@@ -1,0 +1,4 @@
+# Python dependencies for lib/pfsense-sync.py (pfSense REST API → Diode ingestion)
+# Managed via pyproject.toml — run with: uv run lib/pfsense-sync.py
+netboxlabs-diode-sdk
+requests

@@ -1,0 +1,16 @@
+ARG VERSION=v4.5-4.0.0
+FROM docker.io/netboxcommunity/netbox:${VERSION}
+
+# Install NetBox plugins into the existing venv.
+# The upstream image uses uv (not pip) and sets VIRTUAL_ENV + UV_NO_CACHE=1.
+RUN /usr/local/bin/uv pip install netboxlabs-diode-netbox-plugin
+
+# Copy plugins.py so collectstatic includes the diode plugin's static files.
+# At runtime this path is overridden by the volume mount in docker-compose.yml.
+COPY configuration/plugins.py /etc/netbox/config/plugins.py
+
+# Collect static files from newly installed plugins.
+# Granian serves static files from the pre-collected path at runtime — the
+# entrypoint does NOT run collectstatic — so this must happen at build time.
+RUN DEBUG=true SECRET_KEY="dummyKeyWithMinimumLength-------------------------" \
+    /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py collectstatic --no-input

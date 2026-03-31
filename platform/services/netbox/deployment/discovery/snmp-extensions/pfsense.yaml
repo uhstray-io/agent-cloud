@@ -1,0 +1,17 @@
+# Custom sysObjectID-to-device lookup for pfSense / Netgate appliances.
+#
+# The SNMP backend uses this mapping to identify devices by their sysObjectID OID.
+# Without it, enterprise OID 12325 resolves to "Fraunhofer FOKUS" (the IANA registrant)
+# instead of the actual manufacturer (Netgate).
+#
+# OID reference:
+#   .1.3.6.1.4.1.12325     = IANA enterprise assignment (Fraunhofer FOKUS / BSNMP)
+#   .1.3.6.1.4.1.12325.1.1.2.1.1 = pfSense sysObjectID (bsnmpd on FreeBSD)
+#
+# Mount this directory into the orb-agent container at /opt/orb/snmp-extensions
+# and reference it in agent.yaml as:
+#   scope:
+#     lookup_extensions_dir: /opt/orb/snmp-extensions
+
+devices:
+  .1.3.6.1.4.1.12325.1.1.2.1.1: Netgate-4200-pfSense

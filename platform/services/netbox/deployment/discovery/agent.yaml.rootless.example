@@ -1,0 +1,111 @@
+# Orb Agent Configuration — Network & SNMP Discovery (Rootless / Unprivileged Mode)
+#
+# Use this template instead of agent.yaml.example when sudo is unavailable
+# or you cannot run the agent with --privileged.
+#
+# Rootless containers lack CAP_NET_RAW, so this config uses:
+#   - TCP connect scans (scan_types: [connect]) instead of SYN scans
+#   - skip_host: true to bypass ICMP host discovery
+#   - Higher timeout (20 min) because connect scans are much slower
+#
+# To use: copy this file to agent.yaml
+#   cp discovery/agent.yaml.rootless.example discovery/agent.yaml
+#
+# Then edit the targets for your network and run deploy.sh.
+#
+# Valid device roles are defined in discovery/roles.yaml (single source of truth).
+#
+# See: https://github.com/netboxlabs/orb-agent/blob/develop/docs/backends/network_discovery.md#rootless-podman-deployment
+
+orb:
+  config_manager:
+    active: local
+
+  backends:
+    network_discovery:
+    snmp_discovery:
+    common:
+      diode:
+        # gRPC target — must match your Diode server's nginx ingress
+        target: grpc://localhost:8081/diode
+        client_id: ${DIODE_CLIENT_ID}
+        client_secret: ${DIODE_CLIENT_SECRET}
+        agent_name: netbox-discovery-agent
+
+  policies:
+    # ─── Network (subnet) discovery ────────────────────────────────
+    # Finds live IPs and open ports. Creates IP Address entities in NetBox.
+    network_discovery:
+      subnet_scan:
+        config:
+          schedule: "*/10 * * * *"
+          # Timeout in minutes. TCP connect scans are slow — allow ~10 min per /24.
+          timeout: 20
+          defaults:
+            tags:
+              - discovery-network
+              - "site:uhstray-dc"
+            description: "Auto-discovered by network scan"
+        scope:
+          targets:
+            - 192.168.1.0/24
+            # Add more subnets as needed:
+            # - 10.0.0.0/24
+          # Rootless mode: TCP connect scan + skip ICMP host discovery.
+          # Required because rootless containers lack CAP_NET_RAW for SYN scans.
+          scan_types: [connect]
+          skip_host: true
+          # Limit ports to reduce scan time. Without this, nmap scans 1000 ports
+          # per IP which is very slow with TCP connect. Add ports as needed.
+          ports: [22, 80, 443, 8080, 8443, 53, 3389, 5060, 8081, 161]
+
+    # ─── SNMP discovery ──────────────────────────────────────────────
+    snmp_discovery:
+      snmp_scan:
+        config:
+          schedule: "*/10 * * * *"
+          timeout: 600
+          snmp_timeout: 10
+          retries: 3
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: server
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+            device:
+              description: "Auto-discovered via SNMP"
+            interface:
+              description: "Auto-discovered interface"
+            ip_address:
+              description: "Auto-discovered IP"
+        scope:
+          targets:
+            - host: 192.168.1.0/24
+          authentication:
+            protocol_version: SNMPv2c
+            community: ${SNMP_COMMUNITY}
+
+      infrastructure_scan:
+        config:
+          schedule: "*/10 * * * *"
+          timeout: 300
+          snmp_timeout: 10
+          retries: 3
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: gateway-router
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+              - infrastructure
+            device:
+              description: "Infrastructure device (gateway/router/switch)"
+        scope:
+          targets:
+            - host: 192.168.1.1
+          authentication:
+            protocol_version: SNMPv2c
+            community: ${SNMP_COMMUNITY}

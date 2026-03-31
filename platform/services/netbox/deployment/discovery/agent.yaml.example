@@ -1,0 +1,124 @@
+# Orb Agent Configuration — Network & SNMP Discovery
+#
+# The agent runs with sudo --privileged via deploy.sh. The start_orb_agent()
+# function auto-detects the OS and adjusts the network scan mode:
+#   - macOS: forces TCP connect scan (Podman VM NAT blocks raw sockets)
+#   - Linux: uses default SYN scan (--privileged gives real CAP_NET_RAW)
+#
+# DIODE_CLIENT_ID and DIODE_CLIENT_SECRET are automatically created by
+# deploy.sh (step 14) via the Diode plugin API and passed as environment variables.
+#
+# Discovery strategy:
+#   - Network scan: finds live IPs and open ports (nmap TCP connect)
+#   - SNMP scan: enriches devices with hostname, manufacturer, model, interfaces,
+#     MACs, and IP addresses. Assigns site/role/tags for NetBox classification.
+#   - Custom OID lookup: maps pfSense sysObjectID to "Netgate-4200-pfSense"
+#     via snmp-extensions/pfsense.yaml (mounted at /opt/orb/snmp-extensions)
+#
+# Valid device roles are defined in discovery/roles.yaml (single source of truth).
+#
+# Naming convention for tags:
+#   discovery-network  = found by network scan
+#   discovery-snmp     = enriched by SNMP
+#   site:<name>        = site assignment pattern
+
+orb:
+  config_manager:
+    active: local
+
+  backends:
+    network_discovery:
+    snmp_discovery:
+    common:
+      diode:
+        # gRPC target — must match your Diode server's nginx ingress
+        target: grpc://localhost:8081/diode
+        client_id: ${DIODE_CLIENT_ID}
+        client_secret: ${DIODE_CLIENT_SECRET}
+        agent_name: netbox-discovery-agent
+
+  policies:
+    # ─── Network (subnet) discovery ────────────────────────────────
+    # Finds live IPs and open ports. Creates IP Address entities in NetBox.
+    # Does NOT create Device objects — SNMP discovery handles that.
+    network_discovery:
+      subnet_scan:
+        config:
+          schedule: "*/10 * * * *"
+          # Timeout in minutes. TCP connect: ~10 min/subnet. SYN: ~5 min/subnet.
+          timeout: 20
+          defaults:
+            tags:
+              - discovery-network
+              - "site:uhstray-dc"
+            description: "Auto-discovered by network scan"
+        scope:
+          targets:
+            - 192.168.1.0/24
+            # Add more subnets as needed:
+            # - 10.0.0.0/24
+          # scan_types and skip_host are injected automatically by start_orb_agent()
+          # based on OS detection. Do not hardcode here.
+          # Limit ports to reduce scan time
+          ports: [22, 80, 443, 8080, 8443, 53, 3389, 5060, 8081, 161]
+
+    # ─── SNMP discovery ──────────────────────────────────────────────
+    # Enriches discovered hosts with device details: hostname (sysName),
+    # manufacturer/model (sysObjectID), interfaces (IF-MIB), MACs, IPs.
+    # Creates Device, Interface, IP Address, Platform, Manufacturer, Site
+    # entities in NetBox via Diode.
+    snmp_discovery:
+      snmp_scan:
+        config:
+          schedule: "*/10 * * * *"
+          timeout: 600
+          snmp_timeout: 10
+          retries: 3
+          # Custom OID lookup directory — maps sysObjectID to device names.
+          # Mounted into the container at /opt/orb/snmp-extensions by start_orb_agent().
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: server
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+            device:
+              description: "Auto-discovered via SNMP"
+              comments: "Populated by orb-agent SNMP discovery. Device type determined by sysObjectID lookup."
+            interface:
+              description: "Auto-discovered interface"
+            ip_address:
+              description: "Auto-discovered IP"
+        scope:
+          # Scan full subnets — discovers all SNMP-enabled devices, not just gateways
+          targets:
+            - host: 192.168.1.0/24
+          authentication:
+            protocol_version: SNMPv2c
+            community: ${SNMP_COMMUNITY}
+
+      # Dedicated policy for known infrastructure devices (gateways/routers)
+      # with explicit role assignment
+      infrastructure_scan:
+        config:
+          schedule: "*/10 * * * *"
+          timeout: 300
+          snmp_timeout: 10
+          retries: 3
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: gateway-router
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+              - infrastructure
+            device:
+              description: "Infrastructure device (gateway/router/switch)"
+        scope:
+          targets:
+            - host: 192.168.1.1
+          authentication:
+            protocol_version: SNMPv2c
+            community: ${SNMP_COMMUNITY}

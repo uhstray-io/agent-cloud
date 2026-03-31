@@ -1,0 +1,14 @@
+# Standardized device roles for NetBox discovery.
+# This file is the single source of truth — all discovery scripts and agent
+# configs must use roles from this list.
+device_roles:
+  - application-server
+  - firewall
+  - gateway-router
+  - hypervisor
+  - kubernetes-cluster
+  - container
+  - nas
+  - network
+  - server
+  - switch

@@ -1,0 +1,36 @@
+# Upstream clone — do not commit into this repo
+netbox-docker/
+
+# Generated at deploy time by quickstart.sh (contains secrets)
+.env
+
+# Generated secrets (auto-created by generate-secrets.sh and deploy.sh)
+secrets/api_token_peppers.txt
+secrets/device_discovery_password.txt
+secrets/diode_ingest_client_secret.txt
+secrets/diode_postgres_password.txt
+secrets/diode_redis_password.txt
+secrets/diode_to_netbox_client_secret.txt
+secrets/hydra_postgres_password.txt
+secrets/hydra_system_secret.txt
+secrets/netbox_to_diode_client_secret.txt
+secrets/orb_agent_client_id.txt
+secrets/orb_agent_client_secret.txt
+secrets/postgres_password.txt
+secrets/redis_cache_password.txt
+secrets/redis_password.txt
+secrets/secret_key.txt
+secrets/superuser_password.txt
+secrets/agent-resolved.yaml
+
+# Live env files (contain secrets — use .example templates for version control)
+env/netbox.env
+env/postgres.env
+env/discovery.env
+discovery/hydra.yaml
+discovery/agent.yaml
+discovery/agent-resolved.yaml
+
+# Python virtual environment and cache (managed by uv)
+.venv/
+__pycache__/

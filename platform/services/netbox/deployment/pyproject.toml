@@ -1,0 +1,10 @@
+[project]
+name = "netbox-pfsense-sync"
+version = "1.0.0"
+description = "pfSense REST API → NetBox Diode ingestion"
+requires-python = ">=3.10"
+dependencies = [
+    "netboxlabs-diode-sdk",
+    "pyyaml",
+    "requests",
+]

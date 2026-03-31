@@ -1,0 +1,34 @@
+# Ory Hydra configuration for Diode OAuth2
+# Remaining values come from environment variables in env/discovery.env.
+#
+# HYDRA_SYSTEM_SECRET_PLACEHOLDER is replaced by generate-secrets.sh on first run.
+# Do not edit the secrets.system value manually — run generate-secrets.sh instead.
+
+urls:
+  self:
+    issuer: http://hydra:4444
+
+serve:
+  public:
+    host: 0.0.0.0
+    port: 4444
+  admin:
+    host: 0.0.0.0
+    port: 4445
+
+secrets:
+  system:
+    - HYDRA_SYSTEM_SECRET_PLACEHOLDER
+
+strategies:
+  access_token: jwt
+  jwt:
+    scope_claim: both
+
+oauth2:
+  client_credentials:
+    default_grant_allowed_scope: true
+
+log:
+  level: info
+  format: json

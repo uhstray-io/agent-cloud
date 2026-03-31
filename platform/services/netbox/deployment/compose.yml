@@ -1,0 +1,264 @@
+services:
+  # ═══════════════════════════════════════════════════════════════════
+  # NetBox core services
+  # ═══════════════════════════════════════════════════════════════════
+  netbox:
+    image: netbox:latest-plugins
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile-Plugins
+      args:
+        VERSION: ${VERSION:-v4.5-4.0.0}
+    depends_on:
+      - postgres
+      - redis
+      - redis-cache
+    env_file: env/netbox.env
+    user: "netbox:root"
+    ports:
+      - "8000:8080"
+    healthcheck:
+      test: |
+        curl -f http://localhost:8080/login/ || exit 1
+        /opt/netbox/netbox/manage.py showmigrations --plan | grep -q "\[ \]" && exit 1 || exit 0
+      start_period: 180s
+      timeout: 10s
+      interval: 30s
+      retries: 3
+    environment:
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: "admin"
+      SUPERUSER_EMAIL: "admin@uhstray.io"
+      SUPERUSER_PASSWORD: "${SUPERUSER_PASSWORD}"
+      SUPERUSER_API_TOKEN: ""
+      DIODE_TARGET_OVERRIDE: "grpc://ingress-nginx:80/diode"
+    volumes:
+      - ./netbox-docker/configuration:/etc/netbox/config:z,ro
+      - ./configuration/plugins.py:/etc/netbox/config/plugins.py:ro,z
+      - ./secrets/netbox_to_diode_client_secret.txt:/run/secrets/netbox_to_diode:ro,z
+      - netbox-media-files:/opt/netbox/netbox/media:rw
+      - netbox-reports-files:/opt/netbox/netbox/reports:rw
+      - netbox-scripts-files:/opt/netbox/netbox/scripts:rw
+
+  netbox-worker:
+    image: netbox:latest-plugins
+    pull_policy: never
+    depends_on:
+      netbox:
+        condition: service_healthy
+    env_file: env/netbox.env
+    user: "netbox:root"
+    command:
+      - /opt/netbox/venv/bin/python
+      - /opt/netbox/netbox/manage.py
+      - rqworker
+    healthcheck:
+      test: ps -aux | grep -v grep | grep -q rqworker || exit 1
+      start_period: 20s
+      timeout: 3s
+      interval: 15s
+    # Restart so it recovers if it starts before migrations complete.
+    restart: unless-stopped
+    volumes:
+      - ./netbox-docker/configuration:/etc/netbox/config:z,ro
+      - ./configuration/plugins.py:/etc/netbox/config/plugins.py:ro,z
+      - ./secrets/netbox_to_diode_client_secret.txt:/run/secrets/netbox_to_diode:ro,z
+      - netbox-media-files:/opt/netbox/netbox/media:rw
+      - netbox-reports-files:/opt/netbox/netbox/reports:rw
+      - netbox-scripts-files:/opt/netbox/netbox/scripts:rw
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Shared backing services
+  # ═══════════════════════════════════════════════════════════════════
+  postgres:
+    image: docker.io/postgres:18-alpine
+    healthcheck:
+      test: pg_isready -q -t 2 -d $$POSTGRES_DB -U $$POSTGRES_USER
+      start_period: 20s
+      timeout: 30s
+      interval: 10s
+      retries: 5
+    env_file: env/postgres.env
+    volumes:
+      - netbox-postgres:/var/lib/postgresql
+      - ./discovery/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro,z
+
+  redis:
+    image: docker.io/valkey/valkey:9.0-alpine
+    command:
+      - sh
+      - -c
+      - valkey-server --appendonly yes --requirepass $$REDIS_PASSWORD
+    healthcheck:
+      test: '[ $$(valkey-cli --pass "$${REDIS_PASSWORD}" ping) = ''PONG'' ]'
+      start_period: 5s
+      timeout: 3s
+      interval: 1s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - netbox-redis-data:/data
+
+  redis-cache:
+    image: docker.io/valkey/valkey:9.0-alpine
+    command:
+      - sh
+      - -c
+      - valkey-server --requirepass $$REDIS_PASSWORD
+    healthcheck:
+      test: '[ $$(valkey-cli --pass "$${REDIS_PASSWORD}" ping) = ''PONG'' ]'
+      start_period: 5s
+      timeout: 3s
+      interval: 1s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_CACHE_PASSWORD}
+    volumes:
+      - netbox-redis-cache-data:/data
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Discovery services (Diode pipeline)
+  # ═══════════════════════════════════════════════════════════════════
+
+  # Reverse proxy — exposes gRPC/HTTP for the Diode pipeline
+  ingress-nginx:
+    image: docker.io/nginx:stable-alpine3.23
+    ports:
+      - "${DIODE_NGINX_PORT:-8081}:80"
+    volumes:
+      - ./discovery/nginx.conf:/etc/nginx/nginx.conf:ro,z
+    healthcheck:
+      test: wget -qO- http://127.0.0.1:80/health || exit 1
+      start_period: 10s
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      diode-ingester:
+        condition: service_started
+      diode-reconciler:
+        condition: service_started
+      diode-auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Processes incoming discovery data via Redis streams
+  diode-ingester:
+    image: docker.io/netboxlabs/diode-ingester:1.13.0
+    env_file: env/discovery.env
+    environment:
+      REDIS_HOST: diode-redis
+      REDIS_PORT: "6378"
+    depends_on:
+      diode-redis:
+        condition: service_healthy
+      diode-auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Reconciles discovered data against NetBox objects
+  diode-reconciler:
+    image: docker.io/netboxlabs/diode-reconciler:1.13.0
+    env_file: env/discovery.env
+    environment:
+      REDIS_HOST: diode-redis
+      REDIS_PORT: "6378"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB_NAME: ${DIODE_POSTGRES_DB_NAME:-diode}
+      POSTGRES_USER: ${DIODE_POSTGRES_USER:-diode}
+      POSTGRES_PASSWORD: ${DIODE_POSTGRES_PASSWORD}
+    depends_on:
+      diode-redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      diode-auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # OAuth2 token management
+  # OAuth2 clients are registered by deploy.sh via authmanager after this is running.
+  diode-auth:
+    image: docker.io/netboxlabs/diode-auth:1.12.0
+    env_file: env/discovery.env
+    healthcheck:
+      test: nc -z localhost 8080 || exit 1
+      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      hydra:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # OAuth2/OIDC provider
+  hydra:
+    image: docker.io/oryd/hydra:v25.4.0
+    command: serve all --dev --config /etc/hydra/hydra.yaml
+    env_file: env/discovery.env
+    environment:
+      # DSN uses compose variable substitution from the root .env file
+      # (written by generate-secrets.sh), not from env/discovery.env.
+      DSN: "postgres://${HYDRA_POSTGRES_USER:-hydra}:${HYDRA_POSTGRES_PASSWORD}@postgres:5432/${HYDRA_POSTGRES_DB_NAME:-hydra}?sslmode=disable"
+    healthcheck:
+      test: wget -qO- http://localhost:4444/health/ready | grep -q '"status":"ok"'
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./discovery/hydra.yaml:/etc/hydra/hydra.yaml:ro,z
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot: runs Hydra database migrations
+  hydra-migrate:
+    image: docker.io/oryd/hydra:v25.4.0
+    command: migrate sql --yes --config /etc/hydra/hydra.yaml
+    environment:
+      # DSN uses compose variable substitution from the root .env file.
+      DSN: "postgres://${HYDRA_POSTGRES_USER:-hydra}:${HYDRA_POSTGRES_PASSWORD}@postgres:5432/${HYDRA_POSTGRES_DB_NAME:-hydra}?sslmode=disable"
+    volumes:
+      - ./discovery/hydra.yaml:/etc/hydra/hydra.yaml:ro,z
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Diode's own Redis (separate from NetBox Redis). Uses Redis Stack for
+  # RedisJSON/RediSearch/RedisGraph modules required by the reconciler.
+  diode-redis:
+    image: docker.io/redis/redis-stack-server:latest
+    environment:
+      REDIS_ARGS: "--port 6378 --requirepass ${DIODE_REDIS_PASSWORD} --appendonly yes --save 60 1"
+    healthcheck:
+      test: '[ $$(redis-cli -p 6378 --pass "$${REDIS_PASSWORD}" ping) = ''PONG'' ]'
+      start_period: 5s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    env_file: env/discovery.env
+    volumes:
+      - diode-redis-data:/data
+    restart: unless-stopped
+volumes:
+  netbox-media-files:
+    driver: local
+  netbox-postgres:
+    driver: local
+  netbox-redis-cache-data:
+    driver: local
+  netbox-redis-data:
+    driver: local
+  netbox-reports-files:
+    driver: local
+  netbox-scripts-files:
+    driver: local
+  diode-redis-data:
+    driver: local
