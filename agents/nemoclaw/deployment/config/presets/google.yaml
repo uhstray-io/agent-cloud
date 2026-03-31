@@ -1,0 +1,16 @@
+preset:
+  name: google
+  description: "Gemini Google Search Grounding API"
+
+network_policies:
+  google:
+    name: google
+    endpoints:
+      - host: generativelanguage.googleapis.com
+        port: 443
+        access: full
+    binaries:
+      - { path: /usr/local/bin/node }
+      - { path: /usr/local/bin/openclaw }
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/python3 }
