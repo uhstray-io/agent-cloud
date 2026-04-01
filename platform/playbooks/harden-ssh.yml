@@ -1,28 +1,28 @@
 ---
-# harden-ssh.yml — Deploy per-service SSH keys and lock down sshd
+# harden-ssh.yml — Two-phase SSH hardening: distribute keys, verify, THEN lock down
 #
-# Usage via Semaphore:
-#   Template extra var: -e "target_service=netbox_svc"
-#   Or target all agent-cloud VMs: -e "target_service=agent_cloud"
+# Phase 1 (distribute-keys): Adds management + per-service public keys to authorized_keys.
+#          Does NOT touch sshd_config. Safe to run repeatedly. Password auth remains enabled.
 #
-# What this playbook does (all additive, non-destructive):
-#   1. Fetches management + per-service SSH public keys from OpenBao
-#   2. Adds both to authorized_keys (does not remove existing keys)
-#   3. Hardens sshd_config (disable password auth, root login)
-#   4. Fixes cloud-init sshd overrides
-#   5. Restarts sshd
+# Phase 2 (verify-keys): Reconnects using ONLY key auth (PubkeyAuthentication).
+#          If this fails, the play aborts BEFORE any lockdown happens.
+#
+# Phase 3 (lockdown): Disables password auth, root login. Only runs if Phase 2 passed.
+#
+# Usage:
+#   Full hardening:  -e "target_service=netbox_svc"
+#   Keys only:       -e "target_service=netbox_svc skip_lockdown=true"
 #
 # Requires: community.hashi_vault collection, OpenBao AppRole creds in environment
 
-- name: "Harden SSH on {{ target_service | default('(unset)') }}"
+# ── Phase 1: Distribute SSH keys (safe, additive) ───────────────────────────
+- name: "Phase 1: Distribute SSH keys to {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
-  gather_facts: true
+  gather_facts: false
   become: true
   vars:
     target_service: "ungrouped"
     _ssh_user: "{{ ansible_user | default('uhstray') }}"
-
-    # OpenBao connection (from Semaphore environment)
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -68,18 +68,107 @@
         key: "{{ _svc_pub_key }}"
         state: present
 
-    - name: "Harden sshd_config"
+    - name: "Ensure PubkeyAuthentication is enabled"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
         backup: true
-      loop:
-        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
-        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
-        - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
-        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
-      notify: Restart sshd
+      notify: Reload sshd for keys
+
+    - name: "Show authorized_keys contents"
+      ansible.builtin.shell: |
+        cat /home/{{ _ssh_user }}/.ssh/authorized_keys
+      register: _auth_keys
+      changed_when: false
+
+    - name: "Report deployed keys"
+      ansible.builtin.debug:
+        msg: |
+          {{ service_name }}: authorized_keys now contains:
+          {{ _auth_keys.stdout }}
+
+  handlers:
+    - name: Reload sshd for keys
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+
+# ── Phase 2: Verify key auth works BEFORE lockdown ──────────────────────────
+- name: "Phase 2: Verify SSH key auth on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    skip_lockdown: false
+    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+
+  tasks:
+    - name: "Test SSH key auth from runner to target"
+      ansible.builtin.command:
+        cmd: >
+          ssh -o BatchMode=yes
+              -o ConnectTimeout=10
+              -o StrictHostKeyChecking=accept-new
+              -o PasswordAuthentication=no
+              -o PubkeyAuthentication=yes
+              {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
+              echo KEY_AUTH_OK
+      delegate_to: localhost
+      register: _key_test
+      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
+      changed_when: false
+
+    - name: "Key auth verified"
+      ansible.builtin.debug:
+        msg: "{{ service_name }}: SSH key authentication CONFIRMED working"
+
+    - name: "GATE CHECK — abort lockdown if key auth failed"
+      ansible.builtin.assert:
+        that:
+          - _key_test.rc == 0
+          - "'KEY_AUTH_OK' in _key_test.stdout"
+        fail_msg: |
+          SSH key auth verification FAILED for {{ service_name }}.
+          ABORTING — password auth has NOT been disabled.
+          Fix the key distribution and re-run.
+
+# ── Phase 3: Lock down sshd (only if Phase 2 passed) ────────────────────────
+- name: "Phase 3: Lock down sshd on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: true
+  vars:
+    target_service: "ungrouped"
+    skip_lockdown: false
+
+  tasks:
+    - name: "Skip lockdown if requested"
+      ansible.builtin.meta: end_play
+      when: skip_lockdown | bool
+
+    - name: "Disable password authentication"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        backup: true
+      notify: Restart sshd for lockdown
+
+    - name: "Disable challenge-response authentication"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+      notify: Restart sshd for lockdown
+
+    - name: "Disable root login"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: Restart sshd for lockdown
 
     - name: "Check for cloud-init sshd override"
       ansible.builtin.stat:
@@ -92,20 +181,14 @@
         regexp: '^PasswordAuthentication'
         line: 'PasswordAuthentication no'
       when: _cloud_init_sshd.stat.exists
-      notify: Restart sshd
+      notify: Restart sshd for lockdown
 
-    - name: "Verify authorized_keys has both keys"
-      ansible.builtin.shell: |
-        wc -l /home/{{ _ssh_user }}/.ssh/authorized_keys | awk '{print $1}'
-      register: _key_count
-      changed_when: false
-
-    - name: "Report key count"
+    - name: "Lockdown complete"
       ansible.builtin.debug:
-        msg: "{{ service_name }}: {{ _key_count.stdout }} keys in authorized_keys"
+        msg: "{{ service_name }}: sshd hardened — password auth disabled, root login disabled"
 
   handlers:
-    - name: Restart sshd
+    - name: Restart sshd for lockdown
       ansible.builtin.service:
         name: ssh
         state: restarted
