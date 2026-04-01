@@ -1,0 +1,134 @@
+---
+# distribute-ssh-keys.yml — Deploy SSH keys from OpenBao to authorized_keys
+#
+# Safe, additive, no sudo required. Does NOT modify sshd_config.
+# After running this, verify key auth works, then run harden-ssh.yml separately.
+#
+# Usage: -e "target_service=agent_cloud"
+
+- name: "Distribute SSH keys to {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Validate service_name is defined"
+      ansible.builtin.assert:
+        that:
+          - service_name is defined
+        fail_msg: "Host must have service_name defined in inventory"
+
+    - name: "Fetch management SSH public key from OpenBao"
+      ansible.builtin.set_fact:
+        _mgmt_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:public_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+
+    - name: "Fetch per-service SSH public key from OpenBao"
+      ansible.builtin.set_fact:
+        _svc_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh/' + service_name + ':public_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+
+    - name: "Ensure .ssh directory exists"
+      ansible.builtin.file:
+        path: "/home/{{ _ssh_user }}/.ssh"
+        state: directory
+        owner: "{{ _ssh_user }}"
+        group: "{{ _ssh_user }}"
+        mode: "0700"
+
+    - name: "Deploy management SSH public key"
+      ansible.posix.authorized_key:
+        user: "{{ _ssh_user }}"
+        key: "{{ _mgmt_pub_key }}"
+        state: present
+
+    - name: "Deploy per-service SSH public key"
+      ansible.posix.authorized_key:
+        user: "{{ _ssh_user }}"
+        key: "{{ _svc_pub_key }}"
+        state: present
+
+    - name: "Show authorized_keys"
+      ansible.builtin.shell: |
+        cat /home/{{ _ssh_user }}/.ssh/authorized_keys
+      register: _auth_keys
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "{{ service_name }}: {{ _auth_keys.stdout_lines | length }} keys deployed"
+
+# ── Verify key auth works ────────────────────────────────────────────────────
+- name: "Verify SSH key auth"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Fetch management private key from OpenBao"
+      ansible.builtin.set_fact:
+        _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:private_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      run_once: true
+
+    - name: "Write key to temp file"
+      ansible.builtin.tempfile:
+        state: file
+        prefix: ".mgmt_key_"
+      register: _key_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Set key contents"
+      ansible.builtin.copy:
+        content: "{{ _mgmt_priv_key }}\n"
+        dest: "{{ _key_file.path }}"
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: "Test SSH key auth to {{ service_name }}"
+      ansible.builtin.command:
+        cmd: >
+          ssh -i {{ _key_file.path }}
+              -o BatchMode=yes
+              -o ConnectTimeout=10
+              -o StrictHostKeyChecking=accept-new
+              -o PasswordAuthentication=no
+              -o PubkeyAuthentication=yes
+              {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
+              echo KEY_AUTH_OK
+      delegate_to: localhost
+      register: _key_test
+      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
+      changed_when: false
+
+    - name: "Result"
+      ansible.builtin.debug:
+        msg: "{{ service_name }}: SSH key auth {{ 'CONFIRMED' if _key_test.rc == 0 else 'FAILED' }}"
+
+    - name: "Remove temp key"
+      ansible.builtin.file:
+        path: "{{ _key_file.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
