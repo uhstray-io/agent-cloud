@@ -3,14 +3,14 @@
 # Run after deploy-all.yml or independently for health checks.
 
 - name: "Validate OpenBao"
-  hosts: openbao
+  hosts: openbao_svc
   gather_facts: false
   tasks:
     - name: Check OpenBao health
       ansible.builtin.uri:
         url: "{{ service_url }}/v1/sys/health"
         method: GET
-        status_code: [200]
+        status_code: "{{ health_status_codes | default([200]) }}"
         timeout: 10
       register: bao_health
       ignore_errors: true
@@ -20,7 +20,7 @@
         msg: "OpenBao: {{ 'HEALTHY' if bao_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate NocoDB"
-  hosts: nocodb
+  hosts: nocodb_svc
   gather_facts: false
   tasks:
     - name: Check NocoDB health
@@ -37,7 +37,7 @@
         msg: "NocoDB: {{ 'HEALTHY' if nocodb_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate n8n"
-  hosts: n8n
+  hosts: n8n_svc
   gather_facts: false
   tasks:
     - name: Check n8n health
@@ -71,7 +71,7 @@
         msg: "Semaphore: {{ 'HEALTHY' if semaphore_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate NetBox"
-  hosts: netbox
+  hosts: netbox_svc
   gather_facts: false
   tasks:
     - name: Check NetBox health

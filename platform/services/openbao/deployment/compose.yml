@@ -1,0 +1,24 @@
+services:
+  openbao:
+    image: docker.io/openbao/openbao:latest
+    container_name: workflow-openbao
+    restart: unless-stopped
+    ports:
+      - "${OPENBAO_LISTEN:-127.0.0.1}:8200:8200"
+    environment:
+      BAO_ADDR: "http://0.0.0.0:8200"
+      BAO_LOG_LEVEL: warn
+      SKIP_CHOWN: "true"
+      SKIP_SETCAP: "true"
+    volumes:
+      - ./data/openbao:/openbao/data:rw
+      - ./config/openbao.hcl:/openbao/config/openbao.hcl:ro
+    cap_add:
+      - IPC_LOCK
+    command: server
+    healthcheck:
+      test: "bao status -tls-skip-verify 2>&1 || true"
+      start_period: 15s
+      interval: 10s
+      timeout: 5s
+      retries: 3

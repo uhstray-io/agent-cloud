@@ -1,25 +1,24 @@
 ---
-# deploy-service.yml — Deploy a single service: clone repo from GitHub, run deploy.sh, health check.
+# deploy-service.yml — Deploy a single service from the agent-cloud monorepo.
 #
 # Usage:
-#   ansible-playbook deploy-service.yml -e "target_service=nocodb"
+#   ansible-playbook deploy-service.yml -e "target_service=nocodb_svc"
 #   Semaphore task template: set target_service as extra variable.
 #
-# Requires inventory vars per host: service_name, service_repo, service_url,
-# health_path, deploy_dir. Optional: health_status_codes (default [200]).
+# Requires inventory vars per host: service_name, monorepo_repo,
+# monorepo_deploy_path, service_url (optional), health_path (optional).
 #
 # GitHub deploy key fetched from OpenBao at runtime — no keys on disk.
 # OpenBao bootstrap note: if deploying OpenBao itself and the vault is not yet
-# available, pre-clone the repo manually or pass github_deploy_key as an extra var.
+# available, pass github_deploy_key as an extra var.
 
 - name: "Deploy {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
   gather_facts: false
   vars:
-    target_service: ""
-    _deploy_dir: "/home/{{ ansible_user | default('uhstray') }}/{{ service_name }}"
+    target_service: "ungrouped"
+    _monorepo_dir: "/home/{{ ansible_user | default('uhstray') }}/agent-cloud"
     _branch: "{{ service_branch | default('main') }}"
-    _health_codes: "{{ health_status_codes | default([200]) }}"
 
     # OpenBao connection (AppRole credentials from Semaphore environment)
     _bao_url: "{{ openbao_addr | default('') }}"
@@ -31,92 +30,8 @@
       ansible.builtin.assert:
         that:
           - target_service | length > 0
-          - service_repo is defined
-        fail_msg: "target_service must be set and host must have service_repo defined in inventory"
+          - monorepo_deploy_path is defined
+        fail_msg: "target_service must be set and host must have monorepo_deploy_path defined in inventory"
 
-    - name: "Install git if needed"
-      ansible.builtin.apt:
-        name: git
-        state: present
-      become: true
-
-    - name: "Add GitHub to known hosts"
-      ansible.builtin.known_hosts:
-        name: github.com
-        key: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
-        state: present
-
-    # Fetch deploy key from OpenBao and clone repo.
-    # Wrapped in block/always to guarantee temp key cleanup on failure.
-    - name: "Fetch deploy key and clone repo"
-      block:
-        - name: "Fetch GitHub deploy key from OpenBao"
-          ansible.builtin.set_fact:
-            _github_deploy_key: "{{ lookup('community.hashi_vault.hashi_vault',
-              'secret/data/services/github:deploy_key',
-              url=_bao_url, auth_method='approle',
-              role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-          when: github_deploy_key is not defined
-
-        - name: "Use provided deploy key (bootstrap/override)"
-          ansible.builtin.set_fact:
-            _github_deploy_key: "{{ github_deploy_key }}"
-          when: github_deploy_key is defined
-
-        - name: "Write deploy key to temp file"
-          ansible.builtin.tempfile:
-            state: file
-            prefix: ".deploy_key_"
-          register: _key_tempfile
-
-        - name: "Set deploy key contents"
-          ansible.builtin.copy:
-            content: "{{ _github_deploy_key }}\n"
-            dest: "{{ _key_tempfile.path }}"
-            mode: "0600"
-          no_log: true
-
-        - name: "Clone or update {{ service_name }} repo"
-          ansible.builtin.git:
-            repo: "{{ service_repo }}"
-            dest: "{{ _deploy_dir }}"
-            version: "{{ _branch }}"
-            force: true
-            accept_hostkey: false
-            key_file: "{{ _key_tempfile.path }}"
-
-      always:
-        - name: "Remove temp deploy key"
-          ansible.builtin.file:
-            path: "{{ _key_tempfile.path | default('') }}"
-            state: absent
-          when: _key_tempfile.path is defined
-
-    - name: "Run deploy.sh"
-      ansible.builtin.shell: |
-        cd "{{ _deploy_dir }}"
-        bash deploy.sh
-      environment:
-        OPENBAO_ADDR: "{{ _bao_url }}"
-      register: deploy_result
-      changed_when: true
-
-    - name: "Show deploy output"
-      ansible.builtin.debug:
-        var: deploy_result.stdout_lines
-
-    - name: "Verify {{ service_name }} health"
-      ansible.builtin.uri:
-        url: "{{ service_url }}{{ health_path }}"
-        method: GET
-        status_code: "{{ _health_codes }}"
-        validate_certs: false
-      register: health
-      retries: 5
-      delay: 5
-      when: health_path is defined
-
-    - name: "{{ service_name }} status"
-      ansible.builtin.debug:
-        msg: "{{ service_name }} at {{ service_url }} — healthy"
-      when: health is succeeded
+    - name: "Clone and deploy"
+      ansible.builtin.include_tasks: tasks/clone-and-deploy.yml

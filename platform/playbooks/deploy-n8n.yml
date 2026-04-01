@@ -3,4 +3,4 @@
 - name: "Deploy n8n"
   import_playbook: deploy-service.yml
   vars:
-    target_service: n8n
+    target_service: n8n_svc

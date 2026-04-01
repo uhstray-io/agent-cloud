@@ -11,7 +11,7 @@ LIB_DIR="${PROJECT_ROOT}/lib"
 source "${LIB_DIR}/common.sh"
 
 SEMAPHORE_URL="${SEMAPHORE_URL:-http://localhost:${SEMAPHORE_PORT:-3000}}"
-SECRETS_DIR="${PROJECT_ROOT}/vms/semaphore/secrets"
+SECRETS_DIR="${PROJECT_ROOT}/services/semaphore/deployment/secrets"
 API_TOKEN=""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ create_inventory() {
   inv_id=$(echo "$existing" | jq -r '.[] | select(.name == "local") | .id' 2>/dev/null) || inv_id=""
   if [ -z "$inv_id" ]; then
     local inv_content
-    inv_content=$(cat "${SCRIPT_DIR}/inventory/local.yml")
+    inv_content=$(cat "${PROJECT_ROOT}/inventory/local.yml")
     local resp
     resp=$(sem_api POST "/project/${PROJECT_ID}/inventory" -d "$(jq -n \
       --arg name "local" \
@@ -234,31 +234,43 @@ create_task_templates() {
 
   create_template "Deploy OpenBao" \
     "playbooks/deploy-service.yml" \
-    "-e target_service=openbao"
+    "-e target_service=openbao_svc"
 
   create_template "Deploy NocoDB" \
     "playbooks/deploy-service.yml" \
-    "-e target_service=nocodb"
+    "-e target_service=nocodb_svc"
 
   create_template "Deploy n8n" \
     "playbooks/deploy-service.yml" \
-    "-e target_service=n8n"
+    "-e target_service=n8n_svc"
 
   create_template "Deploy Semaphore" \
     "playbooks/deploy-service.yml" \
     "-e target_service=semaphore_svc"
 
+  create_template "Deploy NetBox" \
+    "playbooks/deploy-service.yml" \
+    "-e target_service=netbox_svc"
+
+  create_template "Deploy NemoClaw" \
+    "playbooks/deploy-service.yml" \
+    "-e target_service=nemoclaw_svc"
+
   create_template "Update NocoDB" \
     "playbooks/update-service.yml" \
-    "-e target_service=nocodb"
+    "-e target_service=nocodb_svc"
 
   create_template "Update n8n" \
     "playbooks/update-service.yml" \
-    "-e target_service=n8n"
+    "-e target_service=n8n_svc"
 
   create_template "Update Semaphore" \
     "playbooks/update-service.yml" \
     "-e target_service=semaphore_svc"
+
+  create_template "Update NetBox" \
+    "playbooks/update-service.yml" \
+    "-e target_service=netbox_svc"
 
   # Proxmox provisioning templates
   create_template "Validate Proxmox Cluster" \

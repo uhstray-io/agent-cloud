@@ -1,23 +1,25 @@
 ---
 # update-service.yml — Update a service to the latest container image version
-# Usage: ansible-playbook update-service.yml -e "target_service=nocodb"
+# Usage: ansible-playbook update-service.yml -e "target_service=nocodb_svc"
 # Pulls latest images, restarts compose, then validates health.
 - name: "Update {{ target_service }}"
   hosts: "{{ target_service }}"
   gather_facts: false
   vars:
-    target_service: ""
+    target_service: "ungrouped"
+    _monorepo_dir: "/home/{{ ansible_user | default('uhstray') }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
     - name: Validate target_service is set
       ansible.builtin.assert:
         that:
           - target_service | length > 0
-        fail_msg: "target_service must be set (e.g., -e target_service=nocodb)"
+        fail_msg: "target_service must be set (e.g., -e target_service=nocodb_svc)"
 
     - name: Check compose.yml exists
       ansible.builtin.stat:
-        path: "{{ deploy_dir }}/compose.yml"
+        path: "{{ _deploy_dir }}/compose.yml"
       register: compose_file
 
     - name: Skip non-compose services
@@ -40,7 +42,7 @@
 
     - name: Pull latest images
       ansible.builtin.shell: |
-        cd "{{ deploy_dir }}"
+        cd "{{ _deploy_dir }}"
         {{ runtime.stdout }} compose -f compose.yml pull
       register: pull_result
       changed_when: "'Pull complete' in pull_result.stdout or 'Downloaded' in pull_result.stdout"
@@ -48,7 +50,7 @@
 
     - name: Restart with new images
       ansible.builtin.shell: |
-        cd "{{ deploy_dir }}"
+        cd "{{ _deploy_dir }}"
         {{ runtime.stdout }} compose -f compose.yml up -d
       register: restart_result
       changed_when: true

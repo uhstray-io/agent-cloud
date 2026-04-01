@@ -1,63 +1,60 @@
 ---
 # Production inventory template — replace placeholders with actual values
-# Actual IPs managed in private inventory (dev-test/deployments/semaphore/config/inventory.yml)
+# Real IPs managed in private site-config repo (site-config/inventory/production.yml)
 # This file is committed to a PUBLIC repo — do not add real IPs or credentials
 all:
   children:
-    openbao:
+    openbao_svc:
       hosts:
         "{{ openbao_host }}":
           service_name: openbao
-          service_repo: "git@github.com:uhstray-io/openbao.git"
           service_url: "http://{{ openbao_host }}:8200"
           health_path: "/v1/sys/health"
           health_status_codes: [200, 429, 472, 473, 501, 503]
-          deploy_dir: ~/openbao
+          monorepo_deploy_path: platform/services/openbao/deployment
 
-    nocodb:
+    nocodb_svc:
       hosts:
         "{{ nocodb_host }}":
           service_name: nocodb
-          service_repo: "git@github.com:uhstray-io/nocodb.git"
           service_url: "http://{{ nocodb_host }}:8181"
           health_path: "/api/v1/health"
-          deploy_dir: ~/nocodb
+          monorepo_deploy_path: platform/services/nocodb/deployment
 
-    n8n:
+    n8n_svc:
       hosts:
         "{{ n8n_host }}":
           service_name: n8n
-          service_repo: "git@github.com:uhstray-io/n8n.git"
           service_url: "http://{{ n8n_host }}:5678"
           health_path: "/healthz"
-          deploy_dir: ~/n8n
+          monorepo_deploy_path: platform/services/n8n/deployment
 
     semaphore_svc:
       hosts:
         "{{ semaphore_host }}":
           service_name: semaphore
-          service_repo: "git@github.com:uhstray-io/semaphore.git"
           service_url: "http://{{ semaphore_host }}:3000"
           health_path: "/api/ping"
-          deploy_dir: ~/semaphore
+          monorepo_deploy_path: platform/services/semaphore/deployment
 
-    netbox:
+    netbox_svc:
       hosts:
         "{{ netbox_host }}":
           service_name: netbox
           service_url: "http://{{ netbox_host }}:8000"
           health_path: "/api/status/"
-          deploy_dir: ~/netbox
+          monorepo_deploy_path: platform/services/netbox/deployment
 
-    nemoclaw:
+    nemoclaw_svc:
       hosts:
         "{{ nemoclaw_host }}":
           service_name: nemoclaw
-          deploy_dir: ~/nemoclaw
+          monorepo_deploy_path: agents/nemoclaw/deployment
 
   vars:
-    ansible_user: "{{ ansible_user | default('admin') }}"
+    ansible_user: "{{ ansible_user | default('uhstray') }}"
     ansible_become: false
+    monorepo_repo: "git@github.com:uhstray-io/agent-cloud.git"
     openbao_addr: "http://{{ openbao_host }}:8200"
     target_node: "{{ proxmox_node | default('alphacentauri') }}"
     vm_storage: "{{ proxmox_vm_storage | default('vm-lvms') }}"

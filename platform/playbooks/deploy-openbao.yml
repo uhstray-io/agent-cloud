@@ -5,4 +5,4 @@
 - name: "Deploy OpenBao"
   import_playbook: deploy-service.yml
   vars:
-    target_service: openbao
+    target_service: openbao_svc

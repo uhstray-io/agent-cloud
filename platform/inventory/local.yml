@@ -3,7 +3,7 @@
 # Each service gets a unique alias to prevent Ansible variable merging.
 all:
   children:
-    openbao:
+    openbao_svc:
       hosts:
         openbao-local:
           ansible_host: localhost
@@ -11,9 +11,11 @@ all:
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: openbao
           service_url: "http://localhost:8200"
-          deploy_dir: "{{ project_root }}/vms/openbao"
+          health_path: "/v1/sys/health"
+          health_status_codes: [200, 429, 472, 473, 501, 503]
+          monorepo_deploy_path: platform/services/openbao/deployment
 
-    nocodb:
+    nocodb_svc:
       hosts:
         nocodb-local:
           ansible_host: localhost
@@ -21,9 +23,10 @@ all:
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: nocodb
           service_url: "http://localhost:8181"
-          deploy_dir: "{{ project_root }}/vms/nocodb"
+          health_path: "/api/v1/health"
+          monorepo_deploy_path: platform/services/nocodb/deployment
 
-    n8n:
+    n8n_svc:
       hosts:
         n8n-local:
           ansible_host: localhost
@@ -31,7 +34,8 @@ all:
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: n8n
           service_url: "http://localhost:5678"
-          deploy_dir: "{{ project_root }}/vms/n8n"
+          health_path: "/healthz"
+          monorepo_deploy_path: platform/services/n8n/deployment
 
     semaphore_svc:
       hosts:
@@ -41,9 +45,10 @@ all:
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: semaphore
           service_url: "http://localhost:{{ semaphore_port | default('3000') }}"
-          deploy_dir: "{{ project_root }}/vms/semaphore"
+          health_path: "/api/ping"
+          monorepo_deploy_path: platform/services/semaphore/deployment
 
-    netbox:
+    netbox_svc:
       hosts:
         netbox-local:
           ansible_host: localhost
@@ -51,19 +56,20 @@ all:
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: netbox
           service_url: "http://localhost:8000"
-          deploy_dir: "{{ project_root }}/vms/netbox"
+          health_path: "/api/status/"
+          monorepo_deploy_path: platform/services/netbox/deployment
 
-    nemoclaw:
+    nemoclaw_svc:
       hosts:
         nemoclaw-local:
           ansible_host: localhost
           ansible_connection: local
           ansible_python_interpreter: "{{ ansible_playbook_python }}"
           service_name: nemoclaw
-          deploy_dir: "{{ project_root }}/vms/nemoclaw"
+          monorepo_deploy_path: agents/nemoclaw/deployment
 
   vars:
-    project_root: "{{ playbook_dir }}/../.."
+    monorepo_repo: "git@github.com:uhstray-io/agent-cloud.git"
     openbao_addr: "http://localhost:8200"
 
     # Proxmox API (credentials fetched from OpenBao at runtime)

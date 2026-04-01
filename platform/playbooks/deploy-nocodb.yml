@@ -3,4 +3,4 @@
 - name: "Deploy NocoDB"
   import_playbook: deploy-service.yml
   vars:
-    target_service: nocodb
+    target_service: nocodb_svc
