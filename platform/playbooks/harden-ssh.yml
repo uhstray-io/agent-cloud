@@ -103,12 +103,41 @@
     target_service: "ungrouped"
     skip_lockdown: false
     _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Test SSH key auth from runner to target"
+    - name: "Fetch management private key from OpenBao"
+      ansible.builtin.set_fact:
+        _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:private_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      run_once: true
+
+    - name: "Write management key to temp file"
+      ansible.builtin.tempfile:
+        state: file
+        prefix: ".mgmt_key_"
+      register: _mgmt_key_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Set management key contents"
+      ansible.builtin.copy:
+        content: "{{ _mgmt_priv_key }}\n"
+        dest: "{{ _mgmt_key_file.path }}"
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: "Test SSH key auth to {{ service_name }}"
       ansible.builtin.command:
         cmd: >
-          ssh -o BatchMode=yes
+          ssh -i {{ _mgmt_key_file.path }}
+              -o BatchMode=yes
               -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
               -o PasswordAuthentication=no
@@ -123,6 +152,13 @@
     - name: "Key auth verified"
       ansible.builtin.debug:
         msg: "{{ service_name }}: SSH key authentication CONFIRMED working"
+
+    - name: "Remove temp key file"
+      ansible.builtin.file:
+        path: "{{ _mgmt_key_file.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
 
     - name: "GATE CHECK — abort lockdown if key auth failed"
       ansible.builtin.assert:
@@ -142,6 +178,9 @@
   vars:
     target_service: "ungrouped"
     skip_lockdown: false
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _sshd_settings:
       - { regexp: '^#?\s*PubkeyAuthentication',              line: 'PubkeyAuthentication yes' }
       - { regexp: '^#?\s*PasswordAuthentication',             line: 'PasswordAuthentication no' }
@@ -185,6 +224,31 @@
     - name: "Flush handlers to restart sshd now"
       ansible.builtin.meta: flush_handlers
 
+    - name: "Fetch management private key for verification"
+      ansible.builtin.set_fact:
+        _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:private_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      run_once: true
+
+    - name: "Write verification key to temp file"
+      ansible.builtin.tempfile:
+        state: file
+        prefix: ".verify_key_"
+      register: _verify_key_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Set verification key contents"
+      ansible.builtin.copy:
+        content: "{{ _mgmt_priv_key }}\n"
+        dest: "{{ _verify_key_file.path }}"
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
     - name: "Post-lockdown: verify password auth is rejected"
       ansible.builtin.command:
         cmd: >
@@ -192,7 +256,6 @@
               -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
               -o PubkeyAuthentication=no
-              -o PasswordAuthentication=yes
               {{ ansible_user | default('uhstray') }}@{{ ansible_host | default(inventory_hostname) }}
               echo SHOULD_NOT_REACH
       delegate_to: localhost
@@ -211,7 +274,8 @@
     - name: "Post-lockdown: verify key auth still works"
       ansible.builtin.command:
         cmd: >
-          ssh -o BatchMode=yes
+          ssh -i {{ _verify_key_file.path }}
+              -o BatchMode=yes
               -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
               -o PasswordAuthentication=no
@@ -222,6 +286,13 @@
       register: _post_key_test
       failed_when: "'KEY_AUTH_OK' not in _post_key_test.stdout"
       changed_when: false
+
+    - name: "Remove verification key"
+      ansible.builtin.file:
+        path: "{{ _verify_key_file.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
 
     - name: "Lockdown complete"
       ansible.builtin.debug:
