@@ -1,198 +1,40 @@
 ---
-# harden-ssh.yml — Two-phase SSH hardening: distribute keys, verify, THEN lock down
+# harden-ssh.yml — Configure NOPASSWD sudo and lock down sshd
 #
-# Phase 1 (distribute-keys): Adds management + per-service public keys to authorized_keys.
-#          Does NOT touch sshd_config. Safe to run repeatedly. Password auth remains enabled.
+# Prerequisites:
+#   - SSH keys already distributed (run distribute-ssh-keys.yml first)
+#   - SSH key auth verified working
 #
-# Phase 2 (verify-keys): Reconnects using ONLY key auth (PubkeyAuthentication).
-#          If this fails, the play aborts BEFORE any lockdown happens.
+# What this playbook does:
+#   1. Configures NOPASSWD sudo for ansible_user
+#   2. Hardens /etc/ssh/sshd_config and all sshd_config.d/*.conf files
+#   3. Restarts sshd
+#   4. Verifies password auth is rejected
+#   5. Verifies key auth still works
 #
-# Phase 3 (lockdown): Disables password auth, root login. Only runs if Phase 2 passed.
+# Requires become (sudo). Pass become password via:
+#   Semaphore: set ansible_become_password in environment JSON
+#   CLI: --become --ask-become-pass
 #
-# Usage:
-#   Full hardening:  -e "target_service=netbox_svc"
-#   Keys only:       -e "target_service=netbox_svc skip_lockdown=true"
-#
-# Requires: community.hashi_vault collection, OpenBao AppRole creds in environment
+# Usage: -e "target_service=agent_cloud"
 
-# ── Phase 1: Distribute SSH keys (safe, additive) ───────────────────────────
-- name: "Phase 1: Distribute SSH keys to {{ target_service | default('(unset)') }}"
+- name: "Harden SSH on {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
   gather_facts: false
   become: true
   vars:
     target_service: "ungrouped"
-    _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-
-  tasks:
-    - name: "Validate service_name is defined"
-      ansible.builtin.assert:
-        that:
-          - service_name is defined
-        fail_msg: "Host must have service_name defined in inventory"
-
-    - name: "Fetch management SSH public key from OpenBao"
-      ansible.builtin.set_fact:
-        _mgmt_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh:public_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-
-    - name: "Fetch per-service SSH public key from OpenBao"
-      ansible.builtin.set_fact:
-        _svc_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh/' + service_name + ':public_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-
-    - name: "Ensure .ssh directory exists"
-      ansible.builtin.file:
-        path: "/home/{{ _ssh_user }}/.ssh"
-        state: directory
-        owner: "{{ _ssh_user }}"
-        group: "{{ _ssh_user }}"
-        mode: "0700"
-
-    - name: "Deploy management SSH public key"
-      ansible.posix.authorized_key:
-        user: "{{ _ssh_user }}"
-        key: "{{ _mgmt_pub_key }}"
-        state: present
-
-    - name: "Deploy per-service SSH public key"
-      ansible.posix.authorized_key:
-        user: "{{ _ssh_user }}"
-        key: "{{ _svc_pub_key }}"
-        state: present
-
-    - name: "Ensure PubkeyAuthentication is enabled"
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PubkeyAuthentication'
-        line: 'PubkeyAuthentication yes'
-        backup: true
-      notify: Reload sshd for keys
-
-    - name: "Show authorized_keys contents"
-      ansible.builtin.shell: |
-        cat /home/{{ _ssh_user }}/.ssh/authorized_keys
-      register: _auth_keys
-      changed_when: false
-
-    - name: "Report deployed keys"
-      ansible.builtin.debug:
-        msg: |
-          {{ service_name }}: authorized_keys now contains:
-          {{ _auth_keys.stdout }}
-
-  handlers:
-    - name: Reload sshd for keys
-      ansible.builtin.service:
-        name: ssh
-        state: reloaded
-
-# ── Phase 2: Verify key auth works BEFORE lockdown ──────────────────────────
-- name: "Phase 2: Verify SSH key auth on {{ target_service | default('(unset)') }}"
-  hosts: "{{ target_service }}"
-  gather_facts: false
-  become: false
-  vars:
-    target_service: "ungrouped"
-    skip_lockdown: false
-    _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-
-  tasks:
-    - name: "Fetch management private key from OpenBao"
-      ansible.builtin.set_fact:
-        _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh:private_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-      run_once: true
-
-    - name: "Write management key to temp file"
-      ansible.builtin.tempfile:
-        state: file
-        prefix: ".mgmt_key_"
-      register: _mgmt_key_file
-      delegate_to: localhost
-      run_once: true
-
-    - name: "Set management key contents"
-      ansible.builtin.copy:
-        content: "{{ _mgmt_priv_key }}\n"
-        dest: "{{ _mgmt_key_file.path }}"
-        mode: "0600"
-      delegate_to: localhost
-      run_once: true
-      no_log: true
-
-    - name: "Test SSH key auth to {{ service_name }}"
-      ansible.builtin.command:
-        cmd: >
-          ssh -i {{ _mgmt_key_file.path }}
-              -o BatchMode=yes
-              -o ConnectTimeout=10
-              -o StrictHostKeyChecking=accept-new
-              -o PasswordAuthentication=no
-              -o PubkeyAuthentication=yes
-              {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
-              echo KEY_AUTH_OK
-      delegate_to: localhost
-      register: _key_test
-      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
-      changed_when: false
-
-    - name: "Key auth verified"
-      ansible.builtin.debug:
-        msg: "{{ service_name }}: SSH key authentication CONFIRMED working"
-
-    - name: "Remove temp key file"
-      ansible.builtin.file:
-        path: "{{ _mgmt_key_file.path }}"
-        state: absent
-      delegate_to: localhost
-      run_once: true
-
-    - name: "GATE CHECK — abort lockdown if key auth failed"
-      ansible.builtin.assert:
-        that:
-          - _key_test.rc == 0
-          - "'KEY_AUTH_OK' in _key_test.stdout"
-        fail_msg: |
-          SSH key auth verification FAILED for {{ service_name }}.
-          ABORTING — password auth has NOT been disabled.
-          Fix the key distribution and re-run.
-
-# ── Phase 3: Lock down sshd (only if Phase 2 passed) ────────────────────────
-- name: "Phase 3: Lock down sshd on {{ target_service | default('(unset)') }}"
-  hosts: "{{ target_service }}"
-  gather_facts: false
-  become: true
-  vars:
-    target_service: "ungrouped"
-    skip_lockdown: false
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _sshd_settings:
-      - { regexp: '^#?\s*PubkeyAuthentication',              line: 'PubkeyAuthentication yes' }
-      - { regexp: '^#?\s*PasswordAuthentication',             line: 'PasswordAuthentication no' }
-      - { regexp: '^#?\s*ChallengeResponseAuthentication',    line: 'ChallengeResponseAuthentication no' }
-      - { regexp: '^#?\s*KbdInteractiveAuthentication',       line: 'KbdInteractiveAuthentication no' }
-      - { regexp: '^#?\s*PermitRootLogin',                    line: 'PermitRootLogin no' }
+      - { regexp: '^#?\s*PubkeyAuthentication',           line: 'PubkeyAuthentication yes' }
+      - { regexp: '^#?\s*PasswordAuthentication',          line: 'PasswordAuthentication no' }
+      - { regexp: '^#?\s*ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+      - { regexp: '^#?\s*KbdInteractiveAuthentication',    line: 'KbdInteractiveAuthentication no' }
+      - { regexp: '^#?\s*PermitRootLogin',                 line: 'PermitRootLogin no' }
 
   tasks:
-    - name: "Skip lockdown if requested"
-      ansible.builtin.meta: end_play
-      when: skip_lockdown | bool
-
     - name: "Configure NOPASSWD sudo for {{ ansible_user }}"
       ansible.builtin.copy:
         content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
@@ -209,7 +51,7 @@
       loop: "{{ _sshd_settings }}"
       loop_control:
         label: "{{ item.line }}"
-      notify: Restart sshd for lockdown
+      notify: Restart sshd
 
     - name: "Find all sshd_config.d override files"
       ansible.builtin.find:
@@ -226,87 +68,91 @@
       loop_control:
         label: "{{ item.0.path | basename }}: {{ item.1.line }}"
       when: _sshd_overrides.files | length > 0
-      notify: Restart sshd for lockdown
+      notify: Restart sshd
 
     - name: "Flush handlers to restart sshd now"
       ansible.builtin.meta: flush_handlers
 
-    - name: "Fetch management private key for verification"
+    # ── Post-lockdown verification (runs from Semaphore runner, no become) ────
+
+    - name: "Fetch management private key from OpenBao"
       ansible.builtin.set_fact:
         _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
           'secret/data/services/ssh:private_key',
           url=_bao_url, auth_method='approle',
           role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
       run_once: true
+      become: false
 
     - name: "Write verification key to temp file"
       ansible.builtin.tempfile:
         state: file
         prefix: ".verify_key_"
-      register: _verify_key_file
+      register: _key_file
       delegate_to: localhost
       run_once: true
+      become: false
 
     - name: "Set verification key contents"
       ansible.builtin.copy:
         content: "{{ _mgmt_priv_key }}\n"
-        dest: "{{ _verify_key_file.path }}"
+        dest: "{{ _key_file.path }}"
         mode: "0600"
       delegate_to: localhost
       run_once: true
+      become: false
       no_log: true
 
-    - name: "Post-lockdown: verify password auth is rejected"
+    - name: "Verify password auth is rejected"
       ansible.builtin.command:
         cmd: >
-          ssh -o BatchMode=yes
-              -o ConnectTimeout=10
+          ssh -o BatchMode=yes -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
               -o PubkeyAuthentication=no
               {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
               echo SHOULD_NOT_REACH
       delegate_to: localhost
+      become: false
       register: _pw_test
       failed_when: _pw_test.rc == 0
       changed_when: false
       ignore_errors: true
 
-    - name: "Confirm password auth is disabled"
+    - name: "Confirm password auth disabled"
       ansible.builtin.assert:
-        that:
-          - _pw_test.rc != 0
-        fail_msg: "WARNING: Password auth still works on {{ service_name }} — lockdown incomplete!"
-        success_msg: "{{ service_name }}: password auth correctly REJECTED"
+        that: _pw_test.rc != 0
+        fail_msg: "WARNING: Password auth still works on {{ service_name }}!"
+        success_msg: "{{ service_name }}: password auth REJECTED"
 
-    - name: "Post-lockdown: verify key auth still works"
+    - name: "Verify key auth still works"
       ansible.builtin.command:
         cmd: >
-          ssh -i {{ _verify_key_file.path }}
-              -o BatchMode=yes
-              -o ConnectTimeout=10
+          ssh -i {{ _key_file.path }}
+              -o BatchMode=yes -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
-              -o PasswordAuthentication=no
-              -o PubkeyAuthentication=yes
+              -o PasswordAuthentication=no -o PubkeyAuthentication=yes
               {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
               echo KEY_AUTH_OK
       delegate_to: localhost
-      register: _post_key_test
-      failed_when: "'KEY_AUTH_OK' not in _post_key_test.stdout"
+      become: false
+      register: _key_test
+      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
       changed_when: false
 
     - name: "Remove verification key"
       ansible.builtin.file:
-        path: "{{ _verify_key_file.path }}"
+        path: "{{ _key_file.path }}"
         state: absent
       delegate_to: localhost
       run_once: true
+      become: false
 
     - name: "Lockdown complete"
       ansible.builtin.debug:
-        msg: "{{ service_name }}: sshd hardened — password REJECTED, key auth CONFIRMED, root login disabled"
+        msg: "{{ service_name }}: password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled"
 
   handlers:
-    - name: Restart sshd for lockdown
+    - name: Restart sshd
       ansible.builtin.service:
         name: ssh
         state: restarted
