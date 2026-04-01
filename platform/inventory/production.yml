@@ -53,7 +53,7 @@ all:
 
   vars:
     ansible_user: "{{ ansible_user }}"
-    ansible_become: false
+    # become is controlled per-playbook, not inventory
     monorepo_repo: "git@github.com:uhstray-io/agent-cloud.git"
     openbao_addr: "http://{{ openbao_host }}:8200"
     target_node: "{{ proxmox_node | default('alphacentauri') }}"
