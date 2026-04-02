@@ -15,6 +15,7 @@
 #   1.  Updates/clones the netbox-docker upstream repository
 #   2.  Copies .example templates to live files (if missing)
 #   3.  Generates/syncs secrets (via lib/generate-secrets.sh)
+#  3b.  Stores secrets in OpenBao (if OPENBAO_ADDR is set)
 #   4.  Pulls latest upstream images (unless --no-pull)
 #   5.  Builds the custom NetBox image with plugins
 #   6.  Stops the stack gracefully
@@ -87,24 +88,70 @@ info "Step 2/16: Ensuring templates..."
 copy_example_templates
 
 # ─── Step 3: Generate secrets ───────────────────────────────────────
-info "Step 3/16: Generating secrets..."
+info "Step 3/17: Generating secrets..."
 chmod +x lib/generate-secrets.sh discovery/init-db.sh
 ./lib/generate-secrets.sh "${NETBOX_URL}"
 
+# ─── Step 3b: Store secrets in OpenBao ──────────────────────────────
+if [ -n "${OPENBAO_ADDR:-}" ] && [ "$OPENBAO_ADDR" != "http://127.0.0.1:8200" ]; then
+  info "Step 3b/17: Storing secrets in OpenBao..."
+  PLATFORM_LIB="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
+  if [ -f "${PLATFORM_LIB}/bao-client.sh" ]; then
+    source "${PLATFORM_LIB}/bao-client.sh"
+    if bao_health; then
+      # Authenticate via AppRole (role-id/secret-id from OpenBao deploy)
+      BAO_ROLE_ID="${BAO_ROLE_ID:-}"
+      BAO_SECRET_ID="${BAO_SECRET_ID:-}"
+      if [ -n "$BAO_ROLE_ID" ] && [ -n "$BAO_SECRET_ID" ]; then
+        BAO_TOKEN=$(curl -sf -X POST \
+          -H "Content-Type: application/json" \
+          "${OPENBAO_ADDR}/v1/auth/approle/login" \
+          -d "$(jq -n --arg r "$BAO_ROLE_ID" --arg s "$BAO_SECRET_ID" '{"role_id":$r,"secret_id":$s}')" \
+          | jq -r '.auth.client_token')
+        export BAO_TOKEN
+      fi
+
+      if [ -n "${BAO_TOKEN:-}" ] && [ "$BAO_TOKEN" != "null" ]; then
+        # Build JSON from all secrets in secrets/
+        SECRET_JSON=$(jq -n \
+          --arg superuser_password "$(get_secret superuser_password)" \
+          --arg postgres_password "$(get_secret postgres_password)" \
+          --arg redis_password "$(get_secret redis_password)" \
+          --arg secret_key "$(get_secret secret_key)" \
+          --arg api_token "$(get_secret api_token_peppers)" \
+          --arg url "${NETBOX_URL}" \
+          '{superuser_password:$superuser_password, postgres_password:$postgres_password,
+            redis_password:$redis_password, secret_key:$secret_key,
+            api_token:$api_token, url:$url}')
+        bao_kv_put "services/netbox" "$SECRET_JSON"
+        info "  Stored NetBox secrets in OpenBao at secret/services/netbox"
+      else
+        warn "  No OpenBao token available — skipping secret storage"
+      fi
+    else
+      warn "  OpenBao not reachable at ${OPENBAO_ADDR} — skipping secret storage"
+    fi
+  else
+    warn "  bao-client.sh not found — skipping OpenBao integration"
+  fi
+else
+  info "Step 3b/17: Skipping OpenBao (OPENBAO_ADDR not set or local)"
+fi
+
 # ─── Step 4: Pull latest images ────────────────────────────────────
 if [ "$SKIP_PULL" = false ]; then
-  info "Step 4/16: Pulling latest upstream images..."
+  info "Step 4/17: Pulling latest upstream images..."
   # --ignore-buildable is supported by docker compose but not podman-compose.
   # Fall back to pulling explicit services (excluding locally-built netbox/netbox-worker).
   compose pull --ignore-buildable 2>/dev/null || \
     compose pull postgres redis redis-cache ingress-nginx \
       diode-ingester diode-reconciler diode-auth hydra diode-redis
 else
-  info "Step 4/16: Skipping image pull (--no-pull)"
+  info "Step 4/17: Skipping image pull (--no-pull)"
 fi
 
 # ─── Step 5: Build custom NetBox image ──────────────────────────────
-info "Step 5/16: Building custom NetBox image with plugins..."
+info "Step 5/17: Building custom NetBox image with plugins..."
 build_netbox_image
 
 # ─── Step 6: Stop the stack ─────────────────────────────────────────
@@ -112,7 +159,7 @@ build_netbox_image
 # chains block removal (e.g., after a volume-mount path change). If any project
 # containers remain after compose down, force-remove them so step 8 creates
 # fresh containers from the current compose file.
-info "Step 6/16: Stopping services..."
+info "Step 6/17: Stopping services..."
 stop_orb_agent 2>/dev/null || true
 compose down 2>&1 || true
 leftover=$($CONTAINER_ENGINE ps -a --format '{{.Names}}' 2>/dev/null | grep "^netbox${CONTAINER_SEP}" || true)
@@ -125,14 +172,14 @@ if [ -n "$leftover" ]; then
 fi
 
 # ─── Step 7: Sync DB passwords to existing Postgres volume ─────────
-info "Step 7/16: Checking for existing Postgres volume..."
+info "Step 7/17: Checking for existing Postgres volume..."
 sync_postgres_passwords
 
 # ─── Step 8: Start all services ────────────────────────────────────
 # podman-compose may fail to start one container on the first attempt due to an
 # internal race condition when batch-starting many containers.  A retry is safe
 # because `compose up -d` is idempotent — it only starts what isn't running yet.
-info "Step 8/16: Starting all services..."
+info "Step 8/17: Starting all services..."
 compose up -d || { warn "Some containers failed to start — retrying..."; sleep 5; compose up -d; }
 
 # ─── Step 9: Wait for hydra-migrate ────────────────────────────────
@@ -142,11 +189,11 @@ compose up -d || { warn "Some containers failed to start — retrying..."; sleep
 wait_for_completed "hydra-migrate" 120
 
 # ─── Step 10: Wait for NetBox to become healthy ─────────────────────
-info "Step 10/16: Waiting for NetBox to become healthy..."
+info "Step 10/17: Waiting for NetBox to become healthy..."
 wait_for_healthy "netbox" 300
 
 # ─── Step 11: Run database migrations ──────────────────────────────
-info "Step 11/16: Running database migrations..."
+info "Step 11/17: Running database migrations..."
 compose exec netbox /opt/netbox/netbox/manage.py migrate --no-input
 
 # ─── Step 12: Create admin superuser ───────────────────────────────
@@ -154,7 +201,7 @@ compose exec netbox /opt/netbox/netbox/manage.py migrate --no-input
 # on the netbox container (see docker-compose.yml environment section).
 # Django's createsuperuser --noinput reads the password from DJANGO_SUPERUSER_PASSWORD.
 # Idempotent: skips if the username already exists.
-info "Step 12/16: Creating admin superuser..."
+info "Step 12/17: Creating admin superuser..."
 
 # Read superuser credentials from the container environment
 SU_NAME=$(compose exec netbox bash -c 'echo "$SUPERUSER_NAME"' 2>/dev/null | tr -d '\r')
@@ -187,7 +234,7 @@ su_output=$(compose exec netbox bash -c '
 # Secrets were pre-generated by generate-secrets.sh (step 3) and stored in discovery.env.
 # authmanager runs inside the diode-auth container and uses its OAUTH2_ADMIN_SERVER_URL
 # env var (set to http://hydra:4445) to reach the Hydra admin API.
-info "Step 13/16: Waiting for diode-auth and registering OAuth2 clients..."
+info "Step 13/17: Waiting for diode-auth and registering OAuth2 clients..."
 wait_for_running "diode-auth" 120
 register_oauth2_clients
 
@@ -197,25 +244,25 @@ register_oauth2_clients
 # These are distinct from the infrastructure OAuth2 clients registered in step 13.
 # If secrets/orb_agent_client_id.txt already exists (e.g., user-created via UI),
 # those values are used instead.
-info "Step 14/16: Ensuring orb-agent credentials..."
+info "Step 14/17: Ensuring orb-agent credentials..."
 ensure_agent_credentials
 
 # ─── Step 15: Restart discovery services ───────────────────────────
 # ingester and reconciler may have started before clients were registered; restart them.
 # hydra-migrate dependency was moved from compose to this script (step 9), so podman restart
 # no longer fails on the transitive dependency chain to the exited one-shot container.
-info "Step 15/16: Restarting discovery services with registered credentials..."
+info "Step 15/17: Restarting discovery services with registered credentials..."
 restart_discovery_services
 
 # ─── Step 16: Start Orb Agent + verify all services ────────────────
 # The agent runs as a standalone privileged container via sudo (not compose-managed).
 # This gives it CAP_NET_RAW for SYN scans and ICMP host discovery.
 if [ -f "discovery/agent.yaml" ]; then
-  info "Step 16/16: Starting Orb Agent (privileged, via sudo)..."
+  info "Step 16/17: Starting Orb Agent (privileged, via sudo)..."
   start_orb_agent
   wait_for_agent_running 60
 else
-  info "Step 16/16: Skipping Orb Agent (discovery/agent.yaml not found)"
+  info "Step 16/17: Skipping Orb Agent (discovery/agent.yaml not found)"
 fi
 
 # ─── Optional: pfSense REST API sync ──────────────────────────────
