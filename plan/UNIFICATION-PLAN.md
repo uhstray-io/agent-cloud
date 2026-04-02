@@ -254,9 +254,9 @@ NetClaw integrates deeply with the existing service layer — it reads/writes Ne
 
 **Key architectural decisions from the integration plan:**
 
-- **Separate VM (Option A)** — NetClaw runs on its own VM (192.168.1.165, VMID 265, Docker) because it needs direct network access to managed devices (SSH, SNMP to pfSense, switches, servers). This is fundamentally different from NemoClaw's API-only access pattern.
+- **Separate VM (Option A)** — NetClaw runs on its own VM ({{ netclaw_host }}, VMID 265, Docker) because it needs direct network access to managed devices (SSH, SNMP to pfSense, switches, servers). This is fundamentally different from NemoClaw's API-only access pattern.
 - **Selective MCP deployment** — Only 9 of 46 MCP servers are relevant to the homelab (NetBox, GitHub, nmap, Packet Buddy, Kroki, Protocol, ContainerLab, Prometheus, Grafana). The rest target enterprise Cisco/Juniper/Arista gear.
-- **Broader network policy** — NetClaw's OpenShell policy allows 192.168.1.0/24 SSH+SNMP access. NemoClaw stays restricted to service APIs only.
+- **Broader network policy** — NetClaw's OpenShell policy allows {{ lan_subnet }} SSH+SNMP access. NemoClaw stays restricted to service APIs only.
 - **Cross-agent coordination** — Task routing via NocoDB `task_type` field: `workflow:*` → NemoClaw, `network:*` → NetClaw.
 - **13 agent roles identified** (5 existing, 4 planned, 2 deferred, 2 future) — see Section 8.1 WisAgent architecture for full mapping. Existing: NemoClaw (orchestration+dev), NetClaw (network), WisBot (community, external), Claude Cowork (interactive), vLLM+llama.cpp (inference backbone). Planned P1-P2: Reliability, Governance, Marketing, Research. Deferred: CryptoBot, StockBot. Future P3: Accounting, Storefront.
 
@@ -419,7 +419,7 @@ Tier 1: DEFAULTS (in public repo, committed)
 
 Tier 2: SITE CONFIG (in private repo, per-environment)
   └── inventory files, environment overrides, subnet definitions
-      Examples: NOCODB_HOST=192.168.1.161, PVE_NODE=alphacentauri
+      Examples: NOCODB_HOST={{ nocodb_host }}, PVE_NODE=alphacentauri
 
 Tier 3: SECRETS (in OpenBao, never on disk in steady state)
   └── Passwords, tokens, API keys, TLS certs
@@ -1118,7 +1118,7 @@ Detailed runbooks live in `platform/docs/runbooks/` — this section captures th
 |------|----------|--------|--------|
 | Persistent `hvac` in Semaphore | High | Pending | Custom image (`FROM semaphore:latest` + `pip install hvac`) or startup hook. Lost on restart breaks vault lookups. |
 | SSH key auth for Semaphore VM | High | Pending | Replace password auth. Store private key in OpenBao, deploy public key to `authorized_keys`, disable `PasswordAuthentication`. |
-| Rename PVE API token | High | Pending | `stray@pve!workflow-agent` → `stray@pve!agent-cloud`. Update: Proxmox, OpenBao (`secret/services/proxmox`), all playbooks. |
+| Rename PVE API token | High | Pending | `{{ proxmox_token_id }}` → `stray@pve!agent-cloud`. Update: Proxmox, OpenBao (`secret/services/proxmox`), all playbooks. |
 | AppRole TTLs | Medium | Pending | `token_ttl=1h`, `token_max_ttl=4h`, `secret_id_ttl=720h`. Short token TTL limits leaked token blast radius. |
 | Root token rotation | Medium | Pending | `bao operator generate-root -init` ceremony. Rotate after any interactive session. |
 | OpenBao TLS | Medium | Pending | Self-signed CA or Let's Encrypt. Update `OPENBAO_ADDR` from `http://` to `https://` across all consumers. |
@@ -1126,7 +1126,7 @@ Detailed runbooks live in `platform/docs/runbooks/` — this section captures th
 | Secret rotation policy | Low | Pending | 90-day TTL for service tokens. n8n workflow `rotate-credentials` runs monthly. Log rotations to NocoDB `audit_log`. |
 | Scope PVE API token | Low | Pending | Create `agent-cloud-deploy` role with minimum privileges (VM.Allocate, VM.Clone, VM.Config.*, VM.PowerMgmt, VM.Audit, Datastore.*). |
 | VM firewall rules | Low | Pending | Proxmox firewall: Semaphore→all:22, all→OpenBao:8200, NemoClaw→services, Diode→Proxmox:8006. |
-| OpenBao listener binding | Low | Pending | Bind to `192.168.1.164:8200` instead of `0.0.0.0:8200`. |
+| OpenBao listener binding | Low | Pending | Bind to `{{ openbao_host }}:8200` instead of `0.0.0.0:8200`. |
 
 ### Scaling Triggers
 
@@ -1676,7 +1676,7 @@ Every major decision in this plan is traced back to one or more of the 10 platfo
 | OpenBao | Secrets never on disk in steady state. AppRole least-privilege per service. Dynamic database credentials planned. |
 | Kyverno (Phase 3) | K8s admission policies enforce container security (no privileged pods except agent sandboxes, image pull policies, resource limits). |
 | Harbor (Phase 3) | Container image vulnerability scanning before deployment. |
-| Network policies | OpenShell policies scope each agent to only the endpoints it needs. NetClaw gets 192.168.1.0/24; NemoClaw stays API-only. |
+| Network policies | OpenShell policies scope each agent to only the endpoints it needs. NetClaw gets {{ lan_subnet }}; NemoClaw stays API-only. |
 | Public/private boundary | Real IPs, credentials, and topology data isolated in private `site-config` repo. Public monorepo contains only parameterized templates. |
 | NetClaw ITSM gating | Write operations to production network devices require change management approval. |
 | **Gap to address:** | No mTLS between services currently. Service mesh or Caddy mutual TLS should be added before opening any ports beyond localhost. |

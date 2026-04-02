@@ -30,11 +30,11 @@ Agent Cloud is a dual-agent AI infrastructure platform that deploys two compleme
 
 | VM IP | Services |
 |---|---|
-| `192.168.1.161` | NocoDB + OpenBao |
-| `192.168.1.118` | n8n |
-| `192.168.1.117` | Semaphore |
-| `192.168.1.163` | NemoClaw |
-| `192.168.1.116` | NetBox (infrastructure CMDB, not yet integrated) |
+| `{{ nocodb_host }}` | NocoDB + OpenBao |
+| `{{ n8n_host }}` | n8n |
+| `{{ semaphore_host }}` | Semaphore |
+| `{{ nemoclaw_host }}` | NemoClaw |
+| `{{ netbox_host }}` | NetBox (infrastructure CMDB, not yet integrated) |
 
 All local dev ports are bound to `127.0.0.1`. The NemoClaw network policy (`agent-cloud.yaml`) whitelists production IPs plus `host.docker.internal` fallbacks for local development.
 
@@ -50,19 +50,19 @@ Complete these in order. Each step depends on the previous.
 
 #### Step 1: Identify the Proxmox Host IP
 
-Look at your Proxmox cluster to determine which server hosts the API. Common candidates from your inventory are the physical servers (192.168.1.110, .111, .102, .103, .114, .130-.134, .51, .52). The Proxmox web UI runs on port 8006.
+Look at your Proxmox cluster to determine which server hosts the API. Common candidates from your inventory are the physical servers (see site-config inventory). The Proxmox web UI runs on port 8006.
 
 Once identified, update two locations:
 
 ```bash
 # 1. Update the NemoClaw network policy
 # In nemoclaw/agent-cloud.yaml, replace PROXMOX_HOST_PLACEHOLDER with the real IP
-sed -i 's/PROXMOX_HOST_PLACEHOLDER/192.168.1.XXX/' nemoclaw/agent-cloud.yaml
+sed -i 's/PROXMOX_HOST_PLACEHOLDER/{{ proxmox_host }}/' nemoclaw/agent-cloud.yaml
 
 # 2. Update the OpenBao secret URL
 ROOT_TOKEN=$(jq -r '.root_token' secrets/init.json)
 podman exec -e "BAO_TOKEN=$ROOT_TOKEN" workflow-openbao bao \
-  kv patch secret/services/proxmox url="https://192.168.1.XXX:8006"
+  kv patch secret/services/proxmox url="https://{{ proxmox_host }}:8006"
 ```
 
 #### Step 2: Create Service API Tokens
@@ -525,7 +525,7 @@ When Phase 1 is complete, the following should all be true:
 
 Phase 0 deferred several security items. Before Phase 1 goes to production:
 
-1. **TLS on OpenBao** — Currently `tls_disable=1`. All credential reads are plaintext on loopback. Acceptable for local dev; must enable TLS before production deployment to `192.168.1.161`.
+1. **TLS on OpenBao** — Currently `tls_disable=1`. All credential reads are plaintext on loopback. Acceptable for local dev; must enable TLS before production deployment to `{{ nocodb_host }}`.
 
 2. **AppRole secret_id TTL** — Currently `0` (never expires). Set a TTL (e.g., 24h) and implement rotation via the `nemoclaw-rotate` policy.
 

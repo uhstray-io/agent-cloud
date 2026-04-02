@@ -28,12 +28,12 @@ Production VMs already assigned (from `config/inventory.yml`):
 
 | Service   | VM         | IP              | Status     |
 |-----------|------------|-----------------|------------|
-| NocoDB    | nocodb     | 192.168.1.161   | Deployed   |
-| OpenBao   | nocodb     | 192.168.1.161   | Co-located |
-| n8n       | n8n        | 192.168.1.118   | Deployed   |
-| Semaphore | semaphore  | 192.168.1.117   | Deployed   |
-| NemoClaw  | nemoclaw   | 192.168.1.163   | Deployed   |
-| NetBox    | netbox     | 192.168.1.116   | Deployed   |
+| NocoDB    | nocodb     | {{ nocodb_host }}   | Deployed   |
+| OpenBao   | nocodb     | {{ nocodb_host }}   | Co-located |
+| n8n       | n8n        | {{ n8n_host }}   | Deployed   |
+| Semaphore | semaphore  | {{ semaphore_host }}   | Deployed   |
+| NemoClaw  | nemoclaw   | {{ nemoclaw_host }}   | Deployed   |
+| NetBox    | netbox     | {{ netbox_host }}   | Deployed   |
 
 ---
 
@@ -45,27 +45,27 @@ graph TB
         pve_api["PVE API :8006"]
     end
 
-    subgraph openbao_vm["VM: openbao (192.168.1.164)"]
+    subgraph openbao_vm["VM: openbao ({{ openbao_host }})"]
         openbao["OpenBao :8200<br/>KV v2 + AppRole + DB Engine"]
     end
 
-    subgraph nocodb_vm["VM: nocodb (192.168.1.161)"]
+    subgraph nocodb_vm["VM: nocodb ({{ nocodb_host }})"]
         nocodb["NocoDB :8181<br/>+ Postgres"]
     end
 
-    subgraph n8n_vm["VM: n8n (192.168.1.118)"]
+    subgraph n8n_vm["VM: n8n ({{ n8n_host }})"]
         n8n["n8n :5678<br/>+ Worker + Postgres + Redis"]
     end
 
-    subgraph semaphore_vm["VM: semaphore (192.168.1.117)"]
+    subgraph semaphore_vm["VM: semaphore ({{ semaphore_host }})"]
         semaphore["Semaphore :3000<br/>+ Postgres"]
     end
 
-    subgraph nemoclaw_vm["VM: nemoclaw (192.168.1.163)"]
+    subgraph nemoclaw_vm["VM: nemoclaw ({{ nemoclaw_host }})"]
         nemoclaw["NemoClaw<br/>Docker + OpenShell"]
     end
 
-    subgraph netbox_vm["VM: netbox (192.168.1.116)"]
+    subgraph netbox_vm["VM: netbox ({{ netbox_host }})"]
         netbox["NetBox :8000<br/>+ Diode Pipeline"]
     end
 
@@ -87,7 +87,7 @@ graph TB
 
 ### Key Changes from Current State
 
-1. **OpenBao gets its own VM** (192.168.1.164) — currently co-located with NocoDB on .161. Secrets backbone should not share a failure domain with a data service.
+1. **OpenBao gets its own VM** ({{ openbao_host }}) — currently co-located with NocoDB on .161. Secrets backbone should not share a failure domain with a data service.
 2. **Each service has a dedicated `deploy.sh`** that handles secrets generation, service startup, and programmatic API key bootstrap.
 3. **Proxmox API drives VM provisioning** — create/clone/start VMs via the PVE REST API using the existing `${PVE_TOKEN_ID}` token.
 4. **Semaphore orchestrates deployments** — Ansible playbooks run against the inventory to deploy and update services across VMs.
@@ -295,12 +295,12 @@ sequenceDiagram
 
 | VM Name   | IP              | Services                        | Runtime | Proxmox Node |
 |-----------|-----------------|----------------------------------|---------|--------------|
-| openbao   | 192.168.1.164   | OpenBao                          | Podman  | aurora       |
-| nocodb    | 192.168.1.161   | NocoDB + Postgres                | Podman  | aurora       |
-| n8n       | 192.168.1.118   | n8n + Worker + Postgres + Redis  | Podman  | aurora       |
-| semaphore | 192.168.1.117   | Semaphore + Postgres             | Podman  | aurora       |
-| nemoclaw  | 192.168.1.163   | NemoClaw + OpenShell             | Docker  | aurora       |
-| netbox    | 192.168.1.116   | NetBox + Diode Pipeline          | Podman  | aurora       |
+| openbao   | {{ openbao_host }}   | OpenBao                          | Podman  | aurora       |
+| nocodb    | {{ nocodb_host }}   | NocoDB + Postgres                | Podman  | aurora       |
+| n8n       | {{ n8n_host }}   | n8n + Worker + Postgres + Redis  | Podman  | aurora       |
+| semaphore | {{ semaphore_host }}   | Semaphore + Postgres             | Podman  | aurora       |
+| nemoclaw  | {{ nemoclaw_host }}   | NemoClaw + OpenShell             | Docker  | aurora       |
+| netbox    | {{ netbox_host }}   | NetBox + Diode Pipeline          | Podman  | aurora       |
 
 **Change:** OpenBao moves from co-located on nocodb (161) to its own VM (164). This gives it an independent failure domain and its own storage/memory for the Raft backend.
 
@@ -390,7 +390,7 @@ pve_configure_vm() {
   pve_api PUT "/nodes/${node}/qemu/${vmid}/config" \
     -d "cores=${cores}" \
     -d "memory=${memory}" \
-    -d "ipconfig0=ip=${ip}/24,gw=192.168.1.1"
+    -d "ipconfig0=ip=${ip}/24,gw={{ pfsense_host }}"
 }
 
 # Start VM
@@ -420,7 +420,7 @@ vms:
     cores: 2
     memory: 2048
     disk: 20G
-    ip: 192.168.1.164
+    ip: {{ openbao_host }}
 
   nocodb:
     vmid: 161
@@ -428,7 +428,7 @@ vms:
     cores: 2
     memory: 4096
     disk: 40G
-    ip: 192.168.1.161
+    ip: {{ nocodb_host }}
 
   n8n:
     vmid: 118
@@ -436,7 +436,7 @@ vms:
     cores: 4
     memory: 4096
     disk: 40G
-    ip: 192.168.1.118
+    ip: {{ n8n_host }}
 
   semaphore:
     vmid: 117
@@ -444,7 +444,7 @@ vms:
     cores: 2
     memory: 2048
     disk: 20G
-    ip: 192.168.1.117
+    ip: {{ semaphore_host }}
 
   nemoclaw:
     vmid: 163
@@ -452,7 +452,7 @@ vms:
     cores: 4
     memory: 8192
     disk: 60G
-    ip: 192.168.1.163
+    ip: {{ nemoclaw_host }}
 
   netbox:
     vmid: 116
@@ -460,7 +460,7 @@ vms:
     cores: 2
     memory: 4096
     disk: 40G
-    ip: 192.168.1.116
+    ip: {{ netbox_host }}
 ```
 
 ### Orchestration Flow
@@ -520,7 +520,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/bao-client.sh"
 
 SERVICE_NAME="<service>"
-OPENBAO_ADDR="${OPENBAO_ADDR:-http://192.168.1.164:8200}"
+OPENBAO_ADDR="${OPENBAO_ADDR:-http://{{ openbao_host }}:8200}"
 
 # ── Step 1: Generate secrets ────────────────────────────────────────────
 generate_service_secrets() {
@@ -630,7 +630,7 @@ Semaphore manages all production deployments via Ansible playbooks. This replace
 
 **Inventories:**
 - `local.yml` — all services on localhost (local dev, `ansible_connection: local`)
-- `production.yml` — per-VM inventory with SSH (`ansible_user: uhstray`, `ansible_become: true`)
+- `production.yml` — per-VM inventory with SSH (`ansible_user: {{ ansible_user }}`, `ansible_become: true`)
 
 **Task templates** created by `setup-project.sh`: Deploy All, Validate All, Deploy {OpenBao, NocoDB, n8n, Semaphore}, Update {NocoDB, n8n, Semaphore}.
 
@@ -648,7 +648,7 @@ With OpenBao on its own VM, the NemoClaw network policy needs updating:
 ```yaml
 # Changes to nemoclaw/agent-cloud.yaml:
 # 1. Replace PROXMOX_HOST_PLACEHOLDER with ${PROXMOX_PRIMARY_HOST}
-# 2. Update OpenBao endpoint from 192.168.1.161 to 192.168.1.164
+# 2. Update OpenBao endpoint from {{ nocodb_host }} to {{ openbao_host }}
 
 endpoints:
   # Proxmox API (was placeholder)
@@ -657,7 +657,7 @@ endpoints:
     access: full
 
   # OpenBao secrets (moved to own VM)
-  - host: 192.168.1.164
+  - host: {{ openbao_host }}
     port: 8200
     access: full
 ```
@@ -712,7 +712,7 @@ For production, OpenBao on its own VM should enable TLS. The deploy scripts shou
    - Install from `SharedISOs:iso/ubuntu-24.04.3-live-server-amd64.iso`
    - 2 CPU, 2GB RAM, 20GB disk on `vm-lvms`, vmbr0, firewall off
    - Install packages: `qemu-guest-agent cloud-init podman curl jq ansible genisoimage`
-   - Create `uhstray` user with SSH key, NOPASSWD sudo
+   - Create `{{ ansible_user }}` user with SSH key, NOPASSWD sudo
    - Clean: `cloud-init clean`, truncate machine-id, remove SSH host keys
    - Add cloud-init drive, convert to template
    - Note: Automated autoinstall via ISO + seed ISO hangs on serial console; manual creation required
@@ -720,7 +720,7 @@ For production, OpenBao on its own VM should enable TLS. The deploy scripts shou
 3. SCP `vms/openbao/` + `lib/` to the new VM
 4. Run deploy.sh → OpenBao initialized on its own VM
 5. Migrate secrets from old .161 instance (export/import KV)
-6. Update all service configs to point to 192.168.1.164
+6. Update all service configs to point to {{ openbao_host }}
 
 ### Phase 3 — Deploy to Existing VMs ⬜ PENDING
 
@@ -752,7 +752,7 @@ For production, OpenBao on its own VM should enable TLS. The deploy scripts shou
 
 ## Open Questions
 
-1. ~~**OpenBao VM IP:** Proposed 192.168.1.164 — is this available in the subnet?~~ **Resolved:** 192.168.1.164 confirmed available, not in existing inventory.
+1. ~~**OpenBao VM IP:** Proposed {{ openbao_host }} — is this available in the subnet?~~ **Resolved:** {{ openbao_host }} confirmed available, not in existing inventory.
 2. **VM Template ID:** What is the Proxmox template ID for the base Ubuntu image used for cloning? This goes in `vm-templates.yml`. (Currently placeholder `9000` in the design.)
 3. **NemoClaw AppRole distribution:** How should the NemoClaw VM receive its AppRole credentials on first boot? Currently in `secrets/` files — should these be provisioned via cloud-init user-data?
 4. **TLS timeline:** When should OpenBao TLS be enabled? Before or after the VM migration?

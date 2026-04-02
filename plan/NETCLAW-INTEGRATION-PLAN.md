@@ -100,7 +100,7 @@ NetClaw needs direct network access to managed devices (pfSense at .1/.2, physic
 |---|---|---|
 | VM Name | `netclaw` | Matches naming convention |
 | VMID | 265 | In the 200-299 provisioning range |
-| IP | 192.168.1.165 | Next available after openbao (.164) |
+| IP | {{ netclaw_host }} | Next available after openbao (.164) |
 | Cores | 4 | MCP servers run in parallel; pyATS is CPU-intensive |
 | Memory | 8192 MB | Multiple MCP servers + Python environments + tshark |
 | Disk | 60 GB | pcap storage, config backups, ContainerLab images |
@@ -127,7 +127,7 @@ netclaw:
   cores: 4
   memory: 8192
   disk: 60G
-  ip: 192.168.1.165
+  ip: {{ netclaw_host }}
   node: alphacentauri
   runtime: docker
 ```
@@ -215,40 +215,40 @@ network_policies:
     endpoints:
       # ── Managed Infrastructure ──────────────────────────────
       # pfSense firewalls (SSH + web UI for config backup)
-      - host: 192.168.1.1
+      - host: {{ pfsense_host }}
         port: 443
         access: full
-      - host: 192.168.1.2
+      - host: {{ pfsense2_host }}
         port: 443
         access: full
 
       # Physical servers (SSH for pyATS, SNMP for monitoring)
       # Expand this list based on testbed.yaml
-      - host: 192.168.1.0/24
+      - host: {{ lan_subnet }}
         port: 22
         access: full
-      - host: 192.168.1.0/24
+      - host: {{ lan_subnet }}
         port: 161
         access: full    # SNMP
 
       # ── Workflow Agents Service Layer ───────────────────────
       # NetBox (DCIM/IPAM source of truth — read-write)
-      - host: 192.168.1.116
+      - host: {{ netbox_host }}
         port: 8000
         access: full
 
       # NocoDB (shared data layer — task_log, monitored_resources)
-      - host: 192.168.1.161
+      - host: {{ nocodb_host }}
         port: 8181
         access: full
 
       # n8n (workflow triggering — alert webhooks)
-      - host: 192.168.1.118
+      - host: {{ n8n_host }}
         port: 5678
         access: full
 
       # OpenBao (credential retrieval)
-      - host: 192.168.1.164
+      - host: {{ openbao_host }}
         port: 8200
         access: full
 
@@ -309,7 +309,7 @@ NetClaw's NetBox MCP server provides read-write access to NetBox's DCIM/IPAM. Th
 3. Updates NetBox with current live state (interfaces, IPs, connections)
 4. Generates topology diagrams from NetBox data via Kroki
 
-**Configuration:** NetClaw reads the NetBox URL and token from OpenBao at `secret/services/netbox`. The existing NetBox deployment at 192.168.1.116 requires no changes — NetClaw uses the standard NetBox REST API.
+**Configuration:** NetClaw reads the NetBox URL and token from OpenBao at `secret/services/netbox`. The existing NetBox deployment at {{ netbox_host }} requires no changes — NetClaw uses the standard NetBox REST API.
 
 ### 7.2 NocoDB (Write — Task Logging)
 
@@ -378,7 +378,7 @@ The pyATS testbed defines which devices NetClaw can manage. Initial inventory ba
 # Populated from config/inventory.yml + NetBox
 
 testbed:
-  name: uhstray-homelab
+  name: {{ ansible_user }}-homelab
 
 devices:
   pfsense01:
@@ -389,7 +389,7 @@ devices:
         class: unicon.Unicon
       ssh:
         protocol: ssh
-        ip: 192.168.1.1
+        ip: {{ pfsense_host }}
         port: 22
 
   pfsense02:
@@ -400,7 +400,7 @@ devices:
         class: unicon.Unicon
       ssh:
         protocol: ssh
-        ip: 192.168.1.2
+        ip: {{ pfsense2_host }}
         port: 22
 
   # Physical servers — SSH access for system monitoring
@@ -410,14 +410,14 @@ devices:
     connections:
       ssh:
         protocol: ssh
-        ip: 192.168.1.110
+        ip: {{ proxmox_node_ip }}
         port: 22
 
   # Add more servers as needed from inventory.yml
   # NetClaw can also auto-discover via nmap + ARP
 ```
 
-**Auto-discovery:** NetClaw's nmap MCP server can scan the 192.168.1.0/24 subnet to discover hosts, then reconcile against NetBox and generate/update the testbed.
+**Auto-discovery:** NetClaw's nmap MCP server can scan the {{ lan_subnet }} subnet to discover hosts, then reconcile against NetBox and generate/update the testbed.
 
 ---
 
@@ -453,7 +453,7 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 
 ### Phase A: Foundation (Week 1)
 
-1. **Provision VM** — Clone template → netclaw VM at 192.168.1.165
+1. **Provision VM** — Clone template → netclaw VM at {{ netclaw_host }}
 2. **Install NetClaw** — Clone repo, run `install.sh`, configure Anthropic API key
 3. **Create OpenBao AppRole** — `netclaw` role with `netclaw-readwrite` policy
 4. **Store Anthropic API key** — In OpenBao at `secret/services/netclaw`
@@ -465,7 +465,7 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 ### Phase B: NetBox Integration (Week 2)
 
 1. **Configure NetBox MCP** — Point to existing NetBox at .116, token from OpenBao
-2. **Initial device inventory** — Run nmap discovery against 192.168.1.0/24
+2. **Initial device inventory** — Run nmap discovery against {{ lan_subnet }}
 3. **Populate NetBox** — Import discovered devices, interfaces, IPs
 4. **Set up reconciliation** — Schedule periodic NetBox ↔ live state comparison
 5. **Generate topology diagrams** — From NetBox data via Kroki
@@ -525,7 +525,7 @@ Claude Cowork  ──creates task──→  NocoDB task_queue
 
 | Concern | Mitigation |
 |---|---|
-| NetClaw has broad network access | OpenShell policy restricts to 192.168.1.0/24 only; no internet device access |
+| NetClaw has broad network access | OpenShell policy restricts to {{ lan_subnet }} only; no internet device access |
 | Device credentials (SSH keys, SNMP strings) | Stored in OpenBao, injected via AppRole; never in config files |
 | Config changes to production devices | Read-only by default; writes require ITSM gate or explicit `LAB_MODE=true` |
 | Anthropic API key exposure | Stored in OpenBao at `secret/services/netclaw`, not in env files |
@@ -550,13 +550,13 @@ Claude Cowork  ──creates task──→  NocoDB task_queue
 
 | VM Name | IP | Services | Port | Runtime |
 |---|---|---|---|---|
-| `openbao` | `192.168.1.164` | OpenBao | 8200 | Podman |
-| `nocodb` | `192.168.1.161` | NocoDB + Postgres | 8181 | Podman |
-| `n8n` | `192.168.1.118` | n8n + Worker + Postgres + Redis | 5678 | Podman |
-| `semaphore` | `192.168.1.117` | Semaphore + Postgres | 3000 | Podman |
-| `nemoclaw` | `192.168.1.163` | NemoClaw + OpenShell | — | Docker |
-| `netclaw` | `192.168.1.165` | **NetClaw + OpenClaw + MCP servers** | **18789** | **Docker** |
-| `netbox` | `192.168.1.116` | NetBox + Diode Pipeline | 8000 | Podman |
+| `openbao` | `{{ openbao_host }}` | OpenBao | 8200 | Podman |
+| `nocodb` | `{{ nocodb_host }}` | NocoDB + Postgres | 8181 | Podman |
+| `n8n` | `{{ n8n_host }}` | n8n + Worker + Postgres + Redis | 5678 | Podman |
+| `semaphore` | `{{ semaphore_host }}` | Semaphore + Postgres | 3000 | Podman |
+| `nemoclaw` | `{{ nemoclaw_host }}` | NemoClaw + OpenShell | — | Docker |
+| `netclaw` | `{{ netclaw_host }}` | **NetClaw + OpenClaw + MCP servers** | **18789** | **Docker** |
+| `netbox` | `{{ netbox_host }}` | NetBox + Diode Pipeline | 8000 | Podman |
 
 ---
 

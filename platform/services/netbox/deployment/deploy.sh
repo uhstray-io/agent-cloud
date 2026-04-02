@@ -175,18 +175,20 @@ fi
 info "Step 7/17: Checking for existing Postgres volume..."
 sync_postgres_passwords
 
-# ─── Step 8: Start all services ────────────────────────────────────
-# podman-compose may fail to start one container on the first attempt due to an
-# internal race condition when batch-starting many containers.  A retry is safe
-# because `compose up -d` is idempotent — it only starts what isn't running yet.
-info "Step 8/17: Starting all services..."
-compose up -d || { warn "Some containers failed to start — retrying..."; sleep 5; compose up -d; }
+# ─── Step 8: Start services (staged to avoid DNS race conditions) ──
+# Start backing services first, wait for health, then start application services.
+# Docker Compose starts everything in parallel — if NetBox starts before Redis
+# containers are resolvable via Docker DNS, it fails with name resolution errors.
+info "Step 8/17: Starting backing services..."
+compose up -d postgres redis redis-cache diode-redis
+sleep 5
 
-# ─── Step 9: Wait for hydra-migrate ────────────────────────────────
-# hydra-migrate is a one-shot container that runs Hydra database migrations then exits.
-# The compose dependency was removed from hydra to avoid podman restart failures
-# on containers that transitively depend on the exited one-shot container.
+info "Step 8/17: Starting Hydra + migrations..."
+compose up -d hydra hydra-migrate
 wait_for_completed "hydra-migrate" 120
+
+info "Step 8/17: Starting application services..."
+compose up -d || { warn "Some containers failed to start — retrying..."; sleep 10; compose up -d; }
 
 # ─── Step 10: Wait for NetBox to become healthy ─────────────────────
 info "Step 10/17: Waiting for NetBox to become healthy..."

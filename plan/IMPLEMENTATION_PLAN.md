@@ -18,32 +18,32 @@ Claude Cowork runs on the user's personal device with browser automation, local 
 
 | Service | VM | Runtime | Purpose |
 |---|---|---|---|
-| OpenBao | openbao (192.168.1.164) | Podman | Secrets management — KV v2, AppRole auth, database engine |
-| NocoDB | nocodb (192.168.1.161) | Podman | Shared data layer — tables, views, REST API |
-| n8n | n8n (192.168.1.118) | Podman | Workflow automation — scheduling, webhooks, event routing |
-| Semaphore | semaphore (192.168.1.117) | Podman | Ansible/task automation — playbooks against lab inventory |
-| NemoClaw/OpenClaw | nemoclaw (192.168.1.163) | Docker (NOT podman) | Headless AI agent sandbox |
-| NetBox | netbox (192.168.1.116) | Podman | Infrastructure modeling — IPAM/DCIM + Diode discovery |
+| OpenBao | openbao ({{ openbao_host }}) | Podman | Secrets management — KV v2, AppRole auth, database engine |
+| NocoDB | nocodb ({{ nocodb_host }}) | Podman | Shared data layer — tables, views, REST API |
+| n8n | n8n ({{ n8n_host }}) | Podman | Workflow automation — scheduling, webhooks, event routing |
+| Semaphore | semaphore ({{ semaphore_host }}) | Podman | Ansible/task automation — playbooks against lab inventory |
+| NemoClaw/OpenClaw | nemoclaw ({{ nemoclaw_host }}) | Docker (NOT podman) | Headless AI agent sandbox |
+| NetBox | netbox ({{ netbox_host }}) | Podman | Infrastructure modeling — IPAM/DCIM + Diode discovery |
 | Discord | — | API | Agent notification/interaction channel |
 | GitHub | — | API | Repo management, issue tracking |
-| Proxmox | aurora (192.168.1.52) | API | VM provisioning + infrastructure monitoring |
+| Proxmox | aurora ({{ proxmox_host }}) | API | VM provisioning + infrastructure monitoring |
 
 ### Production Topology
 
-Each service runs on its own VM, provisioned via the Proxmox API on aurora (192.168.1.52). OpenBao has been separated from NocoDB to give the secrets backbone an independent failure domain.
+Each service runs on its own VM, provisioned via the Proxmox API on aurora ({{ proxmox_host }}). OpenBao has been separated from NocoDB to give the secrets backbone an independent failure domain.
 
 | VM Name | IP | Services | Port(s) | Runtime |
 |---|---|---|---|---|
-| `openbao` | `192.168.1.164` | OpenBao | 8200 | Podman |
-| `nocodb` | `192.168.1.161` | NocoDB + Postgres | 8181 | Podman |
-| `n8n` | `192.168.1.118` | n8n + Worker + Postgres + Redis | 5678 | Podman |
-| `semaphore` | `192.168.1.117` | Semaphore + Postgres | 3000 | Podman |
-| `nemoclaw` | `192.168.1.163` | NemoClaw + OpenShell | — | Docker |
-| `netbox` | `192.168.1.116` | NetBox + Diode Pipeline | 8000 | Podman |
+| `openbao` | `{{ openbao_host }}` | OpenBao | 8200 | Podman |
+| `nocodb` | `{{ nocodb_host }}` | NocoDB + Postgres | 8181 | Podman |
+| `n8n` | `{{ n8n_host }}` | n8n + Worker + Postgres + Redis | 5678 | Podman |
+| `semaphore` | `{{ semaphore_host }}` | Semaphore + Postgres | 3000 | Podman |
+| `nemoclaw` | `{{ nemoclaw_host }}` | NemoClaw + OpenShell | — | Docker |
+| `netbox` | `{{ netbox_host }}` | NetBox + Diode Pipeline | 8000 | Podman |
 
 ### Proxmox API Access
 
-VM provisioning and monitoring uses the PVE REST API at `https://192.168.1.52:8006`. API token `stray@pve!workflow-agent` stored in `proxmox/secrets/`. Auth header format: `Authorization: PVEAPIToken=stray@pve!workflow-agent=<token>`.
+VM provisioning and monitoring uses the PVE REST API at `https://{{ proxmox_host }}:8006`. API token `{{ proxmox_token_id }}` stored in `proxmox/secrets/`. Auth header format: `Authorization: PVEAPIToken={{ proxmox_token_id }}=<token>`.
 
 ### Design References
 
@@ -53,12 +53,13 @@ Full architecture design, programmatic API key bootstrap methods, and migration 
 
 ## Key Instructions
 
-1. All work lives in `deployments/agent-cloud/` — do not modify files outside this directory
-2. All container deployments use podman/podman-compose EXCEPT NemoClaw (docker)
-3. Never hardcode secrets — all credentials go in OpenBao or `secrets/` (gitignored)
+1. All deployment code lives in `platform/services/<service>/deployment/` within the **agent-cloud monorepo**
+2. Container runtime is per-service: Docker for NetBox and NemoClaw, Podman for everything else. Set `container_engine` in inventory.
+3. Never hardcode secrets, IPs, or usernames — all credentials go in OpenBao, all IPs in site-config (private)
 4. OpenBao is the source of truth — AppRole auth at runtime, not tokens in env vars
-5. Default to update (`podman-compose up -d`), not reinstall
-6. No git commits until explicitly requested
+5. Playbooks use wrapper pattern (`deploy-<service>.yml`) since Semaphore `extra_cli_arguments` is not supported
+6. `become` is declared per-playbook, never in inventory. SSH keys from OpenBao, temp files cleaned in `always` blocks.
+7. Audit for sensitive data before every push to this public repo
 
 ---
 
@@ -69,7 +70,7 @@ Full architecture design, programmatic API key bootstrap methods, and migration 
 
 ### What Was Built
 
-- **OpenBao** — Initialized with KV v2, database secrets engine, AppRole auth, `nemoclaw-read` and `nemoclaw-rotate` policies. Placeholder secrets seeded at `secret/services/{nocodb,github,discord,proxmox,n8n,semaphore}`. Currently on local dev; migrates to dedicated VM (192.168.1.164) in Phase 0.5.
+- **OpenBao** — Initialized with KV v2, database secrets engine, AppRole auth, `nemoclaw-read` and `nemoclaw-rotate` policies. Placeholder secrets seeded at `secret/services/{nocodb,github,discord,proxmox,n8n,semaphore}`. Currently on local dev; migrates to dedicated VM ({{ openbao_host }}) in Phase 0.5.
 - **NocoDB** — Running with PostgreSQL backend, healthy on port 8181. Awaiting API token creation.
 - **n8n** — Running in queue mode with worker node, PostgreSQL backend, Redis queue. Awaiting first login and API key creation.
 - **Semaphore** — Running with PostgreSQL backend on port 3100 (3000 held by VS Code). Awaiting first login and API token creation.
@@ -81,18 +82,18 @@ Complete these in order — each step depends on the previous.
 
 #### 1. Update Proxmox Host IP
 
-Proxmox host is aurora at 192.168.1.52. Update the two placeholder locations:
+Proxmox host is aurora at {{ proxmox_host }}. Update the two placeholder locations:
 
 ```bash
 # NemoClaw network policy
-sed -i 's/PROXMOX_HOST_PLACEHOLDER/192.168.1.52/' nemoclaw/agent-cloud.yaml
+sed -i 's/PROXMOX_HOST_PLACEHOLDER/{{ proxmox_host }}/' nemoclaw/agent-cloud.yaml
 
 # OpenBao secret URL + token
 ROOT_TOKEN=$(jq -r '.root_token' secrets/init.json)
 podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao \
   kv patch secret/services/proxmox \
-    url="https://192.168.1.52:8006" \
-    token_id="stray@pve!workflow-agent" \
+    url="https://{{ proxmox_host }}:8006" \
+    token_id="{{ proxmox_token_id }}" \
     api_token="$(cat ../proxmox/secrets/stray@pve\!workflow-agent.txt)"
 ```
 
@@ -108,7 +109,7 @@ API tokens are created programmatically by each service's `deploy.sh` — no man
 | **Semaphore** | REST API | Auto-created via `SEMAPHORE_ADMIN_PASSWORD` env var | `POST /api/auth/login` → `POST /api/user/tokens` |
 | **GitHub** | Manual (external) | N/A | Fine-grained PAT via GitHub.com Settings |
 | **Discord** | Manual (external) | N/A | Bot token via Discord Developer Portal |
-| **Proxmox** | Already done | N/A | Token `stray@pve!workflow-agent` in `proxmox/secrets/` |
+| **Proxmox** | Already done | N/A | Token `{{ proxmox_token_id }}` in `proxmox/secrets/` |
 
 **External tokens (GitHub, Discord):** These are third-party services that require manual token creation. Store them via `setup-secrets.sh` as before. All other tokens are created automatically by the deploy scripts.
 
@@ -173,7 +174,7 @@ curl -s http://localhost:3100/api/ping                       # Semaphore
 
 ## Phase 0.5: Per-VM Deployment & Infrastructure Automation
 
-**Status:** DONE — OpenBao VM (210) provisioned on alphacentauri, OpenBao v2.5.2 deployed via Semaphore pulling from `uhstray-io/openbao` GitHub repo, credentials stored in OpenBao, Semaphore playbooks fetch secrets via `community.hashi_vault` AppRole auth (9 PASS / 0 FAIL validation). Automation code migrated to `uhstray-io/infra-automation` (public) and `uhstray-io/openbao` (private) repos.
+**Status:** DONE — OpenBao VM (210) provisioned on alphacentauri, OpenBao v2.5.2 deployed via Semaphore. All deployment code consolidated into the **agent-cloud monorepo** (including openbao, previously in a separate private repo). Only two repos: agent-cloud (public) + site-config (private). `infra-automation` and `openbao` repos deprecated.
 
 **Goal:** Split the monolithic compose stack into per-VM deployments, provision VMs via Proxmox API, and wire up Semaphore for ongoing configuration management. When complete, each service runs on its own VM with programmatic credential bootstrap — no manual UI steps except for GitHub PAT and Discord bot token.
 
@@ -354,13 +355,13 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 - [x] Idempotency verified: second run is no-op with all services healthy
 - [x] Ansible playbooks validated: `validate-all.yml` reports all services HEALTHY
 - [x] Semaphore project setup: 9 task templates created via API
-- [x] NemoClaw network policy updated: OpenBao = 192.168.1.164
+- [x] NemoClaw network policy updated: OpenBao = {{ openbao_host }}
 - [x] Proxmox API wrapper written and validated against live PVE 9.0.3 cluster (2026-03-28)
 - [x] VM template provisioning playbook with autoinstall cloud-init (2026-03-28)
 - [x] VM cloning playbook with cloud-init (static IP, SSH key, DNS) (2026-03-28)
 - [x] Pre/post validation playbook (8 checks) integrated into provisioning workflow (2026-03-28)
 - [x] Semaphore task templates for all provisioning operations (2026-03-28)
-- [ ] OpenBao runs on its own VM at 192.168.1.164 (template + clone ready, needs execution)
+- [ ] OpenBao runs on its own VM at {{ openbao_host }} (template + clone ready, needs execution)
 - [ ] NocoDB, n8n, Semaphore each run on their assigned VMs (playbooks ready)
 - [ ] `validate.sh` updated for multi-VM topology (checks remote health endpoints)
 
@@ -368,28 +369,60 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 
 ## Phase 0.75: Semaphore Automation Infrastructure
 
-**Status:** IN PROGRESS — Steps 1-2 complete (git repo, OpenBao integration). Steps 3-4 pending (NetBox dynamic inventory, per-VM runners).
+**Status:** MOSTLY COMPLETE — Monorepo migration done, SSH hardened, Semaphore pipeline operational. NetBox deployment in progress. Dynamic inventory migration pending.
 
-**Goal:** Establish Semaphore as the production-grade automation platform with git-based workflows, OpenBao-backed credentials, NetBox dynamic inventory, and runner infrastructure.
+**Goal:** Establish Semaphore as the production-grade automation platform with git-based workflows, OpenBao-backed credentials, and full service deployment automation.
 
-### Step 1: Dedicated Automation Git Repository
+### Step 1: Monorepo Consolidation (DONE — 2026-03-30/04-01)
 
-Create `uhstray-io/infra-automation` repository on GitHub. Semaphore points to this repo — no more SCP or manual file deployment. Push-to-deploy.
+Consolidated all deployment code into the **agent-cloud monorepo**. Deprecated `infra-automation` and `openbao` repos.
 
-**Contents to move from `deployments/agent-cloud/`:**
-- `semaphore/playbooks/` → repo root `playbooks/`
-- `semaphore/inventory/` → `inventory/`
-- `proxmox/lib/pve-api.sh`, `proxmox/vm-specs.yml` → `proxmox/`
-- `lib/common.sh`, `lib/bao-client.sh` → `lib/`
-- `semaphore/setup-project.sh` → `scripts/`
+**Completed:**
+- [x] Migrate all playbooks to `platform/playbooks/` with shared task files
+- [x] Migrate openbao deployment into `platform/services/openbao/deployment/` (parameterized, secrets gitignored)
+- [x] Standardize inventory groups to `_svc` suffix (openbao_svc, nocodb_svc, etc.)
+- [x] Shared `tasks/clone-and-deploy.yml` for monorepo clone pattern
+- [x] HTTPS clone (public repo, no deploy key needed)
+- [x] Semaphore project reconfigured to point at agent-cloud monorepo
+- [x] 20 task templates configured with wrapper playbooks
+- [x] `collections/requirements.yml` for auto-installing hashi_vault + posix
+- [x] Remove all hardcoded usernames from public playbooks
+- [x] Remove all IPs from plan/ files (replaced with `{{ }}` placeholders)
 
-**Checklist:**
-- [x] Create `uhstray-io/infra-automation` repo on GitHub (2026-03-29)
-- [x] Move playbooks, inventories, proxmox configs, shared libs (2026-03-29)
-- [x] Update Semaphore project repository to GitHub URL (2026-03-29)
-- [x] Verify task templates resolve playbook paths after move (2026-03-29)
-- [ ] Add SSH deploy key to Semaphore for private repo access (not needed — repo is public)
-- [ ] Set up webhook for auto-sync on push
+### Step 2: SSH Key Authentication (DONE — 2026-04-01)
+
+Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
+
+**Completed:**
+- [x] Generated 6 per-service SSH key pairs (stored in site-config + OpenBao)
+- [x] `distribute-ssh-keys.yml` — deploys keys from OpenBao, verifies key auth
+- [x] `harden-ssh.yml` — NOPASSWD sudo, sshd lockdown, post-lockdown verification
+- [x] Management key in Semaphore key store for all VM access
+- [x] Password auth disabled, root login disabled on all 6 VMs
+- [x] All verification automated (password rejected + key auth confirmed)
+
+### Step 3: Service Deployment via Semaphore (IN PROGRESS — 2026-04-01)
+
+**Completed:**
+- [x] `install-docker.yml` — Docker CE install playbook (official repo)
+- [x] Docker installed on NetBox VM
+- [x] NetBox deploy.sh running through step 8 (Docker Compose startup)
+- [x] OpenBao secret storage added to NetBox deploy.sh (step 3b)
+- [x] Staged Docker Compose startup to avoid DNS race conditions
+
+**In progress:**
+- [ ] Complete NetBox deployment (Hydra startup timing fix applied, needs re-run)
+- [ ] Deploy NocoDB via Semaphore
+- [ ] Deploy n8n via Semaphore
+- [ ] Validate all services healthy after deployment
+
+### Step 4: Remaining Infrastructure (PENDING)
+
+- [ ] NetBox dynamic inventory (`netbox.netbox.nb_inventory` plugin)
+- [ ] Migrate playbooks from static inventory to dynamic
+- [ ] Webhook for auto-sync on push to agent-cloud
+- [ ] Set up Semaphore MCP server for task management
+- [ ] Set up Proxmox MCP server for VM management
 
 ### Step 2: OpenBao as Semaphore Credential Manager
 
@@ -401,7 +434,7 @@ Semaphore key store (AppRole role-id + secret-id only)
     ↓ playbook starts
 community.hashi_vault lookup
     ↓ AppRole auth
-OpenBao (192.168.1.164:8200)
+OpenBao ({{ openbao_host }}:8200)
     ↓ scoped token
 secret/services/proxmox → PVE API token
 secret/services/netbox → NetBox API token
@@ -411,7 +444,7 @@ secret/services/* → all service credentials
 **Playbook pattern:**
 ```yaml
 vars:
-  _bao_url: "http://192.168.1.164:8200"
+  _bao_url: "http://{{ openbao_host }}:8200"
   _bao_role_id: "{{ lookup('env', 'SEMAPHORE_BAO_ROLE_ID') }}"
   _bao_secret_id: "{{ lookup('env', 'SEMAPHORE_BAO_SECRET_ID') }}"
   pve_token: "{{ lookup('community.hashi_vault.hashi_vault',
@@ -441,11 +474,11 @@ Replace static `production.yml` inventory with NetBox as the single source of tr
 
 **Architecture:**
 ```
-Proxmox cluster (192.168.1.52)
-pfSense (192.168.1.1)
+Proxmox cluster ({{ proxmox_host }})
+pfSense ({{ pfsense_host }})
 Network devices (SNMP)
     ↓ Diode Orb agent (central poller)
-NetBox (192.168.1.116:8000)
+NetBox ({{ netbox_host }}:8000)
     ↓ netbox.netbox.nb_inventory plugin
 Semaphore dynamic inventory
     ↓
@@ -453,7 +486,7 @@ Ansible playbooks (deploy, update, validate)
 ```
 
 **Diode Orb Agent — Central Poller:**
-A single Orb agent runs on the NetBox VM (192.168.1.116) and performs:
+A single Orb agent runs on the NetBox VM ({{ netbox_host }}) and performs:
 - **Proxmox discovery**: Polls PVE API → discovers all VMs, their IPs, node placement, resource allocation
 - **pfSense discovery**: Polls pfSense API → discovers DHCP leases, firewall rules, interfaces
 - **Network discovery**: Scans subnets for active hosts, discovers devices
@@ -465,7 +498,7 @@ All discovered data is pushed to NetBox via the Diode ingestion pipeline, keepin
 ```yaml
 # In Semaphore inventory (type: netbox.netbox.nb_inventory)
 plugin: netbox.netbox.nb_inventory
-api_endpoint: http://192.168.1.116:8000
+api_endpoint: http://{{ netbox_host }}:8000
 token: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/netbox:api_token', ...) }}"
 validate_certs: false
 group_by:
@@ -486,9 +519,9 @@ compose:
 5. `vm-specs.yml` retained as the "desired state" for provisioning new VMs; NetBox becomes the "actual state" for managing existing VMs
 
 **Checklist:**
-- [ ] Deploy NetBox to production VM (192.168.1.116) — blocked by podman networking on macOS; deploy on VM directly
+- [ ] Deploy NetBox to production VM ({{ netbox_host }}) — blocked by podman networking on macOS; deploy on VM directly
 - [ ] Configure Diode Orb agent on NetBox VM with Proxmox API credentials
-- [ ] Configure Diode pfSense discovery (pfSense API at 192.168.1.1)
+- [ ] Configure Diode pfSense discovery (pfSense API at {{ pfsense_host }})
 - [ ] Configure Diode network/SNMP discovery for switches and other devices
 - [ ] Verify VMs appear in NetBox with correct IPs after Diode sync
 - [ ] Install `netbox.netbox` collection on Semaphore VM: `ansible-galaxy collection install netbox.netbox`
@@ -878,7 +911,7 @@ When Phase 1 is complete, all of the following should be true:
 - **Unseal verification** — OpenBao deploy.sh verifies unseal succeeded before continuing
 
 ### Deferred to Production Hardening
-- **TLS on OpenBao** — currently `tls_disable=1`; enable on 192.168.1.164 before production use. Self-signed CA acceptable for internal lab; distribute CA cert to all VMs
+- **TLS on OpenBao** — currently `tls_disable=1`; enable on {{ openbao_host }} before production use. Self-signed CA acceptable for internal lab; distribute CA cert to all VMs
 - **Auto-unseal** — currently 1-of-1 Shamir; use transit auto-unseal or 3-of-5 threshold for production
 - **AppRole secret_id TTL** — currently 0 (never expires); set TTL + rotation schedule
 - **Root token rotation** — rotate after initial setup; use recovery tokens for break-glass

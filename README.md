@@ -2,156 +2,151 @@
 
 Privacy-focused, open-source AI platform for startups and small business. Customizable, scalable, extensible, and performant.
 
-**agent-cloud** is the unified platform monorepo — the single source of truth for "what we run and how." It consolidates service deployments, AI agent configurations, Ansible playbooks, Kubernetes manifests, and shared libraries into one repository.
+**agent-cloud** is the unified platform monorepo for [uhstray-io](https://github.com/uhstray-io) -- the single source of truth for service deployments, AI agent configurations, Ansible playbooks, and shared libraries.
 
-## Architecture
+## What is agent-cloud?
 
-agent-cloud follows a layered guardrails model where AI manages context and workloads, while automation tools execute outcomes behind policy enforcement:
+agent-cloud is an AI infrastructure platform that runs on a homelab Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    AI Layer                         │
-│  NemoClaw (workflow) + NetClaw (network) +          │
-│  WisBot (community) + Claude Cowork (interactive)   │
-│  Backed by: vLLM + llama.cpp (local LLM inference)  │
-├─────────────────────────────────────────────────────┤
-│                 Guardrail Layer                     │
-│  OpenBao (secrets) · Kyverno (k8s) · OPA (policy)   │
-│  Network policies · AppRole scoping · ITSM gating   │
-│  AI proposes → guardrails validate → automation runs│
-├─────────────────────────────────────────────────────┤
-│               Automation Layer                      │
-│  Ansible playbooks · Bash deploy scripts · Python   │
-│  Deterministic, idempotent, auditable               │
-├─────────────────────────────────────────────────────┤
-│               Platform Layer                        │
-│  Docker/Podman (dev) ↔ Kubernetes/OpenShift (prod)  │
-│  Proxmox VMs (current) → k8s nodes (scale path)     │
-└─────────────────────────────────────────────────────┘
+AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
+                 Backed by: vLLM + llama.cpp (local LLM inference)
+Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
+                 AI proposes -> guardrails validate -> automation runs
+Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
+                 Deterministic, idempotent, auditable
+Platform Layer   Docker/Podman (dev), Kubernetes/k0s (prod), Proxmox VMs
 ```
 
-### AI Agents
+## Getting Started
+
+### Prerequisites
+
+- A Proxmox cluster (or any Linux VMs with Docker/Podman)
+- OpenBao deployed and initialized (see `platform/services/openbao/deployment/`)
+- Ansible installed locally (for development) or Semaphore deployed (for production)
+- A private `site-config` repository with your real IPs, inventory, and credentials
+
+### Deploy a Service
+
+Every service follows the same pattern. From the target VM:
+
+```bash
+git clone https://github.com/uhstray-io/agent-cloud.git ~/agent-cloud
+cd ~/agent-cloud/platform/services/nocodb/deployment
+bash deploy.sh
+```
+
+Or via Semaphore (production):
+1. Push changes to this repo
+2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
+3. Semaphore clones the repo, SSHes to the target VM, runs `deploy.sh`
+
+### Deploy Pattern
+
+All services are idempotent -- safe to re-run:
+
+1. **Generate secrets** from `secrets/` directory (creates if missing, reuses if existing)
+2. **Start containers** via Docker/Podman Compose
+3. **Bootstrap credentials** (programmatic API token creation)
+4. **Store in OpenBao** (secrets backbone for cross-service access)
+5. **Validate** via health check
+
+## AI Agents
 
 | Agent | Type | Role |
 |-------|------|------|
-| **NemoClaw** | Headless engineer | Background automation, API integrations, CI/CD, health monitoring. Runs in a sandboxed OpenShell runtime with policy-enforced security and OpenBao credential injection. |
-| **NetClaw** | Network engineer | CCIE-level network monitoring, topology discovery, config backup, security auditing. 101+ skills with 46 MCP server backends. Separate network policy for direct device access. |
-| **Claude Cowork** | Interactive architect | Research, architecture decisions, document generation, browser automation. Runs on personal devices with GUI capabilities. |
-| **WisBot** | Community interface | Discord voice/chat bot with LLM-powered interactions, voice recording, reminders. C#/.NET, deployed as external dependency via A2A protocol. |
+| **NemoClaw** | Headless engineer | Background automation, API integrations, CI/CD, health monitoring |
+| **NetClaw** | Network engineer | Network monitoring, topology discovery, config backup, security auditing |
+| **Claude Cowork** | Interactive architect | Research, architecture decisions, document generation |
+| **WisBot** | Community interface | Discord voice/chat bot with LLM-powered interactions |
 
-### Platform Services
+## Platform Services
 
 | Service | Purpose |
 |---------|---------|
-| **OpenBao** | Secrets management — KV v2, AppRole auth, database engine. Single source of truth for all credentials. |
-| **NocoDB** | Shared data layer — structured tables, REST API, task queue for cross-agent coordination. |
-| **n8n** | Workflow automation — event-driven scheduling, webhooks, LLM nodes, queue-mode workers. |
-| **Semaphore** | Deployment orchestration — Ansible playbook execution, infrastructure state management. |
-| **NetBox** | Infrastructure modeling — IPAM/DCIM with Diode auto-discovery from network devices. |
-| **Caddy** | Reverse proxy — automatic TLS, CloudFlare DNS integration. |
-| **vLLM + llama.cpp** | Local LLM inference backbone — GPU-heavy and lightweight engines with OpenAI-compatible API. |
-
-## Quick Start
-
-```bash
-# Clone the repo
-git clone https://github.com/uhstray-io/agent-cloud.git
-cd agent-cloud
-
-# Deploy locally (compose-based, all services)
-cd platform && ./orchestrate.sh --local
-
-# Deploy a single service
-cd platform/services/nocodb/deployment && ./deploy.sh
-```
-
-Every service follows the same 5-step deploy pattern: generate secrets → start containers → bootstrap credentials → store in OpenBao → validate. Learn one, know all.
+| **OpenBao** | Secrets management -- KV v2, AppRole auth, database engine |
+| **NocoDB** | Shared data layer -- structured tables, REST API, task queue |
+| **n8n** | Workflow automation -- event-driven scheduling, webhooks, LLM nodes |
+| **Semaphore** | Deployment orchestration -- Ansible playbook execution |
+| **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
+| **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
+| **vLLM + llama.cpp** | Local LLM inference -- GPU-heavy and lightweight engines |
 
 ## Repository Structure
 
 ```
 agent-cloud/
-├── platform/                          ← Infrastructure & service deployments
-│   ├── services/                      ← Per-service: deployment/ + context/
-│   │   ├── openbao/                   ← Secrets backbone
-│   │   ├── nocodb/                    ← Data layer
-│   │   ├── n8n/                       ← Workflow automation
-│   │   ├── semaphore/                 ← Deployment orchestration
-│   │   ├── netbox/                    ← Infrastructure modeling
-│   │   ├── caddy/                     ← Reverse proxy
-│   │   ├── inference/                 ← vLLM + llama.cpp
-│   │   ├── o11y/                      ← Observability (Grafana/Prometheus/Loki/Tempo)
-│   │   ├── a2a-registry/             ← Agent discovery service
-│   │   ├── nextcloud/                 ← Cloud storage
-│   │   ├── wikijs/                    ← Knowledge base
-│   │   └── postiz/                    ← Content management
-│   ├── lib/                           ← Shared libraries (common.sh, bao-client.sh)
-│   ├── playbooks/                     ← Ansible playbooks (deploy, provision, validate)
-│   ├── inventory/                     ← Inventory templates (no real IPs)
-│   ├── hypervisor/proxmox/            ← VM provisioning and cloud-init
-│   ├── k8s/                           ← Kubernetes manifests (Kustomize overlays)
-│   │   ├── base/                      ← Generated from compose via kompose
-│   │   ├── overlays/                  ← dev / staging / prod
-│   │   └── bootstrap/                 ← k0s/kubeadm cluster setup
-│   └── scripts/                       ← Setup and utility scripts
-├── agents/                            ← AI agent configurations
-│   ├── nemoclaw/                      ← Headless workflow agent
-│   │   ├── deployment/                ← compose.yml, deploy.sh, sandbox config
-│   │   └── context/                   ← skills, use-cases, prompts, architecture
-│   ├── netclaw/                       ← Network engineering agent
-│   │   ├── deployment/                ← compose.yml, testbed template, MCP config
-│   │   └── context/                   ← network skills, pyATS templates
-│   ├── cowork/                        ← Interactive architect agent context
-│   └── workflows/                     ← n8n workflow exports and templates
-├── data/                              ← Data warehouse, lake, analytics
-│   ├── warehouse/                     ← PostgreSQL schemas and migrations
-│   ├── lake/                          ← MinIO bucket configs and lifecycle rules
-│   ├── analytics/                     ← DuckDB queries, Dagster assets
-│   └── docs/                          ← Data dictionary, lineage diagrams
-├── workstations/                      ← Developer device setup
-├── CLAUDE.md                          ← AI agent guidance
-└── README.md
+  platform/
+    services/             Per-service: deployment/ + context/
+      openbao/            Secrets backbone
+      nocodb/             Data layer
+      n8n/                Workflow automation
+      semaphore/          Deployment orchestration
+      netbox/             Infrastructure modeling
+      caddy/              Reverse proxy
+      inference/          LLM inference (planned)
+    playbooks/            Ansible playbooks (see playbooks/README.md)
+    lib/                  Shared bash libraries (common.sh, bao-client.sh)
+    inventory/            Inventory templates (placeholders, no real IPs)
+    hypervisor/proxmox/   VM provisioning and cloud-init
+    k8s/                  Kubernetes manifests (Kustomize overlays)
+  agents/
+    nemoclaw/             Headless workflow agent
+    netclaw/              Network engineering agent
+    cowork/               Interactive architect agent
+  plan/                   Architecture and implementation plans
 ```
 
 Each service directory uses the **deployment/ + context/** split:
-- **deployment/** — compose.yml, deploy.sh, .env.example, Dockerfile (how to run it)
-- **context/** — skills, use-cases, prompts, architecture docs (how AI agents interact with it)
+- **deployment/** -- compose files, deploy.sh, config, Dockerfile (how to run it)
+- **context/** -- skills, use-cases, prompts, architecture docs (how AI agents interact with it)
+
+## Credential Flow
+
+All secrets are managed by **OpenBao**. Services authenticate via AppRole at runtime -- no credentials are stored in environment files or committed to this repository:
+
+```
+Semaphore environment (AppRole role-id + secret-id only)
+  -> playbook starts
+  -> community.hashi_vault lookup
+  -> OpenBao AppRole auth -> scoped token -> fetch secrets
+  -> deploy.sh generates runtime env from OpenBao
+  -> compose up -d
+```
+
+Private configuration (real IPs, production inventory, credential backups) lives in the separate **site-config** repository.
+
+## Automation
+
+Deployments are orchestrated by **Semaphore** running Ansible playbooks from this repo:
+
+- **Deploy playbooks**: `deploy-<service>.yml` -- clone repo, run deploy.sh, health check
+- **Update playbooks**: `update-<service>.yml` -- pull images, restart, health check
+- **SSH hardening**: `distribute-ssh-keys.yml` + `harden-ssh.yml` -- key distribution and sshd lockdown
+- **Provisioning**: `provision-vm.yml` -- clone Proxmox template, configure cloud-init
+
+See `platform/playbooks/README.md` for conventions and full playbook reference.
 
 ## Technology Stack
 
 ```
-INFRASTRUCTURE        Docker/Podman · Kubernetes (k0s) · Proxmox · Harbor · Cilium
-SECRETS & IDENTITY    OpenBao · Authentik (SSO/OIDC) · External Secrets Operator
-DEPLOYMENT & GITOPS   Semaphore · ArgoCD · Kyverno · GitHub Actions
-NETWORKING            Caddy · Traefik/Kong · NATS · NetBox
-DATA                  PostgreSQL · MinIO · DuckDB · NocoDB · Superset · Qdrant
-AI AGENTS             NemoClaw · NetClaw · Claude Cowork · WisBot
-INFERENCE             vLLM (GPU) · llama.cpp (lightweight) · Hymba 1.5B (on-agent)
-AGENT PROTOCOLS       A2A (agent↔agent) · MCP (agent↔tool) · NATS JetStream
-OBSERVABILITY         Grafana · Prometheus · Loki · Tempo · OpenTelemetry
-COLLABORATION         Nextcloud · Wiki.js · Postiz · Discord
-```
-
-## Credential Flow
-
-All secrets are managed by OpenBao. Services authenticate via AppRole at runtime — no credentials are stored in environment files or committed to this repository:
-
-```
-Semaphore environment (AppRole role-id + secret-id only)
-  → playbook starts
-  → community.hashi_vault lookup
-  → OpenBao AppRole auth → scoped token → fetch secrets
-  → deploy.sh generates runtime env from OpenBao
-  → compose up -d
+INFRASTRUCTURE        Docker, Podman, Kubernetes (k0s), Proxmox
+SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
+DEPLOYMENT & GITOPS   Semaphore, Ansible, ArgoCD (planned)
+DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
+AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
+INFERENCE             vLLM (GPU), llama.cpp (lightweight)
+AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
+OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
 
 ## Related Repositories
 
 | Repo | Visibility | Purpose |
 |------|-----------|---------|
-| [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo — platform monorepo |
-| [uhstray-io/NemoClaw](https://github.com/uhstray-io/NemoClaw) | Public | NVIDIA NemoClaw fork |
-| [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET, external dependency) |
+| [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
+| [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
 | [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | Personal LLM stack (Ollama + Open WebUI) |
 
 ## Contributing
