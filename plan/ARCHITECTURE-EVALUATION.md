@@ -196,6 +196,19 @@ done
 ./scripts/validate.sh
 ```
 
+### Phase 0 Close-Out — Validation Criteria
+
+| Step | Validation | Security Check |
+|------|-----------|----------------|
+| 1. Proxmox IP | `curl -sk https://{{ proxmox_host }}:8006/api2/json/version` → 200 | API token scoped to VM management only |
+| 2. API tokens | Each `bao kv get secret/services/<svc>` returns non-placeholder values | Tokens created programmatically, no manual UI login |
+| 3. External creds | `secret/services/github:pat` and `secret/services/discord:bot_token` are set | GitHub PAT fine-grained, Discord bot scoped to target guild |
+| 4. Validation | `validate.sh` returns 15 PASS / 0 FAIL / 0 WARN | No credential exposure in validate output |
+| 5. NemoClaw config | `agent-cloud.yaml` has real service endpoints, no placeholders | Network policy restricts to documented endpoints only |
+| 6. Connectivity | NemoClaw reads from all 6 services without errors | All credentials from OpenBao AppRole, not env files |
+
+**Smoke test per step:** Run the listed command/script. Green = pass. Any failure blocks proceeding to next step.
+
 ---
 
 ## 3. Phase 1: NemoClaw Task Automation — Expanded Plan

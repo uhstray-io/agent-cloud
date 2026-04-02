@@ -76,6 +76,23 @@ Full architecture design, programmatic API key bootstrap methods, and migration 
 - **Semaphore** — Running with PostgreSQL backend on port 3100 (3000 held by VS Code). Awaiting first login and API token creation.
 - **NemoClaw config** — `agent-cloud.yaml` network policy and `sandboxes.json` staged in `nemoclaw/`. Ready to copy to `nemoclaw-deploy/config/` after credentials are validated.
 
+### Phase 0 — Validation Criteria
+
+| Check | Pass Condition |
+|-------|---------------|
+| OpenBao initialized | `bao status` shows `Initialized: true, Sealed: false` |
+| KV v2 engine enabled | `bao secrets list` includes `secret/` |
+| AppRole auth enabled | `bao auth list` includes `approle/` |
+| Placeholder secrets seeded | `bao kv get secret/services/nocodb` returns data |
+| NocoDB healthy | `curl http://localhost:8181/api/v1/health` → 200 |
+| n8n healthy | `curl http://localhost:5678/healthz` → 200 |
+| Semaphore healthy | `curl http://localhost:3000/api/ping` → 200 |
+| validate.sh | 13 PASS / 0 FAIL |
+
+**Smoke test:** Run `validate.sh` end-to-end. All container health checks pass. OpenBao CLI responds to `bao status`.
+
+**Security:** OpenBao runs with `tls_disable=1` (acceptable for loopback in Phase 0). No credentials committed to git. Secrets in `secrets/` directory gitignored.
+
 ### Phase 0 Close-Out Checklist
 
 Complete these in order — each step depends on the previous.
@@ -191,15 +208,28 @@ curl -s http://localhost:3100/api/ping                       # Semaphore
 - **OpenBao AppRole setup** — `vms/openbao/deploy.sh` creates per-service roles (nemoclaw, nocodb, n8n, semaphore) with their respective policies
 - **Semaphore orchestration** — `semaphore/setup-project.sh` (programmatic project configuration via API), `semaphore/inventory/{local,production}.yml`, `semaphore/playbooks/{deploy-all,deploy-service,update-service,validate-all}.yml`
 
-### Security Hardening Applied
+### Phase 0.5 — Validation Criteria
 
-- Credentials passed via stdin (`-d @-` or `--data-raw`) instead of command-line args (prevents process list exposure)
-- SQL injection protection in n8n DB fallback (hex validation on generated keys)
-- Cookie jar cleanup uses `EXIT INT TERM` trap (not just `RETURN`)
-- OpenBao unseal verification after unseal operation
-- Per-service AppRole policies: each VM can only write to its own secret path
+| Check | Pass Condition |
+|-------|---------------|
+| Each deploy.sh completes 5 steps | No errors, health check passes at end |
+| Deploy idempotency | Running deploy.sh twice produces no errors |
+| API tokens in OpenBao | `bao kv get secret/services/<svc>` returns non-placeholder values |
+| AppRole auth per service | Each service authenticates with its own role-id/secret-id |
+| Health endpoints respond | Each service returns HTTP 200 within 30s of compose up |
+| Token round-trip | Fetch token from OpenBao, call service API, get HTTP 200 |
+| Semaphore task templates | 9+ templates created via setup-project.sh API |
 
-### Directory Structure (Actual)
+**Smoke tests per step:**
+- Step 3 (deploy.sh): Run `deploy.sh` on each VM, verify all 5 steps complete
+- Step 6 (orchestrate.sh): `--dry-run` shows correct order, `--only openbao` deploys only OpenBao
+- Step 7 (Semaphore): Task template list via API matches expected 9 templates
+
+**Architectural notes:** OpenBao on separate VM for independent failure domain. HTTP-only bao-client.sh — no binary dependency. Bootstrap order: OpenBao → services (parallel) → NemoClaw (last).
+
+**Security:** Credentials via stdin not CLI args. SQL injection protection in n8n DB fallback. Per-service AppRole policies enforce least privilege. Cookie jar cleanup on all exit paths.
+
+### Directory Structure (Legacy — now migrated to monorepo)
 
 ```
 deployments/agent-cloud/
@@ -424,7 +454,52 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 - [ ] Set up Semaphore MCP server for task management
 - [ ] Set up Proxmox MCP server for VM management
 
-### Step 2: OpenBao as Semaphore Credential Manager
+### Phase 0.75 — Validation Criteria
+
+**Step 1 (Monorepo):**
+
+| Check | Pass Condition |
+|-------|---------------|
+| All playbooks syntax check | `ansible-playbook --syntax-check` passes for every `.yml` |
+| Inventory groups resolve | `ansible-inventory --graph` shows `_svc` groups with correct hosts |
+| No secrets in public repo | `grep -r '192.168' platform/ plan/` returns only `{{ }}` placeholders |
+| Semaphore templates point at agent-cloud | All 20 templates use repo id for agent-cloud |
+| HTTPS clone works | Semaphore clones via `https://github.com/uhstray-io/agent-cloud.git` |
+
+**Smoke test:** Run "Validate All Services" in Semaphore — all VMs reachable, health checks pass.
+
+**Security:** No IPs, usernames, or credentials in agent-cloud repo. Template variables (`{{ }}`) only. `collections/requirements.yml` auto-installs dependencies.
+
+**Step 2 (SSH):**
+
+| Check | Pass Condition |
+|-------|---------------|
+| Per-service keys in OpenBao | `bao kv get secret/services/ssh/<svc>` returns private + public key |
+| Keys deployed to VMs | `authorized_keys` on each VM contains management + service key |
+| Key auth works | `ssh -i <mgmt_key> {{ ansible_user }}@<IP> hostname` succeeds |
+| Password auth disabled | `ssh -o PubkeyAuthentication=no <IP>` → "Permission denied (publickey)" |
+| Root login disabled | `ssh root@<IP>` → rejected |
+| NOPASSWD sudo | `ssh <IP> sudo whoami` → "root" (no password prompt) |
+
+**Smoke test:** Run `distribute-ssh-keys.yml` → all keys deployed + verified. Run `harden-ssh.yml` → password rejected, key confirmed on all VMs.
+
+**Security:** Always verify key auth works BEFORE disabling password auth. Per-service keys provide isolation — compromise of one key affects only one VM. Management key stored in Semaphore key store + OpenBao.
+
+**Step 3 (Service Deployment):**
+
+| Check | Pass Condition |
+|-------|---------------|
+| NetBox deploy completes all 17 steps | deploy.sh exits 0, health check passes |
+| NocoDB deploy via Semaphore | Task succeeds, HTTP 200 at health endpoint |
+| n8n deploy via Semaphore | Task succeeds, HTTP 200 at /healthz |
+| Monorepo cloned on each VM | `~/agent-cloud/` exists, `~/<service>` symlink works |
+| Secrets stored in OpenBao | `bao kv get secret/services/netbox` returns superuser_password, url |
+
+**Smoke test:** Run "Validate All Services" — all 6 services HEALTHY. Run each "Deploy" template once.
+
+**Security:** deploy.sh runs as `{{ ansible_user }}` (not root). `become: false` on clone/deploy tasks prevents root-owned files. CONTAINER_ENGINE set per host in inventory.
+
+### Step 2 (Legacy): OpenBao as Semaphore Credential Manager
 
 Eliminate file-based secrets. Playbooks authenticate to OpenBao via AppRole at runtime and fetch credentials on demand.
 
@@ -630,6 +705,10 @@ Write a `log_task()` helper that all subsequent integrations call to record exec
 - [ ] `task_log` table exists and receives entries
 - [ ] API token is read from environment, never from config
 
+**Smoke test:** Create a `task_log` row, read it back, update status to `success`, delete it. Verify round-trip.
+
+**Security:** NocoDB API token fetched from OpenBao (`secret/services/nocodb:api_token`), injected as env var. Network policy restricts NemoClaw to NocoDB endpoint only for CRUD operations. No admin-level NocoDB access from NemoClaw — read/write to data tables only.
+
 ### Step 2: Discord Messaging
 
 **Goal:** NemoClaw can post messages and read channel history. Discord becomes the alerting backbone.
@@ -656,6 +735,10 @@ Auth: `Authorization: Bot <bot_token>` header, from OpenBao.
 - [ ] NemoClaw can post to a specific Discord channel
 - [ ] Alert webhook is operational: `curl -X POST <n8n_webhook_url> -d '{"severity":"error","message":"test"}'`
 - [ ] Daily digest runs and posts summary
+
+**Smoke test:** Post a test message to `#agent-alerts`, verify it appears. Trigger alert webhook with test payload, verify Discord notification. Wait for daily digest schedule to fire.
+
+**Security:** Discord bot token from OpenBao (`secret/services/discord:bot_token`). Channel IDs stored in OpenBao (not hardcoded). Bot permissions should be scoped to target channels only — no admin/manage permissions. Webhook URL is internal (n8n), not exposed externally.
 
 ### Step 3: GitHub Issue Management
 
@@ -685,6 +768,10 @@ Auth: `Authorization: Bearer <pat>` header, from OpenBao.
 - [ ] NemoClaw can create an issue with title, body, and labels
 - [ ] Issue sync runs on schedule via n8n and populates NocoDB
 - [ ] All operations logged to `task_log`
+
+**Smoke test:** List issues from `uhstray-io/agent-cloud`. Create a test issue with `agent:nemoclaw` label, verify it appears on GitHub. Run sync workflow, verify `github_issues_cache` table populated.
+
+**Security:** GitHub PAT must be fine-grained, scoped to target repos only (not org-wide). PAT stored in OpenBao (`secret/services/github:pat`). Issues created by automation include `agent:nemoclaw` label for attribution. No write access to protected branches.
 
 ### Step 4: Proxmox Resource Monitoring
 
@@ -716,6 +803,10 @@ Auth: `PVEAPIToken=<token_id>=<api_token>` header, both values from OpenBao.
 - [ ] Discord alert fires on threshold breach
 - [ ] On-demand status command returns formatted cluster summary
 
+**Smoke test:** Run health check manually, verify `monitored_resources` table populated with node/VM data. Artificially trigger a threshold (or wait for one) and verify Discord alert posts.
+
+**Security:** Proxmox API token scoped to read-only where possible (`PVEAuditor` role). Token stored in OpenBao (`secret/services/proxmox:api_token`). NemoClaw should NOT have VM start/stop/delete permissions — read-only monitoring. Destructive Proxmox operations go through Semaphore playbooks only.
+
 ### Step 5: n8n Workflow Triggering
 
 **Goal:** NemoClaw can list, trigger, activate/deactivate, and monitor n8n workflows.
@@ -744,6 +835,10 @@ Auth: `X-N8N-API-KEY: <api_key>` header, from OpenBao.
 - [ ] NemoClaw can trigger a workflow execution
 - [ ] Failed executions appear in `task_log` and trigger Discord alerts
 
+**Smoke test:** List all n8n workflows. Trigger the GitHub sync workflow manually. Verify execution appears in `task_log`. Create a deliberately failing workflow and verify Discord alert fires.
+
+**Security:** n8n API key from OpenBao (`secret/services/n8n:api_key`). NemoClaw can list and trigger workflows but cannot modify workflow definitions — no workflow editor access. Webhook endpoints should validate source (internal network only).
+
 ### Step 6: Semaphore Playbook Execution
 
 **Goal:** NemoClaw can trigger Ansible playbooks via Semaphore for infrastructure tasks.
@@ -770,6 +865,10 @@ Auth: `Authorization: Bearer <api_token>` header, from OpenBao.
 - [ ] NemoClaw can list Semaphore projects and templates
 - [ ] NemoClaw can trigger a playbook run and poll for completion
 - [ ] Weekly infrastructure check runs and reports results
+
+**Smoke test:** List Semaphore templates via API. Trigger "Validate All Services" and poll until completion. Verify task log entry created in NocoDB.
+
+**Security:** Semaphore API token from OpenBao (`secret/services/semaphore:api_token`). NemoClaw can only trigger existing templates — cannot create/modify templates or change inventory. Restrict NemoClaw to non-destructive playbooks (validate, collect-facts, ping). Destructive playbooks (deploy, update) require human approval via ITSM gate.
 
 ### Step 7: Scheduled Task Execution Framework
 
@@ -809,6 +908,12 @@ Auth: `Authorization: Bearer <api_token>` header, from OpenBao.
 - [ ] `schedules` table exists in NocoDB with seeded entries
 - [ ] Master scheduler triggers workflows on cron match
 - [ ] Adding a new schedule requires only a NocoDB row insertion
+
+**Smoke test:** Add a test schedule (every minute, triggers a no-op workflow). Verify master scheduler picks it up within 60s. Disable the schedule, verify it stops firing. Delete the row, verify no orphaned triggers.
+
+**Architectural note:** NocoDB as schedule registry means schedules are human-browsable and editable without code changes. n8n is the execution engine, NocoDB is the control plane. This separation allows Claude Cowork (Phase 2) to manage schedules via NocoDB API.
+
+**Security:** Master scheduler runs inside n8n with read access to NocoDB schedules table. New schedules can only reference existing n8n workflow IDs — cannot create arbitrary code execution. Schedule modifications logged to `task_log` for audit trail.
 
 ### Phase 1 Validation Checklist
 

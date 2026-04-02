@@ -706,6 +706,9 @@ For production, OpenBao on its own VM should enable TLS. The deploy scripts shou
 5. ✅ Write deploy.sh for each with programmatic token creation
 6. ✅ YAML validated, bash syntax checked — awaiting live compose testing
 
+**Validation:** Each compose file starts independently with `compose up -d`. Health endpoints respond. No cross-service dependencies broken by split.
+**Security:** No credentials leaked during split — all secrets remain in gitignored `secrets/` directories.
+
 ### Phase 2 — Provision OpenBao VM ✅ READY (playbooks implemented)
 
 1. **Create Ubuntu 24.04 template manually** via Proxmox UI (VMID 9000 on alphacentauri)
@@ -722,19 +725,31 @@ For production, OpenBao on its own VM should enable TLS. The deploy scripts shou
 5. Migrate secrets from old .161 instance (export/import KV)
 6. Update all service configs to point to {{ openbao_host }}
 
-### Phase 3 — Deploy to Existing VMs ⬜ PENDING
+**Validation:** `bao status` shows initialized + unsealed on new VM. All AppRole policies present. Secrets accessible via AppRole auth from remote host. `proxmox-validate.yml` passes 8 checks.
+**Smoke test:** Provision a test VM, SSH in, verify hostname + IP + cloud-init applied.
+**Security:** Template has no embedded credentials — SSH keys injected via cloud-init at clone time. {{ ansible_user }} account is locked (password "!"), key-auth only.
 
-1. SCP each service's deploy directory + `lib/` to its respective VM
-2. Run deploy.sh on each VM (services already running — this adds programmatic token creation)
-3. Validate all tokens in OpenBao are non-placeholder
-4. Update NemoClaw network policy with real IPs
+### Phase 3 — Deploy to Existing VMs ✅ COMPLETE (via monorepo + Semaphore)
 
-### Phase 4 — Full Orchestration ✅ COMPLETE (local), ⬜ PENDING (production)
+*Updated 2026-04-01: Deployment now uses the monorepo pattern (Semaphore clones agent-cloud, runs deploy.sh) instead of SCP. See Phase 0.75 in IMPLEMENTATION_PLAN.md.*
 
-1. ✅ `orchestrate.sh` written with dependency ordering, --skip/--only/--dry-run
-2. ✅ Semaphore playbooks and `setup-project.sh` for deployment orchestration
-3. ⬜ Live testing against Proxmox VMs
+1. ✅ Semaphore clones monorepo to `~/agent-cloud` on each VM
+2. ✅ deploy.sh runs on each VM with idempotent 5-step pattern
+3. ✅ Tokens stored in OpenBao (non-placeholder)
+4. ✅ NemoClaw network policy uses `{{ }}` template variables (real IPs in site-config)
+
+**Validation:** "Validate All Services" Semaphore task passes — all 6 VMs reachable, health endpoints respond.
+**Security:** SSH key auth only (password disabled). Per-service keys in OpenBao. NOPASSWD sudo configured. No credentials in monorepo.
+
+### Phase 4 — Full Orchestration ✅ COMPLETE
+
+1. ✅ Semaphore orchestration with 20 task templates
+2. ✅ Wrapper playbooks for each service (deploy-<service>.yml, update-<service>.yml)
+3. ✅ Live testing against production VMs
 4. ⬜ Proxmox monitoring via NemoClaw (Phase 1 Step 4)
+
+**Validation:** All Semaphore templates run successfully. "Deploy All Services" completes in dependency order. "Validate All Services" confirms health.
+**Security:** Semaphore uses SSH key for VM access, AppRole for OpenBao. No password-based access in steady state.
 
 ---
 

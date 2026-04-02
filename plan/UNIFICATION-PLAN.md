@@ -1048,6 +1048,10 @@ Running Hymba (via llama.cpp) as a sidecar in each agent container allows agents
 - Updated Semaphore configuration
 - Archived/deprecated repos (infra-automation, old agent-cloud path)
 
+**Validation:** `grep -r '192.168' platform/` returns only `{{ }}` placeholders. `ansible-inventory -i inventory/local.yml --graph` shows all `_svc` groups. All Semaphore templates run against agent-cloud repo. `orchestrate.sh` or Semaphore deploy-all completes.
+**Smoke test:** Clone fresh → run validate-all.yml against production inventory → all services reachable.
+**Security:** No IPs, usernames, or credentials in public repo. Template variables only. site-config is the sole source of real infrastructure data. Collections auto-installed by Semaphore.
+
 ### Phase 2: Dynamic Variables + Compose Parameterization (Weeks 3-4)
 
 **Goal:** Every compose file uses `${VARIABLES}` for all environment-specific values. Deploy scripts implement the three-tier variable system.
@@ -1059,6 +1063,10 @@ Running Hymba (via llama.cpp) as a sidecar in each agent container allows agents
 5. Update all deploy scripts to use `load_config()`
 6. Document the variable system in `docs/variables.md`
 7. Validate: fresh clone of public repo + site-config overlay = working deployment
+
+**Validation:** Every compose file passes `docker compose config` without errors. `.env.example` exists for each service. `load_config()` resolves Tier 1→2→3 correctly.
+**Smoke test:** Fresh clone + site-config overlay → `deploy.sh` succeeds for nocodb (representative service). No hardcoded IPs/passwords in any compose file.
+**Security:** Tier 3 secrets always override Tier 2 and Tier 1. `.env` files (containing resolved secrets) are gitignored. `.env.example` committed with empty/default values only.
 
 ### Phase 3: Container Registry + K8s Foundation (Weeks 5-8)
 
@@ -1075,6 +1083,10 @@ Running Hymba (via llama.cpp) as a sidecar in each agent container allows agents
 9. Install Kyverno, port OpenBao AppRole policies to Kyverno ClusterPolicies
 10. Validate: service deploys via both compose (VM) and ArgoCD (k8s) paths
 
+**Validation:** `kompose convert` generates valid k8s manifests for all services. `kustomize build overlays/prod` succeeds. ArgoCD syncs and all pods healthy. ESO creates k8s Secrets from OpenBao paths.
+**Smoke test:** Deploy nocodb via ArgoCD → verify pod running + health endpoint → compare with compose deployment (same behavior).
+**Security:** Harbor registry with RBAC (push = CI only, pull = all nodes). ESO fetches secrets at pod startup — never stored in etcd unencrypted. Kyverno policies enforce: no `latest` tags, no privileged containers except orb-agent, resource limits required.
+
 ### Phase 4: Identity + API Gateway + Alerting (Weeks 9-12)
 
 **Goal:** SSO across all services, API gateway for external access, alert routing.
@@ -1086,6 +1098,10 @@ Running Hymba (via llama.cpp) as a sidecar in each agent container allows agents
 5. Deploy ntfy for self-hosted push notifications
 6. Wire NemoClaw alerts through ntfy → Discord
 7. Validate: single login across all services, API gateway routes traffic, alerts fire on failure
+
+**Validation:** Single OIDC login grants access to Grafana, NocoDB, n8n, Semaphore, NetBox, Wiki.js. API gateway routes `/api/<service>/` to correct backend. Alertmanager fires test alert → ntfy → Discord within 2 minutes.
+**Smoke test:** Log in to Grafana → navigate to NocoDB (no re-auth). Call API via gateway → verify routing. Stop a service → verify alert chain.
+**Security:** Authentik as central IdP — revoke one user = revoke everywhere. API gateway enforces rate limiting and CORS. ntfy self-hosted (no external push notification provider). TLS on all inter-service communication via Caddy/gateway.
 
 ### Phase 5: Data + AI Pipeline (Weeks 13-16)
 
@@ -1105,6 +1121,10 @@ Running Hymba (via llama.cpp) as a sidecar in each agent container allows agents
 12. Deploy Discourse (community forum) + Matterbridge (chat bridge to Discord)
 13. Deploy Mixpost for social media scheduling (uhstray.io, Twitter/X, Mastodon, Bluesky, YouTube, LinkedIn)
 14. Validate: DuckDB queries run over MinIO Parquet, Superset dashboards live, AI agents query structured (warehouse) and unstructured (RAG) data
+
+**Validation:** DuckDB reads Parquet from MinIO without errors. Superset dashboard shows live data. Qdrant returns relevant results for test query. NATS pub/sub message round-trip < 100ms. Whisper transcribes a test audio file correctly.
+**Smoke test:** Upload a WisBot recording → MinIO event → Whisper transcription → LLM summary → Discord post (full pipeline). Query Qdrant with "how does deployment work" → returns relevant doc chunks.
+**Security:** MinIO credentials in OpenBao. S3 bucket policies restrict per-service access (WisBot can only write to wisbot-recordings). Qdrant vector DB not exposed externally. Voice recordings encrypted at rest in MinIO. PII in transcripts flagged by NeMo Guardrails before storage.
 
 ---
 

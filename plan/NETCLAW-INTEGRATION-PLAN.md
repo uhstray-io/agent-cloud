@@ -462,6 +462,10 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 
 **Acceptance:** NetClaw responds to chat queries, can access GitHub, posts to Discord.
 
+**Validation:** `openclaw chat "show version"` returns response. `bao kv get secret/services/netclaw` returns Anthropic key. SSH to VM works with netclaw service key.
+**Smoke test:** Chat query asking for cluster summary. Verify Discord post in #network-alerts channel.
+**Security:** Anthropic API key in OpenBao only, not in env files. Docker (not Podman) required for OpenShell sandbox. Network policy restricts to {{ lan_subnet }} — no external device access.
+
 ### Phase B: NetBox Integration (Week 2)
 
 1. **Configure NetBox MCP** — Point to existing NetBox at .116, token from OpenBao
@@ -471,6 +475,10 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 5. **Generate topology diagrams** — From NetBox data via Kroki
 
 **Acceptance:** NetBox has accurate representation of homelab devices. Topology diagram generated.
+
+**Validation:** NetBox UI shows discovered devices with correct IPs/interfaces. Topology diagram renders without errors. Reconciliation diff reports zero unexpected discrepancies.
+**Smoke test:** Run nmap scan → verify devices appear in NetBox. Compare NetBox device count to expected count. Generate topology SVG.
+**Security:** NetBox API token from OpenBao, scoped to read/write DCIM/IPAM. nmap restricted to {{ lan_subnet }} CIDR. No scanning outside defined ranges.
 
 ### Phase C: Monitoring & Alerting (Week 3)
 
@@ -482,6 +490,10 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 
 **Acceptance:** Health checks run on schedule, alerts fire on failures, data in NocoDB.
 
+**Validation:** `network_health` table in NocoDB has rows with timestamps < 15 minutes old. Discord #network-alerts has at least one test alert. pyATS testbed.yaml matches NetBox device count.
+**Smoke test:** Disable a test device's SSH → verify health check fails → verify Discord alert fires within 15 minutes.
+**Security:** Device SSH credentials in OpenBao at `secret/services/netclaw`. SNMP community strings in OpenBao. pyATS connects read-only (show commands only). No config modification without ITSM gate.
+
 ### Phase D: Advanced Features (Week 4+)
 
 1. **Config backup automation** — Git-backed config backups via GitHub MCP
@@ -491,6 +503,10 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 5. **Cross-agent coordination** — NemoClaw creates tasks, NetClaw executes network operations
 
 **Acceptance:** Config backups in GitHub, ContainerLab runs, pcap analysis works.
+
+**Validation:** Config backup commit appears in GitHub repo. ContainerLab topology starts successfully. Pcap upload + tshark analysis returns parsed output.
+**Smoke test:** Trigger manual config backup → verify Git commit. Deploy FRR lab → verify BGP session establishes. Upload test pcap → verify analysis output.
+**Security:** Config backups in a PRIVATE GitHub repo (contain device configs with potential credentials). Git-backed audit trail (GAIT) is append-only. ContainerLab runs in isolated network namespace. Cross-agent tasks validated: NocoDB task queue checks `source` field to prevent injection.
 
 ---
 
