@@ -12,28 +12,21 @@ Dual-agent AI infrastructure: NemoClaw (headless, background tasks) + Claude Cow
 | **0.75** Automation Infra | IN PROGRESS | Git-driven deploys, OpenBao-backed credentials; NetBox inventory pending |
 | **1** NemoClaw Tasks | PLANNED | NocoDB CRUD, GitHub issues, Discord, Proxmox monitoring |
 
-## Git Repositories
-
-| Repo | Visibility | Purpose |
-|------|-----------|---------|
-| [`uhstray-io/infra-automation`](https://github.com/uhstray-io/infra-automation) | Public | Ansible playbooks, inventory templates (no secrets or IPs). |
-| [`uhstray-io/openbao`](https://github.com/uhstray-io/openbao) | Private | OpenBao compose, deploy script, policies, secrets. |
-| [`uhstray-io/dev-test`](https://github.com/uhstray-io/dev-test) | Private | This repo — inventory, VM specs, service deploy configs. |
 
 ## Production Topology
 
 See `../semaphore/config/inventory.yml` for the canonical host inventory. Key agent-cloud VMs:
 
-| VM | IP | Services | Port | VMID | Node |
-|----|----|----------|------|------|------|
-| `openbao` | `192.168.1.164` | OpenBao v2.5.2 | 8200 | 210 | alphacentauri |
-| `nocodb` | `192.168.1.161` | NocoDB + Postgres | 8181 | 205 | alphacentauri |
-| `n8n` | `192.168.1.118` | n8n + Worker + Postgres + Redis | 5678 | 208 | apollo |
-| `semaphore` | `192.168.1.117` | Semaphore + Postgres | 3000 | 203 | apollo |
-| `nemoclaw` | `192.168.1.163` | NemoClaw + OpenShell | — | 209 | andromeda |
-| `netbox` | `192.168.1.116` | NetBox + Diode Pipeline | 8000 | 202 | mercier77 |
+| VM | Services | Port | VMID | Node |
+|----|----------|------|------|------|
+| `openbao` | OpenBao v2.5.2 | 8200 | 210 | alphacentauri |
+| `nocodb` | NocoDB + Postgres | 8181 | 205 | alphacentauri |
+| `n8n` | n8n + Worker + Postgres + Redis | 5678 | 208 | apollo |
+| `semaphore` | Semaphore + Postgres | 3000 | 203 | apollo |
+| `nemoclaw` | NemoClaw + OpenShell | — | 209 | andromeda |
+| `netbox` | NetBox + Diode Pipeline | 8000 | 202 | mercier77 |
 
-**Proxmox:** 11 nodes, API at `192.168.1.52:8006`, primary host `alphacentauri`, storage `vm-lvms` (931GB), template VMID 9000.
+**Proxmox:** 11 nodes, primary host `aurora`, storage `vm-lvms` (931GB), template VMID 9000.
 
 ## Deployment Architecture
 
@@ -50,8 +43,6 @@ Target VM (rootless podman, ~/service_name)
 ```
 
 **Credentials:** All secrets stored in OpenBao. Semaphore environments contain only AppRole role-id + secret-id. Playbooks fetch credentials at runtime via `community.hashi_vault` lookup. No secrets in the public infra-automation repo.
-
-**Inventory:** Canonical host/IP inventory at `dev-test/deployments/semaphore/config/inventory.yml` (private). The public infra-automation repo uses placeholder variables.
 
 ## OpenBao Secrets Layout
 

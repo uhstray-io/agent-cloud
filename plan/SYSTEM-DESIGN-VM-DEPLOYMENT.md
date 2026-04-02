@@ -16,11 +16,11 @@ Current (Phase 0 — single-host dev):
 ┌─────────────────────────────────────────────────────────┐
 │ Local Dev Machine (compose.yml)                         │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌───────────┐      │
-│  │ OpenBao  │ │  NocoDB   │ │  n8n │ │ Semaphore │      │
-│  │ :8200    │ │  :8181    │ │:5678 │ │  :3100    │      │
-│  └──────────┘ └──────────┘ └──────┘ └───────────┘      │
-│       ↑ All share ac-net bridge                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌───────────┐       │
+│  │ OpenBao  │ │  NocoDB  │ │  n8n │ │ Semaphore │       │
+│  │ :8200    │ │  :8181   │ │:5678 │ │  :3100    │       │
+│  └──────────┘ └──────────┘ └──────┘ └───────────┘       │
+│       ↑ All share ac-net bridge                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -41,7 +41,7 @@ Production VMs already assigned (from `config/inventory.yml`):
 
 ```mermaid
 graph TB
-    subgraph proxmox["Proxmox Host — aurora (192.168.1.52)"]
+    subgraph proxmox["Proxmox Host — aurora (${PROXMOX_PRIMARY_HOST})"]
         pve_api["PVE API :8006"]
     end
 
@@ -89,7 +89,7 @@ graph TB
 
 1. **OpenBao gets its own VM** (192.168.1.164) — currently co-located with NocoDB on .161. Secrets backbone should not share a failure domain with a data service.
 2. **Each service has a dedicated `deploy.sh`** that handles secrets generation, service startup, and programmatic API key bootstrap.
-3. **Proxmox API drives VM provisioning** — create/clone/start VMs via the PVE REST API using the existing `stray@pve!workflow-agent` token.
+3. **Proxmox API drives VM provisioning** — create/clone/start VMs via the PVE REST API using the existing `${PVE_TOKEN_ID}` token.
 4. **Semaphore orchestrates deployments** — Ansible playbooks run against the inventory to deploy and update services across VMs.
 
 ---
@@ -144,7 +144,7 @@ NocoDB creates an admin user on first signup via its `/api/v1/auth/user/signup` 
 # Step 1: Create admin on first boot (signup endpoint, only works when no users exist)
 AUTH_RESPONSE=$(curl -s -X POST http://localhost:8181/api/v1/auth/user/signup \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@uhstray.io","password":"'"$NOCODB_ADMIN_PASSWORD"'"}')
+  -d '{"email":"admin@my-site.io","password":"'"$NOCODB_ADMIN_PASSWORD"'"}')
 JWT_TOKEN=$(echo "$AUTH_RESPONSE" | jq -r '.token')
 
 # Step 2: Create a persistent API token via the auth endpoint
@@ -171,7 +171,7 @@ n8n requires owner setup before any API access. The owner setup endpoint is avai
 OWNER_RESPONSE=$(curl -s -X POST http://localhost:5678/api/v1/owner/setup \
   -H 'Content-Type: application/json' \
   -d '{
-    "email":"admin@uhstray.io",
+    "email":"admin@my-site.io",
     "firstName":"Admin",
     "lastName":"User",
     "password":"'"$N8N_ADMIN_PASSWORD"'"
@@ -180,7 +180,7 @@ OWNER_RESPONSE=$(curl -s -X POST http://localhost:5678/api/v1/owner/setup \
 # Step 2: Login to get session cookie
 LOGIN_RESPONSE=$(curl -s -c - -X POST http://localhost:5678/api/v1/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@uhstray.io","password":"'"$N8N_ADMIN_PASSWORD"'"}')
+  -d '{"email":"admin@my-site.io","password":"'"$N8N_ADMIN_PASSWORD"'"}')
 
 # Step 3: Create API key via internal API
 # n8n stores API keys in its database. Use the /api/v1/me/api-keys endpoint:
@@ -217,12 +217,12 @@ No changes needed — this is what we're replicating for the other services.
 
 #### Proxmox — Token Already Exists
 
-The Proxmox API token `stray@pve!workflow-agent` is already created and stored in `proxmox/secrets/`. Proxmox tokens are created via:
+The Proxmox API token `${PVE_TOKEN_ID}` is already created and stored in `proxmox/secrets/`. Proxmox tokens are created via:
 
 ```bash
 # Via PVE API (if creating more tokens programmatically)
-curl -s -k -X POST "https://192.168.1.52:8006/api2/json/access/users/stray@pve/token/workflow-agent" \
-  -H "Authorization: PVEAPIToken=stray@pve!workflow-agent=<existing-token>" \
+curl -s -k -X POST "https://${PROXMOX_PRIMARY_HOST}:8006/api2/json/access/users/${USER}@pve/token/agent-cloud" \
+  -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=<existing-token>" \
   -H 'Content-Type: application/json' \
   -d '{"privsep":1}'
 ```
@@ -231,9 +231,9 @@ For this project, the existing token is sufficient. Store it in OpenBao:
 
 ```bash
 bao kv patch secret/services/proxmox \
-  api_token="e91bb089-84aa-4486-a0f4-0ee2a54a1677" \
-  token_id="stray@pve!workflow-agent" \
-  url="https://192.168.1.52:8006"
+  api_token=${PVE_TOKEN_SECRET} \
+  token_id=${PVE_TOKEN_ID} \
+  url="https://${PROXMOX_PRIMARY_HOST}:8006"
 ```
 
 ### Bootstrap Sequence Diagram
@@ -358,14 +358,14 @@ deployments/agent-cloud/
 
 ### Proxmox VM Provisioning
 
-The Proxmox API at `https://192.168.1.52:8006` is used to create and manage VMs. The existing API token `stray@pve!workflow-agent` provides access.
+The Proxmox API at `https://${PROXMOX_PRIMARY_HOST}:8006` is used to create and manage VMs. The existing API token `${PVE_TOKEN_ID}` provides access.
 
 ```bash
 # proxmox/lib/pve-api.sh — Core API wrapper
 
-PVE_HOST="https://192.168.1.52:8006"
-PVE_TOKEN_ID="stray@pve!workflow-agent"
-PVE_TOKEN_SECRET="e91bb089-84aa-4486-a0f4-0ee2a54a1677"
+PVE_HOST="https://${PROXMOX_PRIMARY_HOST}:8006"
+PVE_TOKEN_ID=${PVE_TOKEN_ID}
+PVE_TOKEN_SECRET=${PVE_TOKEN_SECRET}
 
 pve_api() {
   local method="$1" path="$2"; shift 2
@@ -577,7 +577,7 @@ Each VM needs to talk to OpenBao to store/retrieve secrets. The `bao-client.sh` 
 ```bash
 # lib/bao-client.sh — Lightweight OpenBao HTTP client
 
-OPENBAO_ADDR="${OPENBAO_ADDR:-http://192.168.1.164:8200}"
+OPENBAO_ADDR="${OPENBAO_ADDR}"
 BAO_TOKEN=""
 
 # Authenticate via AppRole
@@ -647,12 +647,12 @@ With OpenBao on its own VM, the NemoClaw network policy needs updating:
 
 ```yaml
 # Changes to nemoclaw/agent-cloud.yaml:
-# 1. Replace PROXMOX_HOST_PLACEHOLDER with 192.168.1.52
+# 1. Replace PROXMOX_HOST_PLACEHOLDER with ${PROXMOX_PRIMARY_HOST}
 # 2. Update OpenBao endpoint from 192.168.1.161 to 192.168.1.164
 
 endpoints:
   # Proxmox API (was placeholder)
-  - host: 192.168.1.52
+  - host: ${PROXMOX_PRIMARY_HOST}
     port: 8006
     access: full
 
