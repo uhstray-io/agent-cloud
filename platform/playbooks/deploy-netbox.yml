@@ -1,11 +1,84 @@
 ---
-# deploy-netbox.yml — Deploy NetBox
+# deploy-netbox.yml — Full NetBox deployment orchestrated by Ansible
+#
+# Phases:
+#   1. Pre-deploy: Pull user-managed secrets from OpenBao → VM secrets/
+#   2. Deploy: Clone monorepo, run deploy.sh (container operations only)
+#   3. Post-deploy: Push all generated secrets from VM → OpenBao
 #
 # Prerequisites:
 #   - Docker installed (run install-docker.yml first if needed)
-#   - Old deployments cleaned up
-#
+#   - OpenBao unsealed with AppRole credentials in Semaphore environment
+
+# ── Phase 1: Pull user-managed secrets from OpenBao ──────────────────
+- name: "Pre-deploy: Pull NetBox secrets from OpenBao"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _secrets_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # User-managed secrets that deploy.sh doesn't generate
+    _user_secrets:
+      - snmp_community
+      - pfsense_api_key
+      - orb_agent_client_id
+      - orb_agent_client_secret
+      - device_discovery_password
+
+  tasks:
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Fetch NetBox secrets from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _bao_secrets
+      no_log: true
+
+    - name: "Ensure secrets directory exists"
+      ansible.builtin.file:
+        path: "{{ _secrets_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Write user-managed secrets to VM"
+      ansible.builtin.copy:
+        content: "{{ _bao_secrets.json.data.data[item] }}"
+        dest: "{{ _secrets_dir }}/{{ item }}.txt"
+        mode: "0600"
+      loop: "{{ _user_secrets }}"
+      when: _bao_secrets.json.data.data[item] is defined and _bao_secrets.json.data.data[item] | length > 0
+      no_log: true
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Pre-deploy: wrote user-managed secrets to {{ _secrets_dir }}"
+
+# ── Phase 2: Deploy (container operations via deploy.sh) ─────────────
 - name: "Deploy NetBox"
   import_playbook: deploy-service.yml
+  vars:
+    target_service: netbox_svc
+
+# ── Phase 3: Push all secrets to OpenBao ─────────────────────────────
+- name: "Post-deploy: Sync NetBox secrets to OpenBao"
+  import_playbook: sync-secrets-to-openbao.yml
   vars:
     target_service: netbox_svc
