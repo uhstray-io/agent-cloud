@@ -39,6 +39,7 @@
     bash deploy.sh
   become: false
   environment:
+    CONTAINER_ENGINE: "{{ container_engine | default('') }}"
     OPENBAO_ADDR: "{{ _bao_url }}"
     NOCODB_URL: "{{ nocodb_url | default('') }}"
     N8N_URL: "{{ n8n_url | default('') }}"
