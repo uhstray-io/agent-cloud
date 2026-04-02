@@ -41,6 +41,8 @@
   environment:
     CONTAINER_ENGINE: "{{ container_engine | default('') }}"
     OPENBAO_ADDR: "{{ _bao_url }}"
+    BAO_ROLE_ID: "{{ _bao_role_id | default('') }}"
+    BAO_SECRET_ID: "{{ _bao_secret_id | default('') }}"
     NOCODB_URL: "{{ nocodb_url | default('') }}"
     N8N_URL: "{{ n8n_url | default('') }}"
     SEMAPHORE_URL: "{{ semaphore_url | default('') }}"
