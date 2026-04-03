@@ -70,7 +70,7 @@
           app: ansible
           autorun: false
           suppress_success_alerts: true
-        status_code: [200, 201]
+        status_code: [200, 201, 204]
       loop: "{{ _template_config.templates }}"
       loop_control:
         label: "{{ item.name }}"
