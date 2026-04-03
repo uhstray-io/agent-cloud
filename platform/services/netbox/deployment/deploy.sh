@@ -152,11 +152,18 @@ compose up -d hydra hydra-migrate
 wait_for_completed "hydra-migrate" 300
 
 info "Step 8/17: Starting application services..."
-compose up -d || { warn "Some containers failed to start — retrying..."; sleep 10; compose up -d; }
+# compose up -d may report failure due to health check dependencies timing out
+# on first boot (Django migrations take several minutes). We start services,
+# ignore the dependency failure, then wait for health separately.
+compose up -d 2>&1 || true
+sleep 5
+# Ensure netbox container is at least running (even if unhealthy)
+compose up -d --no-deps netbox 2>&1 || true
+compose up -d --no-deps netbox-worker 2>&1 || true
 
 # ─── Step 10: Wait for NetBox to become healthy ─────────────────────
-info "Step 10/17: Waiting for NetBox to become healthy..."
-wait_for_healthy "netbox" 300
+info "Step 10/17: Waiting for NetBox to become healthy (up to 10 min for first boot migrations)..."
+wait_for_healthy "netbox" 600
 
 # ─── Step 11: Run database migrations ──────────────────────────────
 info "Step 11/17: Running database migrations..."
