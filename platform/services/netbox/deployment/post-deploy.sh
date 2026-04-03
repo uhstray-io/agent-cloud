@@ -30,10 +30,8 @@ info "  URL: ${NETBOX_URL}"
 
 compose ps --format json 2>/dev/null | head -1 >/dev/null || error "No compose services running. Run deploy.sh first."
 
-# Ensure secrets/ dir exists for functions that write credentials
-# (ensure_agent_credentials writes orb_agent_client_id/secret to secrets/)
-# Ansible syncs these to OpenBao post-deploy
-mkdir -p "${SCRIPT_DIR}/secrets"
+# No secrets/ directory — all credentials managed by Ansible/OpenBao.
+# Functions read from .env (templated by Ansible from OpenBao).
 
 # ─── Step 11: Run database migrations ──────────────────────────────
 info "Step 11: Running database migrations..."
@@ -87,7 +85,8 @@ else
 fi
 
 # ─── Optional: pfSense REST API sync ──────────────────────────────
-if [ -f "lib/pfsense-sync.py" ] && [ -f "secrets/pfsense_api_key.txt" ]; then
+PFSENSE_KEY="$(get_val "${DOT_ENV}" PFSENSE_API_KEY 2>/dev/null || echo "")"
+if [ -f "lib/pfsense-sync.py" ] && [ -n "$PFSENSE_KEY" ]; then
   if command -v uv >/dev/null 2>&1; then
     info "Running pfSense REST API sync..."
     uv run --project "${SCRIPT_DIR}" lib/pfsense-sync.py 2>&1 || warn "pfSense sync failed (non-fatal)."

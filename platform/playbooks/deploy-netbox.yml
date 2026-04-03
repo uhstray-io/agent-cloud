@@ -122,76 +122,63 @@
         var: _post_deploy.stdout_lines
 
 # ── Phase 4: Sync post-deploy credentials to OpenBao ─────────────────
+# post-deploy.sh may create new orb-agent credentials and write them to .env.
+# Read them from .env and patch OpenBao so they're tracked.
 - name: "Phase 4: Sync new credentials to OpenBao"
   hosts: netbox_svc
   gather_facts: false
   become: false
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Check for post-deploy secrets"
-      ansible.builtin.find:
-        paths: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets"
-        patterns: "*.txt"
-      register: _new_secrets
+    - name: "Read orb-agent credentials from .env"
+      ansible.builtin.shell: |
+        grep '^ORB_AGENT_CLIENT_ID=' "{{ _deploy_dir }}/.env" | cut -d= -f2-
+        grep '^ORB_AGENT_CLIENT_SECRET=' "{{ _deploy_dir }}/.env" | cut -d= -f2-
+      register: _orb_creds
+      changed_when: false
+      no_log: true
 
-    - name: "Sync to OpenBao (if new secrets found)"
-      when: _new_secrets.files | length > 0
-      block:
-        - name: "Read new secrets"
-          ansible.builtin.slurp:
-            src: "{{ item.path }}"
-          loop: "{{ _new_secrets.files }}"
-          loop_control:
-            label: "{{ item.path | basename }}"
-          register: _slurped
-          no_log: true
+    - name: "Patch OpenBao with orb-agent credentials"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+      when: _orb_creds.stdout_lines | length >= 2
 
-        - name: "Authenticate to OpenBao"
-          ansible.builtin.uri:
-            url: "{{ _bao_url }}/v1/auth/approle/login"
-            method: POST
-            body_format: json
-            body:
-              role_id: "{{ _bao_role_id }}"
-              secret_id: "{{ _bao_secret_id }}"
-            status_code: [200]
-          register: _bao_auth
-          delegate_to: localhost
-          no_log: true
+    - name: "Store credentials"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
+        method: PATCH
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+          Content-Type: "application/merge-patch+json"
+        body_format: json
+        body:
+          data:
+            orb_agent_client_id: "{{ _orb_creds.stdout_lines[0] }}"
+            orb_agent_client_secret: "{{ _orb_creds.stdout_lines[1] }}"
+        status_code: [200]
+      delegate_to: localhost
+      no_log: true
+      when: _orb_creds.stdout_lines | length >= 2 and _orb_creds.stdout_lines[0] | length > 0
 
-        - name: "Build update JSON"
-          ansible.builtin.set_fact:
-            _update_json: >-
-              {{ _update_json | default({}) | combine({
-                (item.item.path | basename | regex_replace('\.txt$', '')): (item.content | b64decode | trim)
-              }) }}
-          loop: "{{ _slurped.results }}"
-          loop_control:
-            label: "{{ item.item.path | basename }}"
-          no_log: true
-
-        - name: "Patch OpenBao with new credentials"
-          ansible.builtin.uri:
-            url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
-            method: PATCH
-            headers:
-              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-              Content-Type: "application/merge-patch+json"
-            body_format: json
-            body:
-              data: "{{ _update_json }}"
-            status_code: [200]
-          delegate_to: localhost
-          no_log: true
-
-        - name: "Report synced"
-          ansible.builtin.debug:
-            msg: "Synced {{ _new_secrets.files | length }} post-deploy credentials to OpenBao"
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Orb-agent credentials synced to OpenBao"
+      when: _orb_creds.stdout_lines | length >= 2
 
 # ── Phase 5: Verify ──────────────────────────────────────────────────
 - name: "Phase 5: Verify deployment"

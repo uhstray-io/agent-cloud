@@ -451,8 +451,10 @@ register_oauth2_clients() {
 # Updates .env with the credentials for compose substitution.
 ensure_agent_credentials() {
   local orb_client_id orb_client_secret
-  orb_client_id="$(get_secret orb_agent_client_id 2>/dev/null || echo "")"
-  orb_client_secret="$(get_secret orb_agent_client_secret 2>/dev/null || echo "")"
+
+  # Read from .env (templated by Ansible from OpenBao)
+  orb_client_id="$(get_val "${DOT_ENV}" ORB_AGENT_CLIENT_ID 2>/dev/null || echo "")"
+  orb_client_secret="$(get_val "${DOT_ENV}" ORB_AGENT_CLIENT_SECRET 2>/dev/null || echo "")"
 
   if [ -n "$orb_client_id" ] && [ -n "$orb_client_secret" ]; then
     info "  Using existing agent credential: ${orb_client_id}"
@@ -461,12 +463,10 @@ ensure_agent_credentials() {
     cred_json=$(create_agent_credential "orb-agent")
     orb_client_id=$(echo "$cred_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['client_id'])")
     orb_client_secret=$(echo "$cred_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
-    put_secret orb_agent_client_id "$orb_client_id"
-    put_secret orb_agent_client_secret "$orb_client_secret"
     info "  Created agent credential: ${orb_client_id}"
   fi
 
-  # Ensure .env has the agent credentials for compose substitution
+  # Update .env with credentials (Ansible Phase 4 syncs back to OpenBao)
   grep -q '^ORB_AGENT_CLIENT_ID=' "${DOT_ENV}" && \
     sedi "s|^ORB_AGENT_CLIENT_ID=.*|ORB_AGENT_CLIENT_ID=${orb_client_id}|" "${DOT_ENV}" || \
     echo "ORB_AGENT_CLIENT_ID=${orb_client_id}" >> "${DOT_ENV}"
@@ -490,22 +490,20 @@ ORB_AGENT_CONTAINER="netbox-orb-agent"
 
 # start_orb_agent
 # Starts the orb-agent as a standalone privileged container via sudo.
-# Reads credentials from secrets/ and .env, mounts agent.yaml, uses host networking.
+# Reads credentials from .env (managed by Ansible/OpenBao), mounts agent.yaml, uses host networking.
 # Idempotent: removes any existing container first.
 start_orb_agent() {
-  # Derive project root from SECRETS_DIR (set at source time, always valid)
-  local compose_dir="${SECRETS_DIR%/secrets}"
+  local compose_dir="${SCRIPT_DIR}"
 
-  # Read credentials
+  # Read credentials from .env (templated by Ansible from OpenBao)
   local client_id client_secret snmp_community
-  client_id="$(get_secret orb_agent_client_id)"
-  client_secret="$(get_secret orb_agent_client_secret)"
-  snmp_community="$(get_secret snmp_community 2>/dev/null || echo "")"
-  [ -z "$snmp_community" ] && snmp_community="$(get_val "${DOT_ENV}" SNMP_COMMUNITY)"
-  snmp_community="${snmp_community:-public}"
+  client_id="$(get_val "${DOT_ENV}" ORB_AGENT_CLIENT_ID 2>/dev/null || echo "")"
+  client_secret="$(get_val "${DOT_ENV}" ORB_AGENT_CLIENT_SECRET 2>/dev/null || echo "")"
+  snmp_community="$(get_val "${DOT_ENV}" SNMP_COMMUNITY 2>/dev/null || echo "public")"
 
   if [ -z "$client_id" ] || [ -z "$client_secret" ]; then
-    warn "Agent credentials not found in secrets/ — skipping orb-agent start."
+    warn "Agent credentials not found in .env — skipping orb-agent start."
+    warn "Ensure Ansible has stored orb_agent_client_id/secret in OpenBao."
     return 1
   fi
 
