@@ -18,41 +18,112 @@ Each service's deploy.sh is a monolith that handles everything from secret gener
 
 ## Solution: OpenBao-Driven Secret Lifecycle
 
-**OpenBao is the single source of truth.** No secrets/ directory on VMs. Ansible fetches from OpenBao, templates compose-ready config files directly, and deploy.sh only runs container operations.
+**OpenBao is the single source of truth.** No `secrets/` directory on VMs. No local secret generation. Ansible fetches from OpenBao via `community.hashi_vault`, templates compose-ready config files, and deploy.sh only runs container operations.
 
 ### Architecture
 
 ```
-OpenBao (source of truth)
-  ↑ generate + store (first deploy)
-  ↓ fetch (all deploys)
-Ansible (manage-secrets.yml)
-  ↓ template
-env/*.env, .env, config files (on VM, compose-ready)
-  ↓ read
-deploy.sh (container operations: compose up, migrations, health)
+OpenBao (source of truth — all credentials live here)
+  ↑ generate + store (first deploy only)
+  ↓ fetch (every deploy)
+Ansible manage-secrets.yml (in-memory, never writes secrets to disk files)
+  ↓ Jinja2 template
+env/*.env, .env, config.yaml (on VM — compose-readable, gitignored)
+  ↓ read at container start
+Docker Compose (variable substitution from .env, env_file from env/*.env)
+  ↓
+deploy.sh (container lifecycle only: pull, build, start, wait, migrate)
+  ↓ runtime credentials created (e.g., orb-agent OAuth2)
+post-deploy.sh (writes new creds to .env → Ansible Phase 4 syncs to OpenBao)
 ```
+
+### Why Env Files on Disk?
+
+Docker Compose does not integrate with OpenBao natively. The `.env` and `env/*.env` files are the **minimal required bridge** between Ansible-managed secrets and compose-consumed configuration. These files:
+- Are gitignored (never committed)
+- Are written by Ansible on every deploy (no drift)
+- Contain resolved secrets but no generation logic
+- Are the ONLY local secret storage — no `secrets/` directory
+
+This cannot be eliminated without switching to Docker Swarm secrets, Kubernetes + ESO, or a compose-external injection mechanism. For the Docker Compose pattern, env files on disk are the standard approach.
+
+### What Ansible/Semaphore Manages Natively
+
+| Layer | Mechanism | Disk? |
+|-------|-----------|-------|
+| Semaphore environment JSON | `bao_role_id`, `bao_secret_id`, `openbao_addr` | No — Semaphore injects as env vars |
+| `community.hashi_vault` lookup | Reads secrets from OpenBao at runtime | No — Ansible memory only |
+| `ansible.builtin.template` | Renders `.env.j2` → `.env` on VM | Yes — compose needs files |
+| `ansible.builtin.uri` | Patches OpenBao with new creds (Phase 4) | No — API call |
 
 ### Secret Lifecycle
 
 **First deploy (no secrets in OpenBao):**
 1. `manage-secrets.yml` checks OpenBao — empty
-2. Generates random secrets via Ansible `password` lookup
-3. Stores all secrets in OpenBao
-4. Templates env files on VM from generated values
+2. Generates random secrets via Ansible `password` lookup (in memory)
+3. Stores all secrets in OpenBao (single API call)
+4. Templates env files on VM from generated values (Jinja2)
 5. deploy.sh starts containers using the env files
+6. post-deploy.sh creates runtime credentials (orb-agent OAuth2)
+7. Phase 4 reads new creds from `.env`, patches OpenBao
 
 **Subsequent deploys (secrets exist in OpenBao):**
 1. `manage-secrets.yml` checks OpenBao — has values
-2. Reuses all existing secrets (no regeneration)
+2. Reuses ALL existing secrets (no regeneration, no drift)
 3. Templates env files on VM from fetched values
 4. deploy.sh starts containers — passwords match existing database volumes
+5. post-deploy.sh finds existing credentials, skips creation
+6. Phase 4 confirms creds in OpenBao (no-op patch)
 
-**Secret validation (check-secrets.yml):**
-1. Reads secrets from OpenBao
-2. Tests each credential against its service (DB connect, API call, HTTP auth)
-3. Reports which secrets are valid, expired, or missing
-4. Does NOT modify anything — read-only verification
+**Secret validation (check-secrets.yml / validate-secrets.yml):**
+1. `check-secrets.yml` — Reads OpenBao, reports present/missing/empty (read-only)
+2. `validate-secrets.yml` — Tests each credential against live services (DB, Redis, HTTP)
+3. Neither modifies anything — pure verification
+
+### No Local Secret Generation
+
+deploy.sh and post-deploy.sh do NOT:
+- Call `generate-secrets.sh`
+- Write to a `secrets/` directory
+- Generate random passwords
+- Interact with OpenBao directly
+
+They DO:
+- Verify env files exist (fail if missing — means Ansible didn't run)
+- Read credentials from `.env` (for compose exec commands that need passwords)
+- Write runtime-created credentials to `.env` (orb-agent OAuth2 — synced to OpenBao by Ansible Phase 4)
+
+### deploy.sh Split: Infrastructure + Application
+
+deploy.sh is split into two scripts for independent retry and clear separation:
+
+**deploy.sh (Infrastructure — steps 1-10):**
+```
+1.  Clone upstream dependency repos (netbox-docker)
+2.  Copy .example templates (non-secret config)
+3.  Verify env files present (fail if Ansible didn't run)
+4.  Pull latest images
+5.  Build custom image with plugins
+6.  Stop stack gracefully
+7.  Sync DB passwords to existing volumes
+8.  Start services (staged: backing → Hydra → application)
+10. Wait for NetBox healthy (up to 10 min for first-boot migrations)
+```
+
+**post-deploy.sh (Application — steps 11-16):**
+```
+11. Run database migrations
+12. Create admin superuser (idempotent)
+13. Register OAuth2 clients (Hydra)
+14. Create/reuse orb-agent credentials (writes to .env)
+15. Restart discovery services
+16. Start Orb Agent (privileged, host networking)
+```
+
+The split enables:
+- Retry post-deploy independently (if OAuth2 registration fails, don't rebuild containers)
+- Different timeout profiles (infrastructure needs 10+ min, post-deploy is fast)
+- Clear failure isolation (container startup vs application config)
 
 ---
 
@@ -299,21 +370,27 @@ When secrets or database schemas change incompatibly, a clean deploy destroys vo
 
 | Check | Pass Condition |
 |-------|---------------|
-| No secrets/ directory on VM | deploy.sh reads from env files only |
-| No generate-secrets.sh call | deploy.sh verifies, doesn't generate |
-| OpenBao is authoritative | Redeploying reuses existing secrets |
-| First deploy works | Empty OpenBao → generate → store → deploy |
-| Subsequent deploy works | Existing OpenBao → fetch → template → deploy |
+| No `secrets/` directory on VM | `ls secrets/` fails or is empty |
+| No `generate-secrets.sh` call in deploy.sh | `grep generate-secrets deploy.sh` returns nothing |
+| No `get_secret`/`put_secret` in deploy scripts | Functions read from `.env` only |
+| deploy.sh fails without env files | Remove `.env` → deploy.sh errors immediately |
+| OpenBao is authoritative | Redeploying reuses existing secrets (no new passwords) |
+| First deploy works | Empty OpenBao → generate in memory → store → template → deploy |
+| Subsequent deploy works | Existing OpenBao → fetch → template → deploy (DB passwords match) |
+| Post-deploy creds sync | orb-agent creds written to `.env` → Phase 4 patches OpenBao |
 | check-secrets reports accurately | Lists all secrets, flags missing |
-| validate-secrets tests credentials | DB/API/Redis auth verified |
+| validate-secrets tests credentials | DB/API/Redis auth verified against live services |
 | Task reuse works | Same manage-secrets.yml for netbox, nocodb, n8n |
-| Idempotent end-to-end | Running deploy twice = same state |
+| Idempotent end-to-end | Running deploy twice = same state, same passwords |
+| deploy.sh split works | deploy.sh completes independently; post-deploy.sh retryable |
 
 ## Security Considerations
 
-- **No intermediary files:** Secrets go OpenBao → Ansible memory → env files. No `secrets/*.txt` on disk.
-- **Env files are gitignored:** `.env` and `env/*.env` written by Ansible, never committed
-- **Ansible `no_log: true`** on all secret-handling tasks
-- **AppRole least privilege:** Semaphore's AppRole can read/write all service paths (orchestrator role)
-- **Validation catches drift:** `validate-secrets.yml` detects when a password in OpenBao no longer matches the database
-- **deploy.sh has no credential access:** Cannot authenticate to OpenBao, cannot generate secrets — reduces blast radius if compromised
+- **No `secrets/` directory:** Eliminated entirely. No `.txt` secret files on disk.
+- **Minimal disk footprint:** Only `.env` and `env/*.env` files exist on VM (required by Docker Compose). These are gitignored and overwritten on every deploy.
+- **Secrets never in bash variables long-term:** Ansible holds secrets in memory during template rendering, then discards. deploy.sh reads from `.env` only when needed (compose exec).
+- **Ansible `no_log: true`** on all secret-handling tasks — prevents credential leakage in Semaphore logs.
+- **AppRole least privilege:** Semaphore's AppRole can read/write all service paths (orchestrator role). Per-service AppRoles are more restrictive.
+- **Validation catches drift:** `validate-secrets.yml` detects when a password in OpenBao no longer matches the database.
+- **deploy.sh has no credential access:** Cannot authenticate to OpenBao, cannot generate secrets, cannot write to `secrets/`. Reduces blast radius if a deploy script is compromised.
+- **Runtime credentials (orb-agent):** Created by post-deploy.sh, written to `.env`, synced to OpenBao by Ansible Phase 4. The `.env` is the transient holding area, not the source of truth.
