@@ -75,6 +75,23 @@
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    - name: "Write compose bind-mount secret (temporary — deleted after container start)"
+      block:
+        - name: "Ensure secrets/ dir for compose mount"
+          ansible.builtin.file:
+            path: "{{ _deploy_dir }}/secrets"
+            state: directory
+            mode: "0700"
+
+        - name: "Write netbox_to_diode_client_secret.txt"
+          ansible.builtin.copy:
+            content: "{{ _resolved.netbox_to_diode_client_secret }}"
+            dest: "{{ _deploy_dir }}/secrets/netbox_to_diode_client_secret.txt"
+            mode: "0600"
+          no_log: true
+      vars:
+        _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
 # ── Phase 2: Infrastructure (deploy.sh — containers up + healthy) ────
 - name: "Phase 2: Start NetBox containers"
   hosts: netbox_svc
@@ -120,6 +137,27 @@
     - name: "Post-deploy output"
       ansible.builtin.debug:
         var: _post_deploy.stdout_lines
+
+    - name: "Verify Diode plugin can read the bind-mount secret"
+      ansible.builtin.shell: |
+        {{ container_engine | default('docker') }} exec netbox{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}netbox{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}1 cat /run/secrets/netbox_to_diode 2>&1 | head -1
+      register: _diode_secret_check
+      changed_when: false
+      no_log: true
+      failed_when: _diode_secret_check.stdout | length < 10
+
+    - name: "Bind-mount secret verified"
+      ansible.builtin.debug:
+        msg: "Diode plugin secret mounted at /run/secrets/netbox_to_diode ({{ _diode_secret_check.stdout | length }} chars)"
+
+    - name: "Delete local secret file (container already read it)"
+      ansible.builtin.file:
+        path: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets/netbox_to_diode_client_secret.txt"
+        state: absent
+
+    - name: "Remove secrets/ dir if empty"
+      ansible.builtin.shell: rmdir "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets" 2>/dev/null || true
+      changed_when: false
 
 # ── Phase 4: Sync post-deploy credentials to OpenBao ─────────────────
 # post-deploy.sh may create new orb-agent credentials and write them to .env.
