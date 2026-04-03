@@ -75,8 +75,8 @@
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
-# ── Phase 2: Container Operations ────────────────────────────────────
-- name: "Phase 2: Deploy NetBox containers"
+# ── Phase 2: Infrastructure (deploy.sh — containers up + healthy) ────
+- name: "Phase 2: Start NetBox containers"
   hosts: netbox_svc
   gather_facts: false
   become: false
@@ -85,7 +85,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
-    - name: "Run deploy.sh"
+    - name: "Run deploy.sh (infrastructure)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
         bash deploy.sh {{ service_url | default('http://localhost:8000') }}
@@ -94,12 +94,35 @@
       register: _deploy
       changed_when: true
 
-    - name: "Deploy output"
+    - name: "Infrastructure output"
       ansible.builtin.debug:
         var: _deploy.stdout_lines
 
-# ── Phase 3: Verify ──────────────────────────────────────────────────
-- name: "Phase 3: Verify deployment"
+# ── Phase 3: Application config (post-deploy.sh — migrations, OAuth2, agent) ─
+- name: "Phase 3: Configure NetBox application"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run post-deploy.sh (migrations, superuser, OAuth2, Orb Agent)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash post-deploy.sh {{ service_url | default('http://localhost:8000') }}
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('') }}"
+      register: _post_deploy
+      changed_when: true
+
+    - name: "Post-deploy output"
+      ansible.builtin.debug:
+        var: _post_deploy.stdout_lines
+
+# ── Phase 4: Verify ──────────────────────────────────────────────────
+- name: "Phase 4: Verify deployment"
   hosts: netbox_svc
   gather_facts: false
   become: false
