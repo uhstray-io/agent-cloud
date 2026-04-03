@@ -25,10 +25,11 @@
   register: _clean
   changed_when: true
 
-- name: "Remove agent-cloud clone"
+- name: "Remove agent-cloud clone (may contain root-owned files)"
   ansible.builtin.file:
     path: "{{ _monorepo_dir }}"
     state: absent
+  become: true
 
 - name: "Remove convenience symlink"
   ansible.builtin.file:

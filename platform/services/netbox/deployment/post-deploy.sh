@@ -30,6 +30,11 @@ info "  URL: ${NETBOX_URL}"
 
 compose ps --format json 2>/dev/null | head -1 >/dev/null || error "No compose services running. Run deploy.sh first."
 
+# Ensure secrets/ dir exists for functions that write credentials
+# (ensure_agent_credentials writes orb_agent_client_id/secret to secrets/)
+# Ansible syncs these to OpenBao post-deploy
+mkdir -p "${SCRIPT_DIR}/secrets"
+
 # ─── Step 11: Run database migrations ──────────────────────────────
 info "Step 11: Running database migrations..."
 compose exec netbox /opt/netbox/netbox/manage.py migrate --no-input
