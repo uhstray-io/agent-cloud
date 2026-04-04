@@ -34,18 +34,19 @@ fi
 
 DEFAULT_TIMEOUT="${DEFAULT_TIMEOUT:-300}"
 
-# ─── Container runtime detection ─────────────────────────────────
-# Auto-detect podman or docker; prefer podman when both are available.
-if command -v podman >/dev/null 2>&1; then
-  CONTAINER_ENGINE="podman"
-  CONTAINER_SEP="_"
-elif command -v docker >/dev/null 2>&1; then
-  CONTAINER_ENGINE="docker"
-  CONTAINER_SEP="-"
-else
-  echo "ERROR: Neither podman nor docker is installed" >&2
-  exit 1
+# ─── Container runtime ───────────────────────────────────────────
+# NetBox requires Docker (privileged orb-agent, bind-mount secrets,
+# compose health check dependencies). Podman is not supported.
+# CONTAINER_ENGINE can be overridden by environment variable (set by Ansible).
+if [ -z "${CONTAINER_ENGINE:-}" ]; then
+  if command -v docker >/dev/null 2>&1; then
+    CONTAINER_ENGINE="docker"
+  else
+    echo "ERROR: Docker is not installed. NetBox requires Docker (not Podman)." >&2
+    exit 1
+  fi
 fi
+CONTAINER_SEP="-"
 
 # ─── Logging ──────────────────────────────────────────────────────
 info()  { echo "==> $*"; }

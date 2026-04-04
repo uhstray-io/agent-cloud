@@ -276,8 +276,24 @@ See `plan/IMPLEMENTATION_PLAN.md` and `plan/UNIFICATION-PLAN.md` for detailed ro
 
 - **No AI attribution** in commits — no `Co-Authored-By` lines referencing AI tools
 - **No credentials, IPs, or usernames** in committed files — use `{{ }}` template variables
-- **Audit before push** — always search for sensitive data before pushing to this public repo
 - IPs and real credentials belong exclusively in site-config (private)
+
+### Mandatory Pre-Push Audit
+
+**Before EVERY `git push`, run this audit.** No exceptions:
+
+```bash
+# 1. List staged/committed files
+git diff HEAD~1 --name-only
+
+# 2. Scan for secrets, IPs, credentials
+git diff HEAD~1 | grep -iE '^\+.*192\.168\.|^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*api_token[:=]\s*[A-Za-z0-9]{20}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+
+# 3. Scan new files specifically
+git diff HEAD~1 --diff-filter=A --name-only | xargs grep -liE '192\.168\.|password|api_key|secret'
+```
+
+If any matches are found, fix before pushing. The grep excludes template variables (`{{ }}`), `no_log`, and example/default patterns.
 
 ## Adding a New Service
 
