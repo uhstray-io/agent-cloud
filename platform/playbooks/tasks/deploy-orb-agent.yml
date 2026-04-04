@@ -4,12 +4,13 @@
 # The orb-agent runs as a standalone privileged container (not compose-managed)
 # with host networking for raw socket access (SYN scans, ICMP).
 #
-# Reads credentials from .env (written by manage-diode-credentials.yml).
-# Resolves agent.yaml template with credentials before mounting.
+# Credentials: fetched by the agent directly from OpenBao at runtime via
+# the vault secrets manager integration. No plaintext secrets in config files.
 #
 # Expected variables:
 #   service_name, monorepo_deploy_path, _monorepo_dir
 #   container_engine (docker or podman)
+#   openbao_addr, bao_role_id, bao_secret_id (for vault secrets manager)
 
 - name: "Check agent.yaml exists"
   ansible.builtin.stat:
@@ -31,38 +32,11 @@
       changed_when: false
       no_log: true
 
-    - name: "Read orb-agent secret from .env"
-      ansible.builtin.shell: |
-        grep '^ORB_AGENT_CLIENT_SECRET=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
-      register: _orb_secret
-      changed_when: false
-      no_log: true
-
-    - name: "Read SNMP community from .env"
-      ansible.builtin.shell: |
-        grep '^SNMP_COMMUNITY=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
-      register: _snmp
-      changed_when: false
-
     - name: "Verify credentials available"
       ansible.builtin.assert:
         that:
           - _orb_id.stdout | length > 0
-          - _orb_secret.stdout | length > 0
-        fail_msg: "orb-agent credentials missing from .env. Run manage-diode-credentials first."
-
-    - name: "Resolve agent.yaml with credentials"
-      ansible.builtin.shell: |
-        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-        # Remove stale resolved config (Docker may create as directory)
-        [ -d "discovery/agent-resolved.yaml" ] && rm -rf "discovery/agent-resolved.yaml"
-        sed \
-          -e "s|\${DIODE_CLIENT_ID}|{{ _orb_id.stdout }}|g" \
-          -e "s|\${DIODE_CLIENT_SECRET}|{{ _orb_secret.stdout }}|g" \
-          -e "s|\${SNMP_COMMUNITY}|{{ _snmp.stdout | default('public') }}|g" \
-          discovery/agent.yaml > discovery/agent-resolved.yaml
-        chmod 600 discovery/agent-resolved.yaml
-      no_log: true
+        fail_msg: "orb-agent client_id missing from .env. Run manage-diode-credentials first."
 
     - name: "Stop existing orb-agent"
       ansible.builtin.shell: |
@@ -71,18 +45,30 @@
       become: true
       changed_when: false
 
-    - name: "Start orb-agent (privileged, host networking)"
+    - name: "Clean stale agent-resolved.yaml"
+      ansible.builtin.shell: |
+        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+        [ -d "discovery/agent-resolved.yaml" ] && rm -rf "discovery/agent-resolved.yaml" || true
+        rm -f "discovery/agent-resolved.yaml" 2>/dev/null || true
+      changed_when: false
+
+    - name: "Start orb-agent (privileged, host networking, OpenBao vault integration)"
       ansible.builtin.shell: |
         cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
         sudo {{ container_engine | default('docker') }} run -d \
           --name netbox-orb-agent \
           --privileged \
           --net=host \
-          -v "$(pwd)/discovery/agent-resolved.yaml:/opt/orb/agent.yaml:ro" \
+          -e "OPENBAO_ADDR={{ openbao_addr | default('') }}" \
+          -e "BAO_ROLE_ID={{ bao_role_id | default('') }}" \
+          -e "BAO_SECRET_ID={{ bao_secret_id | default('') }}" \
+          -v "$(pwd)/discovery/agent.yaml:/opt/orb/agent.yaml:ro" \
           -v "$(pwd)/discovery/snmp-extensions:/opt/orb/snmp-extensions:ro" \
-          netboxlabs/orb-agent:latest
+          docker.io/netboxlabs/orb-agent:latest \
+          run -c /opt/orb/agent.yaml
       become: true
       register: _orb_start
+      no_log: true
 
     - name: "Wait for orb-agent to be running"
       ansible.builtin.shell: |
@@ -96,4 +82,4 @@
 
     - name: "Orb Agent deployed"
       ansible.builtin.debug:
-        msg: "orb-agent running with credential {{ _orb_id.stdout }}"
+        msg: "orb-agent running with credential {{ _orb_id.stdout }} (secrets from OpenBao)"

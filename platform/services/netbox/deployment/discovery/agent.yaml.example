@@ -1,28 +1,33 @@
-# Orb Agent Configuration — Network & SNMP Discovery
+# Orb Agent Configuration — Network & SNMP Discovery (Production Linux)
 #
-# The agent runs with sudo --privileged via deploy.sh. The start_orb_agent()
-# function auto-detects the OS and adjusts the network scan mode:
-#   - macOS: forces TCP connect scan (Podman VM NAT blocks raw sockets)
-#   - Linux: uses default SYN scan (--privileged gives real CAP_NET_RAW)
+# Requires: Linux host with sudo --privileged (CAP_NET_RAW for SYN scans)
+# Secrets:  Managed by OpenBao via the vault secrets manager integration
+#           No plaintext credentials in this file — all fetched at runtime
 #
-# DIODE_CLIENT_ID and DIODE_CLIENT_SECRET are automatically created by
-# deploy.sh (step 14) via the Diode plugin API and passed as environment variables.
+# Copy to agent.yaml and customize targets for your environment.
+# See also: agent.yaml.rootless.example for environments without sudo.
 #
-# Discovery strategy:
-#   - Network scan: finds live IPs and open ports (nmap TCP connect)
-#   - SNMP scan: enriches devices with hostname, manufacturer, model, interfaces,
-#     MACs, and IP addresses. Assigns site/role/tags for NetBox classification.
-#   - Custom OID lookup: maps pfSense sysObjectID to "Netgate-4200-pfSense"
-#     via snmp-extensions/pfsense.yaml (mounted at /opt/orb/snmp-extensions)
-#
-# Valid device roles are defined in discovery/roles.yaml (single source of truth).
-#
-# Naming convention for tags:
-#   discovery-network  = found by network scan
-#   discovery-snmp     = enriched by SNMP
-#   site:<name>        = site assignment pattern
+# Valid device roles: see discovery/roles.yaml (single source of truth)
 
 orb:
+  # ─── Secrets Manager: OpenBao (Vault-compatible) ─────────────────
+  # The orb-agent fetches credentials from OpenBao at startup and
+  # refreshes on the configured schedule. No secrets on disk.
+  # Reference: https://netboxlabs.com/docs/orb-agent/secretsmgr/vault/
+  secrets_manager:
+    active: vault
+    sources:
+      vault:
+        address: "${OPENBAO_ADDR}"
+        timeout: 30
+        auth: "approle"
+        auth_args:
+          role_id: "${BAO_ROLE_ID}"
+          secret_id: "${BAO_SECRET_ID}"
+          mount_path: "approle"
+        # Refresh credentials every hour
+        schedule: "0 */1 * * *"
+
   config_manager:
     active: local
 
@@ -33,49 +38,69 @@ orb:
       diode:
         # gRPC target — must match your Diode server's nginx ingress
         target: grpc://localhost:8081/diode
-        client_id: ${DIODE_CLIENT_ID}
-        client_secret: ${DIODE_CLIENT_SECRET}
+        # Credentials fetched from OpenBao at runtime
+        client_id: "${vault://secret/services/netbox/orb_agent_client_id}"
+        client_secret: "${vault://secret/services/netbox/orb_agent_client_secret}"
         agent_name: netbox-discovery-agent
 
   policies:
-    # ─── Network (subnet) discovery ────────────────────────────────
-    # Finds live IPs and open ports. Creates IP Address entities in NetBox.
-    # Does NOT create Device objects — SNMP discovery handles that.
+    # ─── NETWORK DISCOVERY ─────────────────────────────────────────
+    # SYN scan for fast, comprehensive host and port discovery.
+    # Creates IP Address entities in NetBox via Diode.
+    # Runs every 4 hours to avoid overlapping with previous scans.
     network_discovery:
       subnet_scan:
         config:
-          schedule: "*/10 * * * *"
-          # Timeout in minutes. TCP connect: ~10 min/subnet. SYN: ~5 min/subnet.
-          timeout: 20
+          schedule: "0 */4 * * *"
+          # Timeout in minutes. SYN: ~5 min/subnet. TCP connect: ~10 min.
+          timeout: 15
           defaults:
             tags:
               - discovery-network
               - "site:uhstray-dc"
+              - "discovery:auto"
             description: "Auto-discovered by network scan"
         scope:
           targets:
             - 192.168.1.0/24
-            # Add more subnets as needed:
+            # Add more subnets:
             # - 10.0.0.0/24
-          # scan_types and skip_host are injected automatically by start_orb_agent()
-          # based on OS detection. Do not hardcode here.
-          # Limit ports to reduce scan time
-          ports: [22, 80, 443, 8080, 8443, 53, 3389, 5060, 8081, 161]
 
-    # ─── SNMP discovery ──────────────────────────────────────────────
-    # Enriches discovered hosts with device details: hostname (sysName),
-    # manufacturer/model (sysObjectID), interfaces (IF-MIB), MACs, IPs.
-    # Creates Device, Interface, IP Address, Platform, Manufacturer, Site
-    # entities in NetBox via Diode.
+          # SYN scan (Linux privileged — fast, stealthy, requires CAP_NET_RAW)
+          # For rootless environments, use [connect] instead (see rootless example)
+          scan_types: [syn]
+
+          # Host discovery (ICMP pre-scan identifies live IPs before port scanning)
+          ping_scan: true
+          icmp_echo: true
+          icmp_timestamp: true
+          icmp_netmask: true
+
+          # Port specification — key infrastructure and service ports
+          ports: [22, 53, 80, 161, 443, 3389, 5060, 8000, 8080, 8081, 8200, 8443]
+
+          # Optimization
+          fast_mode: true
+          timing: 3
+          max_retries: 2
+          use_target_masks: true
+
+    # ─── SNMP DISCOVERY (All Devices) ──────────────────────────────
+    # Enriches discovered hosts with SNMP data: hostname, manufacturer,
+    # model, interfaces, MACs, IPs. Creates Device, Interface, IP Address,
+    # Platform, Manufacturer, Site entities in NetBox.
+    # Runs every 6 hours (offset from network scan to avoid collision).
     snmp_discovery:
       snmp_scan:
         config:
-          schedule: "*/10 * * * *"
-          timeout: 600
+          schedule: "0 */6 * * *"
+          # Policy timeout in minutes
+          timeout: 10
+          # Per-device SNMP timeout in seconds
           snmp_timeout: 10
-          retries: 3
-          # Custom OID lookup directory — maps sysObjectID to device names.
-          # Mounted into the container at /opt/orb/snmp-extensions by start_orb_agent().
+          retries: 5
+          # Custom OID lookup — maps sysObjectID to device names
+          # Mounted into container at /opt/orb/snmp-extensions by deploy
           lookup_extensions_dir: /opt/orb/snmp-extensions
           defaults:
             site: "Uhstray.io Datacenter"
@@ -83,29 +108,34 @@ orb:
             tags:
               - discovery-snmp
               - "site:uhstray-dc"
+              - "discovery:auto"
             device:
               description: "Auto-discovered via SNMP"
-              comments: "Populated by orb-agent SNMP discovery. Device type determined by sysObjectID lookup."
+              comments: "Populated by orb-agent. sysObjectID determines device type."
             interface:
               description: "Auto-discovered interface"
+              enabled: true
             ip_address:
               description: "Auto-discovered IP"
         scope:
-          # Scan full subnets — discovers all SNMP-enabled devices, not just gateways
           targets:
             - host: 192.168.1.0/24
           authentication:
             protocol_version: SNMPv2c
-            community: ${SNMP_COMMUNITY}
+            # SNMP community string fetched from OpenBao
+            community: "${vault://secret/services/netbox/snmp_community}"
+          max_mib_depth: 10
+          max_repetitions: 10
 
-      # Dedicated policy for known infrastructure devices (gateways/routers)
-      # with explicit role assignment
+      # ─── INFRASTRUCTURE DEVICES ────────────────────────────────────
+      # Known gateways/routers/switches with explicit role assignment.
+      # Separate policy so these get the correct device role in NetBox.
       infrastructure_scan:
         config:
-          schedule: "*/10 * * * *"
-          timeout: 300
+          schedule: "0 */6 * * *"
+          timeout: 10
           snmp_timeout: 10
-          retries: 3
+          retries: 5
           lookup_extensions_dir: /opt/orb/snmp-extensions
           defaults:
             site: "Uhstray.io Datacenter"
@@ -116,9 +146,12 @@ orb:
               - infrastructure
             device:
               description: "Infrastructure device (gateway/router/switch)"
+              comments: "Known infrastructure. sysObjectID mapped via snmp-extensions/."
         scope:
           targets:
             - host: 192.168.1.1
+            # Add more known infrastructure:
+            # - host: 192.168.1.2
           authentication:
             protocol_version: SNMPv2c
-            community: ${SNMP_COMMUNITY}
+            community: "${vault://secret/services/netbox/snmp_community}"

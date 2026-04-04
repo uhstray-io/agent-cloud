@@ -179,21 +179,20 @@
     - name: "Deploy Orb Agent"
       ansible.builtin.include_tasks: tasks/deploy-orb-agent.yml
 
-# ── Phase 5: Verify ──────────────────────────────────────────────────
-- name: "Phase 5: Verify deployment"
+# ── Phase 6: Verify ──────────────────────────────────────────────────
+- name: "Phase 6: Verify deployment"
   hosts: netbox_svc
   gather_facts: false
   become: false
   tasks:
-    - name: "Health check"
+    - name: "Health check (login page)"
       ansible.builtin.uri:
-        url: "{{ service_url }}{{ health_path | default('/login/') }}"
-        status_code: [200, 301, 302]
+        url: "{{ service_url }}/login/"
+        status_code: [200]
         validate_certs: false
-        follow_redirects: safe
         timeout: 30
-      retries: 10
-      delay: 30
+      retries: 5
+      delay: 10
       when: service_url is defined
 
     - name: "NetBox deployed"
