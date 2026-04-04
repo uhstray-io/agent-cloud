@@ -80,7 +80,7 @@ orb:
       snmp_scan:
         config:
           schedule: "0 */6 * * *"
-          timeout: 10
+          timeout: 600
           snmp_timeout: 10
           retries: 5
           lookup_extensions_dir: /opt/orb/snmp-extensions
@@ -111,7 +111,7 @@ orb:
       infrastructure_scan:
         config:
           schedule: "0 */6 * * *"
-          timeout: 10
+          timeout: 600
           snmp_timeout: 10
           retries: 5
           lookup_extensions_dir: /opt/orb/snmp-extensions
