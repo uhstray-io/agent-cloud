@@ -2,8 +2,8 @@
 # deploy-orb-agent.yml — Standalone Orb Agent deployment
 #
 # Independent workflow — runs after netbox deploy or on its own.
-# Creates fresh Diode credentials, templates agent.yaml from OpenBao,
-# starts the privileged orb-agent container.
+# Creates fresh Diode credentials, fetches orb-agent AppRole from OpenBao,
+# templates agent.yaml, starts the privileged orb-agent container.
 #
 # Run via Semaphore: "Deploy Orb Agent" template
 
@@ -28,9 +28,41 @@
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Template agent.yaml from OpenBao credentials"
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Fetch orb-agent AppRole credentials from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/approles/orb-agent"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _orb_approle_resp
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Set orb-agent AppRole facts"
+      ansible.builtin.set_fact:
+        _orb_approle: "{{ _orb_approle_resp.json.data.data }}"
+      no_log: true
+
+    - name: "Template agent.yaml with orb-agent AppRole"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/{{ service_name }}/deployment/templates/agent.yaml.j2"
         dest: "{{ _deploy_dir }}/discovery/agent.yaml"

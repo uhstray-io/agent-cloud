@@ -447,7 +447,10 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 - [ ] Deploy NocoDB via composable pattern
 - [ ] Deploy n8n via composable pattern
 - [ ] Create run-pfsense-sync.yml as independent 15-min scheduled workflow
-- [ ] Create dedicated orb-agent AppRole (currently using Semaphore's)
+- [x] Create dedicated orb-agent AppRole (done 2026-04-04 — policy: read secret/services/netbox, TTL 4h)
+- [ ] Enable OpenTelemetry metrics export from orb-agent to o11y stack
+      Config: `common.otel.grpc` endpoint pointing at OTel collector, `agent_labels` for environment/service tagging
+      Ref: https://github.com/netboxlabs/orb-agent/blob/develop/docs/config_samples.md
 
 ### Step 4: Remaining Infrastructure (PENDING)
 

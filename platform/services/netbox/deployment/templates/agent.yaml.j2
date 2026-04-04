@@ -1,5 +1,5 @@
 # Orb Agent Configuration — Rendered by Ansible
-# OpenBao address and AppRole credentials resolved at deploy time.
+# OpenBao address and orb-agent AppRole credentials resolved at deploy time.
 # vault:// references resolved by the orb-agent at runtime.
 
 orb:
@@ -11,8 +11,8 @@ orb:
         timeout: 30
         auth: "approle"
         auth_args:
-          role_id: "{{ bao_role_id }}"
-          secret_id: "{{ bao_secret_id }}"
+          role_id: "{{ _orb_approle.role_id }}"
+          secret_id: "{{ _orb_approle.secret_id }}"
           mount_path: "approle"
         schedule: "0 */1 * * *"
 
@@ -45,11 +45,32 @@ orb:
           targets:
             - 192.168.1.0/24
           scan_types: [syn]
-          ping_scan: true
+          # ICMP host discovery probes (run before port scan to find live hosts)
+          # ping_scan is NOT set — it conflicts with scan_types
           icmp_echo: true
           icmp_timestamp: true
           icmp_netmask: true
-          ports: [22, 53, 80, 161, 443, 3389, 5060, 8000, 8080, 8081, 8200, 8443]
+          # Ports: agent-cloud services + common infrastructure
+          ports:
+            # Infrastructure
+            - 22     # SSH
+            - 53     # DNS
+            - 80     # HTTP
+            - 161    # SNMP
+            - 443    # HTTPS
+            # Agent-cloud services
+            - 3000   # Semaphore, Grafana
+            - 5432   # PostgreSQL
+            - 5678   # n8n
+            - 6379   # Redis
+            - 8000   # NetBox
+            - 8080   # Internal services (diode-auth, netbox internal)
+            - 8081   # Diode gRPC ingress
+            - 8181   # NocoDB
+            - 8200   # OpenBao
+            - 8443   # HTTPS alt
+            - 9090   # Prometheus
+            - 11434  # Ollama
           fast_mode: true
           timing: 3
           max_retries: 2
