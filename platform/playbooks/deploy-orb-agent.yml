@@ -1,0 +1,40 @@
+---
+# deploy-orb-agent.yml — Standalone Orb Agent deployment
+#
+# Independent workflow — runs after netbox deploy or on its own.
+# Creates fresh Diode credentials, templates agent.yaml from OpenBao,
+# starts the privileged orb-agent container.
+#
+# Run via Semaphore: "Deploy Orb Agent" template
+
+- name: "Manage Diode credentials"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Manage Diode orb-agent credentials"
+      ansible.builtin.include_tasks: tasks/manage-diode-credentials.yml
+
+- name: "Template agent config and deploy"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Template agent.yaml from OpenBao credentials"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/{{ service_name }}/deployment/templates/agent.yaml.j2"
+        dest: "{{ _deploy_dir }}/discovery/agent.yaml"
+        mode: "0644"
+
+    - name: "Deploy Orb Agent"
+      ansible.builtin.include_tasks: tasks/deploy-orb-agent.yml

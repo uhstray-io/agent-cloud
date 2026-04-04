@@ -394,3 +394,101 @@ When secrets or database schemas change incompatibly, a clean deploy destroys vo
 - **Validation catches drift:** `validate-secrets.yml` detects when a password in OpenBao no longer matches the database.
 - **deploy.sh has no credential access:** Cannot authenticate to OpenBao, cannot generate secrets, cannot write to `secrets/`. Reduces blast radius if a deploy script is compromised.
 - **Runtime credentials (orb-agent):** Created by post-deploy.sh, written to `.env`, synced to OpenBao by Ansible Phase 4. The `.env` is the transient holding area, not the source of truth.
+
+---
+
+## AppRole Management (Composable)
+
+### Principle: Self-Service AppRole Provisioning
+
+Services should not depend on OpenBao's `deploy.sh` to create their AppRole. Instead, any service playbook can provision its own AppRole via `tasks/manage-approle.yml`. This decouples identity management from the secrets backbone deployment.
+
+**Implementation:** `tasks/manage-approle.yml`
+- Creates/updates an HCL policy with the exact paths the service needs
+- Creates/updates the AppRole with the policy attached
+- Returns `role_id` and `secret_id`
+- Stores credentials at `secret/services/approles/<name>` in OpenBao
+
+**Semaphore's policy** (`semaphore-read.hcl`) includes `sys/policies/acl/*` and `auth/approle/role/*` capabilities so it can manage AppRoles for any service without root access.
+
+**Example — provisioning an orb-agent AppRole:**
+```yaml
+- include_tasks: tasks/manage-approle.yml
+  vars:
+    _approle_name: "orb-agent"
+    _approle_policy: |
+      path "secret/data/services/netbox/orb_agent_*" {
+        capabilities = ["read"]
+      }
+      path "secret/data/services/netbox/snmp_community" {
+        capabilities = ["read"]
+      }
+```
+
+### Principle: Least-Privilege by Default
+
+Each AppRole gets ONLY the paths it needs. The `manage-approle.yml` task enforces this by requiring the caller to specify the exact HCL policy. No blanket `secret/data/services/*` access unless explicitly requested.
+
+---
+
+## Workflow Decoupling
+
+### Principle: Independent Workflows Over Monolithic Playbooks
+
+Each deployment concern should be its own playbook that can run independently. Don't embed optional components (like the orb-agent) into the service deploy — create a separate workflow.
+
+**Before (brittle):**
+```
+deploy-netbox.yml → 6 phases including orb-agent
+  If orb-agent fails, entire deploy fails.
+  Can't redeploy orb-agent without redeploying NetBox.
+```
+
+**After (decoupled):**
+```
+deploy-netbox.yml → 5 phases (NetBox only)
+deploy-orb-agent.yml → independent (Diode creds + agent start)
+run-pfsense-sync.yml → independent (scheduled every 15 min)
+```
+
+**Benefits:**
+- Retry individual workflows without re-running the whole stack
+- Schedule workflows independently (orb-agent after every NetBox deploy, pfsense-sync every 15 min)
+- Different failure domains — orb-agent failure doesn't block NetBox availability
+- Clear ownership — each playbook has one responsibility
+
+### Principle: Semaphore Templates as Workflow Triggers
+
+Each independent workflow gets its own Semaphore task template. Operators run "Deploy NetBox", then "Deploy Orb Agent", then schedule "Run pfSense Sync" — each independently observable and retryable in the Semaphore UI.
+
+### Implemented Workflows
+
+| Workflow | Playbook | Trigger | Depends On |
+|----------|----------|---------|------------|
+| Deploy NetBox | `deploy-netbox.yml` | Manual / CI | OpenBao unsealed |
+| Deploy Orb Agent | `deploy-orb-agent.yml` | After NetBox deploy | NetBox healthy + Diode auth |
+| Clean Deploy NetBox | `clean-deploy-netbox.yml` | Manual (destructive) | OpenBao unsealed |
+| pfSense Sync | `run-pfsense-sync.yml` (planned) | Every 15 min | NetBox + Diode healthy |
+| Distribute SSH Keys | `distribute-ssh-keys.yml` | After VM provision | OpenBao has SSH keys |
+| Harden SSH | `harden-ssh.yml` | After key distribution | Keys verified working |
+
+---
+
+## Anti-Patterns to Avoid
+
+### Brittle: Monolithic deploy scripts that handle everything
+deploy.sh should NOT: generate secrets, authenticate to OpenBao, manage AppRoles, start auxiliary services, or handle credential rotation. Each concern has its own Ansible task.
+
+### Brittle: Ad-hoc API calls for Semaphore/OpenBao management
+All templates, policies, and AppRoles should be managed as code (`.yml`/`.hcl` files) and applied via playbooks. No `curl` one-liners.
+
+### Brittle: Reusing stale credentials from OpenBao
+Always verify credentials against the live service (e.g., `list_clients` from the Diode plugin), not just OpenBao. A clean deploy wipes the Hydra database but OpenBao retains old credentials.
+
+### Brittle: Sed-based credential injection
+Don't resolve `${VARIABLE}` references via sed in config files. Use either:
+- Ansible Jinja2 templates (for values known at deploy time)
+- Service-native secret managers (e.g., orb-agent's vault integration)
+
+### Brittle: Shared AppRoles across unrelated services
+Each service/component should have its own AppRole with least-privilege policy. The `semaphore-read` AppRole is the exception — it's the orchestrator.

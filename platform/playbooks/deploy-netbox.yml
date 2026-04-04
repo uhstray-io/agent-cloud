@@ -168,20 +168,11 @@
     - name: "Manage Diode orb-agent credentials"
       ansible.builtin.include_tasks: tasks/manage-diode-credentials.yml
 
-# ── Phase 5: Deploy Orb Agent ────────────────────────────────────────
-- name: "Phase 5: Deploy Orb Agent"
-  hosts: netbox_svc
-  gather_facts: false
-  become: false
-  vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+# Orb Agent is a separate workflow: deploy-orb-agent.yml
+# Run it after NetBox deploy to start network/SNMP discovery.
 
-  tasks:
-    - name: "Deploy Orb Agent"
-      ansible.builtin.include_tasks: tasks/deploy-orb-agent.yml
-
-# ── Phase 6: Verify ──────────────────────────────────────────────────
-- name: "Phase 6: Verify deployment"
+# ── Phase 5: Verify ──────────────────────────────────────────────────
+- name: "Phase 5: Verify deployment"
   hosts: netbox_svc
   gather_facts: false
   become: false

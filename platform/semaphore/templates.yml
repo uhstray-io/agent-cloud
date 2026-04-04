@@ -30,6 +30,9 @@ templates:
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
 
+  - name: Deploy Orb Agent
+    playbook: platform/playbooks/deploy-orb-agent.yml
+
   # ── Updates ────────────────────────────────────────────────────
   - name: Update NocoDB
     playbook: platform/playbooks/update-nocodb.yml
