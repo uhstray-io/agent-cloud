@@ -1,0 +1,111 @@
+---
+# manage-approle.yml — Create/update an OpenBao AppRole and policy
+#
+# Idempotent: creates the policy and role if they don't exist,
+# updates them if they do. Returns the role_id and secret_id.
+#
+# Expected variables:
+#   _bao_url, _bao_role_id, _bao_secret_id (existing admin-level AppRole for auth)
+#   _approle_name       — name for the new AppRole (e.g., "orb-agent")
+#   _approle_policy     — HCL policy content (what paths this role can access)
+#   _approle_token_ttl  — token TTL (default: "30m")
+
+- name: "Authenticate to OpenBao (admin)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _bao_role_id }}"
+      secret_id: "{{ _bao_secret_id }}"
+    status_code: [200]
+  register: _admin_auth
+  delegate_to: localhost
+  no_log: true
+
+- name: "Create/update policy: {{ _approle_name }}"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/sys/policies/acl/{{ _approle_name }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    body_format: json
+    body:
+      policy: "{{ _approle_policy }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+
+- name: "Ensure AppRole auth is enabled"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/sys/auth"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    status_code: [200]
+  register: _auth_methods
+  delegate_to: localhost
+
+- name: "Create/update AppRole: {{ _approle_name }}"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/role/{{ _approle_name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    body_format: json
+    body:
+      token_policies:
+        - "{{ _approle_name }}"
+      token_ttl: "{{ _approle_token_ttl | default('30m') }}"
+      token_max_ttl: "{{ _approle_token_max_ttl | default('2h') }}"
+      secret_id_ttl: 0
+      token_num_uses: 0
+    status_code: [200, 204]
+  delegate_to: localhost
+
+- name: "Get role_id"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/role/{{ _approle_name }}/role-id"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    status_code: [200]
+  register: _role_id_resp
+  delegate_to: localhost
+
+- name: "Generate secret_id"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/role/{{ _approle_name }}/secret-id"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: _secret_id_resp
+  delegate_to: localhost
+  no_log: true
+
+- name: "Set AppRole credentials"
+  ansible.builtin.set_fact:
+    _new_role_id: "{{ _role_id_resp.json.data.role_id }}"
+    _new_secret_id: "{{ _secret_id_resp.json.data.secret_id }}"
+  no_log: true
+
+- name: "Store AppRole credentials in OpenBao"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/approles/{{ _approle_name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    body_format: json
+    body:
+      data:
+        role_id: "{{ _new_role_id }}"
+        secret_id: "{{ _new_secret_id }}"
+    status_code: [200]
+  delegate_to: localhost
+  no_log: true
+
+- name: "AppRole provisioned"
+  ansible.builtin.debug:
+    msg: "AppRole '{{ _approle_name }}' created/updated. Credentials stored at secret/services/approles/{{ _approle_name }}"
