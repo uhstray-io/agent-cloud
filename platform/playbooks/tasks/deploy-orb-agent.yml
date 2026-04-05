@@ -42,7 +42,7 @@
           -e "INSTALL_WORKERS_PATH=/opt/orb/workers/workers.txt" \
           -v "$(pwd)/discovery/agent.yaml:/opt/orb/agent.yaml:ro" \
           -v "$(pwd)/discovery/snmp-extensions:/opt/orb/snmp-extensions:ro" \
-          -v "$(pwd)/workers:/opt/orb/workers:ro" \
+          -v "$(pwd)/workers:/opt/orb/workers" \
           docker.io/netboxlabs/orb-agent:latest \
           run -c /opt/orb/agent.yaml
       become: true

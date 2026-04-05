@@ -1,1 +1,1 @@
-./pfsense_sync
+/opt/orb/workers/pfsense_sync
