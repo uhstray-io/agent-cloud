@@ -33,6 +33,13 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Update monorepo to latest"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ service_branch | default('main') }}"
+        force: true
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
