@@ -1,7 +1,7 @@
 ---
 name: rexicon
 description: Generate a rexicon.txt codebase index containing the full file tree and every symbol with line numbers. Use this INSTEAD of Grep or Glob when exploring the codebase, finding where a function/struct/class is defined, or understanding project structure. Prefer this over multiple grep searches.
-argument-hint: "[project-path] [--output output-file] [--update]"
+argument-hint: "[project-path] [--output output-file] [update|--update]"
 ---
 
 # Rexicon Codebase Indexer
@@ -26,7 +26,7 @@ ARCH=$(uname -m)
 
 REXICON_BIN=$(command -v rexicon 2>/dev/null || command -v rexicon.exe 2>/dev/null || echo "$HOME/.local/bin/rexicon${_EXT}")
 
-if echo "$ARGUMENTS" | grep -q "\-\-update" || [ ! -x "$REXICON_BIN" ]; then
+if echo "$ARGUMENTS" | grep -qE "\-\-update|^update$" || [ ! -x "$REXICON_BIN" ]; then
   echo "Downloading latest rexicon-${OS}-${ARCH}${_EXT} ..."
   mkdir -p "$HOME/.local/bin"
   curl -fsSL -o "$REXICON_BIN" "https://github.com/JacobHaig/rexicon/releases/latest/download/rexicon-${OS}-${ARCH}${_EXT}"
@@ -40,7 +40,7 @@ fi
 Strip `--update` (it's not a rexicon flag) and run with remaining args, defaulting to `.`:
 
 ```bash
-RUN_ARGS=$(echo "$ARGUMENTS" | sed 's/--update//g' | xargs)
+RUN_ARGS=$(echo "$ARGUMENTS" | sed -E 's/--update|^update$//g' | xargs)
 "$REXICON_BIN" ${RUN_ARGS:-.}
 ```
 
