@@ -11,16 +11,25 @@ Generate a `rexicon.txt` index of this project containing the full directory tre
 ## Step 1 — Locate or install the binary
 
 ```bash
-REXICON_BIN=$(command -v rexicon 2>/dev/null || echo "$HOME/.local/bin/rexicon")
+# Detect platform and set binary name/extension
+_UNAME_S=$(uname -s)
+_EXT=""
+case "$_UNAME_S" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT) OS="windows"; _EXT=".exe" ;;
+  Darwin)                           OS="macos" ;;
+  Linux)                            OS="linux" ;;
+  *)                                OS=$(echo "$_UNAME_S" | tr '[:upper:]' '[:lower:]') ;;
+esac
+
+ARCH=$(uname -m)
+[ "$ARCH" = "arm64" ] && ARCH="aarch64"
+
+REXICON_BIN=$(command -v rexicon 2>/dev/null || command -v rexicon.exe 2>/dev/null || echo "$HOME/.local/bin/rexicon${_EXT}")
 
 if echo "$ARGUMENTS" | grep -q "\-\-update" || [ ! -x "$REXICON_BIN" ]; then
-  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-  ARCH=$(uname -m)
-  [ "$OS" = "darwin" ] && OS="macos"
-  [ "$ARCH" = "arm64" ] && ARCH="aarch64"
-  echo "Downloading latest rexicon-${OS}-${ARCH} ..."
+  echo "Downloading latest rexicon-${OS}-${ARCH}${_EXT} ..."
   mkdir -p "$HOME/.local/bin"
-  curl -fsSL -o "$REXICON_BIN" "https://github.com/JacobHaig/rexicon/releases/latest/download/rexicon-${OS}-${ARCH}"
+  curl -fsSL -o "$REXICON_BIN" "https://github.com/JacobHaig/rexicon/releases/latest/download/rexicon-${OS}-${ARCH}${_EXT}"
   chmod +x "$REXICON_BIN"
   echo "Installed to $REXICON_BIN"
 fi
