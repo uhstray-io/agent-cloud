@@ -69,20 +69,314 @@ VM provisioning and monitoring uses the PVE REST API at `https://{{ proxmox_host
 
 ---
 
+## Platform Design Principles
+
+The 10 uhstray.io platform design principles are the constitutional constraints for every architectural decision:
+
+| # | Principle | Application |
+|---|-----------|-------------|
+| 1 | **Develop every system "as-code"** | All infrastructure, config, policies, and workflows in version-controlled files. No manual UI-only configuration. |
+| 2 | **Use open-source and free systems first** | Every component is OSS. No vendor lock-in. Proprietary tools only when no viable OSS option exists. |
+| 3 | **Deploy via Kubernetes and containerized frameworks** | Compose for single-site/smaller production, K8s for multi-site/larger scale. Both are production-viable deployment paradigms. |
+| 4 | **Keep platforms as simple as possible** | Prefer single-purpose tools. vLLM/llama.cpp over complex ML pipelines. NocoDB over custom CRUD apps. |
+| 5 | **All deployments version or release controlled** | Compose files pin image versions (`${VERSION:-tag}`). K8s manifests reference tagged images from registry. |
+| 6 | **Track and document work using agile processes** | NocoDB as task tracker, Semaphore for deployment tracking, Git history as audit trail. |
+| 7 | **Single source of truth for all documentation** | Monorepo = one repo to search. CLAUDE.md as the AI agent's single guidance file. |
+| 8 | **Platforms should be resilient and fault tolerant** | Health checks on every service. OpenBao HA (Raft). Compose restart policies. K8s liveness/readiness probes. |
+| 9 | **Systems should use DevSecOps design principles** | OpenBao for secrets. AppRole least-privilege. Kyverno in k8s. Network policies. Container image scanning. |
+| 10 | **Systems should be easy to contribute to** | Public monorepo with `.env.example` files, documented deploy patterns, and a quick-start guide. |
+
+**Additional organizational principles:** Worker-owned not-for-profit, privacy-focused (no telemetry, self-hosted everything), education platform (codebase teaches), AI-centered (AI manages context/decisions, automation tools execute outcomes), data-driven with fair attribution.
+
+---
+
+## The Guardrails Model
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   AI Layer                           │
+│  NemoClaw (workflow) + NetClaw (network) +           │
+│  WisBot (community) + Claude Cowork (interactive)    │
+│  Backed by: vLLM + llama.cpp (local LLM inference)   │
+│  Manages: context, planning, triage, development     │
+├─────────────────────────────────────────────────────┤
+│                Guardrail Layer                        │
+│  Policies: OpenBao (secrets), Kyverno (k8s), OPA,    │
+│  OpenShell network policies, RBAC, AppRole scoping,  │
+│  Authentik SSO/OIDC, ITSM gating (NetClaw config),  │
+│  NeMo Guardrails (AI output validation)              │
+│  AI proposes → guardrails validate → automation runs │
+├─────────────────────────────────────────────────────┤
+│              Automation Layer                         │
+│  Ansible playbooks, Bash deploy scripts, Python      │
+│  tooling — deterministic, idempotent, auditable      │
+├─────────────────────────────────────────────────────┤
+│              Platform Layer                           │
+│  Compose/Podman (single-site prod) ↔ K8s (multi-site)│
+│  Proxmox VMs → k8s nodes (scale path)               │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Agent Architecture
+
+### All Agent Roles
+
+The platform targets **13 agent roles** (5 existing, 4 planned, 2 deferred, 2 future):
+
+| Agent Role | Status | Platform Mapping | Runtime |
+|---|---|---|---|
+| **NemoClaw** (Orchestration + Dev) | ✅ Existing | Headless agent — API integrations, CI/CD, task automation | Docker sandbox |
+| **NetClaw** (Network) | ✅ Existing | Device monitoring, topology, config backup, security audit | Docker sandbox |
+| **Claude + Claude Cowork** (Interactive) | ✅ Existing | Research, architecture, document generation, GUI tasks | Personal device |
+| **WisBot** (Community) | ✅ Existing | Discord voice/chat, user-facing AI — **external repo** (C#/.NET 10) | Podman/k8s |
+| **vLLM + llama.cpp** (Inference) | ✅ Existing | LLM inference backbone for all agents and workflows | GPU VM (Docker) |
+| **Reliability Agent** (SRE) | ⚠️ Planned P1 | HolmesGPT - Pending Research — root-cause analysis, alert investigation, auto-remediation | OpenClaw sandbox |
+| **Governance Agent** (Policy) | ⚠️ Planned P1 | OPA enforcement + NeMo Guardrails for AI output validation + Research Kyverno for viability | OpenClaw sandbox |
+| **Marketing Agent** | ⚠️ Planned P2 | n8n workflows initially, then OpenClaw — content creation via Mixpost | n8n → OpenClaw |
+| **Research Agent** | ⚠️ Planned P2 | Headless research — web search, Qdrant RAG, Wiki.js knowledge base | OpenClaw sandbox |
+| **CryptoBot** (Crypto Markets) | ⏸️ Deferred | Cryptocurrency market analysis — revisit when core platform is stable | TBD |
+| **StockBot** (Equities) | ⏸️ Deferred | Equity market analysis — revisit when core platform is stable | TBD |
+| **Accounting Agent** | 📋 Future P3 | (Akaunting/BigCapital) Research Platforms + LLM — invoice processing, financial reporting | TBD |
+| **Storefront Agent** | 📋 Future P3 | (Medusa headless commerce) Research Platforms + LLM — catalog management, customer queries | TBD |
+
+### Per-Agent Integration Summary
+
+| Agent | OpenBao Role | Inference | Primary Integrations | Guardrails |
+|---|---|---|---|---|
+| **NemoClaw** | `nemoclaw-read` (read-only) | vLLM | NocoDB, n8n, GitHub, NetBox, Proxmox (read-only) | Destructive ops → Semaphore → human approval |
+| **NetClaw** | `netclaw-readwrite` | vLLM | NetBox (bidirectional), pyATS (SSH/SNMP), nmap, NocoDB, n8n | Config changes → ITSM gate → approval |
+| **WisBot** | via platform services | vLLM | Discord, MinIO (recordings), PostgreSQL, n8n webhooks | Voice channel join requires user command |
+| **Claude + Claude Cowork** | N/A (personal device) | vLLM/llama.cpp (optional) | Local files, browser, monorepo, NocoDB (task creation) | Interactive — human in the loop |
+
+### AI Agent Boundaries
+
+```
+AI CAN:                              AI CANNOT:
+  ✓ Read all service APIs              ✗ Write OpenBao policies
+  ✓ Create NocoDB rows                 ✗ Modify network configs directly
+  ✓ Trigger n8n workflows              ✗ Run Ansible playbooks directly
+  ✓ Open GitHub issues/PRs             ✗ Access Proxmox API (destructive)
+  ✓ Query NetBox inventory             ✗ Unseal OpenBao
+  ✓ Read observability data            ✗ Delete any persistent data
+  ✓ Propose infrastructure changes     ✗ Apply changes without human approval
+  ✓ Monitor network devices (read)     ✗ Push config changes without ITSM gate
+  ✓ Scan subnets (scoped to policy)    ✗ Scan outside defined CIDR ranges
+  ✓ Run local LLM inference            ✗ Send data to external AI providers without consent
+```
+
+### Cross-Agent Coordination
+
+Task routing via NocoDB `task_type` field:
+
+| Task Type Prefix | Routed To | Examples |
+|---|---|---|
+| `workflow:*` | NemoClaw | GitHub PRs, n8n triggers, Semaphore ops |
+| `network:*` | NetClaw | Device health, topology, config backup, pcap |
+| `infra:*` | NemoClaw or NetClaw | Proxmox monitoring → NemoClaw, network tracing → NetClaw |
+| `market:*` | Deferred | CryptoBot / StockBot — not yet scoped |
+
+**Coordination flow:** User request → WisBot (Discord) or Claude Cowork (interactive) → creates NocoDB task → NemoClaw/NetClaw picks up based on `task_type` → executes → logs result to `task_log` → Discord notification if needed.
+
+### A2A + MCP Protocols
+
+Agent communication uses two complementary protocols:
+
+| Communication Pattern | Protocol | Transport |
+|---|---|---|
+| Agent ↔ tool/database/API | **MCP** (Model Context Protocol) | Direct HTTP/stdio |
+| Agent ↔ agent coordination | **A2A** (Agent-to-Agent) | NATS JetStream |
+| Workflow trigger / events | **NATS** | JetStream subjects |
+| Telemetry / observability | **OpenTelemetry** | Collector → Grafana |
+| Human → agent | Native interface (Discord, CLI) | A2A handles delegation behind it |
+
+**A2A Registry:** FastAPI-based Agent Card registry at `platform/services/a2a-registry/`. Agents publish `.well-known/agent-card.json`; the registry indexes cards for discovery. OAuth 2.0 via Authentik for secured registration.
+
+**Per-Agent MCP Server Assignments:**
+
+| Agent | MCP Servers |
+|---|---|
+| NemoClaw | GitHub, NocoDB, n8n, Semaphore, NetBox (read-only) |
+| NetClaw | NetBox, nmap, Prometheus, Grafana, Kroki, GitHub, packet-buddy, protocol, containerlab |
+| WisBot | Discord, PostgreSQL, MinIO, Qdrant |
+| Reliability | Prometheus, Alertmanager, Grafana, k8s API, NocoDB |
+| Research | Web search, Qdrant, Wiki.js, document reader, NocoDB |
+| Governance | OPA, Kyverno, VerifyWise, audit logs, NocoDB |
+
+---
+
+## Inference Backbone
+
+> **Note:** This section outlines the target architecture. Specific model selection, quantization strategies, and multi-node scheduling will require further research during implementation.
+
+The platform's local inference backbone is a dual-engine setup running on Proxmox VMs with NVIDIA GPU passthrough (consumer GPUs, 8–12 GB VRAM):
+
+| Engine | Role | Port | Use Cases |
+|---|---|---|---|
+| **vLLM** | GPU-heavy inference | :8000 | Complex reasoning, code generation, long-context tasks. OpenAI-compatible API. |
+| **llama.cpp** | Lightweight/edge inference | :8080 | Lighter workloads, speech-to-text (Whisper.cpp), CPU fallback for dev/test. |
+
+**Architecture:** Proxmox host (GPU passthrough via vfio-pci) → Ubuntu Server VM (UEFI/q35) → Docker + NVIDIA Container Toolkit → vLLM (:8000) + llama.cpp (:8080).
+
+**Integration:** All agents and workflows consume the inference backbone via OpenAI-compatible HTTP endpoints. Inference endpoint URL stored in OpenBao at `secret/services/inference`. Multi-node expansion: each GPU node runs vLLM independently, load balanced via Caddy/Kong.
+
+**Monorepo location:** `platform/services/inference/` — `deployment/` contains compose files for both engines, model pull scripts, and deployment orchestration. `context/` contains model selection guides and architecture docs.
+
+---
+
+## Data Strategy: PostgreSQL + MinIO + DuckDB
+
+The platform uses a three-tier data architecture:
+
+| Tier | Engine | Purpose | Pattern |
+|---|---|---|---|
+| **Tier 1: OLTP** | PostgreSQL | Operational data — app state, CRUD, transactional | Per-service database (NocoDB, n8n, Semaphore, NetBox, WisBot) |
+| **Tier 2: Object Storage** | MinIO | Binary blobs — recordings, backups, Parquet exports, o11y backends | Shared S3-compatible service with bucket-per-concern |
+| **Tier 3: OLAP** | DuckDB | Analytical queries — fast reads over exported data | Embedded (runs wherever the query runs, reads Parquet from MinIO) |
+
+**MinIO Bucket Layout:**
+
+| Bucket | Contents | Lifecycle |
+|---|---|---|
+| `wisbot-recordings/` | Voice recordings (WAV) | 90 days → archive |
+| `o11y-mimir/` | Metrics long-term storage | 1 year |
+| `o11y-tempo/` | Traces | 3 months |
+| `o11y-loki/` | Log chunks | 1 year |
+| `backups/` | Restic backup repository | Per retention policy |
+| `harbor-registry/` | Container image layers | Per tag policy |
+| `data-exports/` | Parquet files for DuckDB | Rolling window |
+
+**Data Flow:** Operational DBs (per-service PostgreSQL) → Dagster ETL assets (extract, transform, load) → warehouse DB + Parquet exports to MinIO → DuckDB queries for ad-hoc analytics / Superset dashboards.
+
+**Data Warehouse Schema:** A dedicated `warehouse` database with source tables (`voice_activity`, `workflow_runs`, `deployments`, `infrastructure`, `incidents`, `git_activity`) populated by Dagster ETL, plus materialized views for common analytical queries.
+
+---
+
+## Dual-Runtime Architecture: Compose and Kubernetes
+
+The platform supports two production-viable deployment paradigms. Both can run production workloads — they differ in scale and multi-site capability:
+
+| Dimension | Compose (Podman/Docker) | Kubernetes |
+|---|---|---|
+| **Target scale** | Single-site production, homelab, small deployments | Multi-site production, larger-scale deployments |
+| **Orchestration** | Semaphore + Ansible playbooks | ArgoCD GitOps |
+| **Secret injection** | Ansible `manage-secrets.yml` → env files | External Secrets Operator (ESO) → k8s Secrets |
+| **Policy enforcement** | OpenBao AppRole policies, OpenShell network policies | Kyverno + OPA admission policies |
+| **Scaling** | Vertical (bigger VMs) | Horizontal (replica scaling, HPA) |
+| **Multi-site** | Clone repo + site-config per site | Kustomize overlays per site/environment |
+| **Service mesh** | N/A (direct inter-service HTTP) | Cilium (eBPF-based CNI, mTLS, network policies) |
+
+### Source-of-Truth Cascade
+
+Compose files remain the source of truth for service definitions:
+
+```
+platform/services/<name>/deployment/compose.yml    ← Source of truth
+    │
+    ├── Compose path: Ansible templates env files → deploy.sh → compose up
+    │   (single-site production, Semaphore orchestrates)
+    │
+    └── K8s path: kompose convert → platform/k8s/base/<name>/
+        → Kustomize overlays (dev/staging/prod/per-site)
+        → ArgoCD syncs from git → ESO injects secrets from OpenBao
+```
+
+### Kubernetes Directory Structure
+
+```
+platform/k8s/
+├── base/<service>/              ← Generated by kompose (CI step)
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── kustomization.yaml
+├── overlays/
+│   ├── dev/                     ← k3s/kind: NodePort, no replicas
+│   ├── staging/                 ← Single-node: ClusterIP, 1 replica
+│   ├── prod/                    ← Multi-node: Ingress, HPA, PDB
+│   │   ├── kustomization.yaml
+│   │   ├── hpa.yaml
+│   │   └── network-policy.yaml
+│   └── site-<name>/             ← Per-site overlays for multi-site
+└── bootstrap/                   ← k0s/kubeadm cluster setup (from open-k8s)
+```
+
+### Secret Management Across Runtimes
+
+OpenBao remains the single source of truth in all environments:
+
+| Runtime | Secret Injection | Mechanism |
+|---|---|---|
+| **Compose (Ansible-managed)** | `manage-secrets.yml` → Jinja2 templates → env files | Ansible `community.hashi_vault` lookup |
+| **Kubernetes** | ESO SecretStore → ExternalSecret → k8s Secret → pod envFrom | External Secrets Operator |
+
+Zero secret changes when moving between runtimes — only the injection mechanism differs. Both paths read from the same OpenBao paths.
+
+### Multi-Site Portability
+
+The key value of the dual-runtime architecture is **site portability**:
+
+- **Compose path:** Clone `agent-cloud` + create a `site-config` per site with real IPs/inventory → Semaphore deploys to that site's VMs. Each site is an independent deployment with its own OpenBao, inventory, and service topology.
+- **K8s path:** Same monorepo + Kustomize overlays per site (`overlays/site-<name>/`) → ArgoCD syncs per-site manifests. Multi-site from a single control plane or independent clusters.
+
+Both paradigms support creating new sites from the same codebase. The choice between them is a scale decision, not a capability limitation.
+
+### VM-to-K8s Migration Order
+
+Migration is not a flag day — both runtimes coexist:
+
+```
+Phase A (current): All services on Proxmox VMs via Compose
+Phase B (parallel): K8s cluster runs alongside VMs
+  - New services deploy to k8s first
+  - Existing services migrate gradually (stateless first)
+Phase C (target):  All services on k8s
+  - Proxmox still runs k8s worker nodes (not eliminated)
+  - VMs host k8s nodes, not individual services
+```
+
+**Migration order** (stateless → stateful → GPU):
+
+1. Caddy → k8s Ingress Controller (Traefik)
+2. WisBot → k8s Deployment (singleton)
+3. n8n workers → k8s Deployment
+4. o11y stack → k8s (Helm charts available)
+5. MinIO → k8s StatefulSet
+6. NocoDB → k8s + PVC
+7. Semaphore → k8s + PVC
+8. NetBox → k8s (complex — Diode pipeline, orb-agent needs host network)
+9. OpenBao → k8s (critical — careful HA setup with Raft)
+10. vLLM + llama.cpp → k8s on GPU nodes (NVIDIA device plugin)
+11. NemoClaw → k8s (Kata Containers for sandboxing)
+12. NetClaw → k8s (Kata + host network for device polling)
+
+---
+
+## Three-Tier Variable System
+
+Configuration follows a three-tier hierarchy where higher tiers override lower:
+
+| Tier | Source | Contents | Example |
+|---|---|---|---|
+| **Tier 1: Defaults** | Public repo (`.env.example`, compose defaults) | Ports, versions, non-secret config | `NOCODB_PORT=8181` |
+| **Tier 2: Site Config** | Private repo (`site-config`) | Real IPs, hostnames, environment-specific values | `NOCODB_HOST={{ nocodb_host }}` |
+| **Tier 3: Secrets** | OpenBao | Passwords, tokens, API keys, TLS certs | `POSTGRES_PASSWORD`, `NOCODB_API_TOKEN` |
+
+**Resolution:** Tier 3 > Tier 2 > Tier 1 (secrets always win). In the composable pattern, Ansible `manage-secrets.yml` performs the merge at template-render time: Jinja2 templates reference defaults, Ansible inventory provides site-config values, and `community.hashi_vault` fetches secrets — all resolved in memory, rendered to env files in `~/services/<name>/`.
+
+---
+
 ## Phase 0: Foundation
 
-> **Legacy phase.** Phase 0 describes the initial local development bootstrap using monolithic deploy.sh scripts that handled secret generation, OpenBao interaction, and container lifecycle in a single script. This pattern has been superseded by the composable automation architecture documented in [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md), where Ansible owns the secret lifecycle and deploy.sh is pure container operations. Phase 0 content is retained for historical context.
-
-**Status:** FUNCTIONAL — 13 PASS / 0 FAIL / 8 WARN (placeholder credentials + NemoClaw pending)
-**Full report:** [PHASE0-REPORT.md](PHASE0-REPORT.md)
+**Status:** COMPLETE
 
 ### What Was Built
 
-- **OpenBao** — Initialized with KV v2, database secrets engine, AppRole auth, `nemoclaw-read` and `nemoclaw-rotate` policies. Placeholder secrets seeded at `secret/services/{nocodb,github,discord,proxmox,n8n,semaphore}`. Currently on local dev; migrates to dedicated VM ({{ openbao_host }}) in Phase 0.5.
-- **NocoDB** — Running with PostgreSQL backend, healthy on port 8181. Awaiting API token creation.
-- **n8n** — Running in queue mode with worker node, PostgreSQL backend, Redis queue. Awaiting first login and API key creation.
-- **Semaphore** — Running with PostgreSQL backend on port 3100 (3000 held by VS Code). Awaiting first login and API token creation.
-- **NemoClaw config** — `agent-cloud.yaml` network policy and `sandboxes.json` staged in `nemoclaw/`. Ready to copy to `nemoclaw-deploy/config/` after credentials are validated.
+- **OpenBao** — Initialized with KV v2, database secrets engine, AppRole auth. Policies: `nemoclaw-read`, `nemoclaw-rotate`, `nocodb-write`, `n8n-write`, `semaphore-write`, `semaphore-read`, `orb-agent`. Secrets seeded at `secret/services/{nocodb,github,discord,proxmox,n8n,semaphore}`.
+- **NocoDB** — Running with PostgreSQL backend on port 8181.
+- **n8n** — Running in queue mode with worker node, PostgreSQL backend, Redis queue.
+- **Semaphore** — Running with PostgreSQL backend on port 3000 (3100 in local dev when VS Code holds 3000).
+- **NemoClaw config** — `agent-cloud.yaml` network policy staged in `agents/nemoclaw/deployment/config/presets/`.
 
 ### Phase 0 — Validation Criteria
 
@@ -91,145 +385,97 @@ VM provisioning and monitoring uses the PVE REST API at `https://{{ proxmox_host
 | OpenBao initialized | `bao status` shows `Initialized: true, Sealed: false` |
 | KV v2 engine enabled | `bao secrets list` includes `secret/` |
 | AppRole auth enabled | `bao auth list` includes `approle/` |
-| Placeholder secrets seeded | `bao kv get secret/services/nocodb` returns data |
+| Secrets seeded | `bao kv get secret/services/nocodb` returns data |
 | NocoDB healthy | `curl http://localhost:8181/api/v1/health` → 200 |
 | n8n healthy | `curl http://localhost:5678/healthz` → 200 |
 | Semaphore healthy | `curl http://localhost:3000/api/ping` → 200 |
-| validate.sh | 13 PASS / 0 FAIL |
-
-**Smoke test:** Run `validate.sh` end-to-end. All container health checks pass. OpenBao CLI responds to `bao status`.
-
-**Security:** OpenBao runs with `tls_disable=1` (acceptable for loopback in Phase 0). No credentials committed to git. *(Phase 0 used `secrets/` directory with `.gitignore`; this has been superseded by the source/runtime directory split — see Composable Automation Architecture section.)*
 
 ### Phase 0 Close-Out Checklist
 
-Complete these in order — each step depends on the previous.
+#### 1. Proxmox Host Configuration
+- [x] NemoClaw network policy updated with real Proxmox IP
+- [x] Proxmox API token stored in OpenBao at `secret/services/proxmox`
 
-#### 1. Update Proxmox Host IP
+#### 2. Per-Service API Token Bootstrap
 
-Proxmox host is aurora at {{ proxmox_host }}. Update the two placeholder locations:
+Tokens are bootstrapped via the composable deploy pattern: Ansible `manage-secrets.yml` generates/fetches DB passwords from OpenBao and templates env files → `deploy.sh` starts containers → `post-deploy.sh` creates admin users and API tokens → Ansible Phase 4 syncs runtime-created tokens back to OpenBao.
 
-```bash
-# NemoClaw network policy
-sed -i 's/PROXMOX_HOST_PLACEHOLDER/{{ proxmox_host }}/' nemoclaw/agent-cloud.yaml
+| Service | Admin Creation | Token Creation | Idempotency |
+|---|---|---|---|
+| **OpenBao** | Root token from `bao operator init` | AppRole via `manage-approle.yml` | Check `bao status` for initialized state |
+| **NocoDB** | `POST /api/v1/auth/user/signup` (first boot) | `POST /api/v1/tokens` (fallback: `/api/v1/meta/api-tokens`) | Signin first; list tokens before creating |
+| **n8n** | `POST /api/v1/owner/setup` (first boot) | `POST /api/v1/me/api-keys` (DB insert fallback) | Owner setup only works when no owner exists |
+| **Semaphore** | Auto-created via `SEMAPHORE_ADMIN_PASSWORD` env var | `POST /api/auth/login` → `POST /api/user/tokens` | List tokens first, skip if exists |
+| **GitHub** | N/A (external) | Fine-grained PAT via GitHub.com | `type: user` in `_secret_definitions` (never auto-generated) |
+| **Discord** | N/A (external) | Bot token via Developer Portal | `type: user` in `_secret_definitions` (never auto-generated) |
+| **Proxmox** | N/A (already done) | Token `{{ proxmox_token_id }}` | Stored in OpenBao |
 
-# OpenBao secret URL + token
-ROOT_TOKEN=$(jq -r '.root_token' secrets/init.json)
-podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao \
-  kv patch secret/services/proxmox \
-    url="https://{{ proxmox_host }}:8006" \
-    token_id="{{ proxmox_token_id }}" \
-    api_token="$(cat ../proxmox/secrets/{{ proxmox_token_id }}.txt)"
-```
+**Bootstrap sequence:** OpenBao first (secrets backbone) → NocoDB, n8n, Semaphore in parallel → NemoClaw last (reads tokens from OpenBao via AppRole).
 
-#### 2. Programmatic API Token Bootstrap
+#### Composable Deploy Sequence Diagram
 
-API tokens are created programmatically by each service's `deploy.sh` — no manual UI login required. This follows the pattern already proven in the NetBox deployment (`netbox/deploy.sh`).
-
-| Service | Bootstrap Method | Admin Creation | Token Endpoint | Idempotency |
-|---|---|---|---|---|
-| **OpenBao** | CLI (`bao operator init`) | Root token from init | AppRole: `bao write auth/approle/login` | Check `bao status` for initialized state |
-| **NocoDB** | REST API | `POST /api/v1/auth/user/signup` (first boot only) | `POST /api/v1/tokens` with JWT auth | Signin first; if 200, admin exists. List tokens before creating |
-| **n8n** | REST API | `POST /api/v1/owner/setup` (first boot only) | `POST /api/v1/me/api-keys` (DB insert fallback) | Owner setup only works when no owner exists |
-| **Semaphore** | REST API | Auto-created via `SEMAPHORE_ADMIN_PASSWORD` env var | `POST /api/auth/login` → `POST /api/user/tokens` | List tokens first (`GET /api/user/tokens`), skip if exists |
-| **GitHub** | Manual (external) | N/A | Fine-grained PAT via GitHub.com Settings | N/A |
-| **Discord** | Manual (external) | N/A | Bot token via Discord Developer Portal | N/A |
-| **Proxmox** | Already done | N/A | Token `{{ proxmox_token_id }}` in `proxmox/secrets/` | N/A |
-
-**Per-Service Bootstrap Details:**
-
-**Semaphore** — Login via `POST /api/auth/login` with `{"auth":"admin","password":"<SEMAPHORE_ADMIN_PASSWORD>"}` returns a session cookie. Use that cookie to `POST /api/user/tokens` to create a bearer token. Store in OpenBao at `secret/services/semaphore`.
-
-**NocoDB** — On first boot, `POST /api/v1/auth/user/signup` with `{"email":"admin@my-site.io","password":"<NOCODB_ADMIN_PASSWORD>"}` returns a JWT. Use the JWT to `POST /api/v1/tokens` (or fallback `POST /api/v1/meta/api-tokens` — endpoint varies by NocoDB version; deploy script tries both). Store in OpenBao at `secret/services/nocodb`.
-
-**n8n** — On first boot, `POST /api/v1/owner/setup` creates the owner account. Login via `POST /api/v1/login` to get a session cookie. Use `POST /api/v1/me/api-keys` with `{"label":"nemoclaw-agent"}` to create an API key. **DB fallback:** if the API endpoint is unavailable, insert directly into the `api_key` table via `podman exec` into Postgres (key generated via `openssl rand -hex 20`, validated as hex-only before SQL insertion to prevent injection). Store in OpenBao at `secret/services/n8n`.
-
-**External tokens (GitHub, Discord):** These are third-party services that require manual token creation. GitHub PAT must be fine-grained, scoped to target repos only (not org-wide) with Repository (read) and Issues (read/write) permissions. Discord bot token from Developer Portal with `bot` scope, `Send Messages` + `Read Message History` permissions, invited to target guild. Store both via `setup-secrets.sh`.
-
-**Bootstrap sequence:** OpenBao first (secrets backbone) → NocoDB, n8n, Semaphore in parallel (each creates its own admin + API token) → store all tokens in OpenBao → NemoClaw last (reads tokens from OpenBao via AppRole).
-
-> **Legacy diagram.** This Phase 0 bootstrap flow shows deploy.sh directly interacting with OpenBao. In the current composable architecture, Ansible `manage-secrets.yml` handles all OpenBao reads/writes and templates env files. deploy.sh performs container operations only. See [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md).
+The following diagram shows how Semaphore triggers Ansible playbooks, Ansible owns all OpenBao interaction and env file templating, deploy.sh handles container lifecycle only, and post-deploy.sh handles application-level bootstrap. See [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md).
 
 ```mermaid
 sequenceDiagram
-    participant Deploy as deploy.sh
-    participant Bao as OpenBao
-    participant NocoDB as NocoDB
-    participant N8N as n8n
     participant Sem as Semaphore
+    participant Ansible as Ansible Playbook
+    participant Bao as OpenBao
+    participant VM as Service VM
+    participant Deploy as deploy.sh
+    participant Post as post-deploy.sh
 
-    Note over Deploy: Phase 1 — Secrets Backbone
-    Deploy->>Bao: init + unseal + policies + AppRole
+    Note over Sem: Operator triggers deploy-<service>.yml
 
-    Note over Deploy: Phase 2 — Service Startup
-    Deploy->>NocoDB: compose up -d
-    Deploy->>N8N: compose up -d
-    Deploy->>Sem: compose up -d
+    Note over Ansible: Phase 1 — Sparse Checkout
+    Sem->>Ansible: Run deploy-<service>.yml
+    Ansible->>VM: sparse-checkout.yml (clone ~/agent-cloud/)
+    Ansible->>VM: setup-runtime-dir.yml (create ~/services/<name>/, symlinks)
 
-    Note over Deploy: Phase 3 — Wait for Health
-    Deploy->>NocoDB: GET /api/v1/health (poll)
-    Deploy->>N8N: GET /healthz (poll)
-    Deploy->>Sem: GET /api/ping (poll)
+    Note over Ansible: Phase 2 — Secrets + Env Files
+    Ansible->>Bao: community.hashi_vault lookup (AppRole auth)
+    Bao-->>Ansible: Existing secrets (or empty on first deploy)
+    alt First deploy (no secrets in OpenBao)
+        Ansible->>Ansible: Generate secrets in memory (password lookup)
+        Ansible->>Bao: Store all secrets (single API call)
+    end
+    Ansible->>VM: Template .env + env/*.env via Jinja2 (mode 0600)
 
-    Note over Deploy: Phase 4 — Programmatic Token Creation
-    Deploy->>NocoDB: signup → JWT → create API token
-    NocoDB-->>Deploy: API token
-    Deploy->>Bao: kv patch secret/services/nocodb
+    Note over Deploy: Phase 3 — Container Operations
+    Ansible->>VM: run-deploy.yml (cd ~/services/<name>/)
+    VM->>Deploy: Execute deploy.sh (from runtime dir)
+    Deploy->>Deploy: Verify .env exists (fail if missing)
+    Deploy->>Deploy: Pull images, build, compose up -d
+    Deploy->>Deploy: Wait for health endpoint
 
-    Deploy->>N8N: owner setup → login → create API key
-    N8N-->>Deploy: API key
-    Deploy->>Bao: kv patch secret/services/n8n
+    Note over Post: Phase 3b — Application Bootstrap
+    VM->>Post: Execute post-deploy.sh
+    Post->>Post: Run DB migrations, create admin user
+    Post->>Post: Register OAuth2 clients, create API tokens
+    Post-->>VM: Write runtime creds to .env (e.g., orb-agent)
 
-    Deploy->>Sem: login → create bearer token
-    Sem-->>Deploy: Bearer token
-    Deploy->>Bao: kv patch secret/services/semaphore
-
-    Note over Deploy: Phase 5 — Validate
-    Deploy->>Bao: kv get secret/services/* (verify all non-placeholder)
-    Deploy->>NocoDB: GET /api/v1/meta/tables (with token)
-    Deploy->>N8N: GET /api/v1/workflows (with key)
-    Deploy->>Sem: GET /api/projects (with token)
+    Note over Ansible: Phase 4 — Verify + Sync
+    Ansible->>VM: verify-health.yml (HTTP health check)
+    Ansible->>VM: Read runtime-created creds from .env
+    Ansible->>Bao: Patch OpenBao with new runtime creds (uri module)
+    Ansible->>Bao: Verify all secrets non-placeholder
 ```
 
-**Security checks per step:**
+#### 3. Store External Credentials
 
-| Step | Validation | Security Check |
-|------|-----------|----------------|
-| 1. Proxmox IP | `curl -sk https://{{ proxmox_host }}:8006/api2/json/version` → 200 | API token scoped to VM management only |
-| 2. API tokens | Each `bao kv get secret/services/<svc>` returns non-placeholder values | Tokens created programmatically, no manual UI login |
-| 3. External creds | `secret/services/github:pat` and `secret/services/discord:bot_token` are set | GitHub PAT fine-grained, Discord bot scoped to target guild |
-| 4. Validation | `validate.sh` returns 15 PASS / 0 FAIL / 0 WARN | No credential exposure in validate output |
-| 5. NemoClaw config | `agent-cloud.yaml` has real service endpoints, no placeholders | Network policy restricts to documented endpoints only |
-| 6. Connectivity | NemoClaw reads from all 6 services without errors | All credentials from OpenBao AppRole, not env files |
-
-#### 3. Store External Credentials in OpenBao
-
-> **Legacy workflow.** In the current composable architecture, external credentials are stored via `manage-secrets.yml` with `type: user` secret definitions (never auto-generated). No `secrets/` directory or `setup-secrets.sh` script needed. The workflow below is the Phase 0 bootstrap path.
-
-```bash
-# Legacy Phase 0 bootstrap:
-./scripts/setup-secrets.sh                    # Creates template, stores in OpenBao
-nano secrets/service-credentials.env          # Fill in GitHub PAT + Discord bot token
-./scripts/setup-secrets.sh                    # Second run stores values
-```
+External tokens (GitHub PAT, Discord bot token) are stored in OpenBao via `manage-secrets.yml` with `type: user` secret definitions — never auto-generated. GitHub PAT must be fine-grained, scoped to target repos only. Discord bot token with `Send Messages` + `Read Message History` permissions.
 
 #### 4. Validate
 
-```bash
-./scripts/validate.sh
-```
+| Step | Validation | Security Check |
+|------|-----------|----------------|
+| Proxmox IP | `curl -sk https://{{ proxmox_host }}:8006/api2/json/version` → 200 | API token scoped to VM management only |
+| API tokens | Each `bao kv get secret/services/<svc>` returns non-placeholder values | Tokens created programmatically, no manual UI login |
+| External creds | `secret/services/github:pat` and `secret/services/discord:bot_token` are set | GitHub PAT fine-grained, Discord bot scoped to target guild |
+| NemoClaw config | `agent-cloud.yaml` has real service endpoints, no placeholders | Network policy restricts to documented endpoints only |
+| Connectivity | NemoClaw reads from all 6 services without errors | All credentials from OpenBao, via composable pattern |
 
-**Target:** 15 PASS / 0 FAIL / 0 WARN. NemoClaw CLI check may WARN if not deployed on this machine.
-
-#### 5. Migrate NemoClaw Config
-
-```bash
-cp nemoclaw/sandboxes.json ../nemoclaw-deploy/config/sandboxes.json
-cp nemoclaw/agent-cloud.yaml ../nemoclaw-deploy/config/presets/agent-cloud.yaml
-cd ../nemoclaw-deploy && ./deploy.sh --local
-```
-
-#### 6. NemoClaw Connectivity Smoke Test
+#### 5. NemoClaw Connectivity Smoke Test
 
 One read operation per service after redeployment:
 
@@ -242,27 +488,22 @@ One read operation per service after redeployment:
 | n8n | `GET /api/v1/workflows` | HTTP 200, workflow list |
 | Semaphore | `GET /api/projects` | HTTP 200, project list |
 
-### Quick Health Check (Current State)
-
-Run these anytime to verify infrastructure health without credentials:
+### Quick Health Check
 
 ```bash
 podman ps --format "{{.Names}}\t{{.Status}}" | grep ac-
-./scripts/unseal.sh                                          # if OpenBao was restarted
 curl -s http://localhost:8181/api/v1/health                  # NocoDB
 curl -s http://localhost:5678/healthz                        # n8n
-curl -s http://localhost:3100/api/ping                       # Semaphore (3100 in local dev; 3000 in production)
-./scripts/validate.sh
+curl -s http://localhost:3000/api/ping                       # Semaphore (3100 in local dev)
 
-# OpenBao policy and AppRole verification (requires root token or privileged access)
-ROOT_TOKEN=$(jq -r '.root_token' secrets/init.json)
-podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao policy list
-podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao read auth/approle/role/nemoclaw
+# OpenBao policy and AppRole verification (requires privileged access)
+podman exec ac-openbao bao policy list
+podman exec ac-openbao bao read auth/approle/role/nemoclaw
 
 # Enumerate all secrets (check for placeholders vs real values)
 for svc in nocodb github discord proxmox n8n semaphore; do
   echo "--- $svc ---"
-  podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao kv get secret/services/$svc
+  podman exec ac-openbao bao kv get secret/services/$svc
 done
 ```
 
@@ -270,169 +511,264 @@ done
 
 ## Phase 0.5: Per-VM Deployment & Infrastructure Automation
 
-**Status:** DONE — OpenBao VM (210) provisioned on alphacentauri, OpenBao v2.5.2 deployed via Semaphore. All deployment code consolidated into the **agent-cloud monorepo** (including openbao, previously in a separate private repo). Only two repos: agent-cloud (public) + site-config (private). `infra-automation` and `openbao` repos deprecated.
+**Status:** COMPLETE — OpenBao VM (210) provisioned on alphacentauri, OpenBao v2.5.2 deployed via Semaphore. All deployment code consolidated into the **agent-cloud monorepo**. Only two repos: agent-cloud (public) + site-config (private).
 
-**Goal:** Split the monolithic compose stack into per-VM deployments, provision VMs via Proxmox API, and wire up Semaphore for ongoing configuration management. When complete, each service runs on its own VM with programmatic credential bootstrap — no manual UI steps except for GitHub PAT and Discord bot token.
-
-> **Legacy phase.** Phase 0.5 established per-VM deployment with monolithic deploy.sh scripts that handled the full lifecycle (secret generation, container operations, OpenBao token storage). The deploy.sh responsibilities and secret management patterns described here have since been decomposed per [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md): Ansible now owns secret lifecycle, deploy.sh is pure container operations, and the source/runtime directory split replaces `secrets/` directories. The infrastructure work (compose files, Proxmox provisioning, Semaphore playbooks) remains valid.
-
-**Historical note:** Per-VM deployment was originally designed in a separate SYSTEM-DESIGN-VM-DEPLOYMENT.md document. That document has been deleted; all relevant content has been absorbed into this plan.
+**Goal:** Split the monolithic compose stack into per-VM deployments, provision VMs via Proxmox API, and wire up Semaphore for ongoing configuration management. Each service runs on its own VM with composable deployment — Ansible manages secrets, deploy.sh handles containers, post-deploy.sh handles application bootstrap.
 
 ### What Was Built
 
-- **Per-service compose files** — `vms/{openbao,nocodb,n8n,semaphore}/compose.yml` extracted from the monolithic compose
-- **Shared libraries** — `lib/common.sh` (logging, secrets, runtime detection, compose wrapper, health waiters, env generators) and `lib/bao-client.sh` (HTTP-only OpenBao client with AppRole auth, KV v2 operations)
-- **Deploy scripts** — `vms/{openbao,nocodb,n8n,semaphore}/deploy.sh` with programmatic API key bootstrap following the 5-step pattern (generate → start → bootstrap → store in OpenBao → validate)
-- **Delegation wrappers** — `vms/nemoclaw/deploy.sh` and `vms/netbox/deploy.sh` delegate to their respective repos
-- **Orchestrator** — `orchestrate.sh` deploys all services in dependency order with `--skip`, `--only`, `--dry-run` options
-- **Per-service AppRole policies** — `vms/openbao/config/policies/{nocodb,n8n,semaphore}-write.hcl` (least-privilege, write-scoped to own path only)
-- **OpenBao AppRole setup** — `vms/openbao/deploy.sh` creates per-service roles (nemoclaw, nocodb, n8n, semaphore) with their respective policies
-- **Semaphore orchestration** — `semaphore/setup-project.sh` (programmatic project configuration via API), `semaphore/inventory/{local,production}.yml`, `semaphore/playbooks/{deploy-all,deploy-service,update-service,validate-all}.yml`
+- **Per-service compose files** — `platform/services/{openbao,nocodb,n8n,semaphore}/deployment/compose.yml`
+- **Shared libraries** — `platform/lib/common.sh` (logging, compose wrapper, health checks, env generators) and `platform/lib/bao-client.sh` (HTTP-only OpenBao client for edge cases)
+- **Deploy scripts** — `platform/services/{openbao,nocodb,n8n,semaphore}/deployment/deploy.sh` (container lifecycle only). NetBox also has `post-deploy.sh` for application bootstrap (migrations, superuser, OAuth2).
+- **Composable task library** — `tasks/manage-secrets.yml`, `tasks/manage-approle.yml`, `tasks/manage-diode-credentials.yml`, `tasks/deploy-orb-agent.yml`, `tasks/clean-service.yml`
+- **Per-service AppRole policies** — HCL files in `platform/services/openbao/deployment/config/policies/`. AppRoles provisioned via `manage-approle.yml` with TTL enforcement (90 days / 25 uses).
+- **Semaphore orchestration** — Config-as-code via `platform/semaphore/templates.yml` + `setup-templates.yml`. 25+ task templates.
+- **Proxmox VM provisioning** — `proxmox-validate.yml`, `provision-template.yml`, `provision-vm.yml` with cloud-init
+- **Jinja2 env templates** — `platform/services/<name>/deployment/templates/*.j2` rendered by `manage-secrets.yml` into `~/services/<name>/`
 
 ### Phase 0.5 — Validation Criteria
 
 | Check | Pass Condition |
 |-------|---------------|
-| Each deploy.sh completes 5 steps | No errors, health check passes at end |
-| Deploy idempotency | Running deploy.sh twice produces no errors |
+| Composable deploy completes | `deploy-<service>.yml` runs all 4 phases without errors |
+| Deploy idempotency | Running deploy playbook twice produces no changes |
 | API tokens in OpenBao | `bao kv get secret/services/<svc>` returns non-placeholder values |
-| AppRole auth per service | Each service authenticates with its own role-id/secret-id |
+| AppRole auth per service | Each service has its own AppRole via `manage-approle.yml` |
 | Health endpoints respond | Each service returns HTTP 200 within 30s of compose up |
 | Token round-trip | Fetch token from OpenBao, call service API, get HTTP 200 |
-| Semaphore task templates | 25+ templates created via setup-project.sh API |
+| Semaphore task templates | 25+ templates applied via `setup-templates.yml` |
+| No `secrets/` directory | `ls ~/services/<name>/secrets/` fails or is empty |
+| Env files in runtime dir | `ls ~/services/<name>/.env ~/services/<name>/env/*.env` succeeds |
 
-**Smoke tests per step:**
-- Step 3 (deploy.sh): Run `deploy.sh` on each VM, verify all 5 steps complete
-- Step 6 (orchestrate.sh): `--dry-run` shows correct order, `--only openbao` deploys only OpenBao
-- Step 7 (Semaphore): Task template list via API matches expected 25+ templates
+**Smoke tests:**
+- Run `deploy-<service>.yml` via Semaphore → verify 4-phase completion
+- Run `validate-all.yml` → all services HEALTHY
+- Run `check-secrets.yml` → all secrets present, no placeholders
 
-**Architectural notes:** OpenBao on separate VM for independent failure domain. HTTP-only bao-client.sh — no binary dependency. Bootstrap order: OpenBao → services (parallel) → NemoClaw (last).
+**Security:** Per-service AppRole policies enforce least privilege. Env files mode 0600 in runtime dir. No credential files on VMs. Ansible `no_log: true` on secret-handling tasks.
 
-**Security:** Credentials via stdin not CLI args. SQL injection protection in n8n DB fallback. Per-service AppRole policies enforce least privilege. Cookie jar cleanup on all exit paths.
-
-### Directory Structure (Legacy — migrated to `platform/services/<name>/deployment/`)
-
-> **Note:** This structure reflects the Phase 0.5 layout under `deployments/agent-cloud/`. All deployment code has since been migrated to the monorepo pattern at `platform/services/<name>/deployment/`. The directory listing below is preserved for historical reference only — see the repo CLAUDE.md "Repository Structure" section for the current layout.
+### Current Repository Structure
 
 ```
-deployments/agent-cloud/
-├── orchestrate.sh                       # ✅ Full-stack deploy in dependency order
-├── lib/
-│   ├── common.sh                        # ✅ Shared library (logging, secrets, compose, health, env gen)
-│   └── bao-client.sh                    # ✅ HTTP-only OpenBao client (curl+jq)
-├── vms/
-│   ├── openbao/
-│   │   ├── compose.yml                  # ✅ OpenBao standalone
-│   │   ├── deploy.sh                    # ✅ Init, unseal, engines, policies, per-service AppRole, seeds
-│   │   └── config/
-│   │       ├── openbao.hcl              # ✅ Server config
-│   │       └── policies/
-│   │           ├── nemoclaw-read.hcl    # ✅ Read-only all service secrets
-│   │           ├── nemoclaw-rotate.hcl  # ✅ Dynamic DB credentials
-│   │           ├── nocodb-write.hcl     # ✅ NocoDB VM: write own path
-│   │           ├── n8n-write.hcl        # ✅ n8n VM: write own path
-│   │           └── semaphore-write.hcl  # ✅ Semaphore VM: write own path
-│   ├── nocodb/
-│   │   ├── compose.yml                  # ✅ NocoDB + Postgres
-│   │   └── deploy.sh                    # ✅ Signup/signin → API token → OpenBao
-│   ├── n8n/
-│   │   ├── compose.yml                  # ✅ n8n + Worker + Postgres + Redis
-│   │   ├── deploy.sh                    # ✅ Owner setup → login → API key (DB fallback) → OpenBao
-│   │   └── config/n8n-init-data.sh      # ✅ Creates n8n_user in Postgres
-│   ├── semaphore/
-│   │   ├── compose.yml                  # ✅ Semaphore + Postgres
-│   │   └── deploy.sh                    # ✅ Login → API token → OpenBao
+agent-cloud/                              # PUBLIC monorepo — the platform
+├── CLAUDE.md                             # AI agent guidance (single source of truth)
+├── README.md                             # Project overview + quick start
+├── CONTRIBUTING.md                       # Contribution guidelines
+│
+├── platform/                             # Infrastructure + service deployments
+│   ├── services/                         # Per-service: deployment/ + context/
+│   │   ├── openbao/
+│   │   │   └── deployment/
+│   │   │       ├── compose.yml           # OpenBao standalone
+│   │   │       ├── deploy.sh             # Container lifecycle only
+│   │   │       ├── README.md
+│   │   │       ├── config/
+│   │   │       │   ├── openbao.hcl       # Server config
+│   │   │       │   └── policies/         # HCL policies (nemoclaw-read, semaphore-read,
+│   │   │       │                         #   nemoclaw-rotate, nocodb-write, n8n-write,
+│   │   │       │                         #   semaphore-write, orb-agent)
+│   │   │       └── secrets/              # .gitignored (bootstrap only)
+│   │   ├── netbox/
+│   │   │   └── deployment/
+│   │   │       ├── deploy.sh             # Container ops (clone upstream, build, start)
+│   │   │       ├── post-deploy.sh        # App bootstrap (migrate, superuser, OAuth2, orb-agent)
+│   │   │       ├── docker-compose.yml    # NetBox + Diode pipeline
+│   │   │       ├── Dockerfile-Plugins    # Custom NetBox image with plugins
+│   │   │       ├── templates/            # Jinja2 env templates (*.env.j2, hydra.yaml.j2, agent.yaml.j2)
+│   │   │       ├── discovery/            # Diode pipeline config (agent.yaml, hydra.yaml, SNMP)
+│   │   │       ├── lib/                  # Service-specific libs (common.sh, generate-secrets.sh, pfsense-sync.py)
+│   │   │       ├── env/                  # Runtime env files (.gitignored, templated by Ansible)
+│   │   │       ├── workers/              # Discovery workers (pfsense_sync)
+│   │   │       ├── netbox-docker/        # Upstream netbox-docker clone
+│   │   │       └── CLAUDE.md             # NetBox-specific agent guidance
+│   │   ├── nocodb/
+│   │   │   └── deployment/
+│   │   │       ├── compose.yml           # NocoDB + Postgres
+│   │   │       └── deploy.sh             # Container lifecycle
+│   │   ├── n8n/
+│   │   │   └── deployment/
+│   │   │       ├── compose.yml           # n8n + Worker + Postgres + Redis
+│   │   │       ├── deploy.sh             # Container lifecycle
+│   │   │       └── config/n8n-init-data.sh
+│   │   ├── semaphore/
+│   │   │   └── deployment/
+│   │   │       ├── compose.yml           # Semaphore + Postgres
+│   │   │       ├── deploy.sh             # Container lifecycle
+│   │   │       └── runner-entrypoint.sh  # Semaphore runner config
+│   │   ├── caddy/
+│   │   │   ├── deployment/               # Caddyfile, compose.yml, start-caddy.sh
+│   │   │   └── context/                  # Caddy usage docs
+│   │   ├── inference/                    # vLLM + llama.cpp (placeholder — Phase 3)
+│   │   ├── a2a-registry/                 # A2A Agent Card registry (placeholder — Phase 3)
+│   │   ├── o11y/                         # Observability stack (placeholder — pending absorption)
+│   │   ├── nextcloud/                    # Cloud storage (context/ only)
+│   │   ├── wikijs/                       # Knowledge base (context/ only)
+│   │   └── postiz/                       # Content management (compose.yml)
+│   │
+│   ├── playbooks/                        # Ansible orchestration
+│   │   ├── deploy-{netbox,openbao,nocodb,n8n,semaphore,nemoclaw,orb-agent}.yml
+│   │   ├── deploy-all.yml                # Full deploy in dependency order
+│   │   ├── deploy-service.yml            # Single service (-e target_service=<name>)
+│   │   ├── update-{netbox,nocodb,n8n,semaphore}-service.yml
+│   │   ├── clean-deploy-netbox.yml       # Destructive: revoke creds + wipe + redeploy
+│   │   ├── distribute-ssh-keys.yml       # Deploy keys from OpenBao
+│   │   ├── harden-ssh.yml                # NOPASSWD sudo + sshd lockdown
+│   │   ├── install-docker.yml            # Docker CE from official repo
+│   │   ├── validate-all.yml              # Health check all services
+│   │   ├── validate-secrets.yml          # Test credentials against live services
+│   │   ├── check-secrets.yml             # Read-only secret inventory
+│   │   ├── sync-secrets-to-openbao.yml   # Push VM secrets → OpenBao
+│   │   ├── sync-netbox-secrets.yml       # NetBox-specific secret sync
+│   │   ├── apply-openbao-policies.yml    # Apply all HCL policies
+│   │   ├── apply-policy-{nemoclaw,orb-agent,semaphore}.yml
+│   │   ├── provision-vm.yml              # Clone template → configure → start VM
+│   │   ├── provision-template.yml        # Create Ubuntu 24.04 template from ISO
+│   │   ├── proxmox-validate.yml          # Pre/post cluster validation (8 checks)
+│   │   ├── tasks/                        # Composable task library
+│   │   │   ├── manage-secrets.yml        # Fetch/generate secrets, template env files
+│   │   │   ├── manage-approle.yml        # Self-service AppRole + policy provisioning
+│   │   │   ├── manage-diode-credentials.yml  # Diode orb-agent credentials
+│   │   │   ├── deploy-orb-agent.yml      # Start orb-agent with vault-integrated config
+│   │   │   ├── clean-service.yml         # Destroy containers, volumes, runtime dir
+│   │   │   ├── clone-and-deploy.yml      # Legacy: clone monorepo + run deploy.sh
+│   │   │   └── apply-openbao-policy.yml  # Apply single HCL policy
+│   │   ├── collections/requirements.yml  # community.hashi_vault, ansible.posix
+│   │   └── README.md                     # Playbook conventions and reference
+│   │
+│   ├── lib/                              # Shared bash libraries
+│   │   ├── common.sh                     # Logging, compose wrapper, health checks, env gen
+│   │   └── bao-client.sh                 # HTTP-only OpenBao client (curl+jq) — edge cases only
+│   │
+│   ├── inventory/                        # Inventory templates (no real IPs — those go in site-config)
+│   │   ├── local.yml                     # All services on localhost
+│   │   └── production.yml                # Per-VM inventory (placeholder IPs)
+│   │
+│   ├── semaphore/                        # Semaphore config-as-code
+│   │   ├── templates.yml                 # Declarative task template definitions (25+)
+│   │   └── setup-templates.yml           # Ansible playbook to apply templates via API
+│   │
+│   ├── hypervisor/proxmox/               # VM provisioning
+│   │   └── cloud-init/                   # autoinstall-user-data.yml, meta-data, build-seed-iso.sh
+│   │
+│   ├── scripts/
+│   │   └── setup-project.sh              # Legacy: programmatic Semaphore project config
+│   │
+│   └── k8s/                              # Kubernetes manifests (placeholder — Phase 3)
+│       ├── base/                          # Generated by kompose from compose files
+│       ├── overlays/{dev,staging,prod}/   # Kustomize overlays per environment/site
+│       └── bootstrap/                    # k0s/kubeadm cluster setup
+│
+├── agents/                               # Per-agent: deployment/ + context/
 │   ├── nemoclaw/
-│   │   └── deploy.sh                    # ✅ Delegates to nemoclaw-deploy repo
-│   └── netbox/
-│       └── deploy.sh                    # ✅ Delegates to netbox repo
-├── semaphore/
-│   ├── setup-project.sh                 # ✅ Programmatic Semaphore project config via API
-│   ├── inventory/
-│   │   ├── local.yml                    # ✅ Local dev: all on localhost
-│   │   └── production.yml               # ✅ Production: per-VM inventory
-│   └── playbooks/
-│       ├── deploy-all.yml               # ✅ Deploy all in dependency order (4 phases)
-│       ├── deploy-service.yml           # ✅ Single service (-e target_service=<name>)
-│       ├── update-service.yml           # ✅ Pull latest + restart + validate
-│       ├── validate-all.yml             # ✅ Health check all services
-│       ├── proxmox-validate.yml         # ✅ Pre/post cluster validation (8 checks)
-│       ├── provision-template.yml       # ✅ Create Ubuntu 24.04 template from ISO
-│       └── provision-vm.yml             # ✅ Clone template → configure → start VM
-├── proxmox/                             # ✅ Proxmox API + cloud-init + VM specs
-│   ├── lib/pve-api.sh                  # ✅ REST API wrapper (curl+jq, 250+ lines)
-│   ├── pre-validate.sh                 # ✅ CLI pre-validation (8 checks)
-│   ├── vm-specs.yml                    # ✅ VM resource specs for all 6 services
-│   ├── cloud-init/
-│   │   ├── autoinstall-user-data.yml   # ✅ Ubuntu autoinstall for template
-│   │   ├── meta-data                   # ✅ NoCloud meta-data
-│   │   └── build-seed-iso.sh          # ✅ Builds cidata ISO
-│   └── secrets/                         # gitignored (SSH keys, API token)
-├── compose.yml                          # Legacy monolithic compose (Phase 0)
-├── config/                              # Legacy monolithic config
-└── scripts/                             # Legacy monolithic scripts
+│   │   ├── deployment/                   # deploy.sh, .env.example, config/presets/, validate.sh
+│   │   │   └── CLAUDE.md                 # NemoClaw-specific agent guidance
+│   │   └── context/                      # skills/, prompts/, use-cases/, architecture/
+│   ├── netclaw/
+│   │   ├── deployment/config/            # Placeholder — testbed.yaml, network-policy.yaml
+│   │   └── context/                      # skills/, prompts/, use-cases/, architecture/
+│   ├── cowork/
+│   │   └── context/                      # Claude Cowork agent context
+│   └── workflows/                        # n8n workflow exports and templates
+│
+├── plan/                                 # Architecture and implementation plans
+│   ├── architecture/                     # Architectural reference docs
+│   │   ├── AUTOMATION-COMPOSABILITY.md   # Composable deployment patterns (authoritative)
+│   │   └── CREDENTIAL-LIFECYCLE-PLAN.md  # Rotation, revocation, audit patterns
+│   └── development/                      # Implementation and feature plans
+│       ├── IMPLEMENTATION_PLAN.md        # This document — comprehensive implementation plan
+│       ├── UNIFICATION-PLAN.md           # Platform vision (to be deprecated)
+│       ├── NETCLAW-INTEGRATION-PLAN.md   # NetClaw agent architecture
+│       ├── NETBOX-DISCOVERY-EXPANSION.md # NetBox discovery expansion
+│       ├── SPARSE-CHECKOUT-MIGRATION.md  # Sparse checkout + runtime dir migration
+│       ├── OPA-INTEGRATION-PLAN.md       # OPA policy engine integration
+│       └── WISAI-DEPLOYMENT-PLAN.md      # WisAI deployment plan
+│
+├── data/                                 # Data warehouse, analytics (placeholder — Phase 5)
+│
+├── collections/
+│   └── requirements.yml                  # Ansible collection dependencies
+│
+└── roles/
+    └── requirements.yml                  # Ansible role dependencies
+```
+
+**Runtime directory structure on VMs** (not in the git clone — created by Ansible):
+
+```
+~/agent-cloud/                            # Sparse git checkout (READ-ONLY source code)
+~/services/<name>/                        # Runtime working directory (GENERATED, mutable)
+    .env                                  # Templated by Ansible from OpenBao secrets (mode 0600)
+    env/*.env                             # Per-component env files (mode 0600)
+    docker-compose.yml                    # Symlink → clone's compose file
+    lib/                                  # Symlink → clone's platform/lib/
+    discovery/agent.yaml                  # Templated by Ansible with vault creds (NetBox)
 ```
 
 ### Implementation Progress
 
 ```
-Step 1: Split compose.yml into per-service compose files          ✅ DONE
-  │     vms/{openbao,nocodb,n8n,semaphore}/compose.yml
-  │     YAML validated, services parsed correctly
+Step 1: Per-service compose files                                 ✅ DONE
+  │     platform/services/{openbao,nocodb,n8n,semaphore}/deployment/compose.yml
   │
-Step 2: Write lib/common.sh + lib/bao-client.sh                  ✅ DONE
-  │     Source guards, TOCTOU-safe secrets, runtime detection
-  │     All bash syntax validated
+Step 2: Shared libraries                                          ✅ DONE
+  │     platform/lib/common.sh + platform/lib/bao-client.sh
   │
-Step 3: Write deploy.sh for each service                          ✅ DONE
-  │     5-step pattern: generate → start → bootstrap → OpenBao → validate
-  │     Security: stdin for creds, hex-validated DB fallback, EXIT traps
-  │     Per-service AppRole roles created by OpenBao deploy.sh
+Step 3: Deploy scripts (container ops only)                       ✅ DONE
+  │     platform/services/{openbao,nocodb,n8n,semaphore}/deployment/deploy.sh
+  │     NetBox: deploy.sh + post-deploy.sh (split pattern)
   │
-Step 4: Provision OpenBao VM via Proxmox API                      ✅ DONE (2026-03-28)
-  │     pve-api.sh library, pre-validate.sh, vm-specs.yml
+Step 4: Composable task library                                   ✅ DONE
+  │     tasks/manage-secrets.yml, manage-approle.yml,
+  │     manage-diode-credentials.yml, deploy-orb-agent.yml, clean-service.yml
+  │
+Step 5: Provision OpenBao VM via Proxmox API                      ✅ DONE (2026-03-28)
   │     Ansible playbooks: proxmox-validate, provision-template, provision-vm
   │     Validated against live PVE 9.0.3 cluster (8 PASS / 0 FAIL)
   │
-Step 5: Deploy services to existing VMs                           ⬜ PENDING
-  │     Requires VM access; deploy scripts ready to SCP+run
+Step 6: Deploy services to VMs via Semaphore                      ⬜ PENDING
+  │     NocoDB and n8n need composable deploy playbooks
+  │     (NetBox already deployed via composable pattern)
   │
-Step 6: Write orchestrate.sh                                      ✅ DONE
-  │     Dependency-ordered with --skip, --only, --dry-run
-  │     Stops on OpenBao failure, continues on other failures
+Step 7: Jinja2 env templates for NocoDB + n8n                     ⬜ PENDING
+  │     Create templates/*.j2, define _secret_definitions + _env_templates
+  │     Follow NetBox template pattern
   │
-Step 7: Wire Semaphore playbooks for ongoing management           ✅ DONE
-        setup-project.sh, 4 playbooks, local + production inventory
-        Bootstrap: deploy Semaphore → setup-project.sh → use templates
+Step 8: deploy.sh + post-deploy.sh split for NocoDB + n8n         ⬜ PENDING
+  │     Split current monolithic deploy.sh into container ops + app bootstrap
+  │
+Step 9: Semaphore config-as-code                                  ✅ DONE
+  │     platform/semaphore/templates.yml + setup-templates.yml
+  │     25+ task templates applied via Ansible playbook
+  │
+Step 10: Sparse checkout + runtime dir tasks                      ⬜ PENDING
+         Create sparse-checkout.yml, setup-runtime-dir.yml, run-deploy.yml,
+         verify-health.yml composable tasks
 ```
 
 ### Per-Service deploy.sh Pattern
 
-> **Legacy pattern (Phase 0.5).** The 5-step monolithic pattern below has been superseded by the composable architecture. See "Composable Automation Architecture" section below and [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md) for the current pattern where Ansible owns secrets and deploy.sh is pure container operations.
+Every service's deployment follows the **composable 4-phase playbook pattern** (see Composable Automation Architecture section):
 
-**Original 5-step pattern (historical):**
+| Phase | Task | Responsibility |
+|-------|------|---------------|
+| **Phase 1** | `sparse-checkout.yml` | Clone `~/agent-cloud/` with service-specific paths |
+| **Phase 2** | `manage-secrets.yml` + `setup-runtime-dir.yml` | Fetch/generate secrets from OpenBao, template env files to `~/services/<name>/`, create symlinks |
+| **Phase 3** | `run-deploy.yml` | Execute deploy.sh (container ops) + post-deploy.sh (app bootstrap) from runtime dir |
+| **Phase 4** | `verify-health.yml` | HTTP health check + sync runtime creds to OpenBao |
 
-1. ~~**Generate secrets**~~ — now handled by Ansible `manage-secrets.yml`
-2. **Start services** — `compose up -d`; wait for health endpoint *(still in deploy.sh)*
-3. **Bootstrap credentials** — create admin user + API token via REST API *(now split into post-deploy.sh)*
-4. ~~**Store in OpenBao**~~ — now handled by Ansible Phase 4 (sync runtime creds to OpenBao)
-5. ~~**Validate**~~ — now handled by Ansible `verify-health.yml`
+**deploy.sh responsibilities:** Verify env files exist (fail if Ansible didn't run), clone upstream dependencies, pull/build images, compose up -d, wait for health. **No** secret generation, **no** OpenBao interaction.
+
+**post-deploy.sh responsibilities:** DB migrations, create admin user, register OAuth2 clients, create API tokens, write runtime creds to `.env`. Independently retryable from deploy.sh.
 
 ### OpenBao Client Library (bao-client.sh)
 
-> **Legacy (Phase 0.5).** In the current composable architecture, deploy.sh does not authenticate to OpenBao or use bao-client.sh. Ansible manages all OpenBao interactions natively via `community.hashi_vault`. The bao-client.sh library remains in `platform/lib/` for edge cases but is not used in the deploy path.
+The `platform/lib/bao-client.sh` library wraps the OpenBao REST API using curl + jq (no binary required). It is **not used in the deploy path** — Ansible `community.hashi_vault` handles all OpenBao interactions natively. The library is available for edge cases and manual troubleshooting.
 
-The library wraps the OpenBao REST API using curl + jq (no binary required):
+Functions: `bao_authenticate()`, `bao_authenticate_root()`, `bao_kv_get()`, `bao_kv_get_field()`, `bao_kv_put()`, `bao_kv_patch()`, `bao_health()`, `bao_wait_ready()`.
 
-- `bao_authenticate()` — AppRole login
-- `bao_authenticate_root()` — Root token auth (initial bootstrap only)
-- `bao_kv_get <path>` / `bao_kv_get_field <path> <field>` — read secrets
-- `bao_kv_put <path> key=value...` / `bao_kv_patch <path> key=value...` — write/update secrets
-- `bao_health()` / `bao_wait_ready()` — health checking
+### AppRole Identities
 
-### AppRole Identities (Implemented)
-
-> **Updated:** AppRole creation has been decoupled from OpenBao's deploy.sh. In the current composable architecture, any service playbook provisions its own AppRole via `tasks/manage-approle.yml` with enforced TTLs. See [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md) "AppRole Management (Composable)" section.
+Any service playbook provisions its own AppRole via `tasks/manage-approle.yml`. See [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md) "AppRole Management" section.
 
 | Role | Policy | Access | Provisioned By |
 |---|---|---|---|
@@ -442,31 +778,27 @@ The library wraps the OpenBao REST API using curl + jq (no binary required):
 | `semaphore` | `semaphore-write` | `secret/services/semaphore` (read/write) | `manage-approle.yml` |
 | `orb-agent` | `orb-agent-read` | `secret/services/netbox/orb_agent_*` (read) | `manage-approle.yml` |
 
-**TTL Enforcement:** All AppRoles created via `manage-approle.yml` enforce `secret_id_ttl: 2160h` (90 days) and `token_num_uses: 25` by default. Semaphore's orchestrator AppRole is the documented exception (unlimited uses due to cross-service orchestration role).
+**TTL Enforcement:** `secret_id_ttl: 2160h` (90 days), `token_num_uses: 25` by default. Semaphore's orchestrator AppRole is the exception (unlimited uses).
 
-**Credential Flow (Composable Pattern):**
-
-In the composable architecture, there are no AppRole credential files on service VMs. The flow is:
+**Credential Flow:**
 
 1. **Semaphore environment JSON** holds orchestrator AppRole `bao_role_id` + `bao_secret_id` + `openbao_addr`
 2. **Ansible `community.hashi_vault`** authenticates to OpenBao at playbook runtime (in memory)
 3. **`manage-secrets.yml`** fetches/generates secrets and templates env files to `~/services/<name>/`
 4. **deploy.sh** reads only from env files — never authenticates to OpenBao
 5. **post-deploy.sh** creates runtime credentials (e.g., OAuth2 clients), writes to `.env`
-6. **Ansible Phase 4** syncs any runtime-created credentials back to OpenBao
+6. **Ansible Phase 4** syncs runtime-created credentials back to OpenBao
 
-Per-service AppRoles are provisioned via `manage-approle.yml` and stored in OpenBao at `secret/services/approles/<name>`. No `role-id.txt`/`secret-id.txt` files on VMs.
+Per-service AppRoles stored in OpenBao at `secret/services/approles/<name>`. No credential files on VMs.
 
-### Semaphore Orchestration (Implemented)
+### Semaphore Orchestration
 
-Semaphore is the deployment orchestrator for production. Bootstrap sequence:
+Semaphore is the deployment orchestrator for production:
 1. `deploy-semaphore.yml` — brings up Semaphore + creates API token (chicken-and-egg)
 2. `platform/semaphore/setup-templates.yml` — applies task templates from `platform/semaphore/templates.yml` (config-as-code, 25+ templates)
 3. Use Semaphore UI or API to run templates
 
-Task templates are managed as code in `platform/semaphore/templates.yml` — not through ad-hoc API calls. Adding a new template: add entry to `templates.yml`, run `setup-templates.yml`, verify in UI.
-
-Task templates include: Deploy All, Validate All, Deploy/Update/Clean Deploy per service, Validate Proxmox Cluster, Create VM Template, Provision per service, Distribute SSH Keys, Harden SSH, Rotate Diode Creds, Audit Credentials.
+Task templates managed as code — not ad-hoc API calls. Templates include: Deploy All, Validate All, Deploy/Update/Clean Deploy per service, Validate Proxmox, Provision VMs, Distribute SSH Keys, Harden SSH, Rotate Diode Creds, Audit Credentials.
 
 ### Proxmox VM Provisioning (Implemented)
 
@@ -483,26 +815,25 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 
 ### Phase 0.5 Validation Checklist
 
-- [x] Each service has its own `vms/<service>/compose.yml` and `deploy.sh`
-- [x] Per-service AppRole identities with least-privilege write policies
-- [x] `orchestrate.sh` deploys the full stack in one command
-- [x] Semaphore has playbooks for deploying/updating/validating each service
-- [x] Semaphore project setup is programmatic (`setup-project.sh`)
-- [x] Deploy scripts use stdin for credential passing (no process list exposure)
+**Completed:**
+- [x] Per-service compose files at `platform/services/<name>/deployment/compose.yml`
+- [x] Per-service AppRole identities via `manage-approle.yml` with TTL enforcement
+- [x] Semaphore playbooks for deploying/updating/validating each service
+- [x] Semaphore config-as-code: 25+ templates via `setup-templates.yml`
 - [x] n8n DB fallback has SQL injection protection (hex validation)
-- [x] Local deployment tested: all 4 services deploy, bootstrap, store tokens, validate (2026-03-28)
+- [x] Local deployment tested: all 4 core services deploy and validate (2026-03-28)
 - [x] Idempotency verified: second run is no-op with all services healthy
-- [x] Ansible playbooks validated: `validate-all.yml` reports all services HEALTHY
-- [x] Semaphore project setup: 25+ task templates created via API
+- [x] Ansible `validate-all.yml` reports all services HEALTHY
 - [x] NemoClaw network policy updated: OpenBao = {{ openbao_host }}
-- [x] Proxmox API wrapper written and validated against live PVE 9.0.3 cluster (2026-03-28)
-- [x] VM template provisioning playbook with autoinstall cloud-init (2026-03-28)
-- [x] VM cloning playbook with cloud-init (static IP, SSH key, DNS) (2026-03-28)
-- [x] Pre/post validation playbook (8 checks) integrated into provisioning workflow (2026-03-28)
-- [x] Semaphore task templates for all provisioning operations (2026-03-28)
-- [ ] OpenBao runs on its own VM at {{ openbao_host }} (template + clone ready, needs execution)
-- [ ] NocoDB, n8n, Semaphore each run on their assigned VMs (playbooks ready)
-- [ ] `validate.sh` updated for multi-VM topology (checks remote health endpoints)
+- [x] Proxmox API validated against live PVE 9.0.3 cluster (2026-03-28)
+- [x] VM template + cloning playbooks with cloud-init (2026-03-28)
+
+**Pending:**
+- [ ] NocoDB deployed via composable pattern (Jinja2 templates, manage-secrets, deploy.sh + post-deploy.sh split)
+- [ ] n8n deployed via composable pattern
+- [ ] Sparse checkout + runtime dir tasks created (`sparse-checkout.yml`, `setup-runtime-dir.yml`, `run-deploy.yml`, `verify-health.yml`)
+- [ ] OpenBao runs on its own VM at {{ openbao_host }}
+- [ ] `validate-all.yml` checks remote health endpoints (multi-VM topology)
 
 ---
 
@@ -514,16 +845,16 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 
 ### Step 1: Monorepo Consolidation (DONE — 2026-03-30/04-01)
 
-Consolidated all deployment code into the **agent-cloud monorepo**. Deprecated `infra-automation` and `openbao` repos.
+Consolidated all deployment code into the **agent-cloud monorepo**. Only two repos remain: agent-cloud (public) + site-config (private).
 
 **Completed:**
 - [x] Migrate all playbooks to `platform/playbooks/` with shared task files
 - [x] Migrate openbao deployment into `platform/services/openbao/deployment/` (parameterized, secrets gitignored)
 - [x] Standardize inventory groups to `_svc` suffix (openbao_svc, nocodb_svc, etc.)
-- [x] Shared `tasks/clone-and-deploy.yml` for monorepo clone pattern
+- [x] Shared `tasks/clone-and-deploy.yml` for monorepo clone pattern (to be replaced by `sparse-checkout.yml`)
 - [x] HTTPS clone (public repo, no deploy key needed)
 - [x] Semaphore project reconfigured to point at agent-cloud monorepo
-- [x] 20 task templates configured with wrapper playbooks
+- [x] 25+ task templates configured via `setup-templates.yml`
 - [x] `collections/requirements.yml` for auto-installing hashi_vault + posix
 - [x] Remove all hardcoded usernames from public playbooks
 - [x] Remove all IPs from plan/ files (replaced with `{{ }}` placeholders)
@@ -578,7 +909,7 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 | All playbooks syntax check | `ansible-playbook --syntax-check` passes for every `.yml` |
 | Inventory groups resolve | `ansible-inventory --graph` shows `_svc` groups with correct hosts |
 | No secrets in public repo | `grep -r '192.168' platform/ plan/` returns only `{{ }}` placeholders |
-| Semaphore templates point at agent-cloud | All 20 templates use repo id for agent-cloud |
+| Semaphore templates point at agent-cloud | All 25+ templates use repo id for agent-cloud |
 | HTTPS clone works | Semaphore clones via `https://github.com/uhstray-io/agent-cloud.git` |
 
 **Smoke test:** Run "Validate All Services" in Semaphore — all VMs reachable, health checks pass.
@@ -614,48 +945,20 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 
 **Security:** deploy.sh runs as `{{ ansible_user }}` (not root). `become: false` on clone/deploy tasks prevents root-owned files. CONTAINER_ENGINE set per host in inventory.
 
-### Step 2 (Legacy): OpenBao as Semaphore Credential Manager
+### Step 5: OpenBao as Semaphore Credential Manager (DONE — 2026-03-30)
 
-Eliminate file-based secrets. Playbooks authenticate to OpenBao via AppRole at runtime and fetch credentials on demand.
+All playbooks authenticate to OpenBao via AppRole at runtime — no file-based secrets.
 
-**Architecture:**
-```
-Semaphore key store (AppRole role-id + secret-id only)
-    ↓ playbook starts
-community.hashi_vault lookup
-    ↓ AppRole auth
-OpenBao ({{ openbao_host }}:8200)
-    ↓ scoped token
-secret/services/proxmox → PVE API token
-secret/services/netbox → NetBox API token
-secret/services/* → all service credentials
-```
-
-**Playbook pattern:**
-```yaml
-vars:
-  _bao_url: "http://{{ openbao_host }}:8200"
-  _bao_role_id: "{{ lookup('env', 'SEMAPHORE_BAO_ROLE_ID') }}"
-  _bao_secret_id: "{{ lookup('env', 'SEMAPHORE_BAO_SECRET_ID') }}"
-  pve_token: "{{ lookup('community.hashi_vault.hashi_vault',
-    'secret/data/services/proxmox:api_token',
-    url=_bao_url, auth_method='approle',
-    role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-```
+**Architecture:** Semaphore environment JSON holds `bao_role_id` + `bao_secret_id` → playbook starts → `community.hashi_vault` lookup → AppRole auth → scoped token → fetch `secret/services/*`.
 
 **Checklist:**
-- [x] Verify `semaphore` AppRole exists in OpenBao (2026-03-30)
-- [x] Create `semaphore-read` policy granting read to `secret/services/*` (2026-03-30)
-- [x] Store Proxmox API token in OpenBao at `secret/services/proxmox` (2026-03-30)
-- [x] Store SSH public key in OpenBao at `secret/services/ssh` (2026-03-30)
-- [x] Store Semaphore VM credentials in OpenBao at `secret/services/semaphore-vm` (2026-03-30)
-- [x] Install `hvac` Python library in Semaphore container (required for vault lookup) (2026-03-30)
-- [x] `collections/requirements.yml` added to infra-automation for `community.hashi_vault` (2026-03-30)
-- [x] Store AppRole role-id + secret-id in Semaphore environment JSON (2026-03-30)
-- [x] Refactor `proxmox-validate.yml` to fetch PVE token + SSH key from OpenBao (2026-03-30)
-- [x] Refactor `provision-vm.yml` to fetch PVE token + SSH key from OpenBao (2026-03-30)
-- [x] Remove all `lookup('file', ...)` secret reads from infra-automation playbooks (2026-03-30)
-- [x] Test: `Validate Proxmox Cluster` via Semaphore with OpenBao-backed credentials — 9 PASS / 0 FAIL (2026-03-30)
+- [x] Semaphore AppRole with `semaphore-read` policy (2026-03-30)
+- [x] All service credentials stored in OpenBao (Proxmox, SSH, Semaphore-VM) (2026-03-30)
+- [x] `hvac` Python library in Semaphore container (2026-03-30)
+- [x] `collections/requirements.yml` with `community.hashi_vault` (2026-03-30)
+- [x] AppRole role-id + secret-id in Semaphore environment JSON (2026-03-30)
+- [x] All playbooks refactored: vault lookups replace `lookup('file', ...)` (2026-03-30)
+- [x] Validated: `Validate Proxmox Cluster` via Semaphore — 9 PASS / 0 FAIL (2026-03-30)
 - [ ] Refactor `deploy-service.yml` to fetch service-specific credentials from OpenBao
 
 ### Step 3: NetBox Dynamic Inventory via Diode
@@ -753,7 +1056,7 @@ When Phase 0.75 is complete:
 ## Composable Automation Architecture
 
 **Status:** IMPLEMENTED for NetBox. NocoDB and n8n rollout pending.
-**Full specification:** [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md)
+**Full specification:** [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md)
 
 This section summarizes the composable automation patterns that govern all service deployments going forward. Phase 0/0.5 established the initial infrastructure; this architecture decomposes the monolithic deploy.sh into reusable Ansible building blocks.
 
@@ -1141,21 +1444,125 @@ When Phase 1 is complete, all of the following should be true:
 
 ---
 
-## Phase 2: Claude Cowork Workflows
+## Phase 2: Claude Cowork Workflows + Platform Services Expansion
+
+**Goal:** Enable Claude Cowork as a productive agent, deploy remaining core services (NocoDB, n8n) via composable pattern, parameterize all compose files, and begin data infrastructure.
+
+### 2A. Claude Cowork Workflows
 
 - Browser-based research pulling data from NocoDB
 - Document generation from monitoring data and issue summaries
 - Visual verification of deployments (screenshot + compare)
 - Architecture decision records stored in the repo
+- NocoDB task creation for NemoClaw background execution
+
+### 2B. NocoDB + n8n Composable Deployment
+
+- Deploy NocoDB via composable pattern (sparse checkout + manage-secrets + deploy.sh + verify)
+- Deploy n8n via composable pattern
+- Create Jinja2 env templates (`_secret_definitions`, `_env_templates`) for each service
+- Validate: idempotent redeploy, secrets from OpenBao, no `secrets/` directory
+
+### 2C. Compose Parameterization Audit
+
+- Audit ALL compose files for hardcoded values (IPs, ports, passwords, versions)
+- Replace with `${VAR:-default}` syntax
+- Create `.env.example` for every service
+- Validate: `docker compose config` passes without errors for all services
+- Validate: fresh clone + site-config overlay → deploy succeeds
+
+### 2D. MinIO Promotion to Shared Service
+
+- Promote MinIO from o11y-only to shared platform service (`platform/services/minio/`)
+- Configure declarative bucket layout (wisbot-recordings, backups, data-exports, etc.)
+- Deploy via composable pattern with OpenBao-managed credentials
+
+**Validation:** All services deployed via composable pattern. No hardcoded values in any compose file. `.env.example` exists for every service. MinIO accepting S3 API calls.
 
 ---
 
-## Phase 3: Cross-Agent Coordination
+## Phase 3: Cross-Agent Coordination + K8s Foundation
 
-- NocoDB as shared task queue: Claude Cowork creates tasks, NemoClaw executes them
+**Goal:** Enable multi-agent task routing via NocoDB, deploy container registry and initial Kubernetes cluster, establish the dual-runtime deployment path.
+
+### 3A. Cross-Agent Coordination
+
+- NocoDB as shared task queue with `task_type` routing (`workflow:*` → NemoClaw, `network:*` → NetClaw)
 - Handoff workflows: NemoClaw gathers data → writes to NocoDB → Claude Cowork generates reports
-- Audit logging: all cross-agent actions recorded with provenance
+- Audit logging: all cross-agent actions recorded with provenance in `task_log`
 - Human-in-the-loop: Discord notifications when agent actions need approval
+- A2A registry service deployment (`platform/services/a2a-registry/`)
+- NATS deployment for event streaming and A2A message transport
+
+### 3B. Container Registry (Harbor)
+
+- Deploy Harbor on a Proxmox VM (compose-based)
+- Configure image push workflow: build → tag → push to Harbor
+- RBAC: push = CI only, pull = all nodes
+- Add Harbor to `platform/services/harbor/deployment/`
+- Semaphore templates for Harbor management
+
+### 3C. Kubernetes Foundation
+
+- Deploy k0s or k3s cluster (from `platform/k8s/bootstrap/`)
+- Run `kompose convert` on all compose files → `platform/k8s/base/`
+- Create Kustomize overlays for dev/staging/prod
+- Install ArgoCD, point at monorepo `platform/k8s/` path
+- Install ESO, configure OpenBao SecretStore
+- Install Kyverno, create admission policies (no `latest` tags, no privileged containers except agent sandboxes, resource limits required)
+- Deploy first service to k8s (Caddy or NocoDB) alongside compose deployment
+- Validate: same service running on both compose (VM) and k8s paths
+
+### 3D. Inference Backbone Deployment
+
+- Deploy vLLM on GPU VM with NVIDIA passthrough
+- Deploy llama.cpp for lightweight/CPU inference
+- Store inference endpoint URL in OpenBao (`secret/services/inference`)
+- Configure all agents to consume inference via OpenAI-compatible API
+- Semaphore templates: deploy vLLM, deploy llama.cpp, pull models
+
+**Validation:** Harbor accepting image pushes. k8s cluster running with ArgoCD syncing. ESO creating k8s Secrets from OpenBao. At least one service deployed to both runtimes. Inference backbone responding to OpenAI-compatible API calls.
+
+---
+
+## Phase 4: Identity + API Gateway + Alerting
+
+**Goal:** SSO across all services, API gateway for external access, alert routing, and GitHub Actions CI.
+
+1. Deploy Authentik as identity provider (SSO/OIDC)
+2. Configure OIDC for: Grafana, NocoDB, n8n, Semaphore, NetBox, Wiki.js, A2A registry
+3. Deploy Kong or APISIX as API gateway (replaces Caddy for API routing; Caddy remains for static sites/compose environments)
+4. Configure Alertmanager rules for critical service health
+5. Deploy ntfy for self-hosted push notifications
+6. Wire agent alerts through ntfy → Discord
+7. Set up GitHub Actions for code CI: WisBot .NET builds, container image builds → Harbor push
+8. Deploy Reliability Agent (HolmesGPT + Prometheus/Alertmanager MCP servers)
+9. Deploy Governance Agent (OPA/Kyverno enforcement + NeMo Guardrails)
+
+**Validation:** Single OIDC login grants access to all web services. API gateway routes `/api/<service>/` to correct backends. Alertmanager fires test alert → ntfy → Discord within 2 minutes. WisBot image builds in GitHub Actions and pushes to Harbor.
+
+---
+
+## Phase 5: Data + AI Pipeline + Community
+
+**Goal:** Data warehouse populated, analytics dashboards live, AI agents have RAG context, community platform operational.
+
+1. Deploy Dagster for ETL orchestration
+2. Build ETL pipelines: NetBox → warehouse, NocoDB → warehouse, WisBot voice stats → warehouse
+3. Export pipeline: PostgreSQL → Parquet → MinIO for DuckDB consumption
+4. Deploy Superset for self-service analytics over warehouse + DuckDB
+5. Deploy Qdrant for vector storage
+6. Build RAG pipeline: Wiki.js docs + WisBot transcripts → embeddings → Qdrant
+7. Deploy NATS JetStream for persistent event streaming (if not already in Phase 3)
+8. Deploy Whisper.cpp via llama.cpp on GPU nodes for voice transcription
+9. Wire n8n trigger: MinIO upload event → Whisper transcription → LLM summary → Discord post
+10. Deploy Discourse (community forum) + Matterbridge (chat bridge to Discord)
+11. Deploy Mixpost for social media scheduling
+12. Migrate WisBot recording storage from local disk to MinIO (S3 SDK in C#)
+13. Deploy Research Agent (OpenClaw + Qdrant + Wiki.js MCP servers)
+14. Deploy Marketing Agent (n8n workflows → Mixpost MCP server)
+
+**Validation:** DuckDB reads Parquet from MinIO without errors. Superset dashboards show live data. Qdrant returns relevant results for test queries. Full transcription pipeline: audio → MinIO → Whisper → LLM summary → Discord. Discourse accessible with Authentik SSO.
 
 ---
 
@@ -1259,6 +1666,13 @@ Self-signed CA is acceptable for internal lab traffic. The `OPENBAO_ADDR` variab
 - **OpenBao backup/DR** — Raft snapshots on schedule, stored on a separate VM from openbao. Document restore procedure and schedule periodic restore tests.
 - **Inter-VM network segmentation** — all VMs currently on same flat /24 subnet. Define expected inter-VM communication flows and consider pfSense/Proxmox firewall rules: e.g., NocoDB VM should not need direct access to Semaphore VM.
 - **n8n webhook authentication** — Phase 1 alert webhooks must require authentication (n8n header auth) or be network-restricted (only NemoClaw's IP) to prevent unauthorized workflow triggering.
+- **VM firewall rules** — Proxmox firewall: Semaphore→all:22, all→OpenBao:8200, NemoClaw→services, Diode→Proxmox:8006. Currently no inter-VM firewall rules.
+- **OpenBao listener binding** — Bind to `{{ openbao_host }}:8200` instead of `0.0.0.0:8200`. Reduces attack surface.
+- **Persistent hvac in Semaphore** — Custom Semaphore image (`FROM semaphore:latest` + `pip install hvac`) or startup hook. Lost on container restart breaks vault lookups.
+- **Rename PVE API token** — `{{ proxmox_token_id }}` → `stray@pve!agent-cloud`. Update Proxmox, OpenBao, all playbooks.
+- **Per-agent network policies** — NetClaw's OpenShell policy allows {{ lan_subnet }} SSH+SNMP access for device management. NemoClaw stays restricted to service APIs only. Each agent's network policy must be documented and enforced.
+- **Kata Containers for k8s sandboxing** — Phase 3+: NemoClaw and NetClaw in k8s use Kata Containers (lightweight VM per sandbox) instead of Docker-in-Docker. No privileged containers in production.
+- **Authentik SSO/OIDC** — Phase 4: centralized identity provider. Revoke one user = revoke everywhere. Required before any multi-user or external access scenarios.
 
 ---
 
@@ -1279,3 +1693,172 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | 1 | OpenBao VM IP | {{ openbao_host }} confirmed available, not in existing inventory | 2026-03-28 |
 | 2 | VM Template ID | VMID 9000, manual creation required (autoinstall serial console hang) | 2026-03-28 |
 | 3 | Monorepo vs. multi-repo | Consolidated to agent-cloud (public) + site-config (private); deprecated infra-automation and openbao repos | 2026-04-01 |
+| 4 | Caddy vs Traefik | Split: Caddy (compose) + Traefik (k8s). Two tools, each in its best context. | 2026-03-30 |
+| 5 | NemoClaw k8s sandboxing | Kata Containers — lightweight VM per sandbox, better isolation than DinD | 2026-03-30 |
+| 6 | WisBot SQLite → PostgreSQL | After platform PG patterns are solid (Phase 2+). WisBot migrates on its own timeline. | 2026-03-30 |
+| 7 | Inference multi-node scheduling | k8s Deployment with `nvidia.com/gpu` resource requests — only schedules on GPU nodes | 2026-03-30 |
+| 8 | Multi-tenancy scope | Single organization, namespace isolation + Authentik groups for internal team boundaries | 2026-03-30 |
+| 9 | Airflow vs Dagster | Dagster — asset-based model, built-in lineage, Python-native, better fit for platform data patterns | 2026-03-30 |
+| 10 | CryptoBot + StockBot | Defer entirely — P3+ at best, revisit when core platform is stable | 2026-03-30 |
+| 11 | WisBot transcription mode | Configurable: automatic via n8n trigger rules, or on-demand via Discord command. Both call same Whisper.cpp pipeline. | 2026-03-30 |
+| 12 | A2A registry hosting | FastAPI server — SQLite + JSON storage, OAuth 2.0 via Authentik, at `platform/services/a2a-registry/` | 2026-03-30 |
+| 13 | Agent lifecycle management | k8s-native liveness probes + o11y stack (Grafana/Prometheus). No custom heartbeat protocol. | 2026-03-30 |
+| 14 | Storefront + Accounting | Keep in plan as P3 possibilities, defer execution until concrete business need | 2026-03-30 |
+
+---
+
+## Appendix A: Technology Gap Analysis
+
+### What We Have (Solid)
+
+| Category | Technology | Status |
+|---|---|---|
+| Secrets management | OpenBao (KV v2, AppRole, database engine) | ✅ Deployed |
+| Workflow automation | n8n (event-driven, LLM-capable) | ✅ Deployed |
+| Deployment orchestration | Semaphore + Ansible | ✅ Deployed |
+| Data/project management | NocoDB | ✅ Deployed |
+| Infrastructure modeling | NetBox + Diode discovery | ✅ Deployed |
+| AI agents | NemoClaw + NetClaw + Claude Cowork + WisBot | ✅ Active |
+| LLM inference | vLLM + llama.cpp on GPU nodes | ✅ Architecture defined |
+| Observability | Grafana + Prometheus + Loki + Tempo + Mimir | ✅ Deployed |
+| VM provisioning | Proxmox API + Ansible playbooks | ✅ Deployed |
+| Reverse proxy | Caddy (CloudFlare DNS) | ✅ Deployed |
+| S3 object storage | MinIO (in o11y, promoting to shared) | ✅ Partial |
+| Operational databases | PostgreSQL (per-service) | ✅ Deployed |
+
+### Partial (Needs Work)
+
+| Category | Gap | Phase |
+|---|---|---|
+| Container registry | No Harbor — needed for k8s image pulls | Phase 3 |
+| Kubernetes runtime | open-k8s configs exist but no platform integration | Phase 3 |
+| GitOps for k8s | No ArgoCD/Flux | Phase 3 |
+| Policy engine (k8s) | Need Kyverno + OPA for k8s admission policies | Phase 3 |
+| Data warehouse | Strategy defined (PG + MinIO + DuckDB), needs implementation | Phase 5 |
+| CNI / service mesh | No inter-service encryption. Need Cilium for k8s. | Phase 3 |
+| Backup/DR | OpenBao backed up, no system-wide strategy | Phase 3+ |
+| Instrumentation | Services emit metrics but no unified tracing (OpenTelemetry) | Phase 4+ |
+
+### Missing (Gaps)
+
+| Category | Technology | Priority | Phase |
+|---|---|---|---|
+| External Secrets Operator | ESO for OpenBao → k8s secret injection | P0 | Phase 3 |
+| API Gateway | Kong/APISIX (rate limiting, auth, routing) | P1 | Phase 4 |
+| Identity provider | Authentik SSO/OIDC across all services | P1 | Phase 4 |
+| Message queue / event bus | NATS JetStream for persistent streaming | P1 | Phase 3 |
+| Alert routing | Alertmanager + ntfy | P1 | Phase 4 |
+| Backup | Restic + MinIO | P1 | Phase 3+ |
+| Code CI/CD | GitHub Actions for WisBot builds, container images | P1 | Phase 4 |
+| Vector database | Qdrant for RAG | P2 | Phase 5 |
+| ETL orchestration | Dagster (asset-based pipelines) | P2 | Phase 5 |
+| Data flow / routing | NiFi (real-time) | P2 | Phase 5 |
+| BI / Analytics | Superset dashboards | P2 | Phase 5 |
+| Speech-to-text | Whisper.cpp via llama.cpp | P2 | Phase 5 |
+| Community forum | Discourse | P3 | Phase 5 |
+| Chat bridge | Matterbridge (Discord ↔ Discourse) | P3 | Phase 5 |
+| Social media | Mixpost (scheduling/publishing) | P3 | Phase 5 |
+| ML pipeline | Kubeflow (model training/serving on k8s) | P3 | Future |
+
+---
+
+## Appendix B: Decision Matrix
+
+| Decision | Recommendation | Rationale |
+|----------|---------------|-----------|
+| Monorepo vs multi-repo | **Monorepo** (agent-cloud) | Atomic changes, shared libs, single AI agent context |
+| K8s distro | **k0s** | Lightweight, single-binary, already documented in open-k8s |
+| GitOps | **ArgoCD** | Largest OSS community, native Kustomize support |
+| Secret injection (k8s) | **ESO + OpenBao** | Keeps OpenBao as single source of truth across runtimes |
+| Policy engine | **Kyverno** + **OPA** | Kyverno for k8s-native YAML; OPA for cross-platform policy-as-code |
+| IdP | **Authentik** | Python-based, lighter than Keycloak, better for small teams |
+| Reverse proxy (compose) | **Caddy** | Simple config, CloudFlare DNS. No migration needed. |
+| Ingress (k8s) | **Traefik** | Native k0s integration, IngressRoute CRDs |
+| API Gateway | **Kong OSS** or **APISIX** | Kong has largest ecosystem; APISIX is more performant |
+| Container Registry | **Harbor** | Vuln scanning, Helm charts, replication, CNCF graduated |
+| CNI / Service Mesh | **Cilium** | eBPF-based, mTLS, network policies, observability |
+| Message queue | **NATS** | Lightweight, JetStream for persistence, no JVM dependency |
+| LLM Inference | **vLLM** (GPU) + **llama.cpp** (lightweight) | vLLM for throughput; llama.cpp for edge/CPU. Both OpenAI-compatible. |
+| Vector DB | **Qdrant** | Rust-based, simple API, good filtering |
+| Data warehouse | **PostgreSQL** | Already deployed, shared tooling, pg extensions |
+| Object storage | **MinIO** | Already in o11y, promoting to shared service |
+| OLAP queries | **DuckDB** | Embedded, reads Parquet from MinIO, zero-server overhead |
+| BI / Analytics | **Superset** | Self-service dashboards over PG + DuckDB |
+| ETL orchestration | **Dagster** | Asset-based model, built-in lineage, Python-native |
+| Data flow | **NiFi** | Real-time data routing between services |
+| Speech-to-text | **Whisper.cpp** | Runs via llama.cpp on GPU nodes |
+| Alerting | **Alertmanager + ntfy** | Already in Prometheus ecosystem + self-hosted push |
+| Instrumentation | **OpenTelemetry** | Unified traces/metrics/logs standard |
+| Community forum | **Discourse** | Async discussion, SSO via Authentik |
+| Chat bridge | **Matterbridge** | Cross-platform relay (Discord ↔ Discourse) |
+| Social media | **Mixpost** | Self-hosted scheduling/publishing |
+| Code CI/CD | **GitHub Actions** | WisBot .NET builds, container images |
+| Agent↔Agent protocol | **A2A** (Linux Foundation) | Task delegation, capability discovery |
+| Agent↔Tool protocol | **MCP** (Agentic AI Foundation) | Structured tool/data access per agent |
+| NemoClaw k8s sandbox | **Kata Containers** | Lightweight VM per sandbox, better than DinD |
+| Backup | **Restic + MinIO** | Incremental, encrypted, MinIO as backup target |
+
+---
+
+## Appendix C: Scaling Triggers
+
+| Service | Trigger | Threshold | Action |
+|---------|---------|-----------|--------|
+| OpenBao | Concurrent AppRole logins | >200 | Vertical: 4 vCPU / 2 GB. Eventually: 3-node Raft HA (requires TLS first). |
+| NocoDB | Postgres WAL size | >20 GB | Expand disk to 64 GB. Stage 2: read replicas. Stage 3: dedicated PG cluster. |
+| n8n | Queue backlog | >100 pending | Add worker replicas in compose (zero-config if Redis/PG handle load). |
+| Semaphore | Concurrent playbooks | >10 | Deploy remote runners on Proxmox nodes (256 MB RAM each). |
+| NemoClaw | OpenShell OOM | — | 6 vCPU / 24 GB / 48 GB. Multi-sandbox: ~4 GB per sandbox, max 3-4 per VM. |
+| NetBox | Device count | >5000 | Expand Postgres: 4 vCPU / 12 GB / 64 GB. |
+| VM disk | Usage | >80% | Expand disk via Proxmox API. |
+
+### Infrastructure Scaling Stages
+
+**Network:** Stage 1 — VLAN segmentation (management, service mesh, cluster, storage). Stage 2 — Service mesh (Cilium) at 15+ services.
+
+**DNS:** Stage 1 — CoreDNS with `*.ac.lab` entries. Stage 2 — NetBox-driven zone export. Stage 3 — Consul service registry.
+
+**Backup/DR:** (1) VM daily snapshots via Semaphore, 7-day retention. (2) OpenBao Raft snapshots. (3) pg_dump for all PG services. (4) Off-site replication to MinIO (future).
+
+**Observability:** Stage 1 — Log aggregation (Vector/Promtail → Loki). Stage 2 — Metrics (Prometheus + Grafana). Stage 3 — Distributed tracing (OpenTelemetry).
+
+---
+
+## Appendix D: Repository Consolidation
+
+### What Was Absorbed
+
+| Original Repo | Destination | Status |
+|---|---|---|
+| `infra-automation` | `platform/playbooks/` | ✅ Done |
+| `openbao` (full repo — deployment + secrets DR) | `platform/services/openbao/deployment/` + `site-config` (secret backups) | ✅ Done — repo deprecated |
+| `open-k8s` | `platform/k8s/bootstrap/` | Planned |
+| `o11y` | `platform/services/o11y/` | Planned |
+| `data-warehouse` | `data/` | Planned |
+| `workstations` | `workstations/` | Planned |
+| `autobox` | Retired → replaced by `platform/lib/` | ✅ Done |
+
+### What Stays Separate
+
+| Repo | Rationale |
+|---|---|
+| **WisBot** (`uhstray-io/WisBot`) | Independent .NET 10 build toolchain, own release cadence. Integrates via A2A as external dependency. |
+| **WisAI** (`uhstray-io/WisAI`) | Personal/workstation LLM stack (Ollama + Open WebUI). Not the platform inference backbone. |
+| **NemoClaw** (`uhstray-io/NemoClaw`) | Upstream NVIDIA fork — separate lifecycle for upstream tracking. |
+| **site-config** (private) | Real IPs, production inventory, Semaphore env configs. ONLY repo with environment-specific data. |
+
+> **Note:** OpenBao deployment and configuration are fully consolidated into `platform/services/openbao/deployment/` within the agent-cloud monorepo. The previously separate `uhstray-io/openbao` private repo has been deprecated — there are only **two repos**: agent-cloud (public) + site-config (private). OpenBao secret backups for disaster recovery are managed via `site-config`, not a separate repository.
+
+### Idempotency Contract
+
+Every operation must be safe to run repeatedly:
+
+| Layer | Idempotency Mechanism |
+|-------|----------------------|
+| Compose | `up -d` is inherently idempotent |
+| Ansible | Declarative modules (`state: present`) |
+| manage-secrets.yml | Fetch from OpenBao; generate only if missing; reuse existing |
+| deploy.sh | Verifies env files exist; starts containers idempotently |
+| ArgoCD (k8s) | Continuous reconciliation — desired state always converges |
+| Kustomize (k8s) | Declarative overlays — applying twice produces same result |
+| ESO (k8s) | Sync loop — OpenBao changes auto-propagate to k8s Secrets |

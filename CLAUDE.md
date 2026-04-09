@@ -22,7 +22,8 @@ Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
 Automation Layer Ansible playbooks, Semaphore orchestration, n8n workflows
                  Deterministic, idempotent, auditable
 
-Platform Layer   Docker (NetBox, NemoClaw), Podman (other services), Kubernetes/k0s (prod)
+Platform Layer   Docker (NetBox, NemoClaw), Podman (other services)
+                 Compose/Podman (single-site prod) ↔ Kubernetes/k0s (multi-site prod)
                  Proxmox VMs for all service hosting
 ```
 
@@ -53,7 +54,8 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/netbox/deployment/CLAUDE.md` — NetBox + Diode discovery pipeline
 - `agents/nemoclaw/deployment/CLAUDE.md` — NemoClaw agent deployment
 - `platform/playbooks/README.md` — Playbook conventions and reference
-- `plan/AUTOMATION-COMPOSABILITY-PLAN.md` — Composable deployment architecture
+- `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
+- `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
 
 Defer to those files when working within those directories.
 
@@ -121,7 +123,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 
 ## Composable Task Library
 
-All deployment automation is built from reusable Ansible tasks. See `plan/AUTOMATION-COMPOSABILITY-PLAN.md` for the full architecture.
+All deployment automation is built from reusable Ansible tasks. See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full architecture.
 
 | Task | Purpose |
 |------|---------|
@@ -200,7 +202,7 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ## Adding a New Service
 
-Follow `plan/AUTOMATION-COMPOSABILITY-PLAN.md`:
+Follow `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
 
 1. Create `platform/services/<name>/deployment/deploy.sh` — container operations only
 2. Create `platform/services/<name>/deployment/templates/*.j2` — Jinja2 env file templates
