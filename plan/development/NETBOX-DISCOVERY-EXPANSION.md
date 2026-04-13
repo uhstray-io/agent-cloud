@@ -54,39 +54,46 @@
 | Unknown SNMP devices | snmp_discovery | — |
 
 **Implementation:** Use Diode's `agent_name` field to distinguish sources. Each discovery source uses a unique agent name:
-- `netbox-discovery-agent` (orb-agent network + SNMP)
-- `proxmox-discovery-agent` (Proxmox worker)
-- `pfsense-sync-agent` (pfSense REST API)
+- `netbox-discovery-agent` (orb-agent network + SNMP) — configured in `agent.yaml.j2` common backend
+- `proxmox-discovery-agent` (Proxmox worker) — will be set in worker `setup()` metadata
+- `pfsense-sync-agent` (pfSense REST API) — set in `PfSenseSyncBackend.setup()` as app_name
+
+**Status:** PARTIALLY IMPLEMENTED — agent_name conventions coded into `agent.yaml.j2` and pfSense worker. Not yet validated with multiple sources pushing overlapping data.
 
 **Validation:** After Phase 2 deployment, verify no duplicate devices in NetBox DCIM.
 
 ---
 
-### Phase 1: pfSense REST API Sync (Independent Workflow)
+### Phase 1: pfSense REST API Sync (Orb-Agent Worker)
 
 **Priority:** DO FIRST — existing code, validates Diode pipeline, config-only
 **Effort:** Low
 **Impact:** Medium (richer pfSense data: serial, version, ARP, gateways, interface descriptions)
+**Status:** COMPLETE (2026-04-05) — implemented as orb-agent worker package
 
-**What:** Schedule `lib/pfsense-sync.py` as an independent Semaphore workflow running every 15 minutes.
+**What:** ~~Schedule `lib/pfsense-sync.py` as an independent Semaphore workflow.~~ Implemented as an orb-agent worker backend package that runs inside the existing orb-agent container on a cron schedule.
 
-**Implementation:**
-1. Create `platform/playbooks/run-pfsense-sync.yml` playbook
-   - Fetches `pfsense_api_key` and Diode credentials from OpenBao
-   - Runs `pfsense-sync.py` on the NetBox VM with credentials as env vars
-2. Add Semaphore template "Run pfSense Sync" to `platform/semaphore/templates.yml`
-3. For 15-min scheduling: use Semaphore's schedule feature if available, otherwise create a systemd timer on the NetBox VM via Ansible
+**Architecture pivot:** The original plan called for a standalone Semaphore playbook + systemd timer. Instead, the pfSense sync was implemented as a self-contained orb-agent worker package. This is cleaner: vault credentials resolve natively via the agent's secrets manager, no new containers or timers needed, and the worker runs within the existing agent lifecycle.
 
-**Credential paths (existing):**
-- `secret/services/netbox/pfsense_api_key` (already stored)
-- `secret/services/netbox/orb_agent_client_id` + `orb_agent_client_secret` (Diode auth)
+**Implementation (actual):**
+1. Created `workers/pfsense_sync/__init__.py` — `PfSenseSyncBackend(Backend)` with full pfSense REST API client (device info, interfaces, IPs, gateways, ARP)
+2. Created `workers/pfsense_sync/pyproject.toml` — declares `requests`, `pyyaml` dependencies
+3. Created `workers/workers.txt` — declares `/opt/orb/workers/pfsense_sync`
+4. Added worker policy to `agent.yaml.j2` — `*/15 * * * *` schedule, vault credential refs
+5. `deploy-orb-agent.yml` mounts `workers/` into container at `/opt/orb/workers`
+
+**Credential paths:**
+- `secret/services/discovery/pfsense/host` (pfSense hostname:port)
+- `secret/services/discovery/pfsense/api_key` (REST API key)
+- `secret/services/netbox/orb_agent_client_id` + `orb_agent_client_secret` (Diode auth, shared by all backends)
 
 **Validation:**
-- [ ] `run-pfsense-sync.yml` runs successfully via Semaphore
+- [ ] orb-agent starts with worker backend loaded (check logs for `pfsense-sync` registration)
 - [ ] pfSense device in NetBox has: serial number, platform version, all interfaces with descriptions, ARP entries, gateway routes
-- [ ] No duplicate pfSense device created (verify agent_name distinction)
+- [ ] No duplicate pfSense device created (verify agent_name distinction works with SNMP-discovered pfSense)
+- [ ] Worker runs on schedule (verify 15-min cycle in agent logs)
 
-**Security:** pfSense API key stored in OpenBao. Script uses HTTPS with TLS verification disabled (self-signed cert on pfSense — acceptable for LAN).
+**Security:** pfSense API key stored in OpenBao, resolved at runtime by orb-agent vault integration. HTTPS with TLS verification disabled (self-signed cert on pfSense — acceptable for LAN).
 
 ---
 
@@ -119,19 +126,22 @@ policies:
   worker:
     proxmox_discovery:
       config:
-        package: nbl_proxmox_discovery
+        package: proxmox_discovery
         schedule: "0 */6 * * *"
+        site_name: "Uhstray.io Datacenter"
       scope:
-        cluster: all
+        url: "${vault://secret/services/discovery/proxmox_api/url}"
+        token_id: "${vault://secret/services/discovery/proxmox_api/token_id}"
+        api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"
 ```
 
-**Custom package (`nbl_proxmox_discovery`):**
+**Custom package (`proxmox_discovery`):**
 - Uses `proxmoxer` Python library
 - Proxmox API credentials from OpenBao vault: `${vault://secret/services/discovery/proxmox_api}`
 - Maps nodes → Device (role: hypervisor, site: Uhstray.io Datacenter)
 - Maps VMs → Device (role: server) with resource annotations
 - Maps LXC → Device (role: container) with resource annotations
-- Pushes via Diode SDK with agent_name `proxmox-discovery-agent`
+- Pushes via Diode SDK with `app_name: proxmox-discovery` (shares common `agent_name` with other backends)
 
 **Credential path (new):**
 - `secret/services/discovery/proxmox_api` — contains `url`, `token_id`, `api_token`
@@ -251,9 +261,9 @@ This keeps the template in one place while allowing per-environment customizatio
 
 | Phase | Effort | Impact | Depends On | Status |
 |-------|--------|--------|------------|--------|
-| Prerequisite: Dedup strategy | Low (documentation) | Critical | — | TODO |
-| 1. pfSense REST API sync | Low (playbook + schedule) | Medium | Existing code | TODO |
-| 2a. Proxmox API metadata | High (custom Python) | High | Dedup strategy | TODO |
+| Prerequisite: Dedup strategy | Low (documentation) | Critical | — | PARTIAL — agent_name coded, not validated |
+| 1. pfSense REST API sync | Low (worker package) | Medium | Existing code | COMPLETE (2026-04-05) — orb-agent worker |
+| 2a. Proxmox API metadata | High (custom Python) | High | Dedup strategy | IN PROGRESS |
 | 2b. Proxmox guest IPs | Medium (API extension) | High | Phase 2a working | TODO |
 | 3. SNMPv3 upgrade | Medium (cred setup) | Medium | Phase 1 validated | TODO |
 | 4. LLDP topology | Low-Medium | Medium | Phase 1 or 2 working | OPTIONAL |

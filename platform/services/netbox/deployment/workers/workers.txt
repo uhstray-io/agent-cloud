@@ -1,1 +1,2 @@
 /opt/orb/workers/pfsense_sync
+/opt/orb/workers/proxmox_discovery

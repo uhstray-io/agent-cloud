@@ -145,6 +145,11 @@ def build_entities(pfsense):
     domain = hostname_data.get("domain", "")
     fqdn = f"{hostname}.{domain}" if domain else hostname
 
+    # Use short hostname as device name to match SNMP sysName.
+    # This ensures Diode merges SNMP-discovered and worker-discovered
+    # entities for the same device instead of creating duplicates.
+    device_name = hostname
+
     version = version_data.get("version", "unknown")
     # Platform and serial come from /status/system, not /system/version
     device_type_model = status_data.get("platform", "Netgate 4200")
@@ -152,7 +157,7 @@ def build_entities(pfsense):
     platform_full = f"pfSense {version}" if version != "unknown" else "pfSense"
 
     device = Device(
-        name=fqdn,
+        name=device_name,
         device_type=DeviceType(
             model=device_type_model,
             manufacturer=Manufacturer(name=MANUFACTURER),
@@ -165,10 +170,10 @@ def build_entities(pfsense):
         role=DeviceRole(name=DEVICE_ROLE),
         serial=serial,
         status="active",
-        comments=f"Synced from pfSense REST API. Version: {version}",
+        comments=f"FQDN: {fqdn}. Synced from pfSense REST API. Version: {version}",
     )
     entities.append(Entity(device=device))
-    print(f"  Device: {fqdn} ({device_type_model}, {platform_full})")
+    print(f"  Device: {device_name} ({device_type_model}, {platform_full})")
 
     # ── Interfaces (from /status/interfaces — live stats with MAC) ──
     try:
@@ -200,7 +205,7 @@ def build_entities(pfsense):
             iface_entity = Interface(
                 name=iface_name,
                 device=Device(
-                    name=fqdn,
+                    name=device_name,
                     device_type=DeviceType(
                         model=device_type_model,
                         manufacturer=Manufacturer(name=MANUFACTURER),
@@ -226,7 +231,7 @@ def build_entities(pfsense):
                     assigned_object_interface=Interface(
                         name=iface_name,
                         device=Device(
-                            name=fqdn,
+                            name=device_name,
                             device_type=DeviceType(
                                 model=device_type_model,
                                 manufacturer=Manufacturer(name=MANUFACTURER),

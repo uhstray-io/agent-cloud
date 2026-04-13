@@ -111,29 +111,13 @@ orb:
           max_mib_depth: 10
           max_repetitions: 10
 
-      infrastructure_scan:
-        config:
-          schedule: "0 */6 * * *"
-          timeout: 600
-          snmp_timeout: 10
-          retries: 5
-          lookup_extensions_dir: /opt/orb/snmp-extensions
-          defaults:
-            site: "Uhstray.io Datacenter"
-            role: gateway-router
-            tags:
-              - discovery-snmp
-              - "site:uhstray-dc"
-              - infrastructure
-            device:
-              description: "Infrastructure device (gateway/router/switch)"
-              comments: "Known infrastructure. sysObjectID mapped via snmp-extensions/."
-        scope:
-          targets:
-            - host: 192.168.1.1
-          authentication:
-            protocol_version: SNMPv2c
-            community: "${vault://secret/services/netbox/snmp_community}"
+      # infrastructure_scan REMOVED — pfSense worker provides richer data
+      # (serial, version, ARP, gateways, interface descriptions) at higher
+      # frequency (15 min vs 6h). Keeping this would create duplicate Devices
+      # because SNMP sysName ("pfsense") differs from REST API FQDN.
+      # The subnet-wide snmp_scan above still discovers pfSense if SNMP is
+      # enabled; the pfSense worker's Device name is aligned to match sysName
+      # so Diode merges rather than duplicates.
 
     # ─── PFSENSE REST API SYNC (Worker) ────────────────────────────
     # Queries pfSense REST API for device, interfaces, IPs, ARP, gateways.
@@ -148,3 +132,17 @@ orb:
         scope:
           host: "${vault://secret/services/discovery/pfsense/host}"
           api_key: "${vault://secret/services/discovery/pfsense/api_key}"
+
+      # ─── PROXMOX VE API DISCOVERY (Worker) ──────────────────────────
+      # Discovers cluster nodes, QEMU VMs, and LXC containers.
+      # Runs every 6 hours. Credentials from OpenBao vault.
+      # PVEAuditor role (read-only) is sufficient for Phase 2a.
+      proxmox_discovery:
+        config:
+          package: proxmox_discovery
+          schedule: "0 */6 * * *"
+          site_name: "Uhstray.io Datacenter"
+        scope:
+          url: "${vault://secret/services/discovery/proxmox_api/url}"
+          token_id: "${vault://secret/services/discovery/proxmox_api/token_id}"
+          api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"

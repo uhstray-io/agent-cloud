@@ -1,0 +1,9 @@
+[project]
+name = "proxmox-discovery"
+version = "1.0.0"
+description = "Proxmox VE API → NetBox Diode worker for orb-agent"
+requires-python = ">=3.10"
+dependencies = [
+    "proxmoxer",
+    "requests",  # HTTP backend for proxmoxer
+]

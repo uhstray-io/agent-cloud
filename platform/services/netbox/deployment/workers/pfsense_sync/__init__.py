@@ -134,13 +134,18 @@ class PfSenseSyncBackend(Backend):
         domain = hostname_data.get("domain", "")
         fqdn = f"{hostname}.{domain}" if domain else hostname
 
+        # Use short hostname as device name to match SNMP sysName.
+        # This ensures Diode merges SNMP-discovered and worker-discovered
+        # entities for the same device instead of creating duplicates.
+        device_name = hostname
+
         version = version_data.get("version", "unknown")
         device_type_model = status_data.get("platform", "Netgate 4200")
         serial = status_data.get("serial", "")
         platform_full = f"pfSense {version}" if version != "unknown" else "pfSense"
 
         device_ref = Device(
-            name=fqdn,
+            name=device_name,
             device_type=DeviceType(
                 model=device_type_model,
                 manufacturer=Manufacturer(name=MANUFACTURER),
@@ -150,7 +155,7 @@ class PfSenseSyncBackend(Backend):
         )
 
         device = Device(
-            name=fqdn,
+            name=device_name,
             device_type=DeviceType(
                 model=device_type_model,
                 manufacturer=Manufacturer(name=MANUFACTURER),
@@ -163,7 +168,7 @@ class PfSenseSyncBackend(Backend):
             role=DeviceRole(name=device_role),
             serial=serial,
             status="active",
-            comments=f"Synced from pfSense REST API. Version: {version}",
+            comments=f"FQDN: {fqdn}. Synced from pfSense REST API. Version: {version}",
         )
         entities.append(Entity(device=device))
 
