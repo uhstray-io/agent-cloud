@@ -62,6 +62,9 @@ templates:
   - name: Validate Secrets
     playbook: platform/playbooks/validate-secrets.yml
 
+  - name: Seed Discovery Credentials
+    playbook: platform/playbooks/seed-discovery-credentials.yml
+
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
 
