@@ -39,7 +39,7 @@ from netboxlabs.diode.sdk.ingester import (
     Platform,
     Site,
 )
-from worker.backend import Backend
+from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -86,7 +86,7 @@ class PfSenseClient:
         return self._get("/diagnostics/arp_table")
 
 
-class PfSenseSyncBackend(Backend):
+class PfSenseSyncBackend(_Backend):
     """orb-agent worker backend for pfSense REST API sync."""
 
     def setup(self) -> Metadata:

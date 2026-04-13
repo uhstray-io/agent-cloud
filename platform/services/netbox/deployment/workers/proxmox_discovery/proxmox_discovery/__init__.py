@@ -41,7 +41,7 @@ from netboxlabs.diode.sdk.ingester import (
     Platform,
     Site,
 )
-from worker.backend import Backend
+from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
 
 MANUFACTURER = "Proxmox"
@@ -58,7 +58,7 @@ def _bytes_to_gb(b):
     return round(b / (1024 ** 3), 1)
 
 
-class ProxmoxDiscoveryBackend(Backend):
+class ProxmoxDiscoveryBackend(_Backend):
     """orb-agent worker backend for Proxmox VE API discovery.
 
     Note on dedup: All orb-agent backends share the common agent_name
