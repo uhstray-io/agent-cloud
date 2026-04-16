@@ -48,14 +48,22 @@ MANUFACTURER = "Proxmox"
 PLATFORM = "Proxmox VE"
 
 
+def _int(val, default=0):
+    """Coerce Proxmox API values to int (API may return strings)."""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def _mb_to_gb(mb):
     """Convert MiB to GiB, rounded to 1 decimal."""
-    return round(mb / 1024, 1)
+    return round(_int(mb) / 1024, 1)
 
 
 def _bytes_to_gb(b):
     """Convert bytes to GiB, rounded to 1 decimal."""
-    return round(b / (1024 ** 3), 1)
+    return round(_int(b) / (1024 ** 3), 1)
 
 
 class ProxmoxDiscoveryBackend(_Backend):
@@ -259,8 +267,8 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         try:
             config = prox.nodes(node_name).qemu(vmid).config.get()
-            cpu_count = config.get("cores", cpu_count)
-            sockets = config.get("sockets", 1)
+            cpu_count = _int(config.get("cores", cpu_count), cpu_count)
+            sockets = _int(config.get("sockets", 1), 1)
             cpu_count = cpu_count * sockets
             if "memory" in config:
                 mem_gb = _mb_to_gb(config["memory"])
@@ -305,7 +313,7 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         try:
             config = prox.nodes(node_name).lxc(vmid).config.get()
-            cpu_count = config.get("cores", cpu_count)
+            cpu_count = _int(config.get("cores", cpu_count), cpu_count)
             if "memory" in config:
                 mem_gb = _mb_to_gb(config["memory"])
         except Exception as e:
