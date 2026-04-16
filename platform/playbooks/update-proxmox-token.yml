@@ -1,0 +1,51 @@
+---
+# update-proxmox-token.yml — Update Proxmox API token in OpenBao
+#
+# Updates the api_token field at both:
+#   secret/services/proxmox (source of truth)
+#   secret/services/discovery/proxmox_api (orb-agent reads this)
+#
+# Pass the token value via extra-vars:
+#   ansible-playbook update-proxmox-token.yml -e proxmox_api_token=<value>
+
+- name: "Update Proxmox API token in OpenBao"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) | default('http://127.0.0.1:8200', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+    _paths:
+      - "secret/data/services/proxmox"
+      - "secret/data/services/discovery/proxmox_api"
+
+  tasks:
+    - name: "Validate token provided"
+      ansible.builtin.assert:
+        that:
+          - proxmox_api_token is defined
+          - proxmox_api_token | length > 0
+        fail_msg: "Pass -e proxmox_api_token=<value>"
+
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: "Read and update each path"
+      ansible.builtin.include_tasks: tasks/update-vault-field.yml
+      loop: "{{ _paths }}"
+      loop_control:
+        loop_var: _vault_path

@@ -1,0 +1,36 @@
+---
+# update-vault-field.yml — Read a vault secret, update api_token, write back
+#
+# Expected variables:
+#   _vault_path      — KV v2 data path (e.g. secret/data/services/proxmox)
+#   proxmox_api_token — new token value
+#   _bao_auth        — authenticated vault token
+#   _bao_url         — OpenBao address
+
+- name: "Read existing secret at {{ _vault_path }}"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/{{ _vault_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _existing
+  delegate_to: localhost
+  no_log: true
+
+- name: "Update api_token at {{ _vault_path }}"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/{{ _vault_path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    body_format: json
+    body:
+      data: "{{ (_existing.json.data.data | default({})) | combine({'api_token': proxmox_api_token, 'token_id': 'stray@pve!agent-cloud'}) }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+  no_log: true
+
+- name: "Updated {{ _vault_path }}"
+  ansible.builtin.debug:
+    msg: "Updated api_token and token_id at {{ _vault_path }}"
