@@ -140,7 +140,7 @@ orb:
       proxmox_discovery:
         config:
           package: proxmox_discovery
-          schedule: "0 */6 * * *"
+          schedule: "*/15 * * * *"
           site_name: "Uhstray.io Datacenter"
         scope:
           url: "${vault://secret/services/discovery/proxmox_api/url}"
