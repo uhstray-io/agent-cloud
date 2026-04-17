@@ -52,6 +52,9 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  - name: Check Discovery Pipeline
+    playbook: platform/playbooks/check-discovery.yml
+
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
 

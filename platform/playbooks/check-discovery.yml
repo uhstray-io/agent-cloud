@@ -1,0 +1,54 @@
+---
+# check-discovery.yml — Check orb-agent worker logs and NetBox discovery state
+# Use after deploying workers to validate discovery is producing entities.
+
+- name: "Check Discovery Pipeline"
+  hosts: netbox_svc
+  gather_facts: false
+  tasks:
+    - name: Get orb-agent container status
+      ansible.builtin.command:
+        cmd: sudo docker inspect --format '{{ '{{' }}.State.Status{{ '}}' }}' netbox-orb-agent
+      register: _agent_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Report agent status
+      ansible.builtin.debug:
+        msg: "Orb Agent: {{ _agent_status.stdout | default('NOT FOUND') }}"
+
+    - name: Get orb-agent logs (last 100 lines)
+      ansible.builtin.command:
+        cmd: sudo docker logs --tail 100 netbox-orb-agent
+      register: _agent_logs
+      changed_when: false
+      ignore_errors: true
+
+    - name: Show worker run output
+      ansible.builtin.debug:
+        msg: "{{ _agent_logs.stdout_lines | default([]) + _agent_logs.stderr_lines | default([]) }}"
+
+    - name: Get NetBox device count via Django shell
+      ansible.builtin.command:
+        cmd: >-
+          docker exec netbox-netbox-1
+          /opt/netbox/netbox/manage.py shell -c
+          "from dcim.models import Device; from ipam.models import IPAddress;
+          devs = Device.objects.all();
+          ips = IPAddress.objects.all();
+          print(f'Devices: {devs.count()}');
+          [print(f'  {d.name:30s}  role={d.role.name if d.role else \"?\":20s}  desc={d.description[:60] if d.description else \"(none)\"}') for d in devs[:50]];
+          print(f'\\nIP Addresses: {ips.count()}');
+          vips = ips.filter(role='vip');
+          print(f'  with role=vip: {vips.count()}');
+          dns = ips.exclude(dns_name=\"\").exclude(dns_name__isnull=True);
+          print(f'  with dns_name: {dns.count()}');
+          arp = ips.filter(description__startswith='ARP:');
+          print(f'  ARP entries (should be 0): {arp.count()}')"
+      register: _nb_stats
+      changed_when: false
+      ignore_errors: true
+
+    - name: Show NetBox discovery stats
+      ansible.builtin.debug:
+        msg: "{{ _nb_stats.stdout_lines | default(['Failed to query NetBox']) }}"
