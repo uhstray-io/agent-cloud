@@ -14,7 +14,8 @@ Private configuration (real IPs, credentials, production inventory) lives in the
 
 ```
 AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
-                 Backed by: vLLM + llama.cpp (local inference, OpenAI-compatible API)
+                 Backed by: WisAI — Ollama worker nodes + Open WebUI coordinator
+                 (local inference, OpenAI-compatible API; vLLM reserved for future 24 GB+ hardware)
 
 Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                  AI proposes -> guardrails validate -> automation executes

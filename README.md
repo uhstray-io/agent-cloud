@@ -10,7 +10,7 @@ agent-cloud is an AI infrastructure platform that runs on a homelab Proxmox clus
 
 ```
 AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
-                 Backed by: vLLM + llama.cpp (local LLM inference)
+                 Backed by: WisAI -- Ollama worker nodes + Open WebUI coordinator
 Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                  AI proposes -> guardrails validate -> automation runs
 Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
@@ -73,7 +73,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **Semaphore** | Deployment orchestration -- Ansible playbook execution |
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
-| **vLLM + llama.cpp** | Local LLM inference -- GPU-heavy and lightweight engines |
+| **WisAI** | Local LLM inference backbone -- Ollama workers + Open WebUI coordinator (OpenAI-compatible API) |
 
 ## Repository Structure
 
@@ -87,7 +87,9 @@ agent-cloud/
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
       caddy/              Reverse proxy
-      inference/          LLM inference (planned)
+      inference-ollama/   WisAI worker nodes (GPU, Ollama)
+      inference-webui/    WisAI coordinator (Open WebUI + Postgres)
+      inference-vllm/     Reserved (future 24 GB+ hardware)
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
@@ -146,7 +148,7 @@ SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, ArgoCD (planned)
 DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
-INFERENCE             vLLM (GPU), llama.cpp (lightweight)
+INFERENCE             WisAI (Ollama workers + Open WebUI, OpenAI-compat)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
@@ -157,7 +159,7 @@ OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 |------|-----------|---------|
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
 | [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | Personal LLM stack (Ollama + Open WebUI) |
+| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | Upstream inference stack (Ollama + Open WebUI) — integrated as the platform inference backbone via `platform/services/inference-ollama/` + `platform/services/inference-webui/` |
 
 ## Contributing
 

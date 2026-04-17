@@ -1,10 +1,17 @@
 # Unification Plan: agent-cloud Platform Monorepo — Full Detail
 
 **Date:** 2026-03-30
-**Status:** DRAFT — Architectural Plan for Review
+**Status:** SUPERSEDED — content absorbed into `IMPLEMENTATION_PLAN.md` (commit 97b4236). Retained for historical reference; `IMPLEMENTATION_PLAN.md` is the canonical source for any conflict.
 
-> **Looking for the executive summary?** See [PLAN.md](./PLAN.md) (~150 lines).
-> This document contains the full architectural detail, rationale, diagrams, and compliance audit.
+> **Canonical sources:**
+> - `plan/development/IMPLEMENTATION_PLAN.md` — current architecture and implementation detail
+> - `plan/development/WISAI-DEPLOYMENT-PLAN.md` — inference backbone deployment detail
+> - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — deployment pattern reference
+>
+> Key drift since this document was frozen:
+> - **Inference backbone is WisAI (Ollama + Open WebUI)**, not vLLM + llama.cpp. vLLM is reserved additively for future 24 GB+ hardware under `platform/services/inference-vllm/`.
+> - **LiteLLM is not in the design.** Agents consume inference via Open WebUI's OpenAI-compatible API at a single OpenBao-stored endpoint URL.
+> - **WisAI repo stays separate as the upstream reference**, but its Ollama and Open WebUI stack IS the platform inference backbone — integrated as `platform/services/inference-ollama/` and `platform/services/inference-webui/`.
 
 ---
 
@@ -51,7 +58,7 @@ The 10 uhstray.io platform design principles are the constitutional constraints 
 │  NemoClaw (workflow) + NetClaw (network) +           │
 │  WisBot (community) + CryptoBot + StockBot (market)  │
 │  Claude Cowork (interactive)                          │
-│  Backed by: vLLM + llama.cpp (local LLM inference)   │
+│  Backed by: WisAI — Ollama nodes + Open WebUI         │
 │  Manages: context, planning, triage, development     │
 ├─────────────────────────────────────────────────────┤
 │                Guardrail Layer                        │
@@ -87,7 +94,7 @@ PUBLIC:
   uhstray-io/open-k8s             ← Kubernetes bootstraps (k0s, kubeadm, microk8s)
   uhstray-io/autobox              ← Infrastructure backbone (referenced, WIP)
   uhstray-io/WisBot               ← C#/.NET Discord bot (voice, reminders, LLM chat) — external dependency
-  uhstray-io/WisAI                ← Personal/workstation LLM stack (Ollama + Open WebUI) — external dependency
+  uhstray-io/WisAI                ← Upstream inference stack (Ollama + Open WebUI); IS the platform inference backbone, integrated as inference-ollama + inference-webui
 
 PRIVATE:
   uhstray-io/dev-test             ← Canonical inventory, agent-cloud, VM configs
@@ -127,7 +134,9 @@ PRIVATE:
 │  │   ├── nextcloud/                                              │
 │  │   ├── wikijs/                                                 │
 │  │   ├── postiz/                                                 │
-│  │   ├── inference/       ← vLLM + llama.cpp (GPU inference)     │
+│  │   ├── inference-ollama/ ← WisAI worker nodes (GPU, Ollama)    │
+│  │   ├── inference-webui/  ← WisAI coordinator (Open WebUI, API) │
+│  │   ├── inference-vllm/   ← RESERVED (future 24 GB+ hardware)   │
 │  │   ├── a2a-registry/    ← Agent Card discovery (FastAPI)       │
 │  │   └── o11y/            ← Grafana/Prometheus/Loki/Tempo stack  │
 │  ├── lib/                ← Shared libraries                      │
@@ -187,10 +196,11 @@ PRIVATE:
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  uhstray-io/WisAI (PUBLIC) — Self-Hosted LLM Reference Stack     │
-│  Ollama + Open WebUI for personal/workstation LLM inference.     │
-│  NOT the platform's core inference backbone (that's vLLM +       │
-│  llama.cpp). WisAI is a standalone project usable independently. │
+│  uhstray-io/WisAI (PUBLIC) — Platform Inference Backbone         │
+│  Ollama worker nodes + Open WebUI coordinator (OpenAI-compat).   │
+│  Repo stays separate as the upstream reference; its stack is     │
+│  integrated into the platform as inference-ollama +              │
+│  inference-webui. vLLM reserved additively for 24 GB+ hardware.  │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
@@ -201,10 +211,12 @@ PRIVATE:
 └─────────────────────────────────────────────────────────────────┘
 
 Note: WisBot and WisAI remain in their own repositories. WisBot has an
-independent build toolchain (.NET) and release cadence. WisAI is a
-reference stack for personal use — the platform's core inference backbone
-is vLLM (GPU-heavy workloads) + llama.cpp (lighter workloads), deployed
-as platform services under `platform/services/inference/`.
+independent build toolchain (.NET) and release cadence. WisAI is the
+upstream reference for the platform's inference backbone — its Ollama
+and Open WebUI stack is integrated as platform services under
+`platform/services/inference-ollama/` and `platform/services/inference-webui/`.
+vLLM is reserved at `platform/services/inference-vllm/` for future 24 GB+
+hardware, additive to WisAI rather than replacing it.
 ```
 
 ### What Gets Absorbed
@@ -220,7 +232,7 @@ as platform services under `platform/services/inference/`.
 | `open-k8s` | `platform/k8s/bootstrap/` | K8s bootstrap is the production scale path |
 | `autobox` | Retired → replaced by `platform/lib/` | The shared libraries *are* the infrastructure backbone |
 | `WisBot` | Stays separate (public) | Independent .NET build toolchain, own release cadence. Integrates via A2A as external dependency. |
-| `WisAI` | Stays separate (public) | Personal/workstation LLM stack. Not the platform inference backbone (see Section 5). |
+| `WisAI` | Stays separate (public) as upstream reference; stack IS the platform inference backbone | Its Ollama + Open WebUI compose files are integrated as `platform/services/inference-ollama/` + `platform/services/inference-webui/`. |
 | `NetClaw integration plan` | `agents/netclaw/` in monorepo | Network agent config, testbed, MCP server selection, network policies |
 | `openbao` | Stays separate (private) | Intentional secrets — must remain private |
 | `NemoClaw` | Stays separate (public fork) | Upstream tracking has its own lifecycle |
@@ -240,7 +252,7 @@ as platform services under `platform/services/inference/`.
 
 **WisBot** (`uhstray-io/WisBot`) stays separate because it has a completely independent build toolchain (.NET 10 / C# 14) with zero overlap with the monorepo's Bash/Python/YAML. Its CI pipeline, release cadence, and contributor base are distinct — a C# developer shouldn't need to clone the full platform (Principle 10). WisBot connects to the platform via A2A protocol, the same integration pattern any external agent would use. The monorepo contains `platform/services/wisbot/` with compose.yml and deploy.sh that pull the pre-built image.
 
-**WisAI** (`uhstray-io/WisAI`) stays separate because it's a personal/workstation LLM stack (Ollama + Open WebUI), not the platform inference backbone. That role belongs to vLLM + llama.cpp (Section 5). WisAI is useful independently of the platform and its architecture docs serve as reference material for the broader community.
+**WisAI** (`uhstray-io/WisAI`) stays separate as the upstream reference repo, but its Ollama + Open WebUI stack IS the platform inference backbone. Integration happens at the monorepo level: `platform/services/inference-ollama/` wraps the Ollama worker compose, `platform/services/inference-webui/` wraps the Open WebUI coordinator. The WisAI repo remains useful standalone and its docs serve as reference material for the broader community. See `WISAI-DEPLOYMENT-PLAN.md` for the full integration plan.
 
 **Trade-off acknowledged:** Keeping WisBot separate means cross-cutting changes (e.g., warehouse schema + WisBot code + Dagster asset) require multi-repo PRs. This is acceptable because such changes are infrequent and the toolchain isolation benefit outweighs the coordination cost.
 
@@ -478,7 +490,7 @@ Playbooks use the same three tiers via Jinja2:
 
 ## 5. Inference Backbone + External Agents
 
-### Core Inference: vLLM + llama.cpp
+### Core Inference: WisAI (Ollama + Open WebUI) — vLLM Reserved
 
 The platform's **local inference backbone** is a dual-engine setup running on Proxmox VMs with NVIDIA GPU passthrough (8-12 GB VRAM consumer cards). This replaces any dependency on a single inference tool — vLLM handles GPU-heavy workloads, llama.cpp handles lighter/edge inference.
 
@@ -530,9 +542,9 @@ llama.cpp (lightweight inference at :8080)
 
 WisBot and WisAI are **separate public repositories** that integrate with the platform as external dependencies. They are not part of the monorepo. See Section 2.1 for the full rationale.
 
-**WisBot** (`uhstray-io/WisBot`) — C#/.NET 10 Discord bot providing voice recording, reminders, voice analytics, and LLM-powered chat. Connects to the platform inference backbone (vLLM) for LLM features. Integrates with the platform via A2A protocol for cross-agent coordination and MCP for tool access (Discord, PostgreSQL, MinIO, Qdrant).
+**WisBot** (`uhstray-io/WisBot`) — C#/.NET 10 Discord bot providing voice recording, reminders, voice analytics, and LLM-powered chat. Connects to the platform inference backbone (WisAI, via Open WebUI's OpenAI-compatible API) for LLM features. Integrates with the platform via A2A protocol for cross-agent coordination and MCP for tool access (Discord, PostgreSQL, MinIO, Qdrant).
 
-**WisAI** (`uhstray-io/WisAI`) — Personal/workstation LLM inference stack (Ollama + Open WebUI). A standalone project usable independently of the platform. Not the platform's core inference backbone — that role belongs to vLLM + llama.cpp. WisAI remains useful for personal workstation inference, development testing, and as a reference stack for anyone who wants local LLM inference without the full platform.
+**WisAI** (`uhstray-io/WisAI`) — Upstream LLM inference stack (Ollama + Open WebUI). The repo stays separate as the reference source, but its stack **is** the platform inference backbone — integrated in the monorepo as `platform/services/inference-ollama/` (GPU worker nodes) and `platform/services/inference-webui/` (Open WebUI coordinator + agent API surface). vLLM is reserved at `platform/services/inference-vllm/` for future 24 GB+ hardware, additive rather than replacing WisAI.
 
 ### Platform ↔ External Agent Relationship
 
@@ -761,7 +773,7 @@ The platform has **5 active AI agents** today, with a target of **13 agent roles
 | **WisBot** | Community interface | Podman/k8s | Discord voice/chat, user-facing AI interactions |
 | **CryptoBot** | Market analyst | ⏸️ Deferred | Cryptocurrency market analysis — revisit when core platform is stable |
 | **StockBot** | Market analyst | ⏸️ Deferred | Equity market analysis — revisit when core platform is stable |
-| **vLLM + llama.cpp** | Inference backbone | GPU VM (Docker) | LLM inference for all agents and workflows |
+| **WisAI** (inference-ollama + inference-webui) | Inference backbone | GPU VMs + DMZ VM (Docker) | LLM inference for all agents and workflows (OpenAI-compatible via Open WebUI); vLLM reserved additively |
 
 ```
 AI CAN:                              AI CANNOT:
@@ -1360,13 +1372,15 @@ AI AGENTS (existing):
   WisBot              ← Discord community agent (C#/.NET 10, voice + chat + LLM) — EXTERNAL REPO
   n8n                 ← AI workflow automation (webhooks, scheduling, LLM nodes)
 
-INFERENCE BACKBONE:
-  vLLM                ← GPU-heavy LLM inference (continuous batching, PagedAttention, OpenAI-compatible API)
-  llama.cpp           ← Lightweight/edge inference (agent sidecars, Whisper, Hymba, CPU fallback)
+INFERENCE BACKBONE (WisAI):
+  inference-ollama    ← GPU worker nodes (Ollama, OpenAI-compatible API at :11434)
+  inference-webui     ← Open WebUI coordinator (human UI + agent API surface at :3000)
+  inference-vllm      ← RESERVED (.gitkeep; future additive backbone for 24 GB+ hardware)
+  Whisper.cpp         ← Speech-to-text (separate concern, voice transcription)
 
-EXTERNAL DEPENDENCIES (separate repos, not in monorepo):
-  WisAI (Ollama)      ← Personal/workstation LLM stack (uhstray-io/WisAI) — NOT the platform backbone
-  Open WebUI          ← Chat frontend for WisAI (human interaction)
+EXTERNAL REFERENCE REPO:
+  uhstray-io/WisAI    ← Upstream Ollama + Open WebUI compose files; integrated into
+                        the monorepo as inference-ollama + inference-webui above
 
 AI AGENTS (planned — from WisAgent/Hymba architecture):
   CryptoBot           ← Crypto market analysis agent (ref-arch)
@@ -1676,7 +1690,7 @@ Every major decision in this plan is traced back to one or more of the 10 platfo
 | Wiki.js | Living documentation for anything that isn't code-adjacent. Monorepo docs are the definitive technical reference; Wiki.js covers processes, onboarding, and runbooks. |
 | NetBox | Single source of truth for infrastructure inventory (IPAM/DCIM). NetClaw reconciles live state against it. |
 | OpenBao | Single source of truth for credentials. No duplicated secrets across env files. |
-| **Tension:** | WisBot and WisAI are separate repos with their own architecture docs. Cross-referencing from the platform docs to their repos is important to avoid drift. The inference backbone docs (vLLM + llama.cpp) live in `platform/services/inference/` within the monorepo. |
+| **Tension:** | WisBot and WisAI are separate repos with their own architecture docs. Cross-referencing from the platform docs to their repos is important to avoid drift. The inference backbone is WisAI (Ollama + Open WebUI), integrated as `platform/services/inference-ollama/` + `platform/services/inference-webui/` within the monorepo; see `WISAI-DEPLOYMENT-PLAN.md`. |
 
 ### Principle 8 — Platforms should be resilient and fault tolerant
 
@@ -1706,7 +1720,7 @@ Every major decision in this plan is traced back to one or more of the 10 platfo
 | Plan Section | How Compliance Is Achieved |
 |---|---|
 | Public monorepo | Anyone can clone, read `.env.example`, and run `orchestrate.sh --local` to get a working stack. |
-| WisBot/WisAI analysis (§2.1) | Kept in separate repos so .NET (WisBot) or personal inference (WisAI) contributors don't need the full platform context. Platform inference backbone (vLLM + llama.cpp) lives in `platform/services/inference/` (`deployment/` for compose + `context/` for model docs). |
+| WisBot/WisAI analysis (§2.1) | WisBot kept separate so its .NET contributors don't need the full platform context. WisAI repo kept separate as the upstream reference, but its Ollama + Open WebUI stack IS the platform inference backbone — integrated as `platform/services/inference-ollama/` + `platform/services/inference-webui/`. |
 | 5-step deploy pattern | Every service follows the same pattern. Learn one, know all. |
 | `.env.example` files | Every service has a documented template with empty secret values. |
 | CLAUDE.md | AI-assisted development guidance embedded in the repo. |

@@ -78,7 +78,7 @@ The 10 uhstray.io platform design principles are the constitutional constraints 
 | 1 | **Develop every system "as-code"** | All infrastructure, config, policies, and workflows in version-controlled files. No manual UI-only configuration. |
 | 2 | **Use open-source and free systems first** | Every component is OSS. No vendor lock-in. Proprietary tools only when no viable OSS option exists. |
 | 3 | **Deploy via Kubernetes and containerized frameworks** | Compose for single-site/smaller production, K8s for multi-site/larger scale. Both are production-viable deployment paradigms. |
-| 4 | **Keep platforms as simple as possible** | Prefer single-purpose tools. vLLM/llama.cpp over complex ML pipelines. NocoDB over custom CRUD apps. |
+| 4 | **Keep platforms as simple as possible** | Prefer single-purpose tools. WisAI (Ollama + Open WebUI) over complex ML platforms. NocoDB over custom CRUD apps. |
 | 5 | **All deployments version or release controlled** | Compose files pin image versions (`${VERSION:-tag}`). K8s manifests reference tagged images from registry. |
 | 6 | **Track and document work using agile processes** | NocoDB as task tracker, Semaphore for deployment tracking, Git history as audit trail. |
 | 7 | **Single source of truth for all documentation** | Monorepo = one repo to search. CLAUDE.md as the AI agent's single guidance file. |
@@ -97,7 +97,7 @@ The 10 uhstray.io platform design principles are the constitutional constraints 
 │                   AI Layer                           │
 │  NemoClaw (workflow) + NetClaw (network) +           │
 │  WisBot (community) + Claude Cowork (interactive)    │
-│  Backed by: vLLM + llama.cpp (local LLM inference)   │
+│  Backed by: WisAI — Ollama nodes + Open WebUI         │
 │  Manages: context, planning, triage, development     │
 ├─────────────────────────────────────────────────────┤
 │                Guardrail Layer                        │
@@ -131,7 +131,7 @@ The platform targets **13 agent roles** (5 existing, 4 planned, 2 deferred, 2 fu
 | **NetClaw** (Network) | ✅ Existing | Device monitoring, topology, config backup, security audit | Docker sandbox |
 | **Claude + Claude Cowork** (Interactive) | ✅ Existing | Research, architecture, document generation, GUI tasks | Personal device |
 | **WisBot** (Community) | ✅ Existing | Discord voice/chat, user-facing AI — **external repo** (C#/.NET 10) | Podman/k8s |
-| **vLLM + llama.cpp** (Inference) | ✅ Existing | LLM inference backbone for all agents and workflows | GPU VM (Docker) |
+| **WisAI** (Inference Backbone) | ✅ Existing (upstream); integrating | Ollama worker nodes + Open WebUI coordinator (OpenAI-compat API) — see `WISAI-DEPLOYMENT-PLAN.md`. vLLM reserved additively for 24 GB+ hardware. | GPU VMs + DMZ VM (Docker) |
 | **Reliability Agent** (SRE) | ⚠️ Planned P1 | HolmesGPT - Pending Research — root-cause analysis, alert investigation, auto-remediation | OpenClaw sandbox |
 | **Governance Agent** (Policy) | ⚠️ Planned P1 | OPA enforcement + NeMo Guardrails for AI output validation + Research Kyverno for viability | OpenClaw sandbox |
 | **Marketing Agent** | ⚠️ Planned P2 | n8n workflows initially, then OpenClaw — content creation via Mixpost | n8n → OpenClaw |
@@ -145,10 +145,10 @@ The platform targets **13 agent roles** (5 existing, 4 planned, 2 deferred, 2 fu
 
 | Agent | OpenBao Role | Inference | Primary Integrations | Guardrails |
 |---|---|---|---|---|
-| **NemoClaw** | `nemoclaw-read` (read-only) | vLLM | NocoDB, n8n, GitHub, NetBox, Proxmox (read-only) | Destructive ops → Semaphore → human approval |
-| **NetClaw** | `netclaw-readwrite` | vLLM | NetBox (bidirectional), pyATS (SSH/SNMP), nmap, NocoDB, n8n | Config changes → ITSM gate → approval |
-| **WisBot** | via platform services | vLLM | Discord, MinIO (recordings), PostgreSQL, n8n webhooks | Voice channel join requires user command |
-| **Claude + Claude Cowork** | N/A (personal device) | vLLM/llama.cpp (optional) | Local files, browser, monorepo, NocoDB (task creation) | Interactive — human in the loop |
+| **NemoClaw** | `nemoclaw-read` (read-only) | WisAI (Ollama via Open WebUI, OpenAI-compat) | NocoDB, n8n, GitHub, NetBox, Proxmox (read-only) | Destructive ops → Semaphore → human approval |
+| **NetClaw** | `netclaw-readwrite` | WisAI (Ollama via Open WebUI, OpenAI-compat) | NetBox (bidirectional), pyATS (SSH/SNMP), nmap, NocoDB, n8n | Config changes → ITSM gate → approval |
+| **WisBot** | via platform services | WisAI (Ollama via Open WebUI, OpenAI-compat) | Discord, MinIO (recordings), PostgreSQL, n8n webhooks | Voice channel join requires user command |
+| **Claude + Claude Cowork** | N/A (personal device) | WisAI when available (OpenAI-compat); optional remote APIs | Local files, browser, monorepo, NocoDB (task creation) | Interactive — human in the loop |
 
 ### AI Agent Boundaries
 
@@ -208,20 +208,25 @@ Agent communication uses two complementary protocols:
 
 ## Inference Backbone
 
-> **Note:** This section outlines the target architecture. Specific model selection, quantization strategies, and multi-node scheduling will require further research during implementation.
+> **Canonical source:** `plan/development/WISAI-DEPLOYMENT-PLAN.md` contains the full deployment detail (directory layout, Ansible playbooks, credential lifecycle, validation criteria). This section is a pointer.
 
-The platform's local inference backbone is a dual-engine setup running on Proxmox VMs with NVIDIA GPU passthrough (consumer GPUs, 8–12 GB VRAM):
+The platform's local inference backbone is **WisAI**: Ollama worker nodes fanned out behind an Open WebUI coordinator, running on Proxmox VMs with NVIDIA GPU passthrough (consumer GPUs, 8–16 GB VRAM today, scaling as hardware improves).
 
-| Engine | Role | Port | Use Cases |
+| Service | Role | Port | Use Cases |
 |---|---|---|---|
-| **vLLM** | GPU-heavy inference | :8000 | Complex reasoning, code generation, long-context tasks. OpenAI-compatible API. |
-| **llama.cpp** | Lightweight/edge inference | :8080 | Lighter workloads, speech-to-text (Whisper.cpp), CPU fallback for dev/test. |
+| **inference-ollama** | GPU worker node (one per GPU VM, scales horizontally) | :11434 | Runs GGUF-quantized models; model set chosen by per-host `inference_model_profile` (small/medium/large). |
+| **inference-webui** | Coordinator + agent API surface (single DMZ VM) | :3000 (WebUI), :3000/api (OpenAI-compat) | Fans out to all Ollama nodes via `OLLAMA_BASE_URLS`; serves humans and agents. |
+| **inference-vllm** | RESERVED — additive backbone for 24 GB+ cards | :8000 (future) | Becomes viable when hardware supports it; does not replace WisAI, runs alongside. |
 
-**Architecture:** Proxmox host (GPU passthrough via vfio-pci) → Ubuntu Server VM (UEFI/q35) → Docker + NVIDIA Container Toolkit → vLLM (:8000) + llama.cpp (:8080).
+**No LiteLLM / no separate inference gateway.** Agents consume Open WebUI's OpenAI-compatible `/api/chat/completions` endpoint directly. Endpoint URL and bearer token live in OpenBao at `secret/services/inference/endpoint` — a single value that swaps if the load-balancing topology changes later.
 
-**Integration:** All agents and workflows consume the inference backbone via OpenAI-compatible HTTP endpoints. Inference endpoint URL stored in OpenBao at `secret/services/inference`. Multi-node expansion: each GPU node runs vLLM independently, load balanced via Caddy/Kong.
+**Architecture:** Proxmox host (GPU passthrough via vfio-pci) → Ubuntu Server VM (UEFI/q35) → Docker + NVIDIA Container Toolkit → Ollama (:11434) on each GPU node; Open WebUI (:3000) + dedicated Postgres on a DMZ VM.
 
-**Monorepo location:** `platform/services/inference/` — `deployment/` contains compose files for both engines, model pull scripts, and deployment orchestration. `context/` contains model selection guides and architecture docs.
+**Integration:** All agents and workflows consume the inference backbone via the OpenAI-compatible endpoint on Open WebUI. Endpoint URL in OpenBao; adding a GPU node is inventory-only (no agent-side change, no OpenBao write).
+
+**Monorepo location:** `platform/services/inference-ollama/` (workers) and `platform/services/inference-webui/` (coordinator). `platform/services/inference-vllm/` is reserved with a `.gitkeep` until 24 GB+ hardware lands.
+
+**Upstream reference:** The `uhstray-io/WisAI` repo hosts the upstream compose files and model scripts; the monorepo integration in `inference-ollama/` and `inference-webui/` wraps them in the platform's composable deployment pattern (OpenBao secrets → Jinja2 env files → deploy.sh → verify).
 
 ---
 
@@ -346,7 +351,7 @@ Phase C (target):  All services on k8s
 7. Semaphore → k8s + PVC
 8. NetBox → k8s (complex — Diode pipeline, orb-agent needs host network)
 9. OpenBao → k8s (critical — careful HA setup with Raft)
-10. vLLM + llama.cpp → k8s on GPU nodes (NVIDIA device plugin)
+10. WisAI (inference-ollama nodes, inference-webui coordinator) → k8s on GPU nodes (NVIDIA device plugin)
 11. NemoClaw → k8s (Kata Containers for sandboxing)
 12. NetClaw → k8s (Kata + host network for device polling)
 
@@ -598,7 +603,9 @@ agent-cloud/                              # PUBLIC monorepo — the platform
 │   │   ├── caddy/
 │   │   │   ├── deployment/               # Caddyfile, compose.yml, start-caddy.sh
 │   │   │   └── context/                  # Caddy usage docs
-│   │   ├── inference/                    # vLLM + llama.cpp (placeholder — Phase 3)
+│   │   ├── inference-ollama/             # WisAI worker nodes (GPU, Ollama)
+│   │   ├── inference-webui/              # WisAI coordinator (Open WebUI + Postgres)
+│   │   ├── inference-vllm/               # Reserved (.gitkeep; future 24 GB+ hardware)
 │   │   ├── a2a-registry/                 # A2A Agent Card registry (placeholder — Phase 3)
 │   │   ├── o11y/                         # Observability stack (placeholder — pending absorption)
 │   │   ├── nextcloud/                    # Cloud storage (context/ only)
@@ -1513,13 +1520,16 @@ When Phase 1 is complete, all of the following should be true:
 - Deploy first service to k8s (Caddy or NocoDB) alongside compose deployment
 - Validate: same service running on both compose (VM) and k8s paths
 
-### 3D. Inference Backbone Deployment
+### 3D. Inference Backbone Deployment (WisAI)
 
-- Deploy vLLM on GPU VM with NVIDIA passthrough
-- Deploy llama.cpp for lightweight/CPU inference
-- Store inference endpoint URL in OpenBao (`secret/services/inference`)
-- Configure all agents to consume inference via OpenAI-compatible API
-- Semaphore templates: deploy vLLM, deploy llama.cpp, pull models
+Canonical plan: `plan/development/WISAI-DEPLOYMENT-PLAN.md`. Summary:
+
+- Deploy `inference-ollama` worker nodes on GPU VMs with NVIDIA passthrough (one service per GPU VM, scales horizontally via inventory)
+- Deploy `inference-webui` coordinator on a DMZ VM (Open WebUI + dedicated Postgres); it fans out to Ollama nodes via `OLLAMA_BASE_URLS` and exposes an OpenAI-compatible API for agents
+- Store inference endpoint URL + bearer token in OpenBao (`secret/services/inference/endpoint`) — a single value all agents consume; swaps if topology changes
+- Agents (NemoClaw, NetClaw, WisBot, Cowork) hit Open WebUI directly — **no LiteLLM, no separate gateway service**
+- Semaphore templates (10 total): deploy-wisai-node, deploy-wisai-webui, pull-wisai-models, update-*, clean-deploy-*, rotate-webui-credentials, validate-wisai, install-nvidia-toolkit
+- `inference-vllm/` remains reserved (`.gitkeep`) until 24 GB+ hardware lands — additive to WisAI, not a replacement
 
 **Validation:** Harbor accepting image pushes. k8s cluster running with ArgoCD syncing. ESO creating k8s Secrets from OpenBao. At least one service deployed to both runtimes. Inference backbone responding to OpenAI-compatible API calls.
 
@@ -1719,7 +1729,7 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Data/project management | NocoDB | ✅ Deployed |
 | Infrastructure modeling | NetBox + Diode discovery | ✅ Deployed |
 | AI agents | NemoClaw + NetClaw + Claude Cowork + WisBot | ✅ Active |
-| LLM inference | vLLM + llama.cpp on GPU nodes | ✅ Architecture defined |
+| LLM inference | WisAI (inference-ollama workers + inference-webui coordinator) | ✅ Architecture defined; vLLM reserved additively |
 | Observability | Grafana + Prometheus + Loki + Tempo + Mimir | ✅ Deployed |
 | VM provisioning | Proxmox API + Ansible playbooks | ✅ Deployed |
 | Reverse proxy | Caddy (CloudFlare DNS) | ✅ Deployed |
@@ -1778,7 +1788,7 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Container Registry | **Harbor** | Vuln scanning, Helm charts, replication, CNCF graduated |
 | CNI / Service Mesh | **Cilium** | eBPF-based, mTLS, network policies, observability |
 | Message queue | **NATS** | Lightweight, JetStream for persistence, no JVM dependency |
-| LLM Inference | **vLLM** (GPU) + **llama.cpp** (lightweight) | vLLM for throughput; llama.cpp for edge/CPU. Both OpenAI-compatible. |
+| LLM Inference | **WisAI** — Ollama workers + Open WebUI coordinator (OpenAI-compat) | Ollama (GGUF + llama.cpp internally) handles current consumer-GPU tier; Open WebUI is both the human UI and the agent API surface. vLLM reserved additively at `platform/services/inference-vllm/` for future 24 GB+ hardware. |
 | Vector DB | **Qdrant** | Rust-based, simple API, good filtering |
 | Data warehouse | **PostgreSQL** | Already deployed, shared tooling, pg extensions |
 | Object storage | **MinIO** | Already in o11y, promoting to shared service |
@@ -1843,7 +1853,7 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Repo | Rationale |
 |---|---|
 | **WisBot** (`uhstray-io/WisBot`) | Independent .NET 10 build toolchain, own release cadence. Integrates via A2A as external dependency. |
-| **WisAI** (`uhstray-io/WisAI`) | Personal/workstation LLM stack (Ollama + Open WebUI). Not the platform inference backbone. |
+| **WisAI** (`uhstray-io/WisAI`) | Upstream reference for the platform inference backbone (Ollama + Open WebUI). Repo stays separate; its compose files are integrated at `platform/services/inference-ollama/` + `platform/services/inference-webui/`. See `WISAI-DEPLOYMENT-PLAN.md`. |
 | **NemoClaw** (`uhstray-io/NemoClaw`) | Upstream NVIDIA fork — separate lifecycle for upstream tracking. |
 | **site-config** (private) | Real IPs, production inventory, Semaphore env configs. ONLY repo with environment-specific data. |
 
