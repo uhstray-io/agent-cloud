@@ -129,6 +129,11 @@ orb:
           schedule: "*/15 * * * *"
           site_name: "Uhstray.io Datacenter"
           device_role: "gateway-router"
+          # Seed data — region/location/rack/tenant (see discovery/seed-data.yaml)
+          region_name: "Home Lab"
+          location_name: "Server Room"
+          rack_name: "Main Rack"
+          tenant_name: "Uhstray.io"
         scope:
           host: "${vault://secret/services/discovery/pfsense/host}"
           api_key: "${vault://secret/services/discovery/pfsense/api_key}"
@@ -142,6 +147,11 @@ orb:
           package: proxmox_discovery
           schedule: "*/15 * * * *"
           site_name: "Uhstray.io Datacenter"
+          # Seed data — region/location/rack/tenant (see discovery/seed-data.yaml)
+          region_name: "Home Lab"
+          location_name: "Server Room"
+          rack_name: "Main Rack"
+          tenant_name: "Uhstray.io"
         scope:
           url: "${vault://secret/services/discovery/proxmox_api/url}"
           token_id: "${vault://secret/services/discovery/proxmox_api/token_id}"

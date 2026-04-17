@@ -1,0 +1,24 @@
+# Seed data for NetBox organizational hierarchy.
+# This file is the single source of truth for region, location, rack,
+# and tenant definitions — mirroring the role of roles.yaml for device roles.
+#
+# Workers read these values from their agent.yaml config (not this file
+# directly). Keep agent.yaml.j2 in sync when editing.
+
+region:
+  name: "Home Lab"
+  description: "Uhstray.io residential infrastructure"
+
+location:
+  name: "Server Room"
+  site: "Uhstray.io Datacenter"
+  description: "Primary equipment location"
+
+rack:
+  name: "Main Rack"
+  location: "Server Room"
+  description: "Primary equipment rack"
+
+tenant:
+  name: "Uhstray.io"
+  description: "Primary platform tenant"

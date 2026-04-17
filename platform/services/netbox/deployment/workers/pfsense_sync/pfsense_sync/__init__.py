@@ -35,9 +35,13 @@ from netboxlabs.diode.sdk.ingester import (
     Entity,
     Interface,
     IPAddress,
+    Location,
     Manufacturer,
     Platform,
+    Rack,
+    Region,
     Site,
+    Tenant,
 )
 from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
@@ -89,8 +93,8 @@ class PfSenseSyncBackend(_Backend):
         return Metadata(
             name="pfsense-sync",
             app_name="pfsense-sync",
-            app_version="1.0.0",
-            description="pfSense REST API → NetBox via Diode",
+            app_version="1.1.0",
+            description="pfSense REST API → NetBox via Diode (+ seed data)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -109,6 +113,13 @@ class PfSenseSyncBackend(_Backend):
         site_name = config.site_name if hasattr(config, "site_name") else "Uhstray.io Datacenter"
         device_role = config.device_role if hasattr(config, "device_role") else "gateway-router"
 
+        # Seed data — organizational hierarchy
+        self._site_name = site_name
+        self._region_name = getattr(config, "region_name", "")
+        self._location_name = getattr(config, "location_name", "")
+        self._rack_name = getattr(config, "rack_name", "")
+        self._tenant_name = getattr(config, "tenant_name", "")
+
         try:
             pfsense = PfSenseClient(host, api_key)
             entities = self._build_entities(pfsense, site_name, device_role)
@@ -118,8 +129,63 @@ class PfSenseSyncBackend(_Backend):
             print(f"[pfsense-sync] ERROR: {e}", file=sys.stderr)
             return []
 
+    # ── Seed data helpers ────────────────────────────────────────
+
+    def _site(self):
+        """Site reference with optional Region nesting."""
+        kwargs = {"name": self._site_name}
+        if self._region_name:
+            kwargs["region"] = Region(name=self._region_name)
+        return Site(**kwargs)
+
+    def _rack_or_none(self):
+        """Rack reference with Location nesting, or None."""
+        if not self._rack_name:
+            return None
+        kwargs = {"name": self._rack_name}
+        if self._location_name:
+            kwargs["location"] = Location(
+                name=self._location_name,
+                site=Site(name=self._site_name),
+            )
+        return Rack(**kwargs)
+
+    def _tenant_or_none(self):
+        """Tenant reference, or None."""
+        if not self._tenant_name:
+            return None
+        return Tenant(name=self._tenant_name)
+
+    def _build_seed_entities(self):
+        """Emit standalone Region/Location/Rack/Tenant entities."""
+        entities = []
+        try:
+            if self._region_name:
+                entities.append(Entity(region=Region(name=self._region_name)))
+            if self._location_name:
+                entities.append(Entity(location=Location(
+                    name=self._location_name,
+                    site=Site(name=self._site_name),
+                )))
+            if self._rack_name:
+                rack_kwargs = {"name": self._rack_name}
+                if self._location_name:
+                    rack_kwargs["location"] = Location(
+                        name=self._location_name,
+                        site=Site(name=self._site_name),
+                    )
+                entities.append(Entity(rack=Rack(**rack_kwargs)))
+            if self._tenant_name:
+                entities.append(Entity(tenant=Tenant(name=self._tenant_name)))
+        except Exception as e:
+            print(f"[pfsense-sync] WARNING: Failed to build seed entities: {e}", file=sys.stderr)
+        return entities
+
     def _build_entities(self, pfsense, site_name, device_role):
         entities = []
+
+        # Emit seed entities (region, location, rack, tenant) first
+        entities.extend(self._build_seed_entities())
 
         # Device info
         hostname_data = pfsense.get_hostname()
@@ -150,7 +216,8 @@ class PfSenseSyncBackend(_Backend):
             role=DeviceRole(name=device_role),
         )
 
-        device = Device(
+        # Physical gateway — gets site (with region), rack, and tenant
+        device_kwargs = dict(
             name=device_name,
             device_type=DeviceType(
                 model=device_type_model,
@@ -160,12 +227,19 @@ class PfSenseSyncBackend(_Backend):
                 name=platform_full,
                 manufacturer=Manufacturer(name=MANUFACTURER),
             ),
-            site=Site(name=site_name),
+            site=self._site(),
             role=DeviceRole(name=device_role),
             serial=serial,
             status="active",
             comments=f"FQDN: {fqdn}. Synced from pfSense REST API. Version: {version}",
         )
+        rack = self._rack_or_none()
+        if rack:
+            device_kwargs["rack"] = rack
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
         # Interfaces

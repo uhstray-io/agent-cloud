@@ -40,9 +40,13 @@ from netboxlabs.diode.sdk.ingester import (
     Entity,
     Interface,
     IPAddress,
+    Location,
     Manufacturer,
     Platform,
+    Rack,
+    Region,
     Site,
+    Tenant,
 )
 from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
@@ -129,8 +133,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         return Metadata(
             name="proxmox-discovery",
             app_name="proxmox-discovery",
-            app_version="2.0.0",
-            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs)",
+            app_version="2.1.0",
+            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs + seed data)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -158,6 +162,13 @@ class ProxmoxDiscoveryBackend(_Backend):
         verify_ssl = (
             config.verify_ssl if hasattr(config, "verify_ssl") else False
         )
+
+        # Seed data — organizational hierarchy
+        self._site_name = site_name
+        self._region_name = getattr(config, "region_name", "")
+        self._location_name = getattr(config, "location_name", "")
+        self._rack_name = getattr(config, "rack_name", "")
+        self._tenant_name = getattr(config, "tenant_name", "")
 
         try:
             prox = self._connect(url, token_id, api_token, verify_ssl)
@@ -194,6 +205,9 @@ class ProxmoxDiscoveryBackend(_Backend):
         """Run full cluster discovery: nodes → VMs → LXC containers."""
         entities = []
 
+        # Emit seed entities (region, location, rack, tenant) first
+        entities.extend(self._build_seed_entities())
+
         nodes = prox.nodes.get()
         for node_data in nodes:
             node_name = node_data["node"]
@@ -227,6 +241,62 @@ class ProxmoxDiscoveryBackend(_Backend):
             except Exception as e:
                 print(f"[proxmox-discovery] WARNING: Failed to list LXC on {node_name}: {e}", file=sys.stderr)
 
+        return entities
+
+    # ── Seed data helpers ────────────────────────────────────────
+
+    def _site(self):
+        """Site reference with optional Region nesting."""
+        kwargs = {"name": self._site_name}
+        if self._region_name:
+            kwargs["region"] = Region(name=self._region_name)
+        return Site(**kwargs)
+
+    def _rack_or_none(self):
+        """Rack reference with Location nesting, or None."""
+        if not self._rack_name:
+            return None
+        kwargs = {"name": self._rack_name}
+        if self._location_name:
+            kwargs["location"] = Location(
+                name=self._location_name,
+                site=Site(name=self._site_name),
+            )
+        return Rack(**kwargs)
+
+    def _tenant_or_none(self):
+        """Tenant reference, or None."""
+        if not self._tenant_name:
+            return None
+        return Tenant(name=self._tenant_name)
+
+    def _build_seed_entities(self):
+        """Emit standalone Region/Location/Rack/Tenant entities.
+
+        These ensure the hierarchy objects exist in NetBox with descriptions
+        before devices reference them.
+        """
+        entities = []
+        try:
+            if self._region_name:
+                entities.append(Entity(region=Region(name=self._region_name)))
+            if self._location_name:
+                entities.append(Entity(location=Location(
+                    name=self._location_name,
+                    site=Site(name=self._site_name),
+                )))
+            if self._rack_name:
+                rack_kwargs = {"name": self._rack_name}
+                if self._location_name:
+                    rack_kwargs["location"] = Location(
+                        name=self._location_name,
+                        site=Site(name=self._site_name),
+                    )
+                entities.append(Entity(rack=Rack(**rack_kwargs)))
+            if self._tenant_name:
+                entities.append(Entity(tenant=Tenant(name=self._tenant_name)))
+        except Exception as e:
+            print(f"[proxmox-discovery] WARNING: Failed to build seed entities: {e}", file=sys.stderr)
         return entities
 
     # ── Device reference helper ───────────────────────────────────
@@ -325,7 +395,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception:
             pass
 
-        device = Device(
+        # Physical node — gets site (with region), rack, and tenant
+        device_kwargs = dict(
             name=node_name,
             device_type=DeviceType(
                 model=cpu_model,
@@ -335,7 +406,7 @@ class ProxmoxDiscoveryBackend(_Backend):
                 name=f"Proxmox VE {pve_version}" if pve_version else PLATFORM,
                 manufacturer=Manufacturer(name=MANUFACTURER),
             ),
-            site=Site(name=site_name),
+            site=self._site(),
             role=DeviceRole(name="hypervisor"),
             status="active" if node_data.get("status") == "online" else "offline",
             description=node_desc if node_desc else None,
@@ -344,6 +415,13 @@ class ProxmoxDiscoveryBackend(_Backend):
                 f"Discovered via Proxmox API."
             ),
         )
+        rack = self._rack_or_none()
+        if rack:
+            device_kwargs["rack"] = rack
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
         # Phase 2b: Node network interfaces
@@ -412,7 +490,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for VM {vmid}: {e}", file=sys.stderr)
 
-        device = Device(
+        # Virtual machine — gets site (with region) and tenant, no rack
+        device_kwargs = dict(
             name=vm_name,
             device_type=DeviceType(
                 model=f"QEMU VM ({cpu_count} vCPU, {mem_gb} GiB)",
@@ -428,6 +507,10 @@ class ProxmoxDiscoveryBackend(_Backend):
                 f"Discovered via Proxmox API."
             ),
         )
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
         # Phase 2b: Guest agent network interfaces (only for running VMs)
@@ -494,7 +577,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for LXC {vmid}: {e}", file=sys.stderr)
 
-        device = Device(
+        # Container — gets site (with region) and tenant, no rack
+        device_kwargs = dict(
             name=ct_name,
             device_type=DeviceType(
                 model=f"LXC Container ({cpu_count} vCPU, {mem_gb} GiB)",
@@ -510,6 +594,10 @@ class ProxmoxDiscoveryBackend(_Backend):
                 f"Discovered via Proxmox API."
             ),
         )
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
         # Phase 2b: LXC network interfaces (only for running containers)
