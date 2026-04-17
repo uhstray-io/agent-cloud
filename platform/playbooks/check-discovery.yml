@@ -52,3 +52,41 @@
     - name: Show NetBox discovery stats
       ansible.builtin.debug:
         msg: "{{ _nb_stats.stdout_lines | default(['Failed to query NetBox']) }}"
+
+    - name: Check Phase B seed data (Region, Location, Rack, Tenant)
+      ansible.builtin.command:
+        cmd: >-
+          docker exec netbox-netbox-1
+          /opt/netbox/netbox/manage.py shell -c
+          "from dcim.models import Region, Location, Rack, Site;
+          from tenancy.models import Tenant;
+          print('=== Phase B Seed Data ===');
+          regions = Region.objects.all();
+          print(f'Regions: {regions.count()}');
+          [print(f'  {r.name}') for r in regions];
+          sites = Site.objects.all();
+          print(f'Sites: {sites.count()}');
+          [print(f'  {s.name}  region={s.region.name if s.region else \"(none)\"}') for s in sites];
+          locs = Location.objects.all();
+          print(f'Locations: {locs.count()}');
+          [print(f'  {l.name}  site={l.site.name}') for l in locs];
+          racks = Rack.objects.all();
+          print(f'Racks: {racks.count()}');
+          [print(f'  {r.name}  location={r.location.name if r.location else \"(none)\"}  site={r.site.name}') for r in racks];
+          tenants = Tenant.objects.all();
+          print(f'Tenants: {tenants.count()}');
+          [print(f'  {t.name}') for t in tenants];
+          from dcim.models import Device;
+          racked = Device.objects.exclude(rack__isnull=True);
+          print(f'Devices with rack: {racked.count()}');
+          [print(f'  {d.name}  rack={d.rack.name}') for d in racked[:20]];
+          tenanted = Device.objects.exclude(tenant__isnull=True);
+          print(f'Devices with tenant: {tenanted.count()}');
+          [print(f'  {d.name}  tenant={d.tenant.name}') for d in tenanted[:20]]"
+      register: _seed_stats
+      changed_when: false
+      ignore_errors: true
+
+    - name: Show seed data stats
+      ansible.builtin.debug:
+        msg: "{{ _seed_stats.stdout_lines | default(['Failed to query seed data']) }}"
