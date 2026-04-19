@@ -127,31 +127,38 @@ orb:
         config:
           package: pfsense_sync
           schedule: "*/15 * * * *"
-          site_name: "Uhstray.io Datacenter"
-          device_role: "gateway-router"
-          # Seed data — region/location/rack/tenant (see discovery/seed-data.yaml)
-          region_name: "Home Lab"
-          location_name: "Server Room"
-          rack_name: "Main Rack"
-          tenant_name: "Uhstray.io"
+          site_name: "{{ discovery_site_name | default('Uhstray.io Datacenter') }}"
+          device_role: "{{ discovery_pfsense_device_role | default('gateway-router') }}"
+          # Seed data — organizational hierarchy (values from site-config inventory)
+          region_name: "{{ discovery_region | default('') }}"
+          location_name: "{{ discovery_location_name | default('') }}"
+          rack_name: "{{ discovery_pfsense_rack | default('') }}"
+          tenant_name: "{{ discovery_tenant_name | default('') }}"
+          site_latitude: "{{ discovery_site_latitude | default('') }}"
+          site_longitude: "{{ discovery_site_longitude | default('') }}"
         scope:
           host: "${vault://secret/services/discovery/pfsense/host}"
           api_key: "${vault://secret/services/discovery/pfsense/api_key}"
 
       # ─── PROXMOX VE API DISCOVERY (Worker) ──────────────────────────
       # Discovers cluster nodes, QEMU VMs, and LXC containers.
-      # Runs every 6 hours. Credentials from OpenBao vault.
-      # PVEAuditor role (read-only) is sufficient for Phase 2a.
+      # Credentials from OpenBao vault. PVEAuditor role (read-only).
       proxmox_discovery:
         config:
           package: proxmox_discovery
           schedule: "*/15 * * * *"
-          site_name: "Uhstray.io Datacenter"
-          # Seed data — region/location/rack/tenant (see discovery/seed-data.yaml)
-          region_name: "Home Lab"
-          location_name: "Server Room"
-          rack_name: "Main Rack"
-          tenant_name: "Uhstray.io"
+          site_name: "{{ discovery_site_name | default('Uhstray.io Datacenter') }}"
+          # Seed data — organizational hierarchy (values from site-config inventory)
+          region_name: "{{ discovery_region | default('') }}"
+          location_name: "{{ discovery_location_name | default('') }}"
+          tenant_name: "{{ discovery_tenant_name | default('') }}"
+          site_latitude: "{{ discovery_site_latitude | default('') }}"
+          site_longitude: "{{ discovery_site_longitude | default('') }}"
+          # Per-node rack assignments (physical nodes → rack names)
+          rack_assignments:
+{% for node, rack in (discovery_rack_assignments | default({})).items() | sort %}
+            {{ node }}: "{{ rack }}"
+{% endfor %}
         scope:
           url: "${vault://secret/services/discovery/proxmox_api/url}"
           token_id: "${vault://secret/services/discovery/proxmox_api/token_id}"

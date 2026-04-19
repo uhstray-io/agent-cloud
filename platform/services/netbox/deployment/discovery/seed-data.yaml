@@ -1,24 +1,37 @@
 # Seed data for NetBox organizational hierarchy.
-# This file is the single source of truth for region, location, rack,
-# and tenant definitions — mirroring the role of roles.yaml for device roles.
+# This file documents the seed data structure and template variable names.
+# Real values live in site-config/inventory/production.yml as discovery_* vars.
 #
-# Workers read these values from their agent.yaml config (not this file
-# directly). Keep agent.yaml.j2 in sync when editing.
+# Workers read these values from their agent.yaml config (templated by
+# Ansible from agent.yaml.j2). Keep agent.yaml.j2 in sync when editing.
+#
+# Template variables (defined in site-config inventory):
+#   discovery_region              — NetBox Region name
+#   discovery_site_name           — NetBox Site name
+#   discovery_site_latitude       — Site GPS latitude
+#   discovery_site_longitude      — Site GPS longitude
+#   discovery_location_name       — NetBox Location name
+#   discovery_tenant_name         — NetBox Tenant name
+#   discovery_rack_assignments    — Dict of node_name → rack_name (proxmox worker)
+#   discovery_pfsense_rack        — Rack name for pfSense device
+#   discovery_pfsense_device_role — Device role for pfSense
 
 region:
-  name: "Home Lab"
-  description: "Uhstray.io residential infrastructure"
+  name: "{{ discovery_region }}"
+
+site:
+  name: "{{ discovery_site_name }}"
+  latitude: "{{ discovery_site_latitude }}"
+  longitude: "{{ discovery_site_longitude }}"
 
 location:
-  name: "Server Room"
-  site: "Uhstray.io Datacenter"
-  description: "Primary equipment location"
+  name: "{{ discovery_location_name }}"
+  site: "{{ discovery_site_name }}"
 
-rack:
-  name: "Main Rack"
-  location: "Server Room"
-  description: "Primary equipment rack"
+racks:
+  # Mapped per-node via discovery_rack_assignments in site-config.
+  # Proxmox worker emits a Rack entity for each unique rack name.
+  # pfSense worker uses discovery_pfsense_rack.
 
 tenant:
-  name: "Uhstray.io"
-  description: "Primary platform tenant"
+  name: "{{ discovery_tenant_name }}"

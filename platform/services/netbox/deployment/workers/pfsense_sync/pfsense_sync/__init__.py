@@ -93,7 +93,7 @@ class PfSenseSyncBackend(_Backend):
         return Metadata(
             name="pfsense-sync",
             app_name="pfsense-sync",
-            app_version="1.1.0",
+            app_version="1.2.0",
             description="pfSense REST API → NetBox via Diode (+ seed data)",
         )
 
@@ -119,6 +119,8 @@ class PfSenseSyncBackend(_Backend):
         self._location_name = getattr(config, "location_name", "")
         self._rack_name = getattr(config, "rack_name", "")
         self._tenant_name = getattr(config, "tenant_name", "")
+        self._site_latitude = getattr(config, "site_latitude", "")
+        self._site_longitude = getattr(config, "site_longitude", "")
 
         try:
             pfsense = PfSenseClient(host, api_key)
@@ -165,10 +167,21 @@ class PfSenseSyncBackend(_Backend):
 
         if self._region_name:
             try:
-                entities.append(Entity(site=Site(
-                    name=self._site_name,
-                    region=Region(name=self._region_name),
-                )))
+                site_kwargs = {
+                    "name": self._site_name,
+                    "region": Region(name=self._region_name),
+                }
+                if self._site_latitude:
+                    try:
+                        site_kwargs["latitude"] = float(self._site_latitude)
+                    except (ValueError, TypeError):
+                        pass
+                if self._site_longitude:
+                    try:
+                        site_kwargs["longitude"] = float(self._site_longitude)
+                    except (ValueError, TypeError):
+                        pass
+                entities.append(Entity(site=Site(**site_kwargs)))
             except Exception as e:
                 print(f"[pfsense-sync] WARNING: Failed to emit Site→Region entity: {e}", file=sys.stderr)
 
@@ -216,10 +229,11 @@ class PfSenseSyncBackend(_Backend):
         domain = hostname_data.get("domain", "")
         fqdn = f"{hostname}.{domain}" if domain else hostname
 
-        # Use short hostname as device name to match SNMP sysName.
-        # This ensures Diode merges SNMP-discovered and worker-discovered
-        # entities for the same device instead of creating duplicates.
-        device_name = hostname
+        # Use FQDN as device name to match SNMP sysName.
+        # pfSense reports sysName as the FQDN, so using FQDN ensures
+        # Diode merges SNMP-discovered and worker-discovered entities
+        # for the same device instead of creating duplicates.
+        device_name = fqdn
 
         version = version_data.get("version", "unknown")
         device_type_model = status_data.get("platform", "Netgate 4200")

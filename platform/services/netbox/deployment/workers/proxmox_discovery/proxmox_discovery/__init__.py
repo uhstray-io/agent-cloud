@@ -133,7 +133,7 @@ class ProxmoxDiscoveryBackend(_Backend):
         return Metadata(
             name="proxmox-discovery",
             app_name="proxmox-discovery",
-            app_version="2.1.0",
+            app_version="2.2.0",
             description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs + seed data)",
         )
 
@@ -167,8 +167,23 @@ class ProxmoxDiscoveryBackend(_Backend):
         self._site_name = site_name
         self._region_name = getattr(config, "region_name", "")
         self._location_name = getattr(config, "location_name", "")
-        self._rack_name = getattr(config, "rack_name", "")
         self._tenant_name = getattr(config, "tenant_name", "")
+        self._site_latitude = getattr(config, "site_latitude", "")
+        self._site_longitude = getattr(config, "site_longitude", "")
+
+        # Per-node rack assignments (dict of node_name → rack_name)
+        raw_rack = getattr(config, "rack_assignments", None)
+        if isinstance(raw_rack, dict):
+            self._rack_assignments = raw_rack
+        elif raw_rack is not None:
+            try:
+                self._rack_assignments = dict(raw_rack)
+            except (TypeError, ValueError):
+                self._rack_assignments = {}
+        else:
+            self._rack_assignments = {}
+        # Fallback: single rack_name applies to all nodes
+        self._default_rack = getattr(config, "rack_name", "")
 
         try:
             prox = self._connect(url, token_id, api_token, verify_ssl)
@@ -245,11 +260,16 @@ class ProxmoxDiscoveryBackend(_Backend):
 
     # ── Seed data helpers ────────────────────────────────────────
 
-    def _rack_or_none(self):
-        """Rack reference with Location nesting, or None."""
-        if not self._rack_name:
+    def _rack_for_node(self, node_name):
+        """Rack reference for a specific node, or None.
+
+        Looks up rack from per-node rack_assignments dict, falls back
+        to default_rack (from legacy rack_name config) if set.
+        """
+        rack_name = self._rack_assignments.get(node_name, self._default_rack)
+        if not rack_name:
             return None
-        kwargs = {"name": self._rack_name}
+        kwargs = {"name": rack_name}
         if self._location_name:
             kwargs["location"] = Location(
                 name=self._location_name,
@@ -284,10 +304,21 @@ class ProxmoxDiscoveryBackend(_Backend):
         # Standalone Site entity links Site→Region (Device entities must NOT nest Region)
         if self._region_name:
             try:
-                entities.append(Entity(site=Site(
-                    name=self._site_name,
-                    region=Region(name=self._region_name),
-                )))
+                site_kwargs = {
+                    "name": self._site_name,
+                    "region": Region(name=self._region_name),
+                }
+                if self._site_latitude:
+                    try:
+                        site_kwargs["latitude"] = float(self._site_latitude)
+                    except (ValueError, TypeError):
+                        pass
+                if self._site_longitude:
+                    try:
+                        site_kwargs["longitude"] = float(self._site_longitude)
+                    except (ValueError, TypeError):
+                        pass
+                entities.append(Entity(site=Site(**site_kwargs)))
             except Exception as e:
                 print(f"[proxmox-discovery] WARNING: Failed to emit Site→Region entity: {e}", file=sys.stderr)
 
@@ -300,9 +331,13 @@ class ProxmoxDiscoveryBackend(_Backend):
             except Exception as e:
                 print(f"[proxmox-discovery] WARNING: Failed to emit Location entity: {e}", file=sys.stderr)
 
-        if self._rack_name:
+        # Emit Rack entities for each unique rack in rack_assignments
+        rack_names = set(self._rack_assignments.values())
+        if self._default_rack:
+            rack_names.add(self._default_rack)
+        for rack_name in sorted(rack_names):
             try:
-                rack_kwargs = {"name": self._rack_name, "site": Site(name=self._site_name)}
+                rack_kwargs = {"name": rack_name, "site": Site(name=self._site_name)}
                 if self._location_name:
                     rack_kwargs["location"] = Location(
                         name=self._location_name,
@@ -310,7 +345,7 @@ class ProxmoxDiscoveryBackend(_Backend):
                     )
                 entities.append(Entity(rack=Rack(**rack_kwargs)))
             except Exception as e:
-                print(f"[proxmox-discovery] WARNING: Failed to emit Rack entity: {e}", file=sys.stderr)
+                print(f"[proxmox-discovery] WARNING: Failed to emit Rack entity '{rack_name}': {e}", file=sys.stderr)
 
         if self._tenant_name:
             try:
@@ -436,7 +471,7 @@ class ProxmoxDiscoveryBackend(_Backend):
                 f"Discovered via Proxmox API."
             ),
         )
-        rack = self._rack_or_none()
+        rack = self._rack_for_node(node_name)
         if rack:
             device_kwargs["rack"] = rack
         tenant = self._tenant_or_none()
