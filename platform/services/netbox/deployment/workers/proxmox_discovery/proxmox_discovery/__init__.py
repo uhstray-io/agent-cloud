@@ -661,8 +661,10 @@ class ProxmoxDiscoveryBackend(_Backend):
         disk_mb = 0
 
         vm_desc = ""
+        vm_config = {}
         try:
-            config = prox.nodes(node_name).qemu(vmid).config.get()
+            vm_config = prox.nodes(node_name).qemu(vmid).config.get()
+            config = vm_config
             vm_desc = config.get("description", "")
             cpu_count = _int(config.get("cores", cpu_count), cpu_count)
             sockets = _int(config.get("sockets", 1), 1)
@@ -712,6 +714,24 @@ class ProxmoxDiscoveryBackend(_Backend):
                     pass
                 else:
                     print(f"[proxmox-discovery] DEBUG: No guest agent for VM {vm_name} ({vmid}): {e}", file=sys.stderr)
+
+        # Fallback: parse ipconfig0 from cloud-init config when guest agent has no IPs
+        if not all_ipv4s:
+            try:
+                for key in ("ipconfig0", "ipconfig1"):
+                    ipconf = vm_config.get(key, "")
+                    if isinstance(ipconf, str) and "ip=" in ipconf:
+                        ip_part = ipconf.split("ip=")[1].split(",")[0].strip()
+                        if "/" in ip_part:
+                            addr, prefix_str = ip_part.split("/", 1)
+                            prefix = _int(prefix_str)
+                            if addr and prefix and not addr.startswith("127."):
+                                all_ipv4s.append({"address": addr, "prefix": prefix})
+                                collected_ifaces.append(("eth0", None, [{"address": addr, "prefix": prefix}]))
+                                print(f"[proxmox-discovery] VM {vm_name}: fallback IP from {key}={addr}/{prefix}")
+                                break
+            except Exception:
+                pass
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
         if primary_addr:
