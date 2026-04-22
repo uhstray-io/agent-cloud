@@ -210,6 +210,7 @@ class ProxmoxDiscoveryBackend(_Backend):
         self._tenant_name = getattr(config, "tenant_name", "")
         self._site_latitude = getattr(config, "site_latitude", "")
         self._site_longitude = getattr(config, "site_longitude", "")
+        print(f"[proxmox-discovery] GPS config: lat='{self._site_latitude}' lon='{self._site_longitude}'")
 
         # Per-node rack assignments (dict of node_name → rack_name)
         raw_rack = getattr(config, "rack_assignments", None)

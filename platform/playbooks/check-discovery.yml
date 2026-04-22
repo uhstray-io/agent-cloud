@@ -86,6 +86,28 @@
       ansible.builtin.debug:
         msg: "{{ _vm_stats.stdout_lines | default(['Failed to query virtualization data']) }}"
 
+    - name: Set GPS coordinates on Site if still None (Django shell fallback)
+      ansible.builtin.command:
+        cmd: >-
+          docker exec netbox-netbox-1
+          /opt/netbox/netbox/manage.py shell -c
+          "from dcim.models import Site;
+          s = Site.objects.get(name='Uhstray.io Datacenter');
+          if s.latitude is None:
+              s.latitude = 41.19481797890624;
+              s.longitude = -74.43649455017179;
+              s.save();
+              print(f'SET GPS: lat={s.latitude} lon={s.longitude}');
+          else:
+              print(f'GPS already set: lat={s.latitude} lon={s.longitude}')"
+      register: _gps_fix
+      changed_when: "'SET GPS' in _gps_fix.stdout"
+      ignore_errors: true
+
+    - name: Show GPS fix result
+      ansible.builtin.debug:
+        msg: "{{ _gps_fix.stdout | default('Failed') }}"
+
     - name: Check Phase B seed data (Region, Location, Rack, Tenant)
       ansible.builtin.command:
         cmd: >-
