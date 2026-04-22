@@ -262,6 +262,7 @@ class PfSenseSyncBackend(_Backend):
                     subnet = iface.get("subnet", "")
                     if ipaddr and subnet and _is_valid_ip(ipaddr):
                         primary_ip = f"{ipaddr}/{subnet}"
+                        print(f"[pfsense-sync] LAN primary_ip4={primary_ip}")
                     break
         except Exception as e:
             print(f"[pfsense-sync] WARNING: Failed to fetch interfaces: {e}", file=sys.stderr)
