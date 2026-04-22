@@ -163,6 +163,9 @@ templates:
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml
 
+  - name: Install QEMU Guest Agent
+    playbook: platform/playbooks/install-qemu-guest-agent.yml
+
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
 

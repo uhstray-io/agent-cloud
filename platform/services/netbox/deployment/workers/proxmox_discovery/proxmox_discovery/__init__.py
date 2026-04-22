@@ -383,7 +383,6 @@ class ProxmoxDiscoveryBackend(_Backend):
                     site_kwargs["longitude"] = float(self._site_longitude)
                 except (ValueError, TypeError):
                     pass
-            print(f"[proxmox-discovery] Site entity: {site_kwargs}")
             entities.append(Entity(site=Site(**site_kwargs)))
         except Exception as e:
             print(f"[proxmox-discovery] WARNING: Failed to emit Site entity: {e}", file=sys.stderr)
@@ -593,10 +592,6 @@ class ProxmoxDiscoveryBackend(_Backend):
                 print(f"[proxmox-discovery] WARNING: Failed to get network for node {node_name}: {e}", file=sys.stderr)
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
-        if primary_addr:
-            print(f"[proxmox-discovery] Node {node_name}: primary_ip4={primary_addr}/{primary_prefix} (from {len(all_ipv4s)} candidates)")
-        else:
-            print(f"[proxmox-discovery] Node {node_name}: no primary_ip4 (collected {len(collected_ifaces)} ifaces, {len(all_ipv4s)} IPv4s)", file=sys.stderr)
 
         # Physical node — gets rack and tenant (Region linked via standalone Site entity)
         device_kwargs = dict(
@@ -717,9 +712,6 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         # Fallback: parse ipconfig0 from cloud-init config when guest agent has no IPs
         if not all_ipv4s:
-            ipconfig_keys = [k for k in vm_config if k.startswith("ipconfig")]
-            net_keys = [k for k in vm_config if k.startswith("net")]
-            print(f"[proxmox-discovery] VM {vm_name}: fallback search — ipconfig keys={ipconfig_keys}, net keys={net_keys}", file=sys.stderr)
             try:
                 for key in ("ipconfig0", "ipconfig1"):
                     ipconf = vm_config.get(key, "")
@@ -731,16 +723,11 @@ class ProxmoxDiscoveryBackend(_Backend):
                             if addr and prefix and not addr.startswith("127."):
                                 all_ipv4s.append({"address": addr, "prefix": prefix})
                                 collected_ifaces.append(("eth0", None, [{"address": addr, "prefix": prefix}]))
-                                print(f"[proxmox-discovery] VM {vm_name}: fallback IP from {key}={addr}/{prefix}")
                                 break
             except Exception:
                 pass
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
-        if primary_addr:
-            print(f"[proxmox-discovery] VM {vm_name}: primary_ip4={primary_addr}/{primary_prefix} (from {len(all_ipv4s)} candidates)")
-        else:
-            print(f"[proxmox-discovery] VM {vm_name}: no primary_ip4 ({len(collected_ifaces)} ifaces, {len(all_ipv4s)} IPv4s, status={vm_status})", file=sys.stderr)
         vm_desc = _sanitize_description(vm_desc)
 
         vm_kwargs = dict(
@@ -852,10 +839,6 @@ class ProxmoxDiscoveryBackend(_Backend):
                 print(f"[proxmox-discovery] DEBUG: Failed to get interfaces for LXC {ct_name} ({vmid}): {e}", file=sys.stderr)
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
-        if primary_addr:
-            print(f"[proxmox-discovery] LXC {ct_name}: primary_ip4={primary_addr}/{primary_prefix} (from {len(all_ipv4s)} candidates)")
-        else:
-            print(f"[proxmox-discovery] LXC {ct_name}: no primary_ip4 ({len(collected_ifaces)} ifaces, {len(all_ipv4s)} IPv4s, status={ct_status})", file=sys.stderr)
         ct_desc = _sanitize_description(ct_desc)
 
         vm_kwargs = dict(

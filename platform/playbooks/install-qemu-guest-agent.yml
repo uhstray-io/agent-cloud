@@ -1,0 +1,46 @@
+---
+# install-qemu-guest-agent.yml — Install QEMU guest agent on target VMs
+#
+# Enables the Proxmox API to query VM network interfaces and IPs,
+# which the proxmox_discovery worker needs for primary_ip4 assignment.
+#
+# Idempotent: skips if already installed and running.
+# Requires become (sudo).
+#
+# Usage: -e "target_service=all_vms" or specific group
+
+- name: "Install QEMU guest agent on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: true
+  become: true
+  vars:
+    target_service: "ungrouped"
+
+  tasks:
+    - name: "Check if qemu-guest-agent is installed"
+      ansible.builtin.command: dpkg -l qemu-guest-agent
+      register: _qga_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Install qemu-guest-agent"
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+        update_cache: true
+      when: _qga_check.rc != 0
+
+    - name: "Enable and start qemu-guest-agent"
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        enabled: true
+        state: started
+
+    - name: "Verify agent is running"
+      ansible.builtin.command: systemctl is-active qemu-guest-agent
+      register: _qga_status
+      changed_when: false
+
+    - name: "Report status"
+      ansible.builtin.debug:
+        msg: "qemu-guest-agent on {{ ansible_hostname }}: {{ _qga_status.stdout }}"
