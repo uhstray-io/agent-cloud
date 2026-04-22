@@ -717,6 +717,9 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         # Fallback: parse ipconfig0 from cloud-init config when guest agent has no IPs
         if not all_ipv4s:
+            ipconfig_keys = [k for k in vm_config if k.startswith("ipconfig")]
+            net_keys = [k for k in vm_config if k.startswith("net")]
+            print(f"[proxmox-discovery] VM {vm_name}: fallback search — ipconfig keys={ipconfig_keys}, net keys={net_keys}", file=sys.stderr)
             try:
                 for key in ("ipconfig0", "ipconfig1"):
                     ipconf = vm_config.get(key, "")
