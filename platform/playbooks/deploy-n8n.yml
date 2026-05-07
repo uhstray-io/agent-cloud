@@ -89,16 +89,18 @@
         N8N_URL: "{{ service_url | default('http://localhost:5678') }}"
       register: _deploy
       changed_when: true
+      no_log: true
 
-    - name: "Deploy output"
+    - name: "Deploy output (filtered)"
       ansible.builtin.debug:
-        var: _deploy.stdout_lines
+        msg: "{{ _deploy.stdout_lines | reject('match', '.*N8N_API_KEY=.*') | list }}"
 
     - name: "Extract API key from deploy output"
       ansible.builtin.set_fact:
         _n8n_api_key: >-
           {{ _deploy.stdout | regex_search('N8N_API_KEY=(.+)', '\1') | first | default('') }}
       when: "'N8N_API_KEY=' in _deploy.stdout"
+      no_log: true
 
 # ── Phase 3: Store runtime credentials in OpenBao ────────────────────
 - name: "Phase 3 - Store runtime credentials"
@@ -160,6 +162,8 @@
         status_code: [200]
         validate_certs: false
         timeout: 30
+      register: _health
+      until: _health.status == 200
       retries: 5
       delay: 10
       when: service_url is defined

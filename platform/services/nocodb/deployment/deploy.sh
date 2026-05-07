@@ -15,6 +15,12 @@ source "${LIB_DIR}/common.sh"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 NOCODB_URL="${NOCODB_URL:-http://localhost:8080}"
 ADMIN_EMAIL="${NOCODB_ADMIN_EMAIL:-admin@uhstray.io}"
+PROJECT_NAME="nocodb"
+
+compose() {
+  detect_runtime
+  $COMPOSE_CMD -p "$PROJECT_NAME" -f compose.yml "$@"
+}
 
 # ── Step 1: Start services ────────────────────────────────────────────────────
 
@@ -30,10 +36,14 @@ step_start_services() {
 step_bootstrap_credentials() {
   info "Step 2: Bootstrapping NocoDB credentials..."
 
+  if [ ! -f "${CONFIG_DIR}/nocodb.env" ]; then
+    error "config/nocodb.env not found — run deploy-nocodb.yml to generate it."
+  fi
+
   local admin_pass
-  admin_pass=$(grep '^NOCODB_ADMIN_PASSWORD=' "${CONFIG_DIR}/nocodb.env" 2>/dev/null | cut -d= -f2-)
+  admin_pass=$(grep '^NOCODB_ADMIN_PASSWORD=' "${CONFIG_DIR}/nocodb.env" | cut -d= -f2-)
   if [ -z "$admin_pass" ]; then
-    warn "  No NOCODB_ADMIN_PASSWORD found in config/nocodb.env — skipping bootstrap."
+    warn "  No NOCODB_ADMIN_PASSWORD in config/nocodb.env — skipping bootstrap."
     return 0
   fi
 

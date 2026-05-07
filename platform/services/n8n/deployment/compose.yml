@@ -40,7 +40,6 @@ services:
       retries: 10
 
   n8n:
-    <<: *n8n-env
     image: docker.n8n.io/n8nio/n8n:latest
     restart: always
     ports:
@@ -72,8 +71,5 @@ services:
 
 volumes:
   db_storage:
-    name: n8n_db_storage
   redis_storage:
-    name: n8n_redis_storage
   n8n_storage:
-    name: n8n_n8n_storage

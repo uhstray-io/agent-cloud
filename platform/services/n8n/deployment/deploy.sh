@@ -15,6 +15,12 @@ source "${LIB_DIR}/common.sh"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 N8N_URL="${N8N_URL:-http://localhost:5678}"
 ADMIN_EMAIL="${N8N_ADMIN_EMAIL:-admin@uhstray.io}"
+PROJECT_NAME="n8n"
+
+compose() {
+  detect_runtime
+  $COMPOSE_CMD -p "$PROJECT_NAME" -f compose.yml "$@"
+}
 
 # ── Step 1: Start services ────────────────────────────────────────────────────
 
@@ -30,10 +36,14 @@ step_start_services() {
 step_bootstrap_credentials() {
   info "Step 2: Bootstrapping n8n credentials..."
 
+  if [ ! -f "${CONFIG_DIR}/n8n.env" ]; then
+    error "config/n8n.env not found — run deploy-n8n.yml to generate it."
+  fi
+
   local owner_pass
-  owner_pass=$(grep '^N8N_OWNER_PASSWORD=' "${CONFIG_DIR}/n8n.env" 2>/dev/null | cut -d= -f2-)
+  owner_pass=$(grep '^N8N_OWNER_PASSWORD=' "${CONFIG_DIR}/n8n.env" | cut -d= -f2-)
   if [ -z "$owner_pass" ]; then
-    warn "  No N8N_OWNER_PASSWORD found in config/n8n.env — skipping bootstrap."
+    warn "  No N8N_OWNER_PASSWORD in config/n8n.env — skipping bootstrap."
     return 0
   fi
 

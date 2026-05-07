@@ -15,8 +15,9 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/nocodb/deployme
   grep -q '{{ secrets.nocodb_jwt_secret }}' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 
-@test "nocodb.env.j2 contains NC_DB connection string pointing to postgres service" {
+@test "nocodb.env.j2 contains NC_DB connection string with URL-encoded password" {
   grep -q 'NC_DB=pg://postgres:5432' "$TEMPLATE_DIR/nocodb.env.j2"
+  grep -q 'urlencode' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 
 @test "nocodb.env.j2 has NC_INVITE_ONLY_SIGNUP" {
