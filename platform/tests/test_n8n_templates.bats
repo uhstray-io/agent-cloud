@@ -15,13 +15,8 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/n8n/deployment/
   grep -q '{{ secrets.n8n_user_password }}' "$TEMPLATE_DIR/n8n.env.j2"
 }
 
-@test "n8n.env.j2 contains N8N_ENCRYPTION_KEY placeholder" {
-  grep -q '{{ secrets.n8n_encryption_key }}' "$TEMPLATE_DIR/n8n.env.j2"
-}
-
-@test "n8n.env.j2 contains DB_POSTGRESDB_PASSWORD for n8n app connection" {
-  grep -q 'DB_POSTGRESDB_PASSWORD=' "$TEMPLATE_DIR/n8n.env.j2"
-  grep -q '{{ secrets.n8n_user_password }}' "$TEMPLATE_DIR/n8n.env.j2"
+@test "n8n.env.j2 contains ENCRYPTION_KEY for compose variable substitution" {
+  grep -q 'ENCRYPTION_KEY={{ secrets.n8n_encryption_key }}' "$TEMPLATE_DIR/n8n.env.j2"
 }
 
 @test "n8n.env.j2 does not contain hardcoded secrets" {

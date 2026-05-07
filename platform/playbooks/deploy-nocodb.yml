@@ -21,7 +21,7 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _service_url: "{{ service_url | default('http://localhost:8181') }}"
+    _service_url: "{{ service_url | default('http://localhost:8080') }}"
     _secret_definitions:
       - {name: nocodb_pg_password, type: random, length: 32}
       - {name: nocodb_jwt_secret, type: random, length: 32}
@@ -76,7 +76,7 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('') }}"
-        NOCODB_URL: "{{ service_url | default('http://localhost:8181') }}"
+        NOCODB_URL: "{{ service_url | default('http://localhost:8080') }}"
       register: _deploy
       changed_when: true
 
@@ -126,7 +126,7 @@
         body:
           data:
             nocodb_api_token: "{{ _nocodb_api_token }}"
-            url: "{{ service_url | default('http://localhost:8181') }}"
+            url: "{{ service_url | default('http://localhost:8080') }}"
         status_code: [200]
       delegate_to: localhost
       run_once: true
@@ -146,7 +146,7 @@
   tasks:
     - name: "Health check"
       ansible.builtin.uri:
-        url: "{{ service_url | default('http://localhost:8181') }}/api/v1/health"
+        url: "{{ service_url | default('http://localhost:8080') }}/api/v1/health"
         status_code: [200]
         validate_certs: false
         timeout: 30

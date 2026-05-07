@@ -13,7 +13,7 @@ LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
 source "${LIB_DIR}/common.sh"
 
 CONFIG_DIR="${SCRIPT_DIR}/config"
-NOCODB_URL="${NOCODB_URL:-http://localhost:8181}"
+NOCODB_URL="${NOCODB_URL:-http://localhost:8080}"
 ADMIN_EMAIL="${NOCODB_ADMIN_EMAIL:-admin@uhstray.io}"
 
 # ── Step 1: Start services ────────────────────────────────────────────────────

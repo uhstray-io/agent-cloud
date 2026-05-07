@@ -96,7 +96,13 @@ step_bootstrap_credentials() {
     return 0
   fi
   local insert_result
-  insert_result=$($CONTAINER_ENGINE exec workflow-n8n-postgres \
+  local pg_container
+  pg_container=$($CONTAINER_ENGINE ps --format '{{.Names}}' 2>/dev/null | grep -E 'postgres' | head -1)
+  if [ -z "$pg_container" ]; then
+    warn "  No postgres container found — aborting DB insert."
+    return 0
+  fi
+  insert_result=$($CONTAINER_ENGINE exec "$pg_container" \
     psql -U n8n_user -d n8n -t -A -c \
     "INSERT INTO api_key (user_id, label, api_key, created_at, updated_at)
      SELECT '1', 'nemoclaw-agent', '${api_key}', NOW(), NOW()
