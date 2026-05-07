@@ -44,7 +44,7 @@ orb:
             description: "Auto-discovered by network scan"
         scope:
           targets:
-            - 192.168.1.0/24
+            - {{ discovery_target_subnet }}
           scan_types: [syn]
           # OS fingerprinting (nmap -O, requires privileged)
           os_detection: true
@@ -104,7 +104,7 @@ orb:
               description: "Auto-discovered IP"
         scope:
           targets:
-            - host: 192.168.1.0/24
+            - host: {{ discovery_target_subnet }}
           authentication:
             protocol_version: SNMPv2c
             community: "${vault://secret/services/netbox/snmp_community}"
