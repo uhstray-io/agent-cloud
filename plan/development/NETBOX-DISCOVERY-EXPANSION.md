@@ -73,7 +73,7 @@ graph TB
 
 | Tier | Source | Worker | Schedule | Entities | What It Discovers |
 |------|--------|--------|----------|----------|-------------------|
-| **T1 -- Network Scan** | nmap | network_discovery | Every 2h | IPs, ports | Live hosts on 192.168.1.0/24 |
+| **T1 -- Network Scan** | nmap | network_discovery | Every 2h | IPs, ports | Live hosts on {{ discovery_target_subnet }} |
 | **T2 -- SNMP Enrichment** | SNMPv2c | snmp_discovery | With T1 | Device details | Hostname, manufacturer, model, interfaces, MACs |
 | **T3 -- API Workers** | Proxmox REST | proxmox_discovery | Every 6h | 97 entities | Nodes, VMs, LXC, interfaces, guest IPs |
 | **T3 -- API Workers** | pfSense REST | pfsense_sync | Every 15m | ~30 entities | Firewall device, interfaces, ARP, gateways |
@@ -127,7 +127,7 @@ pfSense   -> Device (role: gateway-router) + Interface + IPAddress (primary_ip4)
 Orb-agent worker using nmap SYN/connect scans.
 
 **Key behaviors:**
-- Scans 192.168.1.0/24 every 2 hours
+- Scans {{ discovery_target_subnet }} every 2 hours
 - Discovers 32+ live IPs and open ports
 - Creates bare IPAddress entities (no device association)
 

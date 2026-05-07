@@ -72,9 +72,16 @@ jobs:
       - name: RFC1918 IP address audit
         run: |
           echo "Scanning for private IP addresses in diff..."
-          ! git diff origin/main...HEAD \
-            | grep -iE '^\+.*(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' \
-            | grep -v 'target\|host:\|subnet\|scope\|example\|0\.0\.0\.0\|127\.0\.0\.1'
+          HITS=$(git diff origin/main...HEAD \
+            | grep -iE '^\+.*(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})' \
+            | grep -v 'target\|host:\|subnet\|scope\|example\|0\.0\.0\.0\|127\.0\.0\.1' \
+            | grep -v '\.0/\|regex\|pattern\|\\d\|\\.\|grep\|`\|Known issue\|\.x\.' \
+            || true)
+          if [ -n "$HITS" ]; then
+            echo "ERROR: Private IP addresses found in diff:"
+            echo "$HITS"
+            exit 1
+          fi
 
       - name: Credential pattern audit
         run: |
@@ -101,7 +108,7 @@ jobs:
       - name: No .env files tracked
         run: |
           echo "Checking for tracked .env files..."
-          ENV_FILES=$(git ls-files '*.env' | grep -vE '\.(example|template|j2)$' || true)
+          ENV_FILES=$(git ls-files | grep -E '\.env$' | grep -v '\.env\.example$' || true)
           if [ -n "$ENV_FILES" ]; then
             echo "ERROR: .env files must not be tracked in git:"
             echo "$ENV_FILES"

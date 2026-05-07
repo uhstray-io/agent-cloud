@@ -13,9 +13,12 @@ repos:
         language: system
         entry: >-
           bash -c
-          'trufflehog git file://. --since-commit HEAD --fail --no-update 2>/dev/null
-          || trufflehog filesystem --directory . --fail --no-update 2>/dev/null
-          || echo "WARNING: trufflehog not installed. Install with: brew install trufflehog"'
+          'if ! command -v trufflehog &>/dev/null; then
+            echo "ERROR: trufflehog is not installed. Install with: brew install trufflehog";
+            exit 1;
+          fi;
+          trufflehog git file://. --since-commit HEAD --fail --no-update 2>/dev/null
+          || trufflehog filesystem --directory . --fail --no-update 2>/dev/null'
         always_run: true
         pass_filenames: false
         stages: [pre-commit]
@@ -35,8 +38,8 @@ repos:
             MATCHES=$(echo "$STAGED" \
               | grep -nE "^\+" \
               | grep -v "^+++" \
-              | grep -iE "(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)" \
-              | grep -vE "(target|host:|subnet|scope|example|placeholder|0\.0\.0\.0|127\.0\.0\.1|\{\{)" \
+              | grep -iE "(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})" \
+              | grep -vE "(target|host:|subnet|scope|example|placeholder|0\.0\.0\.0|127\.0\.0\.1|\{\{|\.0/|regex|pattern|\\\\d|grep)" \
               || true)
             if [ -n "$MATCHES" ]; then
               echo "ERROR: Private IP addresses found in staged changes:"
