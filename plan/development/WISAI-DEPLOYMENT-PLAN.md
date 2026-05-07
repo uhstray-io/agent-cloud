@@ -44,36 +44,27 @@ The two services share no runtime — they only share an upstream reference (the
 
 ### Deployment topology
 
-```
-                     Operator (browser)
-                           │
-                 ┌─────────┴─────────┐
-                 │  Caddy (future)   │ ← HTTPS, Authentik OIDC
-                 └─────────┬─────────┘
-                           │
-                 ┌─────────▼─────────┐
-                 │  inference-webui  │ ← Open WebUI + Postgres
-                 │   (DMZ VM)        │
-                 └─────────┬─────────┘
-           OLLAMA_BASE_URLS (allow-listed outbound to Inference VLAN)
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   ┌────────────┐   ┌────────────┐   ┌────────────┐
-   │ inference- │   │ inference- │   │ inference- │
-   │  ollama    │   │  ollama    │   │  ollama    │
-   │ (GPU VM 1) │   │ (GPU VM 2) │   │ (GPU VM N) │
-   │ :11434     │   │ :11434     │   │ :11434     │
-   │ bound to   │   │ bound to   │   │ bound to   │
-   │ internal IP│   │ internal IP│   │ internal IP│
-   └────────────┘   └────────────┘   └────────────┘
-   DCGM :9400 (profile-gated, for future Prometheus scrape)
+```mermaid
+graph TD
+    OP["Operator (browser)"]
+    CADDY["Caddy (future)<br/>HTTPS, Authentik OIDC"]
+    WEBUI["inference-webui<br/>Open WebUI + Postgres<br/>(DMZ VM)"]
 
-Agents (NemoClaw, NetClaw, WisBot, Cowork):
-  → consume WisAI's OpenAI-compatible API via Open WebUI, using a single
-    endpoint URL stored at secret/{{ vault_secret_prefix }}/inference/endpoint
-    (Open WebUI fans out to Ollama nodes via OLLAMA_BASE_URLS — the
-     coordinator is both the user UI and the agent API surface)
+    subgraph VLAN["Inference VLAN (OLLAMA_BASE_URLS)"]
+        direction LR
+        N1["inference-ollama<br/>(GPU VM 1)<br/>:11434 bound to internal IP<br/>DCGM :9400"]
+        N2["inference-ollama<br/>(GPU VM 2)<br/>:11434 bound to internal IP<br/>DCGM :9400"]
+        NN["inference-ollama<br/>(GPU VM N)<br/>:11434 bound to internal IP<br/>DCGM :9400"]
+    end
+
+    AGENTS["Agents (NemoClaw, NetClaw, WisBot, Cowork)<br/>consume OpenAI-compatible API via Open WebUI<br/>single endpoint URL from OpenBao"]
+
+    OP --> CADDY
+    CADDY --> WEBUI
+    WEBUI -- "allow-listed outbound" --> N1
+    WEBUI --> N2
+    WEBUI --> NN
+    AGENTS --> WEBUI
 ```
 
 ### Why the WebUI does NOT share a VM with an Ollama node

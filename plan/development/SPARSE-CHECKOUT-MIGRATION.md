@@ -17,36 +17,35 @@
 
 ### Architecture
 
-```
-~/agent-cloud/              ← sparse git checkout (READ-ONLY source)
-  platform/
-    services/netbox/
-      deployment/
-        deploy.sh
-        post-deploy.sh
-        docker-compose.yml
-        templates/*.j2      ← Jinja2 templates (source)
-        lib/common.sh
-        workers/             ← worker packages
-    lib/                     ← shared libraries
-      common.sh
-      bao-client.sh
+```mermaid
+graph TD
+    subgraph CLONE["~/agent-cloud/ (sparse git checkout, READ-ONLY source)"]
+        direction TD
+        CP["platform/"]
+        CS["services/netbox/deployment/"]
+        CDEP["deploy.sh"]
+        CPOST["post-deploy.sh"]
+        CCOMP["docker-compose.yml"]
+        CTMPL["templates/*.j2 (Jinja2 source)"]
+        CWRK["workers/"]
+        CLIB["platform/lib/"]
+        CLCS["common.sh"]
+        CLBAO["bao-client.sh"]
+    end
 
-~/services/netbox/          ← runtime working directory (GENERATED, gitignored equivalent)
-  .env                      ← templated by Ansible from OpenBao
-  env/
-    netbox.env
-    postgres.env
-    discovery.env
-  discovery/
-    agent.yaml              ← templated by Ansible with vault creds
-    hydra.yaml
-    agent-resolved.yaml
-    snmp-extensions/         ← symlink → clone
-  secrets/
-    netbox_to_diode_client_secret.txt  ← bind-mount file
-  docker-compose.yml        ← symlink → clone
-  netbox-docker/            ← upstream clone (managed by deploy.sh)
+    subgraph RUNTIME["~/services/netbox/ (runtime working dir, GENERATED)"]
+        direction TD
+        RENV[".env (templated by Ansible from OpenBao)"]
+        RENVD["env/<br/>netbox.env, postgres.env, discovery.env"]
+        RDISC["discovery/<br/>agent.yaml, hydra.yaml, agent-resolved.yaml"]
+        RSNMP["snmp-extensions/ (symlink to clone)"]
+        RSEC["secrets/<br/>netbox_to_diode_client_secret.txt (bind-mount)"]
+        RCOMP["docker-compose.yml (symlink to clone)"]
+        RNBDOCK["netbox-docker/ (upstream clone, managed by deploy.sh)"]
+    end
+
+    RCOMP -. "symlink" .-> CCOMP
+    RSNMP -. "symlink" .-> CWRK
 ```
 
 ### Key Principles

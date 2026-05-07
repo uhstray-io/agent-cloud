@@ -1,7 +1,7 @@
 # Automation Composability Plan
 
-**Date:** 2026-04-02 (updated 2026-04-05)
-**Status:** IMPLEMENTED — NetBox fully deployed via composable pattern. Core task library proven. NocoDB and n8n rollout pending. Updated to incorporate sparse checkout + runtime directory separation.
+**Date:** 2026-04-02 (updated 2026-05-06)
+**Status:** ACTIVE — Core composable deployment pattern proven for NetBox. Task library and playbook patterns are the standard for all service deployments. Implementation status of individual tasks and service migrations is tracked in development plans.
 **Context:** The NetBox deployment exposed that deploy.sh scripts mix infrastructure concerns (credential management, OpenBao) with container operations (compose, migrations). This plan decomposes service deployments into reusable Ansible building blocks that Semaphore orchestrates.
 
 ---
@@ -22,27 +22,44 @@ Each service's deploy.sh is a monolith that handles everything from secret gener
 
 ### Architecture
 
-```
-OpenBao (source of truth — all credentials live here)
-  ↑ generate + store (first deploy only)
-  ↓ fetch (every deploy)
-Ansible manage-secrets.yml (in-memory, never writes secrets to disk files)
-  ↓ Jinja2 template
-~/services/<name>/ (runtime dir — env/*.env, .env, config.yaml, mode 0600)
-  ↓ read at container start (compose.yml symlinked from clone)
-Docker Compose (variable substitution from .env, env_file from env/*.env)
-  ↓
-deploy.sh (container lifecycle only: pull, build, start, wait, migrate)
-  ↓ runtime credentials created (e.g., orb-agent OAuth2)
-post-deploy.sh (writes new creds to .env → Ansible Phase 4 syncs to OpenBao)
+```mermaid
+flowchart TD
+    BAO["OpenBao<br/>(source of truth — all credentials live here)"]
+    ANS["Ansible manage-secrets.yml<br/>(in-memory, never writes secrets to disk files)"]
+    RTD["~/services/&lt;name&gt;/<br/>(runtime dir — env/*.env, .env, config.yaml, mode 0600)"]
+    CMP["Docker Compose<br/>(variable substitution from .env, env_file from env/*.env)"]
+    DEP["deploy.sh<br/>(container lifecycle only: pull, build, start, wait, migrate)"]
+    POST["post-deploy.sh<br/>(writes new creds to .env)"]
 
-Source/Runtime Directory Split:
-  ~/agent-cloud/              ← sparse git checkout (READ-ONLY source code)
-  ~/services/<name>/          ← runtime working directory (GENERATED, mutable)
-    .env, env/*.env           ← templated by Ansible from OpenBao secrets
-    docker-compose.yml        ← symlink → clone
-    lib/                      ← symlink → clone's platform/lib/
-    discovery/agent.yaml      ← templated by Ansible with vault creds
+    BAO -- "generate + store (first deploy only)" --> ANS
+    ANS -- "fetch (every deploy)" --> BAO
+    ANS -- "Jinja2 template" --> RTD
+    RTD -- "read at container start<br/>(compose.yml symlinked from clone)" --> CMP
+    CMP --> DEP
+    DEP -- "runtime credentials created<br/>(e.g., orb-agent OAuth2)" --> POST
+    POST -- "Ansible Phase 4 syncs to OpenBao" --> BAO
+```
+
+**Source/Runtime Directory Split:**
+
+```mermaid
+graph LR
+    subgraph "READ-ONLY source code"
+        CLONE["~/agent-cloud/<br/>(sparse git checkout)"]
+    end
+    subgraph "GENERATED, mutable"
+        RUNTIME["~/services/&lt;name&gt;/"]
+        ENV[".env, env/*.env<br/>(templated by Ansible from OpenBao)"]
+        COMPOSE["docker-compose.yml<br/>(symlink to clone)"]
+        LIB["lib/<br/>(symlink to clone platform/lib/)"]
+        AGENT["discovery/agent.yaml<br/>(templated by Ansible with vault creds)"]
+    end
+    RUNTIME --> ENV
+    RUNTIME --> COMPOSE
+    RUNTIME --> LIB
+    RUNTIME --> AGENT
+    COMPOSE -. "symlink" .-> CLONE
+    LIB -. "symlink" .-> CLONE
 ```
 
 See `plan/SPARSE-CHECKOUT-MIGRATION.md` for the full directory layout and migration details.
@@ -157,31 +174,31 @@ The split enables:
 
 ```
 platform/playbooks/tasks/
-  manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files  [IMPLEMENTED]
-  manage-approle.yml       Create/update AppRole + policy, store credentials       [IMPLEMENTED]
-  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials           [IMPLEMENTED]
-  write-secret-metadata.yml     Write KV v2 custom metadata after secret store     [PLANNED — Phase 2]
-  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper      [PLANNED — Phase 4]
-  revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients  [PLANNED — Phase 4]
-  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check             [LEGACY]
-  clean-service.yml        Destroy containers, volumes, clone + runtime dir         [UPDATE NEEDED]
-  sparse-checkout.yml      Sparse-clone monorepo for specific service paths         [PLANNED]
-  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone             [PLANNED]
-  run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR)    [PLANNED]
-  verify-health.yml        Health check a service endpoint                          [PLANNED]
+  manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
+  manage-approle.yml       Create/update AppRole + policy, store credentials     
+  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials         
+  write-secret-metadata.yml     Write KV v2 custom metadata after secret store   
+  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper    
+  revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients
+  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check           
+  clean-service.yml        Destroy containers, volumes, clone + runtime dir       
+  sparse-checkout.yml      Sparse-clone monorepo for specific service paths       
+  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone           
+  run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR)  
+  verify-health.yml        Health check a service endpoint                        
 
 platform/playbooks/
   deploy-<service>.yml     Composable: clone + secrets + deploy + verify            [NETBOX DONE]
   clean-deploy-<service>.yml  Wipe + fresh deploy                                  [NETBOX DONE]
-  check-secrets.yml        Read-only secret inventory from OpenBao                  [IMPLEMENTED]
-  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)              [IMPLEMENTED]
-  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao                             [IMPLEMENTED]
-  harden-ssh.yml           NOPASSWD sudo + sshd lockdown                            [IMPLEMENTED]
-  install-docker.yml       Install Docker CE (standalone)                            [IMPLEMENTED]
-  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)       [IMPLEMENTED]
-  rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API)    [PLANNED — Phase 4]
-  rotate-ssh-keys.yml           Annual SSH key rotation                            [PLANNED — Phase 4]
-  audit-credentials.yml         Weekly credential inventory + stale detection      [PLANNED — Phase 5]
+  check-secrets.yml        Read-only secret inventory from OpenBao                
+  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)            
+  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao                           
+  harden-ssh.yml           NOPASSWD sudo + sshd lockdown                          
+  install-docker.yml       Install Docker CE (standalone)                          
+  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)     
+  rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API)  
+  rotate-ssh-keys.yml           Annual SSH key rotation                          
+  audit-credentials.yml         Weekly credential inventory + stale detection    
 ```
 
 ### Task Responsibilities
@@ -494,16 +511,15 @@ When secrets or database schemas change incompatibly, a clean deploy destroys vo
 
 ---
 
-## Migration Path
+## Implementation Status
 
-1. **NetBox (current):** First service to implement full composable pattern with sparse checkout + runtime dir
-2. **Extract reusable tasks:** `sparse-checkout.yml`, `setup-runtime-dir.yml`, `manage-secrets.yml`, `run-deploy.yml`, `verify-health.yml` from deploy-netbox.yml
-3. **NocoDB + n8n:** Apply same pattern — define `_sparse_paths`, `_secret_definitions`, create env templates, deploy.sh uses `CLONE_DIR`
-4. **OpenBao:** Special case — bootstraps itself, but Ansible still manages post-deploy secret sync
-5. **Legacy cleanup:** Deprecate `clone-and-deploy.yml` once all services use sparse checkout pattern
-6. **All future services:** Follow the composable pattern with sparse checkout + runtime dir from day one
+The core composable pattern is proven (NetBox reference implementation). Migration of remaining services and implementation of planned tasks is tracked in development plans:
 
-See `plan/SPARSE-CHECKOUT-MIGRATION.md` for phased rollout details. During migration, services not yet converted continue using `clone-and-deploy.yml` — the `manage-secrets.yml` backward-compatible `default()` pattern ensures both old and new services work.
+- `plan/development/SPARSE-CHECKOUT-MIGRATION.md` — sparse checkout and runtime directory separation
+- `plan/architecture/SERVICE-INTEGRATION-PLAN.md` — per-service migration status and onboarding checklist
+- `plan/development/CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md` — credential rotation and metadata tasks
+
+During migration, services not yet converted continue using `clone-and-deploy.yml` — the `manage-secrets.yml` backward-compatible `default()` pattern ensures both old and new services work.
 
 ---
 
@@ -535,6 +551,8 @@ See `plan/SPARSE-CHECKOUT-MIGRATION.md` for phased rollout details. During migra
 | Metadata tracks lifecycle | Every secret has `created_at`, `creator`, `rotation_schedule` in KV v2 metadata |
 | Audit playbook reports staleness | Credentials older than `rotation_schedule` flagged |
 | AppRole TTLs enforced | `secret_id_ttl` > 0 and `token_num_uses` > 0 for all service AppRoles |
+
+---
 
 ## Security Considerations
 
@@ -609,17 +627,21 @@ All AppRoles must have bounded `secret_id_ttl` and `token_num_uses`. A `secret_i
 Each deployment concern should be its own playbook that can run independently. Don't embed optional components (like the orb-agent) into the service deploy — create a separate workflow.
 
 **Before (brittle):**
-```
-deploy-netbox.yml → 6 phases including orb-agent
-  If orb-agent fails, entire deploy fails.
-  Can't redeploy orb-agent without redeploying NetBox.
+
+```mermaid
+flowchart LR
+    D["deploy-netbox.yml"] --> P["6 phases including orb-agent"]
+    P --> F1["If orb-agent fails, entire deploy fails"]
+    P --> F2["Can't redeploy orb-agent without redeploying NetBox"]
 ```
 
 **After (decoupled):**
-```
-deploy-netbox.yml → 5 phases (NetBox only)
-deploy-orb-agent.yml → independent (Diode creds + agent start)
-run-pfsense-sync.yml → independent (scheduled every 15 min)
+
+```mermaid
+flowchart LR
+    D1["deploy-netbox.yml"] --> P1["5 phases (NetBox only)"]
+    D2["deploy-orb-agent.yml"] --> P2["Diode creds + agent start"]
+    D3["run-pfsense-sync.yml"] --> P3["scheduled every 15 min"]
 ```
 
 **Benefits:**

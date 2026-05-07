@@ -39,60 +39,55 @@ These align with the existing platform design principles and composable automati
 
 ### Where OPA Sits in the Four-Layer Model
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        AI Layer                              │
-│  NemoClaw (.163) · NetClaw (.165) · WisBot · Claude Cowork  │
-│  "Can I do X?" ──────────────────────────┐                  │
-│                                          ▼                  │
-├──────────────────────────────────────────────────────────────┤
-│                     Guardrail Layer                          │
-│                                                              │
-│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │ OpenBao  │    │     OPA      │    │   Kyverno    │       │
-│  │ (.164)   │    │   (NEW VM)   │    │  (k8s only)  │       │
-│  │          │    │              │    │              │        │
-│  │ "Here    │    │ "Are you     │    │ "Is this     │       │
-│  │  are your│    │  allowed to  │    │  k8s resource│       │
-│  │  creds"  │    │  do this?"   │    │  compliant?" │       │
-│  └──────────┘    └──────────────┘    └──────────────┘       │
-│       ▲                ▲                    ▲                │
-│       │                │                    │                │
-│  Credential        Authorization        Admission           │
-│  Lifecycle         Decisions            Control             │
-│  (AppRole,         (agent actions,      (pod specs,         │
-│   rotation,         service calls,       image policies,    │
-│   metadata)         time/rate limits)    network policies)  │
-├──────────────────────────────────────────────────────────────┤
-│                    Automation Layer                           │
-│  Semaphore (.117) → Ansible playbooks → deploy.sh           │
-├──────────────────────────────────────────────────────────────┤
-│                     Platform Layer                           │
-│  Docker/Podman · Proxmox VMs · Kubernetes/k0s (future)      │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph AI["AI Layer"]
+        AGENTS["NemoClaw, NetClaw, WisBot, Claude Cowork"]
+    end
+
+    subgraph GR["Guardrail Layer"]
+        direction LR
+        OPENBAO["OpenBao<br/><i>'Here are your creds'</i><br/>Credential Lifecycle<br/>(AppRole, rotation, metadata)"]
+        OPA["OPA (NEW VM)<br/><i>'Are you allowed to do this?'</i><br/>Authorization Decisions<br/>(agent actions, service calls, time/rate limits)"]
+        KYVERNO["Kyverno (k8s only)<br/><i>'Is this k8s resource compliant?'</i><br/>Admission Control<br/>(pod specs, image policies, network policies)"]
+    end
+
+    subgraph AUTO["Automation Layer"]
+        SEM["Semaphore -> Ansible playbooks -> deploy.sh"]
+    end
+
+    subgraph PLAT["Platform Layer"]
+        INFRA["Docker/Podman, Proxmox VMs, Kubernetes/k0s (future)"]
+    end
+
+    AGENTS -- "Can I do X?" --> OPA
+    AGENTS --> OPENBAO
+    AI --> GR
+    GR --> AUTO
+    AUTO --> PLAT
 ```
 
 ### Agent Authorization Flow
 
 The runtime flow for an agent making a service call:
 
-```
-Agent (NemoClaw/NetClaw)
-  │
-  ├─ 1. Query OPA: POST http://opa:8181/v1/data/agentcloud/allow
-  │     Input: { agent, action, service, endpoint, context }
-  │
-  ├─ 2. OPA evaluates Rego policy → { allow: true/false, reason: "..." }
-  │     Decision logged to OPA decision log
-  │
-  ├─ 3. If allowed: Fetch credential from OpenBao
-  │     GET http://openbao:8200/v1/secret/data/services/<service>
-  │
-  ├─ 4. Execute action against target service
-  │     POST http://<service>:<port>/<endpoint>
-  │
-  └─ 5. Log result to NocoDB task_log
-        { agent, action, service, opa_decision, result }
+```mermaid
+sequenceDiagram
+    participant Agent as Agent (NemoClaw/NetClaw)
+    participant OPA as OPA
+    participant BAO as OpenBao
+    participant SVC as Target Service
+    participant DB as NocoDB task_log
+
+    Agent->>OPA: 1. POST /v1/data/agentcloud/allow<br/>{agent, action, service, endpoint, context}
+    OPA-->>Agent: 2. {allow: true/false, reason: "..."}<br/>Decision logged to OPA decision log
+    alt Allowed
+        Agent->>BAO: 3. GET /v1/secret/data/services/<service>
+        BAO-->>Agent: Credential
+        Agent->>SVC: 4. POST /<endpoint>
+        SVC-->>Agent: Result
+    end
+    Agent->>DB: 5. Log {agent, action, service, opa_decision, result}
 ```
 
 This is additive to the current flow — agents currently go straight from step 3 to step 4. OPA inserts steps 1-2 as a policy checkpoint without modifying the credential lifecycle.
@@ -101,16 +96,17 @@ This is additive to the current flow — agents currently go straight from step 
 
 One OPA instance, deployed as a Docker container on a dedicated lightweight VM. All agents and services query it over HTTP.
 
-```
-VM: opa-svc (192.168.1.TBD)
-  ├── Docker container: openpolicyagent/opa:latest
-  │   ├── Port 8181 (REST API — policy decisions)
-  │   ├── Port 8282 (diagnostics, optional)
-  │   └── /policies (mounted from runtime dir)
-  │
-  └── Policies loaded from:
-      ~/agent-cloud/platform/services/opa/deployment/policies/*.rego
-      (sparse checkout, read-only)
+```mermaid
+graph TD
+    subgraph VM["VM: opa-svc"]
+        subgraph DOCKER["Docker container: openpolicyagent/opa:latest"]
+            P1["Port 8181<br/>(REST API — policy decisions)"]
+            P2["Port 8282<br/>(diagnostics, optional)"]
+            POL["/policies<br/>(mounted from runtime dir)"]
+        end
+        SRC["Policies loaded from:<br/>~/agent-cloud/platform/services/opa/deployment/policies/*.rego<br/>(sparse checkout, read-only)"]
+    end
+    SRC -. "volume mount" .-> POL
 ```
 
 Resource requirements are minimal — OPA holds all policies and data in-memory, typically consuming ~50–100MB RAM with sub-millisecond evaluation times. A 1-core / 1GB RAM / 20GB disk VM is sufficient.
@@ -161,7 +157,7 @@ opa:
   cores: 1
   memory: 1024         # 1GB — OPA is extremely lightweight
   disk: 20
-  ip: "192.168.1.170"  # TBD — confirm against NetBox
+  ip: "{{ opa_service_ip }}"  # Set in site-config inventory
   container_engine: docker
   service_name: opa
   monorepo_deploy_path: "platform/services/opa/deployment"
@@ -357,7 +353,7 @@ Following the credential metadata standard from Credential-Lifecycle-Plan.md, ev
 {
   "created_at": "2026-04-07T12:00:00Z",
   "creator": "deploy-opa.yml",
-  "site": "uhstray-dc",
+  "site": "{{ site_name }}",
   "purpose": "OPA policy engine configuration",
   "rotation_schedule": "90d"
 }
@@ -395,11 +391,11 @@ import rego.v1
 
 default allow := false
 
-# ──────────────────────────────────────────────
+# --------------------------------------------------
 # Static data: loaded from data.json
 # Defines agent identities, service catalog,
 # and permission mappings
-# ──────────────────────────────────────────────
+# --------------------------------------------------
 
 # NemoClaw: API-only workflow automation
 allow if {
@@ -684,8 +680,9 @@ n8n workflows that trigger agent actions can include an OPA check node (HTTP Req
 
 OPA's decision log streams to stdout by default (configured with `--set=decision_logs.console=true`). In the compose environment, Docker collects these logs. When the observability stack (Loki) is deployed, logs route through the standard pipeline:
 
-```
-OPA container stdout → Docker log driver → Loki → Grafana dashboards
+```mermaid
+flowchart LR
+    OPA["OPA container stdout"] --> DOCKER["Docker log driver"] --> LOKI["Loki"] --> GRAF["Grafana dashboards"]
 ```
 
 This provides the missing "unified audit of agent decisions" identified in the Problem section. A Grafana dashboard can show: decisions per agent, deny rate, policy evaluation latency, and rate warning triggers.
@@ -783,25 +780,41 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 
 ## Dependency Map
 
-```
-Phase 1 (OPA Foundation)
-  ├── Requires: Proxmox provisioning (Phase 0 ✅), manage-approle.yml (✅)
-  ├── Requires: sparse-checkout.yml, setup-runtime-dir.yml (planned tasks)
-  └── Parallel with: NemoClaw Phase 1 integration work
+```mermaid
+graph TD
+    P1["Phase 1: OPA Foundation"]
+    P1R1["Requires: Proxmox provisioning (Phase 0), manage-approle.yml"]
+    P1R2["Requires: sparse-checkout.yml, setup-runtime-dir.yml (planned)"]
+    P1R3["Parallel with: NemoClaw Phase 1 integration work"]
 
-Phase 2 (Agent Integration)
-  ├── Requires: Phase 1 complete
-  ├── Requires: NemoClaw deployed and functional
-  └── Requires: NetClaw VM provisioned (if integrating NetClaw)
+    P2["Phase 2: Agent Integration"]
+    P2R1["Requires: Phase 1 complete"]
+    P2R2["Requires: NemoClaw deployed and functional"]
+    P2R3["Requires: NetClaw VM provisioned (if integrating)"]
 
-Phase 3 (Hardening)
-  ├── Requires: Phase 2 complete
-  ├── Optional: Loki deployment (for decision log shipping)
-  └── Integrates with: Credential Lifecycle Plan Phase 2 (metadata) + Phase 5 (audit)
+    P3["Phase 3: Hardening"]
+    P3R1["Requires: Phase 2 complete"]
+    P3R2["Optional: Loki deployment (for decision log shipping)"]
+    P3R3["Integrates with: Credential Lifecycle Plan Phase 2 + Phase 5"]
 
-Phase 4 (Advanced)
-  ├── Driven by operational needs, not scheduled
-  └── Envoy sidecar requires: OPA + OpenBao both stable
+    P4["Phase 4: Advanced"]
+    P4R1["Driven by operational needs, not scheduled"]
+    P4R2["Envoy sidecar requires: OPA + OpenBao both stable"]
+
+    P1R1 --> P1
+    P1R2 --> P1
+    P1R3 -. "parallel" .-> P1
+    P1 --> P2
+    P2R1 --> P2
+    P2R2 --> P2
+    P2R3 --> P2
+    P2 --> P3
+    P3R1 --> P3
+    P3R2 -. "optional" .-> P3
+    P3R3 --> P3
+    P3 --> P4
+    P4R1 --> P4
+    P4R2 --> P4
 ```
 
 ---

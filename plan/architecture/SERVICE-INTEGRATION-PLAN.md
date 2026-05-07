@@ -31,14 +31,22 @@ New services fall into one of four tiers, each with different integration weight
 
 ### Classification Decision
 
-```text
-Does the service need runtime OpenBao access?
-  YES → Infrastructure or AI tier → dedicated AppRole + dedicated VM
-  NO  → Does it run an AI agent or need GPU?
-          YES → AI tier → dedicated VM, context/ directory
-          NO  → Does it have a database + workers + multi-container stack?
-                  YES → Automation tier → dedicated VM
-                  NO  → Auxiliary tier → may co-locate on shared VM
+```mermaid
+flowchart TD
+    Q1{"Does the service need<br/>runtime OpenBao access?"}
+    Q2{"Does it run an AI agent<br/>or need GPU?"}
+    Q3{"Does it have a database +<br/>workers + multi-container stack?"}
+    T1["Infrastructure or AI tier<br/>Dedicated AppRole + dedicated VM"]
+    T2["AI tier<br/>Dedicated VM, context/ directory"]
+    T3["Automation tier<br/>Dedicated VM"]
+    T4["Auxiliary tier<br/>May co-locate on shared VM"]
+
+    Q1 -- "YES" --> T1
+    Q1 -- "NO" --> Q2
+    Q2 -- "YES" --> T2
+    Q2 -- "NO" --> Q3
+    Q3 -- "YES" --> T3
+    Q3 -- "NO" --> T4
 ```
 
 ---
@@ -204,12 +212,17 @@ New auxiliary-tier services with standard-tier credentials do not need scheduled
 
 ## Container Runtime Decision
 
-```text
-Does the service need --privileged or CAP_NET_RAW?
-  YES → Docker
-Does the service depend on compose health dependency chains?
-  YES → Docker (Podman compose has reliability gaps)
-Otherwise → Podman (rootless, default)
+```mermaid
+flowchart TD
+    Q1{"Does the service need<br/>--privileged or CAP_NET_RAW?"}
+    Q2{"Does the service depend on<br/>compose health dependency chains?"}
+    DOCKER["Docker"]
+    PODMAN["Podman (rootless, default)"]
+
+    Q1 -- "YES" --> DOCKER
+    Q1 -- "NO" --> Q2
+    Q2 -- "YES" --> DOCKER
+    Q2 -- "NO" --> PODMAN
 ```
 
 Set `container_engine` per-host in site-config inventory.
@@ -246,11 +259,38 @@ Prerequisites: OpenBao must be running, Semaphore must have the orchestrator App
 
 ---
 
+## In-Progress Migrations
+
+### NocoDB and n8n Composable Migration
+
+**Branch:** `feat/nocodb-n8n-composable` (incomplete)
+
+Development is in progress to migrate NocoDB and n8n from legacy deploy scripts to the composable pattern. The branch includes:
+
+- **Jinja2 env templates** (`nocodb.env.j2`, `n8n.env.j2`) replacing bash-generated env files
+- **4-phase composable playbooks** (`deploy-nocodb.yml`, `deploy-n8n.yml`) using `manage-secrets.yml`
+- **deploy.sh refactored** to container-lifecycle-only (no `generate-secrets.sh`, no OpenBao interaction)
+- **Secret seeding playbook** (`seed-secrets-from-env.yml`) for migrating existing VM `.env` secrets into OpenBao
+- **Clean-deploy playbooks** and Semaphore template entries for both services
+- **BATS tests** for template rendering validation
+
+**What is NOT yet done on that branch:**
+- Sparse checkout and runtime directory separation (uses `clone-and-deploy.yml`)
+- Integration testing against live VMs
+- Final CodeRabbit review resolution
+
+This migration serves as the reference for onboarding additional services. The design decisions (particularly around `seed-secrets-from-env.yml` for pre-existing deployments) apply to any service migrating from the legacy pattern.
+
+See `plan/architecture/AUTOMATION-COMPOSABILITY.md` (Migration Path section) for the full rollout sequence.
+
+---
+
 ## Known Gaps
 
 1. **No automated volume backup** — persistent compose volumes lack backup automation. Gap flagged by infrastructure review.
-2. **Legacy deploy scripts** — NocoDB and n8n deploy.sh still manage secrets directly. Need migration to composable pattern.
+2. **Legacy deploy scripts** — NocoDB and n8n deploy.sh still manage secrets directly. Migration in progress on `feat/nocodb-n8n-composable`.
 3. **NemoClaw wildcard policy** — `nemoclaw-read.hcl` grants `secret/data/services/*` read access. Should be tightened to enumerated paths.
 4. **No ephemeral test environments** — single production cluster. Branch testing workflow mitigates but doesn't replace proper staging.
 5. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
 6. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
+7. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.

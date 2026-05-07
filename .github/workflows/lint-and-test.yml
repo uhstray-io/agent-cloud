@@ -38,6 +38,17 @@ jobs:
         uses: hashicorp/setup-terraform@v4
       - run: find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
 
+      - name: No ASCII art in plan docs
+        run: |
+          echo "Checking plan/ markdown files for Unicode box-drawing characters..."
+          FOUND=$(grep -rnP '[\x{2500}-\x{257F}]' $(find plan -path 'plan/archive' -prune -o -name '*.md' -print) 2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "ERROR: ASCII art box-drawing characters found in plan/ docs."
+            echo "All diagrams must use mermaid fenced blocks."
+            echo "$FOUND"
+            exit 1
+          fi
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -46,15 +57,56 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Secret scan (trufflehog)
+      - name: Secret scan - verified (trufflehog)
         uses: trufflesecurity/trufflehog@main
         with:
           extra_args: --only-verified
 
-      - name: IP/credential audit
+      - name: Secret scan - all detectors (trufflehog)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+          trufflehog git file://. --since-commit "$BASE_SHA" --fail --no-update
+
+      - name: RFC1918 IP address audit
+        run: |
+          echo "Scanning for private IP addresses in diff..."
+          ! git diff origin/main...HEAD \
+            | grep -iE '^\+.*(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' \
+            | grep -v 'target\|host:\|subnet\|scope\|example\|0\.0\.0\.0\|127\.0\.0\.1'
+
+      - name: Credential pattern audit
+        run: |
+          echo "Scanning for hardcoded credentials in diff..."
           ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+          ! git diff origin/main...HEAD | grep -iE '^\+.*(api[_-]?key|token)\s*[:=]\s*[A-Za-z0-9_.-]{20,}' | grep -v '{{'
+          ! git diff origin/main...HEAD | grep -iE '^\+.*BEGIN (RSA|EC|OPENSSH|DSA) PRIVATE KEY'
+
+      - name: Jinja2 template hardcoded value audit
+        run: |
+          echo "Checking Jinja2 templates for hardcoded IPs..."
+          FOUND=$(find platform/services/*/deployment/templates -name '*.j2' -exec \
+            grep -lE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' {} + 2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "WARNING: Hardcoded IPs found in Jinja2 templates (should use variables):"
+            echo "$FOUND"
+            for f in $FOUND; do
+              grep -nE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$f" || true
+            done
+            echo "These should be replaced with template variables from site-config inventory."
+            exit 1
+          fi
+
+      - name: No .env files tracked
+        run: |
+          echo "Checking for tracked .env files..."
+          ENV_FILES=$(git ls-files '*.env' | grep -vE '\.(example|template|j2)$' || true)
+          if [ -n "$ENV_FILES" ]; then
+            echo "ERROR: .env files must not be tracked in git:"
+            echo "$ENV_FILES"
+            exit 1
+          fi
 
       - name: Python security lint (bandit)
         run: pip install bandit && bandit -r platform/services/netbox/deployment/workers/ platform/services/netbox/deployment/lib/pfsense-sync.py -s B101,B110 -q
