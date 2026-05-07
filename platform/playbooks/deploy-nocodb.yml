@@ -57,6 +57,12 @@
         - _symlink_result.msg is defined
         - "'permission denied' in (_symlink_result.msg | lower)"
 
+    - name: "Ensure config directory exists"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config"
+        state: directory
+        mode: "0700"
+
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
