@@ -116,8 +116,8 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/netbox` | All NetBox secrets (DB, Redis, Diode, Hydra, superuser, orb-agent creds with timestamp) |
 | `secret/services/approles/<name>` | AppRole credentials for services (role_id + secret_id) |
 | `secret/services/proxmox` | Proxmox API token, URL |
-| `secret/services/nocodb` | NocoDB API token, URL |
-| `secret/services/n8n` | n8n API key, URL |
+| `secret/services/nocodb` | postgres_password, jwt_secret, admin_password, api_token, URL |
+| `secret/services/n8n` | admin_password, user_password, encryption_key, owner_password, api_key, URL |
 | `secret/services/semaphore` | Semaphore API token, URL |
 | `secret/services/github` | GitHub PAT |
 | `secret/services/discord` | Discord bot token |
@@ -142,8 +142,12 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Workflow | Playbook | Purpose |
 |----------|----------|---------|
 | Deploy NetBox | `deploy-netbox.yml` | 5-phase: secrets → containers → app config → Diode creds → verify |
+| Deploy NocoDB | `deploy-nocodb.yml` | 4-phase: secrets → containers + bootstrap → store API token → verify |
+| Deploy n8n | `deploy-n8n.yml` | 4-phase: secrets → containers + bootstrap → store API key → verify |
 | Deploy Orb Agent | `deploy-orb-agent.yml` | Standalone: Diode creds + agent.yaml template + start agent |
 | Clean Deploy NetBox | `clean-deploy-netbox.yml` | Destructive: wipe volumes + fresh deploy |
+| Clean Deploy NocoDB | `clean-deploy-nocodb.yml` | Destructive: wipe volumes + fresh deploy |
+| Clean Deploy n8n | `clean-deploy-n8n.yml` | Destructive: wipe volumes + fresh deploy |
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | Deploy keys from OpenBao, verify key auth |
 | Harden SSH | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown (after key verification) |
 | Install Docker | `install-docker.yml` | Docker CE from official repo (idempotent) |
@@ -168,9 +172,10 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **Semaphore pipeline** — 25+ task templates, SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
+- **NocoDB composable deployment** — 4-phase playbook, Jinja2 templates, OpenBao integration
+- **n8n composable deployment** — 4-phase playbook, Jinja2 templates, OpenBao integration
 
 ### In Progress
-- NocoDB and n8n deployment via composable pattern
 - pfSense sync as independent scheduled workflow (every 15 min)
 - Dedicated orb-agent AppRole (currently using Semaphore's)
 
