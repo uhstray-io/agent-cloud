@@ -8,15 +8,15 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/nocodb/deployme
 }
 
 @test "nocodb.env.j2 contains POSTGRES_PASSWORD placeholder" {
-  grep -q '{{ secrets.postgres_password }}' "$TEMPLATE_DIR/nocodb.env.j2"
+  grep -q '{{ secrets.nocodb_pg_password }}' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 
 @test "nocodb.env.j2 contains NC_AUTH_JWT_SECRET placeholder" {
-  grep -q '{{ secrets.jwt_secret }}' "$TEMPLATE_DIR/nocodb.env.j2"
+  grep -q '{{ secrets.nocodb_jwt_secret }}' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 
 @test "nocodb.env.j2 contains NC_DB connection string with placeholder" {
-  grep -q '{{ secrets.postgres_password }}' "$TEMPLATE_DIR/nocodb.env.j2"
+  grep -q '{{ secrets.nocodb_pg_password }}' "$TEMPLATE_DIR/nocodb.env.j2"
   grep -q 'NC_DB=' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 

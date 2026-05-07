@@ -31,9 +31,9 @@ step_bootstrap_credentials() {
   info "Step 2: Bootstrapping n8n credentials..."
 
   local owner_pass
-  owner_pass=$(grep '^POSTGRES_NON_ROOT_PASSWORD=' "${CONFIG_DIR}/n8n.env" 2>/dev/null | cut -d= -f2-)
+  owner_pass=$(grep '^N8N_OWNER_PASSWORD=' "${CONFIG_DIR}/n8n.env" 2>/dev/null | cut -d= -f2-)
   if [ -z "$owner_pass" ]; then
-    warn "  No owner password found in config/n8n.env — skipping bootstrap."
+    warn "  No N8N_OWNER_PASSWORD found in config/n8n.env — skipping bootstrap."
     return 0
   fi
 

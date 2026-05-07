@@ -116,8 +116,8 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/netbox` | All NetBox secrets (DB, Redis, Diode, Hydra, superuser, orb-agent creds with timestamp) |
 | `secret/services/approles/<name>` | AppRole credentials for services (role_id + secret_id) |
 | `secret/services/proxmox` | Proxmox API token, URL |
-| `secret/services/nocodb` | postgres_password, jwt_secret, admin_password, api_token, URL |
-| `secret/services/n8n` | admin_password, user_password, encryption_key, owner_password, api_key, URL |
+| `secret/services/nocodb` | nocodb_pg_password, nocodb_jwt_secret, nocodb_admin_password, nocodb_api_token, URL |
+| `secret/services/n8n` | n8n_admin_password, n8n_user_password, n8n_encryption_key, n8n_owner_password, n8n_api_key, URL |
 | `secret/services/semaphore` | Semaphore API token, URL |
 | `secret/services/github` | GitHub PAT |
 | `secret/services/discord` | Discord bot token |
