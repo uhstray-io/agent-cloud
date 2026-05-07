@@ -1,0 +1,18 @@
+---
+# clean-deploy-nocodb.yml — Destroy and redeploy NocoDB from scratch
+#
+# WARNING: Destroys ALL NocoDB data (database, volumes, containers).
+# Uses composable tasks/clean-service.yml then runs deploy-nocodb.yml.
+
+- name: "Clean NocoDB deployment"
+  hosts: nocodb_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-nocodb.yml

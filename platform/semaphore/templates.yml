@@ -86,6 +86,26 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy NocoDB
+    playbook: platform/playbooks/clean-deploy-nocodb.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy n8n
+    playbook: platform/playbooks/clean-deploy-n8n.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy Orb Agent
     playbook: platform/playbooks/deploy-orb-agent.yml
     survey_vars:
