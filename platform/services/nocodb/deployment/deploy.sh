@@ -31,9 +31,9 @@ step_bootstrap_credentials() {
   info "Step 2: Bootstrapping NocoDB credentials..."
 
   local admin_pass
-  admin_pass=$(grep '^POSTGRES_PASSWORD=' "${CONFIG_DIR}/nocodb.env" 2>/dev/null | cut -d= -f2-)
+  admin_pass=$(grep '^NOCODB_ADMIN_PASSWORD=' "${CONFIG_DIR}/nocodb.env" 2>/dev/null | cut -d= -f2-)
   if [ -z "$admin_pass" ]; then
-    warn "  No admin password found in config/nocodb.env — skipping bootstrap."
+    warn "  No NOCODB_ADMIN_PASSWORD found in config/nocodb.env — skipping bootstrap."
     return 0
   fi
 

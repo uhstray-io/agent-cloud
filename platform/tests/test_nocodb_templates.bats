@@ -24,6 +24,10 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/nocodb/deployme
   ! grep -qiE '(password|secret)\s*=\s*[A-Za-z0-9+/]{8,}' "$TEMPLATE_DIR/nocodb.env.j2"
 }
 
+@test "nocodb.env.j2 has NOCODB_ADMIN_PASSWORD for bootstrap" {
+  grep -q 'NOCODB_ADMIN_PASSWORD={{ secrets.nocodb_admin_password }}' "$TEMPLATE_DIR/nocodb.env.j2"
+}
+
 @test "nocodb.env.j2 uses only secrets.* Jinja2 placeholders" {
   local bad_placeholders
   bad_placeholders=$(grep -oE '\{\{[^}]+\}\}' "$TEMPLATE_DIR/nocodb.env.j2" | grep -v 'secrets\.' || true)
