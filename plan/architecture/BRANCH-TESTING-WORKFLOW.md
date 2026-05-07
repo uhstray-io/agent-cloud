@@ -11,25 +11,23 @@ All deploy playbooks support a `service_branch` variable (defaults to `main`). T
 
 ## Workflow
 
-```text
-1. Develop          Push feature branch to GitHub
-                                │
-2. Deploy branch    Semaphore deploy template → set Branch = "feat/my-feature"
-                    (git clones the branch on the target VM, deploys from it)
-                                │
-3. Validate         Run validation templates (Check Discovery, Validate All, etc.)
-                    Confirm expected behavior, check for errors
-                                │
-                    ┌──── PASS ────┐          ┌──── FAIL ────┐
-                    │              │          │               │
-4a. Create PR    gh pr create   4b. Rollback   Re-run deploy template
-    Wait checks  CodeRabbit etc     │          with Branch = "" (defaults to main)
-    Fix findings                    │          Fix code on branch, retry step 2
-    All pass                        │
-    Merge PR                        │
-                    │               │
-5. Deploy main   Re-run deploy template with Branch = "" (defaults to main)
-                 Confirms merged code works in production
+```mermaid
+flowchart TD
+    DEV["1. Develop<br/>Push feature branch to GitHub"]
+    DEPLOY["2. Deploy branch<br/>Semaphore deploy template<br/>Branch = feat/my-feature"]
+    VALIDATE["3. Validate<br/>Run validation templates<br/>Check Discovery, Validate All, etc."]
+    PASS{"PASS?"}
+    PR["4a. Create PR<br/>gh pr create<br/>Wait checks (CodeRabbit etc)<br/>Fix findings, all pass<br/>Merge PR"]
+    ROLLBACK["4b. Rollback<br/>Re-run deploy template<br/>Branch = '' (defaults to main)<br/>Fix code on branch, retry step 2"]
+    MAIN["5. Deploy main<br/>Re-run deploy template<br/>Branch = '' (defaults to main)<br/>Confirms merged code works"]
+
+    DEV --> DEPLOY
+    DEPLOY --> VALIDATE
+    VALIDATE --> PASS
+    PASS -- "Yes" --> PR
+    PASS -- "No" --> ROLLBACK
+    PR --> MAIN
+    ROLLBACK --> DEPLOY
 ```
 
 ## How It Works

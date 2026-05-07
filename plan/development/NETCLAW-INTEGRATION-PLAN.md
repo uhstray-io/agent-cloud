@@ -52,26 +52,35 @@ The homelab has specific network management gaps that NetClaw addresses directly
 
 Deploy NetClaw on its own VM as a standalone OpenClaw agent, communicating with the existing service layer through the same APIs NemoClaw uses.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│ Existing Workflow Agents Stack                                 │
-│                                                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────┐  ┌───────────┐           │
-│  │ OpenBao  │  │  NocoDB  │  │  n8n │  │ Semaphore │           │
-│  │ .164     │  │  .161    │  │ .118 │  │  .117     │           │
-│  └──────────┘  └──────────┘  └──────┘  └───────────┘           │
-│       ↑              ↑           ↑          ↑                  │
-│       │              │           │          │                  │
-│  ┌────┴──────────────┴───────────┴──────────┴────────┐         │
-│  │                    OpenBao AppRole                │         │
-│  └────┬──────────────┬───────────────────────────────┘         │
-│       │              │                                         │
-│  ┌────┴────┐    ┌────┴────┐    ┌───────────┐  ┌──────────┐     │
-│  │NemoClaw │    │NetClaw  │    │  NetBox   │  │ Proxmox  │     │
-│  │  .163   │    │  NEW VM │    │   .116    │  │   .52    │     │
-│  │(Docker) │    │(Docker) │    │           │  │          │     │
-│  └─────────┘    └─────────┘    └───────────┘  └──────────┘     │
-└────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph STACK["Existing Workflow Agents Stack"]
+        direction TB
+        subgraph SERVICES["Service Layer"]
+            direction LR
+            BAO["OpenBao"]
+            NOCO["NocoDB"]
+            N8N["n8n"]
+            SEM["Semaphore"]
+        end
+
+        APPROLE["OpenBao AppRole"]
+
+        subgraph AGENTS["Agent + Infrastructure Layer"]
+            direction LR
+            NEMO["NemoClaw<br/>(Docker)"]
+            NET["NetClaw<br/>(NEW VM, Docker)"]
+            NETBOX["NetBox"]
+            PROX["Proxmox"]
+        end
+    end
+
+    NEMO --> APPROLE
+    NET --> APPROLE
+    APPROLE --> BAO
+    APPROLE --> NOCO
+    APPROLE --> N8N
+    APPROLE --> SEM
 ```
 
 **Pros:** Independent failure domain, dedicated resources for MCP servers (some are memory-hungry), can run different OpenClaw versions, separate network policy (NetClaw needs broader network access than NemoClaw for device polling).
@@ -105,7 +114,7 @@ NetClaw needs direct network access to managed devices (pfSense at .1/.2, physic
 | Memory | 8192 MB | Multiple MCP servers + Python environments + tshark |
 | Disk | 60 GB | pcap storage, config backups, ContainerLab images |
 | Runtime | Docker | OpenClaw/OpenShell requires Docker (same as NemoClaw) |
-| Proxmox Node | alphacentauri | Primary VM host |
+| Proxmox Node | {{ proxmox_node }} | Primary VM host |
 
 ### Provisioning via Existing Playbooks
 
@@ -128,7 +137,7 @@ netclaw:
   memory: 8192
   disk: 60G
   ip: {{ netclaw_host }}
-  node: alphacentauri
+  node: {{ proxmox_node }}
   runtime: docker
 ```
 
@@ -138,17 +147,28 @@ netclaw:
 
 ### Directory Structure
 
-```
-deployments/agent-cloud/
-├── vms/
-│   └── netclaw-network/               # Distinct from vms/nemoclaw/
-│       ├── deploy.sh                   # Install NetClaw + configure integrations
-│       ├── compose.yml                 # Supporting services (if any)
-│       └── config/
-│           ├── testbed.yaml            # pyATS device inventory
-│           ├── netclaw.env             # Platform credentials (gitignored)
-│           ├── USER.md                 # NetClaw identity (operator name, timezone)
-│           └── network-policy.yaml     # OpenShell network policy
+```mermaid
+graph TD
+    ROOT["deployments/agent-cloud/"]
+    VMS["vms/"]
+    NETCLAW["netclaw-network/<br/><i>(Distinct from vms/nemoclaw/)</i>"]
+    DEPLOY["deploy.sh<br/><i>Install NetClaw + configure integrations</i>"]
+    COMPOSE["compose.yml<br/><i>Supporting services (if any)</i>"]
+    CONFIG["config/"]
+    TESTBED["testbed.yaml<br/><i>pyATS device inventory</i>"]
+    ENV["netclaw.env<br/><i>Platform credentials (gitignored)</i>"]
+    USER["USER.md<br/><i>NetClaw identity</i>"]
+    NPOLICY["network-policy.yaml<br/><i>OpenShell network policy</i>"]
+
+    ROOT --> VMS
+    VMS --> NETCLAW
+    NETCLAW --> DEPLOY
+    NETCLAW --> COMPOSE
+    NETCLAW --> CONFIG
+    CONFIG --> TESTBED
+    CONFIG --> ENV
+    CONFIG --> USER
+    CONFIG --> NPOLICY
 ```
 
 ### deploy.sh Pattern (5-Step)
@@ -189,12 +209,11 @@ path "auth/token/renew-self" {
 
 New secret path for NetClaw-specific credentials:
 
-```
-secret/services/netclaw
-  ├── anthropic_api_key    # Claude API key for OpenClaw
-  ├── gateway_token        # OpenClaw gateway auth token
-  └── slack_bot_token      # Dedicated Slack bot (separate from NemoClaw's Discord bot)
-```
+| Path | Purpose |
+|---|---|
+| `secret/services/netclaw/anthropic_api_key` | Claude API key for OpenClaw |
+| `secret/services/netclaw/gateway_token` | OpenClaw gateway auth token |
+| `secret/services/netclaw/slack_bot_token` | Dedicated Slack bot (separate from NemoClaw's Discord bot) |
 
 ---
 
@@ -213,7 +232,7 @@ network_policies:
   netclaw-network:
     name: netclaw-network
     endpoints:
-      # ── Managed Infrastructure ──────────────────────────────
+      # -- Managed Infrastructure ----------------------------
       # pfSense firewalls (SSH + web UI for config backup)
       - host: {{ pfsense_host }}
         port: 443
@@ -231,7 +250,7 @@ network_policies:
         port: 161
         access: full    # SNMP
 
-      # ── Workflow Agents Service Layer ───────────────────────
+      # -- Workflow Agents Service Layer -----------------------
       # NetBox (DCIM/IPAM source of truth — read-write)
       - host: {{ netbox_host }}
         port: 8000
@@ -252,7 +271,7 @@ network_policies:
         port: 8200
         access: full
 
-      # ── External APIs ──────────────────────────────────────
+      # -- External APIs --------------------------------------
       # Anthropic API (Claude inference)
       - host: api.anthropic.com
         port: 443
@@ -404,7 +423,7 @@ devices:
         port: 22
 
   # Physical servers — SSH access for system monitoring
-  alphacentauri:
+  {{ proxmox_node }}:
     os: linux
     type: server
     connections:
@@ -514,20 +533,14 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 
 NetClaw and NemoClaw can coordinate via NocoDB as the shared task queue:
 
-```
-Claude Cowork  ──creates task──→  NocoDB task_queue
-                                       │
-                            ┌──────────┴──────────┐
-                            ▼                      ▼
-                       NemoClaw                 NetClaw
-                  (workflow tasks)        (network tasks)
-                            │                      │
-                            └──────────┬──────────┘
-                                       ▼
-                                  NocoDB results
-                                       │
-                                       ▼
-                              Discord / Slack alerts
+```mermaid
+flowchart TD
+    CC["Claude Cowork"] -- "creates task" --> NQ["NocoDB task_queue"]
+    NQ --> NEMO["NemoClaw<br/>(workflow tasks)"]
+    NQ --> NETCLAW["NetClaw<br/>(network tasks)"]
+    NEMO --> RESULTS["NocoDB results"]
+    NETCLAW --> RESULTS
+    RESULTS --> ALERTS["Discord / Slack alerts"]
 ```
 
 **Task routing:** A `task_type` field in the NocoDB task queue determines routing:

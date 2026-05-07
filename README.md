@@ -146,6 +146,24 @@ Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets,
 
 See `platform/playbooks/README.md` and `plan/architecture/AUTOMATION-COMPOSABILITY.md` for architecture details.
 
+## Architecture Documentation
+
+Detailed architecture and planning documents live in `plan/`:
+
+| Document | Purpose |
+|----------|---------|
+| `plan/architecture/AUTOMATION-COMPOSABILITY.md` | Composable deployment architecture and task library |
+| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | Service onboarding checklist and integration touchpoints |
+| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation, and retirement |
+| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | CI/CD testing strategy and implementation status |
+| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
+| `plan/architecture/CADDY-REVERSE-PROXY.md` | Caddy reverse proxy -- TLS/DNS-01, traffic flow, routing patterns, automation gaps |
+| `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
+| `plan/development/IMPLEMENTATION_PLAN.md` | Full implementation plan (phases, architecture, decisions) |
+| `plan/development/NETBOX-DISCOVERY-EXPANSION.md` | Discovery pipeline architecture (Proxmox, pfSense, SNMP, LLDP) |
+
+For new services, start with `plan/architecture/SERVICE-INTEGRATION-PLAN.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
+
 ## CI/CD and Testing
 
 Every pull request to main runs three automated checks:

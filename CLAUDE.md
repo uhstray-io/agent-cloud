@@ -12,20 +12,32 @@ Private configuration (real IPs, credentials, production inventory) lives in the
 
 ### Four-Layer Guardrails Model
 
-```
-AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
-                 Backed by: WisAI — Ollama worker nodes + Open WebUI coordinator
-                 (local inference, OpenAI-compatible API; vLLM reserved for future 24 GB+ hardware)
+```mermaid
+graph TD
+    subgraph AI["AI Layer"]
+        A1["NemoClaw (headless), NetClaw (network),<br/>WisBot (Discord), Claude Cowork (interactive)"]
+        A2["Backed by: WisAI — Ollama + Open WebUI<br/>(local inference, OpenAI-compatible API;<br/>vLLM reserved for future 24 GB+ hardware)"]
+    end
 
-Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
-                 AI proposes -> guardrails validate -> automation executes
+    subgraph GR["Guardrail Layer"]
+        G1["OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping"]
+        G2["AI proposes -> guardrails validate -> automation executes"]
+    end
 
-Automation Layer Ansible playbooks, Semaphore orchestration, n8n workflows
-                 Deterministic, idempotent, auditable
+    subgraph AUTO["Automation Layer"]
+        AU1["Ansible playbooks, Semaphore orchestration, n8n workflows"]
+        AU2["Deterministic, idempotent, auditable"]
+    end
 
-Platform Layer   Docker (NetBox, NemoClaw), Podman (other services)
-                 Compose/Podman (single-site prod) ↔ Kubernetes/k0s (multi-site prod)
-                 Proxmox VMs for all service hosting
+    subgraph PLAT["Platform Layer"]
+        P1["Docker (NetBox, NemoClaw), Podman (other services)"]
+        P2["Compose/Podman (single-site prod) <-> Kubernetes/k0s (multi-site prod)"]
+        P3["Proxmox VMs for all service hosting"]
+    end
+
+    AI --> GR
+    GR --> AUTO
+    AUTO --> PLAT
 ```
 
 ### Repository Structure
@@ -57,8 +69,19 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
+- `plan/architecture/architecture-reference.md` — Master architecture document index and standards
+- `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules
+- `plan/architecture/CADDY-REVERSE-PROXY.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps
+- `plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md` — Container runtime considerations
+- `plan/architecture/SECURITY-TESTING-STANDARDS.md` — Security testing requirements
+- `plan/architecture/CI-TESTING-SPECIFICATION.md` — Testing standards for new services
+- `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
+
+The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
 Defer to those files when working within those directories.
+
+When developing new changes, consult `plan/architecture/architecture-reference.md` for document standards and `plan/architecture/SERVICE-INTEGRATION-PLAN.md` for the service onboarding checklist. All implementation work should have an implementation plan in `plan/development/` before coding begins.
 
 ## Critical Deployment Rules
 
@@ -86,19 +109,22 @@ This ensures all configuration is version-controlled, auditable, and reproducibl
 
 ### Credential Flow (Composable Pattern)
 
-```
-OpenBao (source of truth)
-  ↑ generate + store (first deploy)
-  ↓ fetch (subsequent deploys)
-Ansible manage-secrets.yml (in memory)
-  ↓ Jinja2 template
-.env, env/*.env, config files (on VM, gitignored)
-  ↓ read at container start
-Docker Compose
-  ↓
-deploy.sh (container lifecycle only)
-  ↓ runtime creds created (e.g., Diode orb-agent)
-Ansible manage-diode-credentials.yml → OpenBao
+```mermaid
+flowchart TD
+    BAO["OpenBao (source of truth)"]
+    ANS["Ansible manage-secrets.yml (in memory)"]
+    ENV[".env, env/*.env, config files<br/>(on VM, gitignored)"]
+    CMP["Docker Compose"]
+    DEP["deploy.sh (container lifecycle only)"]
+    DIODE["Ansible manage-diode-credentials.yml"]
+
+    BAO -- "generate + store (first deploy)" --> ANS
+    ANS -- "fetch (subsequent deploys)" --> BAO
+    ANS -- "Jinja2 template" --> ENV
+    ENV -- "read at container start" --> CMP
+    CMP --> DEP
+    DEP -- "runtime creds created<br/>(e.g., Diode orb-agent)" --> DIODE
+    DIODE --> BAO
 ```
 
 Docker Compose requires `.env` files on disk — this is the minimal bridge between OpenBao and containers. These files are gitignored, overwritten on every deploy, and are NOT the source of truth.
@@ -262,6 +288,8 @@ See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
 - `plan/architecture/TESTING-AND-LINTING-PLAN.md` — Full testing strategy and implementation status
 - `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — Branch deploy and validation workflow
 - `plan/architecture/SERVICE-INTEGRATION-PLAN.md` — Service onboarding checklist
+- `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` — Secret generation, storage, rotation, and retirement
+- `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 
 ## Dependencies
 

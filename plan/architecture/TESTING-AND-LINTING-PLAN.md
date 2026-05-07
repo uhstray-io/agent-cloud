@@ -1,14 +1,52 @@
 # Testing and Linting Plan
 
 **Date:** 2026-04-21
-**Status:** COMPLETE — All phases implemented (1-5). HCL validation and BATS testing included.
+**Updated:** 2026-05-06
+**Status:** ACTIVE — Phases 1-5 implemented for NetBox. Coverage gaps remain for 11 services and 3 agents.
 **Contributors:** Architecture, Automation, Security, and Testing review agents
 
 ---
 
-## Current State
+## Coverage Assessment (2026-05-06)
 
-The repository has **zero automated testing or linting infrastructure**. No GitHub Actions, no pre-commit hooks, no pytest, no shellcheck, no ansible-lint. The only quality gates are:
+### What Exists
+
+The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linters on every PR to main. Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provide functional coverage for NetBox workers and shared libraries.
+
+| Component | Test Coverage | Notes |
+|-----------|---------------|-------|
+| `platform/lib/common.sh` | BATS (8 functions) | Shared library |
+| `platform/services/netbox/deployment/lib/common.sh` | BATS (6 functions) | NetBox-specific library |
+| `platform/playbooks/` | BATS (2 functions) | Heredoc/rendering validation |
+| `platform/services/netbox/deployment/workers/` | pytest (79 cases) | Proxmox + pfSense helpers |
+
+### What Is Missing
+
+**11 services with zero tests:** caddy, inference, n8n, nextcloud, nocodb, o11y, openbao, postiz, semaphore, wikijs, a2a-registry
+
+**3 agents with zero tests:** nemoclaw, netclaw, cowork
+
+**No tests exist for:**
+- Compose file validation (valid YAML, required services, no hardcoded credentials)
+- deploy.sh structural validation (sources common.sh, uses CONTAINER_ENGINE variable)
+- Environment template validation (Jinja2 templates use proper variable namespaces)
+- Credential leak regression tests as standalone BATS tests (currently only CI grep)
+- .gitignore coverage validation for sensitive patterns
+- Tracked .env file detection
+
+### New Testing Requirements
+
+Every new service onboarded to agent-cloud must include tests before its PR can merge. See `plan/architecture/CI-TESTING-SPECIFICATION.md` for the full specification including:
+
+- Test templates for compose files, deploy scripts, env templates, and credential leaks
+- Service onboarding testing checklist
+- CI pipeline extension recommendations
+
+---
+
+## Original State (2026-04-21)
+
+The repository had **zero automated testing or linting infrastructure** at the start of this plan. No GitHub Actions, no pre-commit hooks, no pytest, no shellcheck, no ansible-lint. The only quality gates were:
 
 - A manual `grep`-based pre-push audit for leaked IPs/credentials (CLAUDE.md)
 - Runtime validation playbooks in Semaphore (`validate-all.yml`, `validate-secrets.yml`, `check-discovery.yml`)
@@ -238,20 +276,24 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 
 | Phase | Status | Tests/Tools |
 |-------|--------|-------------|
-| 1a. Ruff (Python lint) | ✅ Implemented | `pyproject.toml` config, violations fixed |
-| 1b. ShellCheck | ✅ Implemented | Warning severity, full repo scan, violations fixed |
-| 1c. Ansible-lint | ✅ Implemented | `.ansible-lint` config, CI step |
-| 1d. YAML lint | ✅ Implemented | `.yamllint.yml`, trailing-spaces enforced |
-| 1e. Hadolint | ✅ Implemented | Dockerfile linting in CI |
-| 1f. Jinja2 validation | ✅ Covered | Via ansible-lint |
-| 1g. HCL validation | ✅ Implemented | `vault fmt -check` in CI |
-| 1h. Trufflehog | ✅ Implemented | Secret scanning in CI |
-| 2. Python unit tests | ✅ Implemented | 79 test cases, 13 parametrized functions |
-| 3. BATS bash tests | ✅ Implemented | 36 test cases, 14 composable functions |
-| 4a. Secret scanning | ✅ Implemented | Trufflehog in CI |
-| 4b. Dependabot | ✅ Implemented | pip, GitHub Actions, Docker |
-| 4c. Bandit | ✅ Implemented | Python security lint in CI |
-| 5. CI pipeline | ✅ Implemented | 3 jobs: lint, security, test |
+| 1a. Ruff (Python lint) | Done | `pyproject.toml` config, violations fixed |
+| 1b. ShellCheck | Done | Warning severity, full repo scan, violations fixed |
+| 1c. Ansible-lint | Done | `.ansible-lint` config, CI step |
+| 1d. YAML lint | Done | `.yamllint.yml`, trailing-spaces enforced |
+| 1e. Hadolint | Done | Dockerfile linting in CI |
+| 1f. Jinja2 validation | Done | Via ansible-lint |
+| 1g. HCL validation | Done | `vault fmt -check` in CI |
+| 1h. Trufflehog | Done | Secret scanning in CI |
+| 2. Python unit tests | Done (NetBox only) | 79 test cases, 13 parametrized functions |
+| 3. BATS bash tests | Done (shared libs only) | 39 test cases, 17 composable functions |
+| 4a. Secret scanning | Done | Trufflehog in CI |
+| 4b. Dependabot | Done | pip, GitHub Actions, Docker |
+| 4c. Bandit | Done | Python security lint in CI |
+| 5. CI pipeline | Done | 3 jobs: lint, security, test |
+| 6. Credential leak tests | **New** | `platform/tests/test_credential_leaks.bats` |
+| 7. Service onboarding tests | **Planned** | Per-service compose/deploy/template validation |
+| 8. Compose dry-run validation | **Planned** | CI step using `docker compose config` |
+| 9. Coverage reporting | **Planned** | pytest-cov + BATS TAP output |
 
 ---
 
@@ -262,3 +304,16 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 3. **Ansible playbooks target live infrastructure** — Molecule would require extensive mocking. ansible-lint + `--check` mode are the pragmatic choices until a test environment exists.
 4. **`_sanitize_description` false positive risk** — Expanding the keyword list risks stripping legitimate description content. Each new keyword needs negative test cases.
 5. **TOCTOU in env file generation** — `generate_*_env()` functions in `common.sh` write files then chmod, leaving a brief window where secrets are world-readable. Fix: use `umask 077` subshells like `put_secret()` already does.
+6. **Only NetBox has functional tests** — 11 services and 3 agents have zero test coverage. Service onboarding must require tests going forward.
+7. **No compose validation in CI** — Compose files are YAML-linted but never checked for structural correctness (required services, volume mounts, network definitions).
+8. **Credential leak tests are CI-only** — The IP/credential grep runs only in the security CI job diff. No standalone BATS tests exist for regression testing against the full committed tree.
+9. **No Jinja2 template rendering tests** — Templates are validated only via ansible-lint syntax checks, not for correct variable namespace usage or rendering output.
+
+---
+
+## Related Documents
+
+- `plan/architecture/CI-TESTING-SPECIFICATION.md` — Detailed specification for writing tests for new services
+- `plan/development/OPENSSF-SCORECARD-PLAN.md` — OpenSSF Scorecard implementation plan
+- `docs/LINTING-AND-TESTING.md` — Local setup and pre-PR checklist
+- `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — Branch deploy and validation workflow
