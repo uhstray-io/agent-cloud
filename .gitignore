@@ -27,3 +27,9 @@ rexicon.txt
 # MemPalace (local AI memory tool)
 mempalace.yaml
 entities.json
+
+# Remember
+.remember/
+
+# Claude tasks lock
+.claude/scheduled_tasks.lock
