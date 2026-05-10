@@ -10,7 +10,7 @@
 
 NetClaw is an open-source, CCIE-level AI network engineering agent built on OpenClaw (the same agent harness that NemoClaw wraps). It provides 101+ skills and 46 MCP server backends for autonomous network monitoring, troubleshooting, configuration, and security auditing — all driven by natural language through Slack, WebEx, or web chat.
 
-**Key capabilities relevant to this homelab:**
+**Key capabilities relevant to this uhstray.io datacenter:**
 
 - **Device health monitoring** — CPU, memory, interfaces, NTP, logs — fleet-wide in parallel via pyATS
 - **NetBox integration** — DCIM/IPAM source-of-truth reconciliation (read-write), topology discovery, IP drift detection
@@ -31,7 +31,7 @@ NetClaw is an open-source, CCIE-level AI network engineering agent built on Open
 
 ## 2. Why NetClaw for This Project
 
-The homelab has specific network management gaps that NetClaw addresses directly:
+The uhstray.io datacenter has specific network management gaps that NetClaw addresses directly:
 
 | Current Gap | NetClaw Solution |
 |---|---|
@@ -323,7 +323,7 @@ network_policies:
 NetClaw's NetBox MCP server provides read-write access to NetBox's DCIM/IPAM. This is the highest-value integration.
 
 **Workflow:**
-1. NetClaw discovers topology via CDP/LLDP/ARP on homelab devices
+1. NetClaw discovers topology via CDP/LLDP/ARP on uhstray.io datacenter devices
 2. Reconciles against NetBox: flags undocumented devices, missing cables, IP drift
 3. Updates NetBox with current live state (interfaces, IPs, connections)
 4. Generates topology diagrams from NetBox data via Kroki
@@ -397,7 +397,7 @@ The pyATS testbed defines which devices NetClaw can manage. Initial inventory ba
 # Populated from config/inventory.yml + NetBox
 
 testbed:
-  name: {{ ansible_user }}-homelab
+  name: {{ ansible_user }}-uhstray.io datacenter
 
 devices:
   pfsense01:
@@ -442,16 +442,16 @@ devices:
 
 ## 9. Selective MCP Server Deployment
 
-NetClaw ships with 46 MCP integrations. Most target enterprise Cisco/Juniper/Arista gear. For this homelab, deploy only the relevant subset:
+NetClaw ships with 46 MCP integrations. Most target enterprise Cisco/Juniper/Arista gear. For this uhstray.io datacenter, deploy only the relevant subset:
 
-### Deploy (Relevant to Homelab)
+### Deploy (Relevant to uhstray.io datacenter)
 
 | MCP Server | Purpose | Why |
 |---|---|---|
 | **NetBox** | DCIM/IPAM source of truth | Already deployed at .116 |
 | **GitHub** | Config-as-code, issues | Already integrated in agent-cloud |
 | **Packet Buddy** | pcap analysis via tshark | Useful for troubleshooting |
-| **nmap** | Network scanning + discovery | Homelab device discovery |
+| **nmap** | Network scanning + discovery | uhstray.io datacenter device discovery |
 | **UML/Kroki** | Diagram generation | Network topology visualization |
 | **Protocol MCP** | BGP/OSPF (if lab routers exist) | FRR testbed for learning |
 | **ContainerLab** | Containerized network labs | Lab simulation on NemoClaw VM |
@@ -493,7 +493,7 @@ NetClaw's `install.sh` clones all MCP servers. After install, disable unused one
 4. **Set up reconciliation** — Schedule periodic NetBox ↔ live state comparison
 5. **Generate topology diagrams** — From NetBox data via Kroki
 
-**Acceptance:** NetBox has accurate representation of homelab devices. Topology diagram generated.
+**Acceptance:** NetBox has accurate representation of uhstray.io datacenter devices. Topology diagram generated.
 
 **Validation:** NetBox UI shows discovered devices with correct IPs/interfaces. Topology diagram renders without errors. Reconciliation diff reports zero unexpected discrepancies.
 **Smoke test:** Run nmap scan → verify devices appear in NetBox. Compare NetBox device count to expected count. Generate topology SVG.
@@ -620,13 +620,13 @@ flowchart TD
 
 1. **Anthropic API key:** Does the project have an existing Anthropic API key for OpenClaw, or does one need to be created? NetClaw uses Claude as its inference provider.
 
-2. **Slack workspace:** Is there an existing Slack workspace for the homelab? NetClaw's primary interface is Slack (WebSocket-based, first-party OpenClaw channel). Discord works but requires a community plugin.
+2. **Slack workspace:** Is there an existing Slack workspace for the uhstray.io datacenter? NetClaw's primary interface is Slack (WebSocket-based, first-party OpenClaw channel). Discord works but requires a community plugin.
 
 3. **pfSense SSH access:** Do the pfSense firewalls have SSH enabled? NetClaw needs SSH for device interaction. If not, the REST API (port 443) is an alternative but requires a custom MCP server.
 
-4. **Switch inventory:** Are there managed switches in the homelab? The inventory shows only servers and VMs. Managed switches would be the highest-value pyATS targets.
+4. **Switch inventory:** Are there managed switches in the uhstray.io datacenter? The inventory shows only servers and VMs. Managed switches would be the highest-value pyATS targets.
 
-5. **Prometheus/Grafana:** Are Prometheus and Grafana deployed in the homelab? If yes, NetClaw's Grafana MCP (75+ tools) and Prometheus MCP (6 tools) add significant observability value.
+5. **Prometheus/Grafana:** Are Prometheus and Grafana deployed in the uhstray.io datacenter? If yes, NetClaw's Grafana MCP (75+ tools) and Prometheus MCP (6 tools) add significant observability value.
 
 6. **Budget for Anthropic API:** NetClaw makes Claude API calls for every interaction and scheduled task. Estimated $5-20/month depending on polling frequency. Is this acceptable?
 

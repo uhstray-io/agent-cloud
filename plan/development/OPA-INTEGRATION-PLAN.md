@@ -31,7 +31,7 @@ These align with the existing platform design principles and composable automati
 3. **OPA follows the composable deployment pattern** — Same 4-phase playbook structure as every other service: sparse checkout → manage secrets → deploy containers → verify health.
 4. **Credential lifecycle compliance** — OPA's own credentials (if any) follow the Create→Verify→Retire pattern. OPA can also enforce policy on credential access as an Envoy sidecar (Phase 3).
 5. **OpenBao remains the single source of truth for secrets** — OPA never stores or manages credentials. It makes authorization decisions. OpenBao issues credentials. They are complementary layers.
-6. **Selective integration over completeness** — Deploy the policies the homelab actually needs. Don't write 50 Rego rules for theoretical scenarios. Start with agent action governance and expand based on real incidents or requirements.
+6. **Selective integration over completeness** — Deploy the policies the uhstray.io datacenter actually needs. Don't write 50 Rego rules for theoretical scenarios. Start with agent action governance and expand based on real incidents or requirements.
 
 ---
 
@@ -592,7 +592,7 @@ scan_allowed if {
     cidr_in_scope(input.target_cidr)
 }
 
-# Scans restricted to defined homelab CIDRs
+# Scans restricted to defined uhstray.io datacenter CIDRs
 cidr_in_scope(cidr) if {
     cidr in data.agentcloud.network.allowed_cidrs
 }
@@ -822,7 +822,7 @@ graph TD
 ## Open Questions
 
 1. **VM IP allocation** — `.170` is proposed for OPA. Confirm against NetBox that this is available and does not conflict with existing reservations.
-2. **OPA authentication in Phase 1** — Running unauthenticated is pragmatic for internal-only homelab. Should we skip straight to token auth if deployment is quick? The complexity delta is low.
+2. **OPA authentication in Phase 1** — Running unauthenticated is pragmatic for internal-only uhstray.io datacenter. Should we skip straight to token auth if deployment is quick? The complexity delta is low.
 3. **Policy change workflow** — Currently policies are volume-mounted from the sparse checkout. A `git pull + container restart` reloads policies. Is this sufficient, or should we implement the OPA bundle API for hot-reload without restart?
 4. **n8n OPA integration depth** — Should n8n workflows query OPA directly (HTTP Request node), or should this be handled at the agent level only? Adding OPA checks in n8n provides defense-in-depth but adds latency to every workflow execution.
 5. **Rate limiting enforcement** — OPA can report rate warnings, but actual rate limiting requires a stateful component (OPA is stateless). Should rate limiting be delegated to an API gateway (Kong/Traefik, Phase 3 of Unification Plan) with OPA providing the policy?
