@@ -1,52 +1,49 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy n8n with programmatic owner setup + API key creation
+# deploy.sh — Deploy n8n (container lifecycle only)
+#
+# Secrets and env files are managed by Ansible (deploy-n8n.yml).
+# This script starts containers, bootstraps the owner + API key,
+# and validates the deployment.
+#
 # Idempotent: safe to re-run on an existing deployment.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
 source "${LIB_DIR}/common.sh"
-source "${LIB_DIR}/bao-client.sh"
 
-SECRETS_DIR="${SCRIPT_DIR}/secrets"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 N8N_URL="${N8N_URL:-http://localhost:5678}"
-OPENBAO_ADDR="${OPENBAO_ADDR:-http://127.0.0.1:8200}"
 ADMIN_EMAIL="${N8N_ADMIN_EMAIL:-admin@uhstray.io}"
+PROJECT_NAME="n8n"
 
-# ── Step 1: Generate secrets & env file ───────────────────────────────────────
-
-step_generate_secrets() {
-  info "Step 1: Generating n8n secrets..."
-  mkdir -p "$SECRETS_DIR"
-
-  local admin_pass
-  admin_pass=$(get_secret "$SECRETS_DIR" n8n_owner_password)
-  needs_gen "$admin_pass" && admin_pass=$(gen_secret 16 32)
-  put_secret "$SECRETS_DIR" n8n_owner_password "$admin_pass"
-
-  generate_n8n_env "${CONFIG_DIR}/n8n.env" "$SECRETS_DIR"
+compose() {
+  detect_runtime
+  $COMPOSE_CMD -p "$PROJECT_NAME" -f compose.yml "$@"
 }
 
-# ── Step 2: Start services ────────────────────────────────────────────────────
+# ── Step 1: Start services ────────────────────────────────────────────────────
 
 step_start_services() {
-  info "Step 2: Starting n8n services..."
+  info "Step 1: Starting n8n services..."
   cd "$SCRIPT_DIR"
   compose up -d
   wait_for_http "${N8N_URL}/healthz" "n8n" 120
 }
 
-# ── Step 3: Bootstrap owner + API key ─────────────────────────────────────────
+# ── Step 2: Bootstrap owner + API key ─────────────────────────────────────────
 
 step_bootstrap_credentials() {
-  info "Step 3: Bootstrapping n8n credentials..."
-  local admin_pass api_key
-  admin_pass=$(get_secret "$SECRETS_DIR" n8n_owner_password)
+  info "Step 2: Bootstrapping n8n credentials..."
 
-  api_key=$(get_secret "$SECRETS_DIR" n8n_api_key)
-  if ! needs_gen "$api_key"; then
-    info "  API key already exists — skipping bootstrap."
+  if [ ! -f "${CONFIG_DIR}/n8n.env" ]; then
+    error "config/n8n.env not found — run deploy-n8n.yml to generate it."
+  fi
+
+  local owner_pass
+  owner_pass=$(grep '^N8N_OWNER_PASSWORD=' "${CONFIG_DIR}/n8n.env" | cut -d= -f2-)
+  if [ -z "$owner_pass" ]; then
+    warn "  No N8N_OWNER_PASSWORD in config/n8n.env — skipping bootstrap."
     return 0
   fi
 
@@ -54,7 +51,7 @@ step_bootstrap_credentials() {
   local setup_response setup_payload
   setup_payload=$(jq -n \
     --arg email "$ADMIN_EMAIL" \
-    --arg pass "$admin_pass" \
+    --arg pass "$owner_pass" \
     '{"email":$email,"firstName":"Admin","lastName":"User","password":$pass}')
 
   setup_response=$(curl -sf -X POST "${N8N_URL}/rest/owner/setup" \
@@ -74,7 +71,7 @@ step_bootstrap_credentials() {
 
   login_payload=$(jq -n \
     --arg email "$ADMIN_EMAIL" \
-    --arg pass "$admin_pass" \
+    --arg pass "$owner_pass" \
     '{"emailOrLdapLoginId":$email,"password":$pass}')
 
   curl -sf -c "$cookie_jar" -X POST "${N8N_URL}/rest/login" \
@@ -85,8 +82,8 @@ step_bootstrap_credentials() {
   }
   info "  Logged in."
 
-  # Create API key (scoped, no expiry)
-  local key_response
+  # Create API key
+  local key_response api_key
   key_response=$(curl -sf -b "$cookie_jar" -X POST "${N8N_URL}/rest/api-keys" \
     -H "Content-Type: application/json" \
     -d '{"label":"nemoclaw-agent","scopes":["workflow:read","workflow:execute","workflow:list"],"expiresAt":0}' \
@@ -95,22 +92,27 @@ step_bootstrap_credentials() {
   api_key=$(echo "${key_response:-}" | jq -r '.data.rawApiKey // empty' 2>/dev/null) || api_key=""
 
   if [ -n "$api_key" ]; then
-    put_secret "$SECRETS_DIR" n8n_api_key "$api_key"
-    info "  API key created and saved."
+    info "  API key created."
+    echo "N8N_API_KEY=${api_key}"
     return 0
   fi
 
-  # Fallback: direct DB insert (api_key is hex-only from openssl rand)
+  # Fallback: direct DB insert
   info "  API endpoint unavailable — trying direct DB insert..."
   detect_runtime
   api_key=$(openssl rand -hex 20)
-  # Validate api_key is hex-only to prevent injection
   if ! [[ "$api_key" =~ ^[0-9a-f]+$ ]]; then
     warn "  Generated key failed hex validation — aborting DB insert."
     return 0
   fi
   local insert_result
-  insert_result=$($CONTAINER_ENGINE exec workflow-n8n-postgres \
+  local pg_container
+  pg_container=$($CONTAINER_ENGINE ps --format '{{.Names}}' 2>/dev/null | grep -E 'postgres' | head -1)
+  if [ -z "$pg_container" ]; then
+    warn "  No postgres container found — aborting DB insert."
+    return 0
+  fi
+  insert_result=$($CONTAINER_ENGINE exec "$pg_container" \
     psql -U n8n_user -d n8n -t -A -c \
     "INSERT INTO api_key (user_id, label, api_key, created_at, updated_at)
      SELECT '1', 'nemoclaw-agent', '${api_key}', NOW(), NOW()
@@ -118,34 +120,18 @@ step_bootstrap_credentials() {
      RETURNING api_key;" 2>/dev/null) || insert_result=""
 
   if [ -n "$insert_result" ]; then
-    put_secret "$SECRETS_DIR" n8n_api_key "$api_key"
     info "  API key created via DB insert."
+    echo "N8N_API_KEY=${api_key}"
   else
     warn "  API key creation failed — may need manual creation."
   fi
 }
 
-# ── Step 4: Store key in OpenBao ──────────────────────────────────────────────
-
-step_store_in_openbao() {
-  info "Step 4: Storing n8n API key in OpenBao..."
-  store_token_in_openbao "$SECRETS_DIR" n8n_api_key "services/n8n" api_key
-}
-
-# ── Step 5: Validate ──────────────────────────────────────────────────────────
+# ── Step 3: Validate ──────────────────────────────────────────────────────────
 
 step_validate() {
-  info "Step 5: Validating n8n deployment..."
-  local api_key
-
+  info "Step 3: Validating n8n deployment..."
   check_http "${N8N_URL}/healthz" "Health"
-
-  api_key=$(get_secret "$SECRETS_DIR" n8n_api_key)
-  if ! needs_gen "$api_key"; then
-    check_http "${N8N_URL}/api/v1/workflows" "API key" "X-N8N-API-KEY" "$api_key"
-  else
-    warn "  API key: not yet created"
-  fi
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -154,10 +140,8 @@ main() {
   info "=== n8n Deployment ==="
   detect_runtime
 
-  step_generate_secrets
   step_start_services
   step_bootstrap_credentials
-  step_store_in_openbao
   step_validate
 
   info "=== n8n deployment complete ==="

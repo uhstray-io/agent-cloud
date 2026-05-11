@@ -1,54 +1,49 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy NocoDB with programmatic admin + API token creation
+# deploy.sh — Deploy NocoDB (container lifecycle only)
+#
+# Secrets and env files are managed by Ansible (deploy-nocodb.yml).
+# This script starts containers, bootstraps the admin user + API token,
+# and validates the deployment.
+#
 # Idempotent: safe to re-run on an existing deployment.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
 source "${LIB_DIR}/common.sh"
-source "${LIB_DIR}/bao-client.sh"
 
-SECRETS_DIR="${SCRIPT_DIR}/secrets"
 CONFIG_DIR="${SCRIPT_DIR}/config"
-NOCODB_URL="${NOCODB_URL:-http://localhost:8181}"
-OPENBAO_ADDR="${OPENBAO_ADDR:-http://127.0.0.1:8200}"
+NOCODB_URL="${NOCODB_URL:-http://localhost:8080}"
 ADMIN_EMAIL="${NOCODB_ADMIN_EMAIL:-admin@uhstray.io}"
+PROJECT_NAME="nocodb"
 
-# ── Step 1: Generate secrets & env file ───────────────────────────────────────
-
-step_generate_secrets() {
-  info "Step 1: Generating NocoDB secrets..."
-  mkdir -p "$SECRETS_DIR"
-
-  # Generate admin password if not already set
-  local admin_pass
-  admin_pass=$(get_secret "$SECRETS_DIR" nocodb_admin_password)
-  needs_gen "$admin_pass" && admin_pass=$(gen_secret 16 32)
-  put_secret "$SECRETS_DIR" nocodb_admin_password "$admin_pass"
-
-  generate_nocodb_env "${CONFIG_DIR}/nocodb.env" "$SECRETS_DIR"
+compose() {
+  detect_runtime
+  $COMPOSE_CMD -p "$PROJECT_NAME" -f compose.yml "$@"
 }
 
-# ── Step 2: Start services ────────────────────────────────────────────────────
+# ── Step 1: Start services ────────────────────────────────────────────────────
 
 step_start_services() {
-  info "Step 2: Starting NocoDB services..."
+  info "Step 1: Starting NocoDB services..."
   cd "$SCRIPT_DIR"
   compose up -d
   wait_for_http "${NOCODB_URL}/api/v1/health" "NocoDB" 120
 }
 
-# ── Step 3: Bootstrap admin user + API token ──────────────────────────────────
+# ── Step 2: Bootstrap admin user + API token ──────────────────────────────────
 
 step_bootstrap_credentials() {
-  info "Step 3: Bootstrapping NocoDB credentials..."
-  local admin_pass api_token
-  admin_pass=$(get_secret "$SECRETS_DIR" nocodb_admin_password)
+  info "Step 2: Bootstrapping NocoDB credentials..."
 
-  # Check if API token already exists
-  api_token=$(get_secret "$SECRETS_DIR" nocodb_api_token)
-  if ! needs_gen "$api_token"; then
-    info "  API token already exists — skipping bootstrap."
+  if [ ! -f "${CONFIG_DIR}/nocodb.env" ]; then
+    error "config/nocodb.env not found — run deploy-nocodb.yml to generate it."
+  fi
+
+  local admin_pass
+  admin_pass=$(grep '^NOCODB_ADMIN_PASSWORD=' "${CONFIG_DIR}/nocodb.env" | cut -d= -f2-)
+  if [ -z "$admin_pass" ]; then
+    warn "  No NOCODB_ADMIN_PASSWORD in config/nocodb.env — skipping bootstrap."
     return 0
   fi
 
@@ -85,15 +80,13 @@ step_bootstrap_credentials() {
   fi
 
   # Create persistent API token
-  local token_response
-  # Try v2 endpoint first, fall back to v1
+  local token_response api_token
   token_response=$(curl -sf -X POST "${NOCODB_URL}/api/v1/tokens" \
     -H "xc-auth: ${jwt_token}" \
     -H "Content-Type: application/json" \
     -d '{"description":"nemoclaw-agent"}' 2>/dev/null) || true
 
   if [ -z "$token_response" ]; then
-    # Fallback: try meta endpoint
     token_response=$(curl -sf -X POST "${NOCODB_URL}/api/v1/meta/api-tokens" \
       -H "xc-auth: ${jwt_token}" \
       -H "Content-Type: application/json" \
@@ -103,34 +96,18 @@ step_bootstrap_credentials() {
   api_token=$(echo "${token_response:-}" | jq -r '.token // empty' 2>/dev/null) || api_token=""
 
   if [ -n "$api_token" ]; then
-    put_secret "$SECRETS_DIR" nocodb_api_token "$api_token"
-    info "  API token created and saved."
+    info "  API token created."
+    echo "NOCODB_API_TOKEN=${api_token}"
   else
     warn "  API token creation failed — may need manual creation."
   fi
 }
 
-# ── Step 4: Store token in OpenBao ────────────────────────────────────────────
-
-step_store_in_openbao() {
-  info "Step 4: Storing NocoDB token in OpenBao..."
-  store_token_in_openbao "$SECRETS_DIR" nocodb_api_token "services/nocodb" api_token
-}
-
-# ── Step 5: Validate ──────────────────────────────────────────────────────────
+# ── Step 3: Validate ──────────────────────────────────────────────────────────
 
 step_validate() {
-  info "Step 5: Validating NocoDB deployment..."
-  local api_token
-  api_token=$(get_secret "$SECRETS_DIR" nocodb_api_token)
-
+  info "Step 3: Validating NocoDB deployment..."
   check_http "${NOCODB_URL}/api/v1/health" "Health"
-
-  if ! needs_gen "$api_token"; then
-    check_http "${NOCODB_URL}/api/v1/auth/user/me" "API token" "xc-token" "$api_token"
-  else
-    warn "  API token: not yet created"
-  fi
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -139,10 +116,8 @@ main() {
   info "=== NocoDB Deployment ==="
   detect_runtime
 
-  step_generate_secrets
   step_start_services
   step_bootstrap_credentials
-  step_store_in_openbao
   step_validate
 
   info "=== NocoDB deployment complete ==="

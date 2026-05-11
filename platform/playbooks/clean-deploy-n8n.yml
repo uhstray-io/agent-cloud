@@ -1,0 +1,18 @@
+---
+# clean-deploy-n8n.yml — Destroy and redeploy n8n from scratch
+#
+# WARNING: Destroys ALL n8n data (database, volumes, workflows, containers).
+# Uses composable tasks/clean-service.yml then runs deploy-n8n.yml.
+
+- name: "Clean n8n deployment"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-n8n.yml

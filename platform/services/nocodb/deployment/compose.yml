@@ -1,14 +1,14 @@
 services:
   nocodb:
     depends_on:
-      nocodb-postgres:
+      postgres:
         condition: service_healthy
     env_file:
       - ./config/nocodb.env
     image: docker.io/nocodb/nocodb:latest
-    container_name: workflow-nocodb
+    container_name: nocodb
     ports:
-      - "${NOCODB_LISTEN:-127.0.0.1}:8181:8080"
+      - "8080:8080"
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
@@ -19,11 +19,9 @@ services:
     volumes:
       - nc_data:/usr/app/data
 
-  nocodb-postgres:
-    container_name: workflow-nocodb-postgres
+  postgres:
+    container_name: postgres
     image: docker.io/postgres:16.6
-    ports:
-      - "${NOCODB_PG_LISTEN:-127.0.0.1}:5433:5432"
     env_file:
       - ./config/nocodb.env
     healthcheck:
