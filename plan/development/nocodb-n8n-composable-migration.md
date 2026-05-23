@@ -1,14 +1,59 @@
+---
+title: NocoDB & n8n Composable Deployment Migration
+authors: ["@jestyr27"]
+date: 2026-05-10
+status: Draft
+tags: [nocodb, n8n, composable-deployment, ansible, openbao]
+---
+
 # NocoDB & n8n Composable Deployment Migration
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate NocoDB and n8n from legacy deploy scripts (secrets generated in bash, stored in `secrets/` on disk) to the composable pattern (OpenBao → Ansible `manage-secrets.yml` → Jinja2 templates → deploy.sh container-only).
+## Problem
 
-**Architecture:** Both services follow the same 3-phase playbook pattern proven by NetBox: Phase 1 clones the repo, authenticates to OpenBao, generates/fetches secrets, and templates `.env` files via Jinja2. Phase 2 runs `deploy.sh` which only manages container lifecycle (compose up, health check). Phase 3 runs application bootstrap (admin/owner creation, API token/key generation) and stores runtime credentials back to OpenBao. Phase 4 verifies health. The `deploy.sh` scripts are refactored to remove secret generation and read pre-templated `.env` files instead.
+NocoDB and n8n currently use legacy deploy scripts that generate secrets in bash and store them in `secrets/` directories on disk. This violates the composable deployment pattern where OpenBao is the single source of truth for credentials.
+
+## Design Principles
+
+1. **OpenBao as source of truth** -- All credentials generated, stored, and fetched via OpenBao
+2. **Jinja2 templating** -- Ansible templates `.env` files from OpenBao data; no secrets in code
+3. **Container-only deploy.sh** -- Deploy scripts handle compose lifecycle only, no secret generation
+4. **Independent workflows** -- Each playbook is self-contained, retryable, and idempotent
+5. **Test-first** -- BATS tests validate templates before implementation
+
+## Architecture
+
+**Goal:** Migrate NocoDB and n8n from legacy deploy scripts to the composable pattern (OpenBao -> Ansible `manage-secrets.yml` -> Jinja2 templates -> deploy.sh container-only).
+
+Both services follow the same 4-phase playbook pattern proven by NetBox: Phase 1 clones the repo, authenticates to OpenBao, generates/fetches secrets, and templates `.env` files via Jinja2. Phase 2 runs `deploy.sh` which only manages container lifecycle (compose up, health check). Phase 3 runs application bootstrap (admin/owner creation, API token/key generation) and stores runtime credentials back to OpenBao. Phase 4 verifies health. The `deploy.sh` scripts are refactored to remove secret generation and read pre-templated `.env` files instead.
+
+```mermaid
+flowchart TD
+    BAO["OpenBao (source of truth)"]
+    ANS["Ansible manage-secrets.yml"]
+    J2["Jinja2 templates (*.env.j2)"]
+    ENV[".env files (on VM, gitignored)"]
+    DEP["deploy.sh (container lifecycle)"]
+    BOOT["Bootstrap (admin/API creds)"]
+    STORE["Store runtime creds in OpenBao"]
+    VERIFY["Health check"]
+
+    BAO -->|"Phase 1: fetch/generate secrets"| ANS
+    ANS -->|"template"| J2
+    J2 -->|"render"| ENV
+    ENV -->|"Phase 2: compose up"| DEP
+    DEP -->|"Phase 2: bootstrap"| BOOT
+    BOOT -->|"Phase 3: store API token/key"| STORE
+    STORE --> BAO
+    STORE -->|"Phase 4"| VERIFY
+```
 
 **Tech Stack:** Ansible, Jinja2, OpenBao (HashiCorp Vault compatible API), Bash, Docker Compose, BATS (testing)
 
-**Security constraint:** No real IPs, credentials, or sensitive data in any committed files. All secrets use `{{ secrets.* }}` Jinja2 placeholders. Real values live in site-config (private) and OpenBao.
+## Security Considerations
+
+No real IPs, credentials, or sensitive data in any committed files. All secrets use `{{ secrets.* }}` Jinja2 placeholders. Real values live in site-config (private) and OpenBao.
 
 ---
 
@@ -101,7 +146,7 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/nocodb/deployme
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && bats platform/tests/test_nocodb_templates.bats`
+Run from repo root: `bats platform/tests/test_nocodb_templates.bats`
 Expected: FAIL — `nocodb.env.j2` does not exist yet
 
 - [ ] **Step 3: Create the NocoDB Jinja2 template**
@@ -120,7 +165,7 @@ NC_AUTH_JWT_SECRET={{ secrets.jwt_secret }}
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && bats platform/tests/test_nocodb_templates.bats`
+Run from repo root: `bats platform/tests/test_nocodb_templates.bats`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -188,7 +233,7 @@ TEMPLATE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../services/n8n/deployment/
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && bats platform/tests/test_n8n_templates.bats`
+Run from repo root: `bats platform/tests/test_n8n_templates.bats`
 Expected: FAIL — `n8n.env.j2` does not exist yet
 
 - [ ] **Step 3: Create the n8n Jinja2 template**
@@ -209,7 +254,7 @@ N8N_ENCRYPTION_KEY={{ secrets.encryption_key }}
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && bats platform/tests/test_n8n_templates.bats`
+Run from repo root: `bats platform/tests/test_n8n_templates.bats`
 Expected: All 7 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -251,7 +296,7 @@ CONFIG_DIR="${SCRIPT_DIR}/config"
 NOCODB_URL="${NOCODB_URL:-http://localhost:8181}"
 ADMIN_EMAIL="${NOCODB_ADMIN_EMAIL:-admin@uhstray.io}"
 
-# ── Step 1: Start services ────────────────────────────────────────────────────
+# Step 1: Start services
 
 step_start_services() {
   info "Step 1: Starting NocoDB services..."
@@ -260,7 +305,7 @@ step_start_services() {
   wait_for_http "${NOCODB_URL}/api/v1/health" "NocoDB" 120
 }
 
-# ── Step 2: Bootstrap admin user + API token ──────────────────────────────────
+# Step 2: Bootstrap admin user + API token
 
 step_bootstrap_credentials() {
   info "Step 2: Bootstrapping NocoDB credentials..."
@@ -330,14 +375,14 @@ step_bootstrap_credentials() {
   fi
 }
 
-# ── Step 3: Validate ──────────────────────────────────────────────────────────
+# Step 3: Validate
 
 step_validate() {
   info "Step 3: Validating NocoDB deployment..."
   check_http "${NOCODB_URL}/api/v1/health" "Health"
 }
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# Main
 
 main() {
   info "=== NocoDB Deployment ==="
@@ -397,7 +442,7 @@ CONFIG_DIR="${SCRIPT_DIR}/config"
 N8N_URL="${N8N_URL:-http://localhost:5678}"
 ADMIN_EMAIL="${N8N_ADMIN_EMAIL:-admin@uhstray.io}"
 
-# ── Step 1: Start services ────────────────────────────────────────────────────
+# Step 1: Start services
 
 step_start_services() {
   info "Step 1: Starting n8n services..."
@@ -406,7 +451,7 @@ step_start_services() {
   wait_for_http "${N8N_URL}/healthz" "n8n" 120
 }
 
-# ── Step 2: Bootstrap owner + API key ─────────────────────────────────────────
+# Step 2: Bootstrap owner + API key
 
 step_bootstrap_credentials() {
   info "Step 2: Bootstrapping n8n credentials..."
@@ -493,14 +538,14 @@ step_bootstrap_credentials() {
   fi
 }
 
-# ── Step 3: Validate ──────────────────────────────────────────────────────────
+# Step 3: Validate
 
 step_validate() {
   info "Step 3: Validating n8n deployment..."
   check_http "${N8N_URL}/healthz" "Health"
 }
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# Main
 
 main() {
   info "=== n8n Deployment ==="
@@ -553,7 +598,7 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
 # OpenBao is the source of truth. Ansible templates compose-ready
 # env files from OpenBao data. deploy.sh only manages containers.
 
-# ── Phase 1: Clone + Secrets + Env Files ─────────────────────────────
+# Phase 1: Clone + Secrets + Env Files
 - name: "Phase 1 - Clone repo and configure secrets"
   hosts: nocodb_svc
   gather_facts: false
@@ -604,7 +649,7 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
-# ── Phase 2: Container lifecycle + bootstrap ─────────────────────────
+# Phase 2: Container lifecycle + bootstrap
 - name: "Phase 2 - Start NocoDB containers and bootstrap"
   hosts: nocodb_svc
   gather_facts: false
@@ -633,7 +678,7 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
         _nocodb_api_token: "{{ _deploy.stdout | regex_search('NOCODB_API_TOKEN=(.+)', '\\1') | first | default('') }}"
       when: "'NOCODB_API_TOKEN=' in _deploy.stdout"
 
-# ── Phase 3: Store runtime credentials in OpenBao ────────────────────
+# Phase 3: Store runtime credentials in OpenBao
 - name: "Phase 3 - Store runtime credentials"
   hosts: nocodb_svc
   gather_facts: false
@@ -656,7 +701,6 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
       register: _bao_auth
       delegate_to: localhost
       run_once: true
-      no_log: true
       when: _nocodb_api_token | default('') | length > 0
 
     - name: "Store API token in OpenBao"
@@ -673,7 +717,6 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
         status_code: [200]
       delegate_to: localhost
       run_once: true
-      no_log: true
       when: _nocodb_api_token | default('') | length > 0
 
     - name: "API token stored"
@@ -681,7 +724,7 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
         msg: "NocoDB API token stored in OpenBao at secret/services/nocodb"
       when: _nocodb_api_token | default('') | length > 0
 
-# ── Phase 4: Verify ──────────────────────────────────────────────────
+# Phase 4: Verify
 - name: "Phase 4 - Verify deployment"
   hosts: nocodb_svc
   gather_facts: false
@@ -704,7 +747,7 @@ Replace `platform/playbooks/deploy-nocodb.yml` with:
 
 - [ ] **Step 2: Run ansible-lint**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && ansible-lint platform/playbooks/deploy-nocodb.yml`
+Run from repo root: `ansible-lint platform/playbooks/deploy-nocodb.yml`
 Expected: Clean (may show info-level warnings which are acceptable)
 
 - [ ] **Step 3: Commit**
@@ -739,7 +782,7 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
 # OpenBao is the source of truth. Ansible templates compose-ready
 # env files from OpenBao data. deploy.sh only manages containers.
 
-# ── Phase 1: Clone + Secrets + Env Files ─────────────────────────────
+# Phase 1: Clone + Secrets + Env Files
 - name: "Phase 1 - Clone repo and configure secrets"
   hosts: n8n_svc
   gather_facts: false
@@ -791,7 +834,7 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
-# ── Phase 2: Container lifecycle + bootstrap ─────────────────────────
+# Phase 2: Container lifecycle + bootstrap
 - name: "Phase 2 - Start n8n containers and bootstrap"
   hosts: n8n_svc
   gather_facts: false
@@ -820,7 +863,7 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
         _n8n_api_key: "{{ _deploy.stdout | regex_search('N8N_API_KEY=(.+)', '\\1') | first | default('') }}"
       when: "'N8N_API_KEY=' in _deploy.stdout"
 
-# ── Phase 3: Store runtime credentials in OpenBao ────────────────────
+# Phase 3: Store runtime credentials in OpenBao
 - name: "Phase 3 - Store runtime credentials"
   hosts: n8n_svc
   gather_facts: false
@@ -843,7 +886,6 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
       register: _bao_auth
       delegate_to: localhost
       run_once: true
-      no_log: true
       when: _n8n_api_key | default('') | length > 0
 
     - name: "Store API key in OpenBao"
@@ -860,7 +902,6 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
         status_code: [200]
       delegate_to: localhost
       run_once: true
-      no_log: true
       when: _n8n_api_key | default('') | length > 0
 
     - name: "API key stored"
@@ -868,7 +909,7 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
         msg: "n8n API key stored in OpenBao at secret/services/n8n"
       when: _n8n_api_key | default('') | length > 0
 
-# ── Phase 4: Verify ──────────────────────────────────────────────────
+# Phase 4: Verify
 - name: "Phase 4 - Verify deployment"
   hosts: n8n_svc
   gather_facts: false
@@ -891,7 +932,7 @@ Replace `platform/playbooks/deploy-n8n.yml` with:
 
 - [ ] **Step 2: Run ansible-lint**
 
-Run: `cd /Users/stray/Documents/GitHub/agent-cloud && ansible-lint platform/playbooks/deploy-n8n.yml`
+Run from repo root: `ansible-lint platform/playbooks/deploy-n8n.yml`
 Expected: Clean
 
 - [ ] **Step 3: Commit**
@@ -988,9 +1029,8 @@ In `platform/semaphore/templates.yml`, add after the "Clean Deploy NetBox" entry
 
 - [ ] **Step 4: Run yamllint and ansible-lint**
 
-Run:
+Run from repo root:
 ```bash
-cd /Users/stray/Documents/GitHub/agent-cloud
 yamllint platform/playbooks/clean-deploy-nocodb.yml platform/playbooks/clean-deploy-n8n.yml platform/semaphore/templates.yml
 ansible-lint platform/playbooks/clean-deploy-nocodb.yml platform/playbooks/clean-deploy-n8n.yml
 ```
@@ -1011,9 +1051,9 @@ git commit -m "feat(playbooks): add clean-deploy playbooks and Semaphore templat
 
 - [ ] **Step 1: Run all existing tests to verify no regressions**
 
-Run:
+Run from repo root:
+
 ```bash
-cd /Users/stray/Documents/GitHub/agent-cloud
 pytest platform/services/netbox/deployment/tests/ -v
 bats platform/tests/
 ```
@@ -1021,9 +1061,9 @@ Expected: All existing tests PASS plus new NocoDB and n8n template tests PASS
 
 - [ ] **Step 2: Run all linters**
 
-Run:
+Run from repo root:
+
 ```bash
-cd /Users/stray/Documents/GitHub/agent-cloud
 ruff check .
 shellcheck -S warning platform/services/nocodb/deployment/deploy.sh platform/services/n8n/deployment/deploy.sh
 ansible-lint platform/playbooks/deploy-nocodb.yml platform/playbooks/deploy-n8n.yml
@@ -1052,13 +1092,15 @@ Expected: "No IP leaks" and "No secret leaks"
 In the `CLAUDE.md` OpenBao Secrets Layout table, update the nocodb and n8n entries to reflect the full secret set:
 
 Change:
-```
+
+```markdown
 | `secret/services/nocodb` | NocoDB API token, URL |
 | `secret/services/n8n` | n8n API key, URL |
 ```
 
 To:
-```
+
+```markdown
 | `secret/services/nocodb` | postgres_password, jwt_secret, admin_password, api_token, URL |
 | `secret/services/n8n` | admin_password, user_password, encryption_key, owner_password, api_key, URL |
 ```
@@ -1066,7 +1108,8 @@ To:
 - [ ] **Step 2: Update Deployment Status**
 
 Move NocoDB and n8n from "In Progress" to "Completed" in the deployment status section, adding:
-```
+
+```markdown
 - **NocoDB composable deployment** — 4-phase playbook, Jinja2 templates, OpenBao integration
 - **n8n composable deployment** — 4-phase playbook, Jinja2 templates, OpenBao integration
 ```
@@ -1095,3 +1138,21 @@ git commit -m "docs: update CLAUDE.md for NocoDB and n8n composable deployment"
 | 9 | Documentation updates | 1 modified |
 
 Total: 7 files created, 5 files modified, 9 commits.
+
+---
+
+## Cross-references
+
+- [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md) -- Composable deployment pattern and task library
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation, and retirement
+- [architecture-reference.md](../architecture/architecture-reference.md) -- Document standards and master index
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) -- Full implementation plan (phases, architecture, decisions)
+- [SERVICE-INTEGRATION-PLAN.md](../architecture/SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
+
+---
+
+## Revision History
+
+| Date | Change |
+| --- | --- |
+| 2026-05-10 | Initial creation. 9-task migration plan for NocoDB and n8n composable deployments. |
