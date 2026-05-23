@@ -6,7 +6,7 @@ Privacy-focused, open-source AI platform for startups and small business. Custom
 
 ## What is agent-cloud?
 
-agent-cloud is an AI infrastructure platform that runs on a homelab Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
+agent-cloud is an AI infrastructure platform that runs on the uhstray.io datacenter Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
 
 ```
 AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)

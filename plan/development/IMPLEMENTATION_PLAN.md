@@ -281,7 +281,7 @@ The platform supports two production-viable deployment paradigms. Both can run p
 
 | Dimension | Compose (Podman/Docker) | Kubernetes |
 |---|---|---|
-| **Target scale** | Single-site production, homelab, small deployments | Multi-site production, larger-scale deployments |
+| **Target scale** | Single-site production, uhstray.io datacenter, small deployments | Multi-site production, larger-scale deployments |
 | **Orchestration** | Semaphore + Ansible playbooks | ArgoCD GitOps |
 | **Secret injection** | Ansible `manage-secrets.yml` → env files | External Secrets Operator (ESO) → k8s Secrets |
 | **Policy enforcement** | OpenBao AppRole policies, OpenShell network policies | Kyverno + OPA admission policies |

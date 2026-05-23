@@ -245,7 +245,7 @@ Expand the pattern and add test cases. Balance false positives (stripping "keybo
 
 ### 4e. TLS Verification Audit
 
-Both `proxmox_discovery` and `pfsense_sync` default `verify_ssl=False`. Document this as an accepted risk for self-signed certs in homelab, but add a config option to enable verification when proper CA infrastructure exists.
+Both `proxmox_discovery` and `pfsense_sync` default `verify_ssl=False`. Document this as an accepted risk for self-signed certs in uhstray.io datacenter, but add a config option to enable verification when proper CA infrastructure exists.
 
 ---
 

@@ -233,7 +233,7 @@ graph TD
 
 ## Composability and Translation
 
-These architecture documents are designed for the uhstray-io homelab platform but follow patterns that translate to other projects:
+These architecture documents are designed for the uhstray.io datacenter platform but follow patterns that translate to other projects:
 
 - **4-phase deploy pattern** (AUTOMATION-COMPOSABILITY.md) applies to any Docker Compose + Ansible stack
 - **Create-Verify-Retire rotation** (CREDENTIAL-LIFECYCLE-PLAN.md) applies to any secrets manager (Vault, AWS Secrets Manager, Azure Key Vault)
@@ -255,9 +255,11 @@ All changes to plan documents must pass CI before merging:
 1. **No ASCII art** -- The `No ASCII art in plan docs` CI step rejects Unicode box-drawing characters (U+2500-U+257F) in `plan/**/*.md`
 2. **No credentials or IPs** -- The security scan steps reject hardcoded private IPs and credential patterns
 3. **YAML lint** -- yamllint validates any embedded YAML blocks
-4. **Markdown rendering** -- Mermaid diagrams must use valid syntax (test locally with a mermaid-capable renderer)
+4. **BASH lint** -- shellcheck validates any bash script code/blocks
+5. **Python lint** -- ruff validates any Python code (pylint is not currently in CI but may be added)
+6. **Markdown rendering** -- Mermaid diagrams must use valid syntax (test locally with a mermaid-capable renderer)
 
-See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md) and [CI-TESTING-SPECIFICATION.md](CI-TESTING-SPECIFICATION.md) for the full testing strategy and CI pipeline reference.
+See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md), [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) and [CI-TESTING-SPECIFICATION.md](CI-TESTING-SPECIFICATION.md) for the full testing strategy and CI pipeline reference.
 
 ---
 
@@ -266,3 +268,4 @@ See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md) and [CI-TESTING-S
 | Date | Change |
 |---|---|
 | 2026-05-06 | Initial creation as part of architecture review. Indexes all existing plan documents, defines document standards, diagram standards, and status values. |
+| 2026-05-10 | Reviewed by @jestyr27, updated some naming conventions and added references to missing documents. |

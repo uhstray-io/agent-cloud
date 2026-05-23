@@ -267,7 +267,7 @@ NetClaw integrates deeply with the existing service layer — it reads/writes Ne
 **Key architectural decisions from the integration plan:**
 
 - **Separate VM (Option A)** — NetClaw runs on its own VM ({{ netclaw_host }}, VMID 265, Docker) because it needs direct network access to managed devices (SSH, SNMP to pfSense, switches, servers). This is fundamentally different from NemoClaw's API-only access pattern.
-- **Selective MCP deployment** — Only 9 of 46 MCP servers are relevant to the homelab (NetBox, GitHub, nmap, Packet Buddy, Kroki, Protocol, ContainerLab, Prometheus, Grafana). The rest target enterprise Cisco/Juniper/Arista gear.
+- **Selective MCP deployment** — Only 9 of 46 MCP servers are relevant to the uhstray.io datacenter (NetBox, GitHub, nmap, Packet Buddy, Kroki, Protocol, ContainerLab, Prometheus, Grafana). The rest target enterprise Cisco/Juniper/Arista gear.
 - **Broader network policy** — NetClaw's OpenShell policy allows {{ lan_subnet }} SSH+SNMP access. NemoClaw stays restricted to service APIs only.
 - **Cross-agent coordination** — Task routing via NocoDB `task_type` field: `workflow:*` → NemoClaw, `network:*` → NetClaw.
 - **13 agent roles identified** (5 existing, 4 planned, 2 deferred, 2 future) — see Section 8.1 WisAgent architecture for full mapping. Existing: NemoClaw (orchestration+dev), NetClaw (network), WisBot (community, external), Claude Cowork (interactive), vLLM+llama.cpp (inference backbone). Planned P1-P2: Reliability, Governance, Marketing, Research. Deferred: CryptoBot, StockBot. Future P3: Accounting, Storefront.
