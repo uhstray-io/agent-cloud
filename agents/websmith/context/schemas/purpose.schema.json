@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/purpose.schema.json",
+  "title": "Purpose Artifact",
+  "description": "Machine-readable mirror of spec/purpose.md. Agents may emit either the markdown or this JSON; the markdown is the source of truth.",
+  "type": "object",
+  "required": [
+    "oneLineSummary",
+    "primaryGoal",
+    "archetype",
+    "audience",
+    "successMetrics",
+    "scope",
+    "constraints",
+    "nonGoals"
+  ],
+  "properties": {
+    "oneLineSummary": {
+      "type": "string",
+      "description": "Single sentence stating what the site is for."
+    },
+    "primaryGoal": {
+      "type": "string",
+      "enum": ["Sell", "Inform", "Capture", "Persuade", "Entertain", "Connect", "Support", "Showcase", "Operate"],
+      "description": "The single most important thing the site must accomplish."
+    },
+    "secondaryGoals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Other goals the site also serves."
+    },
+    "archetype": {
+      "type": "object",
+      "required": ["primary"],
+      "properties": {
+        "primary": {
+          "type": "string",
+          "description": "Primary archetype (e.g., 'e-commerce', 'documentation', 'marketing-landing', or a custom name)."
+        },
+        "secondary": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional archetypes for hybrid sites."
+        },
+        "rationale": { "type": "string" }
+      }
+    },
+    "audience": {
+      "type": "array",
+      "minItems": 1,
+      "description": "At least one specific persona. 'Everyone' is not a valid audience.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "type": "string" },
+          "demographics": { "type": "string" },
+          "expertise": {
+            "type": "string",
+            "enum": ["novice", "intermediate", "advanced", "expert", "mixed"]
+          },
+          "deviceMix": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["desktop", "tablet", "mobile", "kiosk", "assistive-tech", "other"] }
+          },
+          "languages": { "type": "array", "items": { "type": "string" } },
+          "accessibility": { "type": "string" },
+          "networkConstraints": { "type": "string" },
+          "journeyStage": { "type": "string" }
+        }
+      }
+    },
+    "successMetrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["metric"],
+        "properties": {
+          "metric": { "type": "string" },
+          "target": { "type": "string" },
+          "horizon": { "type": "string", "description": "When this metric is evaluated (e.g., '3 months', 'year 1')." }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["pageCount", "contentDynamism", "lifespan"],
+      "properties": {
+        "pageCount": {
+          "type": "string",
+          "enum": ["single", "small", "medium", "large", "app-like"]
+        },
+        "contentDynamism": {
+          "type": "string",
+          "enum": ["static", "dynamic", "personalized"]
+        },
+        "lifespan": {
+          "type": "string",
+          "enum": ["campaign", "seasonal", "long-lived"]
+        },
+        "changeFrequency": {
+          "type": "string",
+          "enum": ["rarely", "monthly", "weekly", "daily", "realtime"]
+        },
+        "tenancy": {
+          "type": "string",
+          "enum": ["single", "multi"]
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "budget": { "type": "string" },
+        "timeline": { "type": "string" },
+        "brandAssets": { "type": "string" },
+        "existingInfrastructure": { "type": "string" },
+        "regulatory": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicitly enumerated regimes (GDPR, CCPA, HIPAA, COPPA, PCI, ADA, EAA, etc.)."
+        },
+        "teamCapacity": { "type": "string" },
+        "other": { "type": "string" }
+      }
+    },
+    "nonGoals": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "Explicit out-of-scope items."
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

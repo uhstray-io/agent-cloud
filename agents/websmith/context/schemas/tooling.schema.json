@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/tooling.schema.json",
+  "title": "Tooling Artifact",
+  "description": "Machine-readable mirror of spec/tooling.md.",
+  "type": "object",
+  "required": ["rendering", "frontend", "styling", "hosting", "buildTooling", "testing", "ciCd"],
+  "properties": {
+    "rendering": {
+      "type": "object",
+      "required": ["primary"],
+      "properties": {
+        "primary": { "type": "string", "enum": ["SSG", "SSR", "CSR", "MPA", "hybrid", "progressive"] },
+        "perPageExceptions": { "type": "array", "items": { "type": "object", "properties": { "page": { "type": "string" }, "mode": { "type": "string" } } } },
+        "rationale": { "type": "string" }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "required": ["framework"],
+      "properties": {
+        "framework": { "type": "string" },
+        "version": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "styling": {
+      "type": "object",
+      "required": ["approach"],
+      "properties": {
+        "approach": { "type": "string" },
+        "library": { "type": "string" },
+        "tokensSystem": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "enum": ["none", "serverless-only", "BaaS", "headless-services", "custom"] },
+        "language": { "type": "string" },
+        "framework": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "primary": { "type": "object", "properties": { "type": { "type": "string" }, "vendor": { "type": "string" } } },
+        "secondary": { "type": "array", "items": { "type": "object" } },
+        "migrations": { "type": "string" },
+        "multiTenancy": { "type": "string", "enum": ["single-db", "schema-per-tenant", "db-per-tenant", "not-applicable"] },
+        "rationale": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string" },
+        "methods": { "type": "array", "items": { "type": "string" } },
+        "sessions": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "objectStore": { "type": "string" },
+        "imagePipeline": { "type": "string" },
+        "video": { "type": "string" }
+      }
+    },
+    "email": {
+      "type": "object",
+      "properties": {
+        "transactional": { "type": "string" },
+        "marketing": { "type": "string" },
+        "otherChannels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "approach": { "type": "string" },
+        "provider": { "type": "string" }
+      }
+    },
+    "cms": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string" },
+        "tool": { "type": "string" },
+        "authoringWorkflow": { "type": "string" }
+      }
+    },
+    "ecommerce": {
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string" },
+        "payments": { "type": "string" },
+        "tax": { "type": "string" },
+        "shipping": { "type": "string" },
+        "inventory": { "type": "string" }
+      }
+    },
+    "analytics": {
+      "type": "object",
+      "properties": {
+        "webAnalytics": { "type": "string" },
+        "productAnalytics": { "type": "string" },
+        "errorTracking": { "type": "string" },
+        "apm": { "type": "string" },
+        "logs": { "type": "string" },
+        "uptime": { "type": "string" },
+        "rum": { "type": "string" }
+      }
+    },
+    "hosting": {
+      "type": "object",
+      "required": ["frontend"],
+      "properties": {
+        "frontend": { "type": "string" },
+        "server": { "type": "string" },
+        "database": { "type": "string" },
+        "regions": { "type": "array", "items": { "type": "string" } },
+        "dataResidency": { "type": "string" },
+        "edgeOrOrigin": { "type": "string", "enum": ["edge", "origin", "both"] }
+      }
+    },
+    "buildTooling": {
+      "type": "object",
+      "properties": {
+        "bundler": { "type": "string" },
+        "packageManager": { "type": "string" },
+        "monorepo": { "type": "string" },
+        "languageVersions": { "type": "object" }
+      }
+    },
+    "codeQuality": {
+      "type": "object",
+      "properties": {
+        "typeChecking": { "type": "string" },
+        "linter": { "type": "string" },
+        "formatter": { "type": "string" },
+        "preCommit": { "type": "string" }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "unit": { "type": "string" },
+        "component": { "type": "string" },
+        "integration": { "type": "string" },
+        "e2e": { "type": "string" },
+        "visualRegression": { "type": "string" },
+        "accessibility": { "type": "string" },
+        "performance": { "type": "string" }
+      }
+    },
+    "ciCd": {
+      "type": "object",
+      "required": ["provider"],
+      "properties": {
+        "provider": { "type": "string" },
+        "previewDeployments": { "type": "boolean" },
+        "branchModel": { "type": "string" },
+        "requiredChecks": { "type": "array", "items": { "type": "string" } },
+        "deploymentStrategy": { "type": "string" },
+        "rollback": { "type": "string" }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "manager": { "type": "string" },
+        "perEnvironment": { "type": "boolean" }
+      }
+    },
+    "featureFlags": { "type": "object", "properties": { "provider": { "type": "string" } } },
+    "i18nTooling": {
+      "type": "object",
+      "properties": {
+        "library": { "type": "string" },
+        "translationWorkflow": { "type": "string" }
+      }
+    },
+    "a11yTooling": {
+      "type": "object",
+      "properties": {
+        "linting": { "type": "string" },
+        "ciChecks": { "type": "string" },
+        "manualPlan": { "type": "string" }
+      }
+    },
+    "securityTooling": {
+      "type": "object",
+      "properties": {
+        "dependencyScanning": { "type": "string" },
+        "sast": { "type": "string" },
+        "wafBots": { "type": "string" },
+        "complianceFrameworks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "otherIntegrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "purpose": { "type": "string" } }
+      }
+    },
+    "stackDiagram": { "type": "string" },
+    "alternativesRejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "reason": { "type": "string" } }
+      }
+    },
+    "openQuestions": { "type": "array", "items": { "type": "string" } }
+  }
+}

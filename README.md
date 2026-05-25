@@ -61,6 +61,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **NemoClaw** | Headless engineer | Background automation, API integrations, CI/CD, health monitoring |
 | **NetClaw** | Network engineer | Network monitoring, topology discovery, config backup, security auditing |
 | **Claude Cowork** | Interactive architect | Research, architecture decisions, document generation |
+| **WebSmith** | Website builder | Prompt-only agent — walks users through a 5-phase workflow to produce a signed `SPEC.md` for a new website service |
 | **WisBot** | Community interface | Discord voice/chat bot with LLM-powered interactions |
 
 ## Platform Services
@@ -101,6 +102,7 @@ agent-cloud/
     nemoclaw/             Headless workflow agent
     netclaw/              Network engineering agent
     cowork/               Interactive architect agent
+    websmith/             Website-building agent (prompt-only; produces SPEC.md)
   plan/
     architecture/         Architecture plans (automation, testing, service integration)
     development/          Development plans (discovery, deployment, migration)

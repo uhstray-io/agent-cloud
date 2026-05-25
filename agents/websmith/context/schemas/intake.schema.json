@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/intake.schema.json",
+  "title": "Intake Artifact",
+  "description": "Machine-readable mirror of spec/intake.md. Every field is optional — the artifact records what the user could answer; gaps are tracked as openQuestions.",
+  "type": "object",
+  "properties": {
+    "projectBasics": {
+      "type": "object",
+      "properties": {
+        "workingTitle": { "type": "string" },
+        "workingDirectory": { "type": "string" },
+        "existingRepo": { "type": "string" },
+        "existingSiteToMigrate": { "type": "string" },
+        "targetLaunchDate": { "type": "string" }
+      }
+    },
+    "people": {
+      "type": "object",
+      "properties": {
+        "teamSize": { "type": "string", "enum": ["solo", "small", "medium", "large", "agency"] },
+        "maintainerExpertise": { "type": "string" },
+        "languagePreferences": { "type": "array", "items": { "type": "string" } },
+        "languageExclusions": { "type": "array", "items": { "type": "string" } },
+        "contentAuthors": { "type": "string" },
+        "supportOwners": { "type": "string" }
+      }
+    },
+    "audienceAndDevices": {
+      "type": "object",
+      "properties": {
+        "primaryPersona": { "type": "string" },
+        "geographicDistribution": { "type": "string" },
+        "launchLanguages": { "type": "array", "items": { "type": "string" } },
+        "plannedLanguages": { "type": "array", "items": { "type": "string" } },
+        "deviceMix": { "type": "object", "additionalProperties": { "type": "string" } },
+        "networkExpectations": { "type": "string" },
+        "browserSupport": { "type": "string" },
+        "assistiveTechInAudience": { "type": "string" }
+      }
+    },
+    "goalAndSuccess": {
+      "type": "object",
+      "properties": {
+        "oneSentencePurpose": { "type": "string" },
+        "primaryMetric": { "type": "string" },
+        "metricTarget": { "type": "string" },
+        "successHorizon": { "type": "string" }
+      }
+    },
+    "complianceAndRegulation": {
+      "type": "object",
+      "properties": {
+        "userRegions": { "type": "array", "items": { "type": "string" } },
+        "applicableRegulations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["GDPR", "CCPA", "CPRA", "HIPAA", "PCI-DSS", "COPPA", "ADA", "EAA", "LGPD", "PIPL", "POPIA", "PIPEDA", "PDPA", "APP", "DSA", "DMA", "other"]
+          }
+        },
+        "industrySpecifics": { "type": "string" },
+        "legalCounsel": { "type": "string" },
+        "dataResidency": { "type": "string" }
+      }
+    },
+    "performanceBudget": {
+      "type": "object",
+      "properties": {
+        "feelTarget": { "type": "string" },
+        "lcpTarget": { "type": "string" },
+        "initialJsCap": { "type": "string" },
+        "pageWeightCap": { "type": "string" },
+        "deviceNetworkTarget": { "type": "string" }
+      }
+    },
+    "accessibilityRequirement": {
+      "type": "object",
+      "properties": {
+        "wcagTarget": { "type": "string", "enum": ["A", "AA", "AAA", "unsure"] },
+        "legalMandate": { "type": "string" },
+        "manualTestingCapacity": { "type": "string" }
+      }
+    },
+    "techPreferences": {
+      "type": "object",
+      "properties": {
+        "existingVendorAccounts": { "type": "array", "items": { "type": "string" } },
+        "mustUse": { "type": "array", "items": { "type": "string" } },
+        "mustNotUse": { "type": "array", "items": { "type": "string" } },
+        "ossPreference": { "type": "string" },
+        "buildBudgetCap": { "type": "string" },
+        "runBudgetCap": { "type": "string" }
+      }
+    },
+    "contentAndIntegrations": {
+      "type": "object",
+      "properties": {
+        "currentContentLocation": { "type": "string" },
+        "contentVolume": {
+          "type": "object",
+          "properties": {
+            "products": { "type": "string" },
+            "articles": { "type": "string" },
+            "docPages": { "type": "string" },
+            "otherPages": { "type": "string" }
+          }
+        },
+        "requiredIntegrations": { "type": "array", "items": { "type": "string" } },
+        "webhooksOrEvents": { "type": "array", "items": { "type": "string" } },
+        "aiMlFeatures": { "type": "string" }
+      }
+    },
+    "brandAndVisual": {
+      "type": "object",
+      "properties": {
+        "existingBrandAssets": { "type": "string" },
+        "likedReferences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "url": { "type": "string" }, "note": { "type": "string" } }
+          }
+        },
+        "dislikedReferences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "url": { "type": "string" }, "note": { "type": "string" } }
+          }
+        },
+        "desiredFeelAdjectives": { "type": "array", "items": { "type": "string" } },
+        "avoidAdjectives": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "hostingAndDeployment": {
+      "type": "object",
+      "properties": {
+        "preferredHosts": { "type": "array", "items": { "type": "string" } },
+        "preferredRegions": { "type": "array", "items": { "type": "string" } },
+        "dataResidency": { "type": "string" },
+        "cdnEdgeNeeds": { "type": "string" },
+        "ciCdPreference": { "type": "string" },
+        "domainSituation": { "type": "string" }
+      }
+    },
+    "operationalAppetite": {
+      "type": "object",
+      "properties": {
+        "postLaunchCapacity": { "type": "string" },
+        "onCallExpectations": { "type": "string" },
+        "uptimeTarget": { "type": "string" },
+        "backupDrAppetite": { "type": "string" }
+      }
+    },
+    "nonGoals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "anythingElse": { "type": "string" },
+    "openQuestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": { "type": "string" },
+          "resolvingPhase": { "type": "string", "enum": ["1-purpose", "2-template", "3-tooling", "4-style", "5-considerations"] }
+        }
+      }
+    },
+    "skipped": {
+      "type": "boolean",
+      "description": "True if the user explicitly chose to skip Phase 0 and extract intake during later phases."
+    }
+  }
+}
