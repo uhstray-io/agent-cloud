@@ -1,0 +1,163 @@
+---
+# deploy-uhhcraft.yml — UhhCraft full deploy (composable pattern).
+#
+# Phase 1: Clone monorepo + verify podman + manage secrets + template .env.
+# Phase 2: Run deploy.sh — container lifecycle (podman compose up, wait healthy).
+# Phase 3: Run post-deploy.sh — migrations (goose + River) + healthcheck.
+# Phase 4: Verify /healthz.
+#
+# Central-Caddy fragment distribution is WebSmith integration Phase 5, not here.
+# Source of truth: plan/development/WEBSMITH-INTEGRATION-PLAN.md (Phase 4).
+
+# ── Phase 1: Clone + Secrets + Env Files ────────────────────────────────────
+- name: "Phase 1: Clone repo + manage secrets + template env"
+  hosts: uhhcraft_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _service_url: "{{ service_url | default('http://localhost:3000') }}"
+    # Secret names == the keys env.j2 reads via {{ secrets.<name> }}, which in
+    # turn feed the env keys config.go requireEnv()s. Keep this list, env.j2,
+    # and config.go in lockstep.
+    _secret_definitions:
+      # Backing services
+      - { name: postgres_password, type: random, length: 32 }
+      - { name: redis_password, type: random, length: 32 }
+      - { name: minio_root_user, type: random, length: 16 }
+      - { name: minio_root_password, type: random, length: 32 }
+      # App secrets
+      - { name: session_secret, type: random, length: 64 }
+      # Stripe (publishable key ships to the browser but is provisioned here too)
+      - { name: stripe_secret_key, type: user }
+      - { name: stripe_publishable_key, type: user }
+      - { name: stripe_webhook_secret, type: user }
+      # Outbound integrations
+      - { name: resend_api_key, type: user }
+      - { name: discord_orders_webhook_url, type: user }
+      - { name: discord_ops_webhook_url, type: user }
+      # Shipping (USPS v3 OAuth2 client credentials)
+      - { name: usps_client_id, type: user }
+      - { name: usps_client_secret, type: user }
+      # Fulfillment overflow (optional — empty unless set in OpenBao)
+      - { name: printify_api_key, type: user }
+      - { name: printify_shop_id, type: user }
+      - { name: hubs_api_key, type: user }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Install git if needed"
+      ansible.builtin.apt:
+        name: git
+        state: present
+      become: true
+
+    - name: "Clone or update agent-cloud monorepo"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ _branch }}"
+        force: true
+
+    - name: "Ensure podman + compose entrypoint"
+      ansible.builtin.include_tasks: tasks/install-podman-compose.yml
+
+    - name: "Convenience symlink"
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "/home/{{ ansible_user }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort convenience symlink: tolerate a permission-denied (some hosts
+      # restrict the home dir), but surface any OTHER real failure. The list form
+      # ANDs its clauses, which would have swallowed everything except
+      # permission-denied — so this is a single explicit boolean instead.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start UhhCraft containers"
+  hosts: uhhcraft_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:3000') }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh {{ _service_url }}
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Application bootstrap (migrations + River) ─────────────────────
+- name: "Phase 3: Run post-deploy bootstrap"
+  hosts: uhhcraft_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:3000') }}"
+
+  tasks:
+    - name: "Run post-deploy.sh (migrations + healthcheck)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        UHHCRAFT_URL={{ _service_url }} bash post-deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _post
+      changed_when: true
+
+    - name: "Show post-deploy.sh output"
+      ansible.builtin.debug:
+        var: _post.stdout_lines
+
+# ── Phase 4: Health verification ────────────────────────────────────────────
+# Central-Caddy fragment distribution is handled in WebSmith integration Phase 5,
+# not here: caddy-site.j2 needs the per-site upstream vars that Phase 6 inventory
+# supplies, and ansible.builtin.template resolves its src on the controller (not
+# the remote clone path), so a render step here would be both premature and wrong.
+- name: "Phase 4: Verify UhhCraft is healthy"
+  hosts: uhhcraft_svc
+  gather_facts: false
+  become: false
+  vars:
+    _service_url: "{{ service_url | default('http://localhost:3000') }}"
+
+  tasks:
+    - name: "Verify /healthz endpoint"
+      ansible.builtin.uri:
+        url: "{{ _service_url }}/healthz"
+        status_code: [200]
+        validate_certs: false
+        timeout: 30
+      register: _health
+      until: _health.status == 200
+      retries: 5
+      delay: 10
+
+    - name: "Deployed"
+      ansible.builtin.debug:
+        msg: "UhhCraft is healthy at {{ _service_url }}"

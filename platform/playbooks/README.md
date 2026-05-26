@@ -103,7 +103,11 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
 | `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
 | `deploy-orb-agent.yml` | Composable | Deploy Orb Agent (standalone: Diode creds + agent.yaml + start) |
+| `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |
+| `deploy-inference-comfyui.yml` | Composable | Deploy ComfyUI sidecar (GPU prereqs + secrets + containers + verify) |
+| `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy |
+| `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 
 ### Updates
 | Playbook | Purpose |
@@ -113,6 +117,9 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `update-n8n.yml` | Update n8n |
 | `update-semaphore.yml` | Update Semaphore |
 | `update-netbox.yml` | Update NetBox |
+| `update-uhhcraft.yml` | Update UhhCraft |
+| `update-inference-comfyui.yml` | Update ComfyUI sidecar |
+| `update-inference-hunyuan3d.yml` | Update Hunyuan3D sidecar |
 
 ### SSH & Security
 | Playbook | Purpose |
@@ -167,6 +174,9 @@ These reusable tasks are the building blocks for all playbooks. See `plan/archit
 | `tasks/apply-openbao-policy.yml` | Implemented | Apply a single OpenBao policy from an .hcl file |
 | `tasks/seed-discovery-credential.yml` | Implemented | Copy/update one credential set at a discovery/* vault path |
 | `tasks/update-vault-field.yml` | Implemented | Read a vault secret, update a specific field, write back |
+| `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
+| `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
+| `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable |
 
 Planned tasks (not yet implemented):
 

@@ -1,0 +1,132 @@
+---
+# deploy-inference-comfyui.yml — ComfyUI sidecar full deploy.
+#
+# Phase 1: Clone monorepo + verify podman + NVIDIA toolkit + manage secrets + template .env.
+# Phase 2: Run deploy.sh (compose lifecycle).
+# Phase 3: Run post-deploy.sh (health + ComfyUI reachability + model weight checks).
+#
+# ComfyUI itself runs separately on the host (or in a sibling container) so
+# the wrapper can be redeployed without restarting the model. The wrapper
+# only talks to ComfyUI at COMFYUI_URL.
+
+# ── Phase 1: Prereqs + secrets + env ────────────────────────────────────────
+- name: "Phase 1: Clone + GPU toolkit + secrets"
+  hosts: inference_comfyui_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _service_url: "{{ service_url | default('http://localhost:8189') }}"
+    # Only real secrets go through OpenBao (→ {{ secrets.<name> }} in env.j2).
+    # COMFYUI_URL, bucket, and generation tuning are non-secret config supplied
+    # by inventory/group_vars (env.j2 reads them as comfyui_* with defaults).
+    _secret_definitions:
+      - { name: minio_root_user, type: random, length: 16 }
+      - { name: minio_root_password, type: random, length: 32 }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Install git if needed"
+      ansible.builtin.apt:
+        name: git
+        state: present
+      become: true
+
+    - name: "Clone or update agent-cloud monorepo"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ _branch }}"
+        force: true
+
+    - name: "Ensure podman + compose entrypoint"
+      ansible.builtin.include_tasks: tasks/install-podman-compose.yml
+
+    - name: "Ensure NVIDIA Container Toolkit + CDI"
+      ansible.builtin.include_tasks: tasks/install-nvidia-toolkit.yml
+
+    - name: "Convenience symlink"
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "/home/{{ ansible_user }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort convenience symlink: tolerate permission-denied but surface
+      # any OTHER real failure. (List form ANDs its clauses, which would have
+      # swallowed everything except permission-denied.)
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start ComfyUI sidecar containers"
+  hosts: inference_comfyui_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:8189') }}"
+
+  tasks:
+    - name: "Run deploy.sh"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh {{ _service_url }}
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Post-deploy verification ──────────────────────────────────────
+- name: "Phase 3: Post-deploy verification"
+  hosts: inference_comfyui_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:8189') }}"
+
+  tasks:
+    - name: "Run post-deploy.sh (smoke optional)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        SERVICE_URL={{ _service_url }} SMOKE={{ smoke | default('0') }} bash post-deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _post
+      changed_when: true
+
+    - name: "Show post-deploy.sh output"
+      ansible.builtin.debug:
+        var: _post.stdout_lines
+
+    - name: "Verify health endpoint"
+      ansible.builtin.uri:
+        url: "{{ _service_url }}/health"
+        status_code: [200]
+        validate_certs: false
+        timeout: 30
+      register: _health
+      until: _health.status == 200
+      retries: 5
+      delay: 10
+
+    - name: "Deployed"
+      ansible.builtin.debug:
+        msg: "inference-comfyui is healthy at {{ _service_url }}"

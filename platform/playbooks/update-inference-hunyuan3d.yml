@@ -1,0 +1,5 @@
+---
+- name: "Update inference-hunyuan3d"
+  import_playbook: update-service.yml
+  vars:
+    target_service: inference_hunyuan3d_svc

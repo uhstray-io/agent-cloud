@@ -1,0 +1,5 @@
+---
+- name: "Update UhhCraft"
+  import_playbook: update-service.yml
+  vars:
+    target_service: uhhcraft_svc

@@ -1,0 +1,5 @@
+---
+- name: "Update inference-comfyui"
+  import_playbook: update-service.yml
+  vars:
+    target_service: inference_comfyui_svc

@@ -1,0 +1,149 @@
+---
+# deploy-inference-hunyuan3d.yml — Hunyuan3D sidecar full deploy.
+#
+# Same shape as deploy-inference-comfyui.yml, plus:
+#   - Verifies model weights present on the host before deploy.sh starts.
+#   - Uses a longer health-check timeout (cold start loads ~5GB into VRAM).
+#
+# Weights live on the host at HUNYUAN3D_WEIGHTS_DIR (default /srv/hunyuan3d/weights).
+# Downloading them is a one-time operator action; this playbook does not
+# fetch them on every deploy.
+
+# ── Phase 1: Prereqs + secrets + env ────────────────────────────────────────
+- name: "Phase 1: Clone + GPU toolkit + weights check + secrets"
+  hosts: inference_hunyuan3d_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _service_url: "{{ service_url | default('http://localhost:8001') }}"
+    _weights_dir: "{{ hunyuan3d_weights_dir | default('/srv/hunyuan3d/weights') }}"
+    # Only real secrets go through OpenBao (→ {{ secrets.<name> }} in env.j2).
+    # MODEL_PATH, weights dir, and generation tuning are non-secret config
+    # supplied by inventory/group_vars (env.j2 reads them as hunyuan_* w/ defaults).
+    _secret_definitions:
+      - { name: minio_root_user, type: random, length: 16 }
+      - { name: minio_root_password, type: random, length: 32 }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Install git if needed"
+      ansible.builtin.apt:
+        name: git
+        state: present
+      become: true
+
+    - name: "Clone or update agent-cloud monorepo"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ _branch }}"
+        force: true
+
+    - name: "Ensure podman + compose entrypoint"
+      ansible.builtin.include_tasks: tasks/install-podman-compose.yml
+
+    - name: "Ensure NVIDIA Container Toolkit + CDI"
+      ansible.builtin.include_tasks: tasks/install-nvidia-toolkit.yml
+
+    - name: "Verify Hunyuan3D weights present on host"
+      ansible.builtin.stat:
+        path: "{{ _weights_dir }}"
+      register: _weights_stat
+
+    - name: "Fail if weights missing"
+      ansible.builtin.fail:
+        msg: |
+          Hunyuan3D model weights not found at {{ _weights_dir }}.
+          Download once (see platform/services/inference-hunyuan3d/deployment/README.md)
+          before re-running this playbook. This task does not pull weights itself —
+          weights are large (~5GB) and updated rarely; treating them as host state
+          keeps deploys fast and idempotent.
+      when: not _weights_stat.stat.exists or not _weights_stat.stat.isdir
+
+    - name: "Convenience symlink"
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "/home/{{ ansible_user }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort convenience symlink: tolerate permission-denied but surface
+      # any OTHER real failure. (List form ANDs its clauses, which would have
+      # swallowed everything except permission-denied.)
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start Hunyuan3D sidecar containers"
+  hosts: inference_hunyuan3d_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:8001') }}"
+    _weights_dir: "{{ hunyuan3d_weights_dir | default('/srv/hunyuan3d/weights') }}"
+
+  tasks:
+    - name: "Run deploy.sh"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        HUNYUAN3D_WEIGHTS_DIR={{ _weights_dir }} bash deploy.sh {{ _service_url }}
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Post-deploy verification ──────────────────────────────────────
+- name: "Phase 3: Post-deploy verification"
+  hosts: inference_hunyuan3d_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _service_url: "{{ service_url | default('http://localhost:8001') }}"
+
+  tasks:
+    - name: "Run post-deploy.sh (smoke optional)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        SERVICE_URL={{ _service_url }} SMOKE={{ smoke | default('0') }} bash post-deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      register: _post
+      changed_when: true
+
+    - name: "Show post-deploy.sh output"
+      ansible.builtin.debug:
+        var: _post.stdout_lines
+
+    - name: "Verify health endpoint (allow long cold-start window)"
+      ansible.builtin.uri:
+        url: "{{ _service_url }}/health"
+        status_code: [200]
+        validate_certs: false
+        timeout: 30
+      register: _health
+      until: _health.status == 200
+      retries: 20
+      delay: 10
+
+    - name: "Deployed"
+      ansible.builtin.debug:
+        msg: "inference-hunyuan3d is healthy at {{ _service_url }}"
