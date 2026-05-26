@@ -5,7 +5,41 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default for all jobs — CI only reads the repo (no writes,
+# no token escalation). Bump per-job if a future job needs more.
+permissions:
+  contents: read
+
 jobs:
+  # Detect which areas changed so language-specific jobs only fire when
+  # relevant. The existing lint / security / test jobs continue to run on
+  # every PR — only the new Go jobs and the Python-inference scope expansion
+  # gate on these outputs.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      python_inference: ${{ steps.filter.outputs.python_inference }}
+      dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'platform/services/uhhcraft/deployment/**'
+              - '.github/workflows/lint-and-test.yml'
+            python_inference:
+              - 'platform/services/inference-comfyui/deployment/**'
+              - 'platform/services/inference-hunyuan3d/deployment/**'
+              - '.github/workflows/lint-and-test.yml'
+            dockerfiles:
+              - 'platform/services/uhhcraft/deployment/Dockerfile'
+              - 'platform/services/inference-comfyui/deployment/Dockerfile'
+              - 'platform/services/inference-hunyuan3d/deployment/Dockerfile'
+
   lint:
     name: Static Analysis
     runs-on: ubuntu-latest
@@ -28,10 +62,28 @@ jobs:
       - name: YAML lint
         run: pip install yamllint && yamllint -c .yamllint.yml .
 
-      - name: Dockerfile lint (hadolint)
+      - name: Dockerfile lint (netbox)
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
+          failure-threshold: warning
+
+      - name: Dockerfile lint (uhhcraft)
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: platform/services/uhhcraft/deployment/Dockerfile
+          failure-threshold: warning
+
+      - name: Dockerfile lint (inference-comfyui)
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: platform/services/inference-comfyui/deployment/Dockerfile
+          failure-threshold: warning
+
+      - name: Dockerfile lint (inference-hunyuan3d)
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: platform/services/inference-hunyuan3d/deployment/Dockerfile
           failure-threshold: warning
 
       - name: HCL format check
@@ -116,7 +168,14 @@ jobs:
           fi
 
       - name: Python security lint (bandit)
-        run: pip install bandit && bandit -r platform/services/netbox/deployment/workers/ platform/services/netbox/deployment/lib/pfsense-sync.py -s B101,B110 -q
+        run: |
+          pip install bandit
+          bandit -r \
+            platform/services/netbox/deployment/workers/ \
+            platform/services/netbox/deployment/lib/pfsense-sync.py \
+            platform/services/inference-comfyui/deployment/app/ \
+            platform/services/inference-hunyuan3d/deployment/app/ \
+            -s B101,B110 -q
 
   test:
     name: Unit Tests
@@ -144,3 +203,155 @@ jobs:
 
       - name: Run Bash tests
         run: bats platform/tests/
+
+  # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
+  # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.
+  go-lint:
+    name: Go lint (uhhcraft)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/services/uhhcraft/deployment
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
+
+      - name: Install templ
+        run: go install github.com/a-h/templ/cmd/templ@v0.2.793
+
+      - name: Install sqlc
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+
+      - name: Generate templ
+        run: templ generate
+
+      - name: Generate sqlc
+        run: sqlc generate
+
+      - name: Verify generated code is deterministic
+        # The generated dirs are gitignored, so `git status` can't see drift in
+        # them. Instead snapshot what the steps above produced, regenerate into
+        # the tree, and diff against the snapshot — this catches a generator
+        # whose output is non-deterministic across runs (tool/version drift).
+        run: |
+          snapshot="$(mktemp -d)"
+          cp -a web/templates "$snapshot/templates"
+          cp -a internal/db/sqlcdb "$snapshot/sqlcdb"
+          templ generate
+          sqlc generate
+          fail=0
+          diff -ru "$snapshot/templates" web/templates || fail=1
+          diff -ru "$snapshot/sqlcdb" internal/db/sqlcdb || fail=1
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Generated code is non-deterministic — templ/sqlc produced different output on a second run."
+            exit 1
+          fi
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # v1.61.0 is the floor that supports Go 1.23 — older (e.g. v1.59)
+          # typecheck-fails on 1.23 code with spurious "undefined" errors.
+          version: v1.61.0
+          working-directory: platform/services/uhhcraft/deployment
+          args: --timeout 5m
+
+      - name: gosec
+        uses: securego/gosec@master
+        with:
+          # G104 (unchecked errors — covered by errcheck), G304 (file path from
+          # var). G704/G710 are experimental taint-analysis rules that don't
+          # honor inline //nosec and false-positive here: the only G704 sink is
+          # the healthcheck to a fixed 127.0.0.1 (app's own APP_PORT, no request
+          # input), and the only G710 redirect target is sanitized by
+          # safeNext() to same-origin relative paths.
+          args: -exclude=G104,G304,G704,G710 -exclude-dir=web/templates -exclude-dir=internal/db/sqlcdb ./...
+
+  go-test:
+    name: Go test (uhhcraft)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/services/uhhcraft/deployment
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: uhhcraft_test
+          POSTGRES_USER: uhhcraft
+          POSTGRES_PASSWORD: ci-only-not-for-prod
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://uhhcraft:ci-only-not-for-prod@localhost:5432/uhhcraft_test?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
+
+      - name: Install templ + sqlc
+        run: |
+          go install github.com/a-h/templ/cmd/templ@v0.2.793
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+
+      - name: Generate code
+        run: |
+          templ generate
+          sqlc generate
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 -timeout=2m ./...
+
+  go-build:
+    name: Go build (uhhcraft image)
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build UhhCraft image
+        # Docker is used in CI (not Podman) — buildx is the path-of-least-resistance
+        # for cache and multi-stage builds in GitHub-hosted runners. The runtime
+        # in prod is Podman; the resulting image is OCI-compliant and works on either.
+        uses: docker/build-push-action@v6
+        with:
+          context: platform/services/uhhcraft/deployment
+          file: platform/services/uhhcraft/deployment/Dockerfile
+          push: false
+          load: true
+          tags: uhhcraft:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+
+      - name: Smoke test the binary
+        run: |
+          docker run --rm --entrypoint /app/uhhcraft uhhcraft:ci version
+          docker images uhhcraft:ci --format '{{.Repository}}:{{.Tag}}  {{.Size}}'

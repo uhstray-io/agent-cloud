@@ -1,0 +1,63 @@
+# golangci-lint v1.61+ config (Go 1.23-capable) for UhhCraft.
+# Run via CI (Phase 8 of WebSmith integration) and locally via `make lint`.
+#
+# Generated files are excluded — *_templ.go is produced by `templ generate`
+# and internal/db/sqlcdb/* by `sqlc generate`. We lint hand-written code only.
+
+run:
+  timeout: 5m
+  go: "1.23"
+
+linters-settings:
+  errcheck:
+    # check-blank stays OFF (errcheck default): the codebase deliberately uses
+    # `_ = x()` for best-effort, non-fatal operations (Discord/email notifies,
+    # cache writes, scans whose error is surfaced via rows.Err()) — a pattern
+    # already reviewed and accepted. errcheck still flags bare unchecked calls.
+    check-blank: false
+  goconst:
+    min-len: 4
+    min-occurrences: 4
+  govet:
+    enable:
+      - shadow
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - bodyclose
+    - errorlint
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+
+issues:
+  exclude-dirs:
+    - web/templates       # *.templ + generated *_templ.go
+    - internal/db/sqlcdb  # sqlc-generated typed client
+  exclude-rules:
+    # main.go has init() and unused setup helpers we accept.
+    - path: cmd/server/main\.go
+      linters:
+        - unparam
+    # http.HandlerFunc / interface signatures require (w, r) even when a param
+    # is unused — revive's unused-parameter is pure noise on those. (Genuinely
+    # removable unused params are still caught by the `unparam` linter.) Done
+    # via exclude-rules, NOT revive.rules, so revive's other rules (var-naming,
+    # etc.) stay active.
+    - linters:
+        - revive
+      text: "unused-parameter"
+  exclude-generated: lax
+  max-issues-per-linter: 0
+  max-same-issues: 0

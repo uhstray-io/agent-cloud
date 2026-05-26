@@ -4,7 +4,9 @@
 
 # ── Stage 1: tool-chains ──────────────────────────────────────────────────────
 FROM golang:1.23-alpine AS tools
-RUN apk add --no-cache git curl
+# libstdc++/libgcc: the Tailwind v4 standalone musl binary is dynamically linked
+# against the C++ runtime (cxxabi / _Unwind_* symbols) — bare alpine lacks them.
+RUN apk add --no-cache git curl libstdc++ libgcc
 # Pin tool versions — bump deliberately, not opportunistically.
 ENV TEMPL_VERSION=v0.2.793 \
     SQLC_VERSION=v1.27.0   \
@@ -13,9 +15,11 @@ RUN go install github.com/a-h/templ/cmd/templ@${TEMPL_VERSION} \
  && go install github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION} \
  && go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}
 
-# Tailwind standalone (no Node).
-ARG TAILWIND_VERSION=v3.4.10
-RUN curl -fsSL "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64" \
+# Tailwind standalone (no Node). v4 — input.css uses v4 syntax (`@import
+# "tailwindcss"` + `@theme`), which the old v3 CLI can't parse. Use the -musl
+# build since the base image is alpine (musl libc), not glibc.
+ARG TAILWIND_VERSION=v4.3.0
+RUN curl -fsSL "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64-musl" \
       -o /usr/local/bin/tailwindcss \
  && chmod +x /usr/local/bin/tailwindcss
 

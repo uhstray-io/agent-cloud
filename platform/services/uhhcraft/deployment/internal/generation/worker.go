@@ -41,7 +41,7 @@ func (Generate3DArgs) Kind() string { return "generate_3d" }
 // ImageWorker processes GenerateImageArgs jobs.
 type ImageWorker struct {
 	river.WorkerDefaults[GenerateImageArgs]
-	db             *pgxpool.Pool
+	db              *pgxpool.Pool
 	imageServiceURL string
 }
 
@@ -112,7 +112,7 @@ func (w *ImageWorker) Work(ctx context.Context, job *river.Job[GenerateImageArgs
 // ThreeDWorker processes Generate3DArgs jobs.
 type ThreeDWorker struct {
 	river.WorkerDefaults[Generate3DArgs]
-	db              *pgxpool.Pool
+	db               *pgxpool.Pool
 	threeDServiceURL string
 }
 
@@ -128,11 +128,11 @@ func (w *ThreeDWorker) Work(ctx context.Context, job *river.Job[Generate3DArgs])
 	}
 
 	reqBody, _ := json.Marshal(map[string]any{
-		"generation_id":      args.GenerationID,
-		"prompt":             args.Prompt,
-		"steps":              30,
-		"guidance":           7.5,
-		"octree_resolution":  256,
+		"generation_id":     args.GenerationID,
+		"prompt":            args.Prompt,
+		"steps":             30,
+		"guidance":          7.5,
+		"octree_resolution": 256,
 	})
 
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)

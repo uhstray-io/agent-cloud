@@ -51,9 +51,9 @@ type StorageConfig struct {
 }
 
 type StripeConfig struct {
-	SecretKey        string
-	PublishableKey   string
-	WebhookSecret    string
+	SecretKey      string
+	PublishableKey string
+	WebhookSecret  string
 }
 
 type EmailConfig struct {
@@ -68,8 +68,8 @@ type DiscordConfig struct {
 }
 
 type PrintifyConfig struct {
-	APIKey  string
-	ShopID  string
+	APIKey string
+	ShopID string
 }
 
 type HubsConfig struct {
@@ -82,7 +82,7 @@ type USPSConfig struct {
 }
 
 type AIConfig struct {
-	ImageServiceURL string
+	ImageServiceURL  string
 	ThreeDServiceURL string
 }
 
@@ -99,14 +99,14 @@ type MaterialsConfig struct {
 }
 
 type StickerMaterials struct {
-	Materials []Material  `toml:"materials"`
-	CutTypes  []CutType   `toml:"cut_types"`
+	Materials []Material `toml:"materials"`
+	CutTypes  []CutType  `toml:"cut_types"`
 }
 
 type PrintMaterials struct {
-	Materials  []Material  `toml:"materials"`
-	Finishes   []Finish    `toml:"finishes"`
-	SizeTiers  []SizeTier  `toml:"size_tiers"`
+	Materials []Material `toml:"materials"`
+	Finishes  []Finish   `toml:"finishes"`
+	SizeTiers []SizeTier `toml:"size_tiers"`
 }
 
 type Material struct {
@@ -141,15 +141,15 @@ type SizeTier struct {
 
 // FulfillmentConfig mirrors relevant parts of config/printify.toml and config/fulfillment_3d.toml
 type FulfillmentConfig struct {
-	Printify    PrintifyFulfillmentConfig `toml:"printify"`
-	Hubs        HubsFulfillmentConfig    `toml:"hubs"`
+	Printify PrintifyFulfillmentConfig `toml:"printify"`
+	Hubs     HubsFulfillmentConfig     `toml:"hubs"`
 }
 
 type PrintifyFulfillmentConfig struct {
-	APIBaseURL            string            `toml:"api_base_url"`
-	RequestTimeoutSeconds int               `toml:"request_timeout_seconds"`
-	WebhookPath           string            `toml:"webhook_path"`
-	MaterialBlueprintMap  map[string]string `toml:"material_blueprint_map"`
+	APIBaseURL               string            `toml:"api_base_url"`
+	RequestTimeoutSeconds    int               `toml:"request_timeout_seconds"`
+	WebhookPath              string            `toml:"webhook_path"`
+	MaterialBlueprintMap     map[string]string `toml:"material_blueprint_map"`
 	CutTypeBlueprintOverride map[string]string `toml:"cut_type_blueprint_override"`
 }
 
@@ -188,39 +188,39 @@ func Load(configDir string) (*Config, error) {
 	cfg.Redis.URL = requireEnv("REDIS_URL")
 
 	// Storage
-	cfg.Storage.Endpoint  = requireEnv("MINIO_ENDPOINT")
+	cfg.Storage.Endpoint = requireEnv("MINIO_ENDPOINT")
 	cfg.Storage.AccessKey = requireEnv("MINIO_ACCESS_KEY")
 	cfg.Storage.SecretKey = requireEnv("MINIO_SECRET_KEY")
-	cfg.Storage.Bucket    = getEnv("MINIO_BUCKET", "uhhcraft")
-	cfg.Storage.UseSSL    = getEnv("MINIO_USE_SSL", "false") == "true"
+	cfg.Storage.Bucket = getEnv("MINIO_BUCKET", "uhhcraft")
+	cfg.Storage.UseSSL = getEnv("MINIO_USE_SSL", "false") == "true"
 
 	// Stripe
-	cfg.Stripe.SecretKey      = requireEnv("STRIPE_SECRET_KEY")
+	cfg.Stripe.SecretKey = requireEnv("STRIPE_SECRET_KEY")
 	cfg.Stripe.PublishableKey = requireEnv("STRIPE_PUBLISHABLE_KEY")
-	cfg.Stripe.WebhookSecret  = requireEnv("STRIPE_WEBHOOK_SECRET")
+	cfg.Stripe.WebhookSecret = requireEnv("STRIPE_WEBHOOK_SECRET")
 
 	// Email
-	cfg.Email.APIKey   = requireEnv("RESEND_API_KEY")
-	cfg.Email.From     = getEnv("EMAIL_FROM", "orders@uhhcraft.uhstray.io")
+	cfg.Email.APIKey = requireEnv("RESEND_API_KEY")
+	cfg.Email.From = getEnv("EMAIL_FROM", "orders@uhhcraft.uhstray.io")
 	cfg.Email.FromName = getEnv("EMAIL_FROM_NAME", "UhhCraft")
 
 	// Discord
 	cfg.Discord.OrdersWebhookURL = requireEnv("DISCORD_ORDERS_WEBHOOK_URL")
-	cfg.Discord.OpsWebhookURL    = requireEnv("DISCORD_OPS_WEBHOOK_URL")
+	cfg.Discord.OpsWebhookURL = requireEnv("DISCORD_OPS_WEBHOOK_URL")
 
 	// Third-party fulfillment
-	cfg.Printify.APIKey  = os.Getenv("PRINTIFY_API_KEY")
-	cfg.Printify.ShopID  = os.Getenv("PRINTIFY_SHOP_ID")
-	cfg.Hubs.APIKey      = os.Getenv("HUBS_API_KEY")
+	cfg.Printify.APIKey = os.Getenv("PRINTIFY_API_KEY")
+	cfg.Printify.ShopID = os.Getenv("PRINTIFY_SHOP_ID")
+	cfg.Hubs.APIKey = os.Getenv("HUBS_API_KEY")
 
 	// USPS
-	cfg.USPS.ClientID     = os.Getenv("USPS_CLIENT_ID")
+	cfg.USPS.ClientID = os.Getenv("USPS_CLIENT_ID")
 	cfg.USPS.ClientSecret = os.Getenv("USPS_CLIENT_SECRET")
 
 	// AI services — required from the environment. A hardcoded localhost
 	// fallback would mask broken .env templating in production and silently
 	// point the workers at nothing.
-	cfg.AI.ImageServiceURL  = requireEnv("AI_IMAGE_SERVICE_URL")
+	cfg.AI.ImageServiceURL = requireEnv("AI_IMAGE_SERVICE_URL")
 	cfg.AI.ThreeDServiceURL = requireEnv("AI_3D_SERVICE_URL")
 
 	// Sentry (optional)

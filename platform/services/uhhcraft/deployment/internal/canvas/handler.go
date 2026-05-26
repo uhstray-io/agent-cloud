@@ -66,8 +66,8 @@ func ViewHandler(a *app.App) http.HandlerFunc {
 				data.AssetURL = url
 			}
 
-			data.MaterialOptions = filteredMaterials(a, item.MaterialIds, item.ProductType)
-			data.CutFinishOptions = filteredCutFinish(a, item.CutFinishIds, item.ProductType)
+			data.MaterialOptions = filteredMaterials(a, item.MaterialIDs, item.ProductType)
+			data.CutFinishOptions = filteredCutFinish(a, item.CutFinishIDs, item.ProductType)
 
 		} else {
 			// Generated item flow
@@ -81,8 +81,8 @@ func ViewHandler(a *app.App) http.HandlerFunc {
 			data.ProductType = gen.ProductType
 			data.Status = gen.Status
 			data.Prompt = gen.Prompt
-			data.MaterialParam = gen.MaterialId
-			data.CutFinishParam = gen.CutFinishId
+			data.MaterialParam = gen.MaterialID
+			data.CutFinishParam = gen.CutFinishID
 			data.ItemName = "Your " + productTypeLabel(gen.ProductType)
 
 			// Generated assets live in the inference sidecars' MinIO and are
@@ -105,7 +105,7 @@ func ViewHandler(a *app.App) http.HandlerFunc {
 		// NoIndex: generated canvas URLs are not indexable
 		data.NoIndex = data.Mode == "generated"
 
-		renderCanvasView(w, r, a, data)
+		renderCanvasView(w, r, data)
 	}
 }
 
@@ -126,7 +126,7 @@ type canvasData struct {
 	Prompt       string
 
 	// Asset URLs (presigned)
-	AssetURL    string
+	AssetURL     string
 	AssetGLBPath string
 	AssetPNGPath string
 
@@ -158,8 +158,8 @@ type catalogRow struct {
 	BasePriceUSD pgtype.Numeric
 	ModelGlbPath pgtype.Text
 	ImagePngPath pgtype.Text
-	MaterialIds  []string
-	CutFinishIds []string
+	MaterialIDs  []string
+	CutFinishIDs []string
 }
 
 func loadCatalogItem(ctx context.Context, pool *pgxpool.Pool, slug string) (catalogRow, error) {
@@ -170,7 +170,7 @@ func loadCatalogItem(ctx context.Context, pool *pgxpool.Pool, slug string) (cata
 		FROM catalog_items
 		WHERE slug = $1 AND active = TRUE`, slug,
 	).Scan(&row.ID, &row.Name, &row.ProductType, &row.BasePriceUSD,
-		&row.ModelGlbPath, &row.ImagePngPath, &row.MaterialIds, &row.CutFinishIds)
+		&row.ModelGlbPath, &row.ImagePngPath, &row.MaterialIDs, &row.CutFinishIDs)
 	return row, err
 }
 
@@ -178,8 +178,8 @@ type generationRow struct {
 	ProductType  string
 	Status       string
 	Prompt       string
-	MaterialId   string
-	CutFinishId  string
+	MaterialID   string
+	CutFinishID  string
 	AssetPngPath pgtype.Text
 	AssetGlbPath pgtype.Text
 	AssetStlPath pgtype.Text
@@ -192,7 +192,7 @@ func loadGeneration(ctx context.Context, pool *pgxpool.Pool, id string) (generat
 		       asset_png_path, asset_glb_path, asset_stl_path
 		FROM generations
 		WHERE id = $1`, id,
-	).Scan(&row.ProductType, &row.Status, &row.Prompt, &row.MaterialId, &row.CutFinishId,
+	).Scan(&row.ProductType, &row.Status, &row.Prompt, &row.MaterialID, &row.CutFinishID,
 		&row.AssetPngPath, &row.AssetGlbPath, &row.AssetStlPath)
 	return row, err
 }
@@ -290,7 +290,7 @@ func productTypeLabel(t string) string {
 }
 
 // renderCanvasView maps the handler view model to the page data and renders it.
-func renderCanvasView(w http.ResponseWriter, r *http.Request, a *app.App, d canvasData) {
+func renderCanvasView(w http.ResponseWriter, r *http.Request, d canvasData) {
 	pd := pages.CanvasData{
 		Mode:            d.Mode,
 		IsAuthenticated: d.IsAuthenticated,

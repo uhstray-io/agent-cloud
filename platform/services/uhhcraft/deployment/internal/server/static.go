@@ -3,11 +3,9 @@ package server
 import (
 	"fmt"
 	"net/http"
-
-	"github.com/wisward/uhhcraft/internal/app"
 )
 
-func renderStaticPage(w http.ResponseWriter, r *http.Request, page string) {
+func renderStaticPage(w http.ResponseWriter, page string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>UhhCraft</title>
@@ -19,7 +17,7 @@ func renderStaticPage(w http.ResponseWriter, r *http.Request, page string) {
 </body></html>`, page)
 }
 
-func render404(w http.ResponseWriter, r *http.Request, a *app.App) {
+func render404(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	fmt.Fprint(w, `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">

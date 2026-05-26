@@ -7,6 +7,10 @@ sql:
       go:
         package: "sqlcdb"
         out: "internal/db/sqlcdb"
+        # Generate pgx/v5-native code (matches the hand-written queries.go driver)
+        # so it uses only existing deps — NOT database/sql + lib/pq + jackc/pgtype
+        # v1, which would bloat go.mod with legacy drivers the app never uses.
+        sql_package: "pgx/v5"
         emit_json_tags: true
         emit_db_tags: true
         emit_prepared_queries: false
@@ -27,4 +31,6 @@ sql:
           - db_type: "numeric"
             go_type: "github.com/jackc/pgx/v5/pgtype.Numeric"
           - db_type: "jsonb"
-            go_type: "[]byte"
+            go_type:
+              type: "byte"
+              slice: true

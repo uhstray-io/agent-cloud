@@ -62,7 +62,7 @@ func AddHandler(a *app.App) http.HandlerFunc {
 			return
 		}
 
-		itemType := r.FormValue("item_type")  // "catalog" or "generated"
+		itemType := r.FormValue("item_type") // "catalog" or "generated"
 		materialID := r.FormValue("material_id")
 		cutFinishID := r.FormValue("cut_finish_id")
 
@@ -368,14 +368,14 @@ func queryCartItems(r *http.Request, a *app.App) ([]pages.CartLineItem, error) {
 			continue
 		}
 		it.LineTotal = it.UnitPrice * float64(it.Quantity)
-		it.MaterialName = resolveMaterialName(a, matID, cutID, it.ProductType)
+		it.MaterialName = resolveMaterialName(a, matID, it.ProductType)
 		it.CutFinishName = resolveCutFinishName(a, cutID, it.ProductType)
 		items = append(items, it)
 	}
 	return items, nil
 }
 
-func resolveMaterialName(a *app.App, matID, cutID, productType string) string {
+func resolveMaterialName(a *app.App, matID, productType string) string {
 	if productType == "sticker" {
 		if m, ok := a.Config.Materials.StickerMaterialByID(matID); ok {
 			return m.DisplayName

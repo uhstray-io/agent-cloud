@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/mail"
 	"net/url"
 
 	resend "github.com/resend/resend-go/v2"
@@ -39,15 +40,18 @@ func New(cfg *config.Config) *Client {
 	}
 }
 
-func (c *Client) from_addr() string {
-	return fmt.Sprintf("%s <%s>", c.fromName, c.from)
+// fromAddr renders the From header. net/mail handles RFC 5322 display-name
+// quoting/encoding, so a misconfigured EMAIL_FROM_NAME containing specials
+// (commas, quotes, angle brackets) still yields a well-formed header.
+func (c *Client) fromAddr() string {
+	return (&mail.Address{Name: c.fromName, Address: c.from}).String()
 }
 
 // SendOrderConfirmation sends the order confirmation email to the customer.
 func (c *Client) SendOrderConfirmation(ctx context.Context, to, orderID, itemNames, total, shippingAddress string) error {
 	html := orderConfirmationHTML(orderID, itemNames, total, shippingAddress, c.baseURL)
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: fmt.Sprintf("Your UhhCraft order is in! (#%s)", shortID(orderID)),
 		Html:    html,
@@ -58,7 +62,7 @@ func (c *Client) SendOrderConfirmation(ctx context.Context, to, orderID, itemNam
 // SendWelcome sends a welcome email to a newly created account.
 func (c *Client) SendWelcome(ctx context.Context, to string) error {
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: "Welcome to UhhCraft! 🦊",
 		Html:    welcomeHTML(c.baseURL),
@@ -70,7 +74,7 @@ func (c *Client) SendWelcome(ctx context.Context, to string) error {
 func (c *Client) SendEmailVerification(ctx context.Context, to, token string) error {
 	link := fmt.Sprintf("%s/account/verify-email?token=%s", c.baseURL, url.QueryEscape(token))
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: "Verify your UhhCraft email",
 		Html:    verifyEmailHTML(link, c.baseURL),
@@ -82,7 +86,7 @@ func (c *Client) SendEmailVerification(ctx context.Context, to, token string) er
 func (c *Client) SendPasswordReset(ctx context.Context, to, token string) error {
 	link := fmt.Sprintf("%s/account/reset-password?token=%s", c.baseURL, url.QueryEscape(token))
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: "Reset your UhhCraft password",
 		Html:    passwordResetHTML(link, c.baseURL),
@@ -93,7 +97,7 @@ func (c *Client) SendPasswordReset(ctx context.Context, to, token string) error 
 // SendOrderShipped sends a shipping notification with tracking info.
 func (c *Client) SendOrderShipped(ctx context.Context, to, orderID, trackingNumber, carrier string) error {
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: fmt.Sprintf("Your UhhCraft order is on its way! (#%s)", shortID(orderID)),
 		Html:    orderShippedHTML(orderID, trackingNumber, carrier, c.baseURL),
@@ -104,7 +108,7 @@ func (c *Client) SendOrderShipped(ctx context.Context, to, orderID, trackingNumb
 // SendAbandonedCart sends a reminder that items are waiting in the cart.
 func (c *Client) SendAbandonedCart(ctx context.Context, to string) error {
 	_, err := c.resend.Emails.SendWithContext(ctx, &resend.SendEmailRequest{
-		From:    c.from_addr(),
+		From:    c.fromAddr(),
 		To:      []string{to},
 		Subject: "You left something behind at UhhCraft",
 		Html:    abandonedCartHTML(c.baseURL),

@@ -86,6 +86,15 @@ cd -
 # Bash tests
 bats platform/tests/
 
+# Go (required if touching platform/services/uhhcraft/deployment/**)
+cd platform/services/uhhcraft/deployment
+templ generate              # regenerate *_templ.go from .templ source
+sqlc generate               # regenerate internal/db/sqlcdb/ from db/queries/*.sql
+golangci-lint run ./...     # config in .golangci.yml
+gosec -exclude=G104,G304,G704,G710 -exclude-dir=web/templates -exclude-dir=internal/db/sqlcdb ./...
+go test -race -count=1 ./...
+cd -
+
 # Secret scan
 git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
 git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
@@ -104,6 +113,14 @@ pip3.11 install pytest netboxlabs-diode-sdk proxmoxer requests
 
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
+
+# Go toolchain (required for UhhCraft changes)
+brew install go@1.23
+go install github.com/a-h/templ/cmd/templ@v0.2.793
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+go install github.com/pressly/goose/v3/cmd/goose@v3.21.1
+brew install golangci-lint
+brew install gosec
 ```
 
 ---

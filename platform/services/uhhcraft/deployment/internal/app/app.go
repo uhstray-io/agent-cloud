@@ -76,9 +76,9 @@ func New(cfg *config.Config) (*App, error) {
 	// Bound the startup ping so a half-up network can't hang the boot forever.
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pingCancel()
-	if err := pool.Ping(pingCtx); err != nil {
+	if pingErr := pool.Ping(pingCtx); pingErr != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
+		return nil, fmt.Errorf("ping postgres: %w", pingErr)
 	}
 	logger.Info("postgres connected")
 
@@ -91,10 +91,10 @@ func New(cfg *config.Config) (*App, error) {
 	rdb := redis.NewClient(redisOpts)
 	redisPingCtx, redisPingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer redisPingCancel()
-	if err := rdb.Ping(redisPingCtx).Err(); err != nil {
+	if pingErr := rdb.Ping(redisPingCtx).Err(); pingErr != nil {
 		_ = rdb.Close()
 		pool.Close()
-		return nil, fmt.Errorf("ping redis: %w", err)
+		return nil, fmt.Errorf("ping redis: %w", pingErr)
 	}
 	logger.Info("redis connected")
 

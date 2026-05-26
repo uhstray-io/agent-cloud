@@ -3,6 +3,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,8 +32,8 @@ func GenerationKey(id string, isUser bool) string {
 // GenerationCooldown is the wait period between generation attempts.
 // Admin users bypass this entirely (checked at the handler level).
 const (
-	GuestCooldown   = 90 * time.Second  // guests wait longer
-	AccountCooldown = 20 * time.Second  // account holders wait less
+	GuestCooldown   = 90 * time.Second // guests wait longer
+	AccountCooldown = 20 * time.Second // account holders wait less
 )
 
 // Result is returned by Allow.
@@ -60,7 +61,7 @@ func (l *Limiter) Allow(ctx context.Context, key string, cooldown time.Duration)
 
 	// Write rejected — a cooldown key already exists. Report the remaining wait.
 	ttl, err := l.rdb.TTL(ctx, key).Result()
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return Result{}, fmt.Errorf("ratelimit ttl: %w", err)
 	}
 	if ttl < 0 {

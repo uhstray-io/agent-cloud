@@ -49,11 +49,11 @@ LIMIT 3;
 -- deleting the row would orphan the job and lose the asset on completion.
 -- name: PurgeOldUserGenerations :exec
 DELETE FROM generations
-WHERE user_id = $1
-  AND status NOT IN ('pending','processing')
-  AND id NOT IN (
-      SELECT id FROM generations
-      WHERE user_id = $1
-      ORDER BY created_at DESC
+WHERE generations.user_id = $1
+  AND generations.status NOT IN ('pending','processing')
+  AND generations.id NOT IN (
+      SELECT g.id FROM generations g
+      WHERE g.user_id = $1
+      ORDER BY g.created_at DESC, g.id DESC
       LIMIT 10
   );
