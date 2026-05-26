@@ -133,6 +133,9 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `apply-policy-orb-agent.yml` | Apply orb-agent policy |
 | `apply-policy-semaphore.yml` | Apply Semaphore policy |
 | `apply-policy-nemoclaw.yml` | Apply NemoClaw policy |
+| `apply-policy-uhhcraft.yml` | Apply UhhCraft policy (reserved) |
+| `apply-policy-inference-comfyui.yml` | Apply ComfyUI sidecar policy (reserved) |
+| `apply-policy-inference-hunyuan3d.yml` | Apply Hunyuan3D sidecar policy (reserved) |
 
 ### Validation & Provisioning
 | Playbook | Purpose |
