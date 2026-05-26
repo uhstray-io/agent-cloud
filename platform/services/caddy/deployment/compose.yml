@@ -12,6 +12,9 @@ services:
       - caddy-config:/config
       - caddy-data:/data
       - ./Caddyfile:/etc/caddy/Caddyfile
+      # Per-site fragments. Read-only — only Ansible writes here, via
+      # platform/playbooks/tasks/distribute-caddy-site.yml.
+      - ./sites:/etc/caddy/sites:ro
 
 volumes:
   caddy-config:

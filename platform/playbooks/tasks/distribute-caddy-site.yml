@@ -1,0 +1,173 @@
+---
+# distribute-caddy-site.yml — Push a rendered Caddy fragment to central Caddy and reload.
+#
+# Usage (from a service's deploy playbook, after rendering templates/caddy-site.j2
+# into a known local path on the service host):
+#
+#   - name: "Distribute Caddy fragment"
+#     ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+#     vars:
+#       _fragment_src: "/tmp/uhhcraft-caddy-site.caddy"   # path on the service host
+#       _fragment_name: "uhhcraft.caddy"                  # filename under sites/
+#
+# Expected variables:
+#   _fragment_src        Path to the rendered fragment ON THE SERVICE VM (typically /tmp/...)
+#   _fragment_name       Filename inside the central Caddy host's sites/ dir
+#
+# Optional variables:
+#   caddy_host           Inventory host of the central Caddy (default: 'caddy_svc').
+#                        Must be a single host in inventory. Override per-deploy if you
+#                        run multiple Caddy instances (regional, staging, etc.).
+#   caddy_container      Caddy container name on the Caddy host (default: 'caddy').
+#                        Used for `<engine> exec` to reload.
+#   caddy_sites_dir      Path on the Caddy host where sites/ is mounted from
+#                        (default derived from the CADDY host's ansible_user:
+#                         /home/<caddy_user>/agent-cloud/platform/services/caddy/deployment/sites).
+#   container_engine     Taken from the CADDY host's vars (delegated), default 'podman'
+#                        (the platform default; Docker is the NetBox-only exception).
+#
+# Safety: the fragment is written, then `caddy validate` runs against the full
+# config; on failure it is rolled back (prior version restored, or removed) and
+# the task fails — so a malformed fragment never persists to break a later
+# restart. Idempotent: an identical fragment + reload is a no-op.
+
+- name: "Validate caddy distribution inputs"
+  ansible.builtin.assert:
+    that:
+      - _fragment_src is defined
+      - _fragment_name is defined
+      # Basename only — block path traversal, since _fragment_name is
+      # concatenated into the dest path on the delegated Caddy host.
+      - _fragment_name is match('^[a-z0-9][a-z0-9-]*\.caddy$')
+    fail_msg: "_fragment_src must be set and _fragment_name must match '<name>.caddy' (no path separators)"
+
+# The Caddy host (and its connection user / container engine) can differ from
+# the service host, so resolve everything from the Caddy host's own vars.
+- name: "Resolve the central Caddy host"
+  ansible.builtin.set_fact:
+    _caddy_target: "{{ groups[caddy_host | default('caddy_svc')] | first }}"
+
+- name: "Resolve the Caddy host's runtime + connection user"
+  ansible.builtin.set_fact:
+    _caddy_engine: "{{ hostvars[_caddy_target].container_engine | default('podman') }}"
+    _caddy_user: "{{ hostvars[_caddy_target].ansible_user | default(ansible_user) }}"
+
+- name: "Resolve the Caddy sites/ directory"
+  ansible.builtin.set_fact:
+    _caddy_sites_dir: "{{ caddy_sites_dir | default('/home/' ~ _caddy_user ~ '/agent-cloud/platform/services/caddy/deployment/sites') }}"
+
+- name: "Slurp rendered fragment from service host"
+  ansible.builtin.slurp:
+    src: "{{ _fragment_src }}"
+  register: _fragment_blob
+
+- name: "Back up any existing fragment (for rollback on invalid config)"
+  ansible.builtin.slurp:
+    src: "{{ _caddy_sites_dir }}/{{ _fragment_name }}"
+  delegate_to: "{{ _caddy_target }}"
+  register: _prev_fragment
+  failed_when: false          # absent on first deploy — that's fine
+
+- name: "Write fragment into central Caddy host's sites/ directory"
+  ansible.builtin.copy:
+    content: "{{ _fragment_blob.content | b64decode }}"
+    dest: "{{ _caddy_sites_dir }}/{{ _fragment_name }}"
+    mode: "0644"
+  delegate_to: "{{ _caddy_target }}"
+  register: _fragment_written
+
+# Everything below only matters when the fragment actually changed — an
+# unchanged fragment was already validated on the deploy that wrote it.
+
+# First confirm the Caddy container is reachable, so we can tell a CONFIG-PARSE
+# failure (→ roll back the bad fragment) apart from an ENGINE/CONTAINER fault
+# (→ do NOT roll back: the new fragment is probably fine, the container is just
+# down; reverting would silently lose a good change).
+# noqa: no-handler — change-gated by design (skip the whole validate/reload
+# sequence when the fragment is unchanged); not a handler use-case.
+- name: "Confirm the Caddy container is reachable"  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: "{{ _caddy_engine }} exec {{ caddy_container | default('caddy') }} caddy version"
+  delegate_to: "{{ _caddy_target }}"
+  register: _caddy_reachable
+  changed_when: false
+  failed_when: false
+  when: _fragment_written.changed
+
+- name: "Fail (without rollback) when Caddy is unreachable — fragment could not be validated"
+  ansible.builtin.fail:
+    msg: >-
+      Caddy container '{{ caddy_container | default('caddy') }}' is unreachable on
+      {{ _caddy_target }} ({{ _caddy_engine }} exec rc {{ _caddy_reachable.rc }}).
+      The fragment was written but NOT validated or reloaded, and was left in
+      place (not rolled back — the engine fault is unrelated to fragment
+      validity). Bring Caddy up and re-run this deploy.
+  when:
+    - _fragment_written.changed
+    - _caddy_reachable.rc != 0
+
+# Caddy is reachable here, so a non-zero validate rc is a genuine config-parse
+# error — safe to roll back. Validates the FULL config (incl. the new fragment)
+# before reloading, so a malformed fragment never persists to break a restart.
+- name: "Validate the full Caddy config with the new fragment"
+  ansible.builtin.command:
+    cmd: >-
+      {{ _caddy_engine }} exec {{ caddy_container | default('caddy') }}
+      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  delegate_to: "{{ _caddy_target }}"
+  register: _caddy_validate
+  changed_when: false
+  failed_when: false
+  when:
+    - _fragment_written.changed
+    - _caddy_reachable.rc == 0
+
+- name: "Roll back to the previous fragment when the config is invalid"
+  ansible.builtin.copy:
+    content: "{{ _prev_fragment.content | b64decode }}"
+    dest: "{{ _caddy_sites_dir }}/{{ _fragment_name }}"
+    mode: "0644"
+  delegate_to: "{{ _caddy_target }}"
+  when:
+    - _fragment_written.changed
+    - (_caddy_validate.rc | default(0)) != 0
+    - _prev_fragment.content is defined
+
+- name: "Remove the bad fragment when the config is invalid and there was no prior version"
+  ansible.builtin.file:
+    path: "{{ _caddy_sites_dir }}/{{ _fragment_name }}"
+    state: absent
+  delegate_to: "{{ _caddy_target }}"
+  when:
+    - _fragment_written.changed
+    - (_caddy_validate.rc | default(0)) != 0
+    - _prev_fragment.content is not defined
+
+- name: "Fail when the new fragment is invalid"
+  ansible.builtin.fail:
+    msg: >-
+      Caddy rejected the {{ _fragment_name }} fragment; rolled back so the live
+      config and next restart are unaffected. validate output:
+      {{ _caddy_validate.stderr | default(_caddy_validate.stdout) | default('(none)') }}
+  when:
+    - _fragment_written.changed
+    - (_caddy_validate.rc | default(0)) != 0
+
+# noqa: no-handler — intentionally gated on the copy's changed state. A handler
+# can't be used: this is an included composable task and the reload MUST run in
+# sequence right after the validate gate, not deferred to a play-end flush.
+- name: "Reload Caddy inside the running container"  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: >-
+      {{ _caddy_engine }} exec {{ caddy_container | default('caddy') }}
+      caddy reload --config /etc/caddy/Caddyfile
+  delegate_to: "{{ _caddy_target }}"
+  register: _caddy_reload
+  changed_when: _fragment_written.changed
+  when: _fragment_written.changed          # nothing to reload if the fragment didn't change
+
+- name: "Report"
+  ansible.builtin.debug:
+    msg: >-
+      Caddy fragment {{ _fragment_name }} {{ 'updated' if _fragment_written.changed else 'unchanged' }};
+      validated + reloaded (reload rc {{ _caddy_reload.rc | default('n/a') }}).
