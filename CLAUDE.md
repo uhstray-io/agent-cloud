@@ -80,6 +80,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/SECURITY-TESTING-STANDARDS.md` — Security testing requirements
 - `plan/architecture/CI-TESTING-SPECIFICATION.md` — Testing standards for new services
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
+- `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
+- `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
@@ -154,6 +156,9 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/uhhcraft` | UhhCraft secrets (DB, Redis, MinIO, Stripe secret+publishable, session, Resend, Discord orders+ops webhooks, USPS client id/secret, Printify, Hubs) |
 | `secret/services/inference-comfyui` | ComfyUI sidecar (own MinIO root creds, COMFYUI_URL) |
 | `secret/services/inference-hunyuan3d` | Hunyuan3D sidecar (own MinIO root creds, model path) |
+| `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
+| `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
+| `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
 
 ## Composable Task Library
 

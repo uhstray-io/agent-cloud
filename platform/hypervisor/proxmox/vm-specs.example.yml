@@ -1,0 +1,130 @@
+# vm-specs.example.yml — Reference schema for Proxmox VM provisioning.
+#
+# The real vm-specs.yml lives in the private site-config repo at
+# site-config/platform/proxmox/vm-specs.yml and contains real IPs and VMIDs.
+# This file documents the schema (no real values) and shows how the WebSmith
+# Phase 6 services should be defined.
+#
+# Consumed by platform/playbooks/provision-vm.yml:
+#   ansible-playbook provision-vm.yml -e target_service=uhhcraft
+# resolves _specs.vms.uhhcraft from this file (or the site-config equivalent).
+#
+# Schema:
+#   defaults:                  Network + storage defaults shared across VMs.
+#   vms.<name>:                Per-service VM definition (name == target_service).
+#     name                     Hostname (and Proxmox VM name).
+#     vmid                     Proxmox VMID (unique across the cluster).
+#     node                     Proxmox node hosting this VM.
+#     cores                    CPU cores.
+#     memory                   RAM in MB.
+#     disk                     Disk size (e.g., "32G").
+#     ip                       Static IP, no CIDR. Defaults.netmask applies.
+#     gateway                  Optional override of defaults.gateway.
+#     nameserver               Optional override of defaults.nameserver.
+#     tags                     Optional override of defaults.base_tags.
+#     hostpci                  Optional list of PCIe passthrough entries
+#                              (GPU services only — see comments below).
+#
+# Field types are strict — provision-vm.yml does not coerce strings to ints.
+# Memory is in MB, disk is the Proxmox storage spec (e.g., "32G"), cores is
+# an integer.
+
+defaults:
+  gateway: "<network-gateway>"                # placeholder
+  nameserver: "1.1.1.1"
+  netmask: 24
+  disk_storage: vm-lvms
+  net_bridge: vmbr0
+  base_tags: "ubuntu;24.04"
+
+vms:
+  # ────────────────────────────────────────────────────────────────────────
+  # Existing services (abbreviated — full versions live in site-config).
+  # ────────────────────────────────────────────────────────────────────────
+  openbao:
+    name: openbao-svc-01
+    vmid: 100
+    node: alphacentauri
+    cores: 2
+    memory: 2048
+    disk: "20G"
+    ip: "<openbao-vm-ip>"
+
+  netbox:
+    name: netbox-svc-01
+    vmid: 110
+    node: alphacentauri
+    cores: 4
+    memory: 8192
+    disk: "40G"
+    ip: "<netbox-vm-ip>"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # WebSmith integration — added 2026-05-25.
+  # ────────────────────────────────────────────────────────────────────────
+
+  # UhhCraft — CPU VM. Hosts Postgres + Redis + MinIO + Go app via Podman.
+  uhhcraft:
+    name: uhhcraft-svc-01
+    vmid: 120
+    node: alphacentauri
+    cores: 4
+    memory: 8192
+    disk: "60G"               # Postgres + MinIO bucket headroom
+    ip: "<uhhcraft-vm-ip>"           # placeholder; real IP in site-config
+    tags: "ubuntu;24.04;web;uhhcraft"
+
+  # inference-comfyui — GPU VM. ComfyUI (Flux.1 Schnell) runs IN this VM on
+  # the passed-through GPU (not containerized — see the service CLAUDE.md),
+  # alongside the FastAPI wrapper + MinIO. The hostpci entry is the GPU PCIe
+  # device — exact ID is host-specific and lives in the site-config copy.
+  inference-comfyui:
+    name: inference-comfyui-svc-01
+    vmid: 130
+    node: alphacentauri        # host with PCIe-passthrough-capable GPU
+    cores: 6
+    memory: 16384
+    disk: "80G"                # MinIO + room for image cache
+    ip: "<inference-comfyui-vm-ip>"
+    tags: "ubuntu;24.04;gpu;inference;uhhcraft"
+    hostpci:
+      # Example PCIe slot — see UHHCRAFT-GPU-PASSTHROUGH.md for how to find
+      # the right ID on your host (lspci -nn | grep -i nvidia).
+      # Format: <slot[:function]>[,options]
+      # `pcie=1` requires VM machine type q35 (set in provision-vm.yml).
+      - "0000:01:00,pcie=1"
+
+  # inference-hunyuan3d — GPU VM. Hunyuan3D-2-mini in-process via diffusers.
+  # Larger VRAM footprint; model weights mounted from host at /srv/hunyuan3d/weights.
+  inference-hunyuan3d:
+    name: inference-hunyuan3d-svc-01
+    vmid: 140
+    node: betelgeuse           # second GPU host (if cluster has one)
+    cores: 6
+    memory: 24576
+    disk: "120G"               # weights + MinIO + generation cache
+    ip: "<inference-hunyuan3d-vm-ip>"
+    tags: "ubuntu;24.04;gpu;inference;uhhcraft"
+    hostpci:
+      - "0000:01:00,pcie=1"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Notes
+# ────────────────────────────────────────────────────────────────────────────
+#
+# 1. GPU VMs require additional Proxmox host configuration before they boot
+#    correctly. See plan/development/UHHCRAFT-GPU-PASSTHROUGH.md for the full
+#    procedure (IOMMU, VFIO bind, NVIDIA driver location, etc.).
+#
+# 2. If only one GPU host is available, set both inference services to the
+#    same node and split GPUs across them (each has 12GB VRAM headroom on
+#    an RTX 5070). Two services on one GPU is not supported — VRAM contention.
+#
+# 3. VMIDs are allocated in increments of 10 by convention. Reserve a range
+#    per service for future scaling (uhhcraft-svc-02, ...-03).
+#
+# 4. Tags are Proxmox-side. They appear in the UI and CLI; they are not
+#    consumed by deploy playbooks.
+#
+# 5. `tags`, `gateway`, and `nameserver` are optional per-VM; they fall back
+#    to the `defaults` block.

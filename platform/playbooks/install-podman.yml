@@ -1,0 +1,52 @@
+---
+# install-podman.yml — Install Podman + podman-compose on target hosts.
+#
+# Mirrors install-docker.yml. Idempotent via apt `state: present` — it installs
+# whichever of podman / podman-compose is missing (so a host that already has
+# podman but not podman-compose is still remediated). Requires become (sudo).
+#
+# Usage: ansible-playbook install-podman.yml -e "target_service=uhhcraft_svc"
+
+- name: "Install Podman on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: true
+  become: true
+  vars:
+    target_service: "ungrouped"
+
+  tasks:
+    - name: "Install podman + podman-compose"
+      # state: present is idempotent — installs only what's missing, so this
+      # also fixes a host that has podman but is missing podman-compose.
+      ansible.builtin.apt:
+        name:
+          - podman
+          - podman-compose
+        state: present
+        update_cache: true
+
+    - name: "Verify a compose entrypoint is available"
+      ansible.builtin.shell: |
+        set -o pipefail
+        if podman compose version >/dev/null 2>&1; then
+          echo plugin
+        elif command -v podman-compose >/dev/null 2>&1; then
+          echo python
+        else
+          echo MISSING
+        fi
+      register: _compose_check
+      changed_when: false
+      become: false
+
+    - name: "Fail if no compose entrypoint after install"
+      ansible.builtin.fail:
+        msg: |
+          Neither `podman compose` (plugin) nor `podman-compose` (python) is callable.
+          Investigate apt source / podman version on this host.
+      when: _compose_check.stdout | trim == 'MISSING'
+
+    - name: "Podman ready"
+      ansible.builtin.debug:
+        msg: >-
+          Podman installed; compose entrypoint: {{ _compose_check.stdout | trim }}.
