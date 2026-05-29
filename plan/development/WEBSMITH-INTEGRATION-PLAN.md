@@ -226,7 +226,7 @@ platform/services/inference-hunyuan3d/
 4. Move `output/ai/model3d/` → `platform/services/inference-hunyuan3d/deployment/`.
 5. **Rewrite `output/docker-compose.yml` → `platform/services/uhhcraft/deployment/compose.yml`:**
    - Same Postgres + Redis + MinIO containers, but pinned image tags.
-   - Replace hardcoded `password: password` etc. with `${VAR}` references read from a templated `.env`.
+   - Replace the dev-only literal placeholder values (e.g., the dev Postgres credential, which upstream simply set to the literal string "password") with `${VAR}` references read from a templated `.env`.
    - Remove the dev-only port exposes that aren't safe in prod (Postgres `5432`, Redis `6379`); keep MinIO `9000` internal only.
    - Add the Go app as a service entry built from `Dockerfile` (currently the README says "production runs natively" — see deviation note below).
    - Healthchecks on every service. Compose `depends_on` with `condition: service_healthy`.
