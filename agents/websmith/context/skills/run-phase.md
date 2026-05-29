@@ -23,7 +23,18 @@ The user has confirmed which phase to run (Phase 0-5). This skill walks one phas
 2. **Enumerate inherited constraints** from prior-phase artifacts. State them back to the user before asking questions.
 3. **Batch all clarifying questions** for this phase into one message. Group logically. Tell the user roughly how many decisions this phase needs.
 4. **Wait for all answers.** Do not draft the artifact before then.
-5. **Draft the artifact** in `platform/services/<sitename>/context/spec/<phase>.md`. Validate it against `agents/websmith/context/schemas/<phase>.schema.json` if a schema exists.
+5. **Resolve the phase slug from `<N>`**:
+
+   | `<N>` | `<slug>` |
+   |-------|----------|
+   | 0 | `intake` |
+   | 1 | `purpose` |
+   | 2 | `template` |
+   | 3 | `tooling` |
+   | 4 | `style` |
+   | 5 | `considerations` |
+
+   Then **draft the artifact** at `platform/services/<sitename>/context/spec/<slug>.md`. Validate it against `agents/websmith/context/schemas/<slug>.schema.json` if a schema exists.
 6. **Run the phase gate** (per `AGENTS.md` §4):
    1. One-line recap.
    2. Key decisions list.

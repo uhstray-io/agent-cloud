@@ -386,7 +386,7 @@ gh pr create
 The authoritative checklist is `plan/architecture/SERVICE-INTEGRATION-PLAN.md`. The short version for the composable pattern:
 
 1. Create `platform/services/<name>/deployment/`:
-   - `deploy.sh` (container lifecycle only, sources `../../lib/common.sh`)
+   - `deploy.sh` (container lifecycle only, sources `../../../lib/common.sh`)
    - `compose.yml`
    - `templates/*.j2` (Jinja2 env / config templates)
 2. Add `_secret_definitions` and `_env_templates` for the service.

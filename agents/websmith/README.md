@@ -11,7 +11,7 @@ WebSmith does not run as a daemon, container, or systemd unit. There is no compo
 
 ## How a site flows through agent-cloud
 
-```
+```text
 WebSmith session (Phases 0–5)
         |
         v
@@ -30,7 +30,7 @@ UhhCraft (at `platform/services/uhhcraft/`) is the first site built this way. Us
 
 ## Layout
 
-```
+```text
 agents/websmith/
 ├── README.md              This file
 ├── CLAUDE.md              Agent-cloud conventions specific to WebSmith

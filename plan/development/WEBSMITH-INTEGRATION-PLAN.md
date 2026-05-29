@@ -1,10 +1,10 @@
 # WebSmith + UhhCraft Integration Plan
 
-> **Status:** Draft, awaiting user signoff
-> **Author:** Claude (Cowork session, 2026-05-25)
-> **Scope:** Integrate the external `website_framework` repo into agent-cloud as the **WebSmith** agent, and integrate its concrete output (UhhCraft) as a first-class platform service with GPU-backed inference sidecars.
+**Date:** 2026-05-25
+**Status:** ACTIVE (Phases 1–11 committed; Phase 10 smoke pending hardware)
+**Context:** Integrate the external `website_framework` repository into agent-cloud as the **WebSmith** agent, and integrate its concrete output (UhhCraft) as a first-class platform service with GPU-backed inference sidecars.
 
-This plan integrates two distinct things from `/Users/jacobhaig/Documents/GitHub/website_framework/`:
+This plan integrates two distinct things from the upstream `website_framework` repository:
 
 1. **The meta-framework** (markdown phase docs, catalogs, schemas, examples) → becomes the **WebSmith** agent at `agents/websmith/`. WebSmith is the agent that any future site builds are run through.
 2. **The example output (UhhCraft)** → a Go + templ + HTMX storefront with Python AI sidecars. Becomes `platform/services/uhhcraft/` plus two new inference services. UhhCraft is the **first concrete site** built with WebSmith; future sites will follow the same pattern.
@@ -410,7 +410,7 @@ platform/hypervisor/proxmox/             VM provisioning configs:
 3. Generate three SSH keypairs (one per service), store in OpenBao at `secret/services/ssh/<name>`.
 4. Run `distribute-ssh-keys.yml` against each VM after provisioning.
 5. Run `harden-ssh.yml` once key auth is verified (rule 5 from CLAUDE.md: verify before hardening).
-6. Run `install-docker.yml` — wait, no: we're on Podman. Use a parallel `install-podman.yml` (this may already exist or need to be authored alongside `tasks/install-podman-compose.yml`).
+6. Run `platform/playbooks/install-podman.yml` to install Podman + podman-compose. (Authored alongside `tasks/install-podman-compose.yml` in Phase 6; mirrors `install-docker.yml` for the Podman runtime.)
 
 **Acceptance:**
 
