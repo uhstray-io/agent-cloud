@@ -31,28 +31,17 @@ These constraints propagate into every phase below.
 
 ## 1. Mental model
 
-```
-                ┌──────────────────────────────────────────────────────┐
-                │                    Cowork / NemoClaw                  │
-                │             (delegates a site-build session)          │
-                └────────────────────────────┬──────────────────────────┘
-                                             │ "build me a website"
-                                             v
-                                ┌────────────────────────────┐
-                                │     WebSmith (agent)       │
-                                │  phases / catalogs / schemas
-                                │  → produces SPEC.md         │
-                                └────────────┬───────────────┘
-                                             │  signed SPEC
-                                             v
-                          ┌──────────────────────────────────────┐
-                          │   platform/services/<sitename>/       │
-                          │   deployment/ + context/              │
-                          │   composable Ansible deploy           │
-                          └──────────────────────────────────────┘
+```mermaid
+flowchart TD
+    OPS["Cowork / NemoClaw<br/>(delegates a site-build session)"]
+    WS["WebSmith (agent)<br/>phases / catalogs / schemas<br/>produces SPEC.md"]
+    SVC["platform/services/&lt;sitename&gt;/<br/>deployment/ + context/<br/>composable Ansible deploy"]
 
-UhhCraft is the first <sitename>. The framework is reusable; each output is its own service.
+    OPS -- "'build me a website'" --> WS
+    WS -- "signed SPEC" --> SVC
 ```
+
+UhhCraft is the first `<sitename>`. The framework is reusable; each output is its own service.
 
 WebSmith is **decision-only** during phases 1-5 (per its own rules). It hands a `SPEC.md` to whoever (or whatever) implements the site. The implementation lands in `platform/services/<sitename>/` and follows agent-cloud's composable deploy pattern from there.
 
@@ -74,37 +63,37 @@ Phases that touch shared infra (CI, Caddy, Semaphore, OpenBao) ship as their own
 
 ```
 agents/websmith/
-├── README.md                       New — short index, links to context/
-├── CLAUDE.md                       New — how this agent fits agent-cloud
-├── deployment/                     Empty/stub — websmith has no runtime service today
-│   └── README.md                   "WebSmith is a prompt agent, not a runtime service"
-└── context/
-    ├── AGENTS.md                   Moved from website_framework/AGENTS.md
-    ├── KICKSTART.md                Moved from website_framework/KICKSTART.md
-    ├── README.md                   Moved from website_framework/README.md (framework's)
-    ├── og_prompt.md                Moved
-    ├── questionnaire.md            Moved
-    ├── verification.md             Moved
-    ├── phases/                     Moved verbatim
-    │   ├── 0-intake.md
-    │   ├── 1-purpose.md
-    │   ├── 2-template.md
-    │   ├── 3-tooling.md
-    │   ├── 4-style.md
-    │   └── 5-considerations.md
-    ├── catalogs/                   Moved verbatim
-    ├── schemas/                    Moved verbatim
-    ├── examples/                   Moved verbatim
-    ├── architecture/               New
-    │   └── integration-with-agent-cloud.md   How a signed SPEC.md becomes a platform service
-    ├── prompts/                    New
-    │   ├── kickoff.md              "Read AGENTS.md and walk me through..."
-    │   └── handoff-to-implementer.md
-    ├── skills/                     New
-    │   ├── run-phase.md
-    │   └── assemble-spec.md
-    └── use-cases/                  New
-        └── uhhcraft-walkthrough.md  How the example output was produced
+|-- README.md                       New — short index, links to context/
+|-- CLAUDE.md                       New — how this agent fits agent-cloud
+|-- deployment/                     Empty/stub — websmith has no runtime service today
+|   +-- README.md                   "WebSmith is a prompt agent, not a runtime service"
++-- context/
+    |-- AGENTS.md                   Moved from website_framework/AGENTS.md
+    |-- KICKSTART.md                Moved from website_framework/KICKSTART.md
+    |-- README.md                   Moved from website_framework/README.md (framework's)
+    |-- og_prompt.md                Moved
+    |-- questionnaire.md            Moved
+    |-- verification.md             Moved
+    |-- phases/                     Moved verbatim
+    |   |-- 0-intake.md
+    |   |-- 1-purpose.md
+    |   |-- 2-template.md
+    |   |-- 3-tooling.md
+    |   |-- 4-style.md
+    |   +-- 5-considerations.md
+    |-- catalogs/                   Moved verbatim
+    |-- schemas/                    Moved verbatim
+    |-- examples/                   Moved verbatim
+    |-- architecture/               New
+    |   +-- integration-with-agent-cloud.md   How a signed SPEC.md becomes a platform service
+    |-- prompts/                    New
+    |   |-- kickoff.md              "Read AGENTS.md and walk me through..."
+    |   +-- handoff-to-implementer.md
+    |-- skills/                     New
+    |   |-- run-phase.md
+    |   +-- assemble-spec.md
+    +-- use-cases/                  New
+        +-- uhhcraft-walkthrough.md  How the example output was produced
 ```
 
 **Work items:**
@@ -145,77 +134,77 @@ agents/websmith/
 
 ```
 platform/services/uhhcraft/
-├── deployment/
-│   ├── README.md                   Adapted from output/README.md (paths fixed, secrets ref OpenBao)
-│   ├── deploy.sh                   New — lifecycle only (podman compose up -d + wait)
-│   ├── post-deploy.sh              New — DB migrations, sqlc verify, templ generate, healthcheck
-│   ├── compose.yml                 Adapted from output/docker-compose.yml (Podman-compatible)
-│   ├── Dockerfile                  New — multi-stage Go build → distroless
-│   ├── Makefile                    Moved from output/Makefile (paths fixed)
-│   ├── go.mod                      Moved
-│   ├── go.sum                      Moved
-│   ├── sqlc.yaml                   Moved
-│   ├── cmd/                        Moved from output/cmd/
-│   ├── internal/                   Moved from output/internal/   (minus ai/ if any)
-│   ├── web/                        Moved from output/web/
-│   ├── db/                         Moved from output/db/ (migrations + queries)
-│   ├── config/                     Moved from output/config/ (non-secret TOML)
-│   └── templates/                  New — Jinja2 .env / config templates
-│       ├── env.j2                  All compose env (DB URL, Redis URL, MinIO creds, Stripe, …)
-│       ├── uhhcraft-app.env.j2     Subset injected into the Go app
-│       └── caddy-site.j2           Caddy route fragment (rendered into central Caddy)
-└── context/
-    ├── README.md
-    ├── CLAUDE.md                   Service-specific Claude guidance
-    ├── spec/                       Moved from output/spec/
-    │   ├── SPEC.md
-    │   ├── intake.md
-    │   ├── purpose.md
-    │   ├── template.md
-    │   ├── tooling.md
-    │   ├── style.md
-    │   └── considerations.md
-    ├── architecture/
-    │   ├── overview.md             How UhhCraft components fit together
-    │   └── ai-sidecar-contract.md  HTTP contract with inference-comfyui + inference-hunyuan3d
-    ├── prompts/                    Reusable prompts for ops + content updates
-    ├── skills/                     "Add a material", "Pause sales for hiatus", etc.
-    └── use-cases/                  Worked examples
+|-- deployment/
+|   |-- README.md                   Adapted from output/README.md (paths fixed, secrets ref OpenBao)
+|   |-- deploy.sh                   New — lifecycle only (podman compose up -d + wait)
+|   |-- post-deploy.sh              New — DB migrations, sqlc verify, templ generate, healthcheck
+|   |-- compose.yml                 Adapted from output/docker-compose.yml (Podman-compatible)
+|   |-- Dockerfile                  New — multi-stage Go build → distroless
+|   |-- Makefile                    Moved from output/Makefile (paths fixed)
+|   |-- go.mod                      Moved
+|   |-- go.sum                      Moved
+|   |-- sqlc.yaml                   Moved
+|   |-- cmd/                        Moved from output/cmd/
+|   |-- internal/                   Moved from output/internal/   (minus ai/ if any)
+|   |-- web/                        Moved from output/web/
+|   |-- db/                         Moved from output/db/ (migrations + queries)
+|   |-- config/                     Moved from output/config/ (non-secret TOML)
+|   +-- templates/                  New — Jinja2 .env / config templates
+|       |-- env.j2                  All compose env (DB URL, Redis URL, MinIO creds, Stripe, …)
+|       |-- uhhcraft-app.env.j2     Subset injected into the Go app
+|       +-- caddy-site.j2           Caddy route fragment (rendered into central Caddy)
++-- context/
+    |-- README.md
+    |-- CLAUDE.md                   Service-specific Claude guidance
+    |-- spec/                       Moved from output/spec/
+    |   |-- SPEC.md
+    |   |-- intake.md
+    |   |-- purpose.md
+    |   |-- template.md
+    |   |-- tooling.md
+    |   |-- style.md
+    |   +-- considerations.md
+    |-- architecture/
+    |   |-- overview.md             How UhhCraft components fit together
+    |   +-- ai-sidecar-contract.md  HTTP contract with inference-comfyui + inference-hunyuan3d
+    |-- prompts/                    Reusable prompts for ops + content updates
+    |-- skills/                     "Add a material", "Pause sales for hiatus", etc.
+    +-- use-cases/                  Worked examples
 ```
 
 ```
 platform/services/inference-comfyui/
-├── deployment/
-│   ├── README.md
-│   ├── deploy.sh                   Podman lifecycle for ComfyUI + Flux.1 wrapper
-│   ├── post-deploy.sh              Model weight checks, smoke generation
-│   ├── compose.yml                 NVIDIA-enabled Podman compose
-│   ├── Dockerfile                  Python FastAPI wrapper around ComfyUI
-│   ├── main.py                     Moved from output/ai/image/main.py
-│   ├── requirements.txt            Moved
-│   └── templates/
-│       └── env.j2                  COMFY_HOST, COMFY_PORT, model paths
-└── context/
-    ├── README.md
-    ├── architecture/
-    │   └── contract.md             POST /generate request/response schema (mirrors uhhcraft side)
-    └── skills/
-        └── add-flux-lora.md
+|-- deployment/
+|   |-- README.md
+|   |-- deploy.sh                   Podman lifecycle for ComfyUI + Flux.1 wrapper
+|   |-- post-deploy.sh              Model weight checks, smoke generation
+|   |-- compose.yml                 NVIDIA-enabled Podman compose
+|   |-- Dockerfile                  Python FastAPI wrapper around ComfyUI
+|   |-- main.py                     Moved from output/ai/image/main.py
+|   |-- requirements.txt            Moved
+|   +-- templates/
+|       +-- env.j2                  COMFY_HOST, COMFY_PORT, model paths
++-- context/
+    |-- README.md
+    |-- architecture/
+    |   +-- contract.md             POST /generate request/response schema (mirrors uhhcraft side)
+    +-- skills/
+        +-- add-flux-lora.md
 ```
 
 ```
 platform/services/inference-hunyuan3d/
-├── deployment/
-│   ├── README.md
-│   ├── deploy.sh
-│   ├── post-deploy.sh              Verify model weights present
-│   ├── compose.yml                 NVIDIA-enabled
-│   ├── Dockerfile
-│   ├── main.py                     Moved from output/ai/model3d/main.py
-│   ├── requirements.txt            Moved
-│   └── templates/env.j2
-└── context/
-    └── (same shape)
+|-- deployment/
+|   |-- README.md
+|   |-- deploy.sh
+|   |-- post-deploy.sh              Verify model weights present
+|   |-- compose.yml                 NVIDIA-enabled
+|   |-- Dockerfile
+|   |-- main.py                     Moved from output/ai/model3d/main.py
+|   |-- requirements.txt            Moved
+|   +-- templates/env.j2
++-- context/
+    +-- (same shape)
 ```
 
 **Work items:**
@@ -309,16 +298,16 @@ secret/services/approles/uhhcraft       role_id + secret_id (for the Go app to r
 
 ```
 platform/playbooks/
-├── deploy-uhhcraft.yml              5-phase composable (mirror deploy-netbox.yml)
-├── update-uhhcraft.yml              Pull + restart + verify
-├── clean-deploy-uhhcraft.yml        Destructive (uses tasks/clean-service.yml)
-├── deploy-inference-comfyui.yml     5-phase
-├── update-inference-comfyui.yml
-├── deploy-inference-hunyuan3d.yml
-├── update-inference-hunyuan3d.yml
-├── apply-policy-uhhcraft.yml        (from Phase 3)
-├── apply-policy-inference-comfyui.yml
-└── apply-policy-inference-hunyuan3d.yml
+|-- deploy-uhhcraft.yml              5-phase composable (mirror deploy-netbox.yml)
+|-- update-uhhcraft.yml              Pull + restart + verify
+|-- clean-deploy-uhhcraft.yml        Destructive (uses tasks/clean-service.yml)
+|-- deploy-inference-comfyui.yml     5-phase
+|-- update-inference-comfyui.yml
+|-- deploy-inference-hunyuan3d.yml
+|-- update-inference-hunyuan3d.yml
+|-- apply-policy-uhhcraft.yml        (from Phase 3)
+|-- apply-policy-inference-comfyui.yml
++-- apply-policy-inference-hunyuan3d.yml
 ```
 
 **Tasks (new, in `platform/playbooks/tasks/`):**
@@ -366,9 +355,9 @@ platform/playbooks/
 
 ```
 platform/services/caddy/deployment/
-├── sites/                              (new directory if not present)
-│   └── uhhcraft.caddy                  Rendered from caddy-site.j2 by deploy-uhhcraft.yml
-└── deploy.sh                           Picks up sites/*.caddy via Caddyfile `import sites/*.caddy`
+|-- sites/                              (new directory if not present)
+|   +-- uhhcraft.caddy                  Rendered from caddy-site.j2 by deploy-uhhcraft.yml
++-- deploy.sh                           Picks up sites/*.caddy via Caddyfile `import sites/*.caddy`
 ```
 
 **Work items:**
