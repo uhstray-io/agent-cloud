@@ -28,7 +28,7 @@ The framework's own KICKSTART.md tells users to build their site in a **separate
 - **Implementation** lands in `platform/services/<sitename>/deployment/`, following the composable pattern documented in `plan/architecture/AUTOMATION-COMPOSABILITY.md`.
 - **Do not** write spec files into `agents/websmith/`. WebSmith holds the workflow; concrete sites live under `platform/services/`.
 
-[`agents/websmith/context/architecture/integration-with-agent-cloud.md`](./context/architecture/integration-with-agent-cloud.md) is the authoritative reference for this override. (On the Phase 1 branch the file is a skeleton; Phase 11 fills it in with the full second-site recipe.)
+[`agents/websmith/context/architecture/integration-with-agent-cloud.md`](./context/architecture/integration-with-agent-cloud.md) is the authoritative reference for this override. (The file is currently a skeleton; Phase 11 will fill it in with the full second-site recipe.)
 
 ## The agent-cloud preset (Phase 3 — Tooling)
 
