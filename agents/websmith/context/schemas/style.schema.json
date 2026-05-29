@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/style.schema.json",
+  "title": "Style Artifact",
+  "description": "Machine-readable mirror of spec/style.md.",
+  "type": "object",
+  "required": ["brandContext", "color", "typography", "spacing", "layout", "shape", "motion", "themeModes", "voice"],
+  "properties": {
+    "brandContext": {
+      "type": "object",
+      "properties": {
+        "existingBrand": { "type": "string" },
+        "feelAdjectives": { "type": "array", "items": { "type": "string" } },
+        "avoidAdjectives": { "type": "array", "items": { "type": "string" } },
+        "likedReferences": { "type": "array", "items": { "type": "object", "properties": { "url": { "type": "string" }, "note": { "type": "string" } } } },
+        "dislikedReferences": { "type": "array", "items": { "type": "object", "properties": { "url": { "type": "string" }, "note": { "type": "string" } } } }
+      }
+    },
+    "color": {
+      "type": "object",
+      "properties": {
+        "palette": {
+          "type": "object",
+          "properties": {
+            "brand": { "type": "string" },
+            "secondary": { "type": "array", "items": { "type": "string" } },
+            "neutrals": { "type": "object" },
+            "semantic": {
+              "type": "object",
+              "properties": {
+                "success": { "type": "string" },
+                "warning": { "type": "string" },
+                "danger": { "type": "string" },
+                "info": { "type": "string" }
+              }
+            }
+          }
+        },
+        "semanticTokens": {
+          "type": "object",
+          "properties": {
+            "light": { "type": "object", "additionalProperties": { "type": "string" } },
+            "dark": { "type": "object", "additionalProperties": { "type": "string" } },
+            "highContrast": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "contrastAudit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pair": { "type": "string" },
+              "ratio": { "type": "number" },
+              "passes": { "type": "string", "enum": ["AA", "AAA", "fail"] }
+            }
+          }
+        }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "properties": {
+        "families": {
+          "type": "object",
+          "properties": {
+            "display": { "type": "string" },
+            "body": { "type": "string" },
+            "mono": { "type": "string" }
+          }
+        },
+        "sourcing": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string", "enum": ["self", "google", "adobe", "foundry", "system"] },
+            "loadingStrategy": { "type": "string" },
+            "subsets": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "token": { "type": "string" },
+              "size": { "type": "string" },
+              "lineHeight": { "type": "string" },
+              "weight": { "type": "string" },
+              "use": { "type": "string" }
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "properties": {
+            "defaultBodySize": { "type": "string" },
+            "maxProseLineLength": { "type": "string" },
+            "headingHierarchy": { "type": "string" },
+            "numerals": { "type": "string" },
+            "capitalization": { "type": "string" }
+          }
+        }
+      }
+    },
+    "spacing": {
+      "type": "object",
+      "properties": {
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "token": { "type": "string" }, "value": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "maxContentWidth": { "type": "string" },
+        "gutter": { "type": "string" },
+        "columnSystem": { "type": "string" },
+        "breakpoints": { "type": "object", "additionalProperties": { "type": "string" } },
+        "densityDefault": { "type": "string", "enum": ["comfortable", "default", "compact"] }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "properties": {
+        "radii": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "token": { "type": "string" }, "value": { "type": "string" }, "usedFor": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "elevation": {
+      "type": "object",
+      "properties": {
+        "shadows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "token": { "type": "string" }, "definition": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "iconography": {
+      "type": "object",
+      "properties": {
+        "style": { "type": "string" },
+        "set": { "type": "string" },
+        "sizes": { "type": "array", "items": { "type": "string" } },
+        "strokeWeight": { "type": "string" },
+        "accessibility": { "type": "string" }
+      }
+    },
+    "imagery": {
+      "type": "object",
+      "properties": {
+        "photography": { "type": "string" },
+        "illustration": { "type": "string" },
+        "sources": { "type": "string" },
+        "aspectRatios": { "type": "array", "items": { "type": "string" } },
+        "treatments": { "type": "array", "items": { "type": "string" } },
+        "altTextPolicy": { "type": "string" }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "required": ["personality"],
+      "properties": {
+        "personality": { "type": "string", "enum": ["none", "subtle", "expressive", "bold"] },
+        "durations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "easings": { "type": "object", "additionalProperties": { "type": "string" } },
+        "whereMotionHappens": { "type": "array", "items": { "type": "string" } },
+        "reducedMotionBehavior": { "type": "string" }
+      }
+    },
+    "themeModes": {
+      "type": "object",
+      "required": ["light"],
+      "properties": {
+        "light": { "type": "string", "enum": ["default", "optional", "off"] },
+        "dark": { "type": "string", "enum": ["default", "optional", "required", "off"] },
+        "highContrast": { "type": "boolean" },
+        "followsSystem": { "type": "boolean" },
+        "userToggle": { "type": "boolean" }
+      }
+    },
+    "componentVisualRules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "variants": { "type": "array", "items": { "type": "string" } },
+          "sizes": { "type": "array", "items": { "type": "string" } },
+          "states": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "properties": {
+        "person": { "type": "string" },
+        "formality": { "type": "string" },
+        "contractions": { "type": "boolean" },
+        "humor": { "type": "string" },
+        "jargon": { "type": "string" },
+        "microcopyPatterns": { "type": "object" },
+        "capitalization": { "type": "string", "enum": ["title-case", "sentence-case"] },
+        "punctuationRules": { "type": "object" }
+      }
+    },
+    "branding": {
+      "type": "object",
+      "properties": {
+        "logoRules": { "type": "string" },
+        "favicon": { "type": "string" },
+        "ogImage": { "type": "string" },
+        "emailAlignment": { "type": "string" }
+      }
+    },
+    "userPreferences": {
+      "type": "object",
+      "properties": {
+        "reducedMotion": { "type": "string" },
+        "reducedData": { "type": "string" },
+        "reducedTransparency": { "type": "string" },
+        "contrastMore": { "type": "string" }
+      }
+    },
+    "openQuestions": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/template.schema.json",
+  "title": "Template Artifact",
+  "description": "Machine-readable mirror of spec/template.md.",
+  "type": "object",
+  "required": ["sitemap", "globalElements", "navigation", "components", "localization", "auth", "contentAuthoring"],
+  "properties": {
+    "sitemap": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "urlPattern", "purpose"],
+        "properties": {
+          "name": { "type": "string" },
+          "urlPattern": { "type": "string" },
+          "purpose": { "type": "string" },
+          "personas": { "type": "array", "items": { "type": "string" } },
+          "entryPoints": { "type": "array", "items": { "type": "string" } },
+          "exitPoints": { "type": "array", "items": { "type": "string" } },
+          "authRequired": {
+            "type": "string",
+            "enum": ["none", "authenticated", "role-gated", "plan-gated"]
+          },
+          "regions": {
+            "type": "object",
+            "properties": {
+              "header": { "type": "string" },
+              "body": { "type": "array", "items": { "type": "string" } },
+              "footer": { "type": "string" }
+            }
+          },
+          "components": { "type": "array", "items": { "type": "string" } },
+          "dynamicBehaviors": { "type": "array", "items": { "type": "string" } },
+          "emptyAndErrorStates": { "type": "string" },
+          "accessibilityNotes": { "type": "string" }
+        }
+      }
+    },
+    "globalElements": {
+      "type": "object",
+      "properties": {
+        "header": { "type": "object" },
+        "footer": { "type": "object" },
+        "persistentUI": {
+          "type": "object",
+          "properties": {
+            "cookieBanner": { "type": "boolean" },
+            "announcementBar": { "type": "boolean" },
+            "chatSupport": { "type": "string" }
+          }
+        }
+      }
+    },
+    "navigation": {
+      "type": "object",
+      "properties": {
+        "desktop": { "type": "string" },
+        "tablet": { "type": "string" },
+        "mobile": { "type": "string" },
+        "primaryPattern": { "type": "string" },
+        "secondaryPatterns": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "purpose": { "type": "string" },
+          "usedOn": { "type": "array", "items": { "type": "string" } },
+          "variants": { "type": "array", "items": { "type": "string" } },
+          "custom": { "type": "boolean", "description": "True if not in catalogs/components.md." }
+        }
+      }
+    },
+    "interactivity": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "area": { "type": "string" },
+          "mode": { "type": "string", "enum": ["static", "client-side", "live", "personalized"] }
+        }
+      }
+    },
+    "localization": {
+      "type": "object",
+      "required": ["launchLanguages"],
+      "properties": {
+        "launchLanguages": { "type": "array", "items": { "type": "string" } },
+        "plannedLanguages": { "type": "array", "items": { "type": "string" } },
+        "rtl": { "type": "boolean" },
+        "urlStrategy": { "type": "string", "enum": ["subdirectory", "subdomain", "ccTLD", "query-param", "none"] },
+        "translationWorkflow": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "publicPages": { "type": "array", "items": { "type": "string" } },
+        "authenticatedPages": { "type": "array", "items": { "type": "string" } },
+        "roleGatedPages": { "type": "array", "items": { "type": "string" } },
+        "planGatedPages": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "personalization": {
+      "type": "object",
+      "properties": {
+        "perUserData": { "type": "array", "items": { "type": "string" } },
+        "crossDeviceSync": { "type": "boolean" },
+        "preferenceStorage": { "type": "string" }
+      }
+    },
+    "contentAuthoring": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "enum": ["hardcoded", "markdown", "cms", "database", "user-generated"] },
+        "workflow": { "type": "string" },
+        "editors": { "type": "string" }
+      }
+    },
+    "openQuestions": { "type": "array", "items": { "type": "string" } }
+  }
+}

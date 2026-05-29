@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://website-agent-framework/schemas/considerations.schema.json",
+  "title": "Considerations Artifact",
+  "description": "Machine-readable mirror of spec/considerations.md. Each section captures a decision (or explicit N/A). Archetype-specific sections are open-shape.",
+  "type": "object",
+  "required": [
+    "archetypeScope",
+    "accessibility",
+    "seo",
+    "performance",
+    "privacy",
+    "security",
+    "content",
+    "monitoring",
+    "deployment",
+    "ciCd",
+    "testing",
+    "maintenance",
+    "launchReadiness",
+    "userSurfacedConsiderations",
+    "outOfScope"
+  ],
+  "properties": {
+    "archetypeScope": {
+      "type": "object",
+      "properties": {
+        "primary": { "type": "string" },
+        "secondary": { "type": "array", "items": { "type": "string" } },
+        "checklistsWalked": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "properties": {
+        "targetLevel": { "type": "string", "enum": ["A", "AA", "AAA"] },
+        "regionalLaws": { "type": "array", "items": { "type": "string" } },
+        "manualTestingPlan": { "type": "string" },
+        "automatedChecks": { "type": "string" },
+        "statementPage": { "type": "boolean" }
+      }
+    },
+    "seo": {
+      "type": "object",
+      "properties": {
+        "metaStrategy": { "type": "string" },
+        "ogCards": { "type": "string" },
+        "sitemap": { "type": "string" },
+        "robotsTxt": { "type": "string" },
+        "structuredDataSchemas": { "type": "array", "items": { "type": "string" } },
+        "urlStrategy": { "type": "string" },
+        "redirects": { "type": "string" },
+        "hreflang": { "type": "string" }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "properties": {
+        "budgets": {
+          "type": "object",
+          "properties": {
+            "lcp": { "type": "string" },
+            "inp": { "type": "string" },
+            "cls": { "type": "string" },
+            "ttfb": { "type": "string" },
+            "initialBundle": { "type": "string" },
+            "imageWeightPerPage": { "type": "string" }
+          }
+        },
+        "lighthouseCiThreshold": { "type": "string" },
+        "imageStrategy": { "type": "string" },
+        "fontLoading": { "type": "string" },
+        "thirdPartyScriptPolicy": { "type": "string" },
+        "cachingPolicy": { "type": "string" }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "properties": {
+        "privacyPolicyPlan": { "type": "string" },
+        "terms": { "type": "string" },
+        "cookiePolicyAndBanner": { "type": "string" },
+        "consentManagement": { "type": "string" },
+        "dsarProcess": { "type": "string" },
+        "dataRetention": { "type": "string" },
+        "ageGating": { "type": "string" }
+      }
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "httpsHsts": { "type": "boolean" },
+        "headers": { "type": "string" },
+        "csrfXss": { "type": "string" },
+        "rateLimitingBots": { "type": "string" },
+        "secrets": { "type": "string" },
+        "dependencyScanning": { "type": "string" },
+        "incidentResponse": { "type": "string" }
+      }
+    },
+    "content": {
+      "type": "object",
+      "properties": {
+        "sourceOfTruth": { "type": "string" },
+        "owners": { "type": "string" },
+        "assetLicensing": { "type": "string" },
+        "optimizationPipeline": { "type": "string" },
+        "versioning": { "type": "string" },
+        "launchContentReady": { "type": "boolean" }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "eventTaxonomy": { "type": "string" },
+        "funnels": { "type": "array", "items": { "type": "string" } },
+        "rum": { "type": "string" },
+        "errorTrackingSampling": { "type": "string" },
+        "logsRetention": { "type": "string" },
+        "alerting": { "type": "string" },
+        "onCall": { "type": "string" }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "properties": {
+        "environments": { "type": "array", "items": { "type": "string" } },
+        "domains": { "type": "array", "items": { "type": "string" } },
+        "dnsProvider": { "type": "string" },
+        "certs": { "type": "string" },
+        "regions": { "type": "array", "items": { "type": "string" } },
+        "failover": { "type": "string" },
+        "backups": { "type": "string" },
+        "dr": { "type": "object", "properties": { "rpo": { "type": "string" }, "rto": { "type": "string" } } },
+        "costMonitoring": { "type": "string" }
+      }
+    },
+    "ciCd": {
+      "type": "object",
+      "properties": {
+        "branching": { "type": "string" },
+        "requiredChecks": { "type": "array", "items": { "type": "string" } },
+        "previewDeployments": { "type": "boolean" },
+        "productionDeployTrigger": { "type": "string" },
+        "smokeTests": { "type": "string" },
+        "rollback": { "type": "string" },
+        "featureFlags": { "type": "string" }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "coverageExpectations": { "type": "string" },
+        "visualRegression": { "type": "string" },
+        "a11yInCi": { "type": "string" },
+        "perfInCi": { "type": "string" },
+        "manualQa": { "type": "string" },
+        "stagingReview": { "type": "string" }
+      }
+    },
+    "i18n": {
+      "type": "object",
+      "properties": {
+        "sourceOfTruth": { "type": "string" },
+        "translationWorkflow": { "type": "string" },
+        "rtl": { "type": "boolean" },
+        "localeSpecificAssets": { "type": "string" },
+        "regionalLegal": { "type": "string" }
+      }
+    },
+    "maintenance": {
+      "type": "object",
+      "properties": {
+        "maintainer": { "type": "string" },
+        "documentation": { "type": "array", "items": { "type": "string" } },
+        "dependencyCadence": { "type": "string" },
+        "browserSupport": { "type": "string" },
+        "sunsetCriteria": { "type": "string" }
+      }
+    },
+    "launchReadiness": {
+      "type": "object",
+      "properties": {
+        "cutOverPlan": { "type": "string" },
+        "oldSiteRedirects": { "type": "string" },
+        "day0Monitoring": { "type": "string" },
+        "day7Retro": { "type": "boolean" }
+      }
+    },
+    "archetypeSpecific": {
+      "type": "object",
+      "description": "Free-shape object keyed by archetype name. Each value documents archetype-specific decisions.",
+      "additionalProperties": { "type": "object" }
+    },
+    "userSurfacedConsiderations": {
+      "type": "array",
+      "description": "Items the user raised that were not in the catalog.",
+      "items": {
+        "type": "object",
+        "properties": { "item": { "type": "string" }, "decision": { "type": "string" } }
+      }
+    },
+    "outOfScope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "item": { "type": "string" }, "reason": { "type": "string" } }
+      }
+    },
+    "openQuestions": { "type": "array", "items": { "type": "string" } }
+  }
+}
