@@ -1,0 +1,71 @@
+# inference-comfyui — Podman-compatible compose.
+#
+# Three concerns on this host:
+#   1. ComfyUI itself (Flux.1 Schnell) — runs on the host outside compose,
+#      or in a sibling container. This compose handles only the FastAPI
+#      wrapper and its own MinIO.
+#   2. FastAPI wrapper — this image — exposes POST /generate to UhhCraft.
+#   3. MinIO — independent instance for THIS service. Generated images live here.
+#
+# GPU access: Podman with the NVIDIA Container Toolkit. The `devices` and
+# `security_opt` options below match podman's CDI handoff convention.
+# Docker users: replace with `deploy.resources.reservations.devices`.
+#
+# All credentials come from .env, templated by Ansible from OpenBao.
+
+name: inference-comfyui
+
+services:
+  minio:
+    # Pinned RELEASE tag (no :latest). Override with MINIO_IMAGE to bump.
+    image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z}
+    container_name: comfyui-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio_data:/data
+    networks:
+      - comfyui
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  api:
+    # Pull a pre-built image (CI builds + pushes); the stack never builds at
+    # deploy time. Override COMFYUI_API_IMAGE to pin a specific tag/digest.
+    image: ${COMFYUI_API_IMAGE:-ghcr.io/uhstray-io/inference-comfyui:latest}
+    container_name: comfyui-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Loopback only. Central Caddy on UhhCraft's host reaches in over internal network.
+      - "127.0.0.1:8189:8189"
+    networks:
+      - comfyui
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8189/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  comfyui:
+    driver: bridge
+
+volumes:
+  minio_data:

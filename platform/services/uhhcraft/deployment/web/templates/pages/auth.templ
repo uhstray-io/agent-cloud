@@ -1,0 +1,384 @@
+package pages
+
+import "github.com/wisward/uhhcraft/web/templates/layouts"
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type SignInData struct {
+	Email string
+	Error string
+	Next  string
+}
+
+type SignUpData struct {
+	Email string
+	Error string
+}
+
+type ForgotPasswordData struct {
+	Email string
+	Error string
+	Sent  bool
+}
+
+type ResetPasswordData struct {
+	Token string
+	Error string
+}
+
+// ── Sign in ───────────────────────────────────────────────────────────────────
+
+templ SignInPage(d SignInData) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Sign in",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm">
+				<div class="text-center mb-8">
+					<div class="text-5xl mb-3" aria-hidden="true">🦊</div>
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)]">Welcome back</h1>
+					<p class="text-sm text-[var(--color-fg-muted)] mt-1">Sign in to your UhhCraft account</p>
+				</div>
+
+				<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 shadow-sm">
+					if d.Error != "" {
+						<div class="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert">
+							{ d.Error }
+						</div>
+					}
+
+					<form method="post" action="/account/sign-in" novalidate>
+						if d.Next != "" {
+							<input type="hidden" name="next" value={ d.Next }/>
+						}
+
+						<div class="mb-4">
+							<label for="signin-email" class={ authLabel() }>Email address</label>
+							<input
+								id="signin-email"
+								type="email"
+								name="email"
+								value={ d.Email }
+								class={ authInput() }
+								autocomplete="email"
+								required
+							/>
+						</div>
+
+						<div class="mb-6">
+							<div class="flex items-center justify-between mb-1">
+								<label for="signin-password" class={ authLabel() }>Password</label>
+								<a href="/account/forgot-password" class="text-xs text-[var(--color-brand-fg)] hover:underline">Forgot password?</a>
+							</div>
+							<input
+								id="signin-password"
+								type="password"
+								name="password"
+								class={ authInput() }
+								autocomplete="current-password"
+								required
+							/>
+						</div>
+
+						<button type="submit" class={ authBtn() }>Sign In</button>
+					</form>
+				</div>
+
+				<p class="text-center text-sm text-[var(--color-fg-muted)] mt-6">
+					Don't have an account?
+					<a href="/account/sign-up" class="text-[var(--color-brand-fg)] font-semibold hover:underline ml-1">Sign up</a>
+				</p>
+			</div>
+		</div>
+	}
+}
+
+// ── Sign up ───────────────────────────────────────────────────────────────────
+
+templ SignUpPage(d SignUpData) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Create account",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm">
+				<div class="text-center mb-8">
+					<div class="text-5xl mb-3" aria-hidden="true">🦊</div>
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)]">Create your account</h1>
+					<p class="text-sm text-[var(--color-fg-muted)] mt-1">Start making unique things today</p>
+				</div>
+
+				<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 shadow-sm">
+					if d.Error != "" {
+						<div class="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert">
+							{ d.Error }
+						</div>
+					}
+
+					<form method="post" action="/account/sign-up" novalidate>
+						<div class="mb-4">
+							<label for="signup-email" class={ authLabel() }>Email address</label>
+							<input
+								id="signup-email"
+								type="email"
+								name="email"
+								value={ d.Email }
+								class={ authInput() }
+								autocomplete="email"
+								required
+							/>
+						</div>
+
+						<div class="mb-4">
+							<label for="signup-password" class={ authLabel() }>Password</label>
+							<input
+								id="signup-password"
+								type="password"
+								name="password"
+								class={ authInput() }
+								autocomplete="new-password"
+								required
+								minlength="8"
+							/>
+							<p class="text-xs text-[var(--color-fg-subtle)] mt-1">At least 8 characters</p>
+						</div>
+
+						<div class="mb-5">
+							<label for="signup-confirm" class={ authLabel() }>Confirm password</label>
+							<input
+								id="signup-confirm"
+								type="password"
+								name="confirm_password"
+								class={ authInput() }
+								autocomplete="new-password"
+								required
+							/>
+						</div>
+
+						<div class="mb-5">
+							<label class="flex items-start gap-3 cursor-pointer">
+								<input
+									type="checkbox"
+									name="age_gate"
+									class="mt-0.5 shrink-0 rounded border-[var(--color-border-default)] text-[var(--color-brand-solid)] focus-visible:ring-[var(--color-focus-ring)]"
+									required
+								/>
+								<span class="text-sm text-[var(--color-fg-muted)]">
+									I confirm I am 13 years of age or older.
+								</span>
+							</label>
+						</div>
+
+						<button type="submit" class={ authBtn() }>Create Account</button>
+
+						<p class="text-xs text-[var(--color-fg-subtle)] mt-4 text-center">
+							By signing up you agree to our
+							<a href="/legal/terms" class="underline hover:text-[var(--color-fg-muted)]">Terms</a>
+							and
+							<a href="/legal/privacy" class="underline hover:text-[var(--color-fg-muted)]">Privacy Policy</a>.
+						</p>
+					</form>
+				</div>
+
+				<p class="text-center text-sm text-[var(--color-fg-muted)] mt-6">
+					Already have an account?
+					<a href="/account/sign-in" class="text-[var(--color-brand-fg)] font-semibold hover:underline ml-1">Sign in</a>
+				</p>
+			</div>
+		</div>
+	}
+}
+
+// ── Sign up success ───────────────────────────────────────────────────────────
+
+templ SignUpSuccessPage(email string) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Check your email",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm text-center">
+				<div class="text-6xl mb-6" aria-hidden="true">📬</div>
+				<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-3">Check your email</h1>
+				<p class="text-[var(--color-fg-muted)] mb-2">
+					We sent a verification link to
+				</p>
+				<p class="font-semibold text-[var(--color-fg-default)] mb-6">{ email }</p>
+				<p class="text-sm text-[var(--color-fg-muted)]">
+					Click the link in the email to verify your account, then
+					<a href="/account/sign-in" class="text-[var(--color-brand-fg)] font-semibold hover:underline">sign in</a>.
+				</p>
+			</div>
+		</div>
+	}
+}
+
+// ── Verify email ──────────────────────────────────────────────────────────────
+
+templ VerifyEmailPage(success bool) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Email verification",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm text-center">
+				if success {
+					<div class="text-6xl mb-6" aria-hidden="true">✅</div>
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-3">Email verified!</h1>
+					<p class="text-[var(--color-fg-muted)] mb-6">Your email address is confirmed. You're all set.</p>
+					<a href="/account/sign-in" class={ authBtn() + " inline-flex" }>Sign In</a>
+				} else {
+					<div class="text-6xl mb-6" aria-hidden="true">😔</div>
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-3">Link expired</h1>
+					<p class="text-[var(--color-fg-muted)] mb-6">This verification link has expired or already been used.</p>
+					<a href="/account/sign-up" class={ authBtn() + " inline-flex" }>Try Again</a>
+				}
+			</div>
+		</div>
+	}
+}
+
+// ── Forgot password ───────────────────────────────────────────────────────────
+
+templ ForgotPasswordPage(d ForgotPasswordData) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Reset password",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm">
+				<div class="text-center mb-8">
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)]">Reset your password</h1>
+					<p class="text-sm text-[var(--color-fg-muted)] mt-1">We'll email you a link to reset it.</p>
+				</div>
+
+				<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 shadow-sm">
+					if d.Sent {
+						<div class="text-center py-2">
+							<div class="text-4xl mb-3" aria-hidden="true">📬</div>
+							<p class="text-sm text-[var(--color-fg-muted)]">
+								If an account exists for <strong class="text-[var(--color-fg-default)]">{ d.Email }</strong>,
+								you'll receive a reset link shortly.
+							</p>
+						</div>
+					} else {
+						if d.Error != "" {
+							<div class="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert">
+								{ d.Error }
+							</div>
+						}
+
+						<form method="post" action="/account/forgot-password" novalidate>
+							<div class="mb-5">
+								<label for="forgot-email" class={ authLabel() }>Email address</label>
+								<input
+									id="forgot-email"
+									type="email"
+									name="email"
+									value={ d.Email }
+									class={ authInput() }
+									autocomplete="email"
+									required
+								/>
+							</div>
+							<button type="submit" class={ authBtn() }>Send Reset Link</button>
+						</form>
+					}
+				</div>
+
+				<p class="text-center text-sm text-[var(--color-fg-muted)] mt-6">
+					Remember it now?
+					<a href="/account/sign-in" class="text-[var(--color-brand-fg)] font-semibold hover:underline ml-1">Sign in</a>
+				</p>
+			</div>
+		</div>
+	}
+}
+
+// ── Reset password ────────────────────────────────────────────────────────────
+
+templ ResetPasswordPage(d ResetPasswordData) {
+	@layouts.Base(layouts.PageData{
+		Title:   "Choose a new password",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm">
+				<div class="text-center mb-8">
+					<h1 class="text-2xl font-bold text-[var(--color-fg-default)]">Choose a new password</h1>
+				</div>
+
+				<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 shadow-sm">
+					if d.Error != "" {
+						<div class="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert">
+							{ d.Error }
+						</div>
+					}
+
+					<form method="post" action="/account/reset-password" novalidate>
+						<input type="hidden" name="token" value={ d.Token }/>
+
+						<div class="mb-4">
+							<label for="reset-password" class={ authLabel() }>New password</label>
+							<input
+								id="reset-password"
+								type="password"
+								name="password"
+								class={ authInput() }
+								autocomplete="new-password"
+								required
+								minlength="8"
+							/>
+							<p class="text-xs text-[var(--color-fg-subtle)] mt-1">At least 8 characters</p>
+						</div>
+
+						<div class="mb-6">
+							<label for="reset-confirm" class={ authLabel() }>Confirm new password</label>
+							<input
+								id="reset-confirm"
+								type="password"
+								name="confirm_password"
+								class={ authInput() }
+								autocomplete="new-password"
+								required
+							/>
+						</div>
+
+						<button type="submit" class={ authBtn() }>Set New Password</button>
+					</form>
+				</div>
+			</div>
+		</div>
+	}
+}
+
+templ ResetPasswordSuccessPage() {
+	@layouts.Base(layouts.PageData{
+		Title:   "Password updated",
+		NoIndex: true,
+	}, "") {
+		<div class="min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+			<div class="w-full max-w-sm text-center">
+				<div class="text-6xl mb-6" aria-hidden="true">✅</div>
+				<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-3">Password updated</h1>
+				<p class="text-[var(--color-fg-muted)] mb-6">Your password has been changed. Sign in with your new password.</p>
+				<a href="/account/sign-in" class={ authBtn() + " inline-flex" }>Sign In</a>
+			</div>
+		</div>
+	}
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func authLabel() string {
+	return "block text-sm font-semibold text-[var(--color-fg-default)] mb-1"
+}
+
+func authInput() string {
+	return "block w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2.5 text-sm text-[var(--color-fg-default)] placeholder:text-[var(--color-fg-subtle)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] transition-colors duration-[var(--duration-fast)]"
+}
+
+func authBtn() string {
+	return "w-full flex items-center justify-center px-4 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-brand-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
+}

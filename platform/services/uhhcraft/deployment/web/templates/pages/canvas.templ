@@ -1,0 +1,306 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/wisward/uhhcraft/web/templates/layouts"
+)
+
+// CanvasData mirrors canvas.canvasData — duplicated here to avoid import cycles.
+type CanvasData struct {
+	Mode            string
+	IsAuthenticated bool
+	IsAdmin         bool
+	NoIndex         bool
+
+	ItemID       string
+	CatalogSlug  string
+	GenerationID string
+	ItemName     string
+	ProductType  string
+	Prompt       string
+
+	AssetURL    string
+	AssetGLBPath string
+	AssetPNGPath string
+
+	Status string
+
+	MaterialParam    string
+	CutFinishParam   string
+	MaterialOptions  []CanvasMaterialOption
+	CutFinishOptions []CanvasMaterialOption
+	Price            float64
+}
+
+type CanvasMaterialOption struct {
+	ID                  string
+	DisplayName         string
+	DescriptionCustomer string
+	PriceModifierUSD    float64
+	Selected            bool
+}
+
+templ CanvasPage(d CanvasData) {
+	@layouts.Base(layouts.PageData{
+		Title:           d.ItemName,
+		Description:     "See your item in 3D before you buy — unique, made just for you.",
+		NoIndex:         d.NoIndex,
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="flex flex-col lg:flex-row min-h-[calc(100vh-4rem)]">
+
+			<!-- ── 3D Canvas viewport (always dark) ── -->
+			<div
+				class="relative flex-1 bg-[var(--color-dark-50)] rounded-none lg:rounded-r-[var(--radius-2xl)]"
+				style="min-height:60vw; max-height:85vh;"
+				id="canvas-container"
+			>
+				<!-- Loading skeleton + poller — only for non-terminal states. A
+			     failed generation must NOT render the poller (it would hit
+			     /generate/status/{id} forever); the failed branch below handles it. -->
+				if d.Status == "pending" || d.Status == "processing" {
+					<div id="canvas-loading" class="absolute inset-0 flex flex-col items-center justify-center gap-4">
+						<!-- Fox mascot loading animation -->
+						<div class="text-6xl animate-bounce" aria-hidden="true">🦊</div>
+						<p class="text-[var(--color-dark-fg)] text-lg font-semibold">
+							if d.ProductType == "sticker" {
+								Generating your sticker...
+							} else {
+								Building your 3D model...
+							}
+						</p>
+						<p class="text-[var(--color-dark-muted)] text-sm">This takes a few seconds. Hang tight!</p>
+						<!-- Auto-refresh status via HTMX polling -->
+						<div
+							hx-get={ fmt.Sprintf("/generate/status/%s", d.GenerationID) }
+							hx-trigger="every 2s"
+							hx-target="#canvas-status-data"
+							hx-swap="innerHTML"
+							aria-live="polite"
+						></div>
+						<span id="canvas-status-data" class="sr-only">Generating...</span>
+					</div>
+				}
+
+				<!-- Three.js canvas (mounted by canvas.js when assetURL is available) -->
+				<canvas
+					id="three-canvas"
+					class="w-full h-full"
+					data-asset-url={ d.AssetURL }
+					data-asset-type={ canvasAssetType(d) }
+					data-product-type={ d.ProductType }
+					aria-label={ fmt.Sprintf("Interactive 3D preview of %s. Drag to rotate, scroll to zoom.", d.ItemName) }
+				></canvas>
+
+				<!-- Error state -->
+				if d.Status == "failed" {
+					<div class="absolute inset-0 flex flex-col items-center justify-center gap-4 p-8 text-center">
+						<div class="text-5xl" aria-hidden="true">😔</div>
+						<p class="text-[var(--color-dark-fg)] text-lg font-semibold">That one didn't work out</p>
+						<p class="text-[var(--color-dark-muted)] text-sm max-w-xs">Sometimes the AI has an off day. Try a different prompt or tweak your description.</p>
+						<a href="/generate" class={ btnSecondaryDark() }>Try Again</a>
+					</div>
+				}
+			</div>
+
+			<!-- ── Side panel (item summary + actions) ── -->
+			<aside
+				class="w-full lg:w-80 xl:w-96 shrink-0 bg-[var(--color-bg-page)] border-t lg:border-t-0 lg:border-l border-[var(--color-border-muted)] flex flex-col"
+				aria-label="Product details"
+			>
+				<div class="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+
+					<!-- Item name -->
+					<div>
+						<h1 class="text-2xl font-bold text-[var(--color-fg-default)]">{ d.ItemName }</h1>
+						if d.Prompt != "" {
+							<p class="text-sm text-[var(--color-fg-muted)] mt-1 italic">"{ d.Prompt }"</p>
+						}
+					</div>
+
+					<!-- Material selector -->
+					if len(d.MaterialOptions) > 0 {
+						<fieldset>
+							<legend class="text-sm font-semibold text-[var(--color-fg-default)] mb-2">
+								Material
+							</legend>
+							<div class="flex flex-wrap gap-2" role="radiogroup">
+								for _, opt := range d.MaterialOptions {
+									<label class={ radialPill(opt.ID == d.MaterialParam) }>
+										<input
+											type="radio"
+											name="material_id"
+											value={ opt.ID }
+											class="sr-only"
+											if opt.ID == d.MaterialParam { checked }
+											title={ opt.DescriptionCustomer }
+										/>
+										{ opt.DisplayName }
+										if opt.PriceModifierUSD > 0 {
+											<span class="text-xs opacity-70"> +{ fmt.Sprintf("$%.2f", opt.PriceModifierUSD) }</span>
+										}
+									</label>
+								}
+							</div>
+						</fieldset>
+					}
+
+					<!-- Cut / Finish selector -->
+					if len(d.CutFinishOptions) > 0 {
+						<fieldset>
+							<legend class="text-sm font-semibold text-[var(--color-fg-default)] mb-2">
+								if d.ProductType == "sticker" {
+									Cut type
+								} else {
+									Finish
+								}
+							</legend>
+							<div class="flex flex-wrap gap-2" role="radiogroup">
+								for _, opt := range d.CutFinishOptions {
+									<label class={ radialPill(opt.ID == d.CutFinishParam) }>
+										<input
+											type="radio"
+											name="cut_finish_id"
+											value={ opt.ID }
+											class="sr-only"
+											if opt.ID == d.CutFinishParam { checked }
+											title={ opt.DescriptionCustomer }
+										/>
+										{ opt.DisplayName }
+										if opt.PriceModifierUSD > 0 {
+											<span class="text-xs opacity-70"> +{ fmt.Sprintf("$%.2f", opt.PriceModifierUSD) }</span>
+										}
+									</label>
+								}
+							</div>
+						</fieldset>
+					}
+
+					<!-- Price -->
+					<div class="flex items-center justify-between py-4 border-t border-[var(--color-border-muted)]">
+						<span class="text-sm text-[var(--color-fg-muted)]">Price</span>
+						<span class="text-2xl font-bold text-[var(--color-fg-default)]" id="canvas-price">
+							{ fmt.Sprintf("$%.2f", d.Price) }
+						</span>
+					</div>
+
+					<!-- Account upgrade nudge (guests only) -->
+					if !d.IsAuthenticated {
+						<div class="rounded-[var(--radius-lg)] bg-[var(--color-accent-bg)] border border-[var(--color-accent-solid)] p-4 text-sm text-[var(--color-accent-fg)]">
+							<span class="font-semibold">⚡ Account holders regenerate much faster</span> and get priority manufacturing.
+							<a href="/account/sign-up" class="underline font-semibold ml-1">Sign up free</a>
+						</div>
+					}
+
+					<!-- 3D print safety disclaimer -->
+					if d.ProductType == "print" {
+						<p class="text-xs text-[var(--color-fg-subtle)]">
+							Decorative use only. Not food-safe, not load-bearing, not suitable for safety-critical applications.
+						</p>
+					}
+				</div>
+
+				<!-- Action bar (sticky bottom) -->
+				<div class="p-4 border-t border-[var(--color-border-muted)] flex flex-col gap-3">
+					if d.Status == "completed" || d.Mode == "catalog" {
+						<!-- Add to cart -->
+						<form
+							action="/cart/add"
+							method="post"
+							hx-post="/cart/add"
+							hx-target="#cart-feedback"
+							hx-swap="innerHTML"
+						>
+							<input type="hidden" name="item_type" value={ d.Mode }/>
+							if d.Mode == "catalog" {
+								<input type="hidden" name="catalog_item_id" value={ d.ItemID }/>
+							} else {
+								<input type="hidden" name="generation_id" value={ d.GenerationID }/>
+							}
+							<input type="hidden" name="material_id" value={ d.MaterialParam } id="hidden-material"/>
+							<input type="hidden" name="cut_finish_id" value={ d.CutFinishParam } id="hidden-cut-finish"/>
+							<button
+								type="submit"
+								class={ btnPrimary() + " w-full" }
+								aria-label="Add to cart"
+							>
+								Add to Cart
+							</button>
+						</form>
+						<div id="cart-feedback" aria-live="polite"></div>
+
+						<!-- Try Again / Back -->
+						if d.Mode == "generated" {
+							<a
+								href="/generate"
+								class={ btnGhost() + " w-full text-center" }
+							>
+								Try a Different Prompt
+							</a>
+						} else {
+							<a
+								href={ templ.SafeURL("/catalog/" + d.CatalogSlug) }
+								class={ btnGhost() + " w-full text-center" }
+							>
+								← Back to Catalog
+							</a>
+						}
+					} else if d.Status == "pending" || d.Status == "processing" {
+						<button disabled class={ btnPrimary() + " w-full opacity-50 cursor-not-allowed" }>
+							Generating...
+						</button>
+					}
+				</div>
+			</aside>
+		</div>
+
+		<!-- Three.js canvas script (loaded only on this page) -->
+		<script src="/static/js/canvas.js" defer type="module"></script>
+
+		<!-- Sync hidden inputs when radials change -->
+		<script>
+			document.addEventListener('change', function(e) {
+				// The add-to-cart form (and these hidden inputs) only exists in
+				// the completed state, so guard against null on pending /
+				// processing / failed renders where a radio change can still fire.
+				if (e.target.name === 'material_id') {
+					var m = document.getElementById('hidden-material');
+					if (m) m.value = e.target.value;
+				}
+				if (e.target.name === 'cut_finish_id') {
+					var c = document.getElementById('hidden-cut-finish');
+					if (c) c.value = e.target.value;
+				}
+			});
+		</script>
+	}
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func btnPrimary() string {
+	return "inline-flex items-center justify-center px-5 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-semibold text-base transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-brand-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
+}
+
+func btnGhost() string {
+	return "inline-flex items-center justify-center px-5 py-3 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] font-medium text-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-fg-default)]"
+}
+
+func btnSecondaryDark() string {
+	return "inline-flex items-center justify-center px-5 py-3 rounded-[var(--radius-md)] bg-[var(--color-dark-200)] text-[var(--color-dark-fg)] font-medium text-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-dark-300)]"
+}
+
+func radialPill(selected bool) string {
+	base := "cursor-pointer px-3 py-1.5 rounded-full border text-sm font-medium transition-all duration-[var(--duration-fast)] select-none"
+	if selected {
+		return base + " bg-[var(--color-brand-bg)] border-[var(--color-brand-solid)] border-2 text-[var(--color-brand-fg)]"
+	}
+	return base + " bg-[var(--color-bg-surface)] border-[var(--color-border-default)] text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-muted)]"
+}
+
+func canvasAssetType(d CanvasData) string {
+	if d.ProductType == "print" {
+		return "glb"
+	}
+	return "sticker-png" // PNG applied as texture to a flat sticker mesh
+}

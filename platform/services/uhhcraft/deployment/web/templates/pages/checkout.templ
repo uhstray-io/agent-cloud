@@ -1,0 +1,338 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/wisward/uhhcraft/web/templates/layouts"
+)
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type CheckoutContactData struct {
+	IsAuthenticated bool
+	CartItems       []CartLineItem
+	Subtotal        float64
+	ShippingFree    bool
+	ShippingAmount  float64
+	Total           float64
+
+	// Form values (pre-filled on error)
+	Email     string
+	FirstName string
+	LastName  string
+	Address1  string
+	Address2  string
+	City      string
+	State     string
+	ZIP       string
+	Error     string
+}
+
+type CheckoutPaymentData struct {
+	IsAuthenticated      bool
+	CartItems            []CartLineItem
+	Subtotal             float64
+	ShippingFree         bool
+	ShippingAmount       float64
+	Total                float64
+	StripePublishableKey string
+	StripeClientSecret   string
+	Email                string
+}
+
+// ── Checkout step 1 — Contact + Shipping ─────────────────────────────────────
+
+templ CheckoutContactPage(d CheckoutContactData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Checkout",
+		NoIndex:         true,
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-lg px-4 sm:px-6 lg:px-8 py-10">
+			<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-8">Checkout</h1>
+
+			<div class="flex flex-col lg:flex-row gap-10">
+				<!-- Form -->
+				<div class="flex-1">
+					@checkoutStepIndicator(1)
+
+					if d.Error != "" {
+						<div class="mb-5 p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert">
+							{ d.Error }
+						</div>
+					}
+
+					<form method="post" action="/checkout" novalidate class="space-y-4">
+						<input type="hidden" name="step" value="contact"/>
+
+						<fieldset>
+							<legend class="text-base font-semibold text-[var(--color-fg-default)] mb-4">Contact</legend>
+							<div>
+								<label for="co-email" class={ coLabel() }>Email address</label>
+								<input id="co-email" type="email" name="email" value={ d.Email } class={ coInput() } autocomplete="email" required/>
+							</div>
+						</fieldset>
+
+						<fieldset class="mt-6">
+							<legend class="text-base font-semibold text-[var(--color-fg-default)] mb-4">Shipping address</legend>
+							<div class="grid grid-cols-2 gap-4">
+								<div>
+									<label for="co-first" class={ coLabel() }>First name</label>
+									<input id="co-first" type="text" name="first_name" value={ d.FirstName } class={ coInput() } autocomplete="given-name" required/>
+								</div>
+								<div>
+									<label for="co-last" class={ coLabel() }>Last name</label>
+									<input id="co-last" type="text" name="last_name" value={ d.LastName } class={ coInput() } autocomplete="family-name" required/>
+								</div>
+							</div>
+							<div class="mt-4">
+								<label for="co-addr1" class={ coLabel() }>Address</label>
+								<input id="co-addr1" type="text" name="address1" value={ d.Address1 } class={ coInput() } autocomplete="address-line1" required/>
+							</div>
+							<div class="mt-4">
+								<label for="co-addr2" class={ coLabel() }>
+									Apartment, suite, etc. <span class="text-[var(--color-fg-subtle)] font-normal">(optional)</span>
+								</label>
+								<input id="co-addr2" type="text" name="address2" value={ d.Address2 } class={ coInput() } autocomplete="address-line2"/>
+							</div>
+							<div class="mt-4 grid grid-cols-3 gap-4">
+								<div class="col-span-1">
+									<label for="co-city" class={ coLabel() }>City</label>
+									<input id="co-city" type="text" name="city" value={ d.City } class={ coInput() } autocomplete="address-level2" required/>
+								</div>
+								<div>
+									<label for="co-state" class={ coLabel() }>State</label>
+									<input id="co-state" type="text" name="state" value={ d.State } class={ coInput() } autocomplete="address-level1" maxlength="2" placeholder="CA" required/>
+								</div>
+								<div>
+									<label for="co-zip" class={ coLabel() }>ZIP</label>
+									<input id="co-zip" type="text" name="zip" value={ d.ZIP } class={ coInput() } autocomplete="postal-code" pattern="[0-9]{5}(-[0-9]{4})?" placeholder="90210 or 90210-1234" required/>
+								</div>
+							</div>
+						</fieldset>
+
+						if !d.IsAuthenticated {
+							<div class="mt-6 p-4 rounded-[var(--radius-lg)] bg-[var(--color-bg-surface)] border border-[var(--color-border-muted)]">
+								<label class="flex items-start gap-3 cursor-pointer">
+									<input type="checkbox" name="age_gate" class="mt-0.5 shrink-0 rounded" required/>
+									<span class="text-sm text-[var(--color-fg-muted)]">
+										I confirm I am 13 years of age or older. (<a href="/legal/terms" class="underline">Terms apply.</a>)
+									</span>
+								</label>
+							</div>
+						}
+
+						<div class="mt-6">
+							<button type="submit" class={ coSubmitBtn() }>Continue to Payment →</button>
+						</div>
+
+						<p class="text-xs text-center text-[var(--color-fg-subtle)] mt-2">
+							Your payment is processed securely by Stripe. We never see your card details.
+						</p>
+					</form>
+				</div>
+
+				<!-- Order summary sidebar -->
+				@checkoutSummary(d.CartItems, d.Subtotal, d.ShippingFree, d.ShippingAmount, d.Total)
+			</div>
+		</div>
+	}
+}
+
+// ── Checkout step 2 — Payment ─────────────────────────────────────────────────
+
+templ CheckoutPaymentPage(d CheckoutPaymentData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Payment",
+		NoIndex:         true,
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-lg px-4 sm:px-6 lg:px-8 py-10">
+			<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-8">Payment</h1>
+
+			<div class="flex flex-col lg:flex-row gap-10">
+				<!-- Payment form -->
+				<div class="flex-1">
+					@checkoutStepIndicator(2)
+
+					<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6">
+						<form id="payment-form" class="space-y-5">
+							<div id="payment-element">
+								<!-- Stripe Payment Element mounts here -->
+								<div class="animate-pulse flex flex-col gap-3">
+									<div class="h-10 rounded-[var(--radius-md)] bg-[var(--color-bg-muted)]"></div>
+									<div class="h-10 rounded-[var(--radius-md)] bg-[var(--color-bg-muted)]"></div>
+									<div class="grid grid-cols-2 gap-3">
+										<div class="h-10 rounded-[var(--radius-md)] bg-[var(--color-bg-muted)]"></div>
+										<div class="h-10 rounded-[var(--radius-md)] bg-[var(--color-bg-muted)]"></div>
+									</div>
+								</div>
+							</div>
+
+							<div id="payment-error" class="hidden p-3 rounded-[var(--radius-md)] bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] text-sm text-[var(--color-danger-fg)]" role="alert"></div>
+
+							<button id="submit-btn" type="submit" class={ coSubmitBtn() }>
+								Place Order · { fmt.Sprintf("$%.2f", d.Total) }
+							</button>
+
+							<p class="text-xs text-center text-[var(--color-fg-subtle)]">
+								🔒 Secured by Stripe. By placing your order you agree to our
+								<a href="/legal/returns" class="underline">return policy</a>.
+							</p>
+						</form>
+					</div>
+
+					<a href="/checkout" class="inline-flex items-center gap-1 text-sm text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] mt-4">
+						<svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+						Back to shipping
+					</a>
+				</div>
+
+				<!-- Order summary sidebar -->
+				@checkoutSummary(d.CartItems, d.Subtotal, d.ShippingFree, d.ShippingAmount, d.Total)
+			</div>
+		</div>
+
+		<!-- Stripe.js -->
+		<script src="https://js.stripe.com/v3/" defer></script>
+		<script data-stripe-key={ d.StripePublishableKey } data-client-secret={ d.StripeClientSecret }>
+			// Capture the script element synchronously — document.currentScript
+			// is null inside the deferred DOMContentLoaded callback below.
+			var _stripeScript = document.currentScript;
+			document.addEventListener('DOMContentLoaded', function() {
+				var key = _stripeScript.dataset.stripeKey;
+				var secret = _stripeScript.dataset.clientSecret;
+				if (!key || !secret) return;
+
+				var stripe = Stripe(key);
+				var elements = stripe.elements({ clientSecret: secret, appearance: {
+					theme: 'stripe',
+					variables: {
+						colorPrimary: '#E8732A',
+						borderRadius: '10px',
+						fontFamily: 'Nunito, Arial Rounded MT Bold, system-ui, sans-serif',
+					}
+				}});
+
+				var paymentElement = elements.create('payment');
+				paymentElement.mount('#payment-element');
+
+				var form = document.getElementById('payment-form');
+				var submitBtn = document.getElementById('submit-btn');
+				var errorDiv = document.getElementById('payment-error');
+				// Remember the server-rendered label so we can restore it on
+				// error (avoids interpolating Go values into raw JS).
+				var submitLabel = submitBtn.textContent;
+
+				form.addEventListener('submit', async function(e) {
+					e.preventDefault();
+					submitBtn.disabled = true;
+					submitBtn.textContent = 'Processing...';
+					errorDiv.classList.add('hidden');
+
+					var result = await stripe.confirmPayment({
+						elements,
+						confirmParams: {
+							return_url: window.location.origin + '/checkout/complete',
+						},
+					});
+
+					if (result.error) {
+						errorDiv.textContent = result.error.message;
+						errorDiv.classList.remove('hidden');
+						submitBtn.disabled = false;
+						submitBtn.textContent = submitLabel;
+					}
+				});
+			});
+		</script>
+	}
+}
+
+// ── Shared sub-components ─────────────────────────────────────────────────────
+
+templ checkoutStepIndicator(current int) {
+	<nav class="flex items-center gap-3 mb-8 text-sm" aria-label="Checkout progress">
+		<span class={ stepBadge(current == 1) + " shrink-0" } aria-current?={ current == 1 }>1</span>
+		<span class={ stepLabel(current == 1) }>Contact &amp; Shipping</span>
+		<div class="flex-1 h-px bg-[var(--color-border-muted)]"></div>
+		<span class={ stepBadge(current == 2) + " shrink-0" } aria-current?={ current == 2 }>2</span>
+		<span class={ stepLabel(current == 2) }>Payment</span>
+	</nav>
+}
+
+templ checkoutSummary(items []CartLineItem, subtotal float64, shippingFree bool, shippingAmt float64, total float64) {
+	<aside class="lg:w-80 xl:w-96 shrink-0" aria-label="Order summary">
+		<div class="bg-[var(--color-bg-surface)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 sticky top-20">
+			<h2 class="text-sm font-bold text-[var(--color-fg-default)] uppercase tracking-wider mb-4">Order Summary</h2>
+
+			<ul class="space-y-3 mb-4 list-none">
+				for _, item := range items {
+					<li class="flex gap-3 text-sm">
+						<div class="w-10 h-10 shrink-0 rounded-[var(--radius-sm)] overflow-hidden bg-[var(--color-bg-raised)] border border-[var(--color-border-muted)]">
+							if item.ThumbnailURL != "" {
+								<img src={ item.ThumbnailURL } alt={ item.Name } class="w-full h-full object-cover"/>
+							} else {
+								<div class="w-full h-full flex items-center justify-center text-lg" aria-hidden="true">🦊</div>
+							}
+						</div>
+						<div class="flex-1 min-w-0">
+							<p class="font-medium text-[var(--color-fg-default)] truncate">{ item.Name }</p>
+							<p class="text-xs text-[var(--color-fg-muted)]">{ item.MaterialName } · qty { fmt.Sprint(item.Quantity) }</p>
+						</div>
+						<span class="font-medium text-[var(--color-fg-default)] shrink-0">{ fmt.Sprintf("$%.2f", item.LineTotal) }</span>
+					</li>
+				}
+			</ul>
+
+			<div class="border-t border-[var(--color-border-muted)] pt-4 space-y-2 text-sm">
+				<div class="flex justify-between">
+					<span class="text-[var(--color-fg-muted)]">Subtotal</span>
+					<span class="text-[var(--color-fg-default)]">{ fmt.Sprintf("$%.2f", subtotal) }</span>
+				</div>
+				<div class="flex justify-between">
+					<span class="text-[var(--color-fg-muted)]">Shipping</span>
+					<span class="text-[var(--color-fg-default)]">
+						if shippingFree {
+							Free
+						} else {
+							{ fmt.Sprintf("$%.2f", shippingAmt) }
+						}
+					</span>
+				</div>
+			</div>
+
+			<div class="border-t border-[var(--color-border-muted)] mt-4 pt-4 flex justify-between font-bold">
+				<span class="text-[var(--color-fg-default)]">Total</span>
+				<span class="text-[var(--color-fg-default)]">{ fmt.Sprintf("$%.2f", total) }</span>
+			</div>
+		</div>
+	</aside>
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func coLabel() string {
+	return "block text-sm font-semibold text-[var(--color-fg-default)] mb-1"
+}
+
+func coInput() string {
+	return "block w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2.5 text-sm text-[var(--color-fg-default)] placeholder:text-[var(--color-fg-subtle)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] transition-colors duration-[var(--duration-fast)]"
+}
+
+func coSubmitBtn() string {
+	return "w-full flex items-center justify-center px-4 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-brand-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] disabled:opacity-50 disabled:cursor-not-allowed"
+}
+
+func stepBadge(active bool) string {
+	if active {
+		return "w-6 h-6 rounded-full bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] text-xs font-bold flex items-center justify-center"
+	}
+	return "w-6 h-6 rounded-full bg-[var(--color-bg-muted)] text-[var(--color-fg-muted)] text-xs font-medium flex items-center justify-center"
+}
+
+func stepLabel(active bool) string {
+	if active {
+		return "font-semibold text-[var(--color-fg-default)]"
+	}
+	return "text-[var(--color-fg-muted)]"
+}

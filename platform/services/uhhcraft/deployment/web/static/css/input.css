@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+/* ── UhhCraft Design Tokens ───────────────────────────────────────────────── */
+/* All brand colours in OKLCH for perceptual uniformity.                      */
+/* Edit here to retheme the entire site.                                      */
+
+@theme {
+  /* Brand — Orange (primary CTA) */
+  --color-orange-50:  oklch(97% 0.02 50);
+  --color-orange-100: oklch(93% 0.05 50);
+  --color-orange-200: oklch(85% 0.10 50);
+  --color-orange-300: oklch(77% 0.15 48);
+  --color-orange-400: oklch(70% 0.17 47);
+  --color-orange-500: oklch(64% 0.17 47); /* PRIMARY — #E8732A */
+  --color-orange-600: oklch(57% 0.16 45); /* hover    — #C85D1C */
+  --color-orange-700: oklch(49% 0.14 43);
+  --color-orange-800: oklch(38% 0.11 41);
+  --color-orange-900: oklch(28% 0.08 39);
+
+  /* Brand — Blue (accent) */
+  --color-blue-50:  oklch(97% 0.02 210);
+  --color-blue-100: oklch(93% 0.05 210);
+  --color-blue-200: oklch(86% 0.09 210);
+  --color-blue-300: oklch(79% 0.11 210);
+  --color-blue-400: oklch(72% 0.12 210); /* ACCENT — #5BBED6 */
+  --color-blue-500: oklch(65% 0.11 210);
+  --color-blue-600: oklch(55% 0.10 210);
+  --color-blue-700: oklch(44% 0.09 210);
+  --color-blue-800: oklch(33% 0.07 210);
+  --color-blue-900: oklch(23% 0.05 210);
+
+  /* Neutrals — warm tint */
+  --color-neutral-50:  oklch(98.5% 0.004 60); /* page bg */
+  --color-neutral-100: oklch(96%   0.006 60); /* card surface */
+  --color-neutral-200: oklch(91%   0.007 60); /* raised / input fill */
+  --color-neutral-300: oklch(83%   0.007 60); /* border muted */
+  --color-neutral-400: oklch(72%   0.007 60); /* border default */
+  --color-neutral-500: oklch(60%   0.007 60); /* subtle text */
+  --color-neutral-600: oklch(50%   0.007 60); /* muted text */
+  --color-neutral-700: oklch(38%   0.007 60); /* body text */
+  --color-neutral-800: oklch(27%   0.007 60); /* strong text */
+  --color-neutral-900: oklch(17%   0.007 60); /* default text — #201E1A */
+
+  /* Dark mode surfaces */
+  --color-dark-50:  oklch(14% 0.008 50); /* page bg dark */
+  --color-dark-100: oklch(18% 0.008 50); /* surface dark */
+  --color-dark-200: oklch(22% 0.008 50); /* raised dark */
+  --color-dark-300: oklch(28% 0.008 50); /* border muted dark */
+  --color-dark-400: oklch(36% 0.008 50); /* border dark */
+  --color-dark-fg:  oklch(93% 0.005 60); /* default text dark */
+  --color-dark-muted: oklch(65% 0.007 60);
+
+  /* Semantic — success */
+  --color-success-solid: oklch(60% 0.15 145);
+  --color-success-bg:    oklch(95% 0.05 145);
+  --color-success-fg:    oklch(35% 0.12 145);
+  --color-success-border:oklch(75% 0.12 145);
+
+  /* Semantic — warning */
+  --color-warning-solid: oklch(72% 0.17 70);
+  --color-warning-bg:    oklch(96% 0.05 75);
+  --color-warning-fg:    oklch(40% 0.12 60);
+  --color-warning-border:oklch(82% 0.14 72);
+
+  /* Semantic — danger */
+  --color-danger-solid:  oklch(55% 0.20 25);
+  --color-danger-bg:     oklch(96% 0.04 20);
+  --color-danger-fg:     oklch(35% 0.15 20);
+  --color-danger-border: oklch(75% 0.16 20);
+
+  /* Typography — Nunito */
+  --font-sans: "Nunito", "Arial Rounded MT Bold", ui-rounded, system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", monospace;
+
+  /* Type scale (1.2 ratio from 16px) */
+  --text-xs:   0.75rem;   /* 12px */
+  --text-sm:   0.875rem;  /* 14px */
+  --text-base: 1rem;      /* 16px */
+  --text-lg:   1.125rem;  /* 18px */
+  --text-xl:   1.25rem;   /* 20px */
+  --text-2xl:  1.5rem;    /* 24px */
+  --text-3xl:  1.875rem;  /* 30px */
+  --text-4xl:  2.25rem;   /* 36px */
+  --text-5xl:  3rem;      /* 48px */
+  --text-6xl:  3.75rem;   /* 60px */
+
+  /* Border radius */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   16px;
+  --radius-xl:   24px;
+  --radius-2xl:  32px;
+
+  /* Motion */
+  --duration-fast:   120ms;
+  --duration-normal: 200ms;
+  --duration-slow:   350ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in:  cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Semantic CSS variables ───────────────────────────────────────────────── */
+
+:root {
+  --color-bg-page:         var(--color-neutral-50);
+  --color-bg-surface:      var(--color-neutral-100);
+  --color-bg-raised:       #ffffff;
+  --color-bg-muted:        var(--color-neutral-200);
+  --color-fg-default:      var(--color-neutral-900);
+  --color-fg-muted:        var(--color-neutral-600);
+  --color-fg-subtle:       var(--color-neutral-500);
+  --color-fg-inverted:     #ffffff;
+  --color-border-default:  var(--color-neutral-300);
+  --color-border-muted:    var(--color-neutral-200);
+  --color-border-strong:   var(--color-neutral-400);
+  --color-brand-solid:     var(--color-orange-500);
+  --color-brand-hover:     var(--color-orange-600);
+  --color-brand-fg:        var(--color-orange-700);
+  --color-brand-bg:        var(--color-orange-50);
+  --color-accent-solid:    var(--color-blue-400);
+  --color-accent-hover:    var(--color-blue-500);
+  --color-accent-fg:       var(--color-blue-600);
+  --color-accent-bg:       var(--color-blue-50);
+  --color-focus-ring:      var(--color-orange-500);
+}
+
+.dark {
+  --color-bg-page:         var(--color-dark-50);
+  --color-bg-surface:      var(--color-dark-100);
+  --color-bg-raised:       var(--color-dark-200);
+  --color-bg-muted:        oklch(26% 0.008 50);
+  --color-fg-default:      var(--color-dark-fg);
+  --color-fg-muted:        var(--color-dark-muted);
+  --color-fg-subtle:       oklch(50% 0.007 60);
+  --color-fg-inverted:     var(--color-neutral-900);
+  --color-border-default:  var(--color-dark-300);
+  --color-border-muted:    oklch(24% 0.008 50);
+  --color-border-strong:   var(--color-dark-400);
+  --color-brand-solid:     var(--color-orange-400);
+  --color-brand-hover:     var(--color-orange-500);
+  --color-brand-fg:        var(--color-orange-300);
+  --color-brand-bg:        oklch(22% 0.04 47);
+  --color-accent-solid:    var(--color-blue-300);
+  --color-accent-hover:    var(--color-blue-400);
+  --color-accent-fg:       var(--color-blue-200);
+  --color-accent-bg:       oklch(20% 0.04 210);
+  --color-focus-ring:      var(--color-orange-400);
+}
+
+/* ── Base styles ──────────────────────────────────────────────────────────── */
+
+html {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg-page);
+  color: var(--color-fg-default);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus ring — visible, non-color-only, contrast-compliant */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Skip-to-content */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 1rem;
+  z-index: 9999;
+  padding: 0.5rem 1rem;
+  background: var(--color-brand-solid);
+  /* Fixed dark ink — not --color-fg-default, which .dark remaps to near-white
+     and would leave a near-invisible light-on-orange skip link in dark mode. */
+  color: #201E1A;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  text-decoration: none;
+  transition: top var(--duration-fast) var(--ease-out);
+}
+.skip-link:focus-visible {
+  top: 1rem;
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--color-bg-surface); }
+::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-strong); }

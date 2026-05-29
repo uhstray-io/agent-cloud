@@ -1,0 +1,189 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/wisward/uhhcraft/web/templates/layouts"
+)
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type CatalogItem struct {
+	Slug         string
+	Name         string
+	Description  string
+	ProductType  string // "sticker" | "print"
+	ThumbnailURL string
+	BasePriceUSD float64
+}
+
+type CatalogCategory struct {
+	Slug  string
+	Name  string
+	Count int
+}
+
+type CatalogBrowseData struct {
+	IsAuthenticated bool
+	Items           []CatalogItem
+	Categories      []CatalogCategory
+	ActiveCategory  string
+	TotalCount      int
+}
+
+type CatalogItemData struct {
+	IsAuthenticated bool
+	Item            CatalogItem
+	CategorySlug    string
+	CategoryName    string
+}
+
+// ── Catalog browse ────────────────────────────────────────────────────────────
+
+templ CatalogBrowsePage(d CatalogBrowseData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Catalog",
+		Description:     "Browse unique stickers and 3D-printed items — or generate your own.",
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-10">
+			<!-- Page header -->
+			<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+				<div>
+					<h1 class="text-3xl font-bold text-[var(--color-fg-default)]">Catalog</h1>
+					<p class="text-[var(--color-fg-muted)] mt-1">
+						{ fmt.Sprintf("%d items", d.TotalCount) } · browse what people are making
+					</p>
+				</div>
+				<a
+					href="/generate"
+					class="inline-flex items-center gap-2 px-5 py-2.5 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm hover:bg-[var(--color-brand-hover)] transition-colors duration-[var(--duration-fast)]"
+				>
+					<svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M12 5v14M5 12h14"/>
+					</svg>
+					Create Your Own
+				</a>
+			</div>
+
+			<!-- Category filters -->
+			if len(d.Categories) > 0 {
+				<nav class="flex flex-wrap gap-2 mb-8" aria-label="Filter by category">
+					<a
+						href="/catalog"
+						class={ categoryPill(d.ActiveCategory == "") }
+					>All</a>
+					for _, cat := range d.Categories {
+						<a
+							href={ templ.SafeURL("/catalog/" + cat.Slug) }
+							class={ categoryPill(d.ActiveCategory == cat.Slug) }
+						>
+							{ cat.Name }
+							<span class="text-xs opacity-60 ml-1">({ fmt.Sprint(cat.Count) })</span>
+						</a>
+					}
+				</nav>
+			}
+
+			<!-- Grid -->
+			if len(d.Items) > 0 {
+				<ul class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 list-none" role="list">
+					for _, item := range d.Items {
+						<li>
+							@catalogCard(item)
+						</li>
+					}
+				</ul>
+			} else {
+				<div class="flex flex-col items-center justify-center py-24 text-center">
+					<div class="text-6xl mb-4" aria-hidden="true">🦊</div>
+					<p class="text-lg font-semibold text-[var(--color-fg-default)] mb-2">Nothing here yet</p>
+					<p class="text-[var(--color-fg-muted)] mb-6">Be the first to make something.</p>
+					<a href="/generate" class="px-5 py-2.5 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm hover:bg-[var(--color-brand-hover)] transition-colors">
+						Start Creating
+					</a>
+				</div>
+			}
+		</div>
+	}
+}
+
+// ── Catalog item detail ───────────────────────────────────────────────────────
+
+templ CatalogItemPage(d CatalogItemData) {
+	@layouts.Base(layouts.PageData{
+		Title:           d.Item.Name,
+		Description:     d.Item.Description,
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-10">
+			<!-- Breadcrumb -->
+			<nav class="flex items-center gap-2 text-sm text-[var(--color-fg-muted)] mb-8" aria-label="Breadcrumb">
+				<a href="/catalog" class="hover:text-[var(--color-fg-default)]">Catalog</a>
+				if d.CategorySlug != "" {
+					<span aria-hidden="true">/</span>
+					<a href={ templ.SafeURL("/catalog/" + d.CategorySlug) } class="hover:text-[var(--color-fg-default)]">{ d.CategoryName }</a>
+				}
+				<span aria-hidden="true">/</span>
+				<span class="text-[var(--color-fg-default)]">{ d.Item.Name }</span>
+			</nav>
+
+			<!-- Redirect to canvas — the catalog item handler should redirect to /canvas/catalog-{slug} -->
+			<!-- This page exists for SEO and as a fallback landing point -->
+			<div class="text-center py-24">
+				<div class="text-6xl mb-4" aria-hidden="true">🦊</div>
+				<p class="text-lg font-semibold text-[var(--color-fg-default)] mb-2">{ d.Item.Name }</p>
+				<p class="text-[var(--color-fg-muted)] mb-6 max-w-sm mx-auto">{ d.Item.Description }</p>
+				<a
+					href={ templ.SafeURL("/canvas/catalog-" + d.Item.Slug) }
+					class="inline-flex px-6 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-base hover:bg-[var(--color-brand-hover)] transition-colors"
+				>
+					See in 3D → Add to Cart
+				</a>
+			</div>
+		</div>
+	}
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+templ catalogCard(item CatalogItem) {
+	<article class="group rounded-[var(--radius-lg)] overflow-hidden bg-[var(--color-bg-raised)] border border-[var(--color-border-muted)] hover:shadow-md transition-all duration-[var(--duration-normal)] hover:-translate-y-0.5">
+		<a href={ templ.SafeURL("/canvas/catalog-" + item.Slug) } class="block">
+			<div class="aspect-square overflow-hidden bg-[var(--color-bg-surface)]">
+				if item.ThumbnailURL != "" {
+					<img
+						src={ item.ThumbnailURL }
+						alt={ item.Name }
+						class="w-full h-full object-cover transition-transform duration-[var(--duration-slow)] group-hover:scale-105"
+						loading="lazy"
+						width="300"
+						height="300"
+					/>
+				} else {
+					<div class="w-full h-full flex items-center justify-center text-4xl" aria-hidden="true">🦊</div>
+				}
+			</div>
+			<div class="p-3">
+				<p class="text-sm font-semibold text-[var(--color-fg-default)] truncate">{ item.Name }</p>
+				<p class="text-xs text-[var(--color-fg-muted)] mt-0.5">
+					{ productTypeLabel(item.ProductType) } · from { fmt.Sprintf("$%.2f", item.BasePriceUSD) }
+				</p>
+			</div>
+		</a>
+	</article>
+}
+
+func categoryPill(active bool) string {
+	base := "px-4 py-1.5 rounded-full text-sm font-medium transition-colors duration-[var(--duration-fast)]"
+	if active {
+		return base + " bg-[var(--color-brand-solid)] text-[var(--color-fg-default)]"
+	}
+	return base + " bg-[var(--color-bg-surface)] text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-fg-default)] border border-[var(--color-border-muted)]"
+}
+
+func productTypeLabel(t string) string {
+	if t == "sticker" {
+		return "Sticker"
+	}
+	return "3D Print"
+}

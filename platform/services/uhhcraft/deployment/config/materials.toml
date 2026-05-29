@@ -1,0 +1,291 @@
+# UhhCraft — Materials & Options Configuration
+#
+# This file defines all available material, finish, and cut-type options
+# for stickers and 3D prints. Prices are modifiers added to the base item price.
+#
+# HOW TO ADD A NEW MATERIAL:
+#   1. Copy an existing block below.
+#   2. Give it a unique `id` (lowercase, hyphens only — used in URLs and DB).
+#   3. Fill in display_name, description_customer (shown to buyer — no jargon),
+#      description_operator (internal notes), and price_modifier_usd.
+#   4. Set available = true.
+#   5. Redeploy. Done.
+#
+# PRICING NOTES:
+#   price_modifier_usd is added to the catalog item's base price.
+#   Use 0.00 for the "standard" option in each category.
+#   Negative values are allowed (e.g., a cheaper cut type).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STICKERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sticker]
+
+# --- Materials / Finishes ---
+# Shown as the first radial selector on sticker product/canvas pages.
+
+[[sticker.materials]]
+id                   = "vinyl-matte"
+display_name         = "Matte"
+description_customer = "Smooth, flat finish with no glare. Looks clean and professional."
+description_operator = "Standard matte vinyl. Most popular option. Indoor and short-term outdoor use."
+price_modifier_usd   = 0.00
+available            = true
+sort_order           = 1
+
+[[sticker.materials]]
+id                   = "vinyl-gloss"
+display_name         = "Gloss"
+description_customer = "Shiny, vibrant finish that makes colors pop. Classic sticker look."
+description_operator = "Gloss vinyl. High color saturation. Slightly more durable than matte."
+price_modifier_usd   = 0.50
+available            = true
+sort_order           = 2
+
+[[sticker.materials]]
+id                   = "vinyl-clear"
+display_name         = "Clear"
+description_customer = "Transparent background — your design floats on whatever surface it's on."
+description_operator = "Clear vinyl with printed design. Background is transparent."
+price_modifier_usd   = 1.00
+available            = true
+sort_order           = 3
+
+[[sticker.materials]]
+id                   = "vinyl-holographic"
+display_name         = "Holographic"
+description_customer = "Rainbow shimmer that shifts as it catches the light. Seriously cool."
+description_operator = "Holographic silver base vinyl. Limited color accuracy — best for bold designs."
+price_modifier_usd   = 2.50
+available            = true
+sort_order           = 4
+
+[[sticker.materials]]
+id                   = "vinyl-reflective"
+display_name         = "Reflective"
+description_customer = "Reflects light brightly — pops in photos and is visible in the dark."
+description_operator = "Engineer-grade reflective vinyl. Good for outdoor / safety visibility use cases."
+price_modifier_usd   = 3.00
+available            = true
+sort_order           = 5
+
+[[sticker.materials]]
+id                   = "vinyl-waterproof"
+display_name         = "Waterproof"
+description_customer = "Built for outdoor use — UV resistant, weatherproof, won't fade in the sun."
+description_operator = "UV-laminated outdoor vinyl. Rated for 3–5 years outdoor exposure."
+price_modifier_usd   = 1.50
+available            = true
+sort_order           = 6
+
+[[sticker.materials]]
+id                   = "vinyl-removable"
+display_name         = "Removable"
+description_customer = "Peels off cleanly without leaving residue. Great for laptops or walls."
+description_operator = "Removable / repositionable adhesive vinyl. Not for long-term outdoor use."
+price_modifier_usd   = 0.75
+available            = true
+sort_order           = 7
+
+[[sticker.materials]]
+id                   = "vinyl-white-opaque"
+display_name         = "White Opaque"
+description_customer = "Solid white backing — design shows true colors on any surface or dark background."
+description_operator = "White opaque vinyl base. Needed for designs that require a white underprint."
+price_modifier_usd   = 0.50
+available            = true
+sort_order           = 8
+
+# --- Cut Types ---
+# Shown as the second radial selector on sticker product/canvas pages.
+
+[[sticker.cut_types]]
+id                   = "die-cut"
+display_name         = "Die Cut"
+description_customer = "Cut exactly to the shape of your design — no border, just the sticker."
+description_operator = "Contour/die cut. Most popular. Requires a clean alpha channel in the PNG."
+price_modifier_usd   = 0.00
+available            = true
+sort_order           = 1
+
+[[sticker.cut_types]]
+id                   = "kiss-cut"
+display_name         = "Kiss Cut"
+description_customer = "Your design cut to shape, but on a square backing sheet — easy to peel and give away."
+description_operator = "Kiss cut on square backing. Good for sticker packs and gifting."
+price_modifier_usd   = 0.25
+available            = true
+sort_order           = 2
+
+[[sticker.cut_types]]
+id                   = "square"
+display_name         = "Square"
+description_customer = "Clean square border around your design. Simple and bold."
+description_operator = "Square crop. No contour cutting — fastest production."
+price_modifier_usd   = -0.25
+available            = true
+sort_order           = 3
+
+[[sticker.cut_types]]
+id                   = "circle"
+display_name         = "Circle"
+description_customer = "Circular border — classic sticker shape."
+description_operator = "Circular crop. Good for logo/badge-style designs."
+price_modifier_usd   = -0.25
+available            = true
+sort_order           = 4
+
+[[sticker.cut_types]]
+id                   = "rounded-rectangle"
+display_name         = "Rounded Corners"
+description_customer = "Square sticker with soft rounded corners — a clean, modern look."
+description_operator = "Rectangle with 4mm corner radius."
+price_modifier_usd   = -0.10
+available            = true
+sort_order           = 5
+
+[[sticker.cut_types]]
+id                   = "oval"
+display_name         = "Oval"
+description_customer = "Oval shape — great for landscape designs."
+description_operator = "Oval crop. Aspect ratio follows design bounding box."
+price_modifier_usd   = -0.15
+available            = true
+sort_order           = 6
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3D PRINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+[print]
+
+# --- Materials ---
+# Shown as the first radial selector on 3D print product/canvas pages.
+
+[[print.materials]]
+id                   = "pla"
+display_name         = "Standard Plastic"
+description_customer = "Lightweight, smooth, and available in tons of colors. Best for decorative items."
+description_operator = "PLA (Polylactic Acid). 0.2mm layer height. Biodegradable. Easy to print. Max temp ~60°C."
+price_modifier_usd   = 0.00
+available            = true
+sort_order           = 1
+
+[[print.materials]]
+id                   = "pla-plus"
+display_name         = "Strong Plastic"
+description_customer = "Stronger and less brittle than standard — holds up better to everyday use."
+description_operator = "PLA+ (modified PLA). Better impact resistance and layer adhesion than standard PLA."
+price_modifier_usd   = 2.00
+available            = true
+sort_order           = 2
+
+[[print.materials]]
+id                   = "petg"
+display_name         = "Durable Plastic"
+description_customer = "Tough and slightly flexible — won't crack from a drop. Good for practical items."
+description_operator = "PETG (Polyethylene Terephthalate Glycol). Higher temp resistance (~80°C). Good chemical resistance."
+price_modifier_usd   = 3.00
+available            = true
+sort_order           = 3
+
+[[print.materials]]
+id                   = "tpu"
+display_name         = "Flexible Rubber"
+description_customer = "Soft, rubbery, and bendable — bounces back to shape. Great for phone accessories."
+description_operator = "TPU (Thermoplastic Polyurethane). Shore hardness ~95A. Slower print speed required."
+price_modifier_usd   = 4.50
+available            = true
+sort_order           = 4
+
+[[print.materials]]
+id                   = "abs"
+display_name         = "Heat-Resistant Plastic"
+description_customer = "Handles heat well — won't warp in a hot car or sunny window."
+description_operator = "ABS (Acrylonitrile Butadiene Styrene). Max temp ~100°C. Requires enclosure to print well."
+price_modifier_usd   = 2.50
+available            = true
+sort_order           = 5
+
+[[print.materials]]
+id                   = "asa"
+display_name         = "Outdoor Plastic"
+description_customer = "UV-resistant and weatherproof — designed for use outside without fading or cracking."
+description_operator = "ASA (Acrylonitrile Styrene Acrylate). UV stable. Similar properties to ABS but outdoor-rated."
+price_modifier_usd   = 3.50
+available            = true
+sort_order           = 6
+
+[[print.materials]]
+id                   = "resin"
+display_name         = "Ultra-Smooth Resin"
+description_customer = "Incredibly detailed and silky smooth — you'd never know it was 3D printed."
+description_operator = "MSLA resin. 0.05mm layer height. Post-cure required. More fragile than FDM. Best for small detail items."
+price_modifier_usd   = 6.00
+available            = true
+sort_order           = 7
+
+# --- Finishes ---
+# Shown as the second radial selector on 3D print product/canvas pages.
+
+[[print.finishes]]
+id                   = "standard"
+display_name         = "Natural Finish"
+description_customer = "The authentic 3D-printed look — subtle layer texture that shows it was handmade."
+description_operator = "No post-processing. Layer lines visible. Fastest turnaround."
+price_modifier_usd   = 0.00
+available            = true
+sort_order           = 1
+
+[[print.finishes]]
+id                   = "sanded"
+display_name         = "Smooth Finish"
+description_customer = "Hand-sanded for a smoother surface — softer feel, cleaner look."
+description_operator = "Wet sanding up to 400 grit. Adds 1–2 days to production."
+price_modifier_usd   = 4.00
+available            = true
+sort_order           = 2
+
+[[print.finishes]]
+id                   = "painted"
+display_name         = "Hand Painted"
+description_customer = "Custom hand-painted in colors that bring your design to life."
+description_operator = "Acrylic paint + sealant. Colors matched to design palette. Adds 2–3 days. Only available for Simple designs — contact for complex requests."
+price_modifier_usd   = 8.00
+available            = true
+sort_order           = 3
+
+# --- Size Tiers ---
+# Used to set base price ranges for 3D prints.
+# The catalog item's base_price is set per item, but size tiers document
+# the pricing logic for the operator when pricing new catalog items.
+# These are NOT shown as a radial selector — size is determined by the generated model.
+
+[[print.size_tiers]]
+id                 = "small"
+display_name       = "Small"
+description        = "Fits within a 5cm × 5cm × 5cm bounding box"
+base_price_usd     = 12.99
+sort_order         = 1
+
+[[print.size_tiers]]
+id                 = "medium"
+display_name       = "Medium"
+description        = "Fits within a 10cm × 10cm × 10cm bounding box"
+base_price_usd     = 22.99
+sort_order         = 2
+
+[[print.size_tiers]]
+id                 = "large"
+display_name       = "Large"
+description        = "Fits within a 20cm × 20cm × 20cm bounding box"
+base_price_usd     = 39.99
+sort_order         = 3
+
+[[print.size_tiers]]
+id                 = "extra-large"
+display_name       = "Extra Large"
+description        = "Fits within a 30cm × 30cm × 30cm bounding box"
+base_price_usd     = 64.99
+sort_order         = 4
