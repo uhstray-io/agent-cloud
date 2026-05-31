@@ -1,11 +1,11 @@
 module github.com/wisward/uhhcraft
 
-go 1.23
+go 1.24.0
 
 require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/a-h/templ v0.2.793
-	github.com/alexedwards/scs/postgresstore v0.0.0-20251002162104-209de6e426de
+	github.com/alexedwards/scs/pgxstore v0.0.0-20251002162104-209de6e426de
 	github.com/alexedwards/scs/v2 v2.8.0
 	github.com/aws/aws-sdk-go-v2 v1.30.3
 	github.com/aws/aws-sdk-go-v2/config v1.27.27
@@ -19,11 +19,10 @@ require (
 	github.com/riverqueue/river v0.11.4
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.11.4
 	github.com/stripe/stripe-go/v79 v79.12.0
-	golang.org/x/crypto v0.25.0
+	golang.org/x/crypto v0.45.0
 )
 
 require (
-	github.com/alexedwards/scs/pgxstore v0.0.0-20251002162104-209de6e426de // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.3 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.11 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.15 // indirect
@@ -50,7 +49,7 @@ require (
 	github.com/riverqueue/river/rivertype v0.11.4 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
