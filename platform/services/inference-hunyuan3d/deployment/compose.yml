@@ -1,0 +1,69 @@
+# inference-hunyuan3d — Podman-compatible compose.
+#
+# Hunyuan3D runs in-process (diffusers pipeline) inside the api container.
+# Model weights live on a host volume at /srv/hunyuan3d/weights so they
+# survive container rebuilds.
+#
+# GPU: NVIDIA Container Toolkit via CDI (Podman) or device reservations (Docker).
+# Independent MinIO instance per the Phase 2 isolation decision.
+
+name: inference-hunyuan3d
+
+services:
+  minio:
+    # Pinned RELEASE tag (no :latest). Override with MINIO_IMAGE to bump.
+    image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z}
+    container_name: hunyuan3d-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio_data:/data
+    networks:
+      - hunyuan3d
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  api:
+    # Pull a pre-built image (CI builds + pushes); the stack never builds at
+    # deploy time. Override HUNYUAN3D_API_IMAGE to pin a specific tag/digest.
+    image: ${HUNYUAN3D_API_IMAGE:-ghcr.io/uhstray-io/inference-hunyuan3d:latest}
+    container_name: hunyuan3d-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8001:8001"
+    networks:
+      - hunyuan3d
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+    volumes:
+      # Model weights live on the host. Mount read-only; the wrapper
+      # only ever reads from them.
+      - ${HUNYUAN3D_WEIGHTS_DIR:-/srv/hunyuan3d/weights}:/weights:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # Hunyuan3D-2-mini takes ~60-90s to load weights on first start.
+      start_period: 120s
+
+networks:
+  hunyuan3d:
+    driver: bridge
+
+volumes:
+  minio_data:

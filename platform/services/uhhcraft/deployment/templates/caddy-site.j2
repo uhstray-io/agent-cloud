@@ -1,0 +1,79 @@
+{# UhhCraft — Caddy fragment.
+   Rendered by Ansible's deploy-uhhcraft.yml and dropped into the central
+   Caddy host's sites/ directory (e.g., /etc/caddy/sites/uhhcraft.caddy).
+   Central Caddy imports sites/*.caddy from its main Caddyfile.
+
+   Inputs (real values come from the site-config inventory, never hardcoded here):
+     uhhcraft_domain         e.g., uhhcraft.uhstray.io
+     uhhcraft_upstream       <uhhcraft-vm-host>:3000       (the UhhCraft VM)
+     uhhcraft_minio_upstream <uhhcraft-vm-host>:9000       (UhhCraft's MinIO API; catalog assets)
+     comfyui_minio_upstream  <comfyui-vm-host>:9000        (inference-comfyui's MinIO; generated images)
+     hunyuan_minio_upstream  <hunyuan-vm-host>:9000        (inference-hunyuan3d's MinIO; generated GLB/STL)
+     uhhcraft_minio_bucket   e.g., uhhcraft                (path-style: /<bucket>/<object>)
+     comfyui_minio_bucket    e.g., generated-images
+     hunyuan_minio_bucket    e.g., generated-3d
+#}
+{{ uhhcraft_domain }} {
+    encode brotli gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        # CSP — self + Stripe + worker-src for Three.js WASM.
+        # Tighten or relax in Phase 10 after canvas integration is verified.
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://js.stripe.com; frame-src https://js.stripe.com; connect-src 'self' https://api.stripe.com; img-src 'self' data: blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+        -Server
+    }
+
+    # ── Generated AI assets (separate MinIO per inference service) ──────────
+    # /generated/img/* → inference-comfyui MinIO
+    handle_path /generated/img/* {
+        rewrite * /{{ comfyui_minio_bucket }}{path}
+        reverse_proxy {{ comfyui_minio_upstream }} {
+            header_up Host {upstream_hostport}
+        }
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+
+    # /generated/3d/*  → inference-hunyuan3d MinIO
+    handle_path /generated/3d/* {
+        rewrite * /{{ hunyuan_minio_bucket }}{path}
+        reverse_proxy {{ hunyuan_minio_upstream }} {
+            header_up Host {upstream_hostport}
+        }
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+
+    # ── Static catalog assets (UhhCraft's own MinIO) ────────────────────────
+    handle_path /static/uploads/* {
+        rewrite * /{{ uhhcraft_minio_bucket }}{path}
+        reverse_proxy {{ uhhcraft_minio_upstream }} {
+            header_up Host {upstream_hostport}
+        }
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+
+    # ── Bundled static (CSS, JS, fonts shipped in the container) ────────────
+    handle /static/* {
+        reverse_proxy {{ uhhcraft_upstream }}
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+
+    # ── Everything else → UhhCraft Go app ───────────────────────────────────
+    reverse_proxy {{ uhhcraft_upstream }} {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /var/log/caddy/{{ uhhcraft_domain }}.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+        format json
+    }
+}

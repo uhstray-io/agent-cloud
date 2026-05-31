@@ -1,0 +1,56 @@
+package components
+
+import "time"
+
+templ Footer() {
+	<footer class="mt-auto border-t border-[var(--color-border-muted)] bg-[var(--color-bg-page)]" role="contentinfo">
+		<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-10">
+			<div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-8">
+				<!-- Brand -->
+				<div class="flex flex-col gap-2">
+					<div class="flex items-center gap-2">
+						<svg width="22" height="22" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+							<circle cx="14" cy="14" r="14" fill="var(--color-orange-500)"/>
+							<text x="14" y="19" text-anchor="middle" font-size="14" fill="var(--color-fg-default)">🦊</text>
+						</svg>
+						<span class="font-extrabold text-[var(--color-fg-default)]">UhhCraft</span>
+					</div>
+					<p class="text-sm text-[var(--color-fg-muted)] max-w-xs">
+						Unique, one of a kind — handcrafted with AI.
+					</p>
+				</div>
+
+				<!-- Navigation -->
+				<nav aria-label="Footer navigation" class="flex flex-wrap gap-x-6 gap-y-2">
+					<a href="/catalog" class={ footerLink() }>Catalog</a>
+					<a href="/generate" class={ footerLink() }>Create</a>
+					<a href="/about" class={ footerLink() }>About</a>
+					<a href="/legal/terms" class={ footerLink() }>Terms</a>
+					<a href="/legal/privacy" class={ footerLink() }>Privacy</a>
+					<a href="/legal/returns" class={ footerLink() }>Returns</a>
+					<a href="/legal/accessibility" class={ footerLink() }>Accessibility</a>
+					<!-- CCPA: Do Not Sell link -->
+					<a href="/legal/privacy#do-not-sell" class={ footerLink() }>Do Not Sell My Info</a>
+				</nav>
+			</div>
+
+			<!-- Bottom bar -->
+			<div class="mt-8 pt-6 border-t border-[var(--color-border-muted)] flex flex-col sm:flex-row items-center justify-between gap-3">
+				<p class="text-xs text-[var(--color-fg-subtle)]">
+					&copy; { currentYear() } UhhCraft. All rights reserved.
+				</p>
+				<p class="text-xs text-[var(--color-fg-subtle)]">
+					Made to order · Shipped from the US
+				</p>
+			</div>
+		</div>
+	</footer>
+}
+
+func footerLink() string {
+	return "text-sm text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] transition-colors duration-[var(--duration-normal)]"
+}
+
+func currentYear() string {
+	return time.Now().Format("2006")
+}

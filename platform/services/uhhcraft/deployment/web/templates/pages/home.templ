@@ -1,0 +1,174 @@
+package pages
+
+import "github.com/wisward/uhhcraft/web/templates/layouts"
+
+// HomeShowcaseItem is a catalog item shown in the homepage gallery.
+type HomeShowcaseItem struct {
+	Slug         string
+	Name         string
+	ProductType  string
+	ThumbnailURL string
+	Caption      string
+}
+
+// HomeData is the view model for the home page.
+type HomeData struct {
+	IsAuthenticated bool
+	ShowcaseItems   []HomeShowcaseItem
+}
+
+templ HomePage(d HomeData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Unique, one of a kind",
+		Description:     "Custom stickers and 3D-printed items designed with AI — describe what you want and see it in 3D before you buy.",
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+
+		<!-- ── Hero ─────────────────────────────────────────────────────── -->
+		<section class="relative overflow-hidden bg-[var(--color-bg-page)]" aria-labelledby="hero-heading">
+			<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-20 lg:py-32">
+				<div class="max-w-2xl">
+					<p class="text-sm font-semibold uppercase tracking-widest text-[var(--color-brand-fg)] mb-4">
+						Made to order · One of a kind
+					</p>
+					<h1
+						id="hero-heading"
+						class="text-5xl lg:text-6xl font-extrabold text-[var(--color-fg-default)] leading-tight mb-6"
+					>
+						Describe it.<br/>
+						<span class="text-[var(--color-brand-solid)]">See it in 3D.</span><br/>
+						We'll make it.
+					</h1>
+					<p class="text-lg text-[var(--color-fg-muted)] mb-10 max-w-lg">
+						Custom stickers and 3D-printed items, designed with AI.
+						Every piece is unique — made exactly for you, or as the perfect gift.
+					</p>
+					<div class="flex flex-wrap gap-4">
+						<a
+							href="/generate"
+							class={ heroCTA() }
+						>
+							Create Something
+						</a>
+						<a
+							href="/catalog"
+							class={ heroSecondaryCTA() }
+						>
+							Browse Catalog
+						</a>
+					</div>
+				</div>
+			</div>
+
+			<!-- Decorative fox mascot (large, faded) -->
+			<div class="absolute right-0 top-0 bottom-0 w-1/2 lg:w-2/5 pointer-events-none opacity-[0.07] select-none flex items-center justify-center" aria-hidden="true">
+				<span style="font-size:18rem;line-height:1;">🦊</span>
+			</div>
+		</section>
+
+		<!-- ── How it works ──────────────────────────────────────────────── -->
+		<section class="bg-[var(--color-bg-surface)] py-16" aria-labelledby="how-heading">
+			<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8">
+				<h2 id="how-heading" class="text-sm font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] text-center mb-10">
+					How it works
+				</h2>
+				<ol class="flex flex-col md:flex-row gap-8 md:gap-4 list-none">
+					@howStep("1", "Describe it", "Type what you want — an orange cartoon tiger, a fox in a space suit, anything. We'll figure out the rest.")
+					@howStep("2", "See it in 3D", "Your item appears in a 3D canvas you can rotate and inspect. Love it? Add to cart.")
+					@howStep("3", "We make it", "We print or cut your unique item and ship it straight to you — or to whoever you're gifting it to.")
+				</ol>
+			</div>
+		</section>
+
+		<!-- ── Showcase gallery ───────────────────────────────────────────── -->
+		if len(d.ShowcaseItems) > 0 {
+			<section class="py-16 bg-[var(--color-bg-page)]" aria-labelledby="showcase-heading">
+				<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8">
+					<h2 id="showcase-heading" class="text-3xl font-bold text-[var(--color-fg-default)] mb-2">
+						What people are making
+					</h2>
+					<p class="text-[var(--color-fg-muted)] mb-10">
+						Every item below was generated with AI and made by hand. None of them existed before someone described them.
+					</p>
+
+					<ul class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 list-none" role="list">
+						for _, item := range d.ShowcaseItems {
+							<li>
+								@showcaseCard(item)
+							</li>
+						}
+					</ul>
+
+					<div class="mt-10 text-center">
+						<a href="/catalog" class={ heroSecondaryCTA() }>Browse all items</a>
+					</div>
+				</div>
+			</section>
+		}
+
+		<!-- ── Bottom CTA ─────────────────────────────────────────────────── -->
+		<section class="bg-[var(--color-brand-bg)] border-y border-[var(--color-brand-solid)]/20 py-16">
+			<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 text-center">
+				<p class="text-2xl lg:text-3xl font-bold text-[var(--color-fg-default)] mb-4">
+					Ready to make something?
+				</p>
+				<p class="text-[var(--color-fg-muted)] mb-8 max-w-md mx-auto">
+					Describe your idea in plain words — no design skills needed.
+				</p>
+				<a href="/generate" class={ heroCTA() }>
+					Start Creating →
+				</a>
+			</div>
+		</section>
+	}
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+templ howStep(num, title, body string) {
+	<li class="flex-1 flex flex-col items-center text-center px-4">
+		<div
+			class="w-10 h-10 rounded-full bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-extrabold text-lg flex items-center justify-center mb-4"
+			aria-hidden="true"
+		>{ num }</div>
+		<h3 class="text-lg font-bold text-[var(--color-fg-default)] mb-2">{ title }</h3>
+		<p class="text-sm text-[var(--color-fg-muted)] leading-relaxed">{ body }</p>
+	</li>
+}
+
+templ showcaseCard(item HomeShowcaseItem) {
+	<article class="group rounded-[var(--radius-lg)] overflow-hidden bg-[var(--color-bg-raised)] border border-[var(--color-border-muted)] hover:shadow-lg transition-all duration-[var(--duration-normal)] hover:-translate-y-0.5">
+		<a href={ templ.SafeURL("/catalog/" + item.Slug) } class="block">
+			<div class="aspect-square overflow-hidden bg-[var(--color-bg-surface)]">
+				if item.ThumbnailURL != "" {
+					<img
+						src={ item.ThumbnailURL }
+						alt={ item.Name }
+						class="w-full h-full object-cover transition-transform duration-[var(--duration-slow)] group-hover:scale-105"
+						loading="lazy"
+						width="400"
+						height="400"
+					/>
+				} else {
+					<div class="w-full h-full flex items-center justify-center text-5xl" aria-hidden="true">🦊</div>
+				}
+			</div>
+			<div class="p-3">
+				<p class="text-sm font-semibold text-[var(--color-fg-default)] truncate">{ item.Name }</p>
+				if item.Caption != "" {
+					<p class="text-xs text-[var(--color-fg-muted)] mt-0.5 truncate">{ item.Caption }</p>
+				}
+			</div>
+		</a>
+	</article>
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func heroCTA() string {
+	return "inline-flex items-center justify-center px-6 py-3.5 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-base transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-brand-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
+}
+
+func heroSecondaryCTA() string {
+	return "inline-flex items-center justify-center px-6 py-3.5 rounded-[var(--radius-md)] bg-[var(--color-bg-surface)] text-[var(--color-fg-default)] font-semibold text-base border border-[var(--color-border-default)] transition-colors duration-[var(--duration-fast)] hover:bg-[var(--color-bg-muted)]"
+}

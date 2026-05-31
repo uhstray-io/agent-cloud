@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" role="img" aria-label="UhhCraft fox mascot">
+  <!-- Left ear -->
+  <path d="M14 48 L28 10 L42 44" fill="#E8732A"/>
+  <!-- Left ear inner -->
+  <path d="M20 45 L28 18 L38 42" fill="#C85D1C"/>
+  <!-- Right ear -->
+  <path d="M66 48 L52 10 L38 44" fill="#E8732A"/>
+  <!-- Right ear inner -->
+  <path d="M60 45 L52 18 L42 42" fill="#C85D1C"/>
+  <!-- Head -->
+  <circle cx="40" cy="54" r="25" fill="#E8732A"/>
+  <!-- Muzzle -->
+  <ellipse cx="40" cy="64" rx="13" ry="9" fill="#FFF6EF"/>
+  <!-- Left eye -->
+  <circle cx="31" cy="49" r="4" fill="#201E1A"/>
+  <!-- Right eye -->
+  <circle cx="49" cy="49" r="4" fill="#201E1A"/>
+  <!-- Eye glints -->
+  <circle cx="32.5" cy="47.5" r="1.5" fill="white"/>
+  <circle cx="50.5" cy="47.5" r="1.5" fill="white"/>
+  <!-- Nose -->
+  <ellipse cx="40" cy="62" rx="2.5" ry="1.8" fill="#201E1A"/>
+</svg>

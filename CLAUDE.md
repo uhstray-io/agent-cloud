@@ -67,6 +67,9 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/netbox/deployment/CLAUDE.md` — NetBox + Diode discovery pipeline
 - `agents/nemoclaw/deployment/CLAUDE.md` — NemoClaw agent deployment
 - `agents/websmith/CLAUDE.md` — WebSmith website-building agent (prompt-only; produces signed SPEC.md per site)
+- `platform/services/uhhcraft/CLAUDE.md` — UhhCraft storefront (first WebSmith-built site)
+- `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
+- `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)

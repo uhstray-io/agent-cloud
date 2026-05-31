@@ -1,0 +1,118 @@
+# UhhCraft — Printify Integration Config
+#
+# Printify is the primary sticker overflow fulfillment provider.
+# When UhhCraft cannot fulfill a sticker order in-house, it routes to Printify.
+#
+# SECRETS (never put here — use environment variables):
+#   PRINTIFY_API_KEY   — from Printify dashboard → Connections → API
+#   PRINTIFY_SHOP_ID   — from Printify dashboard → shop URL or API
+#
+# SETUP STEPS:
+#   1. Create a Printify account at https://printify.com
+#   2. Go to Connections → Generate API Token
+#   3. Set PRINTIFY_API_KEY in your environment
+#   4. Call GET https://api.printify.com/v1/shops.json to get your shop ID
+#   5. Set PRINTIFY_SHOP_ID in your environment
+#   6. Verify blueprint IDs below using GET /v1/catalog/blueprints.json
+#      Filter by title containing "sticker" to find the right IDs.
+
+[printify]
+api_base_url    = "https://api.printify.com/v1"
+api_version     = "v1"
+
+# How long to wait for Printify API responses before timing out.
+request_timeout_seconds = 30
+
+# Printify webhook endpoint (Printify will POST order status updates here).
+# Register this URL in your Printify shop settings → Webhooks.
+# Path handled by the Go app at POST /webhooks/printify
+webhook_path = "/webhooks/printify"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Blueprint and Print Provider Mappings
+#
+# A "blueprint" is Printify's term for a product template (e.g., "Kiss-Cut Stickers").
+# A "print_provider_id" is the specific vendor Printify uses to produce it.
+#
+# HOW TO VERIFY/UPDATE THESE:
+#   GET https://api.printify.com/v1/catalog/blueprints.json
+#   Find blueprints where title contains "sticker"
+#   Then GET /v1/catalog/blueprints/{blueprint_id}/print_providers.json
+#   to see available providers and their variant IDs.
+#
+# NOTE: Blueprint IDs are stable but verify after any Printify catalog update.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Die-cut stickers
+[printify.blueprints.die_cut]
+blueprint_id      = 505       # "Die-Cut Stickers" — verify via API
+print_provider_id = 99        # Sticker Mule via Printify — verify via API
+description       = "Die-cut vinyl stickers, custom shape"
+
+# Kiss-cut stickers
+[printify.blueprints.kiss_cut]
+blueprint_id      = 504       # "Kiss-Cut Sticker Sheets" — verify via API
+print_provider_id = 99        # Sticker Mule via Printify — verify via API
+description       = "Kiss-cut stickers on square backing sheet"
+
+# Square/rectangle stickers
+[printify.blueprints.square]
+blueprint_id      = 503       # "Sticker Sheets" — verify via API
+print_provider_id = 99        # Verify via API
+description       = "Square-cut stickers"
+
+# Circle stickers
+[printify.blueprints.circle]
+blueprint_id      = 506       # "Circle Stickers" — verify via API
+print_provider_id = 99        # Verify via API
+description       = "Circle-cut stickers"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Order creation defaults
+# These are applied to every Printify order created by UhhCraft.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[printify.order_defaults]
+# Shipping method: 1 = standard, 2 = express (check Printify docs for current codes)
+shipping_method = 1
+
+# Label with UhhCraft branding (Printify supports custom packing slips on some plans)
+send_shipping_notification = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Material → Blueprint mapping
+# Maps UhhCraft material IDs (from materials.toml) to Printify blueprint IDs.
+# Used by the fulfillment router to pick the correct Printify product.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[printify.material_blueprint_map]
+# Format: material_id = blueprint_key (must match a key under [printify.blueprints])
+"vinyl-matte"        = "die_cut"
+"vinyl-gloss"        = "die_cut"
+"vinyl-clear"        = "die_cut"
+"vinyl-holographic"  = "die_cut"
+"vinyl-reflective"   = "die_cut"
+"vinyl-waterproof"   = "die_cut"
+"vinyl-removable"    = "die_cut"
+"vinyl-white-opaque" = "die_cut"
+
+[printify.cut_type_blueprint_override]
+# Override the blueprint based on cut type (takes priority over material_blueprint_map).
+# Format: cut_type_id = blueprint_key
+"die-cut"            = "die_cut"
+"kiss-cut"           = "kiss_cut"
+"square"             = "square"
+"circle"             = "circle"
+"rounded-rectangle"  = "square"   # Printify squares with corner rounding applied post-order
+"oval"               = "die_cut"  # Oval handled as die-cut with oval contour
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retry and error handling
+# ─────────────────────────────────────────────────────────────────────────────
+
+[printify.retry]
+max_attempts          = 3
+initial_backoff_ms    = 1000
+backoff_multiplier    = 2.0
+# If all retries fail, order status is set to "fulfillment_failed"
+# and a Discord alert is sent to #ops-alerts.

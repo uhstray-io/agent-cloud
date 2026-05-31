@@ -1,0 +1,175 @@
+package components
+
+import "fmt"
+
+type HeaderProps struct {
+	IsAuthenticated bool
+	IsAdmin         bool
+	CartCount       int
+}
+
+templ Header(p HeaderProps) {
+	<header
+		class="sticky top-0 z-40 w-full bg-[var(--color-bg-page)]/95 backdrop-blur border-b border-[var(--color-border-muted)] transition-colors duration-200"
+		role="banner"
+	>
+		<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8">
+			<div class="flex h-16 items-center justify-between gap-4">
+				<!-- Logo -->
+				<a href="/" class="flex items-center gap-2 shrink-0" aria-label="UhhCraft home">
+					<!-- Fox mascot placeholder SVG (replace with actual asset) -->
+					<svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+						<circle cx="14" cy="14" r="14" fill="var(--color-orange-500)"/>
+						<text x="14" y="19" text-anchor="middle" font-size="14" fill="var(--color-fg-default)">🦊</text>
+					</svg>
+					<span class="text-lg font-extrabold tracking-tight text-[var(--color-fg-default)]">UhhCraft</span>
+				</a>
+
+				<!-- Desktop nav -->
+				<nav class="hidden md:flex items-center gap-1" aria-label="Primary navigation">
+					<a href="/catalog" class={ navLink() }>Catalog</a>
+					<a href="/generate" class={ navLink() }>Create</a>
+					<a href="/about" class={ navLink() }>About</a>
+				</nav>
+
+				<!-- Right: cart + account + theme toggle -->
+				<div class="flex items-center gap-2">
+					<!-- Theme toggle -->
+					<button
+						id="theme-toggle"
+						type="button"
+						class="p-2 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)]"
+						aria-label="Toggle dark mode"
+					>
+						<!-- Sun icon (shown in dark mode) -->
+						<svg class="hidden dark:block w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+						</svg>
+						<!-- Moon icon (shown in light mode) -->
+						<svg class="block dark:hidden w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+						</svg>
+					</button>
+
+					<!-- Cart icon -->
+					<a
+						href="/cart"
+						class="relative p-2 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)]"
+						aria-label={ cartLabel(p.CartCount) }
+					>
+						<svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+							<path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+						</svg>
+						if p.CartCount > 0 {
+							<span
+								class="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--color-brand-solid)] text-[9px] font-bold text-[var(--color-fg-default)]"
+								aria-hidden="true"
+							>{ fmt.Sprint(p.CartCount) }</span>
+						}
+					</a>
+
+					<!-- Account icon -->
+					if p.IsAuthenticated {
+						<div class="relative" x-data="{ open: false }">
+							<button
+								type="button"
+								class="p-2 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)]"
+								aria-label="Account menu"
+								aria-haspopup="true"
+								aria-controls="account-menu"
+								aria-expanded="false"
+								hx-on:click="const m=this.nextElementSibling; m.classList.toggle('hidden'); this.setAttribute('aria-expanded', String(!m.classList.contains('hidden')));"
+							>
+								<svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+								</svg>
+							</button>
+							<div id="account-menu" class="hidden absolute right-0 mt-2 w-48 rounded-[var(--radius-lg)] bg-[var(--color-bg-raised)] shadow-lg border border-[var(--color-border-muted)] py-1 z-50">
+								<a href="/account" class={ dropdownItem() }>My Account</a>
+								<a href="/account/orders" class={ dropdownItem() }>Orders</a>
+								<a href="/account/designs" class={ dropdownItem() }>Saved Designs</a>
+								if p.IsAdmin {
+									<hr class="my-1 border-[var(--color-border-muted)]"/>
+									<a href="/admin" class={ dropdownItem() }>Admin</a>
+								}
+								<hr class="my-1 border-[var(--color-border-muted)]"/>
+								<form action="/account/sign-out" method="post">
+									<button type="submit" class={ dropdownItem() + " w-full text-left" }>Sign Out</button>
+								</form>
+							</div>
+						</div>
+					} else {
+						<a
+							href="/account/sign-in"
+							class="p-2 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)]"
+							aria-label="Sign in"
+						>
+							<svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+							</svg>
+						</a>
+					}
+
+					<!-- Mobile hamburger -->
+					<button
+						type="button"
+						class="md:hidden p-2 rounded-[var(--radius-md)] text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-surface)] transition-colors"
+						aria-label="Open navigation menu"
+						aria-controls="mobile-nav"
+						aria-expanded="false"
+						hx-on:click="const n=document.getElementById('mobile-nav'); n.classList.toggle('hidden'); this.setAttribute('aria-expanded', String(!n.classList.contains('hidden')));"
+					>
+						<svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+						</svg>
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- Mobile nav drawer -->
+		<nav
+			id="mobile-nav"
+			class="hidden md:hidden border-t border-[var(--color-border-muted)] bg-[var(--color-bg-page)]"
+			aria-label="Mobile navigation"
+		>
+			<div class="mx-auto max-w-screen-xl px-4 py-3 flex flex-col gap-1">
+				<a href="/catalog" class={ mobileNavLink() }>Catalog</a>
+				<a href="/generate" class={ mobileNavLink() }>Create</a>
+				<a href="/about" class={ mobileNavLink() }>About</a>
+				<hr class="my-2 border-[var(--color-border-muted)]"/>
+				if p.IsAuthenticated {
+					<a href="/account" class={ mobileNavLink() }>My Account</a>
+					<a href="/account/orders" class={ mobileNavLink() }>Orders</a>
+					<a href="/account/designs" class={ mobileNavLink() }>Saved Designs</a>
+					<form action="/account/sign-out" method="post">
+						<button type="submit" class={ mobileNavLink() + " w-full text-left" }>Sign Out</button>
+					</form>
+				} else {
+					<a href="/account/sign-in" class={ mobileNavLink() }>Sign In</a>
+					<a href="/account/sign-up" class={ mobileNavLink() + " font-semibold text-[var(--color-brand-fg)]" }>Create Account</a>
+				}
+			</div>
+		</nav>
+	</header>
+}
+
+func navLink() string {
+	return "px-3 py-2 rounded-[var(--radius-md)] text-sm font-medium text-[var(--color-fg-muted)] hover:text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)]"
+}
+
+func mobileNavLink() string {
+	return "px-3 py-2 rounded-[var(--radius-md)] text-base font-medium text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-normal)] block"
+}
+
+func dropdownItem() string {
+	return "block px-4 py-2 text-sm text-[var(--color-fg-default)] hover:bg-[var(--color-bg-surface)] transition-colors duration-[var(--duration-fast)]"
+}
+
+func cartLabel(count int) string {
+	if count == 0 {
+		return "Cart"
+	}
+	return fmt.Sprintf("Cart (%d items)", count)
+}

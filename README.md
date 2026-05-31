@@ -75,6 +75,9 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
 | **WisAI** | Local LLM inference backbone -- Ollama workers + Open WebUI coordinator (OpenAI-compatible API) |
+| **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
+| **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
+| **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
 
 ## Repository Structure
 
@@ -91,6 +94,9 @@ agent-cloud/
       inference-ollama/   WisAI worker nodes (GPU, Ollama)
       inference-webui/    WisAI coordinator (Open WebUI + Postgres)
       inference-vllm/     Reserved (future 24 GB+ hardware)
+      inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
+      inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
+      uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook

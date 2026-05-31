@@ -1,0 +1,187 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/wisward/uhhcraft/web/templates/layouts"
+)
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type OrderLineItem struct {
+	Name           string
+	MaterialName   string
+	CutFinishName  string
+	ProductType    string
+	Quantity       int
+	UnitPriceCents int64
+	LineTotalCents int64
+}
+
+type OrderConfirmData struct {
+	IsAuthenticated bool
+	OrderID         string // full UUID
+	ShortID         string // first 8 chars
+	Email           string
+	Status          string
+	Items           []OrderLineItem
+	SubtotalCents   int64
+	ShippingFree    bool
+	ShippingCents   int64
+	TotalCents      int64
+	ShippingName    string
+	ShippingAddress string // formatted single line
+}
+
+// usd formats an integer cent amount as a dollar string, e.g. 999 -> "$9.99".
+// Money is carried as integer cents to avoid binary float drift in totals.
+func usd(cents int64) string {
+	neg := ""
+	if cents < 0 {
+		neg = "-"
+		cents = -cents
+	}
+	return fmt.Sprintf("$%s%d.%02d", neg, cents/100, cents%100)
+}
+
+// ── Order confirmation ────────────────────────────────────────────────────────
+
+templ OrderConfirmPage(d OrderConfirmData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Order Confirmed",
+		NoIndex:         true,
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-md px-4 sm:px-6 lg:px-8 py-16">
+
+			<!-- Header -->
+			<div class="text-center mb-10">
+				<div class="text-7xl mb-4" aria-hidden="true">🦊</div>
+				<h1 class="text-3xl font-extrabold text-[var(--color-fg-default)] mb-2">Order confirmed!</h1>
+				<p class="text-[var(--color-fg-muted)]">
+					We're getting started on it right away. You'll hear from us when it ships.
+				</p>
+			</div>
+
+			<!-- Order card -->
+			<div class="bg-[var(--color-bg-raised)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] overflow-hidden mb-6">
+
+				<!-- Order meta -->
+				<div class="grid grid-cols-2 sm:grid-cols-3 gap-4 p-6 bg-[var(--color-bg-surface)] border-b border-[var(--color-border-muted)]">
+					<div>
+						<p class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)] mb-1">Order</p>
+						<p class="font-bold text-[var(--color-fg-default)] font-mono text-sm">#{ d.ShortID }</p>
+					</div>
+					<div>
+						<p class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)] mb-1">Email</p>
+						<p class="text-sm text-[var(--color-fg-default)] truncate">{ d.Email }</p>
+					</div>
+					<div>
+						<p class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)] mb-1">Lead time</p>
+						<p class="text-sm text-[var(--color-fg-default)]">5–7 business days</p>
+					</div>
+				</div>
+
+				<!-- Items -->
+				<div class="p-6">
+					<h2 class="text-sm font-bold text-[var(--color-fg-default)] uppercase tracking-wider mb-4">Items</h2>
+					<ul class="space-y-4 list-none">
+						for _, item := range d.Items {
+							<li class="flex justify-between gap-4 text-sm">
+								<div>
+									<p class="font-semibold text-[var(--color-fg-default)]">{ item.Name }</p>
+									<p class="text-[var(--color-fg-muted)] text-xs mt-0.5">
+										{ item.MaterialName }
+										if item.CutFinishName != "" {
+											· { item.CutFinishName }
+										}
+										· qty { fmt.Sprint(item.Quantity) }
+									</p>
+								</div>
+								<span class="font-medium text-[var(--color-fg-default)] shrink-0">{ usd(item.LineTotalCents) }</span>
+							</li>
+						}
+					</ul>
+
+					<!-- Totals -->
+					<div class="border-t border-[var(--color-border-muted)] mt-6 pt-4 space-y-2 text-sm">
+						<div class="flex justify-between">
+							<span class="text-[var(--color-fg-muted)]">Subtotal</span>
+							<span>{ usd(d.SubtotalCents) }</span>
+						</div>
+						<div class="flex justify-between">
+							<span class="text-[var(--color-fg-muted)]">Shipping</span>
+							<span>
+								if d.ShippingFree {
+									Free
+								} else {
+									{ usd(d.ShippingCents) }
+								}
+							</span>
+						</div>
+					</div>
+					<div class="border-t border-[var(--color-border-muted)] mt-3 pt-3 flex justify-between font-bold text-base">
+						<span>Total</span>
+						<span>{ usd(d.TotalCents) }</span>
+					</div>
+				</div>
+
+				<!-- Shipping address -->
+				if d.ShippingAddress != "" {
+					<div class="px-6 pb-6">
+						<h2 class="text-sm font-bold text-[var(--color-fg-default)] uppercase tracking-wider mb-2">Ships to</h2>
+						<p class="text-sm text-[var(--color-fg-muted)]">{ d.ShippingName }</p>
+						<p class="text-sm text-[var(--color-fg-muted)]">{ d.ShippingAddress }</p>
+					</div>
+				}
+			</div>
+
+			<!-- What happens next -->
+			<div class="rounded-[var(--radius-xl)] bg-[var(--color-bg-surface)] border border-[var(--color-border-muted)] p-6 mb-8">
+				<h2 class="text-base font-bold text-[var(--color-fg-default)] mb-4">What happens next</h2>
+				<ol class="space-y-3 list-none">
+					@orderStep("1", "We make it", "Your item enters our manufacturing queue. Stickers are cut to shape; 3D prints are cured layer by layer.")
+					@orderStep("2", "We ship it", "Once it's ready, we pack it carefully and drop it with USPS. You'll get a tracking number by email.")
+					@orderStep("3", "You receive it", "Most orders arrive in 5–7 business days from today. The fox mascot is fingers-crossed for you.")
+				</ol>
+			</div>
+
+			<!-- CTAs -->
+			<div class="flex flex-col sm:flex-row gap-3 justify-center">
+				<a href="/catalog" class={ orderSecondaryBtn() }>Browse More Items</a>
+				<a href="/generate" class={ orderPrimaryBtn() }>Create Something New</a>
+			</div>
+
+			if d.IsAuthenticated {
+				<p class="text-center text-sm text-[var(--color-fg-muted)] mt-4">
+					View this and all your past orders in
+					<a href="/account/orders" class="text-[var(--color-brand-fg)] font-semibold hover:underline">My Account</a>.
+				</p>
+			}
+		</div>
+	}
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+templ orderStep(num, title, body string) {
+	<li class="flex gap-4">
+		<div
+			class="w-7 h-7 shrink-0 rounded-full bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] text-xs font-bold flex items-center justify-center mt-0.5"
+			aria-hidden="true"
+		>{ num }</div>
+		<div>
+			<p class="font-semibold text-[var(--color-fg-default)] text-sm">{ title }</p>
+			<p class="text-sm text-[var(--color-fg-muted)] mt-0.5">{ body }</p>
+		</div>
+	</li>
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func orderPrimaryBtn() string {
+	return "inline-flex items-center justify-center px-6 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm hover:bg-[var(--color-brand-hover)] transition-colors duration-[var(--duration-fast)]"
+}
+
+func orderSecondaryBtn() string {
+	return "inline-flex items-center justify-center px-6 py-3 rounded-[var(--radius-md)] bg-[var(--color-bg-surface)] text-[var(--color-fg-default)] font-semibold text-sm border border-[var(--color-border-default)] hover:bg-[var(--color-bg-muted)] transition-colors duration-[var(--duration-fast)]"
+}

@@ -1,0 +1,144 @@
+package pages
+
+import "github.com/wisward/uhhcraft/web/templates/layouts"
+
+// GenerateOption is a selectable material / cut / finish option.
+type GenerateOption struct {
+	ID   string
+	Name string
+}
+
+// GeneratePageData is the view model for the /generate page.
+type GeneratePageData struct {
+	IsAuthenticated  bool
+	StickerMaterials []GenerateOption
+	StickerCutTypes  []GenerateOption
+	PrintMaterials   []GenerateOption
+	PrintFinishes    []GenerateOption
+	Error            string
+}
+
+// GeneratePage renders the AI generation form.
+templ GeneratePage(d GeneratePageData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Create",
+		Description:     "Describe what you want and generate a unique, one-of-a-kind design.",
+		IsAuthenticated: d.IsAuthenticated,
+	}, "") {
+		<div class="mx-auto max-w-screen-md px-4 sm:px-6 lg:px-8 py-10">
+			<h1 class="text-3xl font-bold text-[var(--color-fg-default)]">Create your own</h1>
+			<p class="text-[var(--color-fg-muted)] mt-1 mb-8">
+				Describe what you'd like — we'll generate a unique design and preview it in 3D before you buy.
+			</p>
+
+			if d.Error != "" {
+				<div class="mb-6 rounded-[var(--radius-md)] bg-[var(--color-danger-subtle)] px-4 py-3 text-[var(--color-danger-fg)] text-sm" role="alert">
+					{ d.Error }
+				</div>
+			}
+
+			<form
+				method="post"
+				action="/generate"
+				hx-post="/generate"
+				hx-target="#generate-error"
+				hx-swap="innerHTML"
+				class="space-y-6"
+			>
+				<div>
+					<label for="prompt" class="block text-sm font-bold text-[var(--color-fg-default)] mb-1">Your idea</label>
+					<textarea
+						id="prompt"
+						name="prompt"
+						rows="3"
+						required
+						minlength="3"
+						maxlength="1000"
+						placeholder="a cute fox wearing a tiny astronaut helmet"
+						class="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-default)] px-3 py-2 text-[var(--color-fg-default)]"
+					></textarea>
+				</div>
+
+				<fieldset>
+					<legend class="text-sm font-bold text-[var(--color-fg-default)] mb-1">Product type</legend>
+					<div class="flex gap-4">
+						<label class="inline-flex items-center gap-2">
+							<input type="radio" name="product_type" value="sticker" checked/>
+							<span>Sticker</span>
+						</label>
+						<label class="inline-flex items-center gap-2">
+							<input type="radio" name="product_type" value="print"/>
+							<span>3D print</span>
+						</label>
+					</div>
+				</fieldset>
+
+				<!--
+					Each product type has its own material + cut/finish <select>. Only
+					the one matching the selected product_type is enabled; the others are
+					hidden AND disabled so the browser never submits a mismatched value
+					(a disabled control is not part of the form data). generate.js keeps
+					this in sync with the radio; server-side validation is the backstop.
+				-->
+				<div>
+					<label for="material_sticker" class="block text-sm font-bold text-[var(--color-fg-default)] mb-1">Material</label>
+					<select id="material_sticker" name="material_id" data-pt="sticker" class="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-default)] px-3 py-2 text-[var(--color-fg-default)]">
+						for _, m := range d.StickerMaterials {
+							<option value={ m.ID }>{ m.Name }</option>
+						}
+					</select>
+					<select id="material_print" name="material_id" data-pt="print" disabled class="hidden w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-default)] px-3 py-2 text-[var(--color-fg-default)]">
+						for _, m := range d.PrintMaterials {
+							<option value={ m.ID }>{ m.Name }</option>
+						}
+					</select>
+				</div>
+
+				<div>
+					<label for="cut_sticker" class="block text-sm font-bold text-[var(--color-fg-default)] mb-1">Cut / finish</label>
+					<select id="cut_sticker" name="cut_finish_id" data-pt="sticker" class="w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-default)] px-3 py-2 text-[var(--color-fg-default)]">
+						for _, c := range d.StickerCutTypes {
+							<option value={ c.ID }>{ c.Name }</option>
+						}
+					</select>
+					<select id="cut_print" name="cut_finish_id" data-pt="print" disabled class="hidden w-full rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-bg-default)] px-3 py-2 text-[var(--color-fg-default)]">
+						for _, f := range d.PrintFinishes {
+							<option value={ f.ID }>{ f.Name }</option>
+						}
+					</select>
+				</div>
+
+				<div id="generate-error" aria-live="polite"></div>
+
+				<button
+					type="submit"
+					class="inline-flex items-center gap-2 px-5 py-2.5 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm hover:bg-[var(--color-brand-hover)] transition-colors duration-[var(--duration-fast)]"
+				>
+					Generate
+				</button>
+				if !d.IsAuthenticated {
+					<p class="text-xs text-[var(--color-fg-muted)]">
+						Guests can generate too — <a href="/account/sign-up" class="underline">sign up free</a> for shorter wait times and saved history.
+					</p>
+				}
+			</form>
+			<!-- Show only the material/cut-finish selects for the chosen product type. -->
+			<script>
+				(function () {
+					var radios = document.querySelectorAll('input[name="product_type"]');
+					function sync() {
+						var checked = document.querySelector('input[name="product_type"]:checked');
+						var pt = checked ? checked.value : 'sticker';
+						document.querySelectorAll('select[data-pt]').forEach(function (el) {
+							var on = el.getAttribute('data-pt') === pt;
+							el.classList.toggle('hidden', !on);
+							el.disabled = !on;
+						});
+					}
+					radios.forEach(function (r) { r.addEventListener('change', sync); });
+					sync();
+				})();
+			</script>
+		</div>
+	}
+}

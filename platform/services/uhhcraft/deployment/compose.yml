@@ -1,0 +1,110 @@
+# UhhCraft — Podman-compatible compose for production and local dev.
+#
+# Production: Ansible's deploy-uhhcraft.yml templates .env from OpenBao before
+#             this stack is brought up. The runtime is podman-compose (or
+#             `podman compose`) — see platform/lib/common.sh:detect_runtime.
+#
+# Dev: `docker compose up -d` works identically; .env is generated from
+#      .env.example or templated by the dev quickstart in deployment/README.md.
+#
+# All credentials come from .env. No literal secrets in this file.
+
+name: uhhcraft
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: uhhcraft-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - uhhcraft
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: uhhcraft-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - uhhcraft
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    # Pinned RELEASE tag (no :latest) so deploys are reproducible. Override with
+    # MINIO_IMAGE to bump deliberately.
+    image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z}
+    container_name: uhhcraft-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio_data:/data
+    networks:
+      - uhhcraft
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  app:
+    # Prod and dev both pull a pre-built image — the stack never builds at deploy
+    # time (CI builds + pushes the image; deploy.sh only pulls). Pin via
+    # UHHCRAFT_IMAGE to a specific tag/digest; the :latest default is the
+    # floating prod tag and should be overridden for reproducible deploys.
+    image: ${UHHCRAFT_IMAGE:-ghcr.io/uhstray-io/uhhcraft:latest}
+    container_name: uhhcraft-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Bind to loopback only; central Caddy on the same host proxies in.
+      - "127.0.0.1:3000:3000"
+    networks:
+      - uhhcraft
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/uhhcraft", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  uhhcraft:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

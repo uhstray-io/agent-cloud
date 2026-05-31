@@ -1,0 +1,138 @@
+package layouts
+
+import "github.com/wisward/uhhcraft/web/templates/components"
+
+// SiteBaseURL is the public origin (e.g. https://uhhcraft.uhstray.io), set once
+// at startup from config.App.BaseURL. Used to build absolute URLs (OG tags)
+// without hardcoding the domain in templates.
+var SiteBaseURL string
+
+// defaultOGImage returns the absolute fallback OG image URL when a page doesn't
+// supply its own. Falls back to a root-relative path if the base URL is unset.
+func defaultOGImage() string {
+	const p = "/static/img/og-default.png"
+	if SiteBaseURL != "" {
+		return SiteBaseURL + p
+	}
+	return p
+}
+
+// PageData holds per-page metadata injected by handlers.
+type PageData struct {
+	Title       string
+	Description string
+	OGImage     string // absolute URL or empty for default
+	CanonicalURL string
+	NoIndex     bool   // true for generated canvas pages, account pages, etc.
+
+	// Auth state (populated by middleware / handler)
+	IsAuthenticated bool
+	IsAdmin         bool
+	UserID          string
+	CartCount       int
+
+	// Theme
+	DarkMode bool // initial server-rendered class; JS takes over after
+}
+
+// Base is the root HTML layout used by all pages.
+templ Base(data PageData, bodyClass string) {
+	<!DOCTYPE html>
+	<html
+		lang="en"
+	>
+	<head>
+		<meta charset="UTF-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+		<!-- Title & meta -->
+		if data.Title != "" {
+			<title>{ data.Title } | UhhCraft</title>
+		} else {
+			<title>UhhCraft — Unique, one of a kind</title>
+		}
+		if data.Description != "" {
+			<meta name="description" content={ data.Description }/>
+		}
+		if data.NoIndex {
+			<meta name="robots" content="noindex,nofollow"/>
+		}
+		if data.CanonicalURL != "" {
+			<link rel="canonical" href={ data.CanonicalURL }/>
+		}
+
+		<!-- Open Graph -->
+		<meta property="og:site_name" content="UhhCraft"/>
+		if data.Title != "" {
+			<meta property="og:title" content={ data.Title + " | UhhCraft" }/>
+		} else {
+			<meta property="og:title" content="UhhCraft — Unique, one of a kind"/>
+		}
+		if data.Description != "" {
+			<meta property="og:description" content={ data.Description }/>
+		}
+		if data.OGImage != "" {
+			<meta property="og:image" content={ data.OGImage }/>
+		} else {
+			<meta property="og:image" content={ defaultOGImage() }/>
+		}
+		<meta name="twitter:card" content="summary_large_image"/>
+
+		<!-- Preload critical fonts -->
+		<link rel="preload" href="/static/fonts/nunito-variable.woff2" as="font" type="font/woff2" crossorigin/>
+
+		<!-- Styles -->
+		<link rel="stylesheet" href="/static/css/app.css"/>
+
+		<!-- Favicon -->
+		<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg"/>
+		<link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png"/>
+
+		<!-- Stripe.js loaded only on checkout pages via page-specific scripts -->
+	</head>
+	<body class={ "min-h-screen bg-[var(--color-bg-page)] text-[var(--color-fg-default)] font-sans", bodyClass }>
+		<!-- Skip-to-content (WCAG) -->
+		<a href="#main-content" class="skip-link">Skip to main content</a>
+
+		<!-- Theme toggle script: runs before paint to avoid flash -->
+		<script>
+			(function() {
+				var stored = localStorage.getItem('theme');
+				var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+				if (stored === 'dark' || (!stored && prefersDark)) {
+					document.documentElement.classList.add('dark');
+				} else {
+					document.documentElement.classList.remove('dark');
+				}
+			})();
+		</script>
+
+		@components.Header(components.HeaderProps{
+			IsAuthenticated: data.IsAuthenticated,
+			IsAdmin:         data.IsAdmin,
+			CartCount:       data.CartCount,
+		})
+
+		<main id="main-content" tabindex="-1">
+			{ children... }
+		</main>
+
+		@components.Footer()
+
+		<!-- HTMX -->
+		<script src="/static/js/htmx.min.js" defer></script>
+
+		<!-- Theme toggle handler -->
+		<script>
+			document.addEventListener('DOMContentLoaded', function() {
+				var btn = document.getElementById('theme-toggle');
+				if (!btn) return;
+				btn.addEventListener('click', function() {
+					var isDark = document.documentElement.classList.toggle('dark');
+					localStorage.setItem('theme', isDark ? 'dark' : 'light');
+				});
+			});
+		</script>
+	</body>
+	</html>
+}

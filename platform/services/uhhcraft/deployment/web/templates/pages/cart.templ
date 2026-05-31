@@ -1,0 +1,204 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/wisward/uhhcraft/web/templates/layouts"
+)
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type CartLineItem struct {
+	ID           string
+	ItemType     string // "catalog" | "generated"
+	Name         string
+	ProductType  string // "sticker" | "print"
+	MaterialName string
+	CutFinishName string
+	ThumbnailURL string
+	Quantity     int
+	UnitPrice    float64
+	LineTotal    float64
+}
+
+type CartData struct {
+	IsAuthenticated bool
+	Items           []CartLineItem
+	Subtotal        float64
+	ShippingFree    bool
+	ShippingAmount  float64
+	Total           float64
+	ItemCount       int
+}
+
+// ── Cart page ─────────────────────────────────────────────────────────────────
+
+templ CartPage(d CartData) {
+	@layouts.Base(layouts.PageData{
+		Title:           "Your Cart",
+		NoIndex:         true,
+		IsAuthenticated: d.IsAuthenticated,
+		CartCount:       d.ItemCount,
+	}, "") {
+		<div class="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-10">
+			<h1 class="text-2xl font-bold text-[var(--color-fg-default)] mb-8">Your Cart</h1>
+
+			if len(d.Items) == 0 {
+				<!-- Empty state -->
+				<div class="flex flex-col items-center justify-center py-24 text-center">
+					<div class="text-7xl mb-6" aria-hidden="true">🛒</div>
+					<p class="text-xl font-semibold text-[var(--color-fg-default)] mb-2">Your cart is empty</p>
+					<p class="text-[var(--color-fg-muted)] mb-8 max-w-xs">Browse the catalog or create something unique.</p>
+					<div class="flex flex-wrap gap-3 justify-center">
+						<a href="/generate" class={ cartPrimaryBtn() }>Create Something</a>
+						<a href="/catalog" class={ cartSecondaryBtn() }>Browse Catalog</a>
+					</div>
+				</div>
+			} else {
+				<div class="flex flex-col lg:flex-row gap-8">
+
+					<!-- Item list -->
+					<div class="flex-1 min-w-0">
+						<ul class="divide-y divide-[var(--color-border-muted)] list-none" id="cart-items">
+							for _, item := range d.Items {
+								<li class="flex gap-4 py-5" id={ "cart-item-" + item.ID }>
+									<!-- Thumbnail -->
+									<div class="w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-[var(--radius-md)] overflow-hidden bg-[var(--color-bg-surface)] border border-[var(--color-border-muted)]">
+										if item.ThumbnailURL != "" {
+											<img
+												src={ item.ThumbnailURL }
+												alt={ item.Name }
+												class="w-full h-full object-cover"
+												loading="lazy"
+											/>
+										} else {
+											<div class="w-full h-full flex items-center justify-center text-3xl" aria-hidden="true">🦊</div>
+										}
+									</div>
+
+									<!-- Details -->
+									<div class="flex-1 min-w-0">
+										<p class="font-semibold text-[var(--color-fg-default)] truncate">{ item.Name }</p>
+										<p class="text-xs text-[var(--color-fg-muted)] mt-0.5">
+											{ item.MaterialName }
+											if item.CutFinishName != "" {
+												· { item.CutFinishName }
+											}
+										</p>
+										<p class="text-xs text-[var(--color-fg-subtle)] mt-0.5">{ productTypeBadge(item.ProductType) }</p>
+
+										<!-- Quantity + remove -->
+										<div class="flex items-center gap-3 mt-3">
+											<form
+												method="post"
+												action={ templ.SafeURL("/cart/update/" + item.ID) }
+												hx-post={ "/cart/update/" + item.ID }
+												hx-target="#cart-items"
+												hx-swap="outerHTML"
+												class="flex items-center"
+											>
+												<label for={ "qty-" + item.ID } class="sr-only">Quantity</label>
+												<select
+													id={ "qty-" + item.ID }
+													name="quantity"
+													class="text-sm rounded-[var(--radius-sm)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 text-[var(--color-fg-default)] focus-visible:outline-[var(--color-focus-ring)]"
+													hx-trigger="change"
+													hx-post={ "/cart/update/" + item.ID }
+													hx-include="this"
+													hx-target="closest li"
+													hx-swap="outerHTML"
+												>
+													for i := 1; i <= 10; i++ {
+														<option value={ fmt.Sprint(i) } selected?={ i == item.Quantity }>{ fmt.Sprint(i) }</option>
+													}
+												</select>
+											</form>
+
+											<form
+												method="post"
+												action={ templ.SafeURL("/cart/remove/" + item.ID) }
+												hx-post={ "/cart/remove/" + item.ID }
+												hx-target={ "#cart-item-" + item.ID }
+												hx-swap="outerHTML"
+											>
+												<button type="submit" class="text-xs text-[var(--color-fg-subtle)] hover:text-[var(--color-danger-fg)] transition-colors">
+													Remove
+												</button>
+											</form>
+										</div>
+									</div>
+
+									<!-- Price -->
+									<div class="text-right shrink-0">
+										<p class="font-semibold text-[var(--color-fg-default)]">{ fmt.Sprintf("$%.2f", item.LineTotal) }</p>
+										if item.Quantity > 1 {
+											<p class="text-xs text-[var(--color-fg-muted)]">{ fmt.Sprintf("$%.2f ea.", item.UnitPrice) }</p>
+										}
+									</div>
+								</li>
+							}
+						</ul>
+					</div>
+
+					<!-- Order summary -->
+					<aside class="lg:w-80 xl:w-96 shrink-0" aria-label="Order summary">
+						<div class="bg-[var(--color-bg-surface)] rounded-[var(--radius-xl)] border border-[var(--color-border-muted)] p-6 sticky top-20">
+							<h2 class="text-base font-bold text-[var(--color-fg-default)] mb-4">Order Summary</h2>
+
+							<dl class="space-y-2 text-sm">
+								<div class="flex justify-between">
+									<dt class="text-[var(--color-fg-muted)]">Subtotal ({ fmt.Sprint(d.ItemCount) } items)</dt>
+									<dd class="font-medium text-[var(--color-fg-default)]">{ fmt.Sprintf("$%.2f", d.Subtotal) }</dd>
+								</div>
+								<div class="flex justify-between">
+									<dt class="text-[var(--color-fg-muted)]">Shipping</dt>
+									<dd class="font-medium text-[var(--color-fg-default)]">
+										if d.ShippingFree {
+											<span class="text-[var(--color-success-fg)]">Free</span>
+										} else {
+											{ fmt.Sprintf("$%.2f", d.ShippingAmount) }
+										}
+									</dd>
+								</div>
+								if !d.ShippingFree {
+									<p class="text-xs text-[var(--color-fg-muted)]">Free shipping on orders $50+</p>
+								}
+							</dl>
+
+							<div class="border-t border-[var(--color-border-muted)] my-4"></div>
+
+							<div class="flex justify-between text-base font-bold mb-5">
+								<span class="text-[var(--color-fg-default)]">Total</span>
+								<span class="text-[var(--color-fg-default)]">{ fmt.Sprintf("$%.2f", d.Total) }</span>
+							</div>
+
+							<a href="/checkout" class={ cartPrimaryBtn() + " text-center" }>
+								Proceed to Checkout →
+							</a>
+
+							<p class="text-xs text-[var(--color-fg-subtle)] text-center mt-3">
+								Tax calculated at checkout · US shipping only
+							</p>
+						</div>
+					</aside>
+				</div>
+			}
+		</div>
+	}
+}
+
+// ── CSS helpers ───────────────────────────────────────────────────────────────
+
+func cartPrimaryBtn() string {
+	return "inline-flex w-full items-center justify-center px-5 py-3 rounded-[var(--radius-md)] bg-[var(--color-brand-solid)] text-[var(--color-fg-default)] font-bold text-sm hover:bg-[var(--color-brand-hover)] transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
+}
+
+func cartSecondaryBtn() string {
+	return "inline-flex items-center justify-center px-5 py-3 rounded-[var(--radius-md)] bg-[var(--color-bg-surface)] text-[var(--color-fg-default)] font-semibold text-sm border border-[var(--color-border-default)] hover:bg-[var(--color-bg-muted)] transition-colors duration-[var(--duration-fast)]"
+}
+
+func productTypeBadge(t string) string {
+	if t == "sticker" {
+		return "Sticker"
+	}
+	return "3D Print"
+}

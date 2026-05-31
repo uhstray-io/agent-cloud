@@ -1,0 +1,8 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+websockets>=12.0
+boto3>=1.34.0
+pydantic>=2.7.0
+# >=0.0.27 fixes GHSA-wp53-j4wj-2cfg (arbitrary file write) + GHSA-pp6c-gr5w-3c5g (part-header DoS).
+python-multipart>=0.0.27
