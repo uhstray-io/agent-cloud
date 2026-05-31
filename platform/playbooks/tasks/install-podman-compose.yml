@@ -1,0 +1,52 @@
+---
+# install-podman-compose.yml — Ensure podman + a working compose entrypoint.
+#
+# After this task runs, exactly one of the following is callable on the host:
+#   - `podman compose` (preferred; ships with podman 4.4+ as a built-in plugin)
+#   - `podman-compose`  (Python script fallback)
+#
+# platform/lib/common.sh:detect_runtime picks whichever is available, so we
+# don't pin a specific one — we just need the host to have one.
+#
+# Idempotent. Tested on Ubuntu 22.04 / 24.04.
+
+- name: "Check podman presence"
+  ansible.builtin.command: which podman
+  register: _podman_check
+  changed_when: false
+  failed_when: false
+
+- name: "Install podman + plugin (Ubuntu)"
+  ansible.builtin.apt:
+    name:
+      - podman
+      - podman-compose
+    state: present
+    update_cache: true
+  become: true
+  when: _podman_check.rc != 0
+
+- name: "Check that `podman compose` plugin or `podman-compose` is available"
+  ansible.builtin.shell: |
+    set -o pipefail
+    if podman compose version >/dev/null 2>&1; then
+      echo "podman-compose-plugin"
+    elif command -v podman-compose >/dev/null 2>&1; then
+      echo "podman-compose-python"
+    else
+      echo "MISSING"
+    fi
+  register: _compose_check
+  changed_when: false
+
+- name: "Fail if no compose entrypoint is available"
+  ansible.builtin.fail:
+    msg: |
+      Neither `podman compose` nor `podman-compose` is callable on this host.
+      Install one before continuing — apt install podman-compose (or upgrade
+      podman to >= 4.4 for the built-in plugin).
+  when: _compose_check.stdout | trim == 'MISSING'
+
+- name: "Compose entrypoint"
+  ansible.builtin.debug:
+    msg: "Using: {{ _compose_check.stdout | trim }}"

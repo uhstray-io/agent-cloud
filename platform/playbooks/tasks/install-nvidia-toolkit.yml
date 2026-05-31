@@ -1,0 +1,93 @@
+---
+# install-nvidia-toolkit.yml — NVIDIA Container Toolkit + CDI for Podman.
+#
+# Idempotent. Skips work when nvidia-ctk + the CDI spec are already present.
+# After this runs, Podman accepts `--device nvidia.com/gpu=all` and the
+# `devices: nvidia.com/gpu=all` compose key works.
+#
+# Expected:
+#   GPU + NVIDIA driver already installed on the host (handled at VM build /
+#   cloud-init time, not here — drivers are kernel-coupled and we don't
+#   reinstall them on every deploy).
+#
+# Tested on: Ubuntu 22.04 / 24.04. Other distros are out of scope until needed.
+
+- name: "Check nvidia-ctk presence"
+  ansible.builtin.command: which nvidia-ctk
+  register: _nvidia_ctk_check
+  changed_when: false
+  failed_when: false
+
+# apt_key is removed on Ubuntu 24.04 and deprecated in modern Ansible. Use the
+# signed-by keyring pattern instead: drop the (ASCII-armored) key into
+# /etc/apt/keyrings and reference it from the repo's signed-by option.
+- name: "Ensure apt keyrings directory"
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  become: true
+  when: _nvidia_ctk_check.rc != 0
+
+- name: "Add NVIDIA Container Toolkit GPG key"
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    mode: "0644"
+  become: true
+  when: _nvidia_ctk_check.rc != 0
+
+- name: "Add NVIDIA Container Toolkit apt repo"
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
+    state: present
+    filename: nvidia-container-toolkit
+  become: true
+  when: _nvidia_ctk_check.rc != 0
+
+- name: "Install nvidia-container-toolkit"
+  ansible.builtin.apt:
+    name: nvidia-container-toolkit
+    state: present
+    update_cache: true
+  become: true
+  when: _nvidia_ctk_check.rc != 0
+
+- name: "Generate CDI spec for NVIDIA devices"
+  ansible.builtin.command:
+    cmd: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+    creates: /etc/cdi/nvidia.yaml
+  become: true
+  register: _cdi_generate
+  changed_when: _cdi_generate.rc == 0 and _cdi_generate.changed
+
+- name: "Verify nvidia-smi works inside a probe container"
+  # No `| head -1`: on a multi-GPU host head closes the pipe after the first
+  # line, and `set -o pipefail` would turn the resulting SIGPIPE into a false
+  # failure. Capture all GPU names; the result check below only needs non-empty.
+  ansible.builtin.command:
+    cmd: >-
+      podman run --rm --device nvidia.com/gpu=all
+      docker.io/nvidia/cuda:12.4.1-base-ubuntu22.04
+      nvidia-smi --query-gpu=name --format=csv,noheader
+  register: _gpu_probe
+  changed_when: false
+  failed_when: false
+
+- name: "GPU probe result"
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        ('GPU available: ' ~ _gpu_probe.stdout) if (_gpu_probe.rc == 0 and _gpu_probe.stdout | length > 0)
+        else 'GPU probe FAILED — verify host driver + PCIe passthrough before deploying inference services.'
+      }}
+
+- name: "Fail if GPU not visible"
+  ansible.builtin.fail:
+    msg: |
+      Cannot see a GPU via CDI. Likely causes:
+        - Host NVIDIA driver missing or wrong version.
+        - PCIe passthrough not configured for this VM.
+        - CDI spec at /etc/cdi/nvidia.yaml is stale (re-run this task).
+      See plan/development/UHHCRAFT-GPU-PASSTHROUGH.md (Phase 6 of the integration plan).
+  when: _gpu_probe.rc != 0 or (_gpu_probe.stdout | length) == 0

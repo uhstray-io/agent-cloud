@@ -1,0 +1,58 @@
+---
+# run-migrations.yml — Generic goose migration runner.
+#
+# Reusable across any Go + Postgres service that uses goose for schema
+# migrations. Idempotent: goose itself skips already-applied migrations.
+#
+# Expected variables:
+#   _migrations_dir      — Path to db/migrations/ inside the container OR on the host.
+#   _migration_dsn       — Postgres DSN (postgres://user:pass@host:port/db?sslmode=disable).
+#                          May be sourced from .env on the target host.
+#   _migration_engine    — Where to run goose:
+#                            "container" (default) — exec into the app container via compose
+#                            "host"                — run goose directly on the host
+#   _container_name      — When _migration_engine=container, the compose service name (e.g., "app").
+#   _deploy_dir          — When _migration_engine=container, the compose project dir.
+#
+# Optional variables:
+#   _migration_timeout   — Seconds to wait for a single migration (default 60).
+#   container_engine     — docker | podman (inherited from host vars).
+
+- name: "Validate migration inputs"
+  ansible.builtin.assert:
+    that:
+      - _migrations_dir is defined
+      - _migration_dsn is defined
+      - (_migration_engine | default('container')) in ['container', 'host']
+      # Container mode execs into the compose project, so it needs _deploy_dir.
+      - (_migration_engine | default('container')) != 'container' or (_deploy_dir is defined)
+    fail_msg: >-
+      _migrations_dir and _migration_dsn are required; container mode also
+      requires _deploy_dir, and _migration_engine must be 'container' or 'host'.
+
+- name: "Run goose migrations on host"
+  ansible.builtin.command:
+    cmd: goose -dir {{ _migrations_dir }} postgres "{{ _migration_dsn }}" up
+  register: _goose_host
+  changed_when: "'OK' in _goose_host.stdout or 'applied' in (_goose_host.stdout | lower)"
+  when: (_migration_engine | default('container')) == 'host'
+  no_log: true
+
+- name: "Run goose migrations inside container"
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd "{{ _deploy_dir }}"
+    {{ container_engine | default('podman') }} compose exec -T {{ _container_name | default('app') }} \
+      /app/goose -dir {{ _migrations_dir }} postgres "{{ _migration_dsn }}" up
+  register: _goose_container
+  changed_when: "'OK' in _goose_container.stdout or 'applied' in (_goose_container.stdout | lower)"
+  when: (_migration_engine | default('container')) == 'container'
+  no_log: true
+
+- name: "Migration report"
+  ansible.builtin.debug:
+    msg: >-
+      goose: {{
+        (_goose_host.stdout_lines | default([]) + _goose_container.stdout_lines | default([]))
+        | select | list | length
+      }} lines output ({{ _migration_engine | default('container') }})

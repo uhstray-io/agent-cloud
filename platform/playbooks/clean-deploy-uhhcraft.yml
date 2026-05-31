@@ -1,0 +1,20 @@
+---
+# clean-deploy-uhhcraft.yml — Destroy and redeploy UhhCraft from scratch.
+#
+# WARNING: Destroys ALL UhhCraft data (Postgres, Redis, MinIO volumes,
+#          containers, monorepo clone).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-uhhcraft.yml.
+
+- name: "Clean UhhCraft deployment"
+  hosts: uhhcraft_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-uhhcraft.yml
