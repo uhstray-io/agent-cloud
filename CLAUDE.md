@@ -151,6 +151,9 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/semaphore` | Semaphore API token, URL |
 | `secret/services/github` | GitHub PAT |
 | `secret/services/discord` | Discord bot token |
+| `secret/services/uhhcraft` | UhhCraft secrets (DB, Redis, MinIO, Stripe secret+publishable, session, Resend, Discord orders+ops webhooks, USPS client id/secret, Printify, Hubs) |
+| `secret/services/inference-comfyui` | ComfyUI sidecar (own MinIO root creds, COMFYUI_URL) |
+| `secret/services/inference-hunyuan3d` | Hunyuan3D sidecar (own MinIO root creds, model path) |
 
 ## Composable Task Library
 

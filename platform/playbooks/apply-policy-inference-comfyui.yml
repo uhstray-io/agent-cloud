@@ -1,0 +1,13 @@
+---
+- name: "Apply inference-comfyui OpenBao policy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR')) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _policy_name: "inference-comfyui"
+    _policy_file: "{{ playbook_dir }}/../services/openbao/deployment/config/policies/inference-comfyui.hcl"
+  tasks:
+    - ansible.builtin.include_tasks: tasks/apply-openbao-policy.yml
