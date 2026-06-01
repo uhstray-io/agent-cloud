@@ -28,6 +28,7 @@ New services fall into one of four tiers, each with different integration weight
 | **Automation** | n8n, NocoDB | Full (5-phase playbook, dedicated VM) | Medium |
 | **AI/Agent** | NemoClaw, NetClaw, WisAI, WisBot | Full + agent context directory | Large (GPU for inference) |
 | **Auxiliary** | Wiki.js, Postiz, Nextcloud, a2a-registry | Simplified (3-phase playbook, may co-locate on shared VM) | Small-Medium |
+| **Website** | UhhCraft, future WebSmith-built sites | Full + signed SPEC in `context/spec/` (see §Sites Built via WebSmith below) | Medium-Large (depends on archetype) |
 
 ### Classification Decision
 
@@ -282,6 +283,32 @@ Development is in progress to migrate NocoDB and n8n from legacy deploy scripts 
 This migration serves as the reference for onboarding additional services. The design decisions (particularly around `seed-secrets-from-env.yml` for pre-existing deployments) apply to any service migrating from the legacy pattern.
 
 See `plan/architecture/AUTOMATION-COMPOSABILITY.md` (Migration Path section) for the full rollout sequence.
+
+---
+
+## Sites Built via WebSmith
+
+Websites — both customer-facing storefronts and internal portals — go through one extra layer before the standard onboarding checklist applies: the **WebSmith agent** at [`agents/websmith/`](../../agents/websmith/). WebSmith is a prompt-only meta-framework that walks a human through five phases (purpose, template, tooling, style, considerations) plus an optional intake to produce a signed `SPEC.md`. Only after the spec is signed does the build start.
+
+For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md). The short version:
+
+### How website onboarding differs
+
+1. **Decisions before code.** Phases 1-5 of WebSmith run first. No directories under `platform/services/` are created until the user signs `SPEC.md`. This is non-negotiable — it prevents the common failure mode of scaffolding a stack before deciding what the site is for.
+2. **Spec lives with the service.** The six phase artefacts + assembled `SPEC.md` land at `platform/services/<sitename>/context/spec/`. This is a deviation from WebSmith's framework default (which writes to a separate working directory) — but inside agent-cloud, the spec is committed alongside the implementation it constrains.
+3. **agent-cloud preset is surfaced during Phase 3.** Tooling phase presents the platform's defaults (Postgres, Podman, central Caddy, OpenBao, Semaphore, dedicated Proxmox VM, generate-in-CI) as the recommended path. User overrides are recorded in `SPEC.md` under `## Alignment with agent-cloud conventions` or `## Tracking future deviations`.
+4. **Standard onboarding picks up at Phase 0.** Once `SPEC.md` is signed, the rest of this document applies: Planning → Infrastructure → Repository → Credentials → Automation → Inventory → Testing → Documentation. The signed spec drives the answers to the questions Phase 0 asks (tier classification, dependencies, sizing).
+5. **Recipe is fixed.** Every site lands as a `platform/services/<sitename>/` with the same `deployment/ + context/` shape UhhCraft uses. The second site doesn't get to be bespoke — see the "second-site recipe" in [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md).
+
+### Reference site
+
+[`platform/services/uhhcraft/`](../../platform/services/uhhcraft/) is the first WebSmith-built site. Use its tree as the shape to mirror. Its `context/spec/SPEC.md` shows what a fully-signed spec looks like, including the `## Alignment with agent-cloud conventions` section that captures the platform-level updates.
+
+### Cross-references
+
+- [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md) — architectural contract.
+- [`../development/WEBSMITH-INTEGRATION-PLAN.md`](../development/WEBSMITH-INTEGRATION-PLAN.md) — 11-phase rollout (current sites).
+- [`agents/websmith/context/architecture/integration-with-agent-cloud.md`](../../agents/websmith/context/architecture/integration-with-agent-cloud.md) — second-site recipe (agent-facing).
 
 ---
 
