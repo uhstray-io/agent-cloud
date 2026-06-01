@@ -2,7 +2,7 @@
 
 Self-hosted e-commerce storefront for AI-designed, one-of-a-kind physical goods (stickers + 3D prints). First concrete site built with WebSmith.
 
-**Stack:** Go 1.23 · templ · HTMX · Tailwind CSS · PostgreSQL 16 · Redis 7 · MinIO · Stripe · River · Caddy
+**Stack:** Go 1.26 · templ · HTMX · Tailwind CSS · PostgreSQL 16 · Redis 7 · MinIO · Stripe · River · Caddy
 
 **Full spec:** [`../context/spec/SPEC.md`](../context/spec/SPEC.md) — read the `## Alignment with agent-cloud conventions` section at the bottom for everything platform-specific.
 
@@ -28,8 +28,8 @@ The `deploy.sh` in this directory is **container lifecycle only** — no secret 
 ```bash
 # Prereqs
 go install github.com/a-h/templ/cmd/templ@v0.2.793
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
-go install github.com/pressly/goose/v3/cmd/goose@v3.21.1
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+go install github.com/pressly/goose/v3/cmd/goose@v3.27.1
 go install github.com/air-verse/air@latest
 # Tailwind standalone — see Dockerfile for the version pin
 brew install tailwindcss   # or download the binary from the tailwindlabs releases
