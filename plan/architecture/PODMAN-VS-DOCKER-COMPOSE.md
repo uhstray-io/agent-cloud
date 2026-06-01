@@ -633,3 +633,22 @@ flowchart TD
 - [Docker Compose specification](https://docs.docker.com/compose/compose-file/)
 - [Podman networking (netavark)](https://docs.podman.io/en/latest/markdown/podman-network.1.html)
 - [Compose spec depends_on reference](https://docs.docker.com/compose/how-tos/startup-order/)
+
+## Appendix: UhhCraft — reference Podman service
+
+[`platform/services/uhhcraft/deployment/`](../../platform/services/uhhcraft/deployment/) is the first agent-cloud service designed Podman-first from the start. Its `compose.yml` illustrates every pattern this document recommends:
+
+| Pattern | UhhCraft applies it as |
+|---------|------------------------|
+| **Explicit `container_name:`** | `uhhcraft-postgres`, `uhhcraft-redis`, `uhhcraft-minio`, `uhhcraft-app` |
+| **Fully-qualified image names** | `docker.io/library/postgres:16-alpine` (not bare `postgres:16-alpine`) — Podman requires the registry prefix; Docker accepts both |
+| **No top-level `name:` property on volumes** | Volume keys are short (`postgres_data`, `redis_data`, `minio_data`); the project name `uhhcraft` (set by `name: uhhcraft` at the top of the file) prefixes them |
+| **`depends_on` with `condition: service_healthy`** | Declared on `app` for `postgres`/`redis`/`minio`. Honored by Docker and podman-compose ≥ 1.3.0; on podman-compose 1.0.6 it is parsed but **not** enforced (see §4), so readiness is gated by the explicit health-wait helpers in deploy/post-deploy scripts |
+| **Healthchecks on every backing service** | Postgres uses `pg_isready`, Redis uses authenticated `redis-cli ping`, MinIO uses its `/minio/health/ready` endpoint |
+| **Loopback port binding** | App is published as `127.0.0.1:3000:3000` so only the central Caddy on the same host can reach it; backing services don't expose ports at all |
+| **`env_file: [.env]`** | The Ansible-templated `.env` is the single source of compose env-vars; no literal values in `compose.yml` |
+| **`nvidia.com/gpu=all` device** | Sister services [`inference-comfyui`](../../platform/services/inference-comfyui/deployment/compose.yml) and [`inference-hunyuan3d`](../../platform/services/inference-hunyuan3d/deployment/compose.yml) use the CDI handoff for GPU passthrough under Podman |
+
+UhhCraft also demonstrates how to handle the Go + templ + sqlc generation lifecycle inside a multi-stage `Dockerfile` (Stage 1 installs the tool-chain, Stage 2 generates + builds, Stage 3 is distroless runtime). See [`platform/services/uhhcraft/deployment/Dockerfile`](../../platform/services/uhhcraft/deployment/Dockerfile) for the pattern any future Go service should mirror.
+
+Compose file: [`platform/services/uhhcraft/deployment/compose.yml`](../../platform/services/uhhcraft/deployment/compose.yml). Use it as a template when starting a new Podman-first service.

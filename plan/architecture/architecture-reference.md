@@ -127,6 +127,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards.
 | [PODMAN-VS-DOCKER-COMPOSE.md](PODMAN-VS-DOCKER-COMPOSE.md) | ACTIVE | Compatibility guide for Podman vs Docker across all services. |
 | [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) | ACTIVE | Security testing standards for code, playbooks, templates, and configuration. |
 | [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
+| [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
 
 ---
 
@@ -151,6 +152,8 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [PODMAN-UPGRADE-PLAN.md](../development/PODMAN-UPGRADE-PLAN.md) | PLANNING | Podman-compose upgrade strategy for services using Podman. |
 | [CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md](../development/CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md) | PROPOSED | Implementation phases for credential rotation, metadata, dynamic secrets, site lifecycle. |
 | [ARCHITECTURE-REVIEW-FOLLOWUP.md](../development/ARCHITECTURE-REVIEW-FOLLOWUP.md) | TODO | Deferred items from the 2026-05-07 architecture review. |
+| [WEBSMITH-INTEGRATION-PLAN.md](../development/WEBSMITH-INTEGRATION-PLAN.md) | ACTIVE | 11-phase integration of the WebSmith agent + UhhCraft platform service into agent-cloud (Phases 1–9 merged; 10–11 pending). |
+| [UHHCRAFT-GPU-PASSTHROUGH.md](../development/UHHCRAFT-GPU-PASSTHROUGH.md) | PLANNING | Proxmox PCIe passthrough procedure for the two inference VMs. §1 decision pending. |
 
 ### Archived Plans
 
