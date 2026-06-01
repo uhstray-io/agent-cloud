@@ -116,7 +116,7 @@ brew install terraform
 
 # Go toolchain (required for UhhCraft changes)
 brew install go@1.26
-go install github.com/a-h/templ/cmd/templ@v0.2.793
+go install github.com/a-h/templ/cmd/templ@v0.3.1020
 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 go install github.com/pressly/goose/v3/cmd/goose@v3.27.1
 brew install golangci-lint   # v2.x — config is .golangci.yml `version: "2"`
