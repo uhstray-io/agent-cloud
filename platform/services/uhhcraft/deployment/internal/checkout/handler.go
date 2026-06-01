@@ -14,9 +14,9 @@ import (
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	stripego "github.com/stripe/stripe-go/v79"
-	"github.com/stripe/stripe-go/v79/paymentintent"
-	"github.com/stripe/stripe-go/v79/webhook"
+	stripego "github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/paymentintent"
+	"github.com/stripe/stripe-go/v82/webhook"
 
 	"github.com/wisward/uhhcraft/internal/app"
 	"github.com/wisward/uhhcraft/internal/auth"
@@ -245,7 +245,17 @@ func StripeWebhookHandler(a *app.App) http.HandlerFunc {
 		}
 
 		sig := r.Header.Get("Stripe-Signature")
-		event, err := webhook.ConstructEvent(payload, sig, a.Config.Stripe.WebhookSecret)
+		// stripe-go v82 pins API version "2025-08-27.basil"; the plain
+		// ConstructEvent also rejects any webhook whose version "train" differs
+		// from the SDK's — which would silently drop every event if the
+		// dashboard webhook endpoint is pinned to an older API version. We read
+		// only pi.ID and pi.Metadata (both present and stable across all API
+		// versions; Metadata is echoed back verbatim from what we set at
+		// PaymentIntent creation), so version skew can't mis-deserialize
+		// anything we consume. Keep signature + timestamp validation; opt out
+		// only of the version-match check.
+		event, err := webhook.ConstructEventWithOptions(payload, sig, a.Config.Stripe.WebhookSecret,
+			webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 		if err != nil {
 			a.Logger.Error("stripe webhook signature invalid", "err", err)
 			http.Error(w, "invalid signature", http.StatusBadRequest)
