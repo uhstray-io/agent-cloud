@@ -8,13 +8,15 @@ metadata:
 
 The external `website_framework` repo is being integrated into agent-cloud across 11 phases. The framework becomes the **WebSmith** agent (`agents/websmith/`); its concrete output — **UhhCraft**, a Go + templ + HTMX storefront with Python AI sidecars — becomes the first platform service built that way. Full plan: `plan/development/WEBSMITH-INTEGRATION-PLAN.md`.
 
-## Phase status (verified against `main`, 2026-05-31)
+## Phase status (verified against `main`, 2026-06-01)
 
-- **Phase 1 — MERGED** (PR #18, squash `7ebb178`): `agents/websmith/` agent move.
-- **Phase 2 — MERGED** (PR #19, squash `5a513b5`): full UhhCraft service at `platform/services/uhhcraft/` + `inference-comfyui` / `inference-hunyuan3d` sidecars. Cleared a large CodeRabbit pass (125 findings + 19 on re-review, worked in 10 thematic clusters) with all CI gates green before merge.
-- **Phases 3–11 — NOT STARTED.**
+- **Phases 1–9 — MERGED**, one PR each: P1 #18 (`agents/websmith/` agent move), P2 #19 (full UhhCraft service + `inference-comfyui` / `inference-hunyuan3d` sidecars; cleared a 125+19-finding CodeRabbit pass), P3 #27 (reserved OpenBao policies), P4 #28 (composable Ansible playbooks), P5 #30 (central-Caddy per-site fragment), P6 #32 (inventory + Proxmox VM specs + GPU sub-plan), P7 #34 (Semaphore templates), P8 #35 (CI: Go/templ/sqlc/gosec), P9 #40 (architecture docs + cross-links).
+- **Phase 10 — PENDING, hardware-gated.** Acceptance needs branch-deploy to the real uhhcraft/comfyui/hunyuan3d/caddy VMs + happy-path smoke + GPU passthrough + rollback drill — can't be completed from a dev box.
+- **Phase 11 — PENDING (doable without hardware):** codify the second-site recipe into WebSmith's `catalogs/`.
 
-**Workflow used:** one PR per phase, stacked; wait for *all* CI checks + CodeRabbit to complete and pass before merging; squash-merge. See [[coderabbit-rate-limits]] for the review-cadence constraint.
+**UhhCraft dependency upgrade — DONE** (PRs #36–#39, separate from the phases): Go 1.23→1.26, golangci-lint v1→v2, sqlc/goose bumps + low-risk deps (#36); templ 0.2→0.3 (#37); river 0.11→0.38 (#38); stripe-go v79→v82 (#39). The breaking ones were split one-PR-each on purpose — that's how the stripe-go v82 webhook API-version re-pin got caught (would've silently dropped `payment_intent.succeeded` events; fixed with `ConstructEventWithOptions{IgnoreAPIVersionMismatch: true}`).
+
+**Workflow used:** one PR per phase; wait for *all* CI checks + CodeRabbit to complete and pass before merging; squash-merge. Fold confirmed CodeRabbit findings into [[coderabbit-preflight-checklist]] so the next PR prevents them. See [[coderabbit-rate-limits]] for the review-cadence constraint.
 
 ## Locked decisions (do not re-litigate)
 
