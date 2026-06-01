@@ -1,6 +1,6 @@
 ---
 name: coderabbit-preflight-checklist
-description: Recurring CodeRabbit/CI findings to fix UPFRONT (before pushing) so PRs pass the first review, plus how to triage a CodeRabbit review. Distilled from PRs #19, #27, #28, #30, #32.
+description: Recurring CodeRabbit/CI findings to fix UPFRONT (before pushing) so PRs pass the first review, plus how to triage a CodeRabbit review. Distilled from PRs #19, #27, #28, #30, #32, #35, #36, #40. STANDING PRACTICE — every CodeRabbit finding we confirm as real gets distilled into this file so the next PR prevents it upfront.
 metadata:
   node_type: memory
   type: reference
@@ -11,7 +11,16 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 ## Markdown (markdownlint)
 
 - **Every fenced code block needs a language** (MD040). Use `text` for trees/diagrams/plain output, `bash`, `json`, `hcl`, `yaml`, etc. Closing ``` fences are exempt.
-- **Relative links must resolve.** Count the directory depth from the file to the repo root and verify (`[ -e ../../x ] && echo OK`). A file N dirs deep needs N `../` to reach root. Deep service READMEs are the usual offender.
+- **Relative links must resolve.** Count the directory depth from the file to the repo root and verify (`[ -e ../../x ] && echo OK`). A file N dirs deep needs N `../` to reach root. **Both directions break:** too few `../` (Phase 3) *and* too many (PR #40 had `../../../platform/...` from a `plan/architecture/` doc — only 2 levels deep — which escapes the repo root). `plan/architecture/*` and `plan/development/*` are both 2 deep → `../../` to root, `../development/` or `../architecture/` to the sibling dir. After writing links, grep the diff for `\.\./\.\./\.\./` in any 2-deep doc.
+- **No ASCII-art box-drawing in `plan/**.md`** — CI hard-fails on Unicode `[\x{2500}-\x{257F}]`. All diagrams must be fenced ```mermaid```. (Root files like `kickstart.md` with tree `├──` art are exempt — the gate only scans `plan/`.)
+
+## Markdown / docs internal consistency (PR #40)
+
+CodeRabbit reviews `plan/**/*.md` for internal consistency — a new section that contradicts the same doc's existing body, or an index whose status disagrees with the source's frontmatter, gets flagged. Check these before pushing a docs PR:
+
+- **A new section must not contradict the doc's own body.** PR #40's biggest catch was self-inflicted: an appendix table cell claimed `depends_on: condition: service_healthy` makes the app "wait for postgres/redis/minio to report healthy" — directly contradicting the **same file's §4**, which says podman-compose 1.0.6 parses but does NOT enforce it. When you add an appendix/example to an existing doc, re-read the sections it touches and align claims.
+- **Index status must match the source doc's frontmatter.** `architecture-reference.md` listed `WEBSMITH-INTEGRATION-PLAN.md` as `IMPLEMENTED` while the plan's own `**Status:**` was `ACTIVE` and it was 9/11. Don't mark a multi-phase plan "IMPLEMENTED" until it's done — mirror the source's status + note the phase count.
+- **Use the canonical section names, not one-off variants.** The deviation headings are exactly `## Alignment with agent-cloud conventions` and `## Tracking future deviations` — not `## Deviations from Spec`. Grep the repo for the existing heading before inventing a near-synonym.
 
 ## Ansible (ansible-lint — CI hard-fails on these)
 
@@ -48,6 +57,7 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 - **Percent-encode credentials embedded in connection URLs** (`DATABASE_URL`, `REDIS_URL`): `{{ secrets.pw | urlencode }}` — a `@ : / # ? %` in a password corrupts parsing otherwise.
 - **Dockerfile:** match the pip interpreter to the runtime python (`python3.11 -m ensurepip` + `python -m pip`, not the distro `python3-pip`); add a `HEALTHCHECK`; set `--start-period` for slow first-boot (model/weight load).
 - **Pin security-sensitive deps** (e.g. `python-multipart>=0.0.27`).
+- **`depends_on: condition: service_healthy` is NOT a working readiness gate on podman-compose 1.0.6** — it's parsed but not enforced (containers start in order without waiting for health). Enforced only on podman-compose ≥ 1.3.0 (and Docker). On Podman VMs, readiness is gated by explicit health-wait helpers in deploy/post-deploy scripts (`lib/common.sh`), with `depends_on` kept for documentation + Docker compat. See `plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md` §4. Never describe `service_healthy` as the effective wait mechanism on this platform.
 
 ## Go / app config
 
@@ -79,3 +89,4 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 - **Active vs resolved findings:** an inline comment with `line: null` is outdated/resolved (re-anchored against an old commit) — ignore it; only `line != null` comments are live on the current commit.
 - **Skipping a finding is fine when it's wrong** — reply with the concrete reason (precedent, contradicting config, our `.yamllint.yml` 200-char limit, etc.), then `@coderabbitai review`. CodeRabbit consistently concedes well-evidenced pushback.
 - **Loop:** fix real ones + skip-with-evidence the false positives → re-run local linters → push → `@coderabbitai review` → confirm `line:null` on the resolved ones. Batch fixes per round.
+- **STANDING PRACTICE — close the loop into this file.** Every CodeRabbit finding we *confirm as real* (especially self-inflicted ones like the PR #40 Podman contradiction) gets distilled into the relevant section above before the PR merges, so the next PR prevents it upfront instead of re-discovering it. Preventing the mistake beats triaging it. False positives we rebut don't go here — but a recurring *category* of false positive (e.g. CodeRabbit's repeated "pin actions to SHA" / "doc lives elsewhere" claims) is worth a one-line note so we rebut fast.
