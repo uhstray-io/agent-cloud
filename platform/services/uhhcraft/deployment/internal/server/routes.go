@@ -45,7 +45,7 @@ func Routes(a *app.App) http.Handler {
 
 	// ── Public routes ─────────────────────────────────────────────────────────
 	r.Get("/", catalog.HomeHandler(a))
-	r.Get("/about", staticHandler(a, "about"))
+	r.Get("/about", staticHandler("about"))
 
 	// Catalog
 	r.Get("/catalog", catalog.BrowseHandler(a))
@@ -103,15 +103,14 @@ func Routes(a *app.App) http.Handler {
 	r.Post("/webhooks/hubs", orders.WebhookHandler(a, "hubs"))
 
 	// ── Legal / static pages ──────────────────────────────────────────────────
-	r.Get("/legal/terms", staticHandler(a, "legal-terms"))
-	r.Get("/legal/privacy", staticHandler(a, "legal-privacy"))
-	r.Get("/legal/returns", staticHandler(a, "legal-returns"))
-	r.Get("/legal/accessibility", staticHandler(a, "legal-accessibility"))
+	r.Get("/legal/terms", staticHandler("legal-terms"))
+	r.Get("/legal/privacy", staticHandler("legal-privacy"))
+	r.Get("/legal/returns", staticHandler("legal-returns"))
+	r.Get("/legal/accessibility", staticHandler("legal-accessibility"))
 
 	// ── 404 / 500 ─────────────────────────────────────────────────────────────
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		render404(w, r, a)
+		render404(w)
 	})
 	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -120,8 +119,8 @@ func Routes(a *app.App) http.Handler {
 	return r
 }
 
-func staticHandler(a *app.App, page string) http.HandlerFunc {
+func staticHandler(page string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		renderStaticPage(w, r, page)
+		renderStaticPage(w, page)
 	}
 }

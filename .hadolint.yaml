@@ -1,0 +1,9 @@
+# hadolint config for all Dockerfile lint steps in .github/workflows/lint-and-test.yml.
+#
+# Version-pinning of common build tools (git, curl, ca-certificates, build deps)
+# on a moving distro is impractical and breaks builds when the distro bumps a
+# patch — so we ignore the apk/apt pin rules. Everything else stays at the
+# workflow's `failure-threshold: warning`.
+ignored:
+  - DL3018  # apk add — pin versions (impractical for git/curl/build tools)
+  - DL3008  # apt-get install — pin versions (same, for debian/ubuntu images)

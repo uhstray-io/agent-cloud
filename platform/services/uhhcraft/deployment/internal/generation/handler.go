@@ -238,11 +238,11 @@ func StatusHandler(a *app.App) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":          status,
-			"asset_png_path":  assetPNG,
-			"asset_glb_path":  assetGLB,
-			"asset_stl_path":  assetSTL,
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":         status,
+			"asset_png_path": assetPNG,
+			"asset_glb_path": assetGLB,
+			"asset_stl_path": assetSTL,
 		})
 	}
 }
@@ -342,4 +342,3 @@ type recentGenEntry struct {
 	AssetGLBPath pgtype.Text
 	Status       string
 }
-
