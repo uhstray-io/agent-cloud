@@ -25,7 +25,12 @@ func Routes(a *app.App) http.Handler {
 	r := chi.NewRouter()
 
 	// ── Global middleware ────────────────────────────────────────────────────
-	r.Use(chimiddleware.RealIP)
+	// SA1019: RealIP's spoofing risk (GHSA-3fxj-6jh8-hvhx et al.) doesn't apply
+	// here — UhhCraft's only ingress is the central Caddy proxy on the Podman
+	// network; the app is never directly reachable, so X-Forwarded-For is always
+	// proxy-set and Caddy sees the true peer. (auth.clientIP makes the same trust
+	// assumption for rate-limit keys.) Trusted-proxy hardening is a follow-up.
+	r.Use(chimiddleware.RealIP) //nolint:staticcheck // documented trust boundary above
 	r.Use(chimiddleware.RequestID)
 	r.Use(structuredLogger(a.Logger))
 	r.Use(chimiddleware.Recoverer)

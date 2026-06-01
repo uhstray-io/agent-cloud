@@ -3,14 +3,15 @@
 # Multi-stage: builder generates code + compiles binary; runtime is distroless.
 
 # ── Stage 1: tool-chains ──────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS tools
+FROM golang:1.26-alpine AS tools
 # libstdc++/libgcc: the Tailwind v4 standalone musl binary is dynamically linked
 # against the C++ runtime (cxxabi / _Unwind_* symbols) — bare alpine lacks them.
 RUN apk add --no-cache git curl libstdc++ libgcc
 # Pin tool versions — bump deliberately, not opportunistically.
+# templ stays v0.2.793 until the v0.3 codegen/runtime migration lands separately.
 ENV TEMPL_VERSION=v0.2.793 \
-    SQLC_VERSION=v1.27.0   \
-    GOOSE_VERSION=v3.21.1
+    SQLC_VERSION=v1.31.1   \
+    GOOSE_VERSION=v3.27.1
 RUN go install github.com/a-h/templ/cmd/templ@${TEMPL_VERSION} \
  && go install github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION} \
  && go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}

@@ -219,14 +219,14 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.26"
           cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
 
       - name: Install templ
         run: go install github.com/a-h/templ/cmd/templ@v0.2.793
 
       - name: Install sqlc
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
       - name: Generate templ
         run: templ generate
@@ -254,13 +254,13 @@ jobs:
           fi
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # action v9 is required for golangci-lint v2 (v6 only runs v1).
+        uses: golangci/golangci-lint-action@v9
         with:
-          # v1.61.0 is the floor that supports Go 1.23 — older (e.g. v1.59)
-          # typecheck-fails on 1.23 code with spurious "undefined" errors.
-          version: v1.61.0
+          # v2 config (.golangci.yml version: "2"). v2 has no default timeout,
+          # so the old `--timeout` arg is dropped.
+          version: v2.12.2
           working-directory: platform/services/uhhcraft/deployment
-          args: --timeout 5m
 
       - name: gosec
         uses: securego/gosec@master
@@ -310,13 +310,13 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.26"
           cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
 
       - name: Install templ + sqlc
         run: |
           go install github.com/a-h/templ/cmd/templ@v0.2.793
-          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
       - name: Generate code
         run: |

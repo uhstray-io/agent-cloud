@@ -25,7 +25,7 @@
 
 ## Frontend
 
-- **Language:** Go 1.23+
+- **Language:** Go 1.26+
 - **Templating:** [templ](https://github.com/a-h/templ) — compiled, type-safe Go component templates. Catch template errors at compile time, not runtime.
 - **Interactivity:** [HTMX](https://htmx.org) — server returns HTML partials; HTMX swaps them in-place. Used for: filter bar, cart add/remove/update, generation cooldown UI, form validation feedback, radial selector price recalculation.
 - **3D canvas:** [Three.js](https://threejs.org) — loaded only on `/canvas/[id]`. Bundled as a standalone ES module via esbuild. Handles: mesh loading (GLB), rotation (OrbitControls), texture application (sticker mockup), accept/reject interaction.
@@ -47,7 +47,7 @@
 ## Backend
 
 - **Pattern:** Custom backend — required by the site's complexity (auth, AI job queue, order management, fulfillment routing, rate limiting).
-- **Language:** Go 1.23+
+- **Language:** Go 1.26+
 - **Framework:** Chi router + stdlib `net/http`. No full framework (no Gin, no Echo) — Chi gives routing and middleware without abstracting `net/http`.
 - **AI worker service:** Two separate Python 3.11+ / FastAPI sidecars (one per engine) on the AI machines (internal network). Each exposes a single normalized `POST /generate` endpoint (the route is `/generate`, not `/generate/image` or `/generate/3d` — see the [sidecar contract](../architecture/ai-sidecar-contract.md)):
   - `inference-comfyui` `POST /generate` — runs Flux.1 via ComfyUI, writes the PNG to its MinIO, returns a Caddy-routed `url`.
@@ -266,7 +266,7 @@ Internet
 - **JS (3D canvas only):** esbuild — bundles Three.js + canvas interaction code into `static/js/canvas.js`. No Node package manager for the site shell; esbuild used only for the canvas bundle.
 - **Package manager:** Go modules (`go.mod`). No Node package manager in the Go project.
 - **Monorepo:** No — single repo: Go app + templ templates + Python AI service in `ai/` subdirectory.
-- **Language versions:** Go 1.23+ pinned in `go.mod`. Python 3.11+ pinned in `ai/pyproject.toml`.
+- **Language versions:** Go 1.26+ pinned in `go.mod`. Python 3.11+ pinned in `ai/pyproject.toml`.
 
 ---
 
