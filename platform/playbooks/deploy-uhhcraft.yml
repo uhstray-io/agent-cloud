@@ -5,9 +5,10 @@
 # Phase 2: Run deploy.sh — container lifecycle (podman compose up, wait healthy).
 # Phase 3: Run post-deploy.sh — migrations (goose + River) + healthcheck.
 # Phase 4: Verify /healthz.
+# Phase 5: Render + distribute the central-Caddy fragment (no-op until a
+#          caddy_svc host exists in inventory — added in integration Phase 6).
 #
-# Central-Caddy fragment distribution is WebSmith integration Phase 5, not here.
-# Source of truth: plan/development/WEBSMITH-INTEGRATION-PLAN.md (Phase 4).
+# Source of truth: plan/development/WEBSMITH-INTEGRATION-PLAN.md (Phases 4-5).
 
 # ── Phase 1: Clone + Secrets + Env Files ────────────────────────────────────
 - name: "Phase 1: Clone repo + manage secrets + template env"
@@ -135,10 +136,6 @@
         var: _post.stdout_lines
 
 # ── Phase 4: Health verification ────────────────────────────────────────────
-# Central-Caddy fragment distribution is handled in WebSmith integration Phase 5,
-# not here: caddy-site.j2 needs the per-site upstream vars that Phase 6 inventory
-# supplies, and ansible.builtin.template resolves its src on the controller (not
-# the remote clone path), so a render step here would be both premature and wrong.
 - name: "Phase 4: Verify UhhCraft is healthy"
   hosts: uhhcraft_svc
   gather_facts: false
@@ -161,3 +158,59 @@
     - name: "Deployed"
       ansible.builtin.debug:
         msg: "UhhCraft is healthy at {{ _service_url }}"
+
+# ── Phase 5: Render + distribute the central-Caddy fragment ─────────────────
+# Verify the app is healthy FIRST (above), then expose it via Caddy. Skipped
+# until a central Caddy host (caddy_svc) exists in inventory (added in Phase 6).
+- name: "Phase 5: Render + distribute Caddy fragment"
+  hosts: uhhcraft_svc
+  gather_facts: true              # ansible_default_ipv4 feeds the upstream addresses
+  become: false
+  vars:
+    _fragment_src: "/tmp/uhhcraft-caddy-site.caddy"
+    _fragment_name: "uhhcraft.caddy"
+    _has_caddy: "{{ (groups['caddy_svc'] | default([])) | length > 0 }}"
+
+  tasks:
+    # Cross-service MinIO upstreams are coordinated in INVENTORY, not computed
+    # from cross-host facts (this play only gathers the UhhCraft host's facts).
+    # Require them explicitly — a silent loopback fallback would render a valid
+    # fragment that routes generated-asset requests to the wrong host.
+    - name: "Require cross-service MinIO upstreams when distributing to Caddy"
+      ansible.builtin.assert:
+        that:
+          - inference_comfyui_minio_upstream is defined
+          - inference_hunyuan3d_minio_upstream is defined
+        fail_msg: >-
+          Set inference_comfyui_minio_upstream and inference_hunyuan3d_minio_upstream
+          (host:port of each sidecar's MinIO) in inventory before enabling Caddy
+          distribution (Phase 6).
+      when: _has_caddy | bool
+
+    - name: "Render caddy-site.j2 to the UhhCraft host"
+      # src is resolved on the CONTROLLER (the checked-out monorepo) — the
+      # template module always reads src locally, never from the remote clone.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/uhhcraft/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      vars:
+        # Bucket names self-default inside caddy-site.j2; only the computed
+        # domain + upstreams are passed here. (Inventory may still override the
+        # bucket vars at the host/group level — the template honors them.)
+        uhhcraft_domain: "{{ service_url | default('http://localhost:3000') | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
+        uhhcraft_upstream: "{{ ansible_default_ipv4.address | default(inventory_hostname) }}:3000"
+        uhhcraft_minio_upstream: "{{ ansible_default_ipv4.address | default(inventory_hostname) }}:9000"
+        # No loopback fallback — asserted above; fail loud over routing wrong.
+        comfyui_minio_upstream: "{{ inference_comfyui_minio_upstream }}"
+        hunyuan_minio_upstream: "{{ inference_hunyuan3d_minio_upstream }}"
+      when: _has_caddy | bool
+
+    - name: "Push fragment to central Caddy + reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory — skipping central-Caddy fragment distribution (lands with Phase 6 inventory)."
+      when: not (_has_caddy | bool)

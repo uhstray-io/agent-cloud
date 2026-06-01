@@ -17,7 +17,10 @@
     encode brotli gzip
 
     header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Platform HSTS baseline (matches central Caddyfile). includeSubDomains
+        # + preload are deferred until after first stable production deploy per
+        # the UhhCraft SPEC (preload is hard to reverse).
+        Strict-Transport-Security "max-age=15552000;"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"
         Referrer-Policy "strict-origin-when-cross-origin"
@@ -31,7 +34,7 @@
     # ── Generated AI assets (separate MinIO per inference service) ──────────
     # /generated/img/* → inference-comfyui MinIO
     handle_path /generated/img/* {
-        rewrite * /{{ comfyui_minio_bucket }}{path}
+        rewrite * /{{ comfyui_minio_bucket | default('generated-images') }}{path}
         reverse_proxy {{ comfyui_minio_upstream }} {
             header_up Host {upstream_hostport}
         }
@@ -40,7 +43,7 @@
 
     # /generated/3d/*  → inference-hunyuan3d MinIO
     handle_path /generated/3d/* {
-        rewrite * /{{ hunyuan_minio_bucket }}{path}
+        rewrite * /{{ hunyuan_minio_bucket | default('generated-3d') }}{path}
         reverse_proxy {{ hunyuan_minio_upstream }} {
             header_up Host {upstream_hostport}
         }
@@ -49,7 +52,7 @@
 
     # ── Static catalog assets (UhhCraft's own MinIO) ────────────────────────
     handle_path /static/uploads/* {
-        rewrite * /{{ uhhcraft_minio_bucket }}{path}
+        rewrite * /{{ uhhcraft_minio_bucket | default('uhhcraft') }}{path}
         reverse_proxy {{ uhhcraft_minio_upstream }} {
             header_up Host {upstream_hostport}
         }

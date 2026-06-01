@@ -1,3 +1,15 @@
+# Per-site fragments — one file per service under sites/.
+# Each service ships its own templates/caddy-site.j2 (a Jinja2 template),
+# which Ansible renders on the service host and distributes here via
+# platform/playbooks/tasks/distribute-caddy-site.yml. Caddy is then reloaded.
+#
+# Patterns:
+#   - The legacy {$VAR}-driven routes below stay as-is during the transition.
+#   - New services (UhhCraft etc.) land as sites/<name>.caddy fragments.
+#   - See plan/architecture/CADDY-REVERSE-PROXY.md for the full convention.
+import sites/*.caddy
+
+# ── Legacy {$VAR}-driven routes ─────────────────────────────────────────
 {$CLOUD_DOMAIN} {
 	tls {
 		dns cloudflare {$CLOUDFLARE_API_KEY}

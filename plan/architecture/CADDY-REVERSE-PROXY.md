@@ -22,7 +22,7 @@ Caddy is the sole HTTPS ingress point for the uhstray-io platform. Every externa
 
 Caddy operates at the **Platform Layer** -- it is infrastructure, not automation or AI. It has no business logic; its sole responsibility is accepting inbound HTTPS connections, terminating TLS, and forwarding requests to internal service VMs over HTTP.
 
-```
+```text
 AI Layer         NemoClaw, NetClaw, WisBot, Claude Cowork
                  (consumers of services behind Caddy)
 
@@ -116,6 +116,65 @@ For services that require WebSocket support (e.g., collaborative editing, real-t
 
 Environment variables are resolved at container startup. The current deployment uses `start-caddy.sh` to parse CLI arguments and export variables before running `docker compose up`. The target state replaces this with Ansible-templated `.env` files following the composable pattern.
 
+### Per-Site Fragment (Composable Pattern)
+
+The two patterns above use the central `Caddyfile` with `{$VAR}`-driven substitution and are appropriate for legacy services. **All new services should use the per-site fragment pattern** instead — it keeps the main Caddyfile small, gives each service its own rollout/rollback unit, and lets each service template arbitrary Caddy directives (CSP, route handlers, asset proxies) without touching shared infrastructure.
+
+**Mechanism:**
+
+```text
+1. Each service ships templates/caddy-site.j2 (Jinja2)
+       platform/services/<svc>/deployment/templates/caddy-site.j2
+
+2. The service's deploy playbook renders the fragment on the service VM
+       platform/playbooks/deploy-<svc>.yml  (Phase 5)
+
+3. tasks/distribute-caddy-site.yml delegates to the central Caddy host,
+   copies the rendered fragment into the mounted sites/ directory, and
+   reloads Caddy in-place
+       platform/playbooks/tasks/distribute-caddy-site.yml
+```
+
+The central `Caddyfile` enables this with one line:
+
+```caddyfile
+import sites/*.caddy
+```
+
+Each fragment is a standalone Caddy site block. Example shape (from `platform/services/uhhcraft/deployment/templates/caddy-site.j2`):
+
+```caddyfile
+{{ uhhcraft_domain }} {
+    encode brotli gzip
+    header { ... HSTS, CSP, ... }
+
+    # Routed asset paths — cross-MinIO proxies
+    handle_path /generated/img/* { reverse_proxy {{ comfyui_minio_upstream }} ... }
+    handle_path /generated/3d/*  { reverse_proxy {{ hunyuan_minio_upstream }} ... }
+
+    # Static + app
+    handle /static/*  { reverse_proxy {{ uhhcraft_upstream }} ... }
+    reverse_proxy {{ uhhcraft_upstream }} { ... }
+}
+```
+
+**Reload safety:**
+
+`caddy reload --config /etc/caddy/Caddyfile` is zero-downtime — inflight requests complete; new requests use the new config; cert state is preserved. If a fragment is malformed, Caddy refuses to reload and keeps serving the previous config, so a broken deploy degrades to "no new fragment" rather than an outage.
+
+**File ownership:**
+
+The `sites/` directory is mounted read-only into the Caddy container (`./sites:/etc/caddy/sites:ro`). The only writer is `tasks/distribute-caddy-site.yml`, which runs as `ansible_user` on the Caddy host. Humans don't edit files here.
+
+**Conflict resolution:**
+
+Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot occupy the same domain — Caddy will fail to start if a domain is declared twice. Coordinate domain allocations in inventory, not in fragments.
+
+**When to keep using the legacy `{$VAR}` pattern instead:**
+
+- Existing services already in the main Caddyfile. Migrate when their deploy is rewritten to the composable pattern.
+- One-off / temporary routes (e.g., a maintenance redirect) where a fragment would be overkill.
+
 | Variable | Source | Example Placeholder |
 |----------|--------|-------------------|
 | `{$SERVICE_DOMAIN}` | FQDN from site-config | `svc.example.com` |
@@ -164,55 +223,82 @@ The CloudFlare API key needs **Zone:DNS:Edit** permission for the target zone. I
 
 When a new platform service needs external HTTPS access, follow these steps in coordination with the SERVICE-INTEGRATION-PLAN.md onboarding checklist.
 
-### Step 1: Allocate DNS Record
+**New services should use the per-site fragment pattern** (recommended path below). The legacy `{$VAR}`-in-main-Caddyfile path is preserved only for the existing services that haven't been migrated yet.
+
+### Recommended path — per-site fragment
+
+#### Step 1: Allocate DNS Record
 
 In CloudFlare (or via Terraform/API), create an A record pointing the service's FQDN to the Caddy VM's public IP. Record the FQDN in site-config inventory.
 
-### Step 2: Add Caddyfile Block
+#### Step 2: Write `templates/caddy-site.j2` in your service
 
-Add a new block to the Caddyfile template in `platform/services/caddy/deployment/Caddyfile`:
+Inside `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2`. It's a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). UhhCraft's is the reference shape — read `platform/services/uhhcraft/deployment/templates/caddy-site.j2`.
 
-```caddyfile
-{$NEWSERVICE_DOMAIN} {
-    tls {
-        dns cloudflare {$CLOUDFLARE_API_KEY}
-        resolvers 1.1.1.1 1.0.0.1
-    }
+Minimum useful skeleton:
 
+```jinja
+{{ '{{' }} svc_domain {{ '}}' }} {
+    encode brotli gzip
     header {
-        Strict-Transport-Security max-age=15552000;
+        Strict-Transport-Security "max-age=15552000;"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
     }
-
-    reverse_proxy {$NEWSERVICE_IP}:{$NEWSERVICE_PORT}
+    reverse_proxy {{ '{{' }} svc_upstream {{ '}}' }} {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
 }
 ```
 
-### Step 3: Add Environment Variables
+#### Step 3: Wire distribution into your deploy playbook
 
-Add the corresponding variables to the `.env` template (or the site-config Caddyfile, depending on current deployment method):
+In `platform/playbooks/deploy-<svc>.yml`, add a phase that renders the fragment locally and then includes `tasks/distribute-caddy-site.yml`:
 
+```yaml
+- name: "Distribute Caddy fragment"
+  hosts: <svc>_svc
+  tasks:
+    - name: "Render"
+      ansible.builtin.template:
+        # src resolves on the CONTROLLER (the checked-out monorepo), never the
+        # remote clone path — ansible.builtin.template always reads src locally.
+        src: "{{ playbook_dir }}/../services/<svc>/deployment/templates/caddy-site.j2"
+        dest: "/tmp/<svc>-caddy-site.caddy"
+      vars:
+        svc_domain: "{{ service_url | regex_replace('^https?://', '') }}"
+        svc_upstream: "{{ ansible_default_ipv4.address }}:<port>"
+
+    - name: "Push + reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      vars:
+        _fragment_src: "/tmp/<svc>-caddy-site.caddy"
+        _fragment_name: "<svc>.caddy"
 ```
-NEWSERVICE_DOMAIN=svc.example.com
-NEWSERVICE_IP=10.0.0.x
-NEWSERVICE_PORT=8080
-```
 
-### Step 4: Reload Caddy
+#### Step 4: Deploy
 
-Caddy supports zero-downtime config reloads. After updating the Caddyfile and environment:
+Run `deploy-<svc>.yml` via Semaphore. The fragment is rendered, copied to the central Caddy host's `sites/` directory, and Caddy is reloaded — all zero-downtime.
 
-```bash
-docker exec caddy caddy reload --config /etc/caddy/Caddyfile
-```
+#### Step 5: Verify
 
-Or redeploy via the deploy workflow (when automated -- see Automation Gap below).
+- Confirm HTTPS access at `https://svc.example.com`.
+- Check the Let's Encrypt certificate is issued.
+- Confirm the security headers and CSP are what the service expects.
 
-### Step 5: Verify
+### Legacy path — `{$VAR}`-driven block
 
-- Confirm HTTPS access at `https://svc.example.com`
-- Verify the TLS certificate is issued by Let's Encrypt
-- Check HSTS header is present
-- Test WebSocket connectivity if applicable
+For services already on the legacy pattern (or for one-off routes):
+
+1. Allocate the DNS record (same as Step 1 above).
+2. Add a new block to `platform/services/caddy/deployment/Caddyfile` using `{$NEWSERVICE_DOMAIN}`, `{$NEWSERVICE_IP}`, `{$NEWSERVICE_PORT}`.
+3. Add the variables to the `.env` template (or to `start-caddy.sh` CLI flags).
+4. Reload Caddy: `<engine> exec caddy caddy reload --config /etc/caddy/Caddyfile` (`<engine>` is `podman` by default on this platform; `docker` only on the NetBox host).
+5. Verify the same way.
+
+The legacy path is being phased out as each service migrates to the composable deploy pattern. Don't add new services here unless there's a strong reason.
 
 ---
 
@@ -307,7 +393,7 @@ Caddy automation should be implemented as part of the next service onboarding wa
 
 All Caddyfile blocks include the `Strict-Transport-Security` header:
 
-```
+```text
 Strict-Transport-Security max-age=15552000;
 ```
 
