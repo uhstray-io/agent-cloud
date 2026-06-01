@@ -18,7 +18,7 @@ require (
 	github.com/resend/resend-go/v2 v2.28.0
 	github.com/riverqueue/river v0.38.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.38.0
-	github.com/stripe/stripe-go/v79 v79.12.0
+	github.com/stripe/stripe-go/v82 v82.5.1
 	golang.org/x/crypto v0.52.0
 )
 

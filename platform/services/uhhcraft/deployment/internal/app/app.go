@@ -15,7 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/stripe/stripe-go/v79"
+	"github.com/stripe/stripe-go/v82"
 
 	"github.com/wisward/uhhcraft/internal/config"
 	"github.com/wisward/uhhcraft/internal/db"
