@@ -158,6 +158,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Purpose |
 |----------|---------|
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
+| `install-podman.yml` | Install Podman + podman-compose (idempotent) |
 
 ### Composable Task Library
 

@@ -68,6 +68,47 @@ all:
           service_name: nemoclaw
           monorepo_deploy_path: agents/nemoclaw/deployment
 
+    uhhcraft_svc:
+      hosts:
+        uhhcraft-local:
+          ansible_host: localhost
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          service_name: uhhcraft
+          service_url: "http://localhost:3000"
+          health_path: "/healthz"
+          monorepo_deploy_path: platform/services/uhhcraft/deployment
+          container_engine: podman
+          # Local AI sidecar endpoints (env.j2). No caddy_svc group locally, so
+          # the Phase 5 Caddy distribution is skipped — its minio_upstream vars
+          # aren't required here.
+          uhhcraft_ai_image_url: "http://localhost:8189"
+          uhhcraft_ai_3d_url: "http://localhost:8001"
+
+    inference_comfyui_svc:
+      hosts:
+        inference-comfyui-local:
+          ansible_host: localhost
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          service_name: inference-comfyui
+          service_url: "http://localhost:8189"
+          health_path: "/health"
+          monorepo_deploy_path: platform/services/inference-comfyui/deployment
+          container_engine: podman
+
+    inference_hunyuan3d_svc:
+      hosts:
+        inference-hunyuan3d-local:
+          ansible_host: localhost
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          service_name: inference-hunyuan3d
+          service_url: "http://localhost:8001"
+          health_path: "/health"
+          monorepo_deploy_path: platform/services/inference-hunyuan3d/deployment
+          container_engine: podman
+
   vars:
     monorepo_repo: "https://github.com/uhstray-io/agent-cloud.git"
     openbao_addr: "http://localhost:8200"
