@@ -85,7 +85,11 @@ func runRiverMigrateUp() int {
 		return 1
 	}
 	defer pool.Close()
-	migrator := rivermigrate.New(riverpgxv5.New(pool), nil)
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "river migrate-up: new migrator: %v\n", err)
+		return 1
+	}
 	res, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "river migrate-up: %v\n", err)
