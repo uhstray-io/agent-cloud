@@ -22,6 +22,17 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 - **`ansible.builtin.template` resolves `src` on the CONTROLLER, not the remote.** Point it at a `{{ playbook_dir }}/../...` path, never a remote clone path like `{{ _deploy_dir }}/...`.
 - **`apt_key` is removed on Ubuntu 24.04** (and deprecated). Use the signed-by keyring pattern: `get_url` the (`.asc`) key into `/etc/apt/keyrings/`, then `apt_repository` with `repo: "deb [signed-by=/etc/apt/keyrings/<x>.asc] ..."`.
 - **`set -o pipefail` + `head -1`** false-fails when the upstream writes more than one line (SIGPIPE). Drop the `head`/pipe and slice in Ansible, or avoid pipefail for that probe.
+- **No self-referencing vars** (`jinja[invalid]` recursion). A `vars:` entry `x: "{{ x | default(d) }}"` references itself → infinite templating. Default *inside* the consuming template, or source from a differently-named var.
+- **`no-handler`** fires when a task's `when:` is solely `<registered>.changed`. For an included composable task where the step must run in-sequence (not deferred to a play-end handler flush), `# noqa: no-handler` with a one-line justification is the accepted fix.
+- **Delegated tasks resolve vars from the DELEGATED host**, not the current one. For `delegate_to: caddy_host`, take `container_engine` / `ansible_user` from `hostvars[target].*` (default engine **podman**), not the play host's values.
+
+## Ansible — generated config fragments + cross-service wiring
+
+- **Validate before you persist; a reload-only guard isn't enough.** When a playbook writes a rendered config fragment (Caddy `sites/*.caddy`, nginx, etc.), `<engine> exec ... validate` the FULL config and **roll back** (restore prior / remove) on failure. A bad fragment that only fails `reload` still sits on disk and breaks the *next container restart*.
+- **Distinguish engine/container faults from config-parse errors.** A non-zero `<engine> exec ... validate` rc can mean "container down", not "bad config". Do a reachability pre-check (`caddy version`); on an engine fault **fail without rolling back** (the fragment is probably fine — a false rollback silently reverts a good change). Only roll back when validate fails *after* confirmed reachability.
+- **Coordinate cross-service endpoints in INVENTORY, not via silent fact fallbacks.** Don't compute another service's upstream as `hostvars[...].ansible_default_ipv4 | default('127.0.0.1')` — a missing fact renders a valid-but-wrong fragment routing to loopback. Require an explicit inventory var (`<svc>_minio_upstream`) and `assert` it. A play only gathers its own hosts' facts anyway.
+- **Guard path-traversal on any name concatenated into a delegated dest path.** `assert` it's a safe basename, e.g. `name is match('^[a-z0-9][a-z0-9-]*\.caddy$')`.
+- **HSTS baseline:** `Strict-Transport-Security max-age=15552000;` — do NOT add `includeSubDomains`/`preload` prematurely (preload is hard to reverse; per UhhCraft SPEC it's deferred to post-launch). Keep fragments consistent with the central Caddyfile.
 
 ## Ansible secrets ↔ env templates (platform convention)
 
