@@ -1,6 +1,6 @@
 ---
 name: coderabbit-preflight-checklist
-description: Recurring CodeRabbit/CI findings to fix UPFRONT (before pushing) so PRs pass the first review. Distilled from PRs #19, #27, #28.
+description: Recurring CodeRabbit/CI findings to fix UPFRONT (before pushing) so PRs pass the first review, plus how to triage a CodeRabbit review. Distilled from PRs #19, #27, #28, #30, #32.
 metadata:
   node_type: memory
   type: reference
@@ -25,6 +25,7 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 - **No self-referencing vars** (`jinja[invalid]` recursion). A `vars:` entry `x: "{{ x | default(d) }}"` references itself → infinite templating. Default *inside* the consuming template, or source from a differently-named var.
 - **`no-handler`** fires when a task's `when:` is solely `<registered>.changed`. For an included composable task where the step must run in-sequence (not deferred to a play-end handler flush), `# noqa: no-handler` with a one-line justification is the accepted fix.
 - **Delegated tasks resolve vars from the DELEGATED host**, not the current one. For `delegate_to: caddy_host`, take `container_engine` / `ansible_user` from `hostvars[target].*` (default engine **podman**), not the play host's values.
+- **Don't gate an idempotent install on a presence check that misses partial state.** `apt: { name: [a, b], state: present }` is already idempotent — gating it on `when: a_is_missing` skips remediating a host that has `a` but not `b`. Drop the gate; let `state: present` install only what's missing.
 
 ## Ansible — generated config fragments + cross-service wiring
 
@@ -62,6 +63,19 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 - **Honor `active`/hidden state** in every read path; **never purge in-flight rows** (e.g. `status NOT IN ('pending','processing')`).
 - **Normalize email** (CITEXT) and add source/ownership CHECK constraints.
 
+## Secrets / IPs in committed files
+
+- **Even commented "placeholder" IPs fail the CI gate if they're RFC1918.** `10.0.0.x`, `192.168.x.x`, `172.16–31.x.x` trip the credential-leak / RFC1918 audit regardless of a `# placeholder` comment. In examples/inventory use `<vm-ip>`-style tokens or `{{ host }}` Jinja vars, never a real-looking private IP. (Public IPs like `1.1.1.1` Cloudflare DNS are fine — not RFC1918.)
+- **The local audit grep must cover ALL RFC1918 ranges** — `10\.`, `192\.168\.`, AND `172\.(1[6-9]|2[0-9]|3[01])\.`. A grep that only checks `192.168.` misses `10.x` and passes something CI then rejects.
+
 ## Process
 
-- Run the relevant linters locally before pushing: `ansible-lint`, `templ generate && go build ./... && go vet ./...`, `ruff check`, `python -m py_compile`, `yaml.safe_load`. Then the secret/IP audit (no RFC1918 IPs, no literal creds).
+- Run the relevant linters locally before pushing: `ansible-lint`, `templ generate && go build ./... && go vet ./...`, `ruff check`, `python -m py_compile`, `yaml.safe_load`. Then the secret/IP audit covering all RFC1918 ranges (see above) + no literal creds.
+
+## Working with CodeRabbit reviews (triage discipline)
+
+- **Verify cited "coding guidelines" against the actual repo.** CodeRabbit has fabricated non-existent rules (e.g. claimed secret templates must use `{{ vault_* }}`/`{{ _secret_* }}` — that guideline exists nowhere here; the real mechanism is `manage-secrets.yml`'s `secrets.*` dict, confirmed by every NetBox template). Don't blindly comply — confirm, and **push back with evidence** (precedent files, the actual mechanism). Blindly "fixing" the secrets namespace would have rendered every credential blank.
+- **A `fail` check from rate-limiting is NOT a finding** — see [[coderabbit-rate-limits]]. Distinguish it from `fail` + real findings before reacting.
+- **Active vs resolved findings:** an inline comment with `line: null` is outdated/resolved (re-anchored against an old commit) — ignore it; only `line != null` comments are live on the current commit.
+- **Skipping a finding is fine when it's wrong** — reply with the concrete reason (precedent, contradicting config, our `.yamllint.yml` 200-char limit, etc.), then `@coderabbitai review`. CodeRabbit consistently concedes well-evidenced pushback.
+- **Loop:** fix real ones + skip-with-evidence the false positives → re-run local linters → push → `@coderabbitai review` → confirm `line:null` on the resolved ones. Batch fixes per round.
