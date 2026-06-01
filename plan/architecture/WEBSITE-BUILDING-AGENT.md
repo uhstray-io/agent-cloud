@@ -19,7 +19,7 @@ The mismatch this document resolves: WebSmith was originally designed as a stand
 ## Design Principles
 
 1. **WebSmith is decision-only.** Phases 0–5 produce markdown artefacts. They do not scaffold code, install packages, or run build tools. Implementation happens after `SPEC.md` is signed.
-2. **The spec is the contract.** After Phase 5, the six phase artefacts are assembled into `SPEC.md`. Implementation that deviates updates `SPEC.md` first (under `## Alignment with agent-cloud conventions` or `## Deviations from Spec`) and gets fresh signoff.
+2. **The spec is the contract.** After Phase 5, the six phase artefacts are assembled into `SPEC.md`. Implementation that deviates updates `SPEC.md` first (under `## Alignment with agent-cloud conventions` or `## Tracking future deviations`) and gets fresh signoff.
 3. **The spec lives with the service.** WebSmith's framework default is to write into a separate working directory. Inside agent-cloud, that's overridden: `SPEC.md` and the five precursor artefacts live at `platform/services/<sitename>/context/spec/`. They are the single source of truth for that site's intent.
 4. **Catalogs are non-exhaustive.** WebSmith's `catalogs/` enumerate common archetypes, stacks, components, and considerations. They are starting points, not menus. Sites with novel needs surface them via Phase 5's catch-all question instead of being forced into the nearest entry.
 5. **agent-cloud convention beats catalog defaults.** When WebSmith's Phase 3 (Tooling) presents stack choices, the agent-cloud preset is always offered first. Users may override per-site, but the override is recorded as an explicit deviation in `SPEC.md`.
