@@ -16,6 +16,8 @@ UhhCraft is the **first concrete site** built through the WebSmith agent ([`../.
 
 When editing a page or component, edit the `.templ` source, run `make templ`, and verify the resulting Go file compiles — do not edit `_templ.go` directly.
 
+**templ v0.3 gotcha:** a content text-run that *begins* with a Go keyword (`for` / `if` / `switch`) is parsed as control flow — even directly after an inline element like `</a>`. If literal copy needs to start with one of those words (e.g. `…</a> for shorter wait times`), wrap it in a string literal expression: `…</a>{ " for shorter wait times" }`. (templ ≤0.2 treated it as text; 0.3 does not.)
+
 ### Database changes are migrations + queries, in that order
 
 1. Add a new `db/migrations/NNN_<name>.sql` (goose-style).

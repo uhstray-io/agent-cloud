@@ -27,7 +27,7 @@ The `deploy.sh` in this directory is **container lifecycle only** — no secret 
 
 ```bash
 # Prereqs
-go install github.com/a-h/templ/cmd/templ@v0.2.793
+go install github.com/a-h/templ/cmd/templ@v0.3.1020
 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 go install github.com/pressly/goose/v3/cmd/goose@v3.27.1
 go install github.com/air-verse/air@latest

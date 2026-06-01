@@ -223,7 +223,7 @@ jobs:
           cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
 
       - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.2.793
+        run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
 
       - name: Install sqlc
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
@@ -315,7 +315,7 @@ jobs:
 
       - name: Install templ + sqlc
         run: |
-          go install github.com/a-h/templ/cmd/templ@v0.2.793
+          go install github.com/a-h/templ/cmd/templ@v0.3.1020
           go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
       - name: Generate code

@@ -118,7 +118,11 @@ templ GeneratePage(d GeneratePageData) {
 				</button>
 				if !d.IsAuthenticated {
 					<p class="text-xs text-[var(--color-fg-muted)]">
-						Guests can generate too — <a href="/account/sign-up" class="underline">sign up free</a> for shorter wait times and saved history.
+						// templ v0.3 parses a content text-run that begins with a Go keyword
+						// (for/if/switch) as control flow — even directly after an inline
+						// element. The "for …" copy after </a> must be a string literal so it
+						// stays text. (This comment is stripped from generated output.)
+						Guests can generate too — <a href="/account/sign-up" class="underline">sign up free</a>{ " for shorter wait times and saved history." }
 					</p>
 				}
 			</form>

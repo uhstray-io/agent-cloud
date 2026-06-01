@@ -8,8 +8,7 @@ FROM golang:1.26-alpine AS tools
 # against the C++ runtime (cxxabi / _Unwind_* symbols) — bare alpine lacks them.
 RUN apk add --no-cache git curl libstdc++ libgcc
 # Pin tool versions — bump deliberately, not opportunistically.
-# templ stays v0.2.793 until the v0.3 codegen/runtime migration lands separately.
-ENV TEMPL_VERSION=v0.2.793 \
+ENV TEMPL_VERSION=v0.3.1020 \
     SQLC_VERSION=v1.31.1   \
     GOOSE_VERSION=v3.27.1
 RUN go install github.com/a-h/templ/cmd/templ@${TEMPL_VERSION} \
