@@ -8,6 +8,8 @@ metadata:
 
 The uhstray-io org's CodeRabbit subscription is **Pro+**, not free. Confirmed from the auto-generated PR comment metadata on 2026-05-29 (`Plan: Pro Plus`).
 
+**UPDATE 2026-06-01:** the team raised the CodeRabbit review limit (per the user). Rate-limit "Insufficient review credits" stalls are now rare — retrigger freely with `@coderabbitai review` between PR iterations rather than pacing/waiting. The recovery procedure below still applies if the cap is ever hit.
+
 **Why:** When a PR shows CodeRabbit status "fail — Insufficient review credits", the instinct is to assume free-tier quota or to top up billing. Neither is usually correct.
 
 **How to apply:**
