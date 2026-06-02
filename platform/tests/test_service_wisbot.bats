@@ -41,10 +41,14 @@ setup() {
   ! grep -qE '\b(gen_secret|put_secret|get_secret|bao_)' "$f"
 }
 
-@test "wisbot: deploy.sh fails fast when the env file is missing" {
-  local f="$DEPLOY_DIR/deploy.sh"
-  grep -q 'config/wisbot.env' "$f"
-  grep -q 'error' "$f"
+@test "wisbot: deploy.sh exits non-zero when config/wisbot.env is missing" {
+  # The runtime env file is templated by Ansible and never committed.
+  [ ! -f "$DEPLOY_DIR/config/wisbot.env" ]
+  # CONTAINER_ENGINE set so detect_runtime returns before any real engine call;
+  # deploy.sh must abort at the env-file check (before pulling images).
+  run env CONTAINER_ENGINE=docker bash "$DEPLOY_DIR/deploy.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"config/wisbot.env"* ]]
 }
 
 @test "wisbot: env template references the token via secrets.* (no literal value)" {
