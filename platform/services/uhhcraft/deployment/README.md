@@ -121,15 +121,15 @@ No DB migration, no Go change.
 
 ## Outstanding integration items
 
-These are tracked in [`../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md):
+Tracked in [`../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
 
-- **Phase 3:** OpenBao policy + AppRole for UhhCraft.
-- **Phase 4:** `deploy-uhhcraft.yml` Ansible playbook + composable tasks.
-- **Phase 5:** Caddy `sites/*.caddy` import pattern + reload task.
-- **Phase 6:** Proxmox VM provisioning.
-- **Phase 7:** Semaphore templates.
-- **Phase 8:** CI extensions (Go / templ / sqlc / gosec).
-- **Two app subcommands** the Dockerfile and `compose.yml` assume but the source may not have yet: `./uhhcraft healthcheck` (used by container `HEALTHCHECK`) and `./uhhcraft river migrate-up` (used by `post-deploy.sh`). Add to `cmd/server/main.go` early in implementation.
+The remaining item is **Phase 10 — validation** (hardware-gated):
+
+- Branch-deploy to the real `uhhcraft` / `inference-comfyui` / `inference-hunyuan3d` / `caddy` VMs and walk the happy path (catalog → generate → 3D → cart → Stripe test → order → webhook → fulfillment).
+- `validate-all.yml` green on all four hosts; `uhhcraft.uhstray.io` served behind central Caddy with a valid cert.
+- Exercise the rollback procedure (above) at least once.
+
+Open decisions feeding Phase 10: Stripe test-vs-live mode, CSP for the Three.js/WASM 3D canvas, container registry (GHCR vs Harbor), and the GPU-passthrough §1 host decision (`../../../../plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`).
 
 ## Related
 
