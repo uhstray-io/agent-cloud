@@ -29,13 +29,13 @@ Migration numbers are zero-padded three digits, sequential, never renumbered.
 
 ### River queue
 
-River (`riverqueue/river`) runs in-process. Its tables are managed by `river migrate-up`, invoked from `deployment/post-deploy.sh`. The Go app exposes (or **should** expose; see the deployment README outstanding-items list) `./uhhcraft river migrate-up` as a subcommand.
+River (`riverqueue/river`) runs in-process. Its tables are managed by `river migrate-up`, invoked from `deployment/post-deploy.sh`. The Go app exposes `./uhhcraft river migrate-up` as a subcommand (`cmd/server/main.go`).
 
 Do not call River's migration tool directly from `make` recipes — it diverges from prod.
 
 ### Healthcheck subcommand
 
-`deployment/compose.yml` references `/app/uhhcraft healthcheck`. The Go binary must implement this subcommand: a single HTTP GET to its own `/healthz` returning exit code 0 on 200, 1 otherwise. Add if missing.
+`deployment/compose.yml` references `/app/uhhcraft healthcheck`. The Go binary implements this subcommand (`cmd/server/main.go`): a single HTTP GET to its own `/healthz` returning exit code 0 on 200, 1 otherwise.
 
 ### Secrets
 
