@@ -138,6 +138,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `update-proxmox-token.yml` | Update Proxmox API token in OpenBao |
 | `apply-openbao-policies.yml` | Apply all OpenBao policies from .hcl files |
 | `apply-policy-orb-agent.yml` | Apply orb-agent policy |
+| `provision-orb-agent-approle.yml` | Provision the dedicated orb-agent AppRole + policy (from `orb-agent.hcl`) and store creds at `secret/services/approles/orb-agent` |
 | `apply-policy-semaphore.yml` | Apply Semaphore policy |
 | `apply-policy-nemoclaw.yml` | Apply NemoClaw policy |
 | `apply-policy-uhhcraft.yml` | Apply UhhCraft policy (reserved) |
