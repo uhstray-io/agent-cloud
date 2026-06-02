@@ -1,0 +1,115 @@
+---
+# deploy-wisbot.yml — Deploy WisBot (Discord agent) via the composable pattern.
+#
+# Phase 1: Clone monorepo, fetch the Discord token from OpenBao + template the
+#          site config -> agents/wisbot/deployment/config/wisbot.env
+# Phase 2: Run deploy.sh (pull image, start container)
+# Phase 3: Verify the /health endpoint
+#
+# WisBot lives under agents/ (not platform/services/), so manage-secrets is
+# pointed at its template dir via _templates_src.
+
+- name: "Deploy WisBot — secrets and config"
+  hosts: wisbot_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # WisBot is under agents/ — point manage-secrets at its template directory.
+    _templates_src: "{{ playbook_dir }}/../../agents/wisbot/deployment/templates"
+    # Site config consumed by wisbot.env.j2 (from site-config inventory host vars).
+    _wisbot_guild_id: "{{ wisbot_guild_id }}"
+    _wisbot_ollama_endpoint: "{{ wisbot_ollama_endpoint | default('http://localhost:11434') }}"
+    _wisbot_ollama_model: "{{ wisbot_ollama_model | default('llama3') }}"
+    _secret_definitions:
+      - { name: discord_token, type: user }
+    _env_templates:
+      - { src: wisbot.env.j2, dest: config/wisbot.env, mode: "0600" }
+  tasks:
+    - name: "Require inventory vars"
+      ansible.builtin.assert:
+        that:
+          - wisbot_guild_id is defined
+          - monorepo_deploy_path is defined
+          - monorepo_repo is defined
+        fail_msg: "wisbot_guild_id, monorepo_deploy_path and monorepo_repo must be set in inventory."
+
+    - name: "Install git if needed"
+      ansible.builtin.apt:
+        name: git
+        state: present
+      become: true
+
+    - name: "Clone or update agent-cloud monorepo"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ _branch }}"
+        force: true
+
+    - name: "Manage secrets and template wisbot.env"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Ensure Discord token is present (seed secret/services/wisbot first)"
+      ansible.builtin.assert:
+        that:
+          - _resolved.discord_token | default('') | length > 0
+        fail_msg: >-
+          discord_token is empty in OpenBao secret/services/wisbot — seed it before
+          deploying (type: user is operator-managed and never auto-generated).
+
+- name: "Deploy WisBot — start container"
+  hosts: wisbot_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: "Run deploy.sh (container lifecycle only)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('') }}"
+        CLONE_DIR: "{{ _monorepo_dir }}"
+        WISBOT_URL: "{{ service_url | default('http://localhost:8080') }}"
+      register: _wisbot_deploy
+      changed_when: true
+
+    - name: "Deploy output"
+      ansible.builtin.debug:
+        var: _wisbot_deploy.stdout_lines
+
+- name: "Deploy WisBot — verify health"
+  hosts: wisbot_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require service_url"
+      ansible.builtin.assert:
+        that:
+          - service_url is defined
+          - service_url | length > 0
+        fail_msg: "service_url must be set in inventory to verify WisBot health."
+
+    - name: "Health check /health"
+      ansible.builtin.uri:
+        url: "{{ service_url }}/health"
+        method: GET
+        status_code: [200]
+        validate_certs: false
+        timeout: 10
+      register: _wisbot_health
+      retries: 6
+      delay: 10
+      until: _wisbot_health is succeeded
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "WisBot healthy at {{ service_url }}"

@@ -87,6 +87,23 @@
       ansible.builtin.debug:
         msg: "NetBox: {{ 'HEALTHY' if netbox_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate WisBot"
+  hosts: wisbot_svc
+  gather_facts: false
+  tasks:
+    - name: Check WisBot health
+      ansible.builtin.uri:
+        url: "{{ service_url }}/health"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: wisbot_health
+      ignore_errors: true
+
+    - name: Report WisBot status
+      ansible.builtin.debug:
+        msg: "WisBot: {{ 'HEALTHY' if wisbot_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Summary"
   hosts: localhost
   connection: local
