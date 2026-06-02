@@ -76,6 +76,16 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy WisBot
+    playbook: platform/playbooks/deploy-wisbot.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
@@ -143,6 +153,16 @@ templates:
 
   - name: Clean Deploy UhhCraft
     playbook: platform/playbooks/clean-deploy-uhhcraft.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy WisBot
+    playbook: platform/playbooks/clean-deploy-wisbot.yml
     survey_vars:
       - name: service_branch
         title: "Branch"

@@ -1,0 +1,18 @@
+---
+# clean-deploy-wisbot.yml — Destroy and redeploy WisBot from scratch.
+#
+# WARNING: Destroys the WisBot container, its volumes (SQLite DB + recordings),
+# and the monorepo clone, then runs a fresh deploy-wisbot.yml.
+
+- name: "Clean WisBot deployment"
+  hosts: wisbot_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+  tasks:
+    - name: "Destroy containers, volumes, and clone"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-wisbot.yml
