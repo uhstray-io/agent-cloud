@@ -18,6 +18,16 @@ Do not present a preset as if it's the only option, and never adopt one without 
 
 ---
 
+## Infrastructure presets
+
+These sit **above** the base presets — they decide where the site runs and how it ships, not what's in the source tree.
+
+| Preset | Best for | Headline tradeoffs |
+|--------|----------|--------------------|
+| [`agent-cloud-preset.md`](./agent-cloud-preset.md) | Sites landing inside the agent-cloud monorepo | Pre-decides every infra question (Postgres + Podman + central Caddy + OpenBao + Semaphore + dedicated Proxmox VM); requires platform-shape ops |
+
+If the agent-cloud preset doesn't apply, the site runs on whatever hosting the chosen base preset recommends.
+
 ## Base presets
 
 | Preset | Best for | Headline tradeoffs |
@@ -44,6 +54,7 @@ Do not present a preset as if it's the only option, and never adopt one without 
 
 ## Choosing a preset — quick rubric
 
+- **Site is going into the agent-cloud monorepo** → start with `agent-cloud-preset`, then layer a base preset for the language/framework
 - **Static, mostly-content site, single team, low ops appetite** → `astro-static`
 - **Dynamic SaaS with auth and billing** → `nextjs-typescript` or `sveltekit`
 - **CRUD-heavy app, solo founder or small team** → `rails` or `django`
