@@ -182,6 +182,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 |----------|----------|---------|
 | Deploy NetBox | `deploy-netbox.yml` | 5-phase: secrets → containers → app config → Diode creds → verify |
 | Deploy Orb Agent | `deploy-orb-agent.yml` | Standalone: Diode creds + agent.yaml template + start agent |
+| Provision Orb Agent AppRole | `provision-orb-agent-approle.yml` | Code-managed: scoped policy + AppRole from `orb-agent.hcl`, creds → `secret/services/approles/orb-agent` |
 | Clean Deploy NetBox | `clean-deploy-netbox.yml` | Destructive: wipe volumes + fresh deploy |
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | Deploy keys from OpenBao, verify key auth |
 | Harden SSH | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown (after key verification) |
@@ -211,7 +212,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 ### In Progress
 - NocoDB and n8n deployment via composable pattern
 - pfSense sync as independent scheduled workflow (every 15 min)
-- Dedicated orb-agent AppRole (currently using Semaphore's)
+- Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
 
 ### Planned
 - **Phase 1**: NemoClaw task automation

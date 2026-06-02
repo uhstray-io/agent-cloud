@@ -208,6 +208,9 @@ templates:
   - name: Apply Policy - Orb Agent
     playbook: platform/playbooks/apply-policy-orb-agent.yml
 
+  - name: Provision AppRole - Orb Agent
+    playbook: platform/playbooks/provision-orb-agent-approle.yml
+
   - name: Apply Policy - Semaphore
     playbook: platform/playbooks/apply-policy-semaphore.yml
 

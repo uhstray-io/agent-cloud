@@ -1,0 +1,35 @@
+---
+# provision-orb-agent-approle.yml — Provision the dedicated orb-agent AppRole
+#
+# Creates (or updates) the orb-agent OpenBao policy + AppRole and stores its
+# role_id/secret_id at secret/services/approles/orb-agent. This is the
+# code-managed provisioning that deploy-orb-agent.yml's "Fetch orb-agent
+# AppRole credentials" step depends on — previously that AppRole had to be
+# created by hand. The orb-agent's runtime vault access then uses ITS OWN
+# scoped AppRole (read-only on netbox + discovery/*), not Semaphore's broad one.
+#
+# The policy is single-sourced from config/policies/orb-agent.hcl — the same
+# file apply-policy-orb-agent.yml applies — so the AppRole's scope and the
+# standalone policy can never drift.
+#
+# The admin creds used to run this (BAO_ROLE_ID / BAO_SECRET_ID) are
+# Semaphore's AppRole; its policy already grants sys/policies/acl/* and
+# auth/approle/role/* for exactly this provisioning (see CLAUDE.md, AppRole
+# Management). Run it once at setup and again only to rotate the secret_id.
+#
+# Run via Semaphore: "Provision AppRole - Orb Agent", or directly:
+#   BAO_ROLE_ID=... BAO_SECRET_ID=... ansible-playbook provision-orb-agent-approle.yml
+
+- name: "Provision orb-agent AppRole and policy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR')) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _approle_name: "orb-agent"
+    _approle_policy: "{{ lookup('file', playbook_dir ~ '/../services/openbao/deployment/config/policies/orb-agent.hcl') }}"
+  tasks:
+    - name: "Create/update the orb-agent AppRole + policy"
+      ansible.builtin.include_tasks: tasks/manage-approle.yml
