@@ -31,5 +31,17 @@
     _approle_name: "orb-agent"
     _approle_policy: "{{ lookup('file', playbook_dir ~ '/../services/openbao/deployment/config/policies/orb-agent.hcl') }}"
   tasks:
+    - name: "Validate OpenBao connection and admin auth inputs are set"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _bao_role_id | length > 0
+          - _bao_secret_id | length > 0
+        fail_msg: >-
+          Missing OpenBao inputs — set openbao_addr/bao_role_id/bao_secret_id
+          (or OPENBAO_ADDR/BAO_ROLE_ID/BAO_SECRET_ID in the environment). These
+          are normally injected by Semaphore's environment.
+        quiet: true
+
     - name: "Create/update the orb-agent AppRole + policy"
       ansible.builtin.include_tasks: tasks/manage-approle.yml
