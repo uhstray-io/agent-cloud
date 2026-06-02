@@ -1,0 +1,22 @@
+services:
+  wisbot:
+    image: ghcr.io/uhstray-io/wisbot:${WISBOT_IMAGE_TAG:-latest}
+    container_name: agent-wisbot
+    env_file:
+      - ./config/wisbot.env
+    ports:
+      - "${WISBOT_LISTEN:-127.0.0.1}:8080:8080"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - wisbot_data:/app/data
+      - wisbot_recordings:/app/recordings
+
+volumes:
+  wisbot_data:
+  wisbot_recordings:
