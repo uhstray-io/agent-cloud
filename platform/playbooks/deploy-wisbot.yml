@@ -55,6 +55,14 @@
     - name: "Manage secrets and template wisbot.env"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    - name: "Ensure Discord token is present (seed secret/services/wisbot first)"
+      ansible.builtin.assert:
+        that:
+          - _resolved.discord_token | default('') | length > 0
+        fail_msg: >-
+          discord_token is empty in OpenBao secret/services/wisbot — seed it before
+          deploying (type: user is operator-managed and never auto-generated).
+
 - name: "Deploy WisBot — start container"
   hosts: wisbot_svc
   gather_facts: false
@@ -83,6 +91,13 @@
   gather_facts: false
   become: false
   tasks:
+    - name: "Require service_url"
+      ansible.builtin.assert:
+        that:
+          - service_url is defined
+          - service_url | length > 0
+        fail_msg: "service_url must be set in inventory to verify WisBot health."
+
     - name: "Health check /health"
       ansible.builtin.uri:
         url: "{{ service_url }}/health"
@@ -94,8 +109,7 @@
       retries: 6
       delay: 10
       until: _wisbot_health is succeeded
-      when: service_url is defined
 
     - name: "Report"
       ansible.builtin.debug:
-        msg: "WisBot healthy at {{ service_url | default('N/A') }}"
+        msg: "WisBot healthy at {{ service_url }}"
