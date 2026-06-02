@@ -66,6 +66,7 @@ plan/                        Architecture, implementation, and composability pla
 
 - `platform/services/netbox/deployment/CLAUDE.md` — NetBox + Diode discovery pipeline
 - `agents/nemoclaw/deployment/CLAUDE.md` — NemoClaw agent deployment
+- `agents/wisbot/deployment/CLAUDE.md` — WisBot Discord agent deployment (pulls prebuilt GHCR image)
 - `agents/websmith/CLAUDE.md` — WebSmith website-building agent (prompt-only; produces signed SPEC.md per site)
 - `platform/services/uhhcraft/CLAUDE.md` — UhhCraft storefront (first WebSmith-built site)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
