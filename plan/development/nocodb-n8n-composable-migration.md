@@ -2,7 +2,7 @@
 title: NocoDB & n8n Composable Deployment Migration
 authors: ["@jestyr27"]
 date: 2026-05-10
-status: Draft
+status: Draft — EXECUTION HELD (see "Migration Safety" below)
 tags: [nocodb, n8n, composable-deployment, ansible, openbao]
 ---
 
@@ -13,6 +13,31 @@ tags: [nocodb, n8n, composable-deployment, ansible, openbao]
 ## Problem
 
 NocoDB and n8n currently use legacy deploy scripts that generate secrets in bash and store them in `secrets/` directories on disk. This violates the composable deployment pattern where OpenBao is the single source of truth for credentials.
+
+## Migration Safety — preserving existing stateful secrets (READ FIRST)
+
+> **Status: execution HELD as of 2026-06-02.** These services are **already deployed and in use**, so this is an *in-place migration of live state*, not a greenfield deploy. Several secrets are **stateful** — regenerating them on cutover causes data loss or breakage, not just a rotation:
+>
+> | Secret | If regenerated on a live service |
+> |--------|----------------------------------|
+> | **n8n `N8N_ENCRYPTION_KEY`** | **All stored workflow credentials become permanently undecryptable.** Unrecoverable. |
+> | NocoDB `NC_AUTH_JWT_SECRET` | All existing sessions/JWTs invalidated (users logged out; any JWT-derived state broken). |
+> | Postgres passwords (nocodb pg; n8n admin + non-root) | The running Postgres was *initialised* with the current password — a new one fails auth against the existing data volume. |
+>
+> The task plan below uses `_secret_definitions: type: random`, which `manage-secrets.yml` only generates **when the key is absent** at its OpenBao path. That is correct for a clean deploy, but on an in-place migration it will regenerate every secret that isn't already present *at the exact path/key-name `manage-secrets.yml` reads* (`secret/services/<svc>`, keyed by the `_secret_definitions` `name`). The legacy `deploy.sh` stored these under a VM-local `secrets/` dir and under different OpenBao keys — so a naive first run **would** regenerate them.
+>
+> **Therefore execution is held until we can read the live OpenBao + VM secret state** and complete the prerequisite below. Do NOT run Task 1+ against a live nocodb/n8n host before that.
+
+### Task 0 (prerequisite, on the live cluster): capture and pre-seed existing secrets
+
+Before the first composable deploy of an existing service:
+
+1. On the live VM, read the current values from `config/<svc>.env` (and/or the legacy `secrets/` dir): for n8n — `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD`, `POSTGRES_NON_ROOT_PASSWORD`; for nocodb — the `NC_DB`/`POSTGRES_PASSWORD` and `NC_AUTH_JWT_SECRET`.
+2. Write each into OpenBao at the **exact** path + key the new `_secret_definitions` expect (`secret/data/services/<svc>` with keys `postgres_password`, `jwt_secret`, `encryption_key`, `user_password`, …). `tasks/seed-discovery-credentials.yml` is the existing pattern for idempotent copy-into-OpenBao.
+3. Verify with `check-secrets.yml` that every `type: random` definition resolves to a **pre-existing** value, so the first `manage-secrets.yml` run *fetches* rather than *generates*.
+4. Only then run `deploy-<svc>.yml`. Diff the rendered `.env` against the current one before `compose up` to confirm no stateful value changed.
+
+(For a genuinely fresh host with no data, Task 0 is a no-op and `type: random` correctly generates.)
 
 ## Design Principles
 
@@ -1156,3 +1181,4 @@ Total: 7 files created, 5 files modified, 9 commits.
 | Date | Change |
 | --- | --- |
 | 2026-05-10 | Initial creation. 9-task migration plan for NocoDB and n8n composable deployments. |
+| 2026-06-02 | Added "Migration Safety" + Task 0 (pre-seed existing stateful secrets) after an audit found the `type: random` definitions would regenerate the live n8n encryption key / NocoDB JWT / Postgres passwords on cutover. Status set to EXECUTION HELD pending live OpenBao access to complete Task 0. |

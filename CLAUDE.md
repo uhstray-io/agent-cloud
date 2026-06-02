@@ -208,10 +208,10 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **Semaphore pipeline** — 25+ task templates, SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
+- **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 
 ### In Progress
-- NocoDB and n8n deployment via composable pattern
-- pfSense sync as independent scheduled workflow (every 15 min)
+- NocoDB and n8n deployment via composable pattern — both are deployed today via the **legacy** `deploy.sh` path (bash-generated secrets in an on-VM `secrets/` dir). Migration to the composable pattern is planned in `plan/development/nocodb-n8n-composable-migration.md` but **execution is HELD**: it's an in-place migration of live services with stateful secrets (n8n `N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) that must be pre-seeded into OpenBao before cutover or they'd be regenerated — needs live OpenBao access first (see that plan's "Migration Safety").
 - Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
 
 ### Planned
