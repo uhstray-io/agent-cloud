@@ -28,7 +28,7 @@ The framework's own KICKSTART.md tells users to build their site in a **separate
 - **Implementation** lands in `platform/services/<sitename>/deployment/`, following the composable pattern documented in `plan/architecture/AUTOMATION-COMPOSABILITY.md`.
 - **Do not** write spec files into `agents/websmith/`. WebSmith holds the workflow; concrete sites live under `platform/services/`.
 
-[`agents/websmith/context/architecture/integration-with-agent-cloud.md`](./context/architecture/integration-with-agent-cloud.md) is the authoritative reference for this override. (The file is currently a skeleton; Phase 11 will fill it in with the full second-site recipe.)
+[`agents/websmith/context/architecture/integration-with-agent-cloud.md`](./context/architecture/integration-with-agent-cloud.md) is the authoritative reference for this override — the full second-site recipe (standard service/playbook/Caddy/OpenBao/Semaphore/inventory/CI shapes + the 16-step implementation checklist).
 
 ## The agent-cloud preset (Phase 3 — Tooling)
 
@@ -45,7 +45,7 @@ When a WebSmith session reaches Phase 3 (Tooling), surface these defaults derive
 | Hosting | Dedicated Proxmox VM per service | `platform/hypervisor/proxmox/` |
 | SSH | Per-service ed25519 key from OpenBao | `distribute-ssh-keys.yml` + `harden-ssh.yml` |
 
-Any deviation a user requests from this preset must be captured in the site's `SPEC.md` under a `## Deviations from agent-cloud preset` section.
+Any deviation a user requests from this preset must be captured in the site's `SPEC.md` under its `## Alignment with agent-cloud conventions` section (for integration-time adjustments) or `## Tracking future deviations` (for changes after signoff) — the same canonical headings UhhCraft's SPEC uses.
 
 ## Operating principles inside this directory
 

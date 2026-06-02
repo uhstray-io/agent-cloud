@@ -19,6 +19,7 @@ Principles, alternatives, and trade-offs for choosing a stack during phase 3 (to
 3. **Match operational appetite.** Serverless minimizes ops; self-hosted maximizes control; managed platforms balance both.
 4. **Minimize lock-in proportional to switching cost.** Lock-in is fine when the trade is worth it.
 5. **Boring beats clever** unless cleverness pays for itself.
+6. **Inherit infra opinions when you can.** If the site is going into the agent-cloud monorepo, start with [`stack-presets/agent-cloud-preset.md`](./stack-presets/agent-cloud-preset.md) — it pre-decides every infra question the platform already has a strong answer for. Then pick a base preset for the language/framework. The agent-cloud preset is *not* mutually exclusive with the entries below; it sits above them.
 
 ---
 
