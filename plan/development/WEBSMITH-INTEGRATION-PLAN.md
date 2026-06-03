@@ -520,6 +520,8 @@ kickstart.md                                  + WebSmith + UhhCraft in "Where to
 
 ### Phase 10 — Validation + branch testing + rollback
 
+> **Execution runbook:** [`UHHCRAFT-GO-LIVE-PLAN.md`](UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive, hand-off-ready checklist for this phase (open decisions, full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and open gaps). Phase 10 is hardware-gated; the runbook is what an operator/agent follows against the live cluster. The summary below is retained for context.
+
 **Goal:** End-to-end smoke before merging anything to main.
 
 **Work items:**
