@@ -186,7 +186,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 - [ ] `validate-all.yml` green on all four hosts.
 - [ ] Happy-path smoke (Section D) fully passed.
 - [ ] Rollback drill (Section E) exercised + documented.
-- [ ] `/security-review` run on the full live diff (per the plan's Phase 10 work items).
+- [ ] `/simplify` and `/security-review` run on the full live diff before merge (per the repo branch workflow in root `CLAUDE.md`).
 - [ ] `WEBSMITH-INTEGRATION-PLAN.md` §6 boxes checked; mark Phase 10 complete and update root `CLAUDE.md` deployment status.
 
 ---
