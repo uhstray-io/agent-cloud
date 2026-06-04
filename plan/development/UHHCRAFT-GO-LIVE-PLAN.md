@@ -1,7 +1,7 @@
 ---
 title: UhhCraft Go-Live — Phase 10 Production Validation Plan
 date: 2026-06-02
-status: ACTIVE — execution pending hardware + decisions
+status: ACTIVE
 audience: operator running Semaphore against the live cluster, and any agent preparing/triaging the rollout
 tags: [uhhcraft, inference-comfyui, inference-hunyuan3d, caddy, phase-10, go-live, validation, proxmox, openbao]
 ---
@@ -11,6 +11,8 @@ tags: [uhhcraft, inference-comfyui, inference-hunyuan3d, caddy, phase-10, go-liv
 This is the **single, comprehensive checklist** for taking the UhhCraft platform (the `uhhcraft` storefront + the `inference-comfyui` and `inference-hunyuan3d` GPU sidecars, fronted by central Caddy) from "all code merged" to "live, validated, and signed off." It is **Phase 10** of [`WEBSMITH-INTEGRATION-PLAN.md`](WEBSMITH-INTEGRATION-PLAN.md) — the only remaining substantive phase.
 
 > **Why this doc exists:** every prior phase (1–9, 11) was code/docs that merged through CI. Phase 10 is different — it can only be completed against **real hardware**, and it depends on a few **human decisions** and a **provisioning chain** that must happen in order. This document makes all of that explicit so nothing is missed and so the work can be handed to another agent or operator succinctly.
+
+> **Running it as a live session?** Use the step-by-step **[`UHHCRAFT-GO-LIVE-WALKTHROUGH.md`](UHHCRAFT-GO-LIVE-WALKTHROUGH.md)** — the sequential `[YOU]`/`[CLAUDE]` operator script with hand-off cues. This doc is the reference (the *what*); the walkthrough is the *how-we-execute-together*.
 
 ---
 

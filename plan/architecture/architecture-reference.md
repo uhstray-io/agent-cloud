@@ -154,6 +154,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [ARCHITECTURE-REVIEW-FOLLOWUP.md](../development/ARCHITECTURE-REVIEW-FOLLOWUP.md) | TODO | Deferred items from the 2026-05-07 architecture review. |
 | [WEBSMITH-INTEGRATION-PLAN.md](../development/WEBSMITH-INTEGRATION-PLAN.md) | ACTIVE | 11-phase integration of the WebSmith agent + UhhCraft platform service into agent-cloud (Phases 1–9 + 11 merged; only Phase 10 go-live pending). |
 | [UHHCRAFT-GO-LIVE-PLAN.md](../development/UHHCRAFT-GO-LIVE-PLAN.md) | ACTIVE | Phase 10 production-validation runbook: decisions, provisioning chain, deploy sequence, smoke + rollback, Definition of Done. Execution pending hardware. |
+| [UHHCRAFT-GO-LIVE-WALKTHROUGH.md](../development/UHHCRAFT-GO-LIVE-WALKTHROUGH.md) | ACTIVE | Step-by-step operator session script for the go-live: sequential [YOU]/[CLAUDE] steps with hand-off cues. Companion to the go-live plan. |
 | [UHHCRAFT-GPU-PASSTHROUGH.md](../development/UHHCRAFT-GPU-PASSTHROUGH.md) | PLANNING | Proxmox PCIe passthrough procedure for the two inference VMs. §1 decision pending. |
 
 ### Archived Plans
