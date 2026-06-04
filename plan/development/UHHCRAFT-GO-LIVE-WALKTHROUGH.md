@@ -1,7 +1,7 @@
 ---
 title: UhhCraft Go-Live — Session Walkthrough (You + Claude)
 date: 2026-06-04
-status: ACTIVE — ready to run
+status: ACTIVE
 audience: the operator (you) running this go-live in a live session with Claude
 companion_to: UHHCRAFT-GO-LIVE-PLAN.md
 tags: [uhhcraft, go-live, phase-10, walkthrough, runbook, operator]
@@ -161,11 +161,13 @@ Walk the plan §D checklist together: catalog → generate (ComfyUI) → 3D (Hun
 | 10 Sign-off | final approval | update plan/status docs |
 
 ## Cross-references
+
 - [`UHHCRAFT-GO-LIVE-PLAN.md`](UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive reference (decisions, secret table, deploy sequence, smoke checklist, DoD, gaps).
 - [`UHHCRAFT-GPU-PASSTHROUGH.md`](UHHCRAFT-GPU-PASSTHROUGH.md) — GPU step detail (Step 3).
 - Root [`CLAUDE.md`](../../CLAUDE.md) — Operational Access (using site-config creds) + Semaphore-only deploy rule.
 
 ## Revision history
+
 | Date | Change |
 | --- | --- |
 | 2026-06-04 | Initial session walkthrough — sequential [YOU]/[CLAUDE] steps with hand-off cues, companion to UHHCRAFT-GO-LIVE-PLAN.md. |

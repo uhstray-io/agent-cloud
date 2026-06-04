@@ -1,7 +1,7 @@
 ---
 title: UhhCraft Go-Live — Phase 10 Production Validation Plan
 date: 2026-06-02
-status: ACTIVE — execution pending hardware + decisions
+status: ACTIVE
 audience: operator running Semaphore against the live cluster, and any agent preparing/triaging the rollout
 tags: [uhhcraft, inference-comfyui, inference-hunyuan3d, caddy, phase-10, go-live, validation, proxmox, openbao]
 ---
