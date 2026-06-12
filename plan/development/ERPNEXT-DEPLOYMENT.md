@@ -1017,7 +1017,7 @@ ${CONTAINER_ENGINE} run --rm \
     mc rm -r --force --older-than 30d local/${BACKUP_BUCKET}/nightly || true
   "
 
-if [ -n "${PEER_MINIO_URL:-}" ] && [ -n "${PEER_BACKUP_KEY:-}" ]; then
+if [ -n "${PEER_MINIO_URL:-}" ] && [ -n "${PEER_BACKUP_KEY:-}" ] && [ -n "${PEER_BACKUP_SECRET:-}" ]; then
   info "Step 4: cross-mirror to peer (${PEER_MINIO_URL}) via restricted backup-writer..."
   ${CONTAINER_ENGINE} run --rm \
     -v "${SITES_VOL}:/sites:ro" \
@@ -1383,7 +1383,7 @@ def scrub(value: str) -> str:
 import pytest
 from fastapi.testclient import TestClient
 
-from gate.app.redaction import scrub
+from app.redaction import scrub
 
 PLANTED = [
     "jane.doe@example.com", "+1 (555) 867-5309", "123-45-6789",
