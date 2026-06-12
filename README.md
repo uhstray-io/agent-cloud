@@ -42,6 +42,10 @@ Or via Semaphore (production):
 2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
 3. Semaphore clones the repo, SSHes to the target VM, runs `deploy.sh`
 
+### Local Development (planned)
+
+A laptop-resident dev instance is specified in `plan/development/LOCAL-DEV-DEPLOYMENT.md`: **make bootstraps, Semaphore operates** — `make local-init && make local-bootstrap` provisions the engines, a dev-mode OpenBao (fake credentials only), and a local Semaphore; every service after that deploys through local Semaphore templates running the same composable playbooks as production. Changes validated locally promote through the branch cycle below.
+
 ### Composable Deploy Pattern
 
 Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
@@ -78,6 +82,8 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
+| **ERPNext** *(planned)* | Financial system of record -- dev/prod VMs, cutover books, read-only MCP for Claude Desktop/Cowork |
+| **llm-gate** *(planned)* | Multi-tenant LLM egress gate -- holds the platform's only Anthropic API key; per-tenant allowlists, PII scrubbing, budget ledgers |
 
 ## Repository Structure
 
@@ -169,12 +175,16 @@ Detailed architecture and planning documents live in `plan/`:
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
 | `plan/development/IMPLEMENTATION_PLAN.md` | Full implementation plan (phases, architecture, decisions) |
 | `plan/development/NETBOX-DISCOVERY-EXPANSION.md` | Discovery pipeline architecture (Proxmox, pfSense, SNMP, LLDP) |
+| `plan/development/ERPNEXT-DEPLOYMENT.md` | ERPNext + three-plane LLM integration (local inference, read-only MCP, llm-gate) |
+| `plan/development/LOCAL-DEV-DEPLOYMENT.md` | Local dev deployment + promotion pipeline (make bootstraps, Semaphore operates) |
 
 For new services, start with `plan/architecture/SERVICE-INTEGRATION-PLAN.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
 
 ## CI/CD and Testing
 
-Every pull request to main runs three automated checks:
+**Promotion cycle:** `<feature-branch>` → `dev` → `main` (production). Feature branches PR into the permanent `dev` integration branch; validated changes promote to `main` via a `dev` → `main` PR. Nothing pushes directly to either branch.
+
+Every pull request into `dev` or `main` runs three automated checks:
 
 | Job | Tools | What it catches |
 |-----|-------|-----------------|

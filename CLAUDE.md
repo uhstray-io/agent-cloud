@@ -83,6 +83,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
 - `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
+- `plan/development/ERPNEXT-DEPLOYMENT.md` — ERPNext + three-plane LLM integration (PROPOSED): dev/prod VMs, cutover books, read-only MCP, llm-gate platform service
+- `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev deployment + promotion pipeline (PROPOSED): make bootstraps / Semaphore operates, slim overlays, risk-classed promotion
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
@@ -199,6 +201,16 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **Podman**: All other services (rootless, security-focused)
 - Set `container_engine` in the site-config inventory per host
 
+## Local Development
+
+A laptop-resident instance of the platform is specified in `plan/development/LOCAL-DEV-DEPLOYMENT.md` (PROPOSED). The paradigm: **make bootstraps, Semaphore operates** — the Makefile provisions initial resources only (engines, dev-mode OpenBao seeded with `LOCAL_FAKE_`-prefixed credentials, a local Semaphore with templates registered from `templates.yml` + `templates-local.yml`); every platform after that stands up through local Semaphore templates running the unchanged composable playbooks. Key rules:
+
+- Engine split mirrors prod: podman machine default; Docker Desktop only for root-requiring services (NetBox app tier)
+- Per-service `compose.local.yml` slim overlays (resource caps, trimmed workers/sidecars, loopback ports) applied by the shared `compose` wrapper only in `local_mode` — never fork base compose files
+- Local inventory: `platform/inventory/local-dev.yml.example` (committed, localhost-only) copied to a gitignored working file; no real values ever exist on the laptop
+- Critical Rule #1 becomes code: `tasks/assert-orchestrated.yml` refuses deploys outside a Semaphore environment (prod or local); bootstrap exemption scoped to `bootstrap-local-dev.yml` by name
+- Owned GHCR images publish multi-arch (arm64+amd64) manifests so Apple Silicon machines run native
+
 ## Deployment Status
 
 ### Completed
@@ -215,6 +227,8 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
 
 ### Planned
+- **Local dev deployment + promotion pipeline** — `plan/development/LOCAL-DEV-DEPLOYMENT.md` (PROPOSED): laptop-resident platform driven by a local Semaphore; rehearses the held NocoDB/n8n migration as a side effect
+- **ERPNext + three-plane LLM integration** — `plan/development/ERPNEXT-DEPLOYMENT.md` (PROPOSED): financial system of record (dev + prod VMs, cutover books), read-only MCP for Claude Desktop/Cowork, and **llm-gate** — a multi-tenant platform service on its own VM holding the platform's only Anthropic API key (ERPNext tenant #1, NetClaw #2)
 - **Phase 1**: NemoClaw task automation
 - **Phase 2**: Claude Cowork workflows
 - **Phase 3**: Cross-agent coordination
@@ -228,23 +242,27 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 ### Branch Workflow
 
-**All code changes go through feature branches and pull requests — never push directly to main.**
+**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
-1. Create a feature branch from `main`: `git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
+- `main` is the production branch — Semaphore deploys from it
+- `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `plan/development/LOCAL-DEV-DEPLOYMENT.md` once that lands, and/or via prod branch deploys per `plan/architecture/BRANCH-TESTING-WORKFLOW.md`) before promotion to `main`
+
+1. Create a feature branch from `dev`: `git checkout dev && git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
 2. Commit changes on the feature branch
 3. **Before creating a PR**, update documentation:
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
    - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
 4. Run `/simplify` and `/security-review` on the branch changes
-5. Push the branch: `git push -u origin feat/<description>`
-6. Create a PR via `gh pr create`
+5. Push the branch: `git push -u origin <type>/<description>`
+6. Create a PR **into `dev`**: `gh pr create --base dev`
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
 9. Confirm all checks pass after fixes
-10. Only then merge the PR
+10. Only then merge the PR into `dev`
+11. **Promotion to production**: once the changes on `dev` are validated, open a `dev` → `main` PR — the same checks-complete-and-pass rules apply before merging
 
-**Never merge a PR before its checks have completed and passed.** This applies to all development: new features, bug fixes, plan updates, and documentation changes.
+**Never merge a PR before its checks have completed and passed.** This applies to all development: new features, bug fixes, plan updates, and documentation changes — and to promotion PRs from `dev` to `main`.
 
 ### Mandatory Pre-Push Audit
 
@@ -285,7 +303,7 @@ Key paths:
 
 ## Testing and Linting
 
-Every PR to main is gated by GitHub Actions CI (`.github/workflows/lint-and-test.yml`):
+Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/lint-and-test.yml`):
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
