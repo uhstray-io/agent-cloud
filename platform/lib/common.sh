@@ -58,9 +58,16 @@ detect_runtime() {
 # ── Compose Wrapper ───────────────────────────────────────────────────────────
 
 # compose [args...] — wraps compose with explicit -f to prevent override auto-discovery
+# Local-dev overlay (plan/development/LOCAL-DEV-DEPLOYMENT.md): compose.local.yml
+# is appended only when LOCAL_MODE=true AND the overlay exists on disk.
+# LOCAL_MODE unset or file absent => byte-identical prod behavior.
 compose() {
   detect_runtime
-  $COMPOSE_CMD -f compose.yml "$@"
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
+    $COMPOSE_CMD -f compose.yml -f compose.local.yml "$@"
+  else
+    $COMPOSE_CMD -f compose.yml "$@"
+  fi
 }
 
 # ── Health Waiters ────────────────────────────────────────────────────────────

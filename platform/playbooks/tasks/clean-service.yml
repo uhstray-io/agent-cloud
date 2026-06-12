@@ -34,7 +34,7 @@
 
 - name: "Remove convenience symlink"
   ansible.builtin.file:
-    path: "/home/{{ ansible_user }}/{{ service_name }}"
+    path: "{{ local_home_dir | default('/home/' ~ ansible_user) }}/{{ service_name }}"
     state: absent
 
 - name: "Verify clean"

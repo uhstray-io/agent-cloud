@@ -81,3 +81,32 @@ teardown() {
   run bash -c "source '${BATS_TEST_DIRNAME}/../lib/common.sh' && warn 'test warning' 2>&1 >/dev/null"
   [[ "$output" =~ "WARN" ]]
 }
+
+# ── compose (local-dev overlay) ─────────────────────────────────────
+
+@test "compose: overlay appended only when LOCAL_MODE=true AND compose.local.yml exists" {
+  cd "$TEST_DIR"
+  touch compose.yml
+  # Stub the runtime so compose() echoes its argv instead of invoking an engine
+  detect_runtime() { COMPOSE_CMD="echo"; }
+
+  # No overlay file, no LOCAL_MODE -> base file only
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+
+  # Overlay present but LOCAL_MODE unset -> still base only (prod behavior)
+  touch compose.local.yml
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+
+  # LOCAL_MODE=true + overlay present -> overlay appended
+  export LOCAL_MODE=true
+  run compose up -d
+  [ "$output" = "-f compose.yml -f compose.local.yml up -d" ]
+
+  # LOCAL_MODE=true but overlay absent -> base only
+  rm compose.local.yml
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+  unset LOCAL_MODE
+}

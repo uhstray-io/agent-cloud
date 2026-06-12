@@ -1,0 +1,36 @@
+---
+# assert-orchestrated.yml — Critical Deployment Rule #1 as code.
+#
+# Deploy plays must run under an orchestrated context:
+#   - a Semaphore-injected environment (production Semaphore or the local-dev
+#     Semaphore — both inject the AppRole environment), detected via the
+#     marker variables below, OR
+#   - the scoped bootstrap exemption: a play that sets `_bootstrap_play: true`
+#     in its own committed vars (bootstrap-local-dev.yml only) AND was invoked
+#     with the `bootstrap` tag. The tag alone is NOT sufficient.
+#
+# MARKER IS PROVISIONAL — verify against a real production Semaphore task
+# before wiring this task into deploy playbooks (blocking precondition,
+# plan/development/LOCAL-DEV-DEPLOYMENT.md §11). Override the primary marker
+# via `orchestration_marker_var` once verified.
+#
+# Ships UNWIRED in Phase 0A; wiring happens after marker verification.
+
+- name: "Assert orchestrated context (Critical Rule #1)"
+  ansible.builtin.assert:
+    that:
+      - _orchestrated or _bootstrap_exempt
+    fail_msg: >-
+      Refusing to run: no orchestrated context detected. Deployments run
+      through Semaphore — production or the local-dev instance (CLAUDE.md
+      Critical Deployment Rule #1; plan/development/LOCAL-DEV-DEPLOYMENT.md).
+      Bootstrap plays require BOTH `_bootstrap_play: true` committed in the
+      play AND invocation with `--tags bootstrap`.
+    success_msg: >-
+      Orchestrated context confirmed
+      ({{ 'bootstrap exemption' if _bootstrap_exempt else 'Semaphore environment' }}).
+  vars:
+    _marker_primary: "{{ lookup('ansible.builtin.env', orchestration_marker_var | default('SEMAPHORE_TASK_ID')) }}"
+    _marker_fallback: "{{ lookup('ansible.builtin.env', 'BAO_ROLE_ID') }}"
+    _orchestrated: "{{ (_marker_primary | length > 0) or (_marker_fallback | length > 0) }}"
+    _bootstrap_exempt: "{{ (_bootstrap_play | default(false) | bool) and ('bootstrap' in ansible_run_tags) }}"

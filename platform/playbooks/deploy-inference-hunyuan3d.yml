@@ -15,7 +15,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
@@ -70,7 +70,7 @@
     - name: "Convenience symlink"
       ansible.builtin.file:
         src: "{{ _deploy_dir }}"
-        dest: "/home/{{ ansible_user }}/{{ service_name }}"
+        dest: "{{ local_home_dir | default('/home/' ~ ansible_user) }}/{{ service_name }}"
         state: link
         force: true
       register: _symlink_result
@@ -90,7 +90,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _service_url: "{{ service_url | default('http://localhost:8001') }}"
     _weights_dir: "{{ hunyuan3d_weights_dir | default('/srv/hunyuan3d/weights') }}"
@@ -115,7 +115,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _service_url: "{{ service_url | default('http://localhost:8001') }}"
 
