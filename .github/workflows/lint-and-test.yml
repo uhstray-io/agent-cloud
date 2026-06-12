@@ -341,7 +341,7 @@ jobs:
         # Docker is used in CI (not Podman) — buildx is the path-of-least-resistance
         # for cache and multi-stage builds in GitHub-hosted runners. The runtime
         # in prod is Podman; the resulting image is OCI-compliant and works on either.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: platform/services/uhhcraft/deployment
           file: platform/services/uhhcraft/deployment/Dockerfile
