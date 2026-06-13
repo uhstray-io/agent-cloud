@@ -159,6 +159,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [ERPNEXT-DEPLOYMENT.md](../development/ERPNEXT-DEPLOYMENT.md) | PROPOSED | ERPNext + LLM integration: dev/prod VMs, accounting cutover, backup cross-mirror, read-only MCP, llm-gate service. |
 | [LOCAL-DEV-DEPLOYMENT.md](../development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
 | [DNS-SERVER-DEPLOYMENT.md](../development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
+| [NETBOX-LOCAL-ENGINE.md](../development/NETBOX-LOCAL-ENGINE.md) | PROPOSED | Fix for local NetBox: podman-VM Semaphore can't reach Docker Desktop — run app-tier under podman (profile-gated, discovery excluded). |
 
 ### Archived Plans
 

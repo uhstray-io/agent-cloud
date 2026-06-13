@@ -197,7 +197,7 @@ Loopback ports alone give services addresses, not names. A local DNS server give
 ### Phase 2 — Service coverage, seeds, migration rehearsal
 
 - [ ] **Write** the NocoDB + n8n composable playbooks designed in `nocodb-n8n-composable-migration.md`; deploy greenfield locally via local Semaphore; record findings in that plan (HELD → rehearsed)
-- [ ] NetBox app-only profile under Docker Desktop (discovery/orb-agent excluded by inventory var)
+- [ ] NetBox app-only profile — **engine blocker found + fix planned** (`NETBOX-LOCAL-ENGINE.md`): the podman-VM Semaphore can't reach Docker Desktop (unix socket dead over virtiofs; no TCP daemon), so the robust fix runs NetBox's app tier under **podman** (its lib already honors `CONTAINER_ENGINE`), discovery/orb-agent excluded via a compose `profiles:` gate — not Docker Desktop
 - [ ] `platform/seeds/` — per-service demo fixtures (distinct from P0B's credential seeding), applied by `bootstrap-data.yml` **run as a local Semaphore template** ("Bootstrap Data (Local)"); ownership: fixtures live with each service's deployment dir owner
 - [ ] **Postiz onboarding, local-first** [18]: today it is compose-only with hardcoded credentials and no playbook — run the full Adding-a-New-Service checklist (deploy.sh, `env.j2` → OpenBao-managed secrets, `deploy-postiz.yml`, Semaphore template), developed and validated against the local stack before it ever touches prod. Local port `127.0.0.1:5001` (`${POSTIZ_PORT:-5000}` pattern — macOS AirPlay Receiver squats `:5000` on default installs)
 - [ ] Slim profiles for every covered service: define + measure `compose.local.yml` budgets (table in `docs/LOCAL-DEV.md`: image variant, worker counts, sidecars on/off, mem cap)
