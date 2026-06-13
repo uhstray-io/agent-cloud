@@ -39,7 +39,26 @@ needs_gen() {
 # ── Container Runtime Detection ───────────────────────────────────────────────
 
 detect_runtime() {
-  [ -n "${CONTAINER_ENGINE:-}" ] && return 0
+  # Engine may be preset by the deploy playbooks (environment: CONTAINER_ENGINE).
+  # Still derive COMPOSE_CMD when unset — early-returning without it left
+  # compose() running an empty command (latent bug found by local-dev).
+  if [ -n "${CONTAINER_ENGINE:-}" ]; then
+    if [ -z "${COMPOSE_CMD:-}" ]; then
+      case "$CONTAINER_ENGINE" in
+        podman)
+          COMPOSE_CMD="podman-compose"
+          command -v podman-compose &>/dev/null || COMPOSE_CMD="podman compose"
+          ;;
+        docker)
+          COMPOSE_CMD="docker compose"
+          ;;
+        *)
+          error "Unknown CONTAINER_ENGINE: ${CONTAINER_ENGINE}"
+          ;;
+      esac
+    fi
+    return 0
+  fi
   if command -v podman &>/dev/null; then
     CONTAINER_ENGINE=podman
     COMPOSE_CMD="podman-compose"

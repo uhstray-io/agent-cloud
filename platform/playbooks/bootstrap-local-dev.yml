@@ -43,7 +43,13 @@
     _sem_url: "http://127.0.0.1:3000"
     _sem_admin: localadmin
     _sem_admin_password: LOCAL_FAKE_semaphore_admin
-    _repo_url: "{{ monorepo_repo | default('https://github.com/uhstray-io/agent-cloud.git') }}"
+    # The Semaphore repository points at the WORKING TREE, not GitHub — local
+    # tasks must test uncommitted changes (the whole point of local-dev). The
+    # repo root is bind-mounted read-only into the container; a git_url
+    # starting with "/" makes Semaphore treat it as a local repository (no
+    # clone, runs playbooks from the path in place).
+    _repo_host_dir: "{{ playbook_dir | dirname | dirname }}"
+    _repo_mount: /workspace/agent-cloud
     _repo_branch: "{{ local_repo_branch | default('main') }}"
 
   tasks:
@@ -146,7 +152,27 @@
         status_code: [200]
       register: _secret_id
 
-    # ── Stage 2: Semaphore (BoltDB slim profile) ────────────────────────
+    # ── Stage 2: Semaphore (SQLite slim profile) ────────────────────────
+    # The VM's rootful podman socket is mounted in so Semaphore-run deploy
+    # tasks can drive podman remotely (CONTAINER_HOST in the environment).
+    - name: "Recreate Semaphore if socket mount or label=disable is missing"
+      ansible.builtin.shell: |
+        set -o pipefail
+        if podman container exists {{ _sem_name }}; then
+          MOUNTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Destination{{ "}}" }} {{ "{{" }}end{{ "}}" }}')
+          SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
+          if ! echo "$MOUNTS" | grep -q '/run/podman/podman.sock' || \
+             ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
+             ! echo "$SECOPT" | grep -q 'label=disable'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+        fi
+        echo ok
+      register: _sem_recreate
+      changed_when: "_sem_recreate.stdout | trim == 'recreated'"
+
     - name: "Start local Semaphore"
       ansible.builtin.shell: |
         if ! podman container exists {{ _sem_name }}; then
@@ -154,6 +180,9 @@
           podman run -d --name {{ _sem_name }} --network {{ _net }} \
             -p 127.0.0.1:3000:3000 \
             -v local-semaphore-data:/var/lib/semaphore \
+            -v /run/podman/podman.sock:/run/podman/podman.sock \
+            -v {{ _repo_host_dir }}:{{ _repo_mount }}:ro \
+            --security-opt label=disable \
             -e SEMAPHORE_DB_DIALECT=sqlite \
             -e SEMAPHORE_ADMIN={{ _sem_admin }} \
             -e SEMAPHORE_ADMIN_PASSWORD={{ _sem_admin_password }} \
@@ -183,10 +212,17 @@
       ansible.builtin.command: >-
         podman exec {{ _sem_name }} sh -c
         "pip3 list 2>/dev/null | grep -qi '^hvac' ||
-         { pip3 install --quiet hvac &&
+         { pip3 install --quiet hvac podman-compose &&
            ansible-galaxy collection install community.hashi_vault ansible.posix; }"
       register: _sem_deps
       changed_when: "'hvac' not in _sem_deps.stdout | default('')"
+
+    - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
+      ansible.builtin.command: >-
+        podman exec --user root {{ _sem_name }} sh -c
+        "command -v podman >/dev/null || apk add --no-cache podman"
+      register: _sem_podman
+      changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
 
     # ── Stage 3: automatic API token ────────────────────────────────────
     - name: "Login to Semaphore (session cookie)"
@@ -270,6 +306,8 @@
         headers: *sem_hdr
       register: _repos
 
+    # Create-or-PUT: re-runs correct an existing record (e.g. one that still
+    # points at GitHub) to the local working-tree mount.
     - name: "Create agent-cloud repository"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
@@ -279,11 +317,32 @@
         body:
           name: agent-cloud
           project_id: "{{ _pid | int }}"
-          git_url: "{{ _repo_url }}"
+          git_url: "{{ _repo_mount }}"
           git_branch: "{{ _repo_branch }}"
           ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
         status_code: [201, 204]
       when: _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+
+    - name: "Update agent-cloud repository to the working-tree mount"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories/{{ _existing_repo.id }}"
+        method: PUT
+        headers: *sem_hdr
+        body_format: json
+        body:
+          id: "{{ _existing_repo.id | int }}"
+          name: agent-cloud
+          project_id: "{{ _pid | int }}"
+          git_url: "{{ _repo_mount }}"
+          git_branch: "{{ _repo_branch }}"
+          ssh_key_id: "{{ _existing_repo.ssh_key_id | int }}"
+        status_code: [201, 204]
+      vars:
+        _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud') | first }}"
+      when:
+        - _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length > 0
+        - _existing_repo.git_url != _repo_mount
+      changed_when: true
 
     - name: "Ensure static local inventory"
       ansible.builtin.uri:
@@ -307,19 +366,30 @@
         # Mirrors platform/inventory/local-dev.yml.example, expressed as the
         # static INI Semaphore stores; openbao_addr uses the container-network
         # address because tasks execute inside the Semaphore container.
+        # ansible_user must be DEFINED even for local connections: playbook
+        # defaults like  local_monorepo_dir | default('/home/' ~ ansible_user)
+        # evaluate the default argument eagerly (Jinja), so an undefined
+        # ansible_user errors even when local_monorepo_dir is set.
         _inv_ini: |
-          localhost ansible_connection=local openbao_addr={{ _bao_url_net }} local_mode=true
+          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true
 
           [uhhcraft_svc]
           uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
 
           [uhhcraft_svc:vars]
+          ansible_user=semaphore
           service_name=uhhcraft
-          service_url=http://127.0.0.1:3001
+          service_url=http://host.containers.internal:3001
           monorepo_deploy_path=platform/services/uhhcraft/deployment
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
+          uhhcraft_port=3001
+          uhhcraft_bind=0.0.0.0
+          uhhcraft_base_url=http://127.0.0.1:3001
+          local_monorepo_dir=/home/semaphore/agent-cloud
+          local_home_dir=/home/semaphore
+          local_workspace_dir=/workspace/agent-cloud
         _inv_body: >-
           {{ {'name': 'local',
               'project_id': (_pid | int),
@@ -335,22 +405,34 @@
         headers: *sem_hdr
       register: _envs
 
-    - name: "Create local-openbao environment"
+    - name: "Create or update local-openbao environment"
       ansible.builtin.uri:
-        url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
-        method: POST
+        url: >-
+          {{ _sem_url }}/api/project/{{ _pid }}/environment{{
+            '/' ~ (_envs.json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first)
+            if (_envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length > 0) else '' }}
+        method: "{{ 'PUT' if (_envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length > 0) else 'POST' }}"
         headers: *sem_hdr
         body_format: json
-        body:
-          name: local-openbao
-          project_id: "{{ _pid | int }}"
-          json: "{}"
-          env: "{{ {'BAO_ROLE_ID': _role_id.json.data.role_id,
-                    'BAO_SECRET_ID': _secret_id.json.data.secret_id,
-                    'BAO_ADDR': _bao_url_net,
-                    'OPENBAO_ADDR': _bao_url_net} | to_json }}"
-        status_code: [201, 204]
-      when: _envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length == 0
+        body: "{{ _env_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _existing_env: "{{ _envs.json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | list }}"
+        # AppRole injection exactly as prod, plus the remote-podman wiring so
+        # deploy tasks inside the container drive the VM's engine.
+        _env_body: >-
+          {{ {'name': 'local-openbao',
+              'project_id': (_pid | int),
+              'json': '{}',
+              'env': ({'BAO_ROLE_ID': _role_id.json.data.role_id,
+                       'BAO_SECRET_ID': _secret_id.json.data.secret_id,
+                       'BAO_ADDR': _bao_url_net,
+                       'OPENBAO_ADDR': _bao_url_net,
+                       'CONTAINER_HOST': 'unix:///run/podman/podman.sock',
+                       'CONTAINER_ENGINE': 'podman',
+                       'LOCAL_MODE': 'true'} | to_json)}
+             | combine({'id': (_existing_env | first | int)} if (_existing_env | length > 0) else {}) }}
+      changed_when: true
 
     - name: "Resolve inventory + environment ids"
       ansible.builtin.uri:
