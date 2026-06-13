@@ -7,12 +7,14 @@ the unchanged composable playbooks, with AppRole credential injection exactly
 as in production. No real credentials ever exist on the machine — every
 generated value carries the `LOCAL_FAKE_` prefix.
 
-## Quickstart (current state — Phase 0B)
+## Quickstart (current state — Phase 1)
 
 ```bash
 brew bundle                                  # toolchain (Brewfile)
 podman machine start                         # if not already running
-ansible-playbook platform/playbooks/bootstrap-local-dev.yml --tags bootstrap
+make local-bootstrap                         # control plane up + configured
+make local-deploy-<service>                  # e.g. local-deploy-uhhcraft
+make local-validate
 ```
 
 The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
@@ -24,6 +26,11 @@ The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
    automatically**, project/key/repository/inventory/environment provisioned
 3. **Templates-as-code** — `setup-templates.yml` registers the full shared
    catalog plus `templates-local.yml` against the local instance
+4. **Engine + working-tree wiring** — the VM's rootful podman socket and the
+   **repo working tree** are bind-mounted into the Semaphore container; the
+   Semaphore repository is a **local path** (`/workspace/agent-cloud`), so
+   tasks execute your *uncommitted* changes, and deploys drive the real
+   engine through the mounted socket
 
 State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 
@@ -42,9 +49,10 @@ curl -s -X POST -H "Authorization: Bearer $SEMAPHORE_TOKEN" -H "Content-Type: ap
   "$SEMAPHORE_URL/api/project/$SEMAPHORE_PROJECT_ID/tasks"
 ```
 
-`make` targets wrapping this flow (`local-init`, `local-bootstrap`,
-`local-deploy-<service>`, `local-validate`, `local-clean`, `promote`) are the
-next Phase 0B increment.
+The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
+`local-validate`, `local-clean`, `promote`) wrap this flow via
+`scripts/local-dev.sh`, which also enforces the local-only guard (refuses
+non-local inventories and non-local `openbao_addr`).
 
 ## Port map (registry of record)
 
@@ -53,9 +61,15 @@ next Phase 0B increment.
 | OpenBao (dev) | 127.0.0.1:8200 | containers reach it at `http://local-openbao:8200` on the `local-dev` network |
 | Semaphore | 127.0.0.1:3000 | prod-typical port |
 | UhhCraft | 127.0.0.1:3001 | shifted from 3000 via `${UHHCRAFT_PORT:-3001}` |
-| NocoDB (P2) | 127.0.0.1:8081 | |
 | n8n (P2) | 127.0.0.1:5678 | |
+| NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
 | NetBox (P2, Docker Desktop) | 127.0.0.1:8000 | app tier only — no orb-agent/discovery locally |
+| Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
+| hickory-dns (P4) | 127.0.0.1:5300 | udp+tcp → :53 in-container; `/etc/resolver/<zone>` points here |
+| Caddy local (P4) | 127.0.0.1:8088 / 8443 | local Caddyfile variant, internal CA |
+| ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
+| OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
+| o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |
 
 ## Engine split
 
@@ -77,6 +91,27 @@ reference-machine allocations in the plan (§5).
   serializes its body inside Jinja (`to_json`) to keep native types.
 - `check-secrets.yml` still carries `no_log: true` (predates the no-`no_log`
   standard) — cleanup candidate when next touched.
+- **Working-tree repository:** the Semaphore repository's `git_url` is the
+  absolute path `/workspace/agent-cloud` (the bind-mounted working tree) — a
+  URL would make every task silently test GitHub `main` instead of your
+  uncommitted changes. Local-mode plays **copy** the workspace with
+  `tar --exclude .git` (not `git clone`, which only sees committed state; not
+  `cp -a`, which fails trying to preserve the host-uid ownership of the
+  virtiofs mount).
+- **Engine socket:** `/run/podman/podman.sock` (VM, rootful) is mounted into
+  the Semaphore container with `--security-opt label=disable` — the podman
+  machine VM enforces SELinux, which otherwise denies the cross-container
+  socket even to root. `CONTAINER_HOST` in the Semaphore environment points
+  podman/podman-compose at it.
+- **`ansible_user` must be defined in local inventories** even with
+  `ansible_connection=local`: playbook defaults like
+  `local_monorepo_dir | default('/home/' ~ ansible_user)` fail on undefined
+  `ansible_user` *even when the left side is set* — Jinja evaluates filter
+  arguments eagerly.
+- **`ghcr.io/uhstray-io/uhhcraft` is private** — anonymous pulls 403 before
+  the arch question is even observable. Local deploys of owned images need a
+  `read:packages` PAT (or a local build override); backing images
+  (postgres/redis/minio) pull fine through the mounted socket.
 
 ## Triage
 
