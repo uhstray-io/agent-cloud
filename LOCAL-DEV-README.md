@@ -152,8 +152,8 @@ containers **by their network name** — no IPs, no port juggling.
 | hickory-dns | ✅ working | `make local-deploy-dns` |
 | Caddy | ✅ working | `make local-deploy-caddy` (internal-CA TLS) |
 | UhhCraft | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
+| NetBox | ✅ working | app tier **under podman** (no Docker needed — see `plan/development/NETBOX-LOCAL-ENGINE.md`). `make local-netbox` → `make local-netbox-discover` lists the running containers as VMs at `127.0.0.1:8000` |
 | n8n / NocoDB | 🚧 in progress | composable local deploy being added |
-| NetBox | 🚧 in progress | requires Docker Desktop (engine split); app-tier-only profile |
 | o11y | 📋 planned | observability stack not yet defined |
 
 ---
@@ -198,5 +198,8 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-https` | clean port-free `https://app.dev.test` via a persistent root forwarder (sudo; idempotent) |
 | `make local-https-down` | remove the privileged-port forwarder (sudo) |
 | `make local-validate` | health-check all deployed services |
+| `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |
+| `make local-netbox` | bring up the NetBox app tier under podman |
+| `make local-netbox-discover` | discover the running containers into NetBox as VMs |
 | `make local-clean` | tear down the control plane |
 | `make promote` | fast checks → push feature branch → PR into `dev` |

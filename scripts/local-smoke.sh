@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ok()/no() always return 0, so the `cond && ok || no` idiom never mis-fires.
+# shellcheck disable=SC2015
 # local-smoke.sh — repeatable smoke test for the local-dev deployment.
 #
 # Validates the live local stack end-to-end from the Mac: control plane, DNS
@@ -63,13 +65,25 @@ if running caddy; then
   done
 else sk "caddy not deployed (make local-deploy-caddy)"; fi
 
-hdr "5. /etc/resolver (native macOS resolution)"
+hdr "5. NetBox (app tier under podman)"
+if running netbox-netbox-1; then
+  ok "container netbox-netbox-1 running"
+  http_is "http://127.0.0.1:8000/login/" "200" "NetBox UI (127.0.0.1:8000)"
+  vms=$(podman exec netbox-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell -c \
+        "from virtualization.models import VirtualMachine; print(VirtualMachine.objects.filter(cluster__name='agent-cloud-local').count())" 2>/dev/null \
+        | grep -oE '^[0-9]+$' | tail -1)
+  [ -n "${vms:-}" ] && [ "$vms" -gt 0 ] 2>/dev/null \
+    && ok "container discovery: ${vms} VM(s) in agent-cloud-local cluster" \
+    || no "container discovery (no VMs — run make local-netbox-discover)"
+else sk "netbox not deployed (make local-netbox)"; fi
+
+hdr "6. /etc/resolver (native macOS resolution)"
 if [ -f /etc/resolver/dev.test ]; then
   ok "/etc/resolver/dev.test present"
 else sk "/etc/resolver/dev.test not set (make local-dns-resolver) — native name resolution off"; fi
 
 if [ "$FULL" = true ]; then
-  hdr "6. Static suite (--full)"
+  hdr "7. Static suite (--full)"
   # -S warning matches the repo's CI severity (info-level notes don't gate).
   ( cd "$REPO_ROOT" && shellcheck -S warning scripts/*.sh platform/lib/*.sh platform/services/*/deployment/deploy.sh >/dev/null 2>&1 ) \
     && ok "shellcheck (-S warning)" || no "shellcheck"

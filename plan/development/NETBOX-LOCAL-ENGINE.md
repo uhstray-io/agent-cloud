@@ -1,7 +1,7 @@
 # NetBox Local Engine — Fix Plan
 
 > **Location:** `plan/development/NETBOX-LOCAL-ENGINE.md`
-> **Date:** 2026-06-12 · **Status:** PROPOSED · **Owner:** uhstray-io
+> **Date:** 2026-06-12 · **Status:** ACTIVE — app tier proven locally under podman (2026-06-13); Semaphore-wiring + .example-template gap remain · **Owner:** uhstray-io
 > **Context:** Local-dev (`LOCAL-DEV-DEPLOYMENT.md`) wants NetBox runnable on a developer laptop. NetBox is the platform's one Docker-required service. This plan resolves a hard blocker: the local Semaphore control plane (which runs in the **podman-machine VM**) cannot drive **Docker Desktop's** daemon, and lays out the robust fix.
 
 **Goal:** Run a NetBox **app-tier** profile locally through the same local Semaphore control plane as every other service — without depending on Docker Desktop, and without forking NetBox's deployment.
@@ -75,6 +75,34 @@ Mirrors the DNS/Caddy local conversions — composable, one codebase, podman via
 
 **Gate:** `make local-deploy-netbox` runs through local Semaphore under podman; the app tier comes up healthy (NetBox UI on `127.0.0.1:8000`); discovery/orb-agent absent; idempotent re-run; the build is arm64-native.
 
+## 4a. Validation results (2026-06-13)
+
+Option A executed and proven locally:
+
+- **Image builds under podman** — `netbox:latest-plugins` (801 MB) built rootful in the VM, no issue.
+- **App tier boots healthy under podman** — `postgres + redis + redis-cache + netbox + netbox-worker` via `podman compose ... up -d --no-deps netbox netbox-worker` (driven from the Mac, so the deploy-dir bind-mounts resolve via the `/Users` virtiofs share). UI 200 on `127.0.0.1:8000`. The **diode plugin loads without the discovery pipeline running** (it only contacts Diode on ingest), so app-tier-only is viable with a fake `netbox_to_diode` secret.
+- **Container discovery works without Docker, orb-agent, or Diode** — `scripts/local-netbox-discover.sh` (`make local-netbox-discover`) feeds `podman ps` into NetBox via the Django ORM, creating 9 agent-cloud containers (local-openbao, local-semaphore, dns, caddy, the 5 netbox-* containers) as `VirtualMachine`s in a `agent-cloud-local` Podman cluster. Idempotent (`update_or_create`).
+- Captured repeatably: `scripts/local-netbox-up.sh` (`make local-netbox`) — clone context → fake env → build-if-absent → app-tier up → wait healthy.
+
+Gotchas found + fixed: `API_TOKEN_PEPPER_1`/`SECRET_KEY` must be ≥50 chars; this NetBox build uses **v2 (HMAC-hashed) API tokens** with a `version`-dependent check constraint — hand-creating a token via the ORM is fiddly, so the discovery feed uses the ORM directly (no token).
+
+## 4b. Does NetBox actually need Docker? (finding)
+
+The local result reframes the long-standing "NetBox = Docker" rule. Separating capabilities:
+
+| Capability | Engine reality |
+|---|---|
+| NetBox app (web/worker/db/redis) | **Podman is fine** — proven healthy locally. No Docker need. |
+| **Container** inventory (what we discovered: `podman ps` → NetBox) | **Podman** — this is podman's own data; Docker irrelevant. |
+| Full Diode pipeline (hydra + diode-* + ingress) | **Untested** under podman — more services with `depends_on: condition: service_healthy` (podman-compose historically ignored these), but `deploy.sh` stages startup explicitly, so likely OK. Needs validation. |
+| **Network/IPAM** discovery (orb-agent nmap/SNMP subnet scans — the real prod DCIM value) | Needs `CAP_NET_RAW`/privileged. Already runs as a standalone **`sudo $CONTAINER_ENGINE run --privileged --net=host`** — engine-agnostic; **`sudo podman` works on Linux**, not Docker-specific. (macOS can't scan at all — VM NAT — Docker or podman.) |
+
+**So the Docker requirement was never a hard technical need** — it was the path of least resistance around (a) podman-compose's `depends_on`-health gap (which `deploy.sh`'s explicit staging already mitigates) and (b) a known-good setup. The orb-agent's privilege need is met by `sudo podman` on Linux.
+
+**Important distinction:** what we discovered locally is the **container fleet** (`podman ps`), NOT the prod **network** discovery (real subnets/devices/IPs via nmap+SNMP). Those are different NetBox use cases.
+
+**Recommendation:** NetBox can very likely **standardize on podman** (dropping the Docker special-case, simplifying the engine split to "podman everywhere; `sudo podman` for the privileged agent"). Before changing prod, validate two things on the prod Linux host under podman: (1) the **full** stack (incl. Diode/Hydra) comes up healthy via `deploy.sh`'s staged startup; (2) the **orb-agent** network scan works under `sudo podman run --privileged --net=host`. Local already proves the app tier + container discovery. This finding should feed back into `PODMAN-VS-DOCKER-COMPOSE.md` and the root `CLAUDE.md` Container Runtime section.
+
 ## 5. Risks & open questions
 
 | Item | Risk | Mitigation |
@@ -102,3 +130,4 @@ One codebase (profile-gated, no fork), Semaphore-operated, manage-secrets for th
 | Date | Change |
 |---|---|
 | 2026-06-12 | Initial plan: debugged the podman-VM↔Docker-Desktop blocker (unix socket dead over virtiofs; no TCP daemon); chose Option A (NetBox app-tier under podman) with rejected alternatives; implementation phases + risks |
+| 2026-06-13 | Executed Option A: image builds + app tier healthy under podman; container discovery via ORM (`make local-netbox` / `local-netbox-discover`) — 9 containers as VMs, idempotent (§4a). Added the "does NetBox need Docker?" finding (§4b): no hard need — podman fits the app + container discovery; orb-agent privilege is met by `sudo podman` on Linux; recommend validating the full stack + agent under podman then dropping the Docker special-case. Open gaps: `env/*.env.example` templates missing from the repo (live values only in site-config — fresh `deploy.sh` can't `copy_example`); full Semaphore-wired composable local path; Diode pipeline under podman unproven |

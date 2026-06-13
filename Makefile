@@ -27,6 +27,12 @@ local-validate: ## Run Validate All through the LOCAL Semaphore
 local-smoke: ## Smoke-test the live local stack (control plane, DNS, Caddy/TLS); --full adds lint+BATS
 	@bash scripts/local-smoke.sh $(ARGS)
 
+local-netbox: ## Bring up the NetBox app tier under podman (NETBOX-LOCAL-ENGINE; idempotent)
+	@bash scripts/local-netbox-up.sh
+
+local-netbox-discover: ## Discover the running agent-cloud containers into NetBox (idempotent)
+	@bash scripts/local-netbox-discover.sh
+
 local-dns: ## Bring local DNS fully online: deploy hickory + wire macOS resolver (idempotent)
 	@$(LOCAL_DEV) deploy dns
 	@$(LOCAL_DEV) resolver
