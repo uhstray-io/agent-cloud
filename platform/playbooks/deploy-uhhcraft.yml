@@ -53,39 +53,10 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
-    # Local-dev (local_mode=true) runs inside the Semaphore container: no
-    # sudo/apt, and the source of truth is the read-only working-tree mount
-    # (local_workspace_dir), not GitHub — a git clone would silently test
-    # committed main instead of the developer's uncommitted changes.
-    - name: "Install git if needed"
-      ansible.builtin.apt:
-        name: git
-        state: present
-      become: true
-      when: not (local_mode | default(false) | bool)
-
-    - name: "Clone or update agent-cloud monorepo"
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ _branch }}"
-        force: true
-      when: not (local_mode | default(false) | bool)
-
-    - name: "Copy working tree into place (local mode)"
-      # tar (not cp -a): the workspace mount is owned by the host uid, and a
-      # non-root copy must not try to preserve ownership. .git is excluded —
-      # deploys don't need history and it dominates the copy size.
-      ansible.builtin.shell: |
-        set -o pipefail
-        mkdir -p "{{ _monorepo_dir }}"
-        tar -C "{{ local_workspace_dir }}" --exclude .git --exclude .remember -cf - . \
-          | tar -C "{{ _monorepo_dir }}" -xf -
-      when: local_mode | default(false) | bool
-      changed_when: true
-
-    - name: "Ensure podman + compose entrypoint"
-      ansible.builtin.include_tasks: tasks/install-podman-compose.yml
+    # Place the repo (prod clone / local working-tree copy) + ensure the
+    # podman/compose entrypoint. Shared with every composable service deploy.
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Convenience symlink"
       ansible.builtin.file:

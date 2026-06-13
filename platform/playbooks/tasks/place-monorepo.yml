@@ -1,0 +1,54 @@
+---
+# place-monorepo.yml — put the agent-cloud monorepo on the target and ensure the
+# podman/compose entrypoint. The shared Phase-1 preamble for composable service
+# deploys (deploy-dns, deploy-uhhcraft, and future services — ERPNext, OPA).
+#
+# Two modes, selected by local_mode:
+#   prod  (unset/false): git clone/update from monorepo_repo at _branch.
+#   local (true):        copy the read-only working-tree mount
+#                        (local_workspace_dir) — local tasks must test
+#                        UNCOMMITTED changes, and the Semaphore container has no
+#                        sudo/apt. The same compose entrypoint is ensured either
+#                        way.
+#
+# Expects in the including play's scope:
+#   _monorepo_dir          — where the repo lands on the target
+#   _branch                — service_branch | default('main')  (prod clone)
+#   monorepo_repo          — clone URL                          (prod only)
+#   local_workspace_dir    — RO working-tree mount path         (local only)
+#   local_mode             — bool (inventory)
+#
+# DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
+# Principles — reuse over per-service glue).
+
+- name: "Install git if needed"
+  ansible.builtin.apt:
+    name: git
+    state: present
+  become: true
+  when: not (local_mode | default(false) | bool)
+
+- name: "Clone or update agent-cloud monorepo"
+  ansible.builtin.git:
+    repo: "{{ monorepo_repo }}"
+    dest: "{{ _monorepo_dir }}"
+    version: "{{ _branch }}"
+    force: true
+  when: not (local_mode | default(false) | bool)
+
+- name: "Copy working tree into place (local mode)"
+  # tar (not cp -a): the workspace mount is owned by the host uid, and a
+  # non-root copy must not preserve ownership. .git is excluded (deploys don't
+  # need history); .remember is host-only and mode 700 — unreadable from here,
+  # and would abort the copy.
+  ansible.builtin.shell: |
+    set -o pipefail
+    mkdir -p "{{ _monorepo_dir }}"
+    tar -C "{{ local_workspace_dir }}" --exclude .git --exclude .remember -cf - . \
+      | tar -C "{{ _monorepo_dir }}" -xf -
+  when: local_mode | default(false) | bool
+  changed_when: true
+
+- name: "Ensure podman + compose entrypoint"
+  # Sibling task in this directory; resolves relative to this file.
+  ansible.builtin.include_tasks: install-podman-compose.yml
