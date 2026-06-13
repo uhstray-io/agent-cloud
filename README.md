@@ -20,6 +20,12 @@ Platform Layer   Docker/Podman (dev), Kubernetes/k0s (prod), Proxmox VMs
 
 ## Getting Started
 
+> **Want to run the whole platform on your laptop?** See
+> **[LOCAL-DEV-README.md](LOCAL-DEV-README.md)** — a local control plane
+> (OpenBao + Semaphore) that deploys services with the same playbooks as prod,
+> with DNS + TLS, in a few `make` commands. It also covers promoting changes
+> from local-dev to production.
+
 ### Prerequisites
 
 - A Proxmox cluster (or any Linux VMs with Docker/Podman)

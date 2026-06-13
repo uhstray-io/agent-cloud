@@ -84,6 +84,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
 - `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
+- `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
 - `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; see also `docs/LOCAL-DEV.md`
 - `plan/development/DNS-SERVER-DEPLOYMENT.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 
