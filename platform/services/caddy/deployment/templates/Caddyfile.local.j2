@@ -13,6 +13,14 @@
 }
 
 {% endfor %}
+{% if caddy_netbox_upstream | default('') %}
+{# NetBox runs in its own compose project (not the local-dev network), so it is
+   reached via host.containers.internal rather than a container name. #}
+netbox.dev.test {
+	reverse_proxy {{ caddy_netbox_upstream }}
+}
+
+{% endif %}
 # Per-service fragments distributed by tasks/distribute-caddy-site.yml (none yet
 # locally — the glob tolerates zero matches).
 import sites/*.caddy

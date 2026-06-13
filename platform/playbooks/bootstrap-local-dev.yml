@@ -428,6 +428,7 @@
           caddy_https_bind=127.0.0.1
           caddy_https_port=8443
           caddy_routes=[{'host': 'semaphore.dev.test', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.dev.test', 'upstream': 'local-openbao:8200'}]
+          caddy_netbox_upstream=host.containers.internal:8000
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

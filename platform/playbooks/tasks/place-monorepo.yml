@@ -38,14 +38,18 @@
 
 - name: "Copy working tree into place (local mode)"
   # tar (not cp -a): the workspace mount is owned by the host uid, and a
-  # non-root copy must not preserve ownership. .git is excluded (deploys don't
-  # need history); .remember is host-only and mode 700 — unreadable from here,
-  # and would abort the copy.
+  # non-root copy must not preserve ownership. Excludes are deploy-irrelevant
+  # AND copy-hostile runtime artifacts: .git (history), .remember (host-only,
+  # mode 700), per-service secrets/ (mode 600 — unreadable to this uid, and
+  # secrets come from OpenBao not the tree), and netbox-docker/ (large
+  # gitignored upstream clone). Anything excluded here is regenerated/rendered
+  # at deploy time, never a deploy input.
   ansible.builtin.shell: |
     set -o pipefail
     mkdir -p "{{ _monorepo_dir }}"
-    tar -C "{{ local_workspace_dir }}" --exclude .git --exclude .remember -cf - . \
-      | tar -C "{{ _monorepo_dir }}" -xf -
+    tar -C "{{ local_workspace_dir }}" \
+      --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
+      -cf - . | tar -C "{{ _monorepo_dir }}" -xf -
   when: local_mode | default(false) | bool
   changed_when: true
 

@@ -51,6 +51,10 @@ all:
           caddy_routes:
             - { host: "semaphore.dev.test", upstream: "local-semaphore:3000" }
             - { host: "openbao.dev.test", upstream: "local-openbao:8200" }
+          # NetBox (when deployed via `make local-netbox`) runs in its own compose
+          # project, not the local-dev network — reach it via the host gateway.
+          # Leave unset if you don't run NetBox locally.
+          caddy_netbox_upstream: "host.containers.internal:8000"
 
     uhhcraft_svc:
       hosts:

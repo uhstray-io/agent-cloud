@@ -49,8 +49,13 @@ step_pull_image() {
 }
 
 step_start() {
-  info "Step 3: Starting Caddy..."
-  compose up -d
+  # --force-recreate: the Caddyfile is a SINGLE-FILE bind mount, and Ansible
+  # renders it via atomic rename (new inode), so a plain `compose up -d` (a
+  # no-op on an already-running container) keeps serving the stale inode and a
+  # `caddy reload` re-reads that same stale file. Recreating re-binds the mount
+  # to the freshly rendered file. Idempotent; brief restart only.
+  info "Step 3: Starting Caddy (force-recreate to pick up Caddyfile changes)..."
+  compose up -d --force-recreate
 }
 
 step_wait_healthy() {
