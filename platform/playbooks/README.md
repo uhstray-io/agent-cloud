@@ -166,6 +166,16 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 - **Path vars:** playbooks reference `local_monorepo_dir` (clone location) and `local_home_dir` (convenience-symlink base) with `/home/{{ ansible_user }}` defaults — unset means byte-identical prod behavior; local inventories override them for macOS paths.
 - **Compose overlay:** `lib/common.sh`'s `compose()` appends `compose.local.yml` only when `LOCAL_MODE=true` **and** the overlay file exists; covered by `platform/tests/test_common.bats`.
 
+### Local-Dev Bootstrap
+
+`bootstrap-local-dev.yml` (run with `--tags bootstrap`; the only playbook
+permitted to run unorchestrated — Critical Rule #1 bootstrap exemption via
+`_bootstrap_play: true` + the tag) provisions the local control plane:
+dev-mode OpenBao + local AppRole + `LOCAL_FAKE_` seeds, a pinned single-container
+Semaphore (SQLite), an automatically-created API token, project resources, and
+the full template catalog (`templates.yml` + `templates-local.yml`).
+State: `~/.agent-cloud-local/credentials.env`. See `docs/LOCAL-DEV.md`.
+
 ### Composable Task Library
 
 These reusable tasks are the building blocks for all playbooks. See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full architecture.

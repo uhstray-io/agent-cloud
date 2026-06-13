@@ -1,0 +1,20 @@
+---
+# templates-local.yml — Semaphore templates that exist ONLY on local-dev
+# instances (plan/development/LOCAL-DEV-DEPLOYMENT.md).
+#
+# Merged by setup-templates.yml exclusively when
+# `semaphore_include_local_templates: true` — which only
+# platform/playbooks/bootstrap-local-dev.yml sets. The shared templates.yml
+# stays prod-clean; applying THIS file to production is structurally prevented
+# by that flag defaulting to false.
+
+templates: []
+
+# Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
+#   - name: "Bootstrap Data (Local)"
+#     playbook: platform/playbooks/bootstrap-data.yml
+#     survey_vars:
+#       - name: erpnext_target
+#         title: "Target group"
+#         type: string
+#         required: false

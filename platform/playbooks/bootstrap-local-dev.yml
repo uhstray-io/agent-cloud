@@ -1,0 +1,430 @@
+---
+# bootstrap-local-dev.yml — "make bootstraps, Semaphore operates."
+#
+# Provisions the LOCAL control plane on the developer machine
+# (plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 0B):
+#   1. dev-mode OpenBao container (fake root token, KV v2 auto-mounted)
+#   2. local AppRole (policy `local-semaphore`) — the credential the local
+#      Semaphore injects into every task, exactly like prod
+#   3. local Semaphore container (BoltDB — single container, slim profile)
+#   4. an API token created automatically via the Semaphore API
+#   5. project / key / repository / static inventory / environment resources
+#   6. task templates registered from templates.yml + templates-local.yml
+#
+# Everything after this playbook runs THROUGH the local Semaphore.
+# Idempotent: safe to re-run after a podman-machine reset.
+#
+# This is the ONLY playbook permitted to run unorchestrated (Critical Rule #1
+# bootstrap exemption): `_bootstrap_play: true` below + `--tags bootstrap`.
+#
+# State (gitignored, outside the repo): ~/.agent-cloud-local/credentials.env
+# All generated values carry the LOCAL_FAKE_ prefix — they can never pass as
+# real credentials.
+
+- name: "Bootstrap local-dev control plane (OpenBao + Semaphore)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [bootstrap]
+  vars:
+    _bootstrap_play: true
+    _state_dir: "{{ lookup('env', 'HOME') }}/.agent-cloud-local"
+    _net: local-dev
+    _bao_name: local-openbao
+    _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:latest') }}"
+    _bao_root_token: LOCAL_FAKE_root
+    _bao_url_host: "http://127.0.0.1:8200"           # from the Mac
+    _bao_url_net: "http://local-openbao:8200"        # from containers on _net
+    _sem_name: local-semaphore
+    # Pinned: latest (v2.19 beta) and bolt dialect both panic ("unknown store
+    # type", pro Terraform-store factory); sqlite is the supported embedded
+    # store. The -ansible variant ships ansible for task execution.
+    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.18.12-ansible2.16.5') }}"
+    _sem_url: "http://127.0.0.1:3000"
+    _sem_admin: localadmin
+    _sem_admin_password: LOCAL_FAKE_semaphore_admin
+    _repo_url: "{{ monorepo_repo | default('https://github.com/uhstray-io/agent-cloud.git') }}"
+    _repo_branch: "{{ local_repo_branch | default('main') }}"
+
+  tasks:
+    # ── Stage 0: preflight ──────────────────────────────────────────────
+    - name: "Assert podman machine is running"
+      ansible.builtin.command: podman machine inspect --format '{{ "{{" }}.State{{ "}}" }}'
+      register: _machine
+      changed_when: false
+      failed_when: "'running' not in _machine.stdout"
+
+    - name: "Ensure state dir"
+      ansible.builtin.file:
+        path: "{{ _state_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Ensure local-dev network"
+      ansible.builtin.shell: |
+        podman network exists {{ _net }} || podman network create {{ _net }}
+      register: _netres
+      changed_when: "'created' in _netres.stdout | default('')"
+
+    # ── Stage 1: OpenBao dev ────────────────────────────────────────────
+    - name: "Start dev-mode OpenBao"
+      ansible.builtin.shell: |
+        if ! podman container exists {{ _bao_name }}; then
+          podman run -d --name {{ _bao_name }} --network {{ _net }} \
+            -p 127.0.0.1:8200:8200 \
+            -e BAO_DEV_ROOT_TOKEN_ID={{ _bao_root_token }} \
+            -e BAO_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            {{ _bao_image }} server -dev
+          echo started
+        elif [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _bao_name }})" != "running" ]; then
+          podman start {{ _bao_name }}
+          echo restarted
+        else
+          echo running
+        fi
+      register: _bao_start
+      changed_when: "_bao_start.stdout | trim != 'running'"
+
+    - name: "Wait for OpenBao health"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/health"
+        status_code: [200]
+      register: _bao_health
+      until: _bao_health.status == 200
+      retries: 15
+      delay: 2
+
+    - name: "Enable AppRole auth (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/auth/approle"
+        method: POST
+        headers: &bao_root_hdr
+          X-Vault-Token: "{{ _bao_root_token }}"
+        body_format: json
+        body: { type: approle }
+        status_code: [200, 204, 400]   # 400 = already enabled
+      register: _approle_enable
+      changed_when: _approle_enable.status in [200, 204]
+
+    - name: "Write local-semaphore policy"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/policies/acl/local-semaphore"
+        method: PUT
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          policy: |
+            path "secret/data/services/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
+            path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+        status_code: [200, 204]
+      changed_when: true
+
+    - name: "Create local-semaphore AppRole"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          token_policies: "local-semaphore"
+          token_ttl: 30m
+          token_max_ttl: 2h
+        status_code: [200, 204]
+      changed_when: true
+
+    - name: "Read AppRole role-id"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/role-id"
+        headers: *bao_root_hdr
+      register: _role_id
+
+    - name: "Generate AppRole secret-id"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/secret-id"
+        method: POST
+        headers: *bao_root_hdr
+        status_code: [200]
+      register: _secret_id
+
+    # ── Stage 2: Semaphore (BoltDB slim profile) ────────────────────────
+    - name: "Start local Semaphore"
+      ansible.builtin.shell: |
+        if ! podman container exists {{ _sem_name }}; then
+          podman volume exists local-semaphore-data || podman volume create local-semaphore-data
+          podman run -d --name {{ _sem_name }} --network {{ _net }} \
+            -p 127.0.0.1:3000:3000 \
+            -v local-semaphore-data:/var/lib/semaphore \
+            -e SEMAPHORE_DB_DIALECT=sqlite \
+            -e SEMAPHORE_ADMIN={{ _sem_admin }} \
+            -e SEMAPHORE_ADMIN_PASSWORD={{ _sem_admin_password }} \
+            -e SEMAPHORE_ADMIN_NAME="Local Admin" \
+            -e SEMAPHORE_ADMIN_EMAIL=admin@localhost \
+            {{ _sem_image }}
+          echo started
+        elif [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _sem_name }})" != "running" ]; then
+          podman start {{ _sem_name }}
+          echo restarted
+        else
+          echo running
+        fi
+      register: _sem_start
+      changed_when: "_sem_start.stdout | trim != 'running'"
+
+    - name: "Wait for Semaphore API"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/ping"
+        status_code: [200]
+      register: _sem_ping
+      until: _sem_ping.status == 200
+      retries: 30
+      delay: 2
+
+    - name: "Install task-execution deps inside Semaphore (hvac + collections)"
+      ansible.builtin.command: >-
+        podman exec {{ _sem_name }} sh -c
+        "pip3 list 2>/dev/null | grep -qi '^hvac' ||
+         { pip3 install --quiet hvac &&
+           ansible-galaxy collection install community.hashi_vault ansible.posix; }"
+      register: _sem_deps
+      changed_when: "'hvac' not in _sem_deps.stdout | default('')"
+
+    # ── Stage 3: automatic API token ────────────────────────────────────
+    - name: "Login to Semaphore (session cookie)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          auth: "{{ _sem_admin }}"
+          password: "{{ _sem_admin_password }}"
+        status_code: [204]
+      register: _login
+
+    - name: "Create API token automatically"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/user/tokens"
+        method: POST
+        headers:
+          Cookie: "{{ _login.cookies_string }}"
+        status_code: [201]
+      register: _token_resp
+
+    - name: "Set token fact"
+      ansible.builtin.set_fact:
+        _sem_token: "{{ _token_resp.json.id }}"
+
+    # ── Stage 4: project + resources (idempotent by name) ───────────────
+    - name: "List projects"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        headers: &sem_hdr
+          Authorization: "Bearer {{ _sem_token }}"
+      register: _projects
+
+    - name: "Create agent-cloud project"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body: { name: agent-cloud }
+        status_code: [201]
+      when: _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+      register: _proj_create
+
+    - name: "Resolve project id"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        headers: *sem_hdr
+      register: _projects2
+
+    - name: "Set project id"
+      ansible.builtin.set_fact:
+        _pid: "{{ _projects2.json | selectattr('name', 'equalto', 'agent-cloud') | map(attribute='id') | first }}"
+
+    - name: "Ensure 'none' key"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        headers: *sem_hdr
+      register: _keys
+
+    - name: "Create 'none' key"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body: { name: none, type: none, project_id: "{{ _pid | int }}" }
+        status_code: [201, 204]
+      when: _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
+
+    - name: "Resolve key id"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        headers: *sem_hdr
+      register: _keys2
+
+    - name: "Ensure repository"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
+        headers: *sem_hdr
+      register: _repos
+
+    - name: "Create agent-cloud repository"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body:
+          name: agent-cloud
+          project_id: "{{ _pid | int }}"
+          git_url: "{{ _repo_url }}"
+          git_branch: "{{ _repo_branch }}"
+          ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
+        status_code: [201, 204]
+      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+
+    - name: "Ensure static local inventory"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/inventory"
+        headers: *sem_hdr
+      register: _invs
+
+    - name: "Create or update local inventory"
+      ansible.builtin.uri:
+        url: >-
+          {{ _sem_url }}/api/project/{{ _pid }}/inventory{{
+            '/' ~ (_invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first)
+            if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else '' }}
+        method: "{{ 'PUT' if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else 'POST' }}"
+        headers: *sem_hdr
+        body_format: json
+        body: "{{ _inv_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _existing_inv: "{{ _invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | list }}"
+        # Mirrors platform/inventory/local-dev.yml.example, expressed as the
+        # static INI Semaphore stores; openbao_addr uses the container-network
+        # address because tasks execute inside the Semaphore container.
+        _inv_ini: |
+          localhost ansible_connection=local openbao_addr={{ _bao_url_net }} local_mode=true
+
+          [uhhcraft_svc]
+          uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [uhhcraft_svc:vars]
+          service_name=uhhcraft
+          service_url=http://127.0.0.1:3001
+          monorepo_deploy_path=platform/services/uhhcraft/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+        _inv_body: >-
+          {{ {'name': 'local',
+              'project_id': (_pid | int),
+              'type': 'static',
+              'ssh_key_id': (_keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int),
+              'inventory': _inv_ini}
+             | combine({'id': (_existing_inv | first | int)} if (_existing_inv | length > 0) else {}) }}
+      changed_when: true
+
+    - name: "Ensure environment (AppRole injection, as in prod)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
+        headers: *sem_hdr
+      register: _envs
+
+    - name: "Create local-openbao environment"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body:
+          name: local-openbao
+          project_id: "{{ _pid | int }}"
+          json: "{}"
+          env: "{{ {'BAO_ROLE_ID': _role_id.json.data.role_id,
+                    'BAO_SECRET_ID': _secret_id.json.data.secret_id,
+                    'BAO_ADDR': _bao_url_net,
+                    'OPENBAO_ADDR': _bao_url_net} | to_json }}"
+        status_code: [201, 204]
+      when: _envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length == 0
+
+    - name: "Resolve inventory + environment ids"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/{{ item }}"
+        headers: *sem_hdr
+      register: _res
+      loop: [inventory, environment]
+
+    - name: "Set resource ids"
+      ansible.builtin.set_fact:
+        _inv_id: "{{ _res.results[0].json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first }}"
+        _env_id: "{{ _res.results[1].json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first }}"
+
+    # ── Stage 4b: seed LOCAL_FAKE secrets (absent paths only) ───────────
+    - name: "Check existing service secrets"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item }}"
+        headers: *bao_root_hdr
+        status_code: [200, 404]
+      register: _seed_check
+      loop: [uhhcraft]
+
+    - name: "Seed LOCAL_FAKE secrets for absent services"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.item }}"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          data:
+            postgres_password: "LOCAL_FAKE_{{ item.item }}_postgres"
+            redis_password: "LOCAL_FAKE_{{ item.item }}_redis"
+            session_secret: "LOCAL_FAKE_{{ item.item }}_session"
+        status_code: [200, 204]
+      when: item.status == 404
+      loop: "{{ _seed_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ── Stage 5: persist state for the wrapper ──────────────────────────
+    - name: "Write local credentials state (0600, outside the repo)"
+      ansible.builtin.copy:
+        dest: "{{ _state_dir }}/credentials.env"
+        mode: "0600"
+        content: |
+          # agent-cloud local-dev state — generated by bootstrap-local-dev.yml
+          # All values are LOCAL_FAKE-class; never used outside this machine.
+          SEMAPHORE_URL={{ _sem_url }}
+          SEMAPHORE_TOKEN={{ _sem_token }}
+          SEMAPHORE_PROJECT_ID={{ _pid }}
+          SEMAPHORE_INVENTORY_ID={{ _inv_id }}
+          SEMAPHORE_ENVIRONMENT_ID={{ _env_id }}
+          BAO_ADDR={{ _bao_url_host }}
+          BAO_ROLE_ID={{ _role_id.json.data.role_id }}
+          BAO_SECRET_ID={{ _secret_id.json.data.secret_id }}
+
+    # ── Stage 6: templates-as-code against the local instance ───────────
+    - name: "Register templates (shared + local-only)"
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ playbook_dir }}/../semaphore/setup-templates.yml
+          -e semaphore_project_id={{ _pid }}
+          -e semaphore_inventory_id={{ _inv_id }}
+          -e semaphore_environment_id={{ _env_id }}
+          -e semaphore_include_local_templates=true
+      environment:
+        SEMAPHORE_URL: "{{ _sem_url }}"
+        SEMAPHORE_TOKEN: "{{ _sem_token }}"
+      changed_when: true
+
+    - name: "Bootstrap complete"
+      ansible.builtin.debug:
+        msg: >-
+          Local control plane up: OpenBao {{ _bao_url_host }} (dev),
+          Semaphore {{ _sem_url }} (project {{ _pid }}, inventory {{ _inv_id }},
+          environment {{ _env_id }}). State: {{ _state_dir }}/credentials.env.
+          Everything from here runs THROUGH Semaphore.

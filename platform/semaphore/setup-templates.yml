@@ -16,8 +16,16 @@
   vars:
     _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
     _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
-    _project_id: 1
+    # Defaults match the production instance; the local-dev bootstrap overrides
+    # them for the fresh local Semaphore (LOCAL-DEV-DEPLOYMENT.md Phase 0B).
+    _project_id: "{{ semaphore_project_id | default(1) }}"
     _template_config: "{{ lookup('file', playbook_dir + '/templates.yml') | from_yaml }}"
+    # Local-only templates are merged ONLY when explicitly requested (the local
+    # bootstrap sets this); the shared templates.yml stays prod-clean.
+    _templates_local: >-
+      {{ (lookup('file', playbook_dir + '/templates-local.yml') | from_yaml).templates
+         if (semaphore_include_local_templates | default(false) | bool) else [] }}
+    _all_templates: "{{ _template_config.templates + _templates_local }}"
 
   tasks:
     - name: "Validate environment"
@@ -59,23 +67,29 @@
           Authorization: "Bearer {{ _token }}"
           Content-Type: application/json
         body_format: json
-        body:
-          id: "{{ (_existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | first) | default(omit) }}"
-          name: "{{ item.name }}"
-          project_id: "{{ _project_id }}"
-          inventory_id: 2
-          repository_id: "{{ _repo_id }}"
-          environment_id: 2
-          playbook: "{{ item.playbook }}"
-          app: ansible
-          autorun: false
-          suppress_success_alerts: true
-          survey_vars: "{{ item.survey_vars | default(omit) }}"
+        # Body is serialized inside Jinja (to_json) so the id fields stay JSON
+        # integers — Ansible's non-native templating would otherwise stringify
+        # them, which Semaphore >= v2.18 rejects with a 400.
+        body: "{{ _tpl_body | to_json }}"
         status_code: [200, 201, 204]
-      loop: "{{ _template_config.templates }}"
+      vars:
+        _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
+        _tpl_body: >-
+          {{ {'name': item.name,
+              'project_id': (_project_id | int),
+              'inventory_id': (semaphore_inventory_id | default(2) | int),
+              'repository_id': (_repo_id | int),
+              'environment_id': (semaphore_environment_id | default(2) | int),
+              'playbook': item.playbook,
+              'app': 'ansible',
+              'autorun': false,
+              'suppress_success_alerts': true}
+             | combine({'id': (_existing_ids | first | int)} if (_existing_ids | length > 0) else {})
+             | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
+      loop: "{{ _all_templates }}"
       loop_control:
         label: "{{ item.name }}"
 
     - name: "Report"
       ansible.builtin.debug:
-        msg: "Applied {{ _template_config.templates | length }} templates to Semaphore at {{ _semaphore_url }}"
+        msg: "Applied {{ _all_templates | length }} templates to Semaphore at {{ _semaphore_url }}"
