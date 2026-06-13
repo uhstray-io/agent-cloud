@@ -93,6 +93,19 @@ Defer to those files when working within those directories.
 
 When developing new changes, consult `plan/architecture/architecture-reference.md` for document standards and `plan/architecture/SERVICE-INTEGRATION-PLAN.md` for the service onboarding checklist. All implementation work should have an implementation plan in `plan/development/` before coding begins.
 
+## Engineering Principles — Foundational Over One-Shot
+
+**Build foundational, repeatable, reusable changes — never monkey patches or one-shot fixes.** This is the platform's core engineering value; the Critical Deployment Rules, the composable task library, and the credential flow below are all instances of it. When you fix or build something, fix it at the level where it generalizes:
+
+1. **Fix the mechanism, not the symptom.** When a problem shows up in one place, find the general cause and fix it where every caller benefits — never special-case the one site. Examples in this repo: the same-path shared deploy dir (`/var/lib/agent-cloud-deploy`) fixed container bind-mounts for *all* local services, not just DNS; the `detect_runtime` `COMPOSE_CMD` fix corrected a latent bug for every service, not just the one that surfaced it.
+2. **Everything idempotent and re-runnable.** Bootstrap, deploys, resolver wiring, secret management — re-running must converge, not duplicate or error. If a change isn't safe to run twice, it isn't done.
+3. **No manual one-off steps — encode them.** If something had to be done by hand to make it work, it must become a playbook task, a `make` target, a template, or a documented idempotent command before the work is complete. A fix that lives only in your shell history is a defect. (The `/etc/resolver` wiring became `make local-dns-resolver`; ad-hoc API calls are forbidden — config flows through code.)
+4. **One codebase, no forks.** Environment differences (local vs prod) are expressed through inventory vars, compose overlays (`compose.local.yml`), and env-parameterized values — never forked files. Forks drift; parameters don't. Prefer extending a shared template/task over copying it.
+5. **Reusable building blocks over bespoke glue.** Reach for the composable task library and shared libs (`platform/lib/`) first; if a need recurs, promote it to a reusable task/helper rather than re-implementing per service.
+6. **Leave it repeatable for the next person.** Every non-obvious fix carries its *why* (comment or doc) and, where it guards behavior, a test. A workaround that others can't reproduce or understand is tech debt even if it works today.
+
+If a quick patch is genuinely the only option under time pressure, say so explicitly, scope it, and record the foundational follow-up — don't let a one-shot masquerade as the real fix.
+
 ## Critical Deployment Rules
 
 1. **All deployments go through Semaphore.** Never SSH into a VM and run `deploy.sh` directly. Semaphore injects OpenBao credentials via its environment.
