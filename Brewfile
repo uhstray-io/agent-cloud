@@ -11,6 +11,7 @@ brew "make"
 brew "podman"
 brew "podman-compose"
 brew "shellcheck"
+brew "socat"          # local-dev privileged-port forwarder (make local-https)
 brew "yamllint"
 
 # Optional — only for root-requiring services (NetBox app tier profile):

@@ -215,6 +215,69 @@ resolver() {
   _resolver_verify "$zone"
 }
 
+_LAUNCHD_LABEL="io.uhstray.agent-cloud.https"
+_LAUNCHD_PLIST="/Library/LaunchDaemons/${_LAUNCHD_LABEL}.plist"
+
+https() {
+  # Clean port-free https://app.dev.test needs something bound to the Mac's
+  # privileged :443/:80. macOS requires root for ports <1024 (no sysctl escape),
+  # and podman-machine's forwarder is non-root — so this installs a persistent
+  # root LaunchDaemon that socat-forwards 443->caddy_https_port and
+  # 80->caddy_http_port. Opt-in + idempotent + persistent; default (:8443) needs
+  # none of this. Teardown: make local-https-down.
+  local assume_yes="${ASSUME_YES:-0}"
+  [ "${1:-}" = "--yes" ] && assume_yes=1
+  guard "$INV"
+  command -v socat >/dev/null 2>&1 || die "socat not found — run: brew install socat (or: brew bundle)"
+  command -v ansible-inventory >/dev/null || die "ansible-inventory not found"
+  ansible-inventory -i "$INV" --host caddy-local > /tmp/agent-cloud-caddy-host.json 2>/dev/null \
+    || die "no caddy-local host in $INV — add the caddy_svc group (see the example)"
+  local https_target http_target wrapper tmpl
+  https_target=$(python3 -c "import json;print(json.load(open('/tmp/agent-cloud-caddy-host.json')).get('caddy_https_port','8443'))")
+  http_target=$(python3 -c "import json;print(json.load(open('/tmp/agent-cloud-caddy-host.json')).get('caddy_http_port','8088'))")
+  wrapper="${REPO_ROOT}/platform/local-dev/https-forward.sh"
+  tmpl="${REPO_ROOT}/platform/local-dev/${_LAUNCHD_LABEL}.plist.tmpl"
+  [ -f "$wrapper" ] && [ -f "$tmpl" ] || die "forwarder artifacts missing under platform/local-dev/"
+
+  local rendered; rendered=$(mktemp)
+  sed -e "s|__WRAPPER__|${wrapper}|g" \
+      -e "s|__HTTPS_LISTEN__|443|g"   -e "s|__HTTPS_TARGET__|${https_target}|g" \
+      -e "s|__HTTP_LISTEN__|80|g"     -e "s|__HTTP_TARGET__|${http_target}|g" \
+      "$tmpl" > "$rendered"
+  plutil -lint "$rendered" >/dev/null || { rm -f "$rendered"; die "rendered plist failed plutil -lint"; }
+
+  # Idempotent: already-installed + identical => no-op (the read needs no sudo;
+  # /Library/LaunchDaemons is world-readable).
+  if [ -f "$_LAUNCHD_PLIST" ] && cmp -s "$rendered" "$_LAUNCHD_PLIST"; then
+    info "${_LAUNCHD_PLIST} already current — clean URLs active (443->${https_target}, 80->${http_target})"
+    rm -f "$rendered"; return 0
+  fi
+
+  info "About to install the privileged-port forwarder (needs sudo):"
+  info "  443 -> 127.0.0.1:${https_target}   80 -> 127.0.0.1:${http_target}   (persistent LaunchDaemon)"
+  if [ "$assume_yes" != "1" ]; then
+    printf '[local-dev] proceed? [y/N] '; local ans; read -r ans
+    case "$ans" in y|Y|yes) ;; *) info "skipped — re-run any time: make local-https"; rm -f "$rendered"; return 0 ;; esac
+  fi
+  sudo cp "$rendered" "$_LAUNCHD_PLIST"
+  sudo chown root:wheel "$_LAUNCHD_PLIST"
+  sudo chmod 644 "$_LAUNCHD_PLIST"
+  rm -f "$rendered"
+  # Reload (bootout is harmless if not loaded); bootstrap into the system domain.
+  sudo launchctl bootout system "$_LAUNCHD_PLIST" 2>/dev/null || true
+  sudo launchctl bootstrap system "$_LAUNCHD_PLIST"
+  info "installed — clean URLs now work once DNS resolves (make local-dns-resolver):"
+  info "  https://semaphore.dev.test   https://openbao.dev.test   (no port)"
+}
+
+https_down() {
+  [ -f "$_LAUNCHD_PLIST" ] || { info "forwarder not installed — nothing to do"; return 0; }
+  info "Removing the privileged-port forwarder (needs sudo)..."
+  sudo launchctl bootout system "$_LAUNCHD_PLIST" 2>/dev/null || true
+  sudo rm -f "$_LAUNCHD_PLIST"
+  info "removed."
+}
+
 promote() {
   info "running fast pre-push checks..."
   command -v shellcheck >/dev/null && shellcheck -S warning "${REPO_ROOT}"/scripts/*.sh "${REPO_ROOT}"/platform/lib/*.sh
@@ -237,6 +300,8 @@ case "${1:-}" in
   deploy)    shift; deploy "$@" ;;
   validate)  validate ;;
   resolver)  shift; resolver "$@" ;;
+  https)     shift; https "$@" ;;
+  https-down) https_down ;;
   clean)     clean ;;
   promote)   promote ;;
   *) cat <<EOF
@@ -249,6 +314,9 @@ usage: scripts/local-dev.sh <subcommand>
   validate           run Validate All via LOCAL Semaphore
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)
+  https [--yes]      install the persistent root forwarder for clean port-free
+                     https://app.dev.test (sudo; idempotent). Default is :8443.
+  https-down         remove the privileged-port forwarder (sudo)
   clean              remove local control plane (containers, volume, state)
   promote            fast checks, push feature branch, open PR into dev
 EOF

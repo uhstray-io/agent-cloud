@@ -124,12 +124,18 @@ sequenceDiagram
 
 Two things worth knowing up front:
 
-- **Why `:8443`, not `:443`?** Binding privileged ports (<1024) on macOS needs
-  root, and podman-machine's port forwarder runs as your user — so local Caddy
-  publishes the high ports `8088` (HTTP) / `8443` (HTTPS). Use `:8443` in the URL.
+- **Ports: `:8443` by default, or clean `:443` with one opt-in step.** Binding
+  privileged ports (<1024) on macOS needs root, and podman-machine's forwarder
+  runs as your user — so local Caddy publishes the high ports `8088`/`8443` and
+  the default URL is `https://app.dev.test:8443`. For **clean, port-free**
+  `https://app.dev.test`, run `make local-https` once: it installs a persistent,
+  idempotent root LaunchDaemon (`socat`) that forwards `443→8443` and `80→8088`
+  and survives reboots (`make local-https-down` removes it). This is the only
+  way to get `:443` on macOS without running everything as root, and it's built
+  into the tooling rather than a manual hack.
 - **Browser TLS warning.** Caddy mints certs from its own *internal* CA. Your
-  browser will warn until you trust that root once (`https://…:8443` → accept,
-  or install Caddy's local root CA). The connection is real TLS regardless.
+  browser will warn until you trust that root once (`https://…` → accept, or
+  install Caddy's local root CA). The connection is real TLS regardless.
 
 **Exposing a new app:** add a route to the `caddy_routes` list for `caddy_svc`
 in your inventory (host → upstream `container-name:port`) and re-run
@@ -189,6 +195,8 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-deploy-<svc>` | deploy a service through local Semaphore |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |
+| `make local-https` | clean port-free `https://app.dev.test` via a persistent root forwarder (sudo; idempotent) |
+| `make local-https-down` | remove the privileged-port forwarder (sudo) |
 | `make local-validate` | health-check all deployed services |
 | `make local-clean` | tear down the control plane |
 | `make promote` | fast checks → push feature branch → PR into `dev` |

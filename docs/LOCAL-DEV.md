@@ -108,7 +108,7 @@ non-local inventories and non-local `openbao_addr`).
 | NetBox (P2, Docker Desktop) | 127.0.0.1:8000 | app tier only — no orb-agent/discovery locally |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
 | hickory-dns | 127.0.0.1:5300 | **deployed + working**; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
-| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name (`https://semaphore.dev.test:8443`, `https://openbao.dev.test:8443`) |
+| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.dev.test` (443→8443, 80→8088) |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
 | o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |
@@ -160,6 +160,12 @@ reference-machine allocations in the plan (§5).
   `local_monorepo_dir | default('/home/' ~ ansible_user)` fail on undefined
   `ansible_user` *even when the left side is set* — Jinja evaluates filter
   arguments eagerly.
+- **Clean `:443` needs a privileged forwarder.** macOS requires root to bind
+  ports <1024 and has no `ip_unprivileged_port_start` equivalent; podman-machine's
+  forwarder (gvproxy) is non-root, so local Caddy can only publish `8443`/`8088`.
+  `make local-https` installs a persistent root LaunchDaemon (`socat`) that
+  forwards `443→8443` + `80→8088` — the one privileged hop for port-free URLs,
+  idempotent + reboot-persistent. Default (`:8443`) needs none of it.
 - **`ghcr.io/uhstray-io/uhhcraft` is private** — anonymous pulls 403 before
   the arch question is even observable. Local deploys of owned images need a
   `read:packages` PAT (or a local build override); backing images

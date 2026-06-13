@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-https local-https-down local-clean promote
 .PHONY: local-deploy-%
 
 help: ## Show available targets
@@ -30,6 +30,12 @@ local-dns: ## Bring local DNS fully online: deploy hickory + wire macOS resolver
 
 local-dns-resolver: ## Point macOS /etc/resolver/<zone> at the local DNS (sudo; idempotent, re-runnable)
 	@$(LOCAL_DEV) resolver
+
+local-https: ## Clean port-free https://app.dev.test via a persistent root forwarder (sudo; idempotent)
+	@$(LOCAL_DEV) https
+
+local-https-down: ## Remove the privileged-port forwarder (sudo)
+	@$(LOCAL_DEV) https-down
 
 local-clean: ## Remove the local control plane (containers, volume, state)
 	@$(LOCAL_DEV) clean
