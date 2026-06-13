@@ -24,6 +24,9 @@ local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
 
+local-smoke: ## Smoke-test the live local stack (control plane, DNS, Caddy/TLS); --full adds lint+BATS
+	@bash scripts/local-smoke.sh $(ARGS)
+
 local-dns: ## Bring local DNS fully online: deploy hickory + wire macOS resolver (idempotent)
 	@$(LOCAL_DEV) deploy dns
 	@$(LOCAL_DEV) resolver
