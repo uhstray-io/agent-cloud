@@ -160,6 +160,8 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [LOCAL-DEV-DEPLOYMENT.md](../development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
 | [DNS-SERVER-DEPLOYMENT.md](../development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
 | [NETBOX-LOCAL-ENGINE.md](../development/NETBOX-LOCAL-ENGINE.md) | PROPOSED | Fix for local NetBox: podman-VM Semaphore can't reach Docker Desktop — run app-tier under podman (profile-gated, discovery excluded). |
+| [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | PROPOSED | Authentik central IdP / SSO for all services (local-dev first, then prod): composable service, Caddy forward_auth + OIDC, blueprints config-as-code, Authentik-for-everything incl storefront. |
+| [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | PROPOSED | Fix the `*.dev.test` browser cert warning by trusting Caddy's internal-CA root via an idempotent `make local-tls-trust`; prod = ACME (DNS plan). |
 
 ### Archived Plans
 
