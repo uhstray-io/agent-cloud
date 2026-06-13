@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns-resolver local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-clean promote
 .PHONY: local-deploy-%
 
 help: ## Show available targets
@@ -24,7 +24,11 @@ local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
 
-local-dns-resolver: ## Point macOS /etc/resolver/<zone> at the local DNS (sudo, opt-in)
+local-dns: ## Bring local DNS fully online: deploy hickory + wire macOS resolver (idempotent)
+	@$(LOCAL_DEV) deploy dns
+	@$(LOCAL_DEV) resolver
+
+local-dns-resolver: ## Point macOS /etc/resolver/<zone> at the local DNS (sudo; idempotent, re-runnable)
 	@$(LOCAL_DEV) resolver
 
 local-clean: ## Remove the local control plane (containers, volume, state)

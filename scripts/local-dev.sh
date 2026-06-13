@@ -62,12 +62,24 @@ PY
 
 init() {
   preflight
-  if [ -f "$INV" ]; then
+  if [ -f "$INV" ] && [ "${REFRESH:-0}" != "1" ]; then
     info "working inventory already exists: $INV"
+    # Drift check: the working copy is DERIVED from the example. When the
+    # example gains a service group (e.g. dns_svc), an old working copy lacks
+    # it and host-side commands that read it (resolver) break. Warn + point at
+    # the refresh path rather than silently drifting.
+    local g missing=""
+    for g in $(grep -oE '^[[:space:]]+[a-z0-9_]+_svc:' "$EXAMPLE" | tr -d ' :'); do
+      grep -qE "^[[:space:]]+${g}:" "$INV" || missing="$missing $g"
+    done
+    if [ -n "$missing" ]; then
+      warn "working inventory is missing example group(s):${missing}"
+      warn "refresh it (overwrites $INV — re-apply any local overrides after): REFRESH=1 make local-init"
+    fi
   else
     sed -e "s|__REPO_DIR__|${REPO_ROOT}|g" -e "s|__HOME_DIR__|${HOME}|g" \
       "$EXAMPLE" > "$INV"
-    info "created $INV from example"
+    info "wrote $INV from example"
   fi
   guard "$INV"
 }
@@ -141,10 +153,28 @@ clean() {
   info "clean. Re-create with: make local-bootstrap"
 }
 
+# Confirm the system resolver (getaddrinfo / dscacheutil — NOT dig, which
+# ignores /etc/resolver) routes the zone to the local DNS. Soft: warns, never
+# fails — macOS picks new resolver files up immediately, but DNS must be up.
+_resolver_verify() {
+  local zone="$1" got
+  got=$(dscacheutil -q host -a name "probe.${zone}" 2>/dev/null \
+        | awk '/^ip_address:/{print $2; exit}')
+  if [ "$got" = "127.0.0.1" ]; then
+    info "verified: probe.${zone} -> 127.0.0.1 via the system resolver"
+  else
+    warn "system resolver returned '${got:-nothing}' for probe.${zone} — is local DNS deployed (make local-deploy-dns)?"
+  fi
+}
+
 resolver() {
   # Wire macOS split-DNS at the configured dev zone to the local hickory-dns
-  # (127.0.0.1:<dns_port>). Opt-in + interactive: it is the only sudo step in
-  # the local story, so it is never folded into `init`/`bootstrap`.
+  # (127.0.0.1:<dns_port>). REPEATABLE: idempotent (no-op + no sudo when already
+  # correct), and scriptable with --yes / ASSUME_YES=1. It cannot run through
+  # Semaphore — /etc/resolver is a macOS HOST file outside the podman VM, so it
+  # is a host-bootstrap step (make's job), never a deploy.
+  local assume_yes="${ASSUME_YES:-0}"
+  [ "${1:-}" = "--yes" ] && assume_yes=1
   guard "$INV"
   command -v ansible-inventory >/dev/null || die "ansible-inventory not found"
   ansible-inventory -i "$INV" --host dns-local > /tmp/agent-cloud-dns-host.json 2>/dev/null \
@@ -154,18 +184,35 @@ resolver() {
   port=$(python3 -c "import json;print(json.load(open('/tmp/agent-cloud-dns-host.json')).get('dns_port','5300'))")
   [ -n "$zone" ] || die "dns_zone is not set on dns-local"
   local target="/etc/resolver/${zone}"
-  info "About to write ${target} (needs sudo):"
-  printf '    nameserver 127.0.0.1\n    port %s\n' "$port"
-  printf '[local-dev] proceed? [y/N] '
-  local ans; read -r ans
-  case "$ans" in
-    y|Y|yes) ;;
-    *) info "skipped — test manually with: dig @127.0.0.1 -p ${port} foo.${zone}"; return 0 ;;
-  esac
+  local want; want="$(printf 'nameserver 127.0.0.1\nport %s\n' "$port")"
+
+  # Idempotent: /etc/resolver files are world-readable (0644), so the compare
+  # needs no sudo. Already-correct => no write, no sudo prompt.
+  if [ -f "$target" ] && [ "$(cat "$target" 2>/dev/null)" = "$want" ]; then
+    info "${target} already correct — nothing to do"
+    _resolver_verify "$zone"
+    return 0
+  fi
+
+  # Soft pre-check: a resolver file pointing at a dead port adds failed lookups.
+  if [ -z "$(dig +short +time=2 +tries=1 -p "$port" @127.0.0.1 "probe.${zone}" 2>/dev/null)" ]; then
+    warn "local DNS is not answering on 127.0.0.1:${port} yet — run 'make local-deploy-dns' first (writing the file anyway)"
+  fi
+
+  if [ "$assume_yes" != "1" ]; then
+    info "About to write ${target} (needs sudo):"
+    printf '%s\n' "$want" | sed 's/^/    /'
+    printf '[local-dev] proceed? [y/N] '
+    local ans; read -r ans
+    case "$ans" in
+      y|Y|yes) ;;
+      *) info "skipped — re-run any time: make local-dns-resolver"; return 0 ;;
+    esac
+  fi
   sudo mkdir -p /etc/resolver
-  printf 'nameserver 127.0.0.1\nport %s\n' "$port" | sudo tee "$target" >/dev/null
+  printf '%s\n' "$want" | sudo tee "$target" >/dev/null
   info "wrote ${target} — *.${zone} now resolves via local DNS"
-  info "verify: dscutil --dns | grep -A2 ${zone}  ||  dig foo.${zone}"
+  _resolver_verify "$zone"
 }
 
 promote() {
@@ -189,7 +236,7 @@ case "${1:-}" in
   bootstrap) bootstrap ;;
   deploy)    shift; deploy "$@" ;;
   validate)  validate ;;
-  resolver)  resolver ;;
+  resolver)  shift; resolver "$@" ;;
   clean)     clean ;;
   promote)   promote ;;
   *) cat <<EOF
@@ -200,7 +247,8 @@ usage: scripts/local-dev.sh <subcommand>
   bootstrap          stand up local OpenBao + Semaphore + templates
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   validate           run Validate All via LOCAL Semaphore
-  resolver           wire macOS /etc/resolver/<zone> to the local DNS (sudo)
+  resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
+                     idempotent — re-runnable, no-ops when already correct)
   clean              remove local control plane (containers, volume, state)
   promote            fast checks, push feature branch, open PR into dev
 EOF

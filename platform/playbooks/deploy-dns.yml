@@ -148,3 +148,13 @@
           DNS healthy: *.{{ dns_zone }} -> {{ _dig_wild.stdout | trim }};
           forward {{ dns_forward_probe | default('one.one.one.one') }} ->
           {{ _dig_fwd.stdout | trim if (_dig_fwd.stdout | trim | length > 0) else '(no answer — check egress/upstream)' }}
+
+    # Host-side resolver wiring can't run through Semaphore (it's the Mac's
+    # /etc/resolver, outside this VM) — point the developer at the idempotent
+    # make target instead.
+    - name: "Local-dev hint: wire macOS resolution"
+      ansible.builtin.debug:
+        msg: >-
+          To resolve *.{{ dns_zone }} natively on the Mac, run (idempotent):
+          make local-dns-resolver
+      when: local_mode | default(false) | bool

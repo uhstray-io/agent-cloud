@@ -22,9 +22,39 @@ make local-validate
 `make local-deploy-dns` is the **reference working deploy** — it runs entirely
 through the local Semaphore, renders the zone + config from inventory vars,
 starts hickory-dns, and verifies resolution with `dig` (wildcard answer +
-forwarded external name). After it, `make local-dns-resolver` points
-`/etc/resolver/<zone>` at `127.0.0.1:5300` so `*.<zone>` resolves natively on
-the Mac.
+forwarded external name). `make local-dns` does that *and* wires the host
+resolver in one step.
+
+### Host name resolution is repeatable, not a one-off
+
+Two things make `*.<zone>` resolve **natively** on the Mac (so `curl
+http://openbao.<zone>:8200` works without `--resolve`), and both are
+idempotent — safe to re-run on any machine, any time:
+
+1. **`make local-dns-resolver`** writes `/etc/resolver/<zone>` →
+   `127.0.0.1:5300`. It reads the zone/port from the inventory, **no-ops when
+   the file is already correct** (no needless sudo), accepts `--yes` /
+   `ASSUME_YES=1` for scripting, warns if local DNS isn't up yet, and verifies
+   the system resolver afterward via `dscacheutil`.
+2. **`REFRESH=1 make local-init`** regenerates the gitignored working inventory
+   from the committed example. Plain `make local-init` *warns* when the example
+   has gained a service group your working copy lacks (e.g. `dns_svc`) — that
+   drift is why a resolver run can't find the zone — and points you here.
+
+**Why this needs sudo and can't go through Semaphore:** `/etc/resolver` is a
+macOS *host* file outside the podman VM. Semaphore runs in a container in the
+VM and can't touch it, so resolver wiring is a *host-bootstrap* step (make's
+job, like `brew bundle`) — the sudo is intrinsic, not a gap. Once written, the
+file persists across reboots; the DNS container restarts itself and re-publishes
+`5300`, so resolution keeps working without re-running anything.
+
+**Teardown:** `make local-clean` leaves `/etc/resolver/<zone>` in place (it
+needs sudo to remove). Drop it with `sudo rm /etc/resolver/<zone>` if you stop
+using local DNS, or it will add a failed lookup for that zone once DNS is gone.
+
+This DNS path is for **Mac-host / developer** access. Container-to-container
+traffic uses podman's own network DNS (`local-openbao:8200` on the `local-dev`
+network) — containers don't query hickory and don't need to.
 
 The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
 
