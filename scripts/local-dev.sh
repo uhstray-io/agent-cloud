@@ -306,7 +306,9 @@ tls_trust() {
     info "Caddy root CA already trusted (SHA-1 ${fp:0:12}…) — nothing to do"
     return 0
   fi
-  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/caddy-root.XXXXXX.crt")
+  # BSD mktemp (macOS) requires the X's at the END of the template — no .crt
+  # suffix. security add-trusted-cert reads PEM regardless of extension.
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/caddy-root.XXXXXX")
   printf '%s' "$pem" > "$tmp"
   info "About to trust Caddy's local CA root in the System keychain (needs sudo):"
   info "  $(printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null | sed -E 's/^subject=//')  SHA-1 ${fp}"
