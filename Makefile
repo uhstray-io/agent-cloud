@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-https local-https-down local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
 .PHONY: local-deploy-%
 
 help: ## Show available targets
@@ -45,6 +45,12 @@ local-https: ## Clean port-free https://app.dev.test via a persistent root forwa
 
 local-https-down: ## Remove the privileged-port forwarder (sudo)
 	@$(LOCAL_DEV) https-down
+
+local-tls-trust: ## Trust Caddy's local CA so *.dev.test has no cert warning (sudo; idempotent)
+	@$(LOCAL_DEV) tls-trust
+
+local-tls-untrust: ## Remove the trusted Caddy root CA (sudo)
+	@$(LOCAL_DEV) tls-untrust
 
 local-clean: ## Remove the local control plane (containers, volume, state)
 	@$(LOCAL_DEV) clean

@@ -160,6 +160,13 @@ reference-machine allocations in the plan (§5).
   `local_monorepo_dir | default('/home/' ~ ansible_user)` fail on undefined
   `ansible_user` *even when the left side is set* — Jinja evaluates filter
   arguments eagerly.
+- **Cert warning (`NET::ERR_CERT_AUTHORITY_INVALID`) → `make local-tls-trust`.**
+  Caddy signs `*.dev.test` from its own internal CA. `make local-tls-trust`
+  (sudo, idempotent) extracts Caddy's root from
+  `/data/caddy/pki/authorities/local/root.crt` and trusts it in the macOS System
+  keychain by fingerprint (the root CN is year-stamped + rotates, so trust/
+  untrust key on the SHA-1, not the name). `make local-tls-untrust` reverses it.
+  A `caddy-data` volume wipe ⇒ new CA ⇒ re-run. Plan: `LOCAL-DEV-TLS-TRUST.md`.
 - **Clean `:443` needs a privileged forwarder.** macOS requires root to bind
   ports <1024 and has no `ip_unprivileged_port_start` equivalent; podman-machine's
   forwarder (gvproxy) is non-root, so local Caddy can only publish `8443`/`8088`.

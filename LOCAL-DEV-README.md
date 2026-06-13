@@ -133,9 +133,12 @@ Two things worth knowing up front:
   and survives reboots (`make local-https-down` removes it). This is the only
   way to get `:443` on macOS without running everything as root, and it's built
   into the tooling rather than a manual hack.
-- **Browser TLS warning.** Caddy mints certs from its own *internal* CA. Your
-  browser will warn until you trust that root once (`https://…` → accept, or
-  install Caddy's local root CA). The connection is real TLS regardless.
+- **Browser TLS warning → one command.** Caddy mints certs from its own
+  *internal* CA, so browsers warn (`NET::ERR_CERT_AUTHORITY_INVALID`) until you
+  trust that CA. Run `make local-tls-trust` once (sudo; idempotent) — it trusts
+  Caddy's root in the macOS keychain and the warning is gone for all
+  `*.dev.test` hosts. `make local-tls-untrust` reverses it. (Safari/Chrome use
+  the keychain; Firefox has its own store.)
 
 **Exposing a new app:** add a route to the `caddy_routes` list for `caddy_svc`
 in your inventory (host → upstream `container-name:port`) and re-run
@@ -197,6 +200,8 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |
 | `make local-https` | clean port-free `https://app.dev.test` via a persistent root forwarder (sudo; idempotent) |
 | `make local-https-down` | remove the privileged-port forwarder (sudo) |
+| `make local-tls-trust` | trust Caddy's local CA so `*.dev.test` has no cert warning (sudo; idempotent) |
+| `make local-tls-untrust` | remove the trusted Caddy root CA (sudo) |
 | `make local-validate` | health-check all deployed services |
 | `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |
 | `make local-netbox` | bring up the NetBox app tier under podman |
