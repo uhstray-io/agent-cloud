@@ -74,6 +74,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **Semaphore** | Deployment orchestration -- Ansible playbook execution |
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
+| **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
 | **WisAI** | Local LLM inference backbone -- Ollama workers + Open WebUI coordinator (OpenAI-compatible API) |
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
@@ -90,6 +91,7 @@ agent-cloud/
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
+      dns/                hickory-dns internal resolution (zones-as-code)
       caddy/              Reverse proxy
       inference-ollama/   WisAI worker nodes (GPU, Ollama)
       inference-webui/    WisAI coordinator (Open WebUI + Postgres)

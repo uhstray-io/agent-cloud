@@ -13,9 +13,18 @@ generated value carries the `LOCAL_FAKE_` prefix.
 brew bundle                                  # toolchain (Brewfile)
 podman machine start                         # if not already running
 make local-bootstrap                         # control plane up + configured
+make local-deploy-dns                        # local DNS (fully working today)
+make local-dns-resolver                      # opt-in: macOS /etc/resolver (sudo)
 make local-deploy-<service>                  # e.g. local-deploy-uhhcraft
 make local-validate
 ```
+
+`make local-deploy-dns` is the **reference working deploy** — it runs entirely
+through the local Semaphore, renders the zone + config from inventory vars,
+starts hickory-dns, and verifies resolution with `dig` (wildcard answer +
+forwarded external name). After it, `make local-dns-resolver` points
+`/etc/resolver/<zone>` at `127.0.0.1:5300` so `*.<zone>` resolves natively on
+the Mac.
 
 The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
 
@@ -26,11 +35,13 @@ The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
    automatically**, project/key/repository/inventory/environment provisioned
 3. **Templates-as-code** — `setup-templates.yml` registers the full shared
    catalog plus `templates-local.yml` against the local instance
-4. **Engine + working-tree wiring** — the VM's rootful podman socket and the
-   **repo working tree** are bind-mounted into the Semaphore container; the
-   Semaphore repository is a **local path** (`/workspace/agent-cloud`), so
-   tasks execute your *uncommitted* changes, and deploys drive the real
-   engine through the mounted socket
+4. **Engine + working-tree + shared-deploy wiring** — three mounts make the
+   socket model work: the VM's rootful podman socket (deploys drive the real
+   engine), the **repo working tree** at `/workspace/agent-cloud` (the
+   Semaphore repository is a local path, so tasks run your *uncommitted*
+   changes), and a **shared deploy dir** `/var/lib/agent-cloud-deploy` mounted
+   at the *same absolute path* in the container and on the VM (see "host
+   bind-mounts" below)
 
 State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 
@@ -65,7 +76,7 @@ non-local inventories and non-local `openbao_addr`).
 | NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
 | NetBox (P2, Docker Desktop) | 127.0.0.1:8000 | app tier only — no orb-agent/discovery locally |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
-| hickory-dns (P4) | 127.0.0.1:5300 | udp+tcp → :53 in-container; `/etc/resolver/<zone>` points here |
+| hickory-dns | 127.0.0.1:5300 | **deployed + working**; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
 | Caddy local (P4) | 127.0.0.1:8088 / 8443 | local Caddyfile variant, internal CA |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
@@ -103,6 +114,16 @@ reference-machine allocations in the plan (§5).
   machine VM enforces SELinux, which otherwise denies the cross-container
   socket even to root. `CONTAINER_HOST` in the Semaphore environment points
   podman/podman-compose at it.
+- **Host bind-mounts (config files) need a same-path shared dir.** podman-compose
+  runs *inside* the Semaphore container, but a `./config`-style bind-mount source
+  is resolved on the **VM engine**, which can't see the container's private
+  filesystem (`statfs ... no such file or directory`). Fix: `/var/lib/agent-cloud-deploy`
+  is mounted into Semaphore at the *same absolute path* it has on the VM, and
+  local-mode deploys copy the working tree there (not `~/agent-cloud`) — so the
+  compose project dir is identical on both sides and host mounts resolve. The DNS
+  service is the first to need this (its zone files); services using only named
+  volumes + `env_file` (uhhcraft) don't. Containers reading those mounts also need
+  `security_opt: [label=disable]` (SELinux) — in `compose.local.yml`, never prod.
 - **`ansible_user` must be defined in local inventories** even with
   `ansible_connection=local`: playbook defaults like
   `local_monorepo_dir | default('/home/' ~ ansible_user)` fail on undefined

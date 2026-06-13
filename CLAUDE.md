@@ -71,6 +71,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/uhhcraft/CLAUDE.md` — UhhCraft storefront (first WebSmith-built site)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
+- `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
@@ -83,6 +84,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
 - `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
+- `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; see also `docs/LOCAL-DEV.md`
+- `plan/development/DNS-SERVER-DEPLOYMENT.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
