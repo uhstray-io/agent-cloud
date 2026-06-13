@@ -1,0 +1,106 @@
+---
+# deploy-caddy.yml — Caddy reverse proxy deploy (composable pattern).
+#
+# Phase 1: Place repo + render .env (and, in local-dev, Caddyfile.local) from
+#          inventory vars. No secrets locally — `local_certs` uses Caddy's
+#          internal CA. (Prod DNS-01 needs a Cloudflare key; wiring that via
+#          manage-secrets is a separate, prod-only follow-up — see README.)
+# Phase 2: deploy.sh — container lifecycle (compose up, wait healthy).
+# Phase 3: Verify the admin API loaded the configured routes.
+#
+# Source of truth: plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 4 (Caddy local
+# profile); plan/architecture/CADDY-REVERSE-PROXY.md.
+
+# ── Phase 1: Place repo + render config ─────────────────────────────────────
+- name: "Phase 1: Place repo + render Caddy config"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _templates: "{{ playbook_dir }}/../services/caddy/deployment/templates"
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Render compose .env"
+      ansible.builtin.template:
+        src: "{{ _templates }}/env.j2"
+        dest: "{{ _deploy_dir }}/.env"
+        mode: "0644"
+
+    - name: "Render local Caddyfile (local mode only)"
+      ansible.builtin.template:
+        src: "{{ _templates }}/Caddyfile.local.j2"
+        dest: "{{ _deploy_dir }}/Caddyfile.local"
+        mode: "0644"
+      when: local_mode | default(false) | bool
+
+    - name: "Ensure the sites fragment dir exists"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/sites"
+        state: directory
+        mode: "0755"
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start Caddy"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify routes loaded ───────────────────────────────────────────
+- name: "Phase 3: Verify Caddy config"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Read the running config from the admin API"
+      # 127.0.0.1, not localhost: the admin API is IPv4-only and localhost
+      # resolves to ::1 first in the caddy image.
+      ansible.builtin.command: >-
+        {{ _engine }} exec caddy wget -q -O - http://127.0.0.1:2019/config/
+      register: _cfg
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: _cfg.rc == 0 and (_cfg.stdout | length) > 0
+
+    - name: "Assert each configured route is present in the running config"
+      ansible.builtin.assert:
+        that: (item.host) in _cfg.stdout
+        fail_msg: "route {{ item.host }} not found in Caddy's running config"
+        success_msg: "route {{ item.host }} -> {{ item.upstream }} loaded"
+      loop: "{{ caddy_routes | default([]) }}"
+      loop_control:
+        label: "{{ item.host }}"
+      when: caddy_routes | default([]) | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          Caddy healthy with {{ caddy_routes | default([]) | length }} route(s):
+          {{ caddy_routes | default([]) | map(attribute='host') | join(', ') | default('(none — fragments only)') }}

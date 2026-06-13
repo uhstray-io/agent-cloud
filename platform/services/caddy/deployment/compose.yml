@@ -3,18 +3,36 @@ name: caddy-reverse-proxy
 services:
   caddy:
     container_name: caddy
-    image: iarekylew00t/caddy-cloudflare:latest
+    # Env-parameterized (prod defaults are byte-identical to the long-standing
+    # values). Local-dev overrides via .env: a plain caddy image (no Cloudflare
+    # plugin needed with `tls internal`), loopback high ports, and a rendered
+    # local Caddyfile — none of which can be expressed as a compose.local.yml
+    # overlay, since overlays MERGE ports/volumes (append-only) rather than
+    # replace them.
+    image: ${CADDY_IMAGE:-iarekylew00t/caddy-cloudflare:latest}
     restart: always
     ports:
-      - '80:80'
-      - '443:443'
+      - "${CADDY_HTTP_BIND:-0.0.0.0}:${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443"
     volumes:
       - caddy-config:/config
       - caddy-data:/data
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      # CADDYFILE selects which file backs /etc/caddy/Caddyfile: the committed
+      # prod Caddyfile by default, or a rendered Caddyfile.local in local-dev.
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile
       # Per-site fragments. Read-only — only Ansible writes here, via
       # platform/playbooks/tasks/distribute-caddy-site.yml.
       - ./sites:/etc/caddy/sites:ro
+    healthcheck:
+      # Caddy's admin API answers once the server is up and the config loaded —
+      # a real liveness signal, not just "process started". Use 127.0.0.1, not
+      # localhost: the admin binds IPv4-only, but `localhost` resolves to ::1
+      # first in this image, which would refuse the connection.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
 
 volumes:
   caddy-config:

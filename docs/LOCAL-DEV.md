@@ -15,6 +15,7 @@ podman machine start                         # if not already running
 make local-bootstrap                         # control plane up + configured
 make local-deploy-dns                        # local DNS (fully working today)
 make local-dns-resolver                      # opt-in: macOS /etc/resolver (sudo)
+make local-deploy-caddy                      # reverse proxy (internal-CA HTTPS)
 make local-deploy-<service>                  # e.g. local-deploy-uhhcraft
 make local-validate
 ```
@@ -107,7 +108,7 @@ non-local inventories and non-local `openbao_addr`).
 | NetBox (P2, Docker Desktop) | 127.0.0.1:8000 | app tier only — no orb-agent/discovery locally |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
 | hickory-dns | 127.0.0.1:5300 | **deployed + working**; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
-| Caddy local (P4) | 127.0.0.1:8088 / 8443 | local Caddyfile variant, internal CA |
+| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name (`https://semaphore.dev.test:8443`, `https://openbao.dev.test:8443`) |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
 | o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |

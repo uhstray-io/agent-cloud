@@ -411,6 +411,27 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          [caddy_svc]
+          caddy-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [caddy_svc:vars]
+          ansible_user=semaphore
+          service_name=caddy
+          monorepo_deploy_path=platform/services/caddy/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          caddy_image=docker.io/library/caddy:2-alpine
+          caddy_file=./Caddyfile.local
+          caddy_http_bind=127.0.0.1
+          caddy_http_port=8088
+          caddy_https_bind=127.0.0.1
+          caddy_https_port=8443
+          caddy_routes=[{'host': 'semaphore.dev.test', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.dev.test', 'upstream': 'local-openbao:8200'}]
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [uhhcraft_svc]
           uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
 

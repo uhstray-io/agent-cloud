@@ -1,0 +1,26 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image / ports / Caddyfile are env-parameterized in the BASE file (compose
+# merges those lists append-only, so they can't be overridden here); this
+# overlay carries only what overlays CAN add: caps, SELinux opt, and the extra
+# network that lets Caddy reverse-proxy the control-plane containers by name.
+
+networks:
+  # podman-compose requires every network a service references to be declared
+  # at top level — including the otherwise-implicit default.
+  default:
+  # Created by bootstrap-local-dev.yml; the control-plane containers
+  # (local-openbao, local-semaphore) live here.
+  local-dev:
+    external: true
+
+services:
+  caddy:
+    mem_limit: 256m
+    cpus: 0.75
+    # The podman-machine VM enforces SELinux; reading the bind-mounted
+    # Caddyfile/sites from a container needs this. Local-only.
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev

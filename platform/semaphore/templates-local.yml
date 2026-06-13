@@ -14,6 +14,10 @@ templates:
   - name: "Deploy DNS (Local)"
     playbook: platform/playbooks/deploy-dns.yml
 
+  # Local Caddy — internal-CA TLS, reverse-proxies the control plane by name.
+  - name: "Deploy Caddy (Local)"
+    playbook: platform/playbooks/deploy-caddy.yml
+
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
 #     playbook: platform/playbooks/bootstrap-data.yml

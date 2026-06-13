@@ -1,0 +1,18 @@
+{# Local-dev Caddyfile, rendered by deploy-caddy.yml from inventory vars.
+   Uses Caddy's internal CA (`local_certs`) — no Cloudflare token on the laptop.
+   Routes proxy the local services by their podman-network name (Caddy joins the
+   local-dev network via compose.local.yml), so no host.containers.internal hop.
+   Do NOT edit by hand — re-run the playbook. #}
+{
+	local_certs
+}
+
+{% for r in caddy_routes | default([]) %}
+{{ r.host }} {
+	reverse_proxy {{ r.upstream }}
+}
+
+{% endfor %}
+# Per-service fragments distributed by tasks/distribute-caddy-site.yml (none yet
+# locally — the glob tolerates zero matches).
+import sites/*.caddy
