@@ -141,6 +141,33 @@ clean() {
   info "clean. Re-create with: make local-bootstrap"
 }
 
+resolver() {
+  # Wire macOS split-DNS at the configured dev zone to the local hickory-dns
+  # (127.0.0.1:<dns_port>). Opt-in + interactive: it is the only sudo step in
+  # the local story, so it is never folded into `init`/`bootstrap`.
+  guard "$INV"
+  command -v ansible-inventory >/dev/null || die "ansible-inventory not found"
+  ansible-inventory -i "$INV" --host dns-local > /tmp/agent-cloud-dns-host.json 2>/dev/null \
+    || die "no dns-local host in $INV — add the dns_svc group (see the example)"
+  local zone port
+  zone=$(python3 -c "import json;print(json.load(open('/tmp/agent-cloud-dns-host.json')).get('dns_zone',''))")
+  port=$(python3 -c "import json;print(json.load(open('/tmp/agent-cloud-dns-host.json')).get('dns_port','5300'))")
+  [ -n "$zone" ] || die "dns_zone is not set on dns-local"
+  local target="/etc/resolver/${zone}"
+  info "About to write ${target} (needs sudo):"
+  printf '    nameserver 127.0.0.1\n    port %s\n' "$port"
+  printf '[local-dev] proceed? [y/N] '
+  local ans; read -r ans
+  case "$ans" in
+    y|Y|yes) ;;
+    *) info "skipped — test manually with: dig @127.0.0.1 -p ${port} foo.${zone}"; return 0 ;;
+  esac
+  sudo mkdir -p /etc/resolver
+  printf 'nameserver 127.0.0.1\nport %s\n' "$port" | sudo tee "$target" >/dev/null
+  info "wrote ${target} — *.${zone} now resolves via local DNS"
+  info "verify: dscutil --dns | grep -A2 ${zone}  ||  dig foo.${zone}"
+}
+
 promote() {
   info "running fast pre-push checks..."
   command -v shellcheck >/dev/null && shellcheck -S warning "${REPO_ROOT}"/scripts/*.sh "${REPO_ROOT}"/platform/lib/*.sh
@@ -162,6 +189,7 @@ case "${1:-}" in
   bootstrap) bootstrap ;;
   deploy)    shift; deploy "$@" ;;
   validate)  validate ;;
+  resolver)  resolver ;;
   clean)     clean ;;
   promote)   promote ;;
   *) cat <<EOF
@@ -172,6 +200,7 @@ usage: scripts/local-dev.sh <subcommand>
   bootstrap          stand up local OpenBao + Semaphore + templates
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   validate           run Validate All via LOCAL Semaphore
+  resolver           wire macOS /etc/resolver/<zone> to the local DNS (sudo)
   clean              remove local control plane (containers, volume, state)
   promote            fast checks, push feature branch, open PR into dev
 EOF

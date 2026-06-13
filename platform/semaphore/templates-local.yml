@@ -8,7 +8,11 @@
 # stays prod-clean; applying THIS file to production is structurally prevented
 # by that flag defaulting to false.
 
-templates: []
+templates:
+  # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
+  # Plan: DNS-SERVER-DEPLOYMENT.md (local half: LOCAL-DEV-DEPLOYMENT.md §5.1).
+  - name: "Deploy DNS (Local)"
+    playbook: platform/playbooks/deploy-dns.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"

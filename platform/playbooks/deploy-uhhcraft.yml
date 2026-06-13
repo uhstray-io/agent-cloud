@@ -79,7 +79,7 @@
       ansible.builtin.shell: |
         set -o pipefail
         mkdir -p "{{ _monorepo_dir }}"
-        tar -C "{{ local_workspace_dir }}" --exclude .git -cf - . \
+        tar -C "{{ local_workspace_dir }}" --exclude .git --exclude .remember -cf - . \
           | tar -C "{{ _monorepo_dir }}" -xf -
       when: local_mode | default(false) | bool
       changed_when: true

@@ -51,6 +51,14 @@
     _repo_host_dir: "{{ playbook_dir | dirname | dirname }}"
     _repo_mount: /workspace/agent-cloud
     _repo_branch: "{{ local_repo_branch | default('main') }}"
+    # Shared deploy dir — the crux of running deploys through the mounted engine
+    # socket. podman-compose runs INSIDE the Semaphore container, but bind-mount
+    # source paths are resolved on the VM engine, which can't see the
+    # container's private filesystem. Mounting one VM directory into Semaphore
+    # at the SAME absolute path makes the compose project dir identical on both
+    # sides, so `./config`-style host mounts resolve correctly. local-mode
+    # deploys copy the working tree here (writable) instead of ~/agent-cloud.
+    _deploy_share: /var/lib/agent-cloud-deploy
 
   tasks:
     # ── Stage 0: preflight ──────────────────────────────────────────────
@@ -155,7 +163,17 @@
     # ── Stage 2: Semaphore (SQLite slim profile) ────────────────────────
     # The VM's rootful podman socket is mounted in so Semaphore-run deploy
     # tasks can drive podman remotely (CONTAINER_HOST in the environment).
-    - name: "Recreate Semaphore if socket mount or label=disable is missing"
+    - name: "Ensure the shared deploy dir exists on the VM"
+      # Created on the VM (not the container) so the same absolute path can be
+      # mounted into Semaphore — see _deploy_share rationale above. 1777 lets the
+      # non-root semaphore-container uid write the copied tree.
+      ansible.builtin.command: >-
+        podman machine ssh
+        "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
+      register: _share_mkdir
+      changed_when: false
+
+    - name: "Recreate Semaphore if any required mount or label=disable is missing"
       ansible.builtin.shell: |
         set -o pipefail
         if podman container exists {{ _sem_name }}; then
@@ -163,6 +181,7 @@
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
           if ! echo "$MOUNTS" | grep -q '/run/podman/podman.sock' || \
              ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
+             ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
              ! echo "$SECOPT" | grep -q 'label=disable'; then
             podman rm -f {{ _sem_name }}
             echo recreated
@@ -182,6 +201,7 @@
             -v local-semaphore-data:/var/lib/semaphore \
             -v /run/podman/podman.sock:/run/podman/podman.sock \
             -v {{ _repo_host_dir }}:{{ _repo_mount }}:ro \
+            -v {{ _deploy_share }}:{{ _deploy_share }} \
             --security-opt label=disable \
             -e SEMAPHORE_DB_DIALECT=sqlite \
             -e SEMAPHORE_ADMIN={{ _sem_admin }} \
@@ -373,6 +393,24 @@
         _inv_ini: |
           localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true
 
+          [dns_svc]
+          dns-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [dns_svc:vars]
+          ansible_user=semaphore
+          service_name=dns
+          monorepo_deploy_path=platform/services/dns/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          dns_zone=dev.test
+          dns_listen=0.0.0.0
+          dns_port=5300
+          dns_wildcard_target=127.0.0.1
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [uhhcraft_svc]
           uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -387,8 +425,8 @@
           uhhcraft_port=3001
           uhhcraft_bind=0.0.0.0
           uhhcraft_base_url=http://127.0.0.1:3001
-          local_monorepo_dir=/home/semaphore/agent-cloud
-          local_home_dir=/home/semaphore
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
         _inv_body: >-
           {{ {'name': 'local',

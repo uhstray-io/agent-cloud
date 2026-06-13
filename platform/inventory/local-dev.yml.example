@@ -14,6 +14,23 @@ all:
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
   children:
+    # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
+    # dns_zone defaults to the RFC 6761 reserved `dev.test`; override it in the
+    # gitignored working copy with the real internal subdomain (from site-config).
+    dns_svc:
+      hosts:
+        dns-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: dns
+          monorepo_deploy_path: platform/services/dns/deployment
+          container_engine: podman
+          dns_zone: dev.test
+          dns_listen: 0.0.0.0       # VM bind; podman-machine forwards to the Mac
+          dns_port: 5300            # host publish port (mDNS/VPN-safe on macOS)
+          dns_wildcard_target: 127.0.0.1
+          dns_upstreams: ["1.1.1.1", "1.0.0.1"]
+
     uhhcraft_svc:
       hosts:
         uhhcraft-local:

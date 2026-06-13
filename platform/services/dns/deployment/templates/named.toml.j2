@@ -1,0 +1,31 @@
+{# Rendered by deploy-dns.yml from inventory vars — NOT secrets. hickory-dns
+   named.toml (0.26.x). DNS has no runtime credentials in Phase 1; TSIG keys for
+   RFC 2136 dynamic updates arrive in prod Phase 2 (DNS-SERVER-DEPLOYMENT.md).
+   Do NOT edit by hand — re-run the playbook to refresh. #}
+listen_addrs_ipv4 = ["0.0.0.0"]
+listen_port = 53
+directory = "/var/named"
+
+# --- Authoritative: the internal/dev zone (records rendered from inventory) ---
+[[zones]]
+zone = "{{ dns_zone }}"
+zone_type = "Primary"
+file = "{{ dns_zone }}.zone"
+{% if dns_allow_networks | default([]) | length > 0 %}
+allow_networks = [{% for cidr in dns_allow_networks %}"{{ cidr }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+{% endif %}
+
+# --- Forward everything else upstream (authoritative + forward split). The
+#     recursor stays OFF — it is experimental upstream; forwarding rides the
+#     production-grade resolver. ---
+[[zones]]
+zone = "."
+zone_type = "External"
+
+[zones.stores]
+type = "forward"
+name_servers = [
+{% for ns in dns_upstreams | default(['1.1.1.1', '1.0.0.1']) %}
+  { ip = "{{ ns }}", connections = [{ protocol = { type = "udp" } }, { protocol = { type = "tcp" } }] },
+{% endfor %}
+]

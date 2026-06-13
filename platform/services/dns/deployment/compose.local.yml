@@ -1,0 +1,18 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose() when
+# LOCAL_MODE=true and this file exists. hickory holds everything in memory and
+# idles near-zero; a tight cap keeps it honest on a laptop.
+#
+# NOTE: the loopback port shift is NOT here. compose merges `ports` lists by
+# appending, so a base 53:53 could never be removed by an overlay — the shift to
+# 127.0.0.1:5300 is env-driven in the base file via DNS_LISTEN/DNS_PORT (.env).
+
+services:
+  dns:
+    mem_limit: 128m
+    cpus: 0.5
+    # The podman-machine VM enforces SELinux; reading the config/zone host
+    # bind-mounts from a container would be denied without this. Local-only —
+    # prod runs the compose on the same host as the engine (no cross-context
+    # mount), so this stays in the overlay. security_opt is additive on merge.
+    security_opt:
+      - label=disable
