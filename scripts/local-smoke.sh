@@ -32,8 +32,9 @@ no()   { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 sk()   { printf '  \033[33mSKIP\033[0m %s\n' "$1"; skip=$((skip+1)); }
 hdr()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-running() { podman container exists "$1" 2>/dev/null && \
-            [ "$(podman inspect -f '{{.State.Status}}' "$1" 2>/dev/null)" = running ]; }
+# `podman inspect` already returns non-zero / empty for a missing container, so
+# a separate `container exists` probe is redundant.
+running() { [ "$(podman inspect -f '{{.State.Status}}' "$1" 2>/dev/null)" = running ]; }
 
 http_is() { # url expected_code label
   local code; code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null)

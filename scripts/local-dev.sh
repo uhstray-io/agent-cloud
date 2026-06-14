@@ -20,6 +20,16 @@ info() { printf '[local-dev] %s\n' "$*"; }
 warn() { printf '[local-dev] WARN: %s\n' "$*" >&2; }
 die()  { printf '[local-dev] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# Ask before a privileged/destructive step. Returns 0 to proceed, 1 to skip.
+# Honors --yes / ASSUME_YES via the caller's assume_yes flag (1 = no prompt).
+confirm() {
+  local assume_yes="$1"; shift
+  [ "$assume_yes" = "1" ] && return 0
+  printf '[local-dev] %s [y/N] ' "$*"
+  local ans; read -r ans
+  case "$ans" in y|Y|yes) return 0 ;; *) return 1 ;; esac
+}
+
 preflight() {
   local missing=0 tool
   for tool in podman ansible-playbook ansible-inventory python3 curl git; do
@@ -200,16 +210,10 @@ resolver() {
     warn "local DNS is not answering on 127.0.0.1:${port} yet — run 'make local-deploy-dns' first (writing the file anyway)"
   fi
 
-  if [ "$assume_yes" != "1" ]; then
-    info "About to write ${target} (needs sudo):"
-    printf '%s\n' "$want" | sed 's/^/    /'
-    printf '[local-dev] proceed? [y/N] '
-    local ans; read -r ans
-    case "$ans" in
-      y|Y|yes) ;;
-      *) info "skipped — re-run any time: make local-dns-resolver"; return 0 ;;
-    esac
-  fi
+  info "About to write ${target} (needs sudo):"
+  printf '%s\n' "$want" | sed 's/^/    /'
+  confirm "$assume_yes" "proceed?" \
+    || { info "skipped — re-run any time: make local-dns-resolver"; return 0; }
   sudo mkdir -p /etc/resolver
   printf '%s\n' "$want" | sudo tee "$target" >/dev/null
   info "wrote ${target} — *.${zone} now resolves via local DNS"
@@ -256,10 +260,8 @@ https() {
 
   info "About to install the privileged-port forwarder (needs sudo):"
   info "  443 -> 127.0.0.1:${https_target}   80 -> 127.0.0.1:${http_target}   (persistent LaunchDaemon)"
-  if [ "$assume_yes" != "1" ]; then
-    printf '[local-dev] proceed? [y/N] '; local ans; read -r ans
-    case "$ans" in y|Y|yes) ;; *) info "skipped — re-run any time: make local-https"; rm -f "$rendered"; return 0 ;; esac
-  fi
+  confirm "$assume_yes" "proceed?" \
+    || { info "skipped — re-run any time: make local-https"; rm -f "$rendered"; return 0; }
   sudo cp "$rendered" "$_LAUNCHD_PLIST"
   sudo chown root:wheel "$_LAUNCHD_PLIST"
   sudo chmod 644 "$_LAUNCHD_PLIST"
@@ -303,10 +305,10 @@ _cert_sha1() {  # PEM on stdin -> uppercase hex SHA-1, no colons (keychain forma
 tls_trust() {
   local assume_yes="${ASSUME_YES:-0}"
   [ "${1:-}" = "--yes" ] && assume_yes=1
-  podman container exists step-ca 2>/dev/null || podman container exists caddy 2>/dev/null \
-    || die "no CA running — run: make local-deploy-step-ca (or make local-deploy-caddy)"
+  # No separate "is a CA running" guard — _internal_root_pem returns empty if
+  # neither step-ca nor caddy is up, and the next check dies with guidance.
   local pem fp; pem=$(_internal_root_pem)
-  [ -n "$pem" ] || die "could not read the internal CA root (step-ca /home/step/certs/root_ca.crt, or Caddy's local root)"
+  [ -n "$pem" ] || die "no internal CA root found — is it running? (make local-deploy-step-ca / make local-deploy-caddy)"
   fp=$(printf '%s' "$pem" | _cert_sha1)
   [ -n "$fp" ] || die "could not compute root CA fingerprint (openssl missing?)"
   # Idempotent: already trusted? (reading System.keychain certs needs no sudo)
@@ -320,10 +322,8 @@ tls_trust() {
   printf '%s' "$pem" > "$tmp"
   info "About to trust the internal CA root in the System keychain (needs sudo):"
   info "  $(printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null | sed -E 's/^subject=//')  SHA-1 ${fp}"
-  if [ "$assume_yes" != "1" ]; then
-    printf '[local-dev] proceed? [y/N] '; local ans; read -r ans
-    case "$ans" in y|Y|yes) ;; *) info "skipped — re-run any time: make local-tls-trust"; rm -f "$tmp"; return 0 ;; esac
-  fi
+  confirm "$assume_yes" "proceed?" \
+    || { info "skipped — re-run any time: make local-tls-trust"; rm -f "$tmp"; return 0; }
   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$tmp"
   rm -f "$tmp"
   info "trusted — https://*.agent-cloud.test now loads without a warning (Safari/Chrome; Firefox uses its own store)"
@@ -335,8 +335,11 @@ tls_untrust() {
   [ -n "$pem" ] && fp=$(printf '%s' "$pem" | _cert_sha1)
   # CA gone? fall back to the CN substring of either internal root.
   if [ -z "${fp:-}" ]; then
-    fp=$(security find-certificate -a -Z -c "agent-cloud Internal CA" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
-    [ -n "${fp:-}" ] || fp=$(security find-certificate -a -Z -c "Caddy Local Authority" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
+    local cn
+    for cn in "agent-cloud Internal CA" "Caddy Local Authority"; do
+      fp=$(security find-certificate -a -Z -c "$cn" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
+      [ -n "$fp" ] && break
+    done
   fi
   [ -n "${fp:-}" ] || { info "no internal CA root in the keychain — nothing to do"; return 0; }
   info "Removing internal CA root (SHA-1 ${fp:0:12}…) from the System keychain (sudo)..."

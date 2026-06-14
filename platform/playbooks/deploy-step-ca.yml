@@ -91,16 +91,8 @@
     - name: "Reload step-ca to apply the policy (SIGHUP)"
       ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
       changed_when: true
-
-    - name: "Wait for the CA to answer after reload"
-      ansible.builtin.command: >-
-        {{ _engine }} exec step-ca step ca health
-        --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
-      register: _reload_health
-      changed_when: false
-      retries: 5
-      delay: 2
-      until: "'ok' in _reload_health.stdout"
+      # No post-reload health wait here: Phase 3's retried `step ca health` is
+      # the single gate, and it settles the reload (retries/until 'ok').
 
 # ── Phase 3: Verify the CA ──────────────────────────────────────────────────
 - name: "Phase 3: Verify step-ca"

@@ -1,7 +1,10 @@
 ---
 # mint-internal-cert.yml — mint a wildcard internal TLS leaf from step-ca and
-# drop cert+key into a consuming service's deploy dir. Composable + reusable:
-# any service that needs an internal cert includes this with the vars below.
+# drop cert+key into a consuming service's deploy dir. Reusable by any service
+# whose deploy dir is **co-located with the step-ca container** (the local-dev
+# single-host case: every step here — `exec`/`cp` — runs on the play host with
+# no delegate_to). Cross-host reuse (CA on a different VM than the consumer)
+# would need the exec/cp steps delegated to the CA host — out of scope today.
 #
 # This is the LOCAL token-mint path: step-ca signs `*.<zone>` (+ the apex) via
 # its admin provisioner with no ACME challenge, because `*.<zone>` is not
