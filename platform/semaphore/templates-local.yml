@@ -22,6 +22,10 @@ templates:
   - name: "Deploy Caddy (Local)"
     playbook: platform/playbooks/deploy-caddy.yml
 
+  # Authentik — central IdP / SSO (server+worker+Postgres+Redis behind Caddy).
+  - name: "Deploy Authentik (Local)"
+    playbook: platform/playbooks/deploy-authentik.yml
+
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
 #     playbook: platform/playbooks/bootstrap-data.yml

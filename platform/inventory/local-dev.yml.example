@@ -87,6 +87,21 @@ all:
             - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
             - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000" }
 
+    # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
+    # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
+    # `auth.agent-cloud.test` Caddy route + forward_auth gating land in AUTH
+    # Phase 1/2 (AUTH-SSO-DEPLOYMENT.md), not here.
+    authentik_svc:
+      hosts:
+        authentik-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: authentik
+          monorepo_deploy_path: platform/services/authentik/deployment
+          container_engine: podman
+          authentik_bind: 127.0.0.1
+          authentik_port: 9000
+
     uhhcraft_svc:
       hosts:
         uhhcraft-local:

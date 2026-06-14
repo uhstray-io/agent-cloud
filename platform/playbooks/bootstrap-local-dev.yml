@@ -457,6 +457,22 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          [authentik_svc]
+          authentik-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [authentik_svc:vars]
+          ansible_user=semaphore
+          service_name=authentik
+          monorepo_deploy_path=platform/services/authentik/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          authentik_bind=127.0.0.1
+          authentik_port=9000
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [uhhcraft_svc]
           uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
 

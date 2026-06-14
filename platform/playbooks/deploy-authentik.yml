@@ -1,0 +1,97 @@
+---
+# deploy-authentik.yml — central IdP / SSO (Authentik) deploy (composable).
+#
+# Phase 1: Place repo + manage-secrets (secret_key, bootstrap admin creds, DB
+#          password — generated once into OpenBao, reused thereafter) + template
+#          .env. The committed blueprints/ travel with the repo (config-as-code).
+# Phase 2: deploy.sh — container lifecycle (pull, up postgres+redis+server+
+#          worker, wait healthy; first boot migrates + applies blueprints).
+# Phase 3: Verify the server is healthy + the API answers.
+#
+# Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage authentik secrets"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # secret_key + DB password must be STABLE across redeploys (regenerating
+    # secret_key invalidates sessions/tokens; a new DB password breaks auth) —
+    # manage-secrets generates once into OpenBao and reuses on later runs.
+    _secret_definitions:
+      - { name: secret_key, type: random, length: 60 }
+      - { name: bootstrap_password, type: random, length: 32 }
+      - { name: bootstrap_token, type: random, length: 40 }
+      - { name: db_password, type: random, length: 32 }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start authentik"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify authentik"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Server healthcheck (ak healthcheck)"
+      ansible.builtin.command: "{{ _engine }} exec authentik-server ak healthcheck"
+      register: _ak_health
+      changed_when: false
+      retries: 5
+      delay: 6
+      until: _ak_health.rc == 0
+
+    - name: "API answers (unauthenticated root config endpoint -> 200)"
+      ansible.builtin.command: >-
+        {{ _engine }} exec authentik-server
+        python -c "import urllib.request,sys;
+        sys.exit(0 if urllib.request.urlopen('http://localhost:9000/api/v3/root/config/').status == 200 else 1)"
+      register: _ak_api
+      changed_when: false
+      retries: 5
+      delay: 6
+      until: _ak_api.rc == 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "authentik healthy — server up, API answering on :9000 (behind Caddy for TLS)."

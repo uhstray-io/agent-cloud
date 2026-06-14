@@ -1,0 +1,3 @@
+# Rendered per-deploy from OpenBao by deploy-authentik.yml. Never committed.
+# (blueprints/ ARE committed — config-as-code; only secrets stay out.)
+.env
