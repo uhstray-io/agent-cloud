@@ -37,19 +37,27 @@
   when: not (local_mode | default(false) | bool)
 
 - name: "Copy working tree into place (local mode)"
-  # tar (not cp -a): the workspace mount is owned by the host uid, and a
-  # non-root copy must not preserve ownership. Excludes are deploy-irrelevant
-  # AND copy-hostile runtime artifacts: .git (history), .remember (host-only,
-  # mode 700), per-service secrets/ (mode 600 — unreadable to this uid, and
-  # secrets come from OpenBao not the tree), and netbox-docker/ (large
-  # gitignored upstream clone). Anything excluded here is regenerated/rendered
-  # at deploy time, never a deploy input.
+  # rsync --delete (not tar): tar is additive — it overlays the source but never
+  # removes files deleted from it, so a removed deploy input (e.g. a retired
+  # blueprint) rots in the clone forever and keeps getting applied. --delete
+  # mirrors the source so deletions propagate.
+  #
+  # Two classes of file must NOT be deleted, and `--filter=':- .gitignore'` (rsync
+  # honours each dir's .gitignore as exclude rules) covers both without us
+  # enumerating them: per-deploy rendered artifacts (.env, Caddyfile.local,
+  # certs/, config/ …) are gitignored, so they're neither copied nor deleted —
+  # they're regenerated post-placement by manage-secrets / the deploy. The
+  # explicit excludes cover paths that aren't gitignored but are still copy-hostile
+  # or host-only: .git (history), .remember (host-only, mode 700), secrets/
+  # (mode 600 — unreadable to this uid; creds come from OpenBao), netbox-docker/
+  # (large upstream clone). No -o/-g (like tar): ownership becomes this uid.
   ansible.builtin.shell: |
-    set -o pipefail
+    set -euo pipefail
     mkdir -p "{{ _monorepo_dir }}"
-    tar -C "{{ local_workspace_dir }}" \
+    rsync -rlpt --delete \
+      --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
-      -cf - . | tar -C "{{ _monorepo_dir }}" -xf -
+      "{{ local_workspace_dir }}/" "{{ _monorepo_dir }}/"
   when: local_mode | default(false) | bool
   changed_when: true
 
