@@ -1,7 +1,17 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** PROPOSED — Pending review
+**Status:** Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
+local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
+inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
+internal decision API on `opa:8181` (local-dev), host diagnostics `127.0.0.1:8281`.
+`agent_actions.rego` + `data.json` (under the recursion-safe `data.agentcloud.catalog`
+namespace) + tests pass 7/7; deploy verifies allow+deny + `opa test`; smoke §8 green.
+**Adaptations from this prod-first plan:** local follows the place-monorepo →
+deploy.sh → verify pattern (not sparse-checkout); image pinned to the multi-arch
+`-static` tag (plain tag is amd64-only, crashes under arm64 emulation); Phase 1
+has no secrets so no manage-secrets/AppRole yet (added in Phase 2/3). Agent
+integration (Phase 2), token auth + Loki decision logs (Phase 3) remain.
 **Context:** The Four-Layer Guardrails Model (CLAUDE.md, Unification Plan) already positions OPA in the Guardrail Layer alongside OpenBao and Kyverno. This plan operationalizes that architecture — defining how OPA deploys, what policies it enforces, how it integrates with the composable automation patterns, and where it fits in the implementation roadmap.
 
 ---

@@ -124,6 +124,19 @@ all:
           o11y_prom_port: 9090
           o11y_loki_port: 3100
 
+    # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as
+    # opa:8181 on local-dev; published to 127.0.0.1:8281 for host diagnostics.
+    opa_svc:
+      hosts:
+        opa-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: opa
+          monorepo_deploy_path: platform/services/opa/deployment
+          container_engine: podman
+          opa_bind: 127.0.0.1
+          opa_port: 8281
+
     uhhcraft_svc:
       hosts:
         uhhcraft-local:

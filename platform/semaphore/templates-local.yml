@@ -30,6 +30,10 @@ templates:
   - name: "Deploy o11y (Local)"
     playbook: platform/playbooks/deploy-o11y.yml
 
+  # OPA — Guardrail-layer policy engine (agent action authorization).
+  - name: "Deploy OPA (Local)"
+    playbook: platform/playbooks/deploy-opa.yml
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
@@ -42,6 +46,8 @@ templates:
     playbook: platform/playbooks/clean-deploy-authentik.yml
   - name: "Clean Deploy o11y (Local)"
     playbook: platform/playbooks/clean-deploy-o11y.yml
+  - name: "Clean Deploy OPA (Local)"
+    playbook: platform/playbooks/clean-deploy-opa.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"

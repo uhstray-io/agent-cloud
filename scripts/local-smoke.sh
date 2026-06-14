@@ -135,13 +135,26 @@ if running authentik-server; then
   fi
 else sk "authentik not deployed (make local-deploy-authentik)"; fi
 
-hdr "8. /etc/resolver (native macOS resolution)"
+hdr "8. OPA (Guardrail policy engine)"
+if running opa; then
+  ok "container opa running"
+  http_is "http://127.0.0.1:8281/health" "200" "OPA health (127.0.0.1:8281)"
+  # A live policy decision: nemoclaw read nocodb -> allowed:true.
+  allowed=$(curl -s --max-time 5 -X POST http://127.0.0.1:8281/v1/data/agentcloud/decision \
+            -H 'Content-Type: application/json' \
+            -d '{"input":{"agent":"nemoclaw","action":"read","service":"nocodb"}}' 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["allowed"])' 2>/dev/null)
+  [ "$allowed" = "True" ] && ok "OPA decision: nemoclaw read nocodb -> allow" \
+    || no "OPA decision (got allowed=${allowed:-none})"
+else sk "opa not deployed (make local-deploy-opa)"; fi
+
+hdr "9. /etc/resolver (native macOS resolution)"
 if [ -f "/etc/resolver/${ZONE}" ]; then
   ok "/etc/resolver/${ZONE} present"
 else sk "/etc/resolver/${ZONE} not set (make local-dns-resolver) — native name resolution off"; fi
 
 if [ "$FULL" = true ]; then
-  hdr "9. Static suite (--full)"
+  hdr "10. Static suite (--full)"
   # -S warning matches the repo's CI severity (info-level notes don't gate).
   ( cd "$REPO_ROOT" && shellcheck -S warning scripts/*.sh platform/lib/*.sh platform/services/*/deployment/deploy.sh >/dev/null 2>&1 ) \
     && ok "shellcheck (-S warning)" || no "shellcheck"

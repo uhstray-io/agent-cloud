@@ -112,7 +112,7 @@ non-local inventories and non-local `openbao_addr`).
 | Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
 | Authentik | 127.0.0.1:9300 | **deployed + working + gating**; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`. Gates Grafana (OIDC) + NetBox (forward_auth) — see SSO section below |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
-| OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
+| OPA | 127.0.0.1:8281 | **deployed + working**; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281 (8181 is NocoDB's bind). Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
 | o11y | 3002 / 9090 / 3100 | **deployed + working**; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
 
 ## Engine split
