@@ -21,6 +21,11 @@ services:
     # Caddyfile/sites from a container needs this. Local-only.
     security_opt:
       - label=disable
+    # Appended to the base volumes (compose merges volume lists). The
+    # step-ca-minted wildcard cert+key live here, minted by
+    # tasks/mint-internal-cert.yml; the Caddyfile references the container path.
+    volumes:
+      - ./certs:/etc/caddy/certs:ro
     networks:
       - default
       - local-dev

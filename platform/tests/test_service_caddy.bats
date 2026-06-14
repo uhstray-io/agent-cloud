@@ -43,9 +43,13 @@ setup() {
   ! grep -qE '\b(gen_secret|put_secret|get_secret|bao_)' "$f"
 }
 
-@test "caddy: local Caddyfile template uses internal CA + reverse_proxy, no real domain" {
+@test "caddy: local Caddyfile template serves the step-ca cert (with local_certs fallback), no real domain" {
   local f="$DEPLOY_DIR/templates/Caddyfile.local.j2"
   [ -f "$f" ]
+  # step-ca-minted wildcard when caddy_tls_cert is set; Caddy's own internal CA
+  # (local_certs) only as the fallback when it isn't.
+  grep -q 'caddy_tls_cert' "$f"
+  grep -qF 'tls {{ _cert }} {{ caddy_tls_key }}' "$f"
   grep -q 'local_certs' "$f"
   grep -q 'reverse_proxy' "$f"
   grep -q 'caddy_routes' "$f"

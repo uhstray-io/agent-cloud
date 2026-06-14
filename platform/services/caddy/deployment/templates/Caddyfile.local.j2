@@ -1,15 +1,25 @@
 {# Local-dev Caddyfile, rendered by deploy-caddy.yml from inventory vars.
-   Uses Caddy's internal CA (`local_certs`) — no Cloudflare token on the laptop.
+   TLS source:
+     - caddy_tls_cert set -> serve the step-ca-minted wildcard leaf (a STABLE,
+       shared root trusted once via `make local-tls-trust`). The cert is minted
+       into ./certs by tasks/mint-internal-cert.yml and mounted at the container
+       path in caddy_tls_cert/caddy_tls_key.
+     - caddy_tls_cert unset -> fall back to Caddy's own internal CA (local_certs;
+       ephemeral per-instance root).
    Routes proxy the local services by their podman-network name (Caddy joins the
    local-dev network via compose.local.yml), so no host.containers.internal hop.
    Do NOT edit by hand — re-run the playbook. #}
+{% set _cert = caddy_tls_cert | default('') %}
+{% if not _cert %}
 {
 	local_certs
 }
+{% endif %}
 
 {% for r in caddy_routes | default([]) %}
 {{ r.host }} {
-	reverse_proxy {{ r.upstream }}
+{% if _cert %}	tls {{ _cert }} {{ caddy_tls_key }}
+{% endif %}	reverse_proxy {{ r.upstream }}
 }
 
 {% endfor %}
@@ -17,7 +27,8 @@
 {# NetBox runs in its own compose project (not the local-dev network), so it is
    reached via host.containers.internal rather than a container name. #}
 netbox.dev.test {
-	reverse_proxy {{ caddy_netbox_upstream }}
+{% if _cert %}	tls {{ _cert }} {{ caddy_tls_key }}
+{% endif %}	reverse_proxy {{ caddy_netbox_upstream }}
 }
 
 {% endif %}

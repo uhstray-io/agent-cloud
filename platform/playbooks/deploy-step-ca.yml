@@ -58,6 +58,50 @@
       ansible.builtin.debug:
         var: _deploy.stdout_lines
 
+# ── Phase 2.5: Issuance policy ──────────────────────────────────────────────
+# step-ca's default JWK claims cap leaf certs at 24h. Internal certs that Caddy
+# serves directly (token-mint, no ACME auto-renew locally) would then expire
+# daily. Raise the admin provisioner's x509 duration so a long-lived wildcard
+# can be minted and simply re-minted on each consumer deploy. Idempotent:
+# re-applying the same duration is a no-op in effect.
+- name: "Phase 2.5: Configure step-ca issuance policy"
+  hosts: step_ca_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _max_dur: "{{ stepca_x509_max_dur | default('8760h') }}"
+
+  tasks:
+    - name: "Raise the admin provisioner x509 cert duration"
+      # Literal block + inner-sh backslash continuation: a folded scalar (>-)
+      # keeps newlines around the more-indented flag lines, which `sh -c` then
+      # parses as separate commands. `\`-continuation joins them in the CA shell.
+      ansible.builtin.shell: |
+        {{ _engine }} exec step-ca sh -c '
+          echo "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
+          step ca provisioner update admin --admin-subject step \
+            --x509-max-dur={{ _max_dur }} --x509-default-dur={{ _max_dur }} \
+            --password-file /tmp/pw
+          rc=$?; rm -f /tmp/pw; exit $rc
+        '
+      register: _prov
+      changed_when: true
+
+    - name: "Reload step-ca to apply the policy (SIGHUP)"
+      ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
+      changed_when: true
+
+    - name: "Wait for the CA to answer after reload"
+      ansible.builtin.command: >-
+        {{ _engine }} exec step-ca step ca health
+        --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+      register: _reload_health
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: "'ok' in _reload_health.stdout"
+
 # ── Phase 3: Verify the CA ──────────────────────────────────────────────────
 - name: "Phase 3: Verify step-ca"
   hosts: step_ca_svc

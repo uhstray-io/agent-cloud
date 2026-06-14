@@ -64,6 +64,14 @@ all:
           caddy_http_port: 8088
           caddy_https_bind: 127.0.0.1
           caddy_https_port: 8443
+          # Serve the step-ca-minted wildcard leaf (stable shared root). Set
+          # these to switch off Caddy's own ephemeral internal CA (local_certs).
+          # Container paths (mounted from ./certs by compose.local.yml); the
+          # leaf is minted by tasks/mint-internal-cert.yml on each deploy.
+          # Requires step-ca deployed first (make local-deploy-step-ca).
+          caddy_internal_zone: dev.test
+          caddy_tls_cert: /etc/caddy/certs/wildcard.crt
+          caddy_tls_key: /etc/caddy/certs/wildcard.key
           caddy_routes:
             - { host: "semaphore.dev.test", upstream: "local-semaphore:3000" }
             - { host: "openbao.dev.test", upstream: "local-openbao:8200" }

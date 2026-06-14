@@ -39,6 +39,16 @@
         mode: "0644"
       when: local_mode | default(false) | bool
 
+    - name: "Mint the internal wildcard cert from step-ca (local mode + cert configured)"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_zone: "{{ caddy_internal_zone | default('dev.test') }}"
+        _mint_dest_dir: "{{ _deploy_dir }}"
+        _mint_engine: "{{ container_engine | default('podman') }}"
+      when:
+        - local_mode | default(false) | bool
+        - caddy_tls_cert | default('') | length > 0
+
     - name: "Ensure the sites fragment dir exists"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/sites"

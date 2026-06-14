@@ -1,0 +1,67 @@
+---
+# mint-internal-cert.yml — mint a wildcard internal TLS leaf from step-ca and
+# drop cert+key into a consuming service's deploy dir. Composable + reusable:
+# any service that needs an internal cert includes this with the vars below.
+#
+# This is the LOCAL token-mint path: step-ca signs `*.<zone>` (+ the apex) via
+# its admin provisioner with no ACME challenge, because `*.<zone>` is not
+# resolvable/validatable inside the podman network (see step-ca context +
+# INTERNAL-CA-DEPLOYMENT.md). Prod uses ACME (dns-01) instead. The cert is
+# re-minted every run (cheap), so this task is idempotent in effect.
+#
+# Required vars:
+#   _mint_zone       internal zone, e.g. "dev.test" (cert covers *.zone + zone)
+#   _mint_dest_dir   consuming service's deploy dir; cert lands in <dir>/certs/
+# Optional vars:
+#   _mint_engine     container engine (default: podman)
+#   _mint_dur        leaf validity (default: 8760h; needs the CA's x509-max-dur
+#                    raised to match — deploy-step-ca.yml does this)
+#   _mint_ca_name    step-ca container name (default: step-ca)
+
+- name: "Assert the CA is reachable before minting"
+  ansible.builtin.command: "{{ _mint_engine | default('podman') }} container exists {{ _mint_ca_name | default('step-ca') }}"
+  register: _mint_ca_present
+  changed_when: false
+  failed_when: _mint_ca_present.rc != 0
+  # A clear failure beats a confusing exec error if step-ca isn't up yet.
+
+- name: "Mint *.{{ _mint_zone }} (+ apex) wildcard leaf from step-ca"
+  # Password comes from the CA container's own env — the key never leaves the
+  # CA host. /tmp/pw is removed in the same shell regardless of mint result.
+  # Literal block + inner-sh `\` continuation (a folded scalar keeps the
+  # more-indented flag lines' newlines, which `sh -c` mis-parses as commands).
+  ansible.builtin.shell: |
+    {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }} sh -c '
+      echo "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
+      step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
+        --provisioner admin --provisioner-password-file /tmp/pw \
+        --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
+        --not-after {{ _mint_dur | default("8760h") }} --force \
+        --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+      rc=$?; rm -f /tmp/pw; exit $rc
+    '
+  changed_when: true
+
+- name: "Ensure the consumer's certs dir exists"
+  ansible.builtin.file:
+    path: "{{ _mint_dest_dir }}/certs"
+    state: directory
+    mode: "0750"
+
+- name: "Copy the leaf cert + key out of the CA into {{ _mint_dest_dir }}/certs"
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.crt {{ _mint_dest_dir }}/certs/wildcard.crt"
+    - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.key {{ _mint_dest_dir }}/certs/wildcard.key"
+  changed_when: true
+
+- name: "Lock down the leaf key perms"
+  ansible.builtin.file:
+    path: "{{ _mint_dest_dir }}/certs/wildcard.key"
+    mode: "0640"
+
+- name: "Wipe the transient cert+key from the CA container"
+  ansible.builtin.command: >-
+    {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }}
+    rm -f /tmp/mint.crt /tmp/mint.key
+  changed_when: true

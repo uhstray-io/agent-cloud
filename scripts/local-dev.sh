@@ -278,15 +278,21 @@ https_down() {
   info "removed."
 }
 
-# ── Local TLS trust (LOCAL-DEV-TLS-TRUST.md) ───────────────────────────────
-# Caddy serves *.dev.test from its own internal CA, which the browser doesn't
-# trust (NET::ERR_CERT_AUTHORITY_INVALID). Trust the CA ROOT once. Idempotent
-# (by fingerprint, since the root CN is year-stamped + rotates), reversible.
+# ── Local TLS trust (LOCAL-DEV-TLS-TRUST.md / INTERNAL-CA-DEPLOYMENT.md) ────
+# Caddy serves *.dev.test from the internal CA (step-ca's stable shared root
+# when deployed, else Caddy's own root), which the browser doesn't trust by
+# default (NET::ERR_CERT_AUTHORITY_INVALID). Trust the CA ROOT once. Idempotent
+# (by fingerprint), reversible.
 
-_caddy_root_pem() {
-  # Caddy's internal-CA root (PEM) to stdout. Path verified in the running
-  # container; /data is Caddy's data dir (absolute, not cwd-relative).
-  podman exec caddy cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null
+_internal_root_pem() {
+  # The internal-CA root (PEM) to trust, to stdout. Prefer step-ca's STABLE
+  # shared root (survives Caddy redeploys, reused across hosts/devs); fall back
+  # to Caddy's own ephemeral internal-CA root if step-ca isn't deployed.
+  if podman container exists step-ca 2>/dev/null; then
+    podman exec step-ca cat /home/step/certs/root_ca.crt 2>/dev/null
+  else
+    podman exec caddy cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null
+  fi
 }
 
 _cert_sha1() {  # PEM on stdin -> uppercase hex SHA-1, no colons (keychain format)
@@ -296,21 +302,22 @@ _cert_sha1() {  # PEM on stdin -> uppercase hex SHA-1, no colons (keychain forma
 tls_trust() {
   local assume_yes="${ASSUME_YES:-0}"
   [ "${1:-}" = "--yes" ] && assume_yes=1
-  podman container exists caddy 2>/dev/null || die "caddy not running — run: make local-deploy-caddy"
-  local pem fp; pem=$(_caddy_root_pem)
-  [ -n "$pem" ] || die "could not read Caddy root CA (/data/caddy/pki/authorities/local/root.crt)"
+  podman container exists step-ca 2>/dev/null || podman container exists caddy 2>/dev/null \
+    || die "no CA running — run: make local-deploy-step-ca (or make local-deploy-caddy)"
+  local pem fp; pem=$(_internal_root_pem)
+  [ -n "$pem" ] || die "could not read the internal CA root (step-ca /home/step/certs/root_ca.crt, or Caddy's local root)"
   fp=$(printf '%s' "$pem" | _cert_sha1)
   [ -n "$fp" ] || die "could not compute root CA fingerprint (openssl missing?)"
   # Idempotent: already trusted? (reading System.keychain certs needs no sudo)
   if security find-certificate -a -Z /Library/Keychains/System.keychain 2>/dev/null | grep -iq "$fp"; then
-    info "Caddy root CA already trusted (SHA-1 ${fp:0:12}…) — nothing to do"
+    info "internal CA root already trusted (SHA-1 ${fp:0:12}…) — nothing to do"
     return 0
   fi
   # BSD mktemp (macOS) requires the X's at the END of the template — no .crt
   # suffix. security add-trusted-cert reads PEM regardless of extension.
-  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/caddy-root.XXXXXX")
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/internal-root.XXXXXX")
   printf '%s' "$pem" > "$tmp"
-  info "About to trust Caddy's local CA root in the System keychain (needs sudo):"
+  info "About to trust the internal CA root in the System keychain (needs sudo):"
   info "  $(printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null | sed -E 's/^subject=//')  SHA-1 ${fp}"
   if [ "$assume_yes" != "1" ]; then
     printf '[local-dev] proceed? [y/N] '; local ans; read -r ans
@@ -323,12 +330,15 @@ tls_trust() {
 
 tls_untrust() {
   local fp pem
-  pem=$(_caddy_root_pem)
+  pem=$(_internal_root_pem)
   [ -n "$pem" ] && fp=$(printf '%s' "$pem" | _cert_sha1)
-  # caddy gone? fall back to the year-stamped CN substring.
-  [ -n "${fp:-}" ] || fp=$(security find-certificate -a -Z -c "Caddy Local Authority" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
-  [ -n "${fp:-}" ] || { info "no Caddy root CA in the keychain — nothing to do"; return 0; }
-  info "Removing Caddy root CA (SHA-1 ${fp:0:12}…) from the System keychain (sudo)..."
+  # CA gone? fall back to the CN substring of either internal root.
+  if [ -z "${fp:-}" ]; then
+    fp=$(security find-certificate -a -Z -c "agent-cloud Internal CA" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
+    [ -n "${fp:-}" ] || fp=$(security find-certificate -a -Z -c "Caddy Local Authority" /Library/Keychains/System.keychain 2>/dev/null | awk '/SHA-1/{print $NF; exit}')
+  fi
+  [ -n "${fp:-}" ] || { info "no internal CA root in the keychain — nothing to do"; return 0; }
+  info "Removing internal CA root (SHA-1 ${fp:0:12}…) from the System keychain (sudo)..."
   sudo security delete-certificate -Z "$fp" /Library/Keychains/System.keychain
   info "removed."
 }
@@ -374,9 +384,10 @@ usage: scripts/local-dev.sh <subcommand>
   https [--yes]      install the persistent root forwarder for clean port-free
                      https://app.dev.test (sudo; idempotent). Default is :8443.
   https-down         remove the privileged-port forwarder (sudo)
-  tls-trust [--yes]  trust Caddy's local CA root so *.dev.test has no cert
-                     warning (sudo; idempotent by fingerprint)
-  tls-untrust        remove the trusted Caddy root CA (sudo)
+  tls-trust [--yes]  trust the internal CA root (step-ca's stable root, else
+                     Caddy's) so *.dev.test has no cert warning (sudo;
+                     idempotent by fingerprint)
+  tls-untrust        remove the trusted internal CA root (sudo)
   clean              remove local control plane (containers, volume, state)
   promote            fast checks, push feature branch, open PR into dev
 EOF
