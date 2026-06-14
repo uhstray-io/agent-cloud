@@ -34,6 +34,7 @@
       # client services read them via manage-secrets `_shared_reads`. The worker
       # injects them into the OAuth2-provider blueprints via !Env.
       - { name: grafana_oidc_client_secret, type: random, length: 40 }
+      - { name: netbox_oidc_client_secret, type: random, length: 40 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
