@@ -1,0 +1,20 @@
+# Grafana datasource provisioning (committed config-as-code). Mounted ro at
+# /etc/grafana/provisioning/datasources. Datasources reached by container name
+# on the o11y network. Plan: O11Y-DEPLOYMENT.md.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100

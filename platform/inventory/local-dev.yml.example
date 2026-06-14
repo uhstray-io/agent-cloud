@@ -102,6 +102,21 @@ all:
           authentik_bind: 127.0.0.1
           authentik_port: 9300          # host debug port; step-ca owns 9000. Caddy reaches the container's :9000 by name.
 
+    # Observability stack — Grafana + Prometheus + Loki + Alloy. Grafana fronts
+    # via Caddy (grafana.agent-cloud.test); host debug ports below. Deploy:
+    # make local-deploy-o11y. Plan: O11Y-DEPLOYMENT.md.
+    o11y_svc:
+      hosts:
+        o11y-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: o11y
+          monorepo_deploy_path: platform/services/o11y/deployment
+          container_engine: podman
+          o11y_grafana_port: 3002
+          o11y_prom_port: 9090
+          o11y_loki_port: 3100
+
     uhhcraft_svc:
       hosts:
         uhhcraft-local:

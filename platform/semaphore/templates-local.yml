@@ -26,6 +26,10 @@ templates:
   - name: "Deploy Authentik (Local)"
     playbook: platform/playbooks/deploy-authentik.yml
 
+  # o11y — observability stack (Grafana + Prometheus + Loki + Alloy).
+  - name: "Deploy o11y (Local)"
+    playbook: platform/playbooks/deploy-o11y.yml
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
@@ -36,6 +40,8 @@ templates:
     playbook: platform/playbooks/clean-deploy-caddy.yml
   - name: "Clean Deploy Authentik (Local)"
     playbook: platform/playbooks/clean-deploy-authentik.yml
+  - name: "Clean Deploy o11y (Local)"
+    playbook: platform/playbooks/clean-deploy-o11y.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"

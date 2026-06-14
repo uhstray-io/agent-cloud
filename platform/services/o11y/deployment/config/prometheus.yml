@@ -1,0 +1,23 @@
+# Prometheus scrape config (committed config-as-code). Mounted read-only.
+# Plan: plan/development/O11Y-DEPLOYMENT.md. Targets are reached by container
+# name on the shared network (Caddy joins it via compose.local.yml locally).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: agent-cloud-local
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Caddy exposes Prometheus metrics on its admin endpoint (:2019/metrics).
+  - job_name: caddy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["caddy:2019"]
+
+  # Phase 2 (O11Y-DEPLOYMENT.md): add cAdvisor (per-container) + node-exporter
+  # (host) once validated against the podman-machine VM, and the agent OTLP
+  # path via Alloy.

@@ -1,0 +1,105 @@
+# Observability stack — Grafana + Prometheus + Loki + Grafana Alloy.
+# Podman-compatible compose. Plan: plan/development/O11Y-DEPLOYMENT.md.
+#
+# Ansible's deploy-o11y.yml templates .env (the Grafana admin password from
+# OpenBao) before this starts; deploy.sh is container-lifecycle only — no secret
+# generation. Configs under ./config are committed config-as-code, mounted ro.
+# Behind central Caddy: Grafana serves HTTP on its container :3000 (Caddy
+# terminates TLS); the published loopback port is for host debugging. Ports +
+# images are env-parameterized (compose overlays merge ports append-only, so the
+# local loopback shift lives in .env, not compose.local.yml).
+
+name: o11y
+
+services:
+  prometheus:
+    image: ${O11Y_PROM_IMAGE:-docker.io/prom/prometheus:v3.1.0}
+    container_name: o11y-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${O11Y_PROM_BIND:-127.0.0.1}:${O11Y_PROM_PORT:-9090}:9090"
+    networks: [o11y]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+  loki:
+    image: ${O11Y_LOKI_IMAGE:-docker.io/grafana/loki:3.3.2}
+    container_name: o11y-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./config/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "${O11Y_LOKI_BIND:-127.0.0.1}:${O11Y_LOKI_PORT:-3100}:3100"
+    networks: [o11y]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  alloy:
+    image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
+    container_name: o11y-alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./config/config.alloy:/etc/alloy/config.alloy:ro
+    networks: [o11y]
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  grafana:
+    image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
+    container_name: o11y-grafana
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${O11Y_GRAFANA_BIND:-127.0.0.1}:${O11Y_GRAFANA_PORT:-3002}:3000"
+    networks: [o11y]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+networks:
+  o11y:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:
