@@ -6,7 +6,7 @@ Smallstep `step-ca` as the platform's **internal** CA. Read with the root
 
 ## What it is — and is NOT
 
-- **IS:** the internal CA for `*.dev.test` / internal zones. A stable root +
+- **IS:** the internal CA for `*.agent-cloud.test` / internal zones. A stable root +
   intermediate, auto-initialized on first boot and persisted in the
   `step-ca-data` volume (the win over Caddy's ephemeral `local_certs` root —
   this root survives Caddy redeploys and is shareable across hosts/devs).
@@ -21,14 +21,14 @@ step-ca's root must be trusted **once per client** (`make local-tls-trust`,
 adapted to extract the step-ca root). What step-ca buys over Caddy's own CA is a
 **stable, shared root** — trust it once, reused everywhere, surviving redeploys.
 
-## Issuance for `*.dev.test` (local): token-mint, not in-network ACME
+## Issuance for `*.agent-cloud.test` (local): token-mint, not in-network ACME
 
 step-ca runs an ACME provisioner, **but** ACME domain validation (http-01 /
 tls-alpn-01 / dns-01) requires step-ca to reach or DNS-prove the requested name
-— and `*.dev.test` is not resolvable/reachable *inside* the podman network
+— and `*.agent-cloud.test` is not resolvable/reachable *inside* the podman network
 (containers use podman DNS by name; hickory's wildcard→127.0.0.1 is for the Mac
 host). So locally Caddy does **not** ACME against step-ca; instead the deploy
-**mints a wildcard `*.dev.test` leaf via a provisioner token** (`step ca
+**mints a wildcard `*.agent-cloud.test` leaf via a provisioner token** (`step ca
 certificate`, no challenge) and Caddy serves it. ACME-native issuance is the
 prod/future path, gated on dns-01 via hickory RFC 2136 (`DNS-SERVER-DEPLOYMENT.md`
 Phase 2).

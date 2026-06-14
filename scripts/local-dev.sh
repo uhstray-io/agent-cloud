@@ -219,7 +219,7 @@ _LAUNCHD_LABEL="io.uhstray.agent-cloud.https"
 _LAUNCHD_PLIST="/Library/LaunchDaemons/${_LAUNCHD_LABEL}.plist"
 
 https() {
-  # Clean port-free https://app.dev.test needs something bound to the Mac's
+  # Clean port-free https://app.agent-cloud.test needs something bound to the Mac's
   # privileged :443/:80. macOS requires root for ports <1024 (no sysctl escape),
   # and podman-machine's forwarder is non-root — so this installs a persistent
   # root LaunchDaemon that socat-forwards 443->caddy_https_port and
@@ -267,7 +267,7 @@ https() {
   sudo launchctl bootout system "$_LAUNCHD_PLIST" 2>/dev/null || true
   sudo launchctl bootstrap system "$_LAUNCHD_PLIST"
   info "installed — clean URLs now work once DNS resolves (make local-dns-resolver):"
-  info "  https://semaphore.dev.test   https://openbao.dev.test   (no port)"
+  info "  https://semaphore.agent-cloud.test   https://openbao.agent-cloud.test   (no port)"
 }
 
 https_down() {
@@ -279,7 +279,7 @@ https_down() {
 }
 
 # ── Local TLS trust (LOCAL-DEV-TLS-TRUST.md / INTERNAL-CA-DEPLOYMENT.md) ────
-# Caddy serves *.dev.test from the internal CA (step-ca's stable shared root
+# Caddy serves *.agent-cloud.test from the internal CA (step-ca's stable shared root
 # when deployed, else Caddy's own root), which the browser doesn't trust by
 # default (NET::ERR_CERT_AUTHORITY_INVALID). Trust the CA ROOT once. Idempotent
 # (by fingerprint), reversible.
@@ -325,7 +325,7 @@ tls_trust() {
   fi
   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$tmp"
   rm -f "$tmp"
-  info "trusted — https://*.dev.test now loads without a warning (Safari/Chrome; Firefox uses its own store)"
+  info "trusted — https://*.agent-cloud.test now loads without a warning (Safari/Chrome; Firefox uses its own store)"
 }
 
 tls_untrust() {
@@ -382,10 +382,10 @@ usage: scripts/local-dev.sh <subcommand>
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)
   https [--yes]      install the persistent root forwarder for clean port-free
-                     https://app.dev.test (sudo; idempotent). Default is :8443.
+                     https://app.agent-cloud.test (sudo; idempotent). Default is :8443.
   https-down         remove the privileged-port forwarder (sudo)
   tls-trust [--yes]  trust the internal CA root (step-ca's stable root, else
-                     Caddy's) so *.dev.test has no cert warning (sudo;
+                     Caddy's) so *.agent-cloud.test has no cert warning (sudo;
                      idempotent by fingerprint)
   tls-untrust        remove the trusted internal CA root (sudo)
   clean              remove local control plane (containers, volume, state)

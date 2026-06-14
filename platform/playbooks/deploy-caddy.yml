@@ -42,7 +42,7 @@
     - name: "Mint the internal wildcard cert from step-ca (local mode + cert configured)"
       ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
       vars:
-        _mint_zone: "{{ caddy_internal_zone | default('dev.test') }}"
+        _mint_zone: "{{ caddy_internal_zone | default('agent-cloud.test') }}"
         _mint_dest_dir: "{{ _deploy_dir }}"
         _mint_engine: "{{ container_engine | default('podman') }}"
       when:

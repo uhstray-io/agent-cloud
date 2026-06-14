@@ -10,7 +10,7 @@
 # re-minted every run (cheap), so this task is idempotent in effect.
 #
 # Required vars:
-#   _mint_zone       internal zone, e.g. "dev.test" (cert covers *.zone + zone)
+#   _mint_zone       internal zone, e.g. "agent-cloud.test" (cert covers *.zone + zone)
 #   _mint_dest_dir   consuming service's deploy dir; cert lands in <dir>/certs/
 # Optional vars:
 #   _mint_engine     container engine (default: podman)

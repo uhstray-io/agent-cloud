@@ -7,7 +7,7 @@
 # net.ipv4.ip_unprivileged_port_start escape hatch; podman-machine's port
 # forwarder (gvproxy) runs as your user, so local Caddy can only publish high
 # ports (8443/8088). This root-owned forwarder is the one privileged hop that
-# makes clean, port-free `https://app.dev.test` work. TCP is passed through
+# makes clean, port-free `https://app.agent-cloud.test` work. TCP is passed through
 # verbatim — TLS is still terminated end-to-end by Caddy at the target port, so
 # SNI/cert selection is unaffected.
 #

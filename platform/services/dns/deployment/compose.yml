@@ -23,7 +23,7 @@ services:
     environment:
       # Only consumed by the healthcheck below (escaped $$ so compose does not
       # interpolate it — it must reach the container shell intact).
-      DNS_ZONE: ${DNS_ZONE:-dev.test}
+      DNS_ZONE: ${DNS_ZONE:-agent-cloud.test}
     volumes:
       - ./config/named.toml:/etc/named.toml:ro
       - ./config/zones:/var/named:ro

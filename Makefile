@@ -40,13 +40,13 @@ local-dns: ## Bring local DNS fully online: deploy hickory + wire macOS resolver
 local-dns-resolver: ## Point macOS /etc/resolver/<zone> at the local DNS (sudo; idempotent, re-runnable)
 	@$(LOCAL_DEV) resolver
 
-local-https: ## Clean port-free https://app.dev.test via a persistent root forwarder (sudo; idempotent)
+local-https: ## Clean port-free https://app.agent-cloud.test via a persistent root forwarder (sudo; idempotent)
 	@$(LOCAL_DEV) https
 
 local-https-down: ## Remove the privileged-port forwarder (sudo)
 	@$(LOCAL_DEV) https-down
 
-local-tls-trust: ## Trust Caddy's local CA so *.dev.test has no cert warning (sudo; idempotent)
+local-tls-trust: ## Trust Caddy's local CA so *.agent-cloud.test has no cert warning (sudo; idempotent)
 	@$(LOCAL_DEV) tls-trust
 
 local-tls-untrust: ## Remove the trusted Caddy root CA (sudo)

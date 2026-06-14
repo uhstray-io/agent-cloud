@@ -47,7 +47,7 @@ zone.
   `dns_zone`) and re-run the deploy — never hand-edit a running zone. The one
   exception is the Phase 2 dynamic challenge sub-zone (transient TXT records).
 - **No real zone in the public repo.** `dns_zone` defaults to the RFC 6761
-  reserved `dev.test` locally; the real internal zone lives in the gitignored
+  reserved `agent-cloud.test` locally; the real internal zone lives in the gitignored
   working inventory / site-config.
 - **One engine, two environments.** The laptop and prod run the same image and
   templates, parameterized by env/inventory — never forked.

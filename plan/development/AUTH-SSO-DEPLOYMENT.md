@@ -21,7 +21,7 @@ When Phase 4's gate passes:
 - **One identity, many services.** An operator logs in once at `auth.<zone>` and reaches Semaphore/NetBox/NocoDB/n8n/o11y/Open WebUI without re-authenticating — OIDC where supported, Caddy forward-auth elsewhere.
 - **Human-identity fills the empty guardrail slot.** OpenBao (machine secrets) + OPA (authz policy) + **Authentik (human authn)** form the complete guardrail triad. Authentik says *who you are*; OPA says *what you may do*; OpenBao holds *machine credentials*.
 - **Config is code.** Every realm/provider/application/flow is an Authentik blueprint in the repo, applied on deploy — adding a service to SSO is a config commit reviewed like any other.
-- **Local mirrors prod.** Authentik deploys locally via the same composable service pattern (compose + `compose.local.yml` + `deploy-authentik.yml` + blueprints + `manage-secrets`) and is reached at `https://auth.dev.test`; prod is the same playbook with real OIDC clients + TLS.
+- **Local mirrors prod.** Authentik deploys locally via the same composable service pattern (compose + `compose.local.yml` + `deploy-authentik.yml` + blueprints + `manage-secrets`) and is reached at `https://auth.agent-cloud.test`; prod is the same playbook with real OIDC clients + TLS.
 - **Storefront on the same IdP.** UhhCraft customers authenticate through a dedicated Authentik brand/flow (separate from operator SSO), one system to run.
 
 ```mermaid
@@ -48,7 +48,7 @@ The owner researched four products [1]. The decisive framing: **two are IdPs/SSO
 | BetterAuth | Embedded TS library | Ruled out — TS library, can't gate a fleet, and UhhCraft is Go |
 
 **Repo-grounded reasons Authentik wins here specifically:**
-1. **Topology fit** — ~14 services behind central Caddy [2]; Authentik's embedded outpost + Caddy `forward_auth` gates them with no extra proxy. The local Caddy already routes `semaphore.dev.test`/`netbox.dev.test`/`openbao.dev.test` — those become the first gated apps.
+1. **Topology fit** — ~14 services behind central Caddy [2]; Authentik's embedded outpost + Caddy `forward_auth` gates them with no extra proxy. The local Caddy already routes `semaphore.agent-cloud.test`/`netbox.agent-cloud.test`/`openbao.agent-cloud.test` — those become the first gated apps.
 2. **Config-as-code** — blueprints (declarative YAML) + REST API satisfy the "policy and configuration changes — code only" rule [3]; realms/clients become reviewed commits, not console state.
 3. **Fills a real gap** — no human-identity layer exists; Authentik is additive, not a replacement.
 4. **Ops + privacy fit** — Python/Ansible/pytest culture, self-hosted, MIT core, forkable.
@@ -125,21 +125,21 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 > (`make local-https`) should be in place **before Phase 1** — OIDC cookies and
 > discovery break on an untrusted cert / port-mismatched issuer (see §6 + the
 > TLS plan's sequencing note). The canonical local issuer is the **port-free**
-> `https://auth.dev.test` (requires `make local-https`); register all OIDC
+> `https://auth.agent-cloud.test` (requires `make local-https`); register all OIDC
 > `redirect_uri`s against it (exact-match, port-sensitive).
 
 ### Phase 0 — Scaffold the service (composable, local-first)
 - [ ] `platform/services/authentik/deployment/`: `compose.yml` (**server + worker + Postgres + Redis/valkey** — Authentik requires a Redis broker for the worker, matching NetBox's valkey choice; pinned image), `compose.local.yml` (caps, `label=disable`, `local-dev` network), `deploy.sh` (container lifecycle only), `templates/env.j2` (`AUTHENTIK_SECRET_KEY`, bootstrap admin, DB, Redis — from OpenBao; set `AUTHENTIK_LISTEN__HTTP` so Authentik serves plain HTTP on `:9000` behind Caddy, which terminates TLS), `blueprints/` (seed: default flow, an `agent-cloud` group), `context/architecture.md`
-- [ ] **Caddy forward-auth shape**: extend `Caddyfile.local.j2` (and prod `Caddyfile`) with an optional `forward_auth` route form (a `caddy_routes` entry flag like `forward_auth: true` emitting the `forward_auth auth.dev.test { uri /outpost.goauthentik.io/auth/caddy … copy_headers X-authentik-* }` block + the `/outpost.goauthentik.io/*` passthrough). This is the real composable touch point Phase 2 needs — `caddy_routes` only renders flat `reverse_proxy` today.
+- [ ] **Caddy forward-auth shape**: extend `Caddyfile.local.j2` (and prod `Caddyfile`) with an optional `forward_auth` route form (a `caddy_routes` entry flag like `forward_auth: true` emitting the `forward_auth auth.agent-cloud.test { uri /outpost.goauthentik.io/auth/caddy … copy_headers X-authentik-* }` block + the `/outpost.goauthentik.io/*` passthrough). This is the real composable touch point Phase 2 needs — `caddy_routes` only renders flat `reverse_proxy` today.
 - [ ] `deploy-authentik.yml` — composable: `place-monorepo` → `manage-secrets` → render env + blueprints → deploy.sh → wait healthy → verify `/api/v3/root/config/`
 - [ ] OpenBao layout: `secret/services/authentik` (secret_key, bootstrap_password, bootstrap_token, db_password, per-client secrets)
-- [ ] Wire local: `templates-local.yml` "Deploy Authentik (Local)", `authentik_svc` inventory group, `auth.dev.test` Caddy route (`caddy_routes`), bootstrap `_inv_ini`; port `127.0.0.1:9000`
+- [ ] Wire local: `templates-local.yml` "Deploy Authentik (Local)", `authentik_svc` inventory group, `auth.agent-cloud.test` Caddy route (`caddy_routes`), bootstrap `_inv_ini`; port `127.0.0.1:9000`
 - [ ] BATS: compose pinned/healthcheck, deploy.sh container-only, blueprint validity
 
 **Gate 0:** CI green; templates registered; `ansible-playbook --syntax-check` clean.
 
 ### Phase 1 — Local Authentik up + gate ONE service
-- [ ] `make local-deploy-authentik` → Authentik healthy at `https://auth.dev.test:8443` (via Caddy), admin login works (`LOCAL_FAKE_` bootstrap)
+- [ ] `make local-deploy-authentik` → Authentik healthy at `https://auth.agent-cloud.test:8443` (via Caddy), admin login works (`LOCAL_FAKE_` bootstrap)
 - [ ] Gate **one** service end-to-end (recommend **Semaphore**, native OIDC, or **NetBox**): blueprint creates the OIDC provider+app; service configured to use it; login redirects to Authentik and back
 - [ ] Prove blueprint-as-code: change a blueprint → redeploy → change reflected (no console edit)
 
@@ -148,7 +148,7 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 ### Phase 2 — Roll out the fleet
 - [ ] One blueprint + config change per service in the §4 matrix (OIDC where native, Caddy `forward_auth` → embedded outpost otherwise)
 - [ ] Group→role mapping (e.g. `operators`, `admins`) in blueprints; each service maps Authentik groups to its roles
-- [ ] Smoke: `make local-smoke` extended with an SSO check (auth.dev.test healthy + one gated route 302→Authentik)
+- [ ] Smoke: `make local-smoke` extended with an SSO check (auth.agent-cloud.test healthy + one gated route 302→Authentik)
 
 **Gate 2:** every covered service reachable through SSO; break-glass local admin retained on each.
 
@@ -204,7 +204,7 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 | Authentik image pin + upgrade backups | P0 | Pin a release; Authentik upgrades ship breaking changes + no downgrade — back up Postgres before each upgrade [1] |
 | Authentik authn → OPA authz wiring | Future | Compose after SSO lands; not required for Phase 1–4 |
 | Storefront passkey UX (Hanko reserve) | Deferred | Owner chose Authentik-for-everything; revisit Hanko-embedded only if a distinct passkey storefront is wanted (AGPLv3 flag) |
-| Local port for Authentik (9000) vs Caddy | P0 | `127.0.0.1:9000` direct (HTTP, `AUTHENTIK_LISTEN__HTTP`); `auth.dev.test` via Caddy (add to `caddy_routes` → `local-authentik-server:9000`; registry of record: `docs/LOCAL-DEV.md`) |
+| Local port for Authentik (9000) vs Caddy | P0 | `127.0.0.1:9000` direct (HTTP, `AUTHENTIK_LISTEN__HTTP`); `auth.agent-cloud.test` via Caddy (add to `caddy_routes` → `local-authentik-server:9000`; registry of record: `docs/LOCAL-DEV.md`) |
 | **Sequencing: TLS-trust before or after auth?** | **Owner to confirm** | Review recommends TLS-trust + `make local-https` **first** (OIDC needs trusted TLS + port-free issuer). Owner originally said auth-first; if kept, Phase 1 needs per-service TLS-verify-skip as a throwaway. |
 
 ## 9. References

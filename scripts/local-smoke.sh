@@ -15,8 +15,16 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${HOME}/.agent-cloud-local/credentials.env"
+INV="${REPO_ROOT}/platform/inventory/local-dev.yml"
 FULL=false
 [ "${1:-}" = "--full" ] && FULL=true
+
+# Read the dev zone (dns_zone) from the working inventory so these checks track
+# the configured zone instead of hardcoding it. Falls back to the committed
+# default if the working inventory or ansible-inventory is absent.
+ZONE="$(ansible-inventory -i "$INV" --host dns-local 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("dns_zone",""))' 2>/dev/null)"
+[ -n "$ZONE" ] || ZONE="agent-cloud.test"
 
 pass=0 fail=0 skip=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -47,8 +55,8 @@ http_is "http://127.0.0.1:3000/api/ping"      "200" "Semaphore ping (127.0.0.1:3
 hdr "3. DNS (hickory)"
 if running dns; then
   ok "container dns running"
-  wild=$(dig +short +time=2 +tries=1 -p 5300 @127.0.0.1 probe.dev.test A 2>/dev/null)
-  [ "$wild" = "127.0.0.1" ] && ok "wildcard *.dev.test -> 127.0.0.1" || no "wildcard (got '${wild:-none}')"
+  wild=$(dig +short +time=2 +tries=1 -p 5300 @127.0.0.1 "probe.${ZONE}" A 2>/dev/null)
+  [ "$wild" = "127.0.0.1" ] && ok "wildcard *.${ZONE} -> 127.0.0.1" || no "wildcard (got '${wild:-none}')"
   fwd=$(dig +short +time=3 +tries=2 -p 5300 @127.0.0.1 one.one.one.one A 2>/dev/null)
   [ -n "$fwd" ] && ok "forward one.one.one.one -> $fwd" || no "forward upstream (no answer)"
 else sk "dns not deployed (make local-deploy-dns)"; fi
@@ -57,7 +65,7 @@ hdr "4. Caddy (TLS reverse-proxy)"
 if running caddy; then
   ok "container caddy running"
   # Use --resolve to simulate /etc/resolver (proves the name -> Caddy TLS -> app chain).
-  for pair in "semaphore.dev.test:/api/ping" "openbao.dev.test:/v1/sys/health"; do
+  for pair in "semaphore.${ZONE}:/api/ping" "openbao.${ZONE}:/v1/sys/health"; do
     host="${pair%%:*}"; path="${pair#*:}"
     code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
            --resolve "${host}:8443:127.0.0.1" "https://${host}:8443${path}" 2>/dev/null)
@@ -78,9 +86,9 @@ if running netbox-netbox-1; then
 else sk "netbox not deployed (make local-netbox)"; fi
 
 hdr "6. /etc/resolver (native macOS resolution)"
-if [ -f /etc/resolver/dev.test ]; then
-  ok "/etc/resolver/dev.test present"
-else sk "/etc/resolver/dev.test not set (make local-dns-resolver) — native name resolution off"; fi
+if [ -f "/etc/resolver/${ZONE}" ]; then
+  ok "/etc/resolver/${ZONE} present"
+else sk "/etc/resolver/${ZONE} not set (make local-dns-resolver) — native name resolution off"; fi
 
 if [ "$FULL" = true ]; then
   hdr "7. Static suite (--full)"

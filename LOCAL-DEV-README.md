@@ -27,11 +27,11 @@ app a real hostname with TLS.
 flowchart TB
   subgraph mac["Your Mac"]
     DEV["you: make + browser"]
-    RES["/etc/resolver/dev.test<br/>*.dev.test -> 127.0.0.1:5300"]
+    RES["/etc/resolver/agent-cloud.test<br/>*.agent-cloud.test -> 127.0.0.1:5300"]
     subgraph vm["podman machine VM"]
       BAO["OpenBao (dev)<br/>fake secrets + AppRole"]
       SEM["Semaphore (local)<br/>runs the playbooks"]
-      DNS["hickory-dns<br/>*.dev.test -> 127.0.0.1"]
+      DNS["hickory-dns<br/>*.agent-cloud.test -> 127.0.0.1"]
       CAD["Caddy<br/>internal-CA TLS<br/>reverse proxy"]
       SVC["service stacks<br/>uhhcraft / n8n / nocodb / ..."]
     end
@@ -44,7 +44,7 @@ flowchart TB
   SEM --> DNS
   SEM --> CAD
   BAO -->|"OpenBao -> Ansible -> .env"| SVC
-  DEV -->|"https://app.dev.test:8443"| CAD
+  DEV -->|"https://app.agent-cloud.test:8443"| CAD
   RES -.resolves names.-> DNS
   CAD -->|reverse proxy by name| SVC
   mac ==>|git push -> CI -> branch deploy| PROD
@@ -74,7 +74,7 @@ podman machine start
 
 ```bash
 make local-bootstrap        # OpenBao + Semaphore + templates (idempotent)
-make local-deploy-dns       # local DNS  (*.dev.test)
+make local-deploy-dns       # local DNS  (*.agent-cloud.test)
 make local-deploy-caddy     # reverse proxy with TLS
 make local-dns-resolver     # one-time: point macOS at local DNS (asks for sudo)
 ```
@@ -99,9 +99,9 @@ Once `make local-deploy-dns`, `make local-deploy-caddy`, and
 `make local-dns-resolver` have run, each app is reachable **by name over HTTPS**:
 
 ```
-https://semaphore.dev.test:8443     -> Semaphore UI
-https://openbao.dev.test:8443       -> OpenBao API
-https://<app>.dev.test:8443         -> any app with a Caddy route
+https://semaphore.agent-cloud.test:8443     -> Semaphore UI
+https://openbao.agent-cloud.test:8443       -> OpenBao API
+https://<app>.agent-cloud.test:8443         -> any app with a Caddy route
 ```
 
 How it fits together:
@@ -113,8 +113,8 @@ sequenceDiagram
     participant H as hickory-dns
     participant C as Caddy (:8443)
     participant A as App
-    B->>R: https://semaphore.dev.test:8443
-    R->>H: resolve semaphore.dev.test (via /etc/resolver)
+    B->>R: https://semaphore.agent-cloud.test:8443
+    R->>H: resolve semaphore.agent-cloud.test (via /etc/resolver)
     H-->>R: 127.0.0.1
     B->>C: TLS connect 127.0.0.1:8443
     C-->>B: serves wildcard cert (step-ca internal CA)
@@ -127,8 +127,8 @@ Two things worth knowing up front:
 - **Ports: `:8443` by default, or clean `:443` with one opt-in step.** Binding
   privileged ports (<1024) on macOS needs root, and podman-machine's forwarder
   runs as your user — so local Caddy publishes the high ports `8088`/`8443` and
-  the default URL is `https://app.dev.test:8443`. For **clean, port-free**
-  `https://app.dev.test`, run `make local-https` once: it installs a persistent,
+  the default URL is `https://app.agent-cloud.test:8443`. For **clean, port-free**
+  `https://app.agent-cloud.test`, run `make local-https` once: it installs a persistent,
   idempotent root LaunchDaemon (`socat`) that forwards `443→8443` and `80→8088`
   and survives reboots (`make local-https-down` removes it). This is the only
   way to get `:443` on macOS without running everything as root, and it's built
@@ -137,7 +137,7 @@ Two things worth knowing up front:
   the platform's internal CA, **step-ca** (a stable root that survives
   redeploys). Browsers warn (`NET::ERR_CERT_AUTHORITY_INVALID`) until you trust
   that root: run `make local-tls-trust` once (sudo; idempotent) and the warning
-  is gone for all `*.dev.test` hosts. `make local-tls-untrust` reverses it.
+  is gone for all `*.agent-cloud.test` hosts. `make local-tls-untrust` reverses it.
   (Safari/Chrome use the keychain; Firefox has its own store.) See
   [Why some steps ask for `sudo`](#why-some-steps-ask-for-sudo) below.
 
@@ -237,9 +237,9 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-deploy-<svc>` | deploy a service through local Semaphore |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |
-| `make local-https` | clean port-free `https://app.dev.test` via a persistent root forwarder (sudo; idempotent) |
+| `make local-https` | clean port-free `https://app.agent-cloud.test` via a persistent root forwarder (sudo; idempotent) |
 | `make local-https-down` | remove the privileged-port forwarder (sudo) |
-| `make local-tls-trust` | trust the local CA root (step-ca) so `*.dev.test` has no cert warning (sudo; idempotent) |
+| `make local-tls-trust` | trust the local CA root (step-ca) so `*.agent-cloud.test` has no cert warning (sudo; idempotent) |
 | `make local-tls-untrust` | remove the trusted local CA root (sudo) |
 | `make local-validate` | health-check all deployed services |
 | `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |

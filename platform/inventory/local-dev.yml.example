@@ -15,8 +15,14 @@ all:
 
   children:
     # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
-    # dns_zone defaults to the RFC 6761 reserved `dev.test`; override it in the
-    # gitignored working copy with the real internal subdomain (from site-config).
+    # Local zone: `agent-cloud.test` — under the RFC 6761 reserved `.test` TLD
+    # (never publicly resolvable -> safe split-DNS, no mDNS clash like `.local`,
+    # no forced-HTTPS like a real `.dev`), carrying the agent-cloud name. The zone
+    # is written LITERALLY here and in caddy_internal_zone / caddy_routes /
+    # stepca_dns_names below, plus bootstrap-local-dev.yml's _inv_ini — keep them
+    # in sync. (It must be a literal, NOT a `{{ var }}` ref: host-side scripts read
+    # it via `ansible-inventory --host`, which dumps vars raw without evaluating
+    # Jinja.) Override in this gitignored working copy for a different local zone.
     dns_svc:
       hosts:
         dns-local:
@@ -25,13 +31,13 @@ all:
           service_name: dns
           monorepo_deploy_path: platform/services/dns/deployment
           container_engine: podman
-          dns_zone: dev.test
+          dns_zone: agent-cloud.test
           dns_listen: 0.0.0.0       # VM bind; podman-machine forwards to the Mac
           dns_port: 5300            # host publish port (mDNS/VPN-safe on macOS)
           dns_wildcard_target: 127.0.0.1
           dns_upstreams: ["1.1.1.1", "1.0.0.1"]
 
-    # step-ca — internal CA (stable root; issues certs for *.dev.test). Caddy
+    # step-ca — internal CA (stable root; issues certs for the dev zone). Caddy
     # reaches it by container name on the local-dev network (step-ca:9000); the
     # published loopback port is for host debugging.
     step_ca_svc:
@@ -45,7 +51,7 @@ all:
           stepca_bind: 127.0.0.1
           stepca_port: 9000
           stepca_name: "agent-cloud Internal CA (local)"
-          stepca_dns_names: "step-ca,localhost,step-ca.dev.test"
+          stepca_dns_names: "step-ca,localhost,step-ca.agent-cloud.test"
 
     # Local Caddy — internal-CA TLS on loopback high ports; reverse-proxies the
     # control-plane containers by their local-dev network name. Add routes for
@@ -69,12 +75,12 @@ all:
           # Container paths (mounted from ./certs by compose.local.yml); the
           # leaf is minted by tasks/mint-internal-cert.yml on each deploy.
           # Requires step-ca deployed first (make local-deploy-step-ca).
-          caddy_internal_zone: dev.test
+          caddy_internal_zone: agent-cloud.test
           caddy_tls_cert: /etc/caddy/certs/wildcard.crt
           caddy_tls_key: /etc/caddy/certs/wildcard.key
           caddy_routes:
-            - { host: "semaphore.dev.test", upstream: "local-semaphore:3000" }
-            - { host: "openbao.dev.test", upstream: "local-openbao:8200" }
+            - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
+            - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
           # NetBox (when deployed via `make local-netbox`) runs in its own compose
           # project, not the local-dev network — reach it via the host gateway.
           # Leave unset if you don't run NetBox locally.

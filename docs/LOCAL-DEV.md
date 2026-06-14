@@ -108,7 +108,7 @@ non-local inventories and non-local `openbao_addr`).
 | NetBox | 127.0.0.1:8000 | **deployed + working under podman** (not Docker — see NETBOX-LOCAL-ENGINE.md §4b); app tier only. `make local-netbox` then `make local-netbox-discover` (feeds running containers in as VMs). admin / LOCAL_FAKE_admin |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
 | hickory-dns | 127.0.0.1:5300 | **deployed + working**; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
-| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.dev.test` (443→8443, 80→8088) |
+| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
 | o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |
@@ -161,7 +161,7 @@ reference-machine allocations in the plan (§5).
   `ansible_user` *even when the left side is set* — Jinja evaluates filter
   arguments eagerly.
 - **Cert warning (`NET::ERR_CERT_AUTHORITY_INVALID`) → `make local-tls-trust`.**
-  Caddy signs `*.dev.test` from its own internal CA. `make local-tls-trust`
+  Caddy signs `*.agent-cloud.test` from its own internal CA. `make local-tls-trust`
   (sudo, idempotent) extracts Caddy's root from
   `/data/caddy/pki/authorities/local/root.crt` and trusts it in the macOS System
   keychain by fingerprint (the root CN is year-stamped + rotates, so trust/
