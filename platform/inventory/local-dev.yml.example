@@ -93,6 +93,7 @@ all:
             - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000", forward_auth: "authentik-server:9000" }
             - { host: "grafana.agent-cloud.test", upstream: "o11y-grafana:3000" }
             - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000" }
+            - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -136,6 +137,18 @@ all:
           container_engine: podman
           opa_bind: 127.0.0.1
           opa_port: 8281
+
+    # n8n — workflow automation (composable; greenfield locally). Behind Caddy
+    # at n8n.agent-cloud.test. The encryption key is stateful (see deploy-n8n.yml).
+    n8n_svc:
+      hosts:
+        n8n-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: n8n
+          monorepo_deploy_path: platform/services/n8n/deployment
+          container_engine: podman
+          n8n_bind: 127.0.0.1
 
     uhhcraft_svc:
       hosts:

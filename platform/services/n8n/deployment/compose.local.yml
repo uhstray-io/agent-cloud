@@ -1,0 +1,32 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/env are env-parameterized in the BASE; this overlay carries only what
+# overlays CAN add: memory caps, the SELinux opt (the podman-machine VM enforces
+# SELinux on the init-script bind mount), and the extra `local-dev` network so
+# central Caddy reaches n8n by name (workflow-n8n:5678). Postgres/redis stay on
+# the internal default network only.
+
+networks:
+  default:
+  local-dev:
+    external: true
+
+services:
+  n8n:
+    mem_limit: 1g
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev
+  n8n-worker:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  n8n-postgres:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+  n8n-redis:
+    mem_limit: 128m
+    security_opt:
+      - label=disable

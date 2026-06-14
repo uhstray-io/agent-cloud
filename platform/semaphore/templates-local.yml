@@ -34,6 +34,11 @@ templates:
   - name: "Deploy OPA (Local)"
     playbook: platform/playbooks/deploy-opa.yml
 
+  # n8n — workflow automation (composable; greenfield locally). The legacy
+  # secret-gen deploy.sh path is replaced by manage-secrets + a templated .env.
+  - name: "Deploy n8n (Local)"
+    playbook: platform/playbooks/deploy-n8n.yml
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
@@ -48,6 +53,8 @@ templates:
     playbook: platform/playbooks/clean-deploy-o11y.yml
   - name: "Clean Deploy OPA (Local)"
     playbook: platform/playbooks/clean-deploy-opa.yml
+  - name: "Clean Deploy n8n (Local)"
+    playbook: platform/playbooks/clean-deploy-n8n.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
