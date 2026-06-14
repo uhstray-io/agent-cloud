@@ -14,10 +14,11 @@ Authentik as the platform's central **IdP / SSO**. Read with the root
 
 ## How it runs
 
-- **Behind central Caddy.** Authentik serves plain **HTTP on :9000**
+- **Behind central Caddy.** Authentik serves plain **HTTP on container :9000**
   (`AUTHENTIK_LISTEN__HTTP=0.0.0.0:9000`); Caddy terminates TLS in front and
   reaches it by name on the `local-dev` network (`authentik-server:9000`). The
-  published loopback port is for host debugging.
+  published loopback port is for host debugging only — `127.0.0.1:9300` locally
+  (step-ca owns `:9000`), mapping to the container's `:9000`.
 - **Composable, no fork.** `compose.yml` is env-parameterized (image/ports);
   `compose.local.yml` is a slim overlay (caps, `label=disable`, joins
   `local-dev`). `deploy.sh` is container-lifecycle-only — no secret generation.

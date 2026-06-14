@@ -100,7 +100,7 @@ all:
           monorepo_deploy_path: platform/services/authentik/deployment
           container_engine: podman
           authentik_bind: 127.0.0.1
-          authentik_port: 9000
+          authentik_port: 9300          # host debug port; step-ca owns 9000. Caddy reaches the container's :9000 by name.
 
     uhhcraft_svc:
       hosts:
