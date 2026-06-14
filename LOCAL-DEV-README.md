@@ -55,7 +55,7 @@ flowchart TB
 | Secrets | OpenBao (dev mode, `LOCAL_FAKE_` values) | OpenBao (real, source of truth) |
 | Orchestration | Semaphore (1 container, SQLite) | Semaphore (full) |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
-| Names + TLS | hickory-dns + Caddy (internal CA) | DNS + Caddy (Let's Encrypt/Cloudflare) |
+| Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
 | Engine | podman (Docker only where root is required) | same split |
 
 ---
@@ -117,7 +117,7 @@ sequenceDiagram
     R->>H: resolve semaphore.dev.test (via /etc/resolver)
     H-->>R: 127.0.0.1
     B->>C: TLS connect 127.0.0.1:8443
-    C-->>B: serves cert (Caddy internal CA)
+    C-->>B: serves wildcard cert (step-ca internal CA)
     C->>A: reverse_proxy local-semaphore:3000
     A-->>B: response
 ```
@@ -133,17 +133,56 @@ Two things worth knowing up front:
   and survives reboots (`make local-https-down` removes it). This is the only
   way to get `:443` on macOS without running everything as root, and it's built
   into the tooling rather than a manual hack.
-- **Browser TLS warning → one command.** Caddy mints certs from its own
-  *internal* CA, so browsers warn (`NET::ERR_CERT_AUTHORITY_INVALID`) until you
-  trust that CA. Run `make local-tls-trust` once (sudo; idempotent) — it trusts
-  Caddy's root in the macOS keychain and the warning is gone for all
-  `*.dev.test` hosts. `make local-tls-untrust` reverses it. (Safari/Chrome use
-  the keychain; Firefox has its own store.)
+- **Browser TLS warning → one command.** Caddy serves a wildcard cert issued by
+  the platform's internal CA, **step-ca** (a stable root that survives
+  redeploys). Browsers warn (`NET::ERR_CERT_AUTHORITY_INVALID`) until you trust
+  that root: run `make local-tls-trust` once (sudo; idempotent) and the warning
+  is gone for all `*.dev.test` hosts. `make local-tls-untrust` reverses it.
+  (Safari/Chrome use the keychain; Firefox has its own store.) See
+  [Why some steps ask for `sudo`](#why-some-steps-ask-for-sudo) below.
 
 **Exposing a new app:** add a route to the `caddy_routes` list for `caddy_svc`
 in your inventory (host → upstream `container-name:port`) and re-run
 `make local-deploy-caddy`. Caddy reverse-proxies the control-plane and service
 containers **by their network name** — no IPs, no port juggling.
+
+---
+
+## Why some steps ask for `sudo`
+
+**Deploying a service never needs sudo.** Every service deploy runs through
+local Semaphore, and the control plane and all containers run *unprivileged*
+inside the podman VM. Sudo is requested only by a few **host-setup** `make`
+targets — and only because they change files on **macOS itself** that live
+*outside* the podman VM. That's also *why* they can't run through Semaphore
+(the control plane can't reach your Mac's system dirs or trust store): they're a
+one-time host bootstrap that `make` does for you. Each is **idempotent**
+(re-running is a safe no-op) and **reversible**.
+
+| Step | What it changes on your Mac | Why it needs root | Required? |
+|---|---|---|---|
+| `make local-dns-resolver` (also run by `make local-dns`) | writes `/etc/resolver/<zone>` | `/etc/resolver/` is a protected system directory; only root can add the split-DNS rule that points `*.<zone>` at your local DNS. Without it your Mac can't resolve the app hostnames at all. | **Yes** — names won't resolve otherwise |
+| `make local-tls-trust` | adds a CA root to the **System keychain** (`/Library/Keychains/System.keychain`) | Writing the system-wide trust store needs admin rights. This trusts the local **step-ca** root so HTTPS loads without a warning. | **Recommended** — and **mandatory** on a real `.dev` zone (see note) |
+| `make local-https` | binds ports `80`/`443` and installs a `/Library/LaunchDaemons/` unit | macOS reserves ports below 1024 for root, and a system LaunchDaemon must be installed as root. Only needed for clean, port-free URLs. | **Optional** — skip it and use `:8443` |
+
+In practice:
+
+- You'll be asked for your password at most **three** times during initial
+  setup — once each, then never again (they no-op on re-run).
+- **You can see exactly what each will do before granting.** The resolver,
+  forwarder, and trust logic live in `scripts/local-dev.sh` and
+  `platform/local-dev/`; each prints what it's about to write and asks first
+  (pass `--yes` / `ASSUME_YES=1` to skip the prompt in scripts).
+- **Undo any of them:** `make local-tls-untrust`, `make local-https-down`, or
+  delete `/etc/resolver/<zone>`.
+- **Nothing else uses sudo.** If a *deploy* ever prompts for root, that's a bug —
+  deploys are unprivileged by design.
+
+> **`.dev` note:** if your dev zone is a real `.dev` domain, the whole `.dev`
+> TLD is HSTS-preloaded — browsers force HTTPS and **won't let you click past**
+> an untrusted certificate. There, `make local-tls-trust` isn't just
+> recommended, it's required before any app loads in a browser (one command,
+> then everything is genuinely secure).
 
 ---
 
@@ -200,8 +239,8 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |
 | `make local-https` | clean port-free `https://app.dev.test` via a persistent root forwarder (sudo; idempotent) |
 | `make local-https-down` | remove the privileged-port forwarder (sudo) |
-| `make local-tls-trust` | trust Caddy's local CA so `*.dev.test` has no cert warning (sudo; idempotent) |
-| `make local-tls-untrust` | remove the trusted Caddy root CA (sudo) |
+| `make local-tls-trust` | trust the local CA root (step-ca) so `*.dev.test` has no cert warning (sudo; idempotent) |
+| `make local-tls-untrust` | remove the trusted local CA root (sudo) |
 | `make local-validate` | health-check all deployed services |
 | `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |
 | `make local-netbox` | bring up the NetBox app tier under podman |
