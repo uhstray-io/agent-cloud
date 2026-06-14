@@ -17,6 +17,7 @@ EXAMPLE="${INV}.example"
 STATE="${HOME}/.agent-cloud-local/credentials.env"
 
 info() { printf '[local-dev] %s\n' "$*"; }
+warn() { printf '[local-dev] WARN: %s\n' "$*" >&2; }
 die()  { printf '[local-dev] ERROR: %s\n' "$*" >&2; exit 1; }
 
 preflight() {
