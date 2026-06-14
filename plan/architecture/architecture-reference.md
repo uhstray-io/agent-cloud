@@ -161,9 +161,9 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [LOCAL-DEV-DEPLOYMENT.md](../development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
 | [DNS-SERVER-DEPLOYMENT.md](../development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
 | [NETBOX-LOCAL-ENGINE.md](../development/NETBOX-LOCAL-ENGINE.md) | PROPOSED | Fix for local NetBox: podman-VM Semaphore can't reach Docker Desktop — run app-tier under podman (profile-gated, discovery excluded). |
-| [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | PROPOSED | Authentik central IdP / SSO for all services (local-dev first, then prod): composable service, Caddy forward_auth + OIDC, blueprints config-as-code, Authentik-for-everything incl storefront. |
-| [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | PROPOSED | Fix the `*.agent-cloud.test` browser cert warning by trusting the CA root via an idempotent `make local-tls-trust`. The trust tooling is built; the CA *source* is superseded by INTERNAL-CA-DEPLOYMENT (step-ca) per owner. |
-| [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | PROPOSED (optional) | step-ca for **internal** TLS (`*.agent-cloud.test`/internal zones): stable root, Caddy ACME client. Optional robustness upgrade — `make local-tls-trust` (Caddy-root) already works. Decision pending; review fixes to fold in before build. |
+| [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | PHASE 0 DONE (local) | Authentik central IdP / SSO. Composable service deployed + healthy via local Semaphore (server+worker+Postgres+Redis); blueprints config-as-code. Caddy `forward_auth`/OIDC gating is the next phase. |
+| [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | DONE (superseded by step-ca) | `make local-tls-trust` built + working; the CA *source* is now step-ca (INTERNAL-CA-DEPLOYMENT), and tls-trust extracts the step-ca root. |
+| [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | IMPLEMENTED (local) | step-ca internal CA deployed via local Semaphore: stable root, serves the `*.agent-cloud.test` wildcard Caddy presents (token-mint locally; ACME dns-01 is the prod path). |
 
 ### Archived Plans
 

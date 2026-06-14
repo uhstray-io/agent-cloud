@@ -72,6 +72,8 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
+- `platform/services/step-ca/context/architecture.md` — step-ca internal CA (stable root; issues the `*.agent-cloud.test` wildcard Caddy serves; local-dev live)
+- `platform/services/authentik/context/architecture.md` — Authentik central IdP/SSO (server+worker+Postgres+Redis; blueprints config-as-code; local-dev live)
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
@@ -176,6 +178,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/inference-comfyui` | ComfyUI sidecar (own MinIO root creds, COMFYUI_URL) |
 | `secret/services/inference-hunyuan3d` | Hunyuan3D sidecar (own MinIO root creds, model path) |
 | `secret/services/step-ca` | Internal CA key-decryption password (`init_password`); the root/intermediate keys live encrypted in the `step-ca-data` volume, NOT here |
+| `secret/services/authentik` | Authentik IdP secrets (`secret_key`, `bootstrap_password`, `bootstrap_token`, `db_password`); generated once + reused (stable across redeploys) |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |

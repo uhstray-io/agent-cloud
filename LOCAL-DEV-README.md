@@ -178,11 +178,13 @@ In practice:
 - **Nothing else uses sudo.** If a *deploy* ever prompts for root, that's a bug —
   deploys are unprivileged by design.
 
-> **`.dev` note:** if your dev zone is a real `.dev` domain, the whole `.dev`
-> TLD is HSTS-preloaded — browsers force HTTPS and **won't let you click past**
-> an untrusted certificate. There, `make local-tls-trust` isn't just
-> recommended, it's required before any app loads in a browser (one command,
-> then everything is genuinely secure).
+> **Zone note:** the local zone is `agent-cloud.test` — under the RFC 6761
+> reserved `.test` TLD (never publicly resolvable; no mDNS clash like `.local`;
+> no forced-HTTPS like a real `.dev`). Because it's not HSTS-preloaded, an
+> untrusted cert still lets you click through — but `make local-tls-trust`
+> (trust the step-ca root once) gives a clean padlock and is needed for strict
+> OIDC flows. (If you ever switch to a real `.dev` zone, that TLD *is* HSTS-
+> preloaded and the trust step becomes mandatory — no click-through.)
 
 ---
 
@@ -191,8 +193,10 @@ In practice:
 | Service | Status | Notes |
 |---|---|---|
 | OpenBao + Semaphore | ✅ working | the control plane (`make local-bootstrap`) |
-| hickory-dns | ✅ working | `make local-deploy-dns` |
-| Caddy | ✅ working | `make local-deploy-caddy` (internal-CA TLS) |
+| hickory-dns | ✅ working | `make local-deploy-dns` (authoritative for `*.agent-cloud.test`) |
+| step-ca | ✅ working | `make local-deploy-step-ca` — internal CA; stable root, issues the `*.agent-cloud.test` wildcard Caddy serves. Trust once: `make local-tls-trust` |
+| Caddy | ✅ working | `make local-deploy-caddy` — reverse proxy serving the step-ca wildcard cert |
+| Authentik | ✅ working | `make local-deploy-authentik` — central IdP/SSO (server+worker+Postgres+Redis); debug API at `127.0.0.1:9300`, reached via Caddy. SSO gating (`forward_auth`) is the next phase |
 | UhhCraft | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
 | NetBox | ✅ working | app tier **under podman** (no Docker needed — see `plan/development/NETBOX-LOCAL-ENGINE.md`). `make local-netbox` → `make local-netbox-discover` lists the running containers as VMs at `127.0.0.1:8000` |
 | n8n / NocoDB | 🚧 in progress | composable local deploy being added |

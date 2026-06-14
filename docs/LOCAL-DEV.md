@@ -107,8 +107,10 @@ non-local inventories and non-local `openbao_addr`).
 | NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
 | NetBox | 127.0.0.1:8000 | **deployed + working under podman** (not Docker — see NETBOX-LOCAL-ENGINE.md §4b); app tier only. `make local-netbox` then `make local-netbox-discover` (feeds running containers in as VMs). admin / LOCAL_FAKE_admin |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
-| hickory-dns | 127.0.0.1:5300 | **deployed + working**; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
-| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; internal-CA TLS, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
+| hickory-dns | 127.0.0.1:5300 | **deployed + working**; authoritative for `*.agent-cloud.test`; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
+| step-ca | 127.0.0.1:9000 | **deployed + working**; internal CA (stable root in `step-ca-data`); Caddy reaches `step-ca:9000` on `local-dev`; issues the `*.agent-cloud.test` wildcard. `make local-deploy-step-ca` |
+| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
+| Authentik | 127.0.0.1:9300 | **deployed + working**; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`; SSO `forward_auth` gating is the next phase |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
 | o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |
