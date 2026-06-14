@@ -1,0 +1,120 @@
+---
+# deploy-erpnext.yml — ERPNext deploy (composable). Same 3-phase shape as
+# deploy-n8n.yml / deploy-opa.yml; one codebase serves local dev and (later)
+# the prod/dev VMs via inventory vars.
+#
+# Phase 1: Place repo + manage-secrets (MariaDB root + admin passwords — locally
+#          the LOCAL_FAKE_ set at secret/services/erpnext; generated once into
+#          OpenBao and reused) + template .env.
+# Phase 2: deploy.sh — container lifecycle (pull, staged startup: db+redis →
+#          configurator → app tier). Leaves the site unborn.
+# Phase 2b: post-deploy.sh — idempotent site creation (the frontend's
+#          /api/method/ping only answers 200 after the site exists).
+# Phase 3: Verify ERPNext /api/method/ping.
+#
+# Plan: plan/development/ERPNEXT-DEPLOYMENT.md (§7) + LOCAL-DEV-DEPLOYMENT.md (P4).
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage ERPNext secrets"
+  hosts: erpnext_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Slim tier: backing-service credentials only (no MinIO / peer-backup keys —
+    # backup + cross-mirror are prod-only). Both are random-generated once into
+    # OpenBao and reused thereafter (changing DB_PASSWORD against a live site
+    # would orphan the MariaDB root login).
+    _secret_definitions:
+      - { name: mariadb_root_password, type: random, length: 32 }
+      - { name: admin_password, type: random, length: 24 }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start ERPNext containers"
+  hosts: erpnext_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Compose substitution for the published frontend host port. Inventory
+        # erpnext_bind/erpnext_port flow straight into compose.yml.
+        ERPNEXT_BIND: "{{ erpnext_bind | default('127.0.0.1') }}"
+        ERPNEXT_PORT: "{{ erpnext_port | default('8080') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 2b: App bootstrap (idempotent site creation) ──────────────────────
+- name: "Phase 2b: Bootstrap ERPNext site"
+  hosts: erpnext_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run post-deploy.sh (creates the site if absent — idempotent)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash post-deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      register: _bootstrap
+      changed_when: true
+
+    - name: "Show post-deploy.sh output"
+      ansible.builtin.debug:
+        var: _bootstrap.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify ERPNext"
+  hosts: erpnext_svc
+  gather_facts: false
+  become: false
+  vars:
+    # Reachable by container name on local-dev (this play runs in the Semaphore
+    # container); prod overrides with the ERPNext host URL.
+    _erpnext_health: "{{ erpnext_health_url | default('http://erpnext-frontend:8080/api/method/ping') }}"
+
+  tasks:
+    - name: "ERPNext health (/api/method/ping -> 200)"
+      ansible.builtin.uri:
+        url: "{{ _erpnext_health }}"
+        status_code: [200]
+      register: _erpnext
+      retries: 12
+      delay: 5
+      until: _erpnext.status == 200
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "ERPNext healthy — stack up, site created, /api/method/ping answering."

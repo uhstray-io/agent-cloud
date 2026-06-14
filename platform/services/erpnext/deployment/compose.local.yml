@@ -1,0 +1,60 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose() when
+# LOCAL_MODE=true. Images/ports/site are env-parameterized in the BASE; this
+# overlay carries only what overlays CAN add: memory caps, the SELinux opt (the
+# podman-machine VM enforces SELinux on the `sites` volume), and the extra
+# `local-dev` network so central Caddy reaches the frontend by name
+# (erpnext-frontend:8080). DB + both Redis stay on the internal `erpnext`
+# network only.
+#
+# The base compose is ALREADY the slim shape (single `queue` worker, no MinIO);
+# this overlay only adds caps/network. Measured budget target: ≤3.5 GB total
+# (LOCAL-DEV-DEPLOYMENT.md P4). The caps below sum to ~3.4 GB.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. the base
+  # `erpnext` network the services already attach to.
+  erpnext:
+  local-dev:
+    external: true
+
+services:
+  db:
+    mem_limit: 768m
+    security_opt:
+      - label=disable
+  redis-cache:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+  redis-queue:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+  configurator:
+    # One-shot; cap it too so the `compose run` step stays inside budget.
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  backend:
+    mem_limit: 1280m
+    security_opt:
+      - label=disable
+  frontend:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+    networks:
+      - erpnext
+      - local-dev
+  websocket:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+  queue:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  scheduler:
+    mem_limit: 256m
+    security_opt:
+      - label=disable

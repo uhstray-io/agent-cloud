@@ -1,0 +1,27 @@
+---
+# clean-deploy-erpnext.yml — Destroy and redeploy ERPNext.
+#
+# DANGER: destroys the ERPNext data volumes (sites / db-data / redis-queue-data)
+#         — the ENTIRE site DB: company, chart of accounts, every ledger entry.
+#         Intended for LOCAL greenfield only. NEVER run against a populated/prod
+#         ERPNext (use deploy-erpnext.yml for in-place redeploys, or restore from
+#         a backup). Local-dev shares one deploy tree, so the clone is NOT
+#         removed (clean-service.yml branches on local_mode).
+#
+# OpenBao secrets survive the wipe — the same DB/admin passwords are reused, so
+# post-deploy.sh recreates the site against the regenerated DB cleanly.
+#
+# Uses composable tasks/clean-service.yml then runs deploy-erpnext.yml.
+
+- name: "Clean ERPNext deployment"
+  hosts: erpnext_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-erpnext.yml

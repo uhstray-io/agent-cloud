@@ -39,6 +39,10 @@ templates:
   - name: "Deploy n8n (Local)"
     playbook: platform/playbooks/deploy-n8n.yml
 
+  # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
+  - name: "Deploy ERPNext (Local)"
+    playbook: platform/playbooks/deploy-erpnext.yml
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
@@ -55,6 +59,8 @@ templates:
     playbook: platform/playbooks/clean-deploy-opa.yml
   - name: "Clean Deploy n8n (Local)"
     playbook: platform/playbooks/clean-deploy-n8n.yml
+  - name: "Clean Deploy ERPNext (Local)"
+    playbook: platform/playbooks/clean-deploy-erpnext.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"

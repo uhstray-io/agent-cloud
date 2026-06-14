@@ -1,0 +1,19 @@
+{# ERPNext central-Caddy fragment — distributed by deploy-erpnext.yml via
+   tasks/distribute-caddy-site.yml when a caddy_svc host exists. Same shape as
+   the UhhCraft / other per-site fragments. The domain comes from
+   erpnext_public_url (svc_domain) so ONE template serves prod and the local-dev
+   *.agent-cloud.test name alike. Caddy handles WebSocket upgrades transparently,
+   so the Frappe socket.io path needs no special block. #}
+{{ svc_domain }} {
+    encode brotli gzip
+    header {
+        Strict-Transport-Security "max-age=15552000;"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    reverse_proxy {{ svc_upstream }} {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
