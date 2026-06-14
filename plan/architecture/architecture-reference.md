@@ -117,6 +117,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards.
 |---|---|---|
 | [architecture-reference.md](architecture-reference.md) | ACTIVE | This document. Master index and document standards. |
 | [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) | ACTIVE | Composable task library, 4-phase deploy pattern, secret lifecycle, runtime directory separation. The foundational deployment architecture. |
+| [AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md](AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md) | ADOPTED | Where to use declarative vs imperative automation: two-axis taxonomy (loop-ownership × authoring-discipline), classification of every surface, FORCED-vs-DEBT split, ranked action backlog (incl. the manage-approle security defect), the AI-never-closes-a-loop invariant. |
 | [BRANCH-TESTING-WORKFLOW.md](BRANCH-TESTING-WORKFLOW.md) | ACTIVE | Branch deploy and validation workflow via Semaphore survey variables. |
 | [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) | ACTIVE | Credential governance: TTL requirements, Create-Verify-Retire rotation, metadata standard, vault paths, audit requirements. |
 | [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) | ACTIVE | Standard onboarding checklist for new services. Tier classification, phases, anti-patterns. |

@@ -74,6 +74,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
+- `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
 - `plan/architecture/architecture-reference.md` — Master architecture document index and standards
 - `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules
