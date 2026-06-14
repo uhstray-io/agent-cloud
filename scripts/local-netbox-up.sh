@@ -20,6 +20,13 @@ DEPLOY_DIR="${REPO_ROOT}/platform/services/netbox/deployment"
 VERSION="v4.5-4.0.0"
 cd "$DEPLOY_DIR"
 
+# Pin the app-tier publish to loopback locally (compose substitution in
+# docker-compose.yml). With the REMOTE_AUTH forward_auth overlay enabled, a
+# LAN-reachable :8000 would let anyone spoof X-authentik-* and become a NetBox
+# superuser — Caddy's forward_auth gate must be the only ingress. Prod (deploy.sh)
+# leaves this unset → 0.0.0.0.
+export NETBOX_HOST_IP=127.0.0.1
+
 log() { printf '[netbox-up] %s\n' "$*"; }
 
 # 1. Upstream netbox-docker context (provides the runtime /etc/netbox/config mount).

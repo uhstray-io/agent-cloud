@@ -47,10 +47,12 @@
   # enumerating them: per-deploy rendered artifacts (.env, Caddyfile.local,
   # certs/, config/ …) are gitignored, so they're neither copied nor deleted —
   # they're regenerated post-placement by manage-secrets / the deploy. The
-  # explicit excludes cover paths that aren't gitignored but are still copy-hostile
-  # or host-only: .git (history), .remember (host-only, mode 700), secrets/
-  # (mode 600 — unreadable to this uid; creds come from OpenBao), netbox-docker/
-  # (large upstream clone). No -o/-g (like tar): ownership becomes this uid.
+  # explicit excludes: .git is never gitignored, so its exclude is load-bearing;
+  # .remember/, secrets/, netbox-docker/ ARE gitignored (the filter already skips
+  # them) but are listed explicitly as belt-and-suspenders — a missing or edited
+  # .gitignore must never leak host-only (.remember, mode 700), mode-600 secrets/
+  # (creds come from OpenBao anyway), or the large netbox-docker/ upstream clone.
+  # No -o/-g (like tar): ownership becomes this uid.
   ansible.builtin.shell: |
     set -euo pipefail
     mkdir -p "{{ _monorepo_dir }}"
