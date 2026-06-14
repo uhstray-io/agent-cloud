@@ -116,7 +116,7 @@ compose up -d --no-deps netbox netbox-worker
 # RBAC: developers get read-only. forward_auth syncs a platform-developers user
 # into a same-named NetBox group (REMOTE_AUTH_GROUP_SYNC); pre-create that group
 # with a view-all ObjectPermission so members are read-only. Admins are NetBox
-# superusers (REMOTE_AUTH_SUPERUSER_GROUPS); platform-business is denied at the
+# superusers (REMOTE_AUTH_SUPERUSER_GROUPS); platform-user is denied at the
 # Authentik gate and never reaches NetBox. Idempotent. (ObjectType vs ContentType
 # differs across NetBox versions, so resolve the M2M's related model.)
 ensure_dev_readonly() {

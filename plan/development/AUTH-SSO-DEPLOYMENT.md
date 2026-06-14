@@ -129,11 +129,11 @@ Authentik **groups** (not Authentik "Roles", which only delegate Authentik-admin
 |---|---|---|---|---|
 | `platform-admins` | **full** access everywhere | Admin | superuser | reach UI (then OpenBao token) |
 | `platform-developers` | **read-only** everywhere | Viewer | view-only (object perm) | reach UI (then OpenBao token) |
-| `platform-business` | **no** access | denied (not in allowed groups) | denied at gate | denied at gate |
+| `platform-user` | **no** access | denied (not in allowed groups) | denied at gate | denied at gate |
 
 Enforcement happens in **two tiers**: (1) *can you reach the service* and (2) *what role you get*.
 
-- **Tier 1 — reach** is the `platform-member` expression policy (`zz-sso-bindings.yaml`), bound to each forward_auth application: it passes `platform-admins`/`platform-developers` (and Authentik superusers, so break-glass `akadmin` is never locked out) and **denies `platform-business`**. For OIDC services, Grafana's `GF_AUTH_GENERIC_OAUTH_ALLOWED_GROUPS` does the same.
+- **Tier 1 — reach** is the `platform-member` expression policy (`zz-sso-bindings.yaml`), bound to each forward_auth application: it passes `platform-admins`/`platform-developers` (and Authentik superusers, so break-glass `akadmin` is never locked out) and **denies `platform-user`**. For OIDC services, Grafana's `GF_AUTH_GENERIC_OAUTH_ALLOWED_GROUPS` does the same.
 - **Tier 2 — role** maps the surviving groups to a native role. The group **names are the contract**; renaming breaks every consumer. The same list rides both the OIDC `groups` claim (Authentik's default `profile` scope emits it) and the forward_auth `X-authentik-groups` header:
   - **Grafana** — `ROLE_ATTRIBUTE_PATH`: `platform-admins`→Admin, else→Viewer (read-only). `ALLOWED_GROUPS` excludes business.
   - **NetBox** — `REMOTE_AUTH_GROUP_SYNC_ENABLED` syncs the header into Django groups; `REMOTE_AUTH_SUPERUSER_GROUPS=platform-admins` → superuser; a `platform-developers` group pre-seeded with a view-all `ObjectPermission` (in `local-netbox-up.sh`) → read-only. business never arrives (Tier-1 denied).
@@ -177,7 +177,7 @@ Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 - [x] Smoke: `make local-smoke` §7 — Authentik live + NetBox & OpenBao forward_auth 302→IdP + Grafana OIDC button.
 - [ ] Remaining matrix services (Semaphore, Open WebUI, NocoDB/n8n edition-gated, …).
 
-**Status (2026-06-14):** Grafana + NetBox + OpenBao gated through Authentik with the 3-tier model. Validated headlessly: the `platform-member` policy denies `platform-business` and passes admins/developers (PolicyEngine eval per user); NetBox header consumption gives admin superuser (view/add/delete) vs developer read-only (view only, no add/delete); Grafana `ALLOWED_GROUPS` + role path deployed; smoke §7 green. Break-glass retained (NetBox `ObjectPermissionBackend` extends `ModelBackend`; Grafana `GF_SECURITY_ADMIN_PASSWORD`; OpenBao root token). The credentialed browser click-through is the operator's final confirmation. **Gate 2 (partial):** covered services reach SSO with tiered access; break-glass retained.
+**Status (2026-06-14):** Grafana + NetBox + OpenBao gated through Authentik with the 3-tier model. Validated headlessly: the `platform-member` policy denies `platform-user` and passes admins/developers (PolicyEngine eval per user); NetBox header consumption gives admin superuser (view/add/delete) vs developer read-only (view only, no add/delete); Grafana `ALLOWED_GROUPS` + role path deployed; smoke §7 green. Break-glass retained (NetBox `ObjectPermissionBackend` extends `ModelBackend`; Grafana `GF_SECURITY_ADMIN_PASSWORD`; OpenBao root token). The credentialed browser click-through is the operator's final confirmation. **Gate 2 (partial):** covered services reach SSO with tiered access; break-glass retained.
 
 ### Phase 3 — Storefront brand/flow
 > **This OVERRIDES a signed-spec decision.** UhhCraft's `context/spec/SPEC.md`

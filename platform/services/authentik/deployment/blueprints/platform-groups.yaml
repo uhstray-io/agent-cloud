@@ -25,6 +25,6 @@ entries:
       is_superuser: false
   - model: authentik_core.group
     identifiers:
-      name: platform-business
+      name: platform-user
     attrs:
       is_superuser: false

@@ -79,7 +79,7 @@ setup() {
 @test "authentik: platform RBAC groups are config-as-code (admins is_superuser)" {
   local f="$DEPLOY_DIR/blueprints/platform-groups.yaml"
   [ -f "$f" ]
-  for g in platform-admins platform-developers platform-business; do grep -q "name: $g" "$f"; done
+  for g in platform-admins platform-developers platform-user; do grep -q "name: $g" "$f"; done
   # admins carries is_superuser: true (portable: check the lines after its name).
   grep -A3 'name: platform-admins' "$f" | grep -q 'is_superuser: true'
 }
@@ -101,9 +101,11 @@ setup() {
   grep -q 'authentik_outposts.outpost' "$f"
   grep -q '\[name, netbox\]' "$f"
   grep -q '\[name, openbao\]' "$f"
-  # gate allows admins+developers, NOT business; superuser break-glass.
-  grep -q 'platform-admins' "$f" && grep -q 'platform-developers' "$f"
-  ! grep -q 'platform-business' "$f"
+  # gate's allowed set has admins+developers (quoted), NOT the no-access tier;
+  # superuser break-glass. (platform-user may appear in a comment, so match the
+  # quoted set membership, not bare presence.)
+  grep -q '"platform-admins"' "$f" && grep -q '"platform-developers"' "$f"
+  ! grep -q '"platform-user"' "$f"
   grep -q 'is_superuser' "$f"
   grep -q 'authentik_policies.policybinding' "$f"
 }

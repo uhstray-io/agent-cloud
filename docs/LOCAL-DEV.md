@@ -193,7 +193,7 @@ Authentik is the central IdP. Two integration styles are live locally:
 |---|---|---|---|---|
 | `platform-admins` | full | Admin | superuser | reach UI |
 | `platform-developers` | read-only | Viewer | view-only | reach UI |
-| `platform-business` | none | denied | denied | denied |
+| `platform-user` | none | denied | denied | denied |
 
 Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.yaml`) / Grafana `ALLOWED_GROUPS` decides *who reaches the service* (business is denied; superusers always pass for break-glass), then each service maps the group to a role. Assign membership in the Authentik UI.
 

@@ -23,7 +23,7 @@ entries:
   # Access gate (RBAC tier 1 — can you reach the service at all?):
   #   platform-admins      -> full access (downstream role = superuser/Admin)
   #   platform-developers  -> read-only access (downstream role = Viewer/view-only)
-  #   platform-business    -> NO access (denied here)
+  #   platform-user    -> NO access (denied here)
   # Authentik superusers always pass so the break-glass akadmin is never locked
   # out. Without this binding the implicit-consent flow would let ANY
   # authenticated user through (and NetBox would auto-provision them).
