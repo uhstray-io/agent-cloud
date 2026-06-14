@@ -452,7 +452,7 @@
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000'}]
+          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000'}]
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

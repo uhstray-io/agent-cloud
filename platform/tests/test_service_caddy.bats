@@ -56,6 +56,19 @@ setup() {
   ! grep -qE 'uhstray\.io' "$f"
 }
 
+@test "caddy: forward_auth route is opt-in per-route and strips client identity headers" {
+  local f="$DEPLOY_DIR/templates/Caddyfile.local.j2"
+  # Only routes with a forward_auth upstream get the gated route block.
+  grep -qF "r.forward_auth" "$f"
+  # The embedded-outpost endpoints must be proxied to Authentik, not the app.
+  grep -qF '/outpost.goauthentik.io/*' "$f"
+  grep -qF 'uri /outpost.goauthentik.io/auth/caddy' "$f"
+  # Identity headers are copied from the outpost AND stripped from the client
+  # request first (anti-spoofing) — both must be present.
+  grep -qE 'copy_headers .*X-authentik-username' "$f"
+  grep -qE 'request_header -X-authentik-username' "$f"
+}
+
 @test "caddy: env template prod defaults match the compose defaults" {
   local f="$DEPLOY_DIR/templates/env.j2"
   [ -f "$f" ]

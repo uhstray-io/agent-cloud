@@ -1,0 +1,76 @@
+# Authentik blueprint — NetBox via forward_auth (proxy provider).
+#
+# Local-dev SSO mechanism for NetBox. Central Caddy authenticates each request
+# against Authentik's embedded outpost (/outpost.goauthentik.io/auth/caddy) and
+# injects X-authentik-* identity headers; NetBox trusts them via REMOTE_AUTH_*
+# (platform/services/netbox/deployment/docker-compose.local-auth.yml).
+#
+# Why forward_auth (not OIDC) locally: NetBox runs as its own podman-compose
+# project (NETBOX-LOCAL-ENGINE), off the local-dev network. With forward_auth
+# NetBox makes NO outbound calls to Authentik, so there is no in-container DNS
+# resolution of *.agent-cloud.test and no step-ca TLS-trust to solve — Caddy
+# (already on local-dev) does the auth. No client secret either: the proxy
+# provider self-manages its tokens.
+#
+# Prod SSO for NetBox is OIDC (see AUTH-SSO-DEPLOYMENT.md), wired on the
+# composable deploy path where shared-secret + reachability are solved.
+version: 1
+metadata:
+  name: agent-cloud - NetBox forward_auth
+context:
+  netbox_external_host: https://netbox.agent-cloud.test:8443/
+  authentik_browser_host: https://auth.agent-cloud.test:8443/
+entries:
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-netbox
+    identifiers:
+      name: netbox
+    attrs:
+      mode: forward_single
+      external_host: !Context netbox_external_host
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+  - model: authentik_core.application
+    identifiers:
+      slug: netbox
+    attrs:
+      name: NetBox
+      provider: !KeyOf provider-netbox
+      meta_launch_url: !Context netbox_external_host
+      open_in_new_tab: true
+  # Bind the proxy provider to the built-in embedded outpost so Caddy's
+  # forward_auth endpoint can validate sessions.
+  # NOTE: this REPLACES the embedded outpost's provider list. When OpenBao adds
+  # its own forward_auth provider, list BOTH here (or lift this binding into a
+  # shared outpost blueprint that !Finds every proxy provider by name).
+  - model: authentik_outposts.outpost
+    identifiers:
+      name: authentik Embedded Outpost
+    attrs:
+      providers:
+        - !KeyOf provider-netbox
+      # Browser-facing IdP URL. Without this the embedded outpost builds its
+      # login redirect from its internal listen socket (http://0.0.0.0:9000),
+      # which the browser can't reach. The embedded outpost reaches core
+      # in-process, so authentik_host here only affects the browser redirect —
+      # set it to the public URL (via Caddy). LOCAL value; prod parameterizes
+      # the zone. NB: the serializer REPLACES config wholesale (it doesn't
+      # merge), so we mirror Authentik's defaults and override only the host —
+      # otherwise omitted keys (log_level, naming template, …) become null.
+      config:
+        authentik_host: !Context authentik_browser_host
+        authentik_host_browser: ""
+        authentik_host_insecure: false
+        log_level: info
+        object_naming_template: ak-outpost-%(name)s
+        docker_map_ports: true
+        refresh_interval: minutes=5
+        kubernetes_replicas: 1
+        kubernetes_namespace: default
+        kubernetes_service_type: ClusterIP
+        kubernetes_image_pull_secrets: []
+        kubernetes_disabled_components: []
+        kubernetes_ingress_annotations: {}
+        kubernetes_ingress_secret_name: authentik-outpost-tls

@@ -85,7 +85,9 @@ all:
           caddy_routes:
             - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
             - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
-            - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000" }
+            # forward_auth gates NetBox through Authentik's embedded outpost
+            # (NetBox can't do OIDC locally — see netbox-forward-auth.yaml).
+            - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000", forward_auth: "authentik-server:9000" }
             - { host: "grafana.agent-cloud.test", upstream: "o11y-grafana:3000" }
             - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000" }
 

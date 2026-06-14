@@ -85,7 +85,14 @@ if ! podman image exists netbox:latest-plugins 2>/dev/null && \
   podman build -t netbox:latest-plugins -f Dockerfile-Plugins --build-arg VERSION="$VERSION" .
 fi
 
-compose() { podman compose --project-name netbox -f docker-compose.yml "$@"; }
+# Base compose + the local-only forward_auth overlay (REMOTE_AUTH_* so NetBox
+# trusts the X-authentik-* headers central Caddy injects). The overlay is
+# committed and never used by the prod deploy.sh path.
+compose() {
+  podman compose --project-name netbox \
+    -f docker-compose.yml \
+    -f docker-compose.local-auth.yml "$@"
+}
 
 # 4. App tier only — backing services first, then netbox + worker (--no-deps so
 #    the discovery pipeline is never pulled in).

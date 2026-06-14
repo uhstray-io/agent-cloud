@@ -1,0 +1,30 @@
+# Authentik blueprint — platform RBAC groups (config-as-code).
+#
+# Three access tiers surfaced to every SSO'd service. `platform-admins` is
+# is_superuser here (Authentik admin) and maps to each app's top role;
+# developers/business map to lower roles. The group NAMES are the stable
+# contract every service maps against:
+#   - Grafana:  GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH (groups claim)
+#   - NetBox:   REMOTE_AUTH_SUPERUSER_GROUPS / _STAFF_GROUPS (X-authentik-groups)
+#   - OpenBao:  policy aliases on the groups claim (planned)
+# Do NOT rename casually. Membership is assigned in the Authentik UI (or a
+# future user-seed blueprint). Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+version: 1
+metadata:
+  name: agent-cloud - platform groups
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: platform-admins
+    attrs:
+      is_superuser: true
+  - model: authentik_core.group
+    identifiers:
+      name: platform-developers
+    attrs:
+      is_superuser: false
+  - model: authentik_core.group
+    identifiers:
+      name: platform-business
+    attrs:
+      is_superuser: false

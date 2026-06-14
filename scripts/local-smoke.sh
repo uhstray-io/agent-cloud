@@ -102,13 +102,38 @@ if running o11y-grafana; then
     && ok "Loki has container logs (Alloy shipping)" || no "Loki logs (Alloy not shipping?)"
 else sk "o11y not deployed (make local-deploy-o11y)"; fi
 
-hdr "7. /etc/resolver (native macOS resolution)"
+hdr "7. SSO (Authentik IdP + forward_auth / OIDC)"
+if running authentik-server; then
+  ok "container authentik-server running"
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+         --resolve "auth.${ZONE}:8443:127.0.0.1" "https://auth.${ZONE}:8443/-/health/live/" 2>/dev/null)
+  { [ "$code" = "200" ] || [ "$code" = "204" ]; } \
+    && ok "Authentik live behind Caddy (auth.${ZONE})" || no "Authentik behind Caddy (got ${code:-none})"
+  # NetBox is gated by forward_auth: unauthenticated -> redirect to the Authentik
+  # authorize endpoint at the public IdP URL (not the internal listen address).
+  if running netbox-netbox-1; then
+    loc=$(curl -sk -o /dev/null -w '%{redirect_url}' --max-time 5 \
+          --resolve "netbox.${ZONE}:8443:127.0.0.1" "https://netbox.${ZONE}:8443/" 2>/dev/null)
+    case "$loc" in
+      *"auth.${ZONE}"*authorize*) ok "NetBox forward_auth -> Authentik login" ;;
+      *) no "NetBox forward_auth (redirect: ${loc:-none})" ;;
+    esac
+  fi
+  # Grafana OIDC: the login page offers the Authentik (generic_oauth) button.
+  if running o11y-grafana; then
+    curl -sk --max-time 5 --resolve "grafana.${ZONE}:8443:127.0.0.1" \
+         "https://grafana.${ZONE}:8443/login" 2>/dev/null | grep -qi 'generic_oauth' \
+      && ok "Grafana OIDC button present" || no "Grafana OIDC button"
+  fi
+else sk "authentik not deployed (make local-deploy-authentik)"; fi
+
+hdr "8. /etc/resolver (native macOS resolution)"
 if [ -f "/etc/resolver/${ZONE}" ]; then
   ok "/etc/resolver/${ZONE} present"
 else sk "/etc/resolver/${ZONE} not set (make local-dns-resolver) — native name resolution off"; fi
 
 if [ "$FULL" = true ]; then
-  hdr "8. Static suite (--full)"
+  hdr "9. Static suite (--full)"
   # -S warning matches the repo's CI severity (info-level notes don't gate).
   ( cd "$REPO_ROOT" && shellcheck -S warning scripts/*.sh platform/lib/*.sh platform/services/*/deployment/deploy.sh >/dev/null 2>&1 ) \
     && ok "shellcheck (-S warning)" || no "shellcheck"

@@ -108,7 +108,7 @@ flowchart TB
 
 | Service | Mechanism | Notes |
 |---|---|---|
-| NetBox | **OIDC** (`SOCIAL_AUTH`/`REMOTE_AUTH`) | native; group→role mapping via blueprint |
+| NetBox | **forward_auth** (local, DONE) / OIDC (prod) | local: proxy provider + embedded outpost; NetBox trusts `X-authentik-*` via `REMOTE_AUTH_*`. NetBox runs as its own podman-compose project **off** the `local-dev` network, so OIDC's server-side token/userinfo calls can't resolve/trust the in-network IdP — forward_auth sidesteps that (NetBox makes no outbound IdP calls). Prod uses native OIDC `social_auth` on the composable deploy path (shared secret + reachability solved there). |
 | NocoDB | **OIDC** (enterprise; else forward_auth) | OIDC SSO is a paid-tier feature like n8n — confirm edition at execution; community edition falls back to forward_auth |
 | n8n | **OIDC** (enterprise SSO; else forward_auth) | confirm edition at execution |
 | o11y (Grafana) | **OIDC** | Grafana generic OAuth |
@@ -120,6 +120,23 @@ flowchart TB
 | services with no OIDC | **Caddy forward_auth** → outpost | uniform gate |
 
 The matrix is a blueprint-per-service: each row is an Authentik `application` + `provider` blueprint + the service's OIDC/forward-auth config (templated from OpenBao client secrets).
+
+### Platform groups (RBAC)
+
+Authentik **groups** (not Authentik "Roles", which only delegate Authentik-admin) are the single source of truth for access tiers; each service maps a group to its own native role. Defined config-as-code in `blueprints/platform-groups.yaml`:
+
+| Group | `is_superuser` (Authentik) | Grafana role | NetBox |
+|---|---|---|---|
+| `platform-admins` | yes | Admin | superuser + staff |
+| `platform-developers` | no | Editor | member (object perms) |
+| `platform-business` | no | Viewer | member (object perms) |
+
+The group **names are the contract**; renaming them breaks every consumer. Propagation is mechanism-agnostic — the same group list rides the OIDC `groups` claim (Authentik's default `profile` scope already emits it) **and** the forward_auth `X-authentik-groups` header:
+- **Grafana** — `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` JMESPath over `groups[*]` (env, no Grafana-side config).
+- **NetBox** — `REMOTE_AUTH_GROUP_SYNC_ENABLED` + `REMOTE_AUTH_SUPERUSER_GROUPS=platform-admins` syncs the header into Django groups.
+- **OpenBao** (planned) — group claim → OpenBao external group → policy.
+
+Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 
 ## 5. Implementation phases
 
@@ -148,11 +165,13 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 **Gate 1:** one service's login flows through Authentik via local Semaphore deploy; identity claims visible; blueprint round-trip proven.
 
 ### Phase 2 — Roll out the fleet
-- [ ] One blueprint + config change per service in the §4 matrix (OIDC where native, Caddy `forward_auth` → embedded outpost otherwise)
-- [ ] Group→role mapping (e.g. `operators`, `admins`) in blueprints; each service maps Authentik groups to its roles
-- [ ] Smoke: `make local-smoke` extended with an SSO check (auth.agent-cloud.test healthy + one gated route 302→Authentik)
+- [x] **Grafana (OIDC)** — generic_oauth; browser AUTH_URL via Caddy, server-side token/userinfo via internal `authentik-server:9000` (o11y is on `local-dev`); client secret shared via `manage-secrets` `_shared_reads`.
+- [x] **NetBox (forward_auth)** — proxy provider + embedded-outpost binding; `docker-compose.local-auth.yml` overlay sets `REMOTE_AUTH_*`; Caddy `forward_auth` route. Validated: unauth → Authentik 302; identity header → auto-created superuser + synced `platform-admins` group.
+- [x] Group→role mapping in blueprints (`platform-groups.yaml`; each service maps the group list).
+- [x] Smoke: `make local-smoke` §7 — Authentik live behind Caddy + NetBox forward_auth 302→IdP + Grafana OIDC button.
+- [ ] Remaining matrix services (Semaphore, OpenBao forward_auth, Open WebUI, NocoDB/n8n edition-gated, …).
 
-**Gate 2:** every covered service reachable through SSO; break-glass local admin retained on each.
+**Status (2026-06-14):** Grafana + NetBox gated end-to-end through Authentik with group→role mapping; break-glass local admin retained on both (NetBox `ObjectPermissionBackend` extends `ModelBackend`; Grafana keeps `GF_SECURITY_ADMIN_PASSWORD`). The credentialed browser click-through (enter creds → land on dashboard with mapped role) is the operator's final confirmation; everything up to it is validated headlessly. **Gate 2 (partial):** covered services reach SSO; break-glass retained.
 
 ### Phase 3 — Storefront brand/flow
 > **This OVERRIDES a signed-spec decision.** UhhCraft's `context/spec/SPEC.md`
@@ -186,6 +205,8 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 - **Break-glass**: every service keeps a local admin until SSO is proven (rule #5) — an IdP outage must not lock operators out of everything.
 - **TLS dependency (prerequisite, not follow-on):** OIDC cookies (`Secure`/`SameSite`) and server-to-server discovery break on Caddy's untrusted internal CA. Trusted local TLS (`LOCAL-DEV-TLS-TRUST.md`) + clean port-free URLs (`make local-https`) should land **before Phase 1**. The owner's stated order was auth-first; the review recommends the TLS fix first (it's small) — owner to confirm (see §8).
 - Authentik EE features (RAC, AI risk) stay off (MIT core only) to avoid the paid-license surface.
+- **forward_auth header spoofing:** Caddy strips inbound `X-authentik-*` from the client *before* the auth subrequest (the `forward_auth` route in `Caddyfile.local.j2`), so only the outpost can set identity headers. Without this a caller could forge `X-authentik-username` and bypass auth — `copy_headers` only overwrites headers the outpost actually returns. The gated app must also be reachable **only** via Caddy (NetBox's `127.0.0.1:8000` is loopback-only on the dev host).
+- **Embedded-outpost browser URL:** the embedded outpost reaches core in-process, so its `authentik_host` (set in the outpost blueprint to `https://auth.<zone>:8443/`) only drives the **browser** login redirect. Left empty, it falls back to the internal listen socket (`http://0.0.0.0:9000`), which the browser can't reach. (`authentik_host_browser` is not consulted for this redirect in 2024.12.)
 
 ## 7. Validation (master)
 
@@ -222,4 +243,5 @@ The matrix is a blueprint-per-service: each row is an Authentik `application` + 
 | Date | Change |
 |---|---|
 | 2026-06-13 | Initial plan: Authentik chosen as central IdP (decision criteria + rejected alternatives from owner research, repo-grounded); composable local-first → prod architecture; per-service OIDC/forward_auth matrix; phases + gates; Authentik-for-everything incl storefront; kept separate from Ory Hydra; TLS-trust + OPA cross-refs |
+| 2026-06-14 | Implemented Phase 2 for Grafana (OIDC) + NetBox (forward_auth). NetBox moved OIDC→forward_auth locally (runs off `local-dev`, can't reach the in-network IdP server-side); added `platform-groups.yaml` RBAC (platform-admins/developers/business) with per-service mapping; embedded-outpost `authentik_host` config (browser-redirect fix); Caddy `forward_auth` route + inbound-header strip; `local-smoke` §7. Mechanism fix: `place-monorepo` local copy switched tar→`rsync --delete` (honors `.gitignore`) so removed deploy inputs (e.g. retired blueprints) propagate. |
 | 2026-06-13 | Adversarial-review fixes: added Redis to the Phase-0 compose (Authentik requires a broker); flagged TLS-trust as a prerequisite (OIDC cookies/discovery) and surfaced the auth-vs-TLS sequencing as an owner decision; added the `forward_auth` Caddyfile-template task (the real Phase-2 touch point); NocoDB OIDC marked enterprise-gated like n8n; Phase 3 reconciled with UhhCraft's signed self-built-auth SPEC (override-or-descope); Authentik HTTP `:9000` behind Caddy + port-free issuer |

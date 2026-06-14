@@ -110,10 +110,10 @@ non-local inventories and non-local `openbao_addr`).
 | hickory-dns | 127.0.0.1:5300 | **deployed + working**; authoritative for `*.agent-cloud.test`; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
 | step-ca | 127.0.0.1:9000 | **deployed + working**; internal CA (stable root in `step-ca-data`); Caddy reaches `step-ca:9000` on `local-dev`; issues the `*.agent-cloud.test` wildcard. `make local-deploy-step-ca` |
 | Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
-| Authentik | 127.0.0.1:9300 | **deployed + working**; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`; SSO `forward_auth` gating is the next phase |
+| Authentik | 127.0.0.1:9300 | **deployed + working + gating**; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`. Gates Grafana (OIDC) + NetBox (forward_auth) — see SSO section below |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA (P4) | 127.0.0.1:8281 | 8181 is NocoDB's local bind; diagnostics 8282 stays internal |
-| o11y (reserved) | 3002 / 9090 / 3100 | grafana / prometheus / loki — stack still a stub |
+| o11y | 3002 / 9090 / 3100 | **deployed + working**; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
 
 ## Engine split
 
@@ -180,11 +180,29 @@ reference-machine allocations in the plan (§5).
   `read:packages` PAT (or a local build override); backing images
   (postgres/redis/minio) pull fine through the mounted socket.
 
+## SSO (Authentik)
+
+Authentik is the central IdP. Two integration styles are live locally:
+
+- **Grafana — OIDC.** Grafana's `generic_oauth` redirects to Authentik; the login page shows an **Authentik** button.
+- **NetBox — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers; NetBox trusts them via `REMOTE_AUTH_*`. NetBox makes no outbound calls to the IdP (it runs off the `local-dev` network), which is why forward_auth — not OIDC — is the local mechanism. Prod NetBox uses OIDC.
+
+**Access tiers** are Authentik **groups** (`platform-groups.yaml`): `platform-admins` (→ Grafana Admin, NetBox superuser), `platform-developers` (→ Editor), `platform-business` (→ Viewer). Assign membership in the Authentik UI. The group names are the contract every service maps against.
+
+**Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders the forward_auth route) → `local-deploy-o11y` (Grafana OIDC) → `make local-netbox` (REMOTE_AUTH overlay). `make local-smoke` §7 checks all three headlessly.
+
+**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`):
+1. Create a user in Authentik (`https://auth.agent-cloud.test`, admin `akadmin`) and add them to `platform-admins`.
+2. Visit `https://grafana.agent-cloud.test` → "Sign in with Authentik" → land as **Admin**.
+3. Visit `https://netbox.agent-cloud.test` → redirected to Authentik login → back into NetBox as a **superuser** (auto-created on first login).
+
 ## Triage
 
 | Symptom | Check |
 |---|---|
 | Bootstrap fails at "Assert podman machine" | `podman machine start` |
+| NetBox/Grafana login redirect points at `0.0.0.0:9000` | Embedded outpost `authentik_host` unset — re-run `make local-deploy-authentik` (blueprint sets it) |
+| NetBox SSO not gating (loads without login) | `make local-deploy-caddy` (renders the forward_auth route from inventory); confirm `caddy_routes` netbox entry has `forward_auth` |
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |
