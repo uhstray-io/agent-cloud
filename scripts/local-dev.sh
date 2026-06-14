@@ -151,6 +151,15 @@ deploy() {
   _run_template "platform/playbooks/deploy-${svc}.yml"
 }
 
+# DESTRUCTIVE: wipe the service's containers + volumes, then redeploy. The
+# shared deploy tree is kept (clean-service.yml is local-aware).
+clean_deploy() {
+  local svc="${1:-}"
+  [ -n "$svc" ] || die "usage: local-dev.sh clean-deploy <service>"
+  guard "$INV"
+  _run_template "platform/playbooks/clean-deploy-${svc}.yml"
+}
+
 validate() {
   guard "$INV"
   _run_template "platform/playbooks/validate-all.yml"
@@ -367,6 +376,7 @@ case "${1:-}" in
   init)      init ;;
   bootstrap) bootstrap ;;
   deploy)    shift; deploy "$@" ;;
+  clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
   resolver)  shift; resolver "$@" ;;
   https)     shift; https "$@" ;;
@@ -382,6 +392,7 @@ usage: scripts/local-dev.sh <subcommand>
   guard [file]       refuse non-local inventories (used by every subcommand)
   bootstrap          stand up local OpenBao + Semaphore + templates
   deploy <service>   run the service's deploy template via LOCAL Semaphore
+  clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
   validate           run Validate All via LOCAL Semaphore
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)

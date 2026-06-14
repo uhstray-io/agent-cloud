@@ -1,0 +1,24 @@
+---
+# clean-deploy-step-ca.yml — Destroy and redeploy step-ca from scratch.
+#
+# WARNING: Destroys the step-ca-data volume — this DELETES the CA root +
+#          intermediate. A fresh deploy auto-initializes a NEW, different root,
+#          so every client must re-trust it (make local-tls-trust) and any
+#          consumer (Caddy) must re-mint its cert. Use only for a deliberate CA
+#          reset. Local-dev shares one deploy tree, so the clone is NOT removed
+#          (clean-service.yml branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-step-ca.yml.
+
+- name: "Clean step-ca deployment"
+  hosts: step_ca_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-step-ca.yml

@@ -26,6 +26,17 @@ templates:
   - name: "Deploy Authentik (Local)"
     playbook: platform/playbooks/deploy-authentik.yml
 
+  # Clean-deploy (destructive): wipe a local service's containers+volumes, then
+  # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
+  - name: "Clean Deploy DNS (Local)"
+    playbook: platform/playbooks/clean-deploy-dns.yml
+  - name: "Clean Deploy step-ca (Local)"
+    playbook: platform/playbooks/clean-deploy-step-ca.yml
+  - name: "Clean Deploy Caddy (Local)"
+    playbook: platform/playbooks/clean-deploy-caddy.yml
+  - name: "Clean Deploy Authentik (Local)"
+    playbook: platform/playbooks/clean-deploy-authentik.yml
+
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
 #     playbook: platform/playbooks/bootstrap-data.yml

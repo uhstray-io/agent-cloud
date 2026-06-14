@@ -3,11 +3,25 @@
 #
 # WARNING: Destroys ALL data for the service (database, volumes, containers).
 #
+# Two modes (CLAUDE.md "one codebase, no forks"):
+#   - PROD (default): per-VM, per-service clone at /home/<user>/agent-cloud —
+#     teardown removes the clone too, with `become` (it may hold root-owned
+#     files).
+#   - LOCAL (`local_mode: true`): every local service deploys from ONE shared
+#     dir (/var/lib/agent-cloud-deploy/agent-cloud), so removing it would break
+#     sibling services — skip the clone removal (place-monorepo re-copies the
+#     tree on the next deploy). No `become` (the semaphore user drives the VM
+#     engine over the mounted socket); `compose down -v` targets the project by
+#     the compose `name:` field, NOT --project-name service_name (which
+#     mismatches services whose project name differs, e.g. caddy).
+#
 # Expected variables:
 #   service_name, monorepo_deploy_path, _monorepo_dir
 #   container_engine (optional, defaults to docker)
+#   local_mode (optional, defaults to false)
 
-- name: "Stop and remove containers + volumes for {{ service_name }}"
+# ── PROD teardown (per-VM clone) ────────────────────────────────────────────
+- name: "Stop and remove containers + volumes for {{ service_name }} (prod)"
   ansible.builtin.shell: |
     set -o pipefail
     DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -25,18 +39,44 @@
   become: true
   register: _clean
   changed_when: true
+  when: not (local_mode | default(false) | bool)
 
-- name: "Remove agent-cloud clone (may contain root-owned files)"
+# ── LOCAL teardown (shared deploy dir; keep the tree) ───────────────────────
+- name: "Stop and remove containers + volumes for {{ service_name }} (local)"
+  ansible.builtin.shell: |
+    set -o pipefail
+    DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    ENGINE="{{ container_engine | default('podman') }}"
+    COMPOSE_FILE=""
+    for f in docker-compose.yml compose.yml; do
+      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_FILE="${f}" && break
+    done
+    if [ -n "$COMPOSE_FILE" ]; then
+      cd "$DEPLOY_DIR"
+      # No --project-name: let the compose `name:` field set the project (matches
+      # how deploy.sh brought it up) so the right volumes are removed.
+      $ENGINE compose -f "$COMPOSE_FILE" down -v 2>&1 || true
+    fi
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+  register: _clean_local
+  changed_when: true
+  when: local_mode | default(false) | bool
+
+# ── Clone removal — PROD only (local shares the tree) ───────────────────────
+- name: "Remove agent-cloud clone (prod; may contain root-owned files)"
   ansible.builtin.file:
     path: "{{ _monorepo_dir }}"
     state: absent
   become: true
+  when: not (local_mode | default(false) | bool)
 
-- name: "Remove convenience symlink"
+- name: "Remove convenience symlink (prod)"
   ansible.builtin.file:
     path: "{{ local_home_dir | default('/home/' ~ ansible_user) }}/{{ service_name }}"
     state: absent
+  when: not (local_mode | default(false) | bool)
 
+# ── Verify (both modes) ─────────────────────────────────────────────────────
 - name: "Verify clean"
   ansible.builtin.shell: |
     set -o pipefail

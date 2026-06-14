@@ -4,7 +4,7 @@
 LOCAL_DEV := scripts/local-dev.sh
 
 .PHONY: help local-preflight local-init local-bootstrap local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
-.PHONY: local-deploy-%
+.PHONY: local-deploy-% local-clean-deploy-%
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z%-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-22s %s\n", $$1, $$2}'
@@ -20,6 +20,9 @@ local-bootstrap: ## Stand up local OpenBao + Semaphore + templates (idempotent)
 
 local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local-deploy-uhhcraft)
 	@$(LOCAL_DEV) deploy $*
+
+local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then redeploy (e.g. make local-clean-deploy-dns)
+	@$(LOCAL_DEV) clean-deploy $*
 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
