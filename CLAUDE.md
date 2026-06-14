@@ -160,6 +160,13 @@ Docker Compose requires `.env` files on disk — this is the minimal bridge betw
 
 Services provision their own AppRoles via `tasks/manage-approle.yml` — no need to modify OpenBao's deploy.sh. The task creates the policy, AppRole, and stores credentials in OpenBao. Semaphore's policy includes `sys/policies/acl/*` and `auth/approle/role/*` for this purpose.
 
+### Credential Handling — discrete functions, scoped `no_log`
+
+**Isolate credential handling into discrete functions/tasks, and reserve `no_log: true` for those.** Secret-bearing steps — OpenBao auth, fetch/generate/resolve/store, `_shared_reads`, templating secret env files — belong in their own tasks (or a dedicated credentials function) carrying `no_log: true`; that keeps secrets out of logs **without** blinding the rest of the run.
+
+- **`no_log` is for credential tasks only.** Do **not** put it on deploys, waits, health checks, verification, or debug displays — there it hides failures and makes Semaphore runs undiagnosable (a past `deploy.sh` failure was censored exactly this way). The fix is *scoping* `no_log` to the credential boundary, not banning or blanket-applying it.
+- The reusable `tasks/manage-secrets.yml` is the reference: its auth/fetch/resolve/store/shared-read steps are `no_log`'d; `deploy.sh` and verification are not.
+
 ### OpenBao Secrets Layout
 
 | Path | Contents |
