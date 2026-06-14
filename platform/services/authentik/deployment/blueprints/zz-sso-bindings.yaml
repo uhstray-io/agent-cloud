@@ -1,0 +1,76 @@
+# Authentik blueprint — shared forward_auth bindings (applied LAST).
+#
+# Owns the cross-service concerns for every forward_auth app so no single
+# service's blueprint can clobber another's:
+#   1. the embedded-outpost provider list (which proxy providers it serves), and
+#   2. the per-app access gate (who may pass forward_auth).
+#
+# The `zz-` prefix makes this the last blueprint Authentik applies, so every
+# !Find below resolves against providers/apps the service blueprints already
+# created. Add a new forward_auth service by: (a) its own provider+app blueprint,
+# (b) one line in the outpost `providers` list here, (c) one PolicyBinding here.
+# Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+version: 1
+metadata:
+  name: agent-cloud - SSO bindings
+context:
+  # Browser-facing IdP URL. Without it the embedded outpost builds its login
+  # redirect from its internal listen socket (http://0.0.0.0:9000), which the
+  # browser can't reach. The embedded outpost reaches core in-process, so this
+  # only affects the browser redirect. LOCAL value; prod parameterizes the zone.
+  authentik_browser_host: https://auth.agent-cloud.test:8443/
+entries:
+  # Access gate (RBAC tier 1 — can you reach the service at all?):
+  #   platform-admins      -> full access (downstream role = superuser/Admin)
+  #   platform-developers  -> read-only access (downstream role = Viewer/view-only)
+  #   platform-business    -> NO access (denied here)
+  # Authentik superusers always pass so the break-glass akadmin is never locked
+  # out. Without this binding the implicit-consent flow would let ANY
+  # authenticated user through (and NetBox would auto-provision them).
+  - model: authentik_policies_expression.expressionpolicy
+    id: policy-platform-member
+    identifiers:
+      name: platform-member
+    attrs:
+      expression: |
+        allowed = {"platform-admins", "platform-developers"}
+        return request.user.is_superuser or bool(
+            allowed & {g.name for g in request.user.ak_groups.all()}
+        )
+
+  # Embedded outpost: serve every forward_auth proxy provider. Replacing the
+  # list here (not per service) is safe because this is the single owner.
+  - model: authentik_outposts.outpost
+    identifiers:
+      name: authentik Embedded Outpost
+    attrs:
+      providers:
+        - !Find [authentik_providers_proxy.proxyprovider, [name, netbox]]
+        - !Find [authentik_providers_proxy.proxyprovider, [name, openbao]]
+      # Embedded outpost is in-process + non-Kubernetes, so only the host/log
+      # keys matter; the serializer replaces config wholesale, so we set the
+      # meaningful keys and let the inert kubernetes_* defaults fall away.
+      config:
+        authentik_host: !Context authentik_browser_host
+        authentik_host_browser: ""
+        authentik_host_insecure: false
+        log_level: info
+        object_naming_template: ak-outpost-%(name)s
+        docker_map_ports: true
+        refresh_interval: minutes=5
+
+  # Bind the access gate to each forward_auth application.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, netbox]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, openbao]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true

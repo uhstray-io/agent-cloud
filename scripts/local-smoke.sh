@@ -66,12 +66,11 @@ hdr "4. Caddy (TLS reverse-proxy)"
 if running caddy; then
   ok "container caddy running"
   # Use --resolve to simulate /etc/resolver (proves the name -> Caddy TLS -> app chain).
-  for pair in "semaphore.${ZONE}:/api/ping" "openbao.${ZONE}:/v1/sys/health"; do
-    host="${pair%%:*}"; path="${pair#*:}"
-    code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
-           --resolve "${host}:8443:127.0.0.1" "https://${host}:8443${path}" 2>/dev/null)
-    [ "$code" = "200" ] && ok "https://${host}:8443 -> 200" || no "https://${host}:8443 (got ${code:-none})"
-  done
+  # Semaphore is the ungated 200 example; OpenBao is now forward_auth-gated
+  # (checked in §7) and its health is covered directly at 127.0.0.1:8200 in §2.
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+         --resolve "semaphore.${ZONE}:8443:127.0.0.1" "https://semaphore.${ZONE}:8443/api/ping" 2>/dev/null)
+  [ "$code" = "200" ] && ok "https://semaphore.${ZONE}:8443 -> 200" || no "https://semaphore.${ZONE}:8443 (got ${code:-none})"
 else sk "caddy not deployed (make local-deploy-caddy)"; fi
 
 hdr "5. NetBox (app tier under podman)"
@@ -117,6 +116,15 @@ if running authentik-server; then
     case "$loc" in
       *"auth.${ZONE}"*authorize*) ok "NetBox forward_auth -> Authentik login" ;;
       *) no "NetBox forward_auth (redirect: ${loc:-none})" ;;
+    esac
+  fi
+  # OpenBao UI is forward_auth-gated too -> unauthenticated redirects to Authentik.
+  if running local-openbao; then
+    loc=$(curl -sk -o /dev/null -w '%{redirect_url}' --max-time 5 \
+          --resolve "openbao.${ZONE}:8443:127.0.0.1" "https://openbao.${ZONE}:8443/" 2>/dev/null)
+    case "$loc" in
+      *"auth.${ZONE}"*authorize*) ok "OpenBao forward_auth -> Authentik login" ;;
+      *) no "OpenBao forward_auth (redirect: ${loc:-none})" ;;
     esac
   fi
   # Grafana OIDC: the login page offers the Authentik (generic_oauth) button.

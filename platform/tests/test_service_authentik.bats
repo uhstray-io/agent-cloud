@@ -75,3 +75,35 @@ setup() {
   grep -qE '^entries:' "$f"
   grep -q 'authentik_core.group' "$f"
 }
+
+@test "authentik: platform RBAC groups are config-as-code (admins is_superuser)" {
+  local f="$DEPLOY_DIR/blueprints/platform-groups.yaml"
+  [ -f "$f" ]
+  for g in platform-admins platform-developers platform-business; do grep -q "name: $g" "$f"; done
+  # admins carries is_superuser: true (portable: check the lines after its name).
+  grep -A3 'name: platform-admins' "$f" | grep -q 'is_superuser: true'
+}
+
+@test "authentik: netbox + openbao are forward_auth proxy providers (no client secret)" {
+  for svc in netbox openbao; do
+    local f="$DEPLOY_DIR/blueprints/${svc}-forward-auth.yaml"
+    [ -f "$f" ]
+    grep -q 'authentik_providers_proxy.proxyprovider' "$f"
+    grep -q 'mode: forward_single' "$f"
+    ! grep -qi 'client_secret' "$f"
+  done
+}
+
+@test "authentik: shared bindings own the outpost (both providers) + the access gate" {
+  local f="$DEPLOY_DIR/blueprints/zz-sso-bindings.yaml"
+  [ -f "$f" ]
+  # zz- so it applies last (resolves !Find against already-created providers).
+  grep -q 'authentik_outposts.outpost' "$f"
+  grep -q '\[name, netbox\]' "$f"
+  grep -q '\[name, openbao\]' "$f"
+  # gate allows admins+developers, NOT business; superuser break-glass.
+  grep -q 'platform-admins' "$f" && grep -q 'platform-developers' "$f"
+  ! grep -q 'platform-business' "$f"
+  grep -q 'is_superuser' "$f"
+  grep -q 'authentik_policies.policybinding' "$f"
+}

@@ -1,0 +1,36 @@
+# Authentik blueprint — OpenBao UI via forward_auth (proxy provider).
+#
+# Gates the OpenBao web UI behind Authentik: central Caddy authenticates each
+# request against the embedded outpost before proxying to local-openbao:8200.
+# This is a NETWORK gate (defense-in-depth) — it does not log you into OpenBao;
+# OpenBao's own token auth still applies, and the root/break-glass token is
+# always retained (AUTH-SSO-DEPLOYMENT.md §6, Critical Rule #5). True OpenBao
+# RBAC (Authentik group -> OpenBao policy) would use OpenBao's OIDC/JWT auth
+# method; that's a later step.
+#
+# The outpost binding + access gate live in zz-sso-bindings.yaml.
+version: 1
+metadata:
+  name: agent-cloud - OpenBao forward_auth
+context:
+  openbao_external_host: https://openbao.agent-cloud.test:8443/
+entries:
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-openbao
+    identifiers:
+      name: openbao
+    attrs:
+      mode: forward_single
+      external_host: !Context openbao_external_host
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+  - model: authentik_core.application
+    identifiers:
+      slug: openbao
+    attrs:
+      name: OpenBao
+      provider: !KeyOf provider-openbao
+      meta_launch_url: !Context openbao_external_host
+      open_in_new_tab: true

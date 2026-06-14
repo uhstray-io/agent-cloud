@@ -84,7 +84,10 @@ all:
           # (host.containers.internal). Drop the NetBox line if you don't run it.
           caddy_routes:
             - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
-            - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
+            # forward_auth gates the OpenBao UI through Authentik (network gate;
+            # OpenBao's own token auth still applies). Internal control-plane
+            # access uses local-openbao:8200 directly, so it's unaffected.
+            - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200", forward_auth: "authentik-server:9000" }
             # forward_auth gates NetBox through Authentik's embedded outpost
             # (NetBox can't do OIDC locally — see netbox-forward-auth.yaml).
             - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000", forward_auth: "authentik-server:9000" }

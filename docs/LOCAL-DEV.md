@@ -185,16 +185,24 @@ reference-machine allocations in the plan (§5).
 Authentik is the central IdP. Two integration styles are live locally:
 
 - **Grafana — OIDC.** Grafana's `generic_oauth` redirects to Authentik; the login page shows an **Authentik** button.
-- **NetBox — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers; NetBox trusts them via `REMOTE_AUTH_*`. NetBox makes no outbound calls to the IdP (it runs off the `local-dev` network), which is why forward_auth — not OIDC — is the local mechanism. Prod NetBox uses OIDC.
+- **NetBox + OpenBao — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers. NetBox trusts them via `REMOTE_AUTH_*`; for OpenBao it's a network gate on the UI (OpenBao's own token auth still applies, root token retained). These services make no outbound calls to the IdP, which is why forward_auth — not OIDC — is the local mechanism. The internal control-plane path to OpenBao (`local-openbao:8200`) is **ungated**, so Semaphore/Ansible are unaffected.
 
-**Access tiers** are Authentik **groups** (`platform-groups.yaml`): `platform-admins` (→ Grafana Admin, NetBox superuser), `platform-developers` (→ Editor), `platform-business` (→ Viewer). Assign membership in the Authentik UI. The group names are the contract every service maps against.
+**Access tiers** are Authentik **groups** (`platform-groups.yaml`) — the names are the contract every service maps against:
 
-**Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders the forward_auth route) → `local-deploy-o11y` (Grafana OIDC) → `make local-netbox` (REMOTE_AUTH overlay). `make local-smoke` §7 checks all three headlessly.
+| Group | Access | Grafana | NetBox | OpenBao UI |
+|---|---|---|---|---|
+| `platform-admins` | full | Admin | superuser | reach UI |
+| `platform-developers` | read-only | Viewer | view-only | reach UI |
+| `platform-business` | none | denied | denied | denied |
 
-**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`):
-1. Create a user in Authentik (`https://auth.agent-cloud.test`, admin `akadmin`) and add them to `platform-admins`.
-2. Visit `https://grafana.agent-cloud.test` → "Sign in with Authentik" → land as **Admin**.
-3. Visit `https://netbox.agent-cloud.test` → redirected to Authentik login → back into NetBox as a **superuser** (auto-created on first login).
+Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.yaml`) / Grafana `ALLOWED_GROUPS` decides *who reaches the service* (business is denied; superusers always pass for break-glass), then each service maps the group to a role. Assign membership in the Authentik UI.
+
+**Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders forward_auth routes) → `local-deploy-o11y` (Grafana OIDC) → `make local-netbox` (REMOTE_AUTH overlay + seeds the developer read-only permission). `make local-smoke` §7 checks all gates headlessly.
+
+**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`). Create three users in Authentik (`https://auth.agent-cloud.test`, admin `akadmin`), one per group, then:
+1. **admin** → `grafana`/`netbox`/`openbao` all reachable; Grafana **Admin**, NetBox **superuser** (full CRUD).
+2. **developer** → all reachable; Grafana **Viewer**, NetBox **read-only** (can view, cannot add/edit/delete).
+3. **business** → **denied** at every service (Authentik shows "not authorized" / Grafana refuses login).
 
 ## Triage
 

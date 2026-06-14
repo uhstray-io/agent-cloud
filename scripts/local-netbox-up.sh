@@ -113,10 +113,33 @@ done
 log "starting netbox + worker..."
 compose up -d --no-deps netbox netbox-worker
 
+# RBAC: developers get read-only. forward_auth syncs a platform-developers user
+# into a same-named NetBox group (REMOTE_AUTH_GROUP_SYNC); pre-create that group
+# with a view-all ObjectPermission so members are read-only. Admins are NetBox
+# superusers (REMOTE_AUTH_SUPERUSER_GROUPS); platform-business is denied at the
+# Authentik gate and never reaches NetBox. Idempotent. (ObjectType vs ContentType
+# differs across NetBox versions, so resolve the M2M's related model.)
+ensure_dev_readonly() {
+  log "ensuring platform-developers read-only ObjectPermission..."
+  compose exec -T netbox /opt/netbox/netbox/manage.py shell -c "
+from users.models import ObjectPermission, Group
+g, _ = Group.objects.get_or_create(name='platform-developers')
+# actions is NOT NULL with no default — must be in defaults at create time.
+p, _ = ObjectPermission.objects.get_or_create(name='platform-developers-readonly', defaults={'enabled': True, 'actions': ['view']})
+OT = ObjectPermission._meta.get_field('object_types').related_model
+p.object_types.set(OT.objects.all()); p.groups.set([g])
+print('readonly perm ->', p.object_types.count(), 'types, group', list(p.groups.values_list('name', flat=True)))
+" 2>/dev/null | grep -v '🧬' || log "WARN: read-only perm setup failed (set it manually)"
+}
+
 log "waiting for netbox to become healthy (first boot runs migrations — up to 10 min)..."
 for _ in $(seq 1 120); do
   s=$(podman inspect -f '{{.State.Health.Status}}' netbox-netbox-1 2>/dev/null || echo none)
-  [ "$s" = healthy ] && { log "NetBox healthy at http://127.0.0.1:8000 (admin / LOCAL_FAKE_admin)"; exit 0; }
+  if [ "$s" = healthy ]; then
+    log "NetBox healthy at http://127.0.0.1:8000 (admin / LOCAL_FAKE_admin)"
+    ensure_dev_readonly
+    exit 0
+  fi
   sleep 5
 done
 log "ERROR: NetBox did not become healthy in time — check: podman logs netbox-netbox-1" >&2
