@@ -164,6 +164,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | PHASE 0 DONE (local) | Authentik central IdP / SSO. Composable service deployed + healthy via local Semaphore (server+worker+Postgres+Redis); blueprints config-as-code. Caddy `forward_auth`/OIDC gating is the next phase. |
 | [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | DONE (superseded by step-ca) | `make local-tls-trust` built + working; the CA *source* is now step-ca (INTERNAL-CA-DEPLOYMENT), and tls-trust extracts the step-ca root. |
 | [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | IMPLEMENTED (local) | step-ca internal CA deployed via local Semaphore: stable root, serves the `*.agent-cloud.test` wildcard Caddy presents (token-mint locally; ACME dns-01 is the prod path). |
+| [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
 
 ### Archived Plans
 
