@@ -3,7 +3,7 @@
 > **Location:** `plan/development/INTERNAL-CA-DEPLOYMENT.md`
 > **Date:** 2026-06-13 · **Status:** PROPOSED (optional upgrade) · **Owner:** uhstray-io
 >
-> **Standing decision update (2026-06-13):** this is the **internal** CA (for `*.dev.test` / internal zones), distinct from the **public** CA product (Boulder — `BOULDER-CA-DEPLOYMENT.md`). It is an *optional robustness upgrade*: `make local-tls-trust` (trusting Caddy's own root) **already fixes the cert warning today**. Adopt step-ca only if the stable-shared-root benefits are wanted. **Two review corrections to fold in before any build** (below).
+> **Standing decision update (2026-06-13):** this is the **internal** CA (for `*.dev.test` / internal zones) — for internal/LAN names that public CAs can't validate. Public/customer TLS is a separate need served by Caddy automatic-HTTPS + Let's Encrypt (`plan/architecture/CADDY-REVERSE-PROXY.md` → TLS strategy); operating a *public* CA is out of scope. step-ca here is an *optional robustness upgrade*: `make local-tls-trust` (trusting Caddy's own root) **already fixes the cert warning today**. Adopt step-ca only if the stable-shared-root benefits are wanted. **Two review corrections to fold in before any build** (below).
 >
 > **Review corrections (must apply before build):**
 > 1. **OpenBao is NOT a step-ca keystore.** step-ca holds its root+intermediate keys in its volume, encrypted at rest; the realistic OpenBao integration is the **decryption password + provisioner secrets** (injected at deploy via `manage-secrets.yml`), not the key bytes. Treat every "root key sealed in OpenBao" phrase below as "encrypted keys in the step-ca volume; password/secrets in OpenBao."

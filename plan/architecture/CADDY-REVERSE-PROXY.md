@@ -186,17 +186,16 @@ Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot 
 
 ## TLS and DNS Integration
 
-### TLS strategy: three needs, one is not a CA (decided 2026-06-13)
+### TLS strategy: two needs, neither is being a public CA (decided 2026-06-13)
 
-TLS for agent-cloud decomposes into three distinct needs. Conflating them led to briefly over-scoping a CA; the decided architecture:
+TLS for agent-cloud decomposes into two distinct needs. Conflating hosting with *being a CA* briefly over-scoped the work; the decided architecture:
 
 | Need | Solution | Notes |
 |---|---|---|
 | **Public TLS** — the hosted SaaS app + customer/tenant domains (browser-trusted) | **Caddy automatic-HTTPS + Let's Encrypt** (DNS-01 below). For SaaS tenant *custom domains*, **Caddy On-Demand TLS** issues per-domain certs from LE on first request, gated by an `ask` authorization endpoint. | TLS **consumption** — you obtain public certs from LE; you do **not** run a CA. This is the canonical SaaS custom-domain pattern. |
-| **Internal TLS** — services/operators on `*.dev.test` / internal zones / LAN | **Caddy internal CA** (`tls internal` / automatic-https internal issuer) — trust the root once (`make local-tls-trust`); **step-ca** (`INTERNAL-CA-DEPLOYMENT.md`) only if a shared root across many hosts is wanted. | Internal-only; LE/Boulder can't validate non-public names. |
-| **Being a public CA** — issuing certs to third parties as a product | **Boulder** (`BOULDER-CA-DEPLOYMENT.md`) — **DEFERRED**, not on the hosting path. | A separate compliance-heavy *product*, not required to host SaaS/Enterprise. Being a SaaS ≠ being a CA. |
+| **Internal TLS** — services/operators on `*.dev.test` / internal zones / LAN | **Caddy internal CA** (`tls internal` / automatic-https internal issuer) — trust the root once (`make local-tls-trust`); **step-ca** (`INTERNAL-CA-DEPLOYMENT.md`) only if a shared root across many hosts is wanted. | Internal-only; LE can't validate non-public names. |
 
-**Key principle:** hosting agent-cloud as SaaS + Enterprise needs TLS **consumption** (Caddy + Let's Encrypt), not TLS **production** (a CA). Enterprise self-hosted installs use the same Caddy automatic-HTTPS (their LE certs + their internal CA); even air-gapped installs that can't reach LE want an *internal* CA (step-ca), never Boulder.
+**Key principle:** hosting agent-cloud as SaaS + Enterprise needs TLS **consumption** (Caddy + Let's Encrypt), not TLS **production** (running a public CA — out of scope). Enterprise self-hosted installs use the same Caddy automatic-HTTPS (their LE certs + their internal CA); even air-gapped installs that can't reach LE want an *internal* CA (step-ca), not a public-CA product.
 
 ### Why DNS-01 Challenge
 
