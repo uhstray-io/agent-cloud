@@ -12,11 +12,10 @@
    that runs in its own compose project (NetBox) rather than on local-dev.
    Do NOT edit by hand — re-run the playbook. #}
 {% set _cert = caddy_tls_cert | default('') %}
-{% if not _cert %}
 {
-	local_certs
+{% if not _cert %}	local_certs
+{% endif %}	metrics
 }
-{% endif %}
 
 {% for r in caddy_routes | default([]) %}
 {{ r.host }} {

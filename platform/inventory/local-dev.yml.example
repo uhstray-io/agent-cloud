@@ -86,6 +86,7 @@ all:
             - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
             - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
             - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000" }
+            - { host: "grafana.agent-cloud.test", upstream: "o11y-grafana:3000" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The

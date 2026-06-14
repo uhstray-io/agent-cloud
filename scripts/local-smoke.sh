@@ -86,13 +86,29 @@ if running netbox-netbox-1; then
     || no "container discovery (no VMs — run make local-netbox-discover)"
 else sk "netbox not deployed (make local-netbox)"; fi
 
-hdr "6. /etc/resolver (native macOS resolution)"
+hdr "6. o11y (Grafana + Prometheus + Loki + Alloy)"
+if running o11y-grafana; then
+  ok "container o11y-grafana running"
+  # Health via each container's own loopback (the stack talks by name internally).
+  podman exec o11y-grafana wget -q -O /dev/null http://127.0.0.1:3000/api/health 2>/dev/null \
+    && ok "Grafana /api/health 200" || no "Grafana health"
+  podman exec o11y-prometheus wget -q -O /dev/null http://127.0.0.1:9090/-/ready 2>/dev/null \
+    && ok "Prometheus /-/ready" || no "Prometheus ready"
+  podman exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready 2>/dev/null \
+    && ok "Loki /ready" || no "Loki ready"
+  # Alloy shipping container logs -> Loki: the `container` label exists once logs flow.
+  labels=$(podman exec o11y-loki wget -q -O - http://127.0.0.1:3100/loki/api/v1/labels 2>/dev/null)
+  printf '%s' "$labels" | grep -q '"container"' \
+    && ok "Loki has container logs (Alloy shipping)" || no "Loki logs (Alloy not shipping?)"
+else sk "o11y not deployed (make local-deploy-o11y)"; fi
+
+hdr "7. /etc/resolver (native macOS resolution)"
 if [ -f "/etc/resolver/${ZONE}" ]; then
   ok "/etc/resolver/${ZONE} present"
 else sk "/etc/resolver/${ZONE} not set (make local-dns-resolver) — native name resolution off"; fi
 
 if [ "$FULL" = true ]; then
-  hdr "7. Static suite (--full)"
+  hdr "8. Static suite (--full)"
   # -S warning matches the repo's CI severity (info-level notes don't gate).
   ( cd "$REPO_ROOT" && shellcheck -S warning scripts/*.sh platform/lib/*.sh platform/services/*/deployment/deploy.sh >/dev/null 2>&1 ) \
     && ok "shellcheck (-S warning)" || no "shellcheck"
