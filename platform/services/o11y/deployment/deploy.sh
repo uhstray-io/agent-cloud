@@ -41,7 +41,12 @@ step_pull_image() {
 
 step_start() {
   info "Step 3: Starting o11y (prometheus + loki + alloy + grafana)..."
-  compose up -d
+  # --force-recreate: Grafana reads runtime config (admin pw, OIDC client
+  # settings) from `env_file: .env`. An env_file content change is NOT a
+  # compose-spec change, so plain `up -d` keeps the stale env — force-recreate
+  # so re-rendered .env always applies. (Config files are bind-mounted ro and
+  # also picked up on recreate.)
+  compose up -d --force-recreate
 }
 
 step_wait_healthy() {

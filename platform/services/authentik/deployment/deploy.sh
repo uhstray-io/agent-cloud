@@ -41,7 +41,11 @@ step_pull_image() {
 
 step_start() {
   info "Step 3: Starting authentik (postgres + redis + server + worker)..."
-  compose up -d
+  # --force-recreate: server/worker read runtime config (secrets, OIDC client
+  # secrets, blueprints' !Env) from `env_file: .env`. An env_file content change
+  # is NOT a compose-spec change, so plain `up -d` leaves the old containers
+  # running with stale env. Force-recreate so re-rendered .env always applies.
+  compose up -d --force-recreate
 }
 
 step_wait_healthy() {

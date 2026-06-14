@@ -24,6 +24,10 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _secret_definitions:
       - { name: grafana_admin_password, type: random, length: 32 }
+    # OIDC client secret is owned by authentik (the IdP); read it here so
+    # Grafana's generic_oauth secret matches the provider blueprint.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
