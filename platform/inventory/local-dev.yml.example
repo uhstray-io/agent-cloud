@@ -31,6 +31,22 @@ all:
           dns_wildcard_target: 127.0.0.1
           dns_upstreams: ["1.1.1.1", "1.0.0.1"]
 
+    # step-ca — internal CA (stable root; issues certs for *.dev.test). Caddy
+    # reaches it by container name on the local-dev network (step-ca:9000); the
+    # published loopback port is for host debugging.
+    step_ca_svc:
+      hosts:
+        step-ca-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: step-ca
+          monorepo_deploy_path: platform/services/step-ca/deployment
+          container_engine: podman
+          stepca_bind: 127.0.0.1
+          stepca_port: 9000
+          stepca_name: "agent-cloud Internal CA (local)"
+          stepca_dns_names: "step-ca,localhost,step-ca.dev.test"
+
     # Local Caddy — internal-CA TLS on loopback high ports; reverse-proxies the
     # control-plane containers by their local-dev network name. Add routes for
     # other local services as they come up.

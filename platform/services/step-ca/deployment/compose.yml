@@ -1,0 +1,47 @@
+# step-ca — internal CA (Smallstep). Podman-compatible compose.
+#
+# A single container that auto-initializes a stable root + intermediate on
+# first run (DOCKER_STEPCA_INIT_*), persisting them in the step-ca-data volume.
+# Subsequent runs reuse the SAME root (the win over Caddy's ephemeral local_certs).
+#
+# Ansible's deploy-step-ca.yml templates .env (the init/key password from
+# OpenBao) before this starts; deploy.sh is container-lifecycle only — no key or
+# secret generation. The root KEY lives encrypted in the volume; only the
+# password lives in OpenBao (step-ca is not an external-keystore client).
+# Plan: plan/development/INTERNAL-CA-DEPLOYMENT.md.
+
+name: step-ca
+
+services:
+  step-ca:
+    image: ${STEPCA_IMAGE:-docker.io/smallstep/step-ca:0.30.2}
+    container_name: step-ca
+    restart: unless-stopped
+    environment:
+      # First-run auto-init (ignored once /home/step/config/ca.json exists).
+      DOCKER_STEPCA_INIT_NAME: ${STEPCA_NAME:-agent-cloud Internal CA}
+      DOCKER_STEPCA_INIT_DNS_NAMES: ${STEPCA_DNS_NAMES:-step-ca,localhost}
+      DOCKER_STEPCA_INIT_PROVISIONER_NAME: ${STEPCA_PROVISIONER:-admin}
+      DOCKER_STEPCA_INIT_PASSWORD: ${STEPCA_INIT_PASSWORD}
+      DOCKER_STEPCA_INIT_ACME: ${STEPCA_INIT_ACME:-true}
+    ports:
+      # Loopback by default; local-dev shifts via .env. step-ca serves HTTPS.
+      - "${STEPCA_BIND:-127.0.0.1}:${STEPCA_PORT:-9000}:9000"
+    volumes:
+      - step-ca-data:/home/step
+    networks: [step-ca]
+    healthcheck:
+      # step-ca serves HTTPS on 9000 with its own cert; `step ca health` uses
+      # the in-volume root to verify the chain (no --insecure).
+      test: ["CMD-SHELL", "step ca health --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  step-ca:
+    driver: bridge
+
+volumes:
+  step-ca-data:

@@ -411,6 +411,24 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          [step_ca_svc]
+          step-ca-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [step_ca_svc:vars]
+          ansible_user=semaphore
+          service_name=step-ca
+          monorepo_deploy_path=platform/services/step-ca/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          stepca_bind=127.0.0.1
+          stepca_port=9000
+          stepca_name=agent-cloud Internal CA (local)
+          stepca_dns_names=step-ca,localhost,step-ca.dev.test
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [caddy_svc]
           caddy-local ansible_host=127.0.0.1 ansible_connection=local
 

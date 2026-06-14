@@ -14,6 +14,10 @@ templates:
   - name: "Deploy DNS (Local)"
     playbook: platform/playbooks/deploy-dns.yml
 
+  # step-ca — internal CA (stable root; issues certs for *.dev.test).
+  - name: "Deploy step-ca (Local)"
+    playbook: platform/playbooks/deploy-step-ca.yml
+
   # Local Caddy — internal-CA TLS, reverse-proxies the control plane by name.
   - name: "Deploy Caddy (Local)"
     playbook: platform/playbooks/deploy-caddy.yml
