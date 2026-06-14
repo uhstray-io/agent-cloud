@@ -78,13 +78,14 @@ all:
           caddy_internal_zone: agent-cloud.test
           caddy_tls_cert: /etc/caddy/certs/wildcard.crt
           caddy_tls_key: /etc/caddy/certs/wildcard.key
+          # Each entry is {host, upstream}. Most upstreams are local-dev
+          # container names; NetBox is the exception — it runs in its own compose
+          # project (not local-dev), so it's reached via the host gateway
+          # (host.containers.internal). Drop the NetBox line if you don't run it.
           caddy_routes:
             - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
             - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200" }
-          # NetBox (when deployed via `make local-netbox`) runs in its own compose
-          # project, not the local-dev network — reach it via the host gateway.
-          # Leave unset if you don't run NetBox locally.
-          caddy_netbox_upstream: "host.containers.internal:8000"
+            - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000" }
 
     uhhcraft_svc:
       hosts:
