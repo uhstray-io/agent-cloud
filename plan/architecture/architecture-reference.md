@@ -163,7 +163,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | PROPOSED | Authentik central IdP / SSO for all services (local-dev first, then prod): composable service, Caddy forward_auth + OIDC, blueprints config-as-code, Authentik-for-everything incl storefront. |
 | [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | PROPOSED | Fix the `*.dev.test` browser cert warning by trusting the CA root via an idempotent `make local-tls-trust`. The trust tooling is built; the CA *source* is superseded by INTERNAL-CA-DEPLOYMENT (step-ca) per owner. |
 | [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | PROPOSED (optional) | step-ca for **internal** TLS (`*.dev.test`/internal zones): stable root, Caddy ACME client. Optional robustness upgrade — `make local-tls-trust` (Caddy-root) already works. Decision pending; review fixes to fold in before build. |
-| [BOULDER-CA-DEPLOYMENT.md](../development/BOULDER-CA-DEPLOYMENT.md) | PROPOSED (scoping) | Boulder as a **public** ACME CA product (subscriber certs at scale). Honest phasing: private-CA-first → audit/CT/root-program compliance for public trust. Separate from the internal CA. |
+| [BOULDER-CA-DEPLOYMENT.md](../development/BOULDER-CA-DEPLOYMENT.md) | DEFERRED | Boulder = a **public CA product** (be-a-CA), NOT needed for SaaS/Enterprise hosting (that's Caddy+LE, TLS *consumption*). Shelved; retained only as scoping for a hypothetical future CA product line. |
 
 ### Archived Plans
 

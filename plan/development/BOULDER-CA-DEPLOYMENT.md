@@ -1,7 +1,9 @@
 # Boulder CA Deployment Plan — Public ACME CA Product
 
 > **Location:** `plan/development/BOULDER-CA-DEPLOYMENT.md`
-> **Date:** 2026-06-13 · **Status:** PROPOSED (scoping) · **Owner:** uhstray-io
+> **Date:** 2026-06-13 · **Status:** DEFERRED — NOT on the SaaS/Enterprise hosting path · **Owner:** uhstray-io
+>
+> **Standing decision (2026-06-13):** Boulder is **shelved**. Hosting agent-cloud as SaaS + Enterprise needs TLS *consumption*, not a CA: public/customer-domain TLS comes from **Caddy automatic-HTTPS + Let's Encrypt** (incl. **On-Demand TLS** for SaaS tenant custom domains), and internal TLS from **Caddy's internal CA / step-ca** — see `plan/architecture/CADDY-REVERSE-PROXY.md` (TLS strategy). This plan is retained **only** as the scoping doc for a hypothetical *future* product where uhstray-io itself becomes a public CA (sells/issues certs to third parties). Do **not** build any of it for the hosting business — being a SaaS ≠ being a CA.
 > **Context:** uhstray-io intends to **operate a public-facing ACME CA as a product** — issuing certificates to external tenants/customers at scale, the way Let's Encrypt does. The chosen engine is **Boulder** (the software that runs Let's Encrypt). This plan scopes that program honestly: Boulder is the *technical* core, but a **publicly-trusted** CA is a multi-year **compliance and trust program**, not a service deploy.
 >
 > **Scope boundary:** this is the **public** CA product. **Internal** TLS for `*.dev.test` / internal zones is a *separate* concern handled by `INTERNAL-CA-DEPLOYMENT.md` (step-ca) — Boulder can't and shouldn't issue for non-public, non-validatable names. The two CAs coexist; don't conflate them.
