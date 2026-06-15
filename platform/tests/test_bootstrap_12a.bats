@@ -24,10 +24,15 @@ setup() {
 
 # ── Fix #1: COMPOSE_CMD forced on the Mac-direct genesis path ────────────────
 @test "fix #1: foundation deploys pass COMPOSE_CMD through from local_compose_cmd" {
+  # default('') NOT default(omit): omit leaks its placeholder string into the
+  # environment dict (it isn't stripped there), which deploy.sh runs -> rc 127.
+  # Empty is treated as unset by common.sh detect_runtime ([ -z ]).
   for svc in dns step-ca caddy authentik; do
-    run grep -q "COMPOSE_CMD: \"{{ local_compose_cmd | default(omit) }}\"" "$PB/deploy-${svc}.yml"
+    run grep -q "COMPOSE_CMD: \"{{ local_compose_cmd | default('') }}\"" "$PB/deploy-${svc}.yml"
     [ "$status" -eq 0 ] || { echo "deploy-${svc}.yml missing COMPOSE_CMD passthrough"; return 1; }
   done
+  run grep -rl "local_compose_cmd | default(omit)" "$PB"
+  [ -z "$output" ] || { echo "default(omit) still present (leaks placeholder): $output"; return 1; }
 }
 
 # ── §12A order: foundation genesis-deployed before Semaphore ─────────────────
@@ -77,5 +82,13 @@ setup() {
 
 @test "preflight checks podman-compose + jq (genesis prereqs)" {
   run grep -qE "podman-compose .*jq|podman podman-compose" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "deploy-authentik waits for the embedded outpost to serve forward_auth" {
+  # closes the post-deploy window where forward_auth 404s before outpost sync
+  run grep -q "outpost to serve forward_auth" "$PB/deploy-authentik.yml"
+  [ "$status" -eq 0 ]
+  run grep -q "outpost.goauthentik.io/auth/caddy" "$PB/deploy-authentik.yml"
   [ "$status" -eq 0 ]
 }

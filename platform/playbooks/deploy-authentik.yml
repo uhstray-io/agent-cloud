@@ -66,7 +66,9 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
         # Force the compose provider on the Mac-direct genesis path (§12A fix #1).
-        COMPOSE_CMD: "{{ local_compose_cmd | default(omit) }}"
+        # Empty on the Semaphore path; detect_runtime derives ([ -z ]). NOT
+        # default(omit) — omit leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
 
@@ -102,6 +104,32 @@
       delay: 6
       until: _ak_api.rc == 0
 
+    - name: "Wait for the embedded outpost to serve forward_auth (proxy-provider sync)"
+      # `ak healthcheck` + the API go green BEFORE the embedded outpost finishes
+      # loading proxy providers from the blueprints, so for ~a minute after deploy
+      # the forward_auth gates 404 (they look broken right after a deploy/genesis,
+      # and the smoke test races the sync). Gate the deploy on the gate actually
+      # working: probe the outpost's Caddy auth endpoint for a committed
+      # proxy-provider host until it issues the auth redirect (302). Host +
+      # X-Forwarded-Proto=https are exactly what Caddy's forward_auth sends; the
+      # host must match a committed forward_auth blueprint's external_host
+      # (netbox-forward-auth.yaml: netbox.agent-cloud.test:8443). http.client (not
+      # urllib) so the 302 is returned, not followed to the TLS-gated IdP.
+      ansible.builtin.command: >-
+        {{ _engine }} exec authentik-server
+        python -c "import http.client,sys;
+        c=http.client.HTTPConnection('localhost',9000,timeout=8);
+        c.putrequest('GET','/outpost.goauthentik.io/auth/caddy',skip_host=True);
+        c.putheader('Host','{{ authentik_outpost_probe_host | default('netbox.agent-cloud.test:8443') }}');
+        c.putheader('X-Forwarded-Proto','https');
+        c.endheaders();
+        sys.exit(0 if c.getresponse().status == 302 else 1)"
+      register: _ak_outpost
+      changed_when: false
+      retries: 20
+      delay: 6
+      until: _ak_outpost.rc == 0
+
     - name: "Report"
       ansible.builtin.debug:
-        msg: "authentik healthy — server up, API answering on :9000 (behind Caddy for TLS)."
+        msg: "authentik healthy — server up, API answering on :9000, embedded outpost serving forward_auth (behind Caddy for TLS)."
