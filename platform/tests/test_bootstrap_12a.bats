@@ -81,7 +81,9 @@ setup() {
 }
 
 @test "preflight checks podman-compose + jq (genesis prereqs)" {
-  run grep -qE "podman-compose .*jq|podman podman-compose" "$REPO_ROOT/scripts/local-dev.sh"
+  run grep -q "podman-compose" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+  run grep -q "jq" "$REPO_ROOT/scripts/local-dev.sh"
   [ "$status" -eq 0 ]
 }
 

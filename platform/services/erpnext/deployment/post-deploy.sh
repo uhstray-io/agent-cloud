@@ -72,6 +72,9 @@ step_oidc() {
     info "Step 4: OIDC client secret absent — skipping Social Login Key."
     return 0
   fi
+  # Secret is set, so OIDC is intended — the base URL is required (referenced
+  # unguarded below). Fail loudly here instead of hard-erroring under `set -u`.
+  : "${ERPNEXT_OIDC_BASE_URL:?ERPNEXT_OIDC_BASE_URL missing when ERPNEXT_OIDC_CLIENT_SECRET is set}"
   info "Step 4: Configuring Authentik Social Login Key (idempotent)..."
   # Write the upsert script into the backend, then run it through bench console
   # (reads the values from env so the secret isn't baked into the script body).

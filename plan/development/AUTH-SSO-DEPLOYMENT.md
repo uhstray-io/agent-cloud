@@ -163,7 +163,7 @@ Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 **Gate 0:** CI green; templates registered; `ansible-playbook --syntax-check` clean.
 
 ### Phase 1 — Local Authentik up + gate ONE service
-- [ ] `make local-deploy-authentik` → Authentik healthy at `https://auth.agent-cloud.test:8443` (via Caddy), admin login works (`LOCAL_FAKE_` bootstrap)
+- [ ] `make local-deploy-authentik` → Authentik healthy at `https://auth.agent-cloud.test` (via Caddy), admin login works (`LOCAL_FAKE_` bootstrap)
 - [ ] Gate **one** service end-to-end (recommend **Semaphore**, native OIDC, or **NetBox**): blueprint creates the OIDC provider+app; service configured to use it; login redirects to Authentik and back
 - [ ] Prove blueprint-as-code: change a blueprint → redeploy → change reflected (no console edit)
 

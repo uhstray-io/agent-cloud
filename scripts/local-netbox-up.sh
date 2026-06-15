@@ -35,11 +35,13 @@ if [ ! -d netbox-docker/.git ]; then
   git clone --depth 1 --branch release https://github.com/netbox-community/netbox-docker.git netbox-docker
 fi
 
-# 2. Fake LOCAL_FAKE_ env (gitignored). Written only if absent — never clobbers.
+# 2. Fake LOCAL_FAKE_ env (gitignored). Each artifact is written only if absent —
+#    checked independently so a partial state (one file present, others missing)
+#    still converges. Never clobbers an existing file.
 #    SECRET_KEY and API_TOKEN_PEPPER_1 must be >=50 chars (NetBox requirement).
 mkdir -p env secrets
 if [ ! -f env/netbox.env ]; then
-  log "writing fake local env files..."
+  log "writing fake local env/netbox.env..."
   cat > env/netbox.env <<'EOF'
 DB_HOST=postgres
 DB_NAME=netbox
@@ -64,6 +66,9 @@ WEBHOOKS_ENABLED=true
 MEDIA_ROOT=/opt/netbox/netbox/media
 CORS_ORIGIN_ALLOW_ALL=true
 EOF
+fi
+if [ ! -f env/postgres.env ]; then
+  log "writing fake local env/postgres.env..."
   cat > env/postgres.env <<'EOF'
 POSTGRES_DB=netbox
 POSTGRES_USER=netbox
@@ -75,12 +80,18 @@ HYDRA_POSTGRES_DB_NAME=hydra
 HYDRA_POSTGRES_USER=hydra
 HYDRA_POSTGRES_PASSWORD=LOCAL_FAKE_hydra_db
 EOF
-  : > env/discovery.env   # must exist (compose env_file); app-tier doesn't use it
+fi
+# discovery.env must exist (compose env_file); app-tier doesn't use it.
+[ -f env/discovery.env ] || : > env/discovery.env
+if [ ! -f .env ]; then
+  log "writing fake local .env..."
   cat > .env <<'EOF'
 REDIS_PASSWORD=LOCAL_FAKE_redis
 REDIS_CACHE_PASSWORD=LOCAL_FAKE_rediscache
 SUPERUSER_PASSWORD=LOCAL_FAKE_admin
 EOF
+fi
+if [ ! -f secrets/netbox_to_diode_client_secret.txt ]; then
   printf 'LOCAL_FAKE_n2d_secret' > secrets/netbox_to_diode_client_secret.txt
   chmod 600 secrets/netbox_to_diode_client_secret.txt
 fi

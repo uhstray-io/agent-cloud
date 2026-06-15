@@ -112,7 +112,9 @@ _load_state() {
   set +a
 }
 
-_api() { curl -sf -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" "$@"; }
+# Bounded curl so a network stall can't hang deploy/clean/validate indefinitely.
+_CURL_OPTS=(--connect-timeout 5 --max-time 30 --retry 2 --retry-delay 1 --retry-connrefused)
+_api() { curl -sf "${_CURL_OPTS[@]}" -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" "$@"; }
 
 # _run_template <playbook-rel-path> [extra-vars-json]
 _run_template() {
@@ -130,7 +132,7 @@ print(m[0]['id'] if m else '')")
   [ -n "$extra" ] && body="${body}, \"environment\": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$extra")"
   body="${body}}"
   local task
-  task=$(curl -sf -X POST -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" \
+  task=$(curl -sf "${_CURL_OPTS[@]}" -X POST -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" \
     -H "Content-Type: application/json" -d "$body" "${base}/tasks" \
     | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
   info "dispatched task ${task} (template ${tid}: ${playbook}) — watching..."

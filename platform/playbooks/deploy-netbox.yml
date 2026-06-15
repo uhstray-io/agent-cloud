@@ -68,7 +68,7 @@
     - name: "Create convenience symlink"
       ansible.builtin.file:
         src: "{{ _deploy_dir }}"
-        dest: "{{ local_home_dir | default('/home/' ~ ansible_user) }}/{{ service_name }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy'))) }}/{{ service_name }}"
         state: link
         force: true
       register: _symlink_result

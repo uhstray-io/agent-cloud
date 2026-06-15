@@ -47,7 +47,9 @@ setup() {
 
 @test "dns: deploy.sh is container-only (no secret generation or OpenBao)" {
   local f="$DEPLOY_DIR/deploy.sh"
-  ! grep -qE '\b(gen_secret|put_secret|get_secret|bao_)' "$f"
+  ! grep -qE '\b(gen_secret|put_secret|get_secret|bao_|vault|openbao|generate-secrets\.sh|generate_[[:alnum:]_]*secret[[:alnum:]_]*)\b' "$f"
+  ! grep -qE 'bao-client\.sh' "$f"
+  ! grep -qE 'curl[^#]*:8200\b' "$f"
 }
 
 @test "dns: deploy.sh exits non-zero when config/named.toml is missing" {

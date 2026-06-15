@@ -21,7 +21,7 @@ setup() {
 
 @test "caddy: prod defaults are byte-identical (cloudflare image, 80/443, committed Caddyfile)" {
   local f="$DEPLOY_DIR/compose.yml"
-  grep -qE '\$\{CADDY_IMAGE:-iarekylew00t/caddy-cloudflare:latest\}' "$f"
+  grep -qE '\$\{CADDY_IMAGE:-iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
   grep -qE '\$\{CADDY_HTTP_PORT:-80\}:80' "$f"
   grep -qE '\$\{CADDY_HTTPS_PORT:-443\}:443' "$f"
   grep -qE '\$\{CADDYFILE:-\./Caddyfile\}' "$f"
@@ -72,7 +72,7 @@ setup() {
 @test "caddy: env template prod defaults match the compose defaults" {
   local f="$DEPLOY_DIR/templates/env.j2"
   [ -f "$f" ]
-  grep -qE "caddy_image \| default\('iarekylew00t/caddy-cloudflare:latest'\)" "$f"
+  grep -qE "caddy_image \| default\('iarekylew00t/caddy-cloudflare:2\.11\.4-alpine'\)" "$f"
   grep -qE "caddy_file \| default\('\./Caddyfile'\)" "$f"
 }
 

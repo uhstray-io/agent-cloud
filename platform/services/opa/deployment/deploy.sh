@@ -36,10 +36,18 @@ main() {
   # The OPA image is distroless (no shell/wget for a compose healthcheck), so
   # poll the container is running; the playbook gates on GET /health.
   info "Waiting for the opa container to be running..."
+  running=false
   for _ in $(seq 1 20); do
-    [ "$(${CONTAINER_ENGINE} inspect -f '{{.State.Status}}' opa 2>/dev/null)" = running ] && { info "opa running."; break; }
+    if [ "$(${CONTAINER_ENGINE} inspect -f '{{.State.Status}}' opa 2>/dev/null)" = running ]; then
+      info "opa running."
+      running=true
+      break
+    fi
     sleep 2
   done
+  if [ "$running" != true ]; then
+    error "OPA container did not reach running state within timeout."
+  fi
   info "=== OPA container lifecycle complete ==="
 }
 

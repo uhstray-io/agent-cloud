@@ -158,8 +158,8 @@ if [ "$FULL" = true ]; then
   # -S warning matches the repo's CI severity (info-level notes don't gate).
   ( cd "$REPO_ROOT" && shellcheck -S warning scripts/*.sh platform/lib/*.sh platform/services/*/deployment/deploy.sh >/dev/null 2>&1 ) \
     && ok "shellcheck (-S warning)" || no "shellcheck"
-  ( cd "$REPO_ROOT" && bats platform/tests/test_common.bats platform/tests/test_service_dns.bats platform/tests/test_service_caddy.bats >/dev/null 2>&1 ) \
-    && ok "BATS (common/dns/caddy)" || no "BATS"
+  ( cd "$REPO_ROOT" && bats platform/tests/*.bats >/dev/null 2>&1 ) \
+    && ok "BATS (full suite)" || no "BATS"
 fi
 
 hdr "Result: ${pass} passed, ${fail} failed, ${skip} skipped"

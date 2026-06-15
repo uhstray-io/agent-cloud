@@ -43,12 +43,12 @@ services:
 
   n8n:
     container_name: workflow-n8n
-    # NB: the :latest DEFAULT is transitional — it matches what the live prod
-    # instance currently runs. PIN before relying on it: set N8N_IMAGE (inventory)
-    # to a specific tag. For the prod migration the tag MUST equal prod's running
-    # version (captured at Task 0 / seed-n8n-secrets.yml) — a silent upgrade can
-    # break N8N_ENCRYPTION_KEY-bound workflow credentials.
-    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}
+    # NB: the default is pinned to the version the live instance currently runs.
+    # Override via N8N_IMAGE (inventory) for a different tag. For the prod
+    # migration the tag MUST equal prod's running version (captured at Task 0 /
+    # seed-n8n-secrets.yml) — a silent upgrade can break N8N_ENCRYPTION_KEY-bound
+    # workflow credentials.
+    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:2.25.7}
     restart: always
     ports:
       - "${N8N_LISTEN:-127.0.0.1}:5678:5678"
@@ -65,7 +65,7 @@ services:
 
   n8n-worker:
     container_name: workflow-n8n-worker
-    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}
+    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:2.25.7}
     restart: always
     command: worker
     env_file: .env

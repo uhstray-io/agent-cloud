@@ -20,6 +20,17 @@
 #   container_engine (optional, defaults to docker)
 #   local_mode (optional, defaults to false)
 
+- name: "Assert required variables for clean-service"
+  ansible.builtin.assert:
+    that:
+      - service_name is defined
+      - service_name | length > 0
+      - monorepo_deploy_path is defined
+      - monorepo_deploy_path | length > 0
+      - _monorepo_dir is defined
+      - _monorepo_dir | length > 0
+    fail_msg: "clean-service.yml requires service_name, monorepo_deploy_path, and _monorepo_dir."
+
 # ── PROD teardown (per-VM clone) ────────────────────────────────────────────
 - name: "Stop and remove containers + volumes for {{ service_name }} (prod)"
   ansible.builtin.shell: |
@@ -72,7 +83,7 @@
 
 - name: "Remove convenience symlink (prod)"
   ansible.builtin.file:
-    path: "{{ local_home_dir | default('/home/' ~ ansible_user) }}/{{ service_name }}"
+    path: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy'))) }}/{{ service_name }}"
     state: absent
   when: not (local_mode | default(false) | bool)
 

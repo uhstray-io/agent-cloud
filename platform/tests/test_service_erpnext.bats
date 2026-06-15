@@ -90,7 +90,9 @@ setup() {
   [ -f "$f" ]
   grep -qF 'DB_PASSWORD={{ secrets.mariadb_root_password }}' "$f"
   grep -qF 'ADMIN_PASSWORD={{ secrets.admin_password }}' "$f"
-  ! grep -qiE 'LOCAL_FAKE|password=[A-Za-z0-9]{8}'
+  # Guard against credential literals in *value* position (an assigned secret),
+  # not prose mentions of LOCAL_FAKE_ in the doc comment header.
+  ! grep -qiE '=[^{]*LOCAL_FAKE|password=[A-Za-z0-9]{8}' "$f"
 }
 
 @test "erpnext: env template uses approved Jinja2 namespaces only" {
