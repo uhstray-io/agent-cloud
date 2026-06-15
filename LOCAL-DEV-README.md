@@ -73,14 +73,20 @@ podman machine start
 **Stand it up:**
 
 ```bash
-make local-bootstrap        # OpenBao + Semaphore + templates (idempotent)
-make local-deploy-dns       # local DNS  (*.agent-cloud.test)
-make local-deploy-caddy     # reverse proxy with TLS
+make local-bootstrap        # GENESIS: OpenBao + the secure foundation
+                            # (dns, step-ca, caddy, authentik) + OIDC-secured
+                            # Semaphore, in dependency order (idempotent)
 make local-dns-resolver     # one-time: point macOS at local DNS (asks for sudo)
+make local-tls-trust        # one-time: trust the internal CA root (asks for sudo)
 ```
 
-That's it. `make help` lists every target. Re-running anything is safe —
-each step is idempotent.
+`make local-bootstrap` now stands up the whole secure foundation and brings
+Semaphore up **last, already OIDC-secured** (LOCAL-DEV-DEPLOYMENT.md §12A) — you
+no longer deploy dns/step-ca/caddy/authentik separately. `make help` lists every
+target. Re-running anything is safe — each step is idempotent.
+
+For the **full stack** (foundation + Tier-3 services o11y/opa/erpnext/netbox/n8n
+through Semaphore): `make local-up`.
 
 **Deploy a service** (through local Semaphore, like prod):
 
@@ -95,7 +101,7 @@ To reset: `make local-clean` then `make local-bootstrap`.
 
 ## Accessing your apps (local DNS + TLS)
 
-Once `make local-deploy-dns`, `make local-deploy-caddy`, and
+Once `make local-bootstrap` (which deploys dns + caddy) and
 `make local-dns-resolver` have run, each app is reachable **by name over HTTPS**:
 
 ```

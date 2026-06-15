@@ -91,7 +91,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
 - `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
 - `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
-- `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; see also `docs/LOCAL-DEV.md`
+- `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/LOCAL-DEV-12A-IMPLEMENTATION.md`
 - `plan/development/DNS-SERVER-DEPLOYMENT.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.

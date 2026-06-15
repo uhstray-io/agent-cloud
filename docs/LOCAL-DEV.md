@@ -10,15 +10,21 @@ generated value carries the `LOCAL_FAKE_` prefix.
 ## Quickstart (current state — Phase 1)
 
 ```bash
-brew bundle                                  # toolchain (Brewfile)
+brew bundle                                  # toolchain (Brewfile; podman-compose + jq required)
 podman machine start                         # if not already running
-make local-bootstrap                         # control plane up + configured
-make local-deploy-dns                        # local DNS (fully working today)
+make local-bootstrap                         # GENESIS: OpenBao + foundation
+                                             # (dns,step-ca,caddy,authentik) +
+                                             # OIDC-secured Semaphore, in order (§12A)
 make local-dns-resolver                      # opt-in: macOS /etc/resolver (sudo)
-make local-deploy-caddy                      # reverse proxy (internal-CA HTTPS)
-make local-deploy-<service>                  # e.g. local-deploy-uhhcraft
+make local-tls-trust                         # opt-in: trust internal CA root (sudo)
+make local-up                                # + Tier-3 (o11y,opa,erpnext,netbox,n8n) via Semaphore
+make local-deploy-<service>                  # or one at a time, e.g. local-deploy-uhhcraft
 make local-validate
 ```
+
+`make local-bootstrap` is the **genesis**: it brings up the secure foundation
+directly (Mac-direct, un-forked `deploy-<svc>.yml`) and starts Semaphore **last,
+already OIDC-secured**. dns/step-ca/caddy/authentik are no longer separate steps.
 
 `make local-deploy-dns` is the **reference working deploy** — it runs entirely
 through the local Semaphore, renders the zone + config from inventory vars,
