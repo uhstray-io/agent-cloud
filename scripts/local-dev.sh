@@ -168,8 +168,11 @@ validate() {
 clean() {
   info "removing local control plane containers + state..."
   podman rm -f local-openbao local-semaphore 2>/dev/null || true
-  podman volume rm -f local-semaphore-data 2>/dev/null || true
+  # local-openbao-data holds the persistent vault; removing it (with the init
+  # material below) is the only intentional way to wipe local secrets.
+  podman volume rm -f local-semaphore-data local-openbao-data 2>/dev/null || true
   rm -f "$STATE"
+  rm -rf "${STATE%/*}/openbao-config" "${STATE%/*}/openbao-init.json"
   info "clean. Re-create with: make local-bootstrap"
 }
 

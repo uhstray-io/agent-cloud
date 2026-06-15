@@ -59,7 +59,7 @@ network) — containers don't query hickory and don't need to.
 
 The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
 
-1. **OpenBao** (dev mode, `127.0.0.1:8200`) — AppRole auth, `local-semaphore`
+1. **OpenBao** (persistent file backend, `127.0.0.1:8200`) — AppRole auth, `local-semaphore`
    policy + role, `LOCAL_FAKE_` seed secrets for local service groups
 2. **Semaphore** (`127.0.0.1:3000`, single container, SQLite) — admin
    `localadmin` / `LOCAL_FAKE_semaphore_admin`, **API token created
@@ -100,7 +100,7 @@ non-local inventories and non-local `openbao_addr`).
 
 | Service | Local port | Notes |
 |---|---|---|
-| OpenBao (dev) | 127.0.0.1:8200 | containers reach it at `http://local-openbao:8200` on the `local-dev` network |
+| OpenBao (persistent) | 127.0.0.1:8200 | containers reach it at `http://local-openbao:8200` on the `local-dev` network |
 | Semaphore | 127.0.0.1:3000 | prod-typical port |
 | UhhCraft | 127.0.0.1:3001 | shifted from 3000 via `${UHHCRAFT_PORT:-3001}` |
 | n8n (P2) | 127.0.0.1:5678 | |

@@ -3,7 +3,8 @@
 #
 # Provisions the LOCAL control plane on the developer machine
 # (plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 0B):
-#   1. dev-mode OpenBao container (fake root token, KV v2 auto-mounted)
+#   1. persistent OpenBao container (file storage; init/unseal key kept in
+#      the local state dir so a podman-machine restart no longer wipes secrets)
 #   2. local AppRole (policy `local-semaphore`) — the credential the local
 #      Semaphore injects into every task, exactly like prod
 #   3. local Semaphore container (BoltDB — single container, slim profile)
@@ -32,7 +33,14 @@
     _net: local-dev
     _bao_name: local-openbao
     _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:latest') }}"
-    _bao_root_token: LOCAL_FAKE_root
+    # Persistent file storage (not dev/in-memory). The init-generated root token
+    # + single unseal key are persisted to _bao_init_file (0600) so re-bootstrap
+    # after a restart unseals the SAME vault. _bao_root_token is set as a fact in
+    # Stage 1 (no fixed token); only this play ever uses it — services auth via
+    # the AppRole. `make local-clean` is the sole intentional wipe.
+    _bao_data_vol: local-openbao-data
+    _bao_config_dir: "{{ _state_dir }}/openbao-config"
+    _bao_init_file: "{{ _state_dir }}/openbao-init.json"
     _bao_url_host: "http://127.0.0.1:8200"           # from the Mac
     _bao_url_net: "http://local-openbao:8200"        # from containers on _net
     _sem_name: local-semaphore
@@ -80,16 +88,63 @@
       register: _netres
       changed_when: "'created' in _netres.stdout | default('')"
 
-    # ── Stage 1: OpenBao dev ────────────────────────────────────────────
-    - name: "Start dev-mode OpenBao"
+    # ── Stage 1: OpenBao (persistent file storage) ──────────────────────
+    - name: "Ensure local OpenBao config dir"
+      # 0755 (not 0700): the container mounts this :ro and the unprivileged
+      # in-container `openbao` user must traverse it to read openbao.hcl. The
+      # file is non-secret (it only names storage paths) — the secret unseal
+      # material lives in _bao_init_file (0600), never here.
+      ansible.builtin.file:
+        path: "{{ _bao_config_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Write local OpenBao config (file storage)"
+      # Storage path is /openbao/file — pre-created in the image and owned by the
+      # unprivileged `openbao` user the server drops to. A fresh root-owned named
+      # volume at /openbao/data would be unwritable ("permission denied").
+      # disable_mlock: rootless podman has no IPC_LOCK cap. The container loads
+      # every *.hcl in /openbao/config.
+      ansible.builtin.copy:
+        dest: "{{ _bao_config_dir }}/openbao.hcl"
+        mode: "0644"
+        content: |
+          ui = true
+          disable_mlock = true
+          listener "tcp" {
+            address     = "0.0.0.0:8200"
+            tls_disable = 1
+          }
+          storage "file" {
+            path = "/openbao/file"
+          }
+          api_addr = "http://0.0.0.0:8200"
+
+    - name: "Start persistent OpenBao (recreate if still dev-mode)"
+      # Recreate when an existing container lacks the persistent data volume —
+      # migrates a pre-existing dev-mode container to file storage in place.
       ansible.builtin.shell: |
+        set -o pipefail
+        RECREATE=0
+        if podman container exists {{ _bao_name }}; then
+          if ! podman inspect {{ _bao_name }} \
+               --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Name{{ "}}" }} {{ "{{" }}end{{ "}}" }}' \
+               | grep -q '{{ _bao_data_vol }}'; then
+            podman rm -f {{ _bao_name }}
+            RECREATE=1
+          fi
+        fi
         if ! podman container exists {{ _bao_name }}; then
+          podman volume exists {{ _bao_data_vol }} || podman volume create {{ _bao_data_vol }}
           podman run -d --name {{ _bao_name }} --network {{ _net }} \
             -p 127.0.0.1:8200:8200 \
-            -e BAO_DEV_ROOT_TOKEN_ID={{ _bao_root_token }} \
-            -e BAO_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
-            {{ _bao_image }} server -dev
-          echo started
+            -v {{ _bao_data_vol }}:/openbao/file \
+            -v {{ _bao_config_dir }}:/openbao/config:ro \
+            -e BAO_ADDR=http://0.0.0.0:8200 \
+            -e SKIP_SETCAP=true \
+            -e SKIP_CHOWN=true \
+            {{ _bao_image }} server
+          [ "$RECREATE" = 1 ] && echo recreated || echo started
         elif [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _bao_name }})" != "running" ]; then
           podman start {{ _bao_name }}
           echo restarted
@@ -97,16 +152,97 @@
           echo running
         fi
       register: _bao_start
-      changed_when: "_bao_start.stdout | trim != 'running'"
+      changed_when: "(_bao_start.stdout | trim) != 'running'"
 
-    - name: "Wait for OpenBao health"
+    - name: "Wait for OpenBao to accept API requests"
+      # seal-status answers 200 even while uninitialized/sealed; /sys/health
+      # would return 501/503 in those states and never converge on first boot.
       ansible.builtin.uri:
-        url: "{{ _bao_url_host }}/v1/sys/health"
+        url: "{{ _bao_url_host }}/v1/sys/seal-status"
         status_code: [200]
-      register: _bao_health
-      until: _bao_health.status == 200
-      retries: 15
+      register: _bao_listen
+      until: _bao_listen.status == 200
+      retries: 30
       delay: 2
+
+    # _bao_listen.json (from the wait above) IS the seal-status body — reuse it
+    # rather than re-GET the same endpoint; nothing mutates state in between.
+    - name: "Initialize OpenBao (first run only)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/init"
+        method: PUT
+        body_format: json
+        body: { secret_shares: 1, secret_threshold: 1 }
+      register: _bao_init
+      when: not _bao_listen.json.initialized
+      no_log: true
+
+    - name: "Persist init material (root token + unseal key, 0600)"
+      ansible.builtin.copy:
+        dest: "{{ _bao_init_file }}"
+        mode: "0600"
+        content: "{{ {'root_token': _bao_init.json.root_token, 'unseal_key': _bao_init.json.keys_base64[0]} | to_nice_json }}"
+      when: not _bao_listen.json.initialized
+      no_log: true
+
+    - name: "Check for persisted init material"
+      ansible.builtin.stat:
+        path: "{{ _bao_init_file }}"
+      register: _bao_init_stat
+
+    - name: "Fail clearly if initialized but the unseal key was lost"
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao is initialized but {{ _bao_init_file }} is missing — the unseal
+          key/root token are unrecoverable. Run `make local-clean && make local-up`
+          to wipe and rebuild the local vault (then clean-deploy stateful services).
+      when:
+        - _bao_listen.json.initialized
+        - not _bao_init_stat.stat.exists
+
+    - name: "Load + decode persisted init material (once)"
+      ansible.builtin.slurp:
+        src: "{{ _bao_init_file }}"
+      register: _bao_init_slurp
+      no_log: true
+
+    - name: "Set OpenBao root token + unseal key facts"
+      ansible.builtin.set_fact:
+        _bao_init_data: "{{ _bao_init_slurp.content | b64decode | from_json }}"
+      no_log: true
+
+    - name: "Derive root token + unseal key"
+      ansible.builtin.set_fact:
+        _bao_root_token: "{{ _bao_init_data.root_token }}"
+        _bao_unseal_key: "{{ _bao_init_data.unseal_key }}"
+      no_log: true
+
+    - name: "Unseal OpenBao if sealed"
+      # Skip when the wait already saw an unsealed vault (warm run); fires on
+      # first init (uninitialized => sealed) and after a container restart.
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/unseal"
+        method: PUT
+        body_format: json
+        body: { key: "{{ _bao_unseal_key }}" }
+      register: _bao_unseal
+      until: not _bao_unseal.json.sealed
+      retries: 5
+      delay: 2
+      when: _bao_listen.json.sealed
+      no_log: true
+
+    - name: "Enable KV v2 at secret/ (idempotent; dev mode auto-mounted this)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/mounts/secret"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_root_token }}"
+        body_format: json
+        body: { type: kv, options: { version: 2 } }
+        status_code: [200, 204, 400]   # 400 = already mounted
+      register: _kv_enable
+      changed_when: _kv_enable.status in [200, 204]
 
     - name: "Enable AppRole auth (idempotent)"
       ansible.builtin.uri:
@@ -673,7 +809,7 @@
     - name: "Bootstrap complete"
       ansible.builtin.debug:
         msg: >-
-          Local control plane up: OpenBao {{ _bao_url_host }} (dev),
+          Local control plane up: OpenBao {{ _bao_url_host }} (persistent),
           Semaphore {{ _sem_url }} (project {{ _pid }}, inventory {{ _inv_id }},
           environment {{ _env_id }}). State: {{ _state_dir }}/credentials.env.
           Everything from here runs THROUGH Semaphore.

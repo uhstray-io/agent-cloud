@@ -29,7 +29,7 @@ flowchart TB
     DEV["you: make + browser"]
     RES["/etc/resolver/agent-cloud.test<br/>*.agent-cloud.test -> 127.0.0.1:5300"]
     subgraph vm["podman machine VM"]
-      BAO["OpenBao (dev)<br/>fake secrets + AppRole"]
+      BAO["OpenBao (persistent file)<br/>fake secrets + AppRole"]
       SEM["Semaphore (local)<br/>runs the playbooks"]
       DNS["hickory-dns<br/>*.agent-cloud.test -> 127.0.0.1"]
       CAD["Caddy<br/>internal-CA TLS<br/>reverse proxy"]
@@ -52,7 +52,7 @@ flowchart TB
 
 | Layer | Local | What it mirrors in prod |
 |---|---|---|
-| Secrets | OpenBao (dev mode, `LOCAL_FAKE_` values) | OpenBao (real, source of truth) |
+| Secrets | OpenBao (persistent file backend, `LOCAL_FAKE_` values; survives restart) | OpenBao (real, source of truth) |
 | Orchestration | Semaphore (1 container, SQLite) | Semaphore (full) |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
 | Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
