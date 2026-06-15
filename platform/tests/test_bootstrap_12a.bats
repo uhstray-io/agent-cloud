@@ -93,6 +93,14 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "bootstrap pre-creates agent-cloud-admin as a Semaphore global admin" {
+  # OIDC users land non-admin; pre-creating an external admin user makes the SSO
+  # login link to it and see all projects.
+  bp="$PB/bootstrap-local-dev.yml"
+  run grep -q "Create agent-cloud-admin Semaphore admin user" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "external: true" "$bp"; [ "$status" -eq 0 ]
+}
+
 @test "agent-cloud-admin user-seed blueprint puts the daily admin in platform-admins" {
   bp="$REPO_ROOT/platform/services/authentik/deployment/blueprints/agent-cloud-admin.yaml"
   [ -f "$bp" ]

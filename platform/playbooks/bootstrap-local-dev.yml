@@ -590,6 +590,36 @@
       ansible.builtin.set_fact:
         _sem_token: "{{ _token_resp.json.id }}"
 
+    # ── Stage 3b: agent-cloud-admin Semaphore admin (OIDC links to it) ──
+    # OIDC users land NON-admin (Semaphore has no group->role mapping), so an
+    # SSO login sees no projects. Pre-create agent-cloud-admin as a GLOBAL admin
+    # (external=true -> authenticated via OIDC, no password) so its SSO login
+    # matches this user by username and it can see + work on ALL projects.
+    # Idempotent by username. akadmin intentionally stays non-admin.
+    - name: "List Semaphore users"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+      register: _sem_users
+
+    - name: "Create agent-cloud-admin Semaphore admin user (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        body_format: json
+        body:
+          name: "agent-cloud Admin"
+          username: agent-cloud-admin
+          email: "agent-cloud-admin@{{ dev_zone | default('agent-cloud.test') }}"
+          admin: true
+          external: true
+        status_code: [201, 204]
+      when: _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
+      changed_when: true
+
     # ── Stage 4: project + resources (idempotent by name) ───────────────
     - name: "List projects"
       ansible.builtin.uri:
