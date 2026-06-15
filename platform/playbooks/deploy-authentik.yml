@@ -37,6 +37,7 @@
       # secret; its OIDC secret is added on the prod composable path.)
       - { name: grafana_oidc_client_secret, type: random, length: 40 }
       - { name: erpnext_oidc_client_secret, type: random, length: 40 }
+      - { name: semaphore_oidc_client_secret, type: random, length: 40 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
