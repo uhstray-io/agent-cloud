@@ -83,7 +83,8 @@
       # parses as separate commands. `\`-continuation joins them in the CA shell.
       ansible.builtin.shell: |
         {{ _engine }} exec step-ca sh -c '
-          echo "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
+          umask 077
+          printf "%s" "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
           step ca provisioner update admin --admin-subject step \
             --x509-max-dur={{ _max_dur }} --x509-default-dur={{ _max_dur }} \
             --password-file /tmp/pw

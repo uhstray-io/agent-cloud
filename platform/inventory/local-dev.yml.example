@@ -74,7 +74,7 @@ all:
           service_name: caddy
           monorepo_deploy_path: platform/services/caddy/deployment
           container_engine: podman
-          caddy_image: docker.io/library/caddy:2-alpine
+          caddy_image: docker.io/library/caddy:2.11.4-alpine
           caddy_file: ./Caddyfile.local
           caddy_http_bind: 127.0.0.1
           caddy_http_port: 8088
@@ -167,7 +167,7 @@ all:
           n8n_bind: 127.0.0.1
           # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
           # mirror is the same image. Base compose default stays docker.n8n.io.
-          n8n_image: docker.io/n8nio/n8n:latest
+          n8n_image: docker.io/n8nio/n8n:2.25.7
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy

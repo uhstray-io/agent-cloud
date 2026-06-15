@@ -21,6 +21,15 @@
 # DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
 # Principles — reuse over per-service glue).
 
+- name: "Assert required variables for monorepo placement"
+  ansible.builtin.assert:
+    that:
+      - _monorepo_dir is defined
+      - (_branch is defined) or (local_mode | default(false) | bool)
+      - (monorepo_repo is defined) or (local_mode | default(false) | bool)
+      - (local_workspace_dir is defined) or not (local_mode | default(false) | bool)
+    fail_msg: "Missing required variables for place-monorepo.yml"
+
 - name: "Install git if needed"
   ansible.builtin.apt:
     name: git
@@ -56,12 +65,13 @@
   ansible.builtin.shell: |
     set -euo pipefail
     mkdir -p "{{ _monorepo_dir }}"
-    rsync -rlpt --delete \
+    rsync -rlpti --delete \
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
       "{{ local_workspace_dir }}/" "{{ _monorepo_dir }}/"
   when: local_mode | default(false) | bool
-  changed_when: true
+  register: _rsync_result
+  changed_when: _rsync_result.stdout | length > 0
 
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file.

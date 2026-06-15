@@ -40,7 +40,7 @@
     _stepca_name: step-ca
     _net: local-dev
     _bao_name: local-openbao
-    _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:latest') }}"
+    _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:2.5.4') }}"
     # Persistent file storage (not dev/in-memory). The init-generated root token
     # + single unseal key are persisted to _bao_init_file (0600) so re-bootstrap
     # after a restart unseals the SAME vault. _bao_root_token is set as a fact in
@@ -295,6 +295,7 @@
         url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/role-id"
         headers: *bao_root_hdr
       register: _role_id
+      no_log: true
 
     - name: "Generate AppRole secret-id"
       ansible.builtin.uri:
@@ -303,6 +304,7 @@
         headers: *bao_root_hdr
         status_code: [200]
       register: _secret_id
+      no_log: true
 
     # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
     # §12A: the secure foundation comes up directly here — dns → step-ca →
@@ -540,13 +542,19 @@
       delay: 2
 
     - name: "Install task-execution deps inside Semaphore (hvac + collections)"
+      # Check + install each dependency independently so a warm rerun after a
+      # partial install (or an image change) converges every missing piece — a
+      # single hvac guard would skip the whole block and leave gaps behind.
       ansible.builtin.command: >-
         podman exec {{ _sem_name }} sh -c
-        "pip3 list 2>/dev/null | grep -qi '^hvac' ||
-         { pip3 install --quiet hvac podman-compose &&
-           ansible-galaxy collection install community.hashi_vault ansible.posix; }"
+        "python3 -c 'import hvac' >/dev/null 2>&1 || { pip3 install --quiet hvac; echo INSTALLED; };
+         command -v podman-compose >/dev/null 2>&1 || { pip3 install --quiet podman-compose; echo INSTALLED; };
+         ansible-galaxy collection list community.hashi_vault >/dev/null 2>&1 ||
+           { ansible-galaxy collection install community.hashi_vault; echo INSTALLED; };
+         ansible-galaxy collection list ansible.posix >/dev/null 2>&1 ||
+           { ansible-galaxy collection install ansible.posix; echo INSTALLED; }"
       register: _sem_deps
-      changed_when: "'hvac' not in _sem_deps.stdout | default('')"
+      changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
 
     - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
       ansible.builtin.command: >-
@@ -566,6 +574,7 @@
           password: "{{ _sem_admin_password }}"
         status_code: [204]
       register: _login
+      no_log: true
 
     - name: "Create API token automatically"
       ansible.builtin.uri:
@@ -575,6 +584,7 @@
           Cookie: "{{ _login.cookies_string }}"
         status_code: [201]
       register: _token_resp
+      no_log: true
 
     - name: "Set token fact"
       ansible.builtin.set_fact:
@@ -722,6 +732,7 @@
           dns_listen=0.0.0.0
           dns_port=5300
           dns_wildcard_target=127.0.0.1
+          dns_upstreams=["1.1.1.1", "1.0.0.1"]
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -912,6 +923,7 @@
                        'LOCAL_MODE': 'true'} | to_json)}
              | combine({'id': (_existing_env | first | int)} if (_existing_env | length > 0) else {}) }}
       changed_when: true
+      no_log: true
 
     - name: "Resolve inventory + environment ids"
       ansible.builtin.uri:
@@ -950,9 +962,11 @@
       loop: "{{ _seed_check.results }}"
       loop_control:
         label: "{{ item.item }}"
+      no_log: true
 
     # ── Stage 5: persist state for the wrapper ──────────────────────────
     - name: "Write local credentials state (0600, outside the repo)"
+      no_log: true
       ansible.builtin.copy:
         dest: "{{ _state_dir }}/credentials.env"
         mode: "0600"

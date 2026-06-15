@@ -97,7 +97,7 @@
       ansible.builtin.command: >-
         {{ _engine }} exec authentik-server
         python -c "import urllib.request,sys;
-        sys.exit(0 if urllib.request.urlopen('http://localhost:9000/api/v3/root/config/').status == 200 else 1)"
+        sys.exit(0 if urllib.request.urlopen('http://localhost:9000/api/v3/root/config/', timeout=5).status == 200 else 1)"
       register: _ak_api
       changed_when: false
       retries: 5

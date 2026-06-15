@@ -32,6 +32,13 @@ p_https=$!
 socat "TCP-LISTEN:${HTTP_LISTEN},fork,reuseaddr,bind=127.0.0.1" "TCP:127.0.0.1:${HTTP_TARGET}" &
 p_http=$!
 
+# Kill BOTH listeners on exit: if one dies the loop below exits, and a surviving
+# child would otherwise keep its port bound and trip the launchd restart loop.
+cleanup() {
+  kill "$p_https" "$p_http" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 # Exit if EITHER forwarder dies, so launchd (KeepAlive) restarts the whole unit.
 # Portable poll instead of `wait -n` (undefined in POSIX sh / macOS bash 3.2).
 while kill -0 "$p_https" 2>/dev/null && kill -0 "$p_http" 2>/dev/null; do

@@ -18,6 +18,13 @@
 #   _ca_engine          container engine (default: podman)
 #   _ca_name            step-ca container name (default: step-ca)
 
+- name: "Assert required variables for CA-root distribution"
+  ansible.builtin.assert:
+    that:
+      - _ca_root_dest_dir is defined
+      - _ca_root_dest_dir | length > 0
+    fail_msg: "distribute-ca-root.yml requires `_ca_root_dest_dir` (consuming service's deploy dir)."
+
 - name: "Assert the CA is reachable before copying its root"
   ansible.builtin.command: "{{ _ca_engine | default('podman') }} container exists {{ _ca_name | default('step-ca') }}"
   register: _ca_root_present

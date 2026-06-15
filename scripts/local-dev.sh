@@ -49,9 +49,11 @@ guard() {
     || die "inventory does not parse: $file"
   python3 - "$file" <<'PY' || exit 1
 import json, sys
+from urllib.parse import urlparse
 data = json.load(open("/tmp/agent-cloud-local-inv.json"))
 hv = data.get("_meta", {}).get("hostvars", {})
 LOCAL = {"127.0.0.1", "localhost", "::1"}
+LOCAL_BAO = LOCAL | {"local-openbao"}
 bad = []
 for host, v in hv.items():
     conn = v.get("ansible_connection", "")
@@ -59,8 +61,8 @@ for host, v in hv.items():
     if conn != "local" and addr not in LOCAL:
         bad.append(f"{host} (ansible_host={addr}, connection={conn or 'ssh'})")
     bao = str(v.get("openbao_addr", "http://127.0.0.1:8200"))
-    if not (bao.startswith("http://127.0.0.1") or bao.startswith("http://localhost")
-            or bao.startswith("http://local-openbao")):
+    # Parse the host (prefix checks accept e.g. http://127.0.0.1.evil:8200).
+    if urlparse(bao).hostname not in LOCAL_BAO:
         bad.append(f"{host} (openbao_addr={bao})")
 if bad:
     print("[local-dev] ERROR: REFUSING non-local inventory entries:", file=sys.stderr)
@@ -171,8 +173,10 @@ clean() {
   # local-openbao-data holds the persistent vault; removing it (with the init
   # material below) is the only intentional way to wipe local secrets.
   podman volume rm -f local-semaphore-data local-openbao-data 2>/dev/null || true
-  rm -f "$STATE"
-  rm -rf "${STATE%/*}/openbao-config" "${STATE%/*}/openbao-init.json"
+  # Remove the whole tool-owned state dir ($HOME/.agent-cloud-local) so every
+  # generated credential file goes — credentials.env, openbao-config/,
+  # openbao-init.json, semaphore-oidc.env, step-ca-bundle.crt — not just a subset.
+  rm -rf "${STATE%/*}"
   info "clean. Re-create with: make local-bootstrap"
 }
 
@@ -302,12 +306,18 @@ https_down() {
 _internal_root_pem() {
   # The internal-CA root (PEM) to trust, to stdout. Prefer step-ca's STABLE
   # shared root (survives Caddy redeploys, reused across hosts/devs); fall back
-  # to Caddy's own ephemeral internal-CA root if step-ca isn't deployed.
-  if podman container exists step-ca 2>/dev/null; then
-    podman exec step-ca cat /home/step/certs/root_ca.crt 2>/dev/null
-  else
-    podman exec caddy cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null
+  # to Caddy's own ephemeral internal-CA root if step-ca isn't running.
+  # Gate on RUNNING (not `container exists`, which is true for a stopped
+  # container): a stopped step-ca would otherwise fail `podman exec` and skip
+  # the caddy fallback. Always returns 0 so the caller's empty-check gives
+  # guidance instead of `set -e` aborting the command substitution.
+  if [ "$(podman inspect -f '{{.State.Running}}' step-ca 2>/dev/null || true)" = "true" ]; then
+    podman exec step-ca cat /home/step/certs/root_ca.crt 2>/dev/null && return 0
   fi
+  if [ "$(podman inspect -f '{{.State.Running}}' caddy 2>/dev/null || true)" = "true" ]; then
+    podman exec caddy cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null && return 0
+  fi
+  return 0
 }
 
 _cert_sha1() {  # PEM on stdin -> uppercase hex SHA-1, no colons (keychain format)
@@ -361,8 +371,13 @@ tls_untrust() {
 
 promote() {
   info "running fast pre-push checks..."
-  command -v shellcheck >/dev/null && shellcheck -S warning "${REPO_ROOT}"/scripts/*.sh "${REPO_ROOT}"/platform/lib/*.sh
-  command -v yamllint >/dev/null && yamllint -c "${REPO_ROOT}/.yamllint.yml" "${REPO_ROOT}/platform/playbooks" "${REPO_ROOT}/platform/semaphore"
+  # Mandatory (not best-effort) + repository-wide via git ls-files, so a missing
+  # linter or an un-globbed file (https-forward.sh, inventories, compose, blueprints)
+  # can't slip a lint failure past local promotion that CI would then catch.
+  command -v shellcheck >/dev/null || die "shellcheck not found — run: brew bundle"
+  git -C "$REPO_ROOT" ls-files -z '*.sh' | xargs -0 shellcheck -S warning
+  command -v yamllint >/dev/null || die "yamllint not found — run: brew bundle"
+  git -C "$REPO_ROOT" ls-files -z '*.yml' '*.yaml' | xargs -0 yamllint -c "${REPO_ROOT}/.yamllint.yml"
   local branch
   branch=$(git -C "$REPO_ROOT" branch --show-current)
   case "$branch" in

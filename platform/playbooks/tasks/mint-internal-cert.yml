@@ -21,6 +21,15 @@
 #                    raised to match — deploy-step-ca.yml does this)
 #   _mint_ca_name    step-ca container name (default: step-ca)
 
+- name: "Assert required variables for cert minting"
+  ansible.builtin.assert:
+    that:
+      - _mint_zone is defined
+      - _mint_zone | length > 0
+      - _mint_dest_dir is defined
+      - _mint_dest_dir | length > 0
+    fail_msg: "mint-internal-cert.yml requires `_mint_zone` (internal zone) and `_mint_dest_dir` (consuming service's deploy dir)."
+
 - name: "Assert the CA is reachable before minting"
   ansible.builtin.command: "{{ _mint_engine | default('podman') }} container exists {{ _mint_ca_name | default('step-ca') }}"
   register: _mint_ca_present
@@ -35,7 +44,8 @@
   # more-indented flag lines' newlines, which `sh -c` mis-parses as commands).
   ansible.builtin.shell: |
     {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }} sh -c '
-      echo "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
+      umask 077
+      printf "%s" "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
       step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
         --provisioner admin --provisioner-password-file /tmp/pw \
         --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
