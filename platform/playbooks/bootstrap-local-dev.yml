@@ -588,7 +588,7 @@
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000'}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}]
+          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}]
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

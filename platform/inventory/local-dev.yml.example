@@ -92,7 +92,10 @@ all:
             # (NetBox can't do OIDC locally — see netbox-forward-auth.yaml).
             - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000", forward_auth: "authentik-server:9000" }
             - { host: "grafana.agent-cloud.test", upstream: "o11y-grafana:3000" }
-            - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000" }
+            # internal_https_port: also listen on :8443 in-network so OIDC
+            # clients (ERPNext/Semaphore/… backends) reach the IdP at the same
+            # host:port the browser uses (AUTH-SSO-DEPLOYMENT.md OIDC enabler).
+            - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000", internal_https_port: 8443 }
             # forward_auth gates n8n through Authentik's embedded outpost
             # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
             - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }

@@ -21,7 +21,12 @@
 }
 
 {% for r in caddy_routes | default([]) %}
-{{ r.host }} {
+{# A route may opt into a second, internal-only HTTPS listener (e.g. :8443) so
+   in-network OIDC clients reach the IdP at the SAME host:port the browser uses
+   — Caddy publishes host:8443 -> container:443, but in-network peers hit the
+   container directly, so the container must also listen on :8443. The wildcard
+   cert covers the host on any port; no extra host publish is needed. #}
+{{ r.host }}{% if r.internal_https_port | default('') %}, {{ r.host }}:{{ r.internal_https_port }}{% endif %} {
 {% if _cert %}	tls {{ _cert }} {{ caddy_tls_key }}
 {% endif %}{% if r.forward_auth | default('') %}	route {
 		# Strip client-supplied identity headers up front: only the outpost may
