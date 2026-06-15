@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
 .PHONY: local-deploy-% local-clean-deploy-%
 
 help: ## Show available targets
@@ -53,6 +53,10 @@ local-all: ## EVERYTHING in dependency order: full stack + macOS DNS resolver + 
 	@$(LOCAL_DEV) resolver --yes
 	@$(LOCAL_DEV) tls-trust --yes
 	@echo "[local-all] stack up + host wiring done — browse https://<svc>.agent-cloud.test:8443 (port-free :443: make local-https)."
+	@$(LOCAL_DEV) creds
+
+local-creds: ## Show the Authentik admin login (read live from OpenBao) for browser SSO testing
+	@$(LOCAL_DEV) creds
 
 local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local-deploy-uhhcraft)
 	@$(LOCAL_DEV) deploy $*

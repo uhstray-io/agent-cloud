@@ -92,3 +92,14 @@ setup() {
   run grep -q "outpost.goauthentik.io/auth/caddy" "$PB/deploy-authentik.yml"
   [ "$status" -eq 0 ]
 }
+
+@test "wrapper exposes a creds subcommand and local-all prints it" {
+  run grep -q "^  creds)" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+  # creds reads the authentik bootstrap_password from OpenBao (not a 2nd store)
+  run grep -q "secret/data/services/authentik" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+  # local-all chains creds at the end
+  run grep -q "LOCAL_DEV) creds" "$REPO_ROOT/Makefile"
+  [ "$status" -eq 0 ]
+}

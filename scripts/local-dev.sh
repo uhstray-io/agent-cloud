@@ -167,6 +167,47 @@ validate() {
   _run_template "platform/playbooks/validate-all.yml"
 }
 
+# Show the Authentik admin login so the developer can test SSO/login in the
+# browser. The bootstrap password is read live from OpenBao (the source of
+# truth) via the local-semaphore AppRole — never stored in a second place. It's
+# a local-only break-glass superuser on the dev's own machine, so printing it is
+# the point. ASCII-only output (CI rejects Unicode box-drawing characters).
+creds() {
+  _load_state
+  local zone tok pw
+  zone=$(ansible-inventory -i "$INV" --host dns-local 2>/dev/null \
+        | python3 -c "import json,sys;print(json.load(sys.stdin).get('dns_zone','agent-cloud.test'))" 2>/dev/null)
+  [ -n "$zone" ] || zone="agent-cloud.test"
+  tok=$(curl -sf -X POST \
+        -d "{\"role_id\":\"${BAO_ROLE_ID}\",\"secret_id\":\"${BAO_SECRET_ID}\"}" \
+        "${BAO_ADDR}/v1/auth/approle/login" 2>/dev/null \
+        | python3 -c "import json,sys;print(json.load(sys.stdin)['auth']['client_token'])" 2>/dev/null) || true
+  [ -n "${tok:-}" ] || die "OpenBao AppRole login failed — is the stack up? (make local-bootstrap)"
+  pw=$(curl -sf -H "X-Vault-Token: ${tok}" "${BAO_ADDR}/v1/secret/data/services/authentik" 2>/dev/null \
+      | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('bootstrap_password',''))" 2>/dev/null) || true
+  [ -n "${pw:-}" ] || die "authentik bootstrap_password not in OpenBao — is authentik deployed? (make local-deploy-authentik)"
+  cat <<EOF
+
+  =====================================================================
+   Authentik -- browser SSO login (the platform IdP)
+  ---------------------------------------------------------------------
+   URL:       https://auth.${zone}:8443/
+   Username:  akadmin
+   Password:  ${pw}
+
+   Local-only bootstrap superuser (break-glass; bypasses the platform
+   gate). Log in here, then SSO / forward-auth carries you into the apps:
+     Semaphore  https://semaphore.${zone}:8443/
+     Grafana    https://grafana.${zone}:8443/
+     ERPNext    https://erp.${zone}:8443/
+     NetBox     https://netbox.${zone}:8443/
+     OpenBao    https://openbao.${zone}:8443/
+     n8n        https://n8n.${zone}:8443/
+  =====================================================================
+   (resolves + trusts TLS after: make local-dns-resolver  make local-tls-trust)
+EOF
+}
+
 clean() {
   info "removing local control plane containers + state..."
   podman rm -f local-openbao local-semaphore 2>/dev/null || true
@@ -396,6 +437,7 @@ case "${1:-}" in
   deploy)    shift; deploy "$@" ;;
   clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
+  creds)     creds ;;
   resolver)  shift; resolver "$@" ;;
   https)     shift; https "$@" ;;
   https-down) https_down ;;
@@ -412,6 +454,7 @@ usage: scripts/local-dev.sh <subcommand>
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
   validate           run Validate All via LOCAL Semaphore
+  creds              show the Authentik admin login (read from OpenBao) for browser testing
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)
   https [--yes]      install the persistent root forwarder for clean port-free
