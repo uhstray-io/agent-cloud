@@ -279,6 +279,12 @@ resolver() {
 
 _LAUNCHD_LABEL="io.uhstray.agent-cloud.https"
 _LAUNCHD_PLIST="/Library/LaunchDaemons/${_LAUNCHD_LABEL}.plist"
+# The forwarder script must run from OUTSIDE the repo: a root LaunchDaemon cannot
+# execute a script that lives in a TCC-protected user dir (~/Documents, ~/Desktop,
+# ~/Downloads) — launchd fails with "Operation not permitted" and crash-loops, so
+# nothing binds :443. `https` installs a copy to this system path and points the
+# daemon there; `https-down` removes it.
+_FORWARDER_BIN="/usr/local/bin/agent-cloud-https-forward.sh"
 
 https() {
   # Clean port-free https://app.agent-cloud.test needs something bound to the Mac's
@@ -302,15 +308,18 @@ https() {
   [ -f "$wrapper" ] && [ -f "$tmpl" ] || die "forwarder artifacts missing under platform/local-dev/"
 
   local rendered; rendered=$(mktemp)
-  sed -e "s|__WRAPPER__|${wrapper}|g" \
+  # Point the daemon at the SYSTEM copy of the wrapper (_FORWARDER_BIN), never the
+  # in-repo path — a root daemon can't exec from a TCC-protected ~/ dir.
+  sed -e "s|__WRAPPER__|${_FORWARDER_BIN}|g" \
       -e "s|__HTTPS_LISTEN__|443|g"   -e "s|__HTTPS_TARGET__|${https_target}|g" \
       -e "s|__HTTP_LISTEN__|80|g"     -e "s|__HTTP_TARGET__|${http_target}|g" \
       "$tmpl" > "$rendered"
   plutil -lint "$rendered" >/dev/null || { rm -f "$rendered"; die "rendered plist failed plutil -lint"; }
 
-  # Idempotent: already-installed + identical => no-op (the read needs no sudo;
-  # /Library/LaunchDaemons is world-readable).
-  if [ -f "$_LAUNCHD_PLIST" ] && cmp -s "$rendered" "$_LAUNCHD_PLIST"; then
+  # Idempotent: no-op only when BOTH the plist AND the installed wrapper are
+  # current (reads need no sudo — both live in world-readable dirs).
+  if [ -f "$_LAUNCHD_PLIST" ] && cmp -s "$rendered" "$_LAUNCHD_PLIST" \
+     && [ -f "$_FORWARDER_BIN" ] && cmp -s "$wrapper" "$_FORWARDER_BIN"; then
     info "${_LAUNCHD_PLIST} already current — clean URLs active (443->${https_target}, 80->${http_target})"
     rm -f "$rendered"; return 0
   fi
@@ -319,6 +328,9 @@ https() {
   info "  443 -> 127.0.0.1:${https_target}   80 -> 127.0.0.1:${http_target}   (persistent LaunchDaemon)"
   confirm "$assume_yes" "proceed?" \
     || { info "skipped — re-run any time: make local-https"; rm -f "$rendered"; return 0; }
+  # Install the wrapper to a non-TCC system path the root daemon can execute.
+  sudo mkdir -p "$(dirname "$_FORWARDER_BIN")"
+  sudo install -m 0755 -o root -g wheel "$wrapper" "$_FORWARDER_BIN"
   sudo cp "$rendered" "$_LAUNCHD_PLIST"
   sudo chown root:wheel "$_LAUNCHD_PLIST"
   sudo chmod 644 "$_LAUNCHD_PLIST"
@@ -331,10 +343,12 @@ https() {
 }
 
 https_down() {
-  [ -f "$_LAUNCHD_PLIST" ] || { info "forwarder not installed — nothing to do"; return 0; }
+  if [ ! -f "$_LAUNCHD_PLIST" ] && [ ! -f "$_FORWARDER_BIN" ]; then
+    info "forwarder not installed — nothing to do"; return 0
+  fi
   info "Removing the privileged-port forwarder (needs sudo)..."
-  sudo launchctl bootout system "$_LAUNCHD_PLIST" 2>/dev/null || true
-  sudo rm -f "$_LAUNCHD_PLIST"
+  [ -f "$_LAUNCHD_PLIST" ] && { sudo launchctl bootout system "$_LAUNCHD_PLIST" 2>/dev/null || true; }
+  sudo rm -f "$_LAUNCHD_PLIST" "$_FORWARDER_BIN"
   info "removed."
 }
 

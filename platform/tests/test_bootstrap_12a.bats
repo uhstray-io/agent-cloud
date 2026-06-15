@@ -93,6 +93,14 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "https forwarder runs from a non-TCC system path, not the repo (~/Documents)" {
+  # a root LaunchDaemon can't exec a script under a TCC-protected ~/ dir
+  run grep -q '_FORWARDER_BIN="/usr/local/bin/' "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+  run grep -q 's|__WRAPPER__|${_FORWARDER_BIN}|g' "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+}
+
 @test "wrapper exposes a creds subcommand and local-all prints it" {
   run grep -q "^  creds)" "$REPO_ROOT/scripts/local-dev.sh"
   [ "$status" -eq 0 ]
