@@ -59,3 +59,23 @@ setup() {
   run grep -q "if (_oidc_ready | bool) else ''" "$bp"
   [ "$status" -eq 0 ]
 }
+
+@test "TLS bundle includes the system roots, not just step-ca (else apk/pip break)" {
+  # SSL_CERT_FILE replaces the whole trust store — the bundle must carry the
+  # image's public roots too. Regression guard for the validation-found bug.
+  run grep -q "ca-certificates.crt" "$PB/bootstrap-local-dev.yml"
+  [ "$status" -eq 0 ]
+}
+
+@test "podman-compose discovery uses shell (command -v is a builtin) + asserts" {
+  bp="$PB/bootstrap-local-dev.yml"
+  run grep -q "ansible.builtin.shell: command -v podman-compose" "$bp"
+  [ "$status" -eq 0 ]
+  run grep -q "Require podman-compose for the Mac-direct genesis path" "$bp"
+  [ "$status" -eq 0 ]
+}
+
+@test "preflight checks podman-compose + jq (genesis prereqs)" {
+  run grep -qE "podman-compose .*jq|podman podman-compose" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+}

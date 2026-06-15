@@ -32,7 +32,7 @@ confirm() {
 
 preflight() {
   local missing=0 tool
-  for tool in podman ansible-playbook ansible-inventory python3 curl git; do
+  for tool in podman podman-compose ansible-playbook ansible-inventory python3 curl git jq; do
     command -v "$tool" >/dev/null 2>&1 || { info "missing tool: $tool"; missing=1; }
   done
   [ "$missing" -eq 0 ] || die "install the toolchain first: brew bundle (repo root)"

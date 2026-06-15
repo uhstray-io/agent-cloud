@@ -312,12 +312,23 @@
     #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
     # No no_log here — deploys + their verify phases must stay diagnosable
     # (CLAUDE.md: scope no_log to credential tasks only).
-    - name: "Discover podman-compose on the Mac (forces the compose provider)"
-      # Genesis REQUIRES podman-compose — fail loud rather than let detect_runtime
-      # fall back to `podman compose` (docker-compose) and hit the label mismatch.
-      ansible.builtin.command: command -v podman-compose
+    - name: "Locate podman-compose on the Mac (forces the compose provider)"
+      # shell (not command): `command -v` is a shell builtin. Genesis REQUIRES
+      # podman-compose — without it detect_runtime falls back to `podman compose`
+      # (docker-compose) and hits the network label mismatch (§12A fix #1).
+      ansible.builtin.shell: command -v podman-compose
       register: _pc
       changed_when: false
+      failed_when: false
+
+    - name: "Require podman-compose for the Mac-direct genesis path"
+      ansible.builtin.assert:
+        that: _pc.rc == 0
+        fail_msg: >-
+          podman-compose not found on PATH. The genesis foundation deploys run
+          Mac-direct and require it. Install it: `brew install podman-compose`
+          (it's in the repo Brewfile — `brew bundle` installs the full toolchain).
+        success_msg: "podman-compose: {{ _pc.stdout | trim }}"
 
     - name: "Genesis-deploy the secure foundation in dependency order"
       ansible.builtin.command:
@@ -399,11 +410,18 @@
       ansible.builtin.set_fact:
         _oidc_ready: "{{ _sem_oidc_json is defined }}"
 
-    - name: "Export the step-ca root bundle for Semaphore TLS trust"
-      # Go verifies the ID-token JWKS + discovery over TLS using SSL_CERT_FILE;
-      # the step-ca root is what signs Caddy's auth.<zone> wildcard leaf.
-      ansible.builtin.shell: >-
-        podman exec step-ca cat /home/step/certs/root_ca.crt > {{ _state_dir }}/step-ca-bundle.crt
+    - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
+      # SSL_CERT_FILE REPLACES the whole container trust store, so the bundle MUST
+      # carry the PUBLIC roots too — otherwise apk/pip/ansible-galaxy (public TLS)
+      # break with cert-verify errors. Public roots come from the Semaphore image
+      # itself (exact set the container expects); the step-ca root is appended so
+      # Go ALSO trusts Caddy's internal auth.<zone> leaf for OIDC discovery/JWKS.
+      ansible.builtin.shell: |
+        set -o pipefail
+        {
+          podman run --rm {{ _sem_image }} cat /etc/ssl/certs/ca-certificates.crt
+          podman exec step-ca cat /home/step/certs/root_ca.crt
+        } > {{ _state_dir }}/step-ca-bundle.crt
       register: _bundle
       changed_when: true
       when: _oidc_ready | bool
