@@ -9,7 +9,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
     - name: "Destroy containers, volumes, and clone"
       ansible.builtin.include_tasks: tasks/clean-service.yml
