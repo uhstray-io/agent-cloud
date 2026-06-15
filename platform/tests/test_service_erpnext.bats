@@ -135,3 +135,10 @@ setup() {
   grep -q 'import_playbook: deploy-erpnext.yml' "$f"
   grep -qi 'DANGER' "$f"
 }
+
+@test "erpnext: Social Login Key sets custom_base_url (else Frappe ignores base_url)" {
+  # Without custom_base_url, Frappe resolves the relative authorize/token paths
+  # against the SITE url (erp.<zone>) instead of base_url (the IdP) -> 404.
+  local f="$REPO_ROOT/platform/services/erpnext/deployment/post-deploy.sh"
+  grep -q 'doc.custom_base_url = 1' "$f"
+}

@@ -86,6 +86,11 @@ if not exists:
 doc.client_id = os.environ["OIDC_CID"]
 doc.client_secret = os.environ["OIDC_SECRET"]
 doc.base_url = os.environ["OIDC_BASE"]
+# REQUIRED: without custom_base_url, Frappe (apps/frappe/.../utils/oauth.py)
+# ignores base_url and resolves the relative authorize/token paths against the
+# SITE url (erp.<zone>) -> the IdP authorize redirect points at ERPNext itself
+# and 404s. Setting it makes Frappe build <base_url><authorize_url> = the IdP.
+doc.custom_base_url = 1
 doc.authorize_url = "/application/o/authorize/"
 doc.access_token_url = "/application/o/token/"
 doc.api_endpoint = "/application/o/userinfo/"
