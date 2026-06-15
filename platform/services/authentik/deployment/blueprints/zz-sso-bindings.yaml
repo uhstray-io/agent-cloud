@@ -60,7 +60,12 @@ entries:
         docker_map_ports: true
         refresh_interval: minutes=5
 
-  # Bind the access gate to each forward_auth application.
+  # Bind the access gate to EVERY application — forward_auth AND OIDC.
+  # Authentik evaluates application policy bindings during the authorization
+  # flow, BEFORE issuing an OIDC token, so this enforces the platform tier for
+  # OIDC apps (grafana/erpnext/semaphore) too — not just the forward_auth gates.
+  # Without it the deny tier (platform-user) could complete OIDC login (grafana
+  # self-filters via ALLOWED_GROUPS, but erpnext/semaphore have no other gate).
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_core.application, [slug, netbox]]
@@ -78,6 +83,28 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_core.application, [slug, n8n]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true
+  # OIDC apps — same tier gate, enforced at the authorization flow.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, grafana]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, erpnext]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, semaphore]]
       policy: !KeyOf policy-platform-member
       order: 0
     attrs:

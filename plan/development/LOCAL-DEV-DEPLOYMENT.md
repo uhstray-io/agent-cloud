@@ -300,7 +300,7 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 
 | Platform rule | How this plan satisfies it |
 |---|---|
-| All deployments through Semaphore (rule #1) | **Strengthened**: local deploys also run through (local) Semaphore; rule enforced in code via `assert-orchestrated.yml`; bootstrap exemption documented in ACCESS-BOUNDARIES |
+| All deployments through Semaphore (rule #1) | **Strengthened**: local deploys also run through (local) Semaphore; rule enforced in code via `assert-orchestrated.yml`; **genesis-bootstrap exemption** (widened to the secure foundation — OpenBao/dns/step-ca/caddy/authentik + Semaphore — per §12A) documented in ACCESS-BOUNDARIES |
 | deploy.sh containers-only (rule #2) | Same scripts run locally; no variants |
 | Independent workflows (rule #3) | bootstrap, per-service templates, validate, seeds are separate playbooks/templates |
 | No intermediary secret files (rule #4) | manage-secrets flow preserved against local OpenBao; fakes only |
@@ -310,6 +310,33 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 | Make bootstraps, Semaphore operates | Wrapper logic is bootstrap-only; platforms, validation, and data seeding all run via local Semaphore templates |
 | Pre-Push Audit | Automated via `.pre-commit-config.yaml` (P3); CLAUDE.md updated |
 | Plan doc standards | Status header, mermaid-only diagrams, phase gates, validation table, security section, decision criteria with rejected alternatives + owner overrides, revision history |
+
+## 12A. Bootstrap ordering — secure foundation before the orchestrator (2026-06-15)
+
+**Decision.** Semaphore's job is to *securely operate* the platform, so its security substrate must exist **before** it — not be reconfigured afterward. The genesis bootstrap therefore brings up the secure foundation **directly**, and Semaphore comes up **last, already OIDC-secured**. This supersedes the earlier "OpenBao+Semaphore first, everything else through Semaphore" ordering for the security-foundational services.
+
+**Rejected alternative.** Bring Semaphore up first (unsecured), then enable OIDC in a post-stack pass. Rejected: it leaves a window where the orchestrator runs without SSO, needs a fragile recreate-with-validated-JSON step, and is worse for prod-parity. Bringing dependencies up first removes the chicken-and-egg entirely.
+
+The genesis order (all brought up by `make local-bootstrap`, directly — not through Semaphore):
+
+```mermaid
+flowchart LR
+  BAO["OpenBao<br/>secrets"] --> DNS["dns<br/>naming"] --> CA["step-ca<br/>trust"] --> CADDY["caddy<br/>ingress + serves the IdP URL"] --> AK["authentik<br/>identity (OIDC)"] --> SEM["Semaphore<br/>orchestrator — LAST,<br/>OIDC-secured at boot"]
+  SEM -.->|operates| T3["Tier 3 (through Semaphore):<br/>o11y · opa · erpnext · netbox · n8n"]
+```
+
+**Mechanism.** The bootstrap runs each foundation service's **existing composable deploy playbook** directly (with the BAO AppRole creds the bootstrap already holds, under the `bootstrap` tag / context that `assert-orchestrated.yml` accepts) — it does **not** fork the deploys. Semaphore is then started last with OIDC env already present (step-ca + authentik are up): `SEMAPHORE_OIDC_PROVIDERS` (the inner-map JSON, **jq-validated before inject** — a malformed value panics Semaphore at startup), `SEMAPHORE_WEB_ROOT=https://semaphore.<zone>:8443`, and the step-ca trust **bundle** mounted with `SSL_CERT_FILE` (Go verifies the ID-token JWKS over TLS). The local `SEMAPHORE_ADMIN`/password login is retained as the fallback (OIDC users are non-admin — Semaphore has no group→role mapping; promote OIDC admins manually).
+
+**Critical Rule #1 nuance.** "All deployments go through Semaphore" still holds for operations; the **genesis bootstrap is the sanctioned exception** (a service can't deploy through an orchestrator that isn't up yet). This change *widens* that exception from "OpenBao+Semaphore" to "the secure foundation (OpenBao, dns, step-ca, caddy, authentik) + Semaphore." Everything after genesis (Tier 3 + redeploys) still goes through Semaphore. ACCESS-BOUNDARIES + §12 updated.
+
+**Requirements (the implementation must satisfy):**
+- **Idempotent + re-runnable.** Re-running `make local-bootstrap` converges; each foundation step is its own idempotent deploy. A re-run after the stack is up must not duplicate or error.
+- **No forks.** Foundation services use their existing `deploy-<svc>.yml`; only the *invocation context* (direct, bootstrap-tagged) differs from the Semaphore path.
+- **Fail-safe Semaphore OIDC.** `jq`-validate `SEMAPHORE_OIDC_PROVIDERS` before passing it; if step-ca/authentik aren't up yet (first genesis pass mid-build), Semaphore still starts (OIDC added once its deps exist) — the control plane must never be left unbootable.
+- **Foundation set:** OpenBao, dns, step-ca, caddy, authentik (+ Semaphore). Tier 3 (o11y, opa, erpnext, netbox, n8n) stays Semaphore-deployed.
+- **`make local-bootstrap`** = genesis (foundation + OIDC-secured Semaphore); **`make local-up`** = bootstrap + Tier-3 deploys through Semaphore; sudo host steps (resolver/TLS-trust/:443) stay separate.
+
+**Validation:** full stack reaches healthy; Semaphore API still answers after genesis (control plane survives); Semaphore login page offers the OIDC button; discovery TLS-verifies from the Semaphore container with the bundle; `platform-user` is denied at the IdP (the §P1 policy bindings). Full OIDC login is a browser check.
 
 ## 13. References
 
@@ -341,6 +368,8 @@ Tags: *(repo)* agent-cloud file · *(panel)* multi-agent review artifact · *(lo
 | 2026-06-12 | Initial plan synthesized from the three-agent panel (architecture / automation / developer-experience with cross-challenge round) |
 | 2026-06-12 | Interactive review: owner overruled panel on engine (podman default, Docker only for root-requiring services) and orchestrator (**local Semaphore drives local deploys**; templates-as-code validated locally); multi-arch CI builds added (panel review gap); Rule #1 code-enforced via assert-orchestrated.yml; multi-dev from day one; stricter risk classes ratified; P0 split into 0A (prod-shared, render-unchanged gate) / 0B (additive local artifacts); honesty fixes (BATS is static; cold/warm bootstrap targets); simplification pass |
 | 2026-06-12 | Paradigm + footprint update: "make bootstraps, Semaphore operates" promoted to a design principle (Makefile provisions initial resources only; platforms, validation, and seeds run via local Semaphore templates); per-service `compose.local.yml` slim overlays (resource caps, trimmed workers/sidecars) applied by the shared compose wrapper in local_mode, with measured budgets |
+| 2026-06-14 | OpenBao moved to a persistent file backend (genesis-bootstrapped; dev-mode references corrected throughout) |
+| 2026-06-15 | §12A added: bootstrap reordered so the **secure foundation (OpenBao→dns→step-ca→caddy→authentik) is genesis-bootstrapped before Semaphore**, which comes up last already OIDC-secured (eliminates the Semaphore-OIDC chicken-and-egg). Rule #1 genesis exemption widened accordingly |
 | 2026-06-12 | /simplify + consistency pass: risk classes defined in prose (not just the diagram); §7 branch-deploy coverage consolidated to one note; Gate 2 full-tier budget made crisp (≤14 GB) and aligned across Target outcome/§10/§11; `local-up TIER` added to Makefile contract + diagram; local-only Semaphore templates split into `templates-local.yml` so the shared `templates.yml` stays prod-clean (templates-as-code adherence); assert-orchestrated marker verification made an explicit blocking precondition |
 | 2026-06-12 | /security-review fixes + sizing: bootstrap exemption scoped to bootstrap-local-dev.yml by name (tag alone insufficient); working-inventory filename + .gitignore entry specified; templates-local.yml fate fixed (committed, applied only under local_mode); fake seeds carry LOCAL_FAKE_ prefix; image-signing tracked as future hardening; reference-machine VM allocations added (48 GB host — both VMs + full tier ≤20 GB) |
 | 2026-06-12 | Self-explaining pass: `[n]` citations threaded through §2/§4/§5 with a tagged References section (§13, absorbing the cross-ref list; [16] marked as the one explicit assumption); bootstrap-handoff sequence diagram added to §5 showing where make's job ends and Semaphore's begins |

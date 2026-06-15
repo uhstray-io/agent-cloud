@@ -30,7 +30,7 @@
     state: directory
     mode: "0755"
 
-- name: "Build a step-ca trust bundle (root + intermediate) in {{ _ca_root_dest_dir }}/certs"
+- name: "Build a step-ca trust bundle (root + intermediate) under {{ _ca_root_dest_dir }}"
   # Caddy serves the leaf only, so a client needs BOTH the intermediate and the
   # root to build the chain (leaf -> intermediate -> root). Concatenate them into
   # one bundle and make it 0644 — the cert chain is public (non-secret) and the
