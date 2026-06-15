@@ -21,3 +21,11 @@ setup() {
   run grep -q "ansible_user | default('deploy')" "$PB/deploy-dns.yml"
   [ "$status" -eq 0 ]
 }
+
+# ── Fix #1: COMPOSE_CMD forced on the Mac-direct genesis path ────────────────
+@test "fix #1: foundation deploys pass COMPOSE_CMD through from local_compose_cmd" {
+  for svc in dns step-ca caddy authentik; do
+    run grep -q "COMPOSE_CMD: \"{{ local_compose_cmd | default(omit) }}\"" "$PB/deploy-${svc}.yml"
+    [ "$status" -eq 0 ] || { echo "deploy-${svc}.yml missing COMPOSE_CMD passthrough"; return 1; }
+  done
+}

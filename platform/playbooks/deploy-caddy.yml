@@ -72,6 +72,8 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path (§12A fix #1).
+        COMPOSE_CMD: "{{ local_compose_cmd | default(omit) }}"
       register: _deploy
       changed_when: true
 
