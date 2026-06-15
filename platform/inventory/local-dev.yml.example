@@ -150,6 +150,9 @@ all:
           monorepo_deploy_path: platform/services/n8n/deployment
           container_engine: podman
           n8n_bind: 127.0.0.1
+          # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
+          # mirror is the same image. Base compose default stays docker.n8n.io.
+          n8n_image: docker.io/n8nio/n8n:latest
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy

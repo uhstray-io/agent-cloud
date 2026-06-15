@@ -653,6 +653,7 @@
           openbao_addr={{ _bao_url_net }}
           local_mode=true
           n8n_bind=127.0.0.1
+          n8n_image=docker.io/n8nio/n8n:latest
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
