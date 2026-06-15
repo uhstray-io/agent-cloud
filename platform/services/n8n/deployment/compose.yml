@@ -1,8 +1,10 @@
 x-n8n-env: &n8n-env
-  N8N_HOST: localhost
+  # Host-facing values are env-parameterized so prod (real domain, HTTPS, secure
+  # cookies behind Caddy) needs no fork — local-dev keeps the loopback defaults.
+  N8N_HOST: ${N8N_HOST:-localhost}
   NODE_ENV: production
-  WEBHOOK_URL: "http://localhost:5678/"
-  N8N_SECURE_COOKIE: "false"
+  WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+  N8N_SECURE_COOKIE: "${N8N_SECURE_COOKIE:-false}"
   DB_TYPE: postgresdb
   DB_POSTGRESDB_HOST: n8n-postgres
   DB_POSTGRESDB_PORT: "5432"
@@ -41,6 +43,11 @@ services:
 
   n8n:
     container_name: workflow-n8n
+    # NB: the :latest DEFAULT is transitional — it matches what the live prod
+    # instance currently runs. PIN before relying on it: set N8N_IMAGE (inventory)
+    # to a specific tag. For the prod migration the tag MUST equal prod's running
+    # version (captured at Task 0 / seed-n8n-secrets.yml) — a silent upgrade can
+    # break N8N_ENCRYPTION_KEY-bound workflow credentials.
     image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}
     restart: always
     ports:

@@ -12,13 +12,21 @@ import rego.v1
 default allow := false
 
 # Hard block: destructive Semaphore templates require explicit human approval,
-# for ANY agent. Evaluated before allow (deny wins).
+# for ANY agent. Evaluated before allow (deny wins). Matching is by PREFIX
+# ("Clean Deploy ...") OR the explicit list — the prefix auto-covers every
+# clean-deploy template (prod names AND the "(Local)" variants) and any future
+# service, so the guardrail can't grow a hole when a service is added (the
+# data.json list alone once silently missed ERPNext, the financial system-of-record).
 deny if {
 	input.service == "semaphore"
 	input.action == "run_task"
-	input.template_name in data.agentcloud.catalog.semaphore.destructive_templates
 	not input.human_approved
+	_destructive(input.template_name)
 }
+
+_destructive(t) if startswith(t, "Clean Deploy")
+
+_destructive(t) if t in data.agentcloud.catalog.semaphore.destructive_templates
 
 # Allow when the agent's per-service action list (data.json) permits the action.
 # An unknown agent/service/action makes the lookup undefined -> rule fails ->

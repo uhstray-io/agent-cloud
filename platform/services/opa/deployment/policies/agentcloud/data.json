@@ -25,6 +25,7 @@
         "Clean Deploy NocoDB",
         "Clean Deploy n8n",
         "Clean Deploy OPA",
+        "Clean Deploy ERPNext",
         "Wipe and Rebuild"
       ]
     }

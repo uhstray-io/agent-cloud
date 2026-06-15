@@ -38,6 +38,29 @@ test_destructive_template_allowed_with_approval if {
 	}
 }
 
+# ERPNext (financial system-of-record) clean-deploy must be blocked too — the
+# prefix rule covers it even though it was once missing from the explicit list.
+test_clean_deploy_erpnext_blocked if {
+	not agentcloud.allow with input as {
+		"agent": "nemoclaw",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": "Clean Deploy ERPNext",
+		"human_approved": false,
+	}
+}
+
+# The "(Local)" template-name variant is blocked by the prefix rule as well.
+test_clean_deploy_local_variant_blocked if {
+	not agentcloud.allow with input as {
+		"agent": "nemoclaw",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": "Clean Deploy ERPNext (Local)",
+		"human_approved": false,
+	}
+}
+
 test_unknown_agent_denied if {
 	not agentcloud.allow with input as {"agent": "rogue-agent", "action": "read", "service": "nocodb"}
 }
