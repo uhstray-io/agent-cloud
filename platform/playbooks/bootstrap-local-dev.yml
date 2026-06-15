@@ -331,6 +331,11 @@
         success_msg: "podman-compose: {{ _pc.stdout | trim }}"
 
     - name: "Genesis-deploy the secure foundation in dependency order"
+      # Shell-out to ansible-playbook (not import_playbook): import_playbook is a
+      # parse-time, un-loopable static include — it can't take per-run -e vars
+      # (local_compose_cmd) or this play's runtime AppRole creds. The command
+      # module surfaces the child's stdout/stderr on failure, so a deploy.sh error
+      # stays diagnosable (validated). Each deploy-<svc>.yml runs un-forked.
       ansible.builtin.command:
         cmd: >-
           ansible-playbook -i {{ _inv_file }}
@@ -413,13 +418,16 @@
     - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
       # SSL_CERT_FILE REPLACES the whole container trust store, so the bundle MUST
       # carry the PUBLIC roots too — otherwise apk/pip/ansible-galaxy (public TLS)
-      # break with cert-verify errors. Public roots come from the Semaphore image
-      # itself (exact set the container expects); the step-ca root is appended so
-      # Go ALSO trusts Caddy's internal auth.<zone> leaf for OIDC discovery/JWKS.
+      # break with cert-verify errors. Both reads come from the already-running
+      # step-ca (deployed earlier in the genesis loop, so always up under the
+      # _oidc_ready gate): its image ships a full public CA set, and root_ca.crt is
+      # the internal root Go must trust for Caddy's auth.<zone> leaf (OIDC JWKS).
+      # Reading from step-ca avoids a throwaway `podman run` of the Semaphore image
+      # on every warm re-run and keeps the bundle always-fresh (no stale cache).
       ansible.builtin.shell: |
         set -o pipefail
         {
-          podman run --rm {{ _sem_image }} cat /etc/ssl/certs/ca-certificates.crt
+          podman exec step-ca cat /etc/ssl/certs/ca-certificates.crt
           podman exec step-ca cat /home/step/certs/root_ca.crt
         } > {{ _state_dir }}/step-ca-bundle.crt
       register: _bundle
