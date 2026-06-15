@@ -34,6 +34,10 @@
     # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
     # this -i so they pick up the foundation host groups + genesis path vars.
     _inv_file: "{{ playbook_dir }}/../inventory/local-dev.yml"
+    # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
+    # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
+    # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
+    _stepca_name: step-ca
     _net: local-dev
     _bao_name: local-openbao
     _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:latest') }}"
@@ -363,7 +367,7 @@
     # mapping; promote OIDC admins by hand).
     - name: "Detect OIDC dependencies (step-ca + authentik up)"
       ansible.builtin.shell: >-
-        podman container exists step-ca && podman container exists authentik-server
+        podman container exists {{ _stepca_name }} && podman container exists authentik-server
         && echo ready || echo notready
       register: _oidc_deps
       changed_when: false
@@ -424,11 +428,14 @@
       # the internal root Go must trust for Caddy's auth.<zone> leaf (OIDC JWKS).
       # Reading from step-ca avoids a throwaway `podman run` of the Semaphore image
       # on every warm re-run and keeps the bundle always-fresh (no stale cache).
+      # (tasks/distribute-ca-root.yml is the canonical reader for the service-side
+      # case — it builds a root+intermediate bundle into a service certs dir; here
+      # we need public-roots+root for SSL_CERT_FILE, so it can't be reused as-is.)
       ansible.builtin.shell: |
         set -o pipefail
         {
-          podman exec step-ca cat /etc/ssl/certs/ca-certificates.crt
-          podman exec step-ca cat /home/step/certs/root_ca.crt
+          podman exec {{ _stepca_name }} cat /etc/ssl/certs/ca-certificates.crt
+          podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt
         } > {{ _state_dir }}/step-ca-bundle.crt
       register: _bundle
       changed_when: true
