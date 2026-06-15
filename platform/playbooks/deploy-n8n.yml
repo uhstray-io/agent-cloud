@@ -30,6 +30,10 @@
       - { name: db_admin_password, type: random, length: 32 }
       - { name: db_user_password, type: random, length: 32 }
       - { name: encryption_key, type: random, length: 48 }
+      # n8n owner account (agent-cloud-admin). Community n8n has no SSO — Caddy
+      # forward_auth gates ACCESS, but n8n still needs its own owner or it shows
+      # /setup. Seeded in Phase 3 so an SSO'd admin lands on a ready instance.
+      - { name: owner_password, type: random, length: 24 }
     _env_templates:
       - { src: n8n.env.j2, dest: .env, mode: "0600" }
 
@@ -73,17 +77,68 @@
   vars:
     # Reachable by container name on local-dev (this play runs in the Semaphore
     # container); prod overrides with the n8n host URL.
-    _n8n_health: "{{ n8n_health_url | default('http://workflow-n8n:5678/healthz') }}"
+    _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
+    _owner_email: "agent-cloud-admin@{{ dev_zone | default('agent-cloud.test') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
     - name: "n8n health (/healthz -> 200)"
       ansible.builtin.uri:
-        url: "{{ _n8n_health }}"
+        url: "{{ _n8n_base }}/healthz"
         status_code: [200]
       register: _n8n
       retries: 12
       delay: 5
       until: _n8n.status == 200
+
+    # Community n8n has no SSO: forward_auth gates ACCESS, then n8n needs its own
+    # owner account or it serves /setup. Seed agent-cloud-admin as the owner so an
+    # SSO'd admin lands ready. Idempotent: only runs when n8n still wants setup,
+    # so re-deploys never clobber an existing owner. Password from OpenBao.
+    - name: "Check whether n8n still needs owner setup"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/rest/settings"
+        status_code: [200]
+      register: _n8n_settings
+
+    - name: "Seed the n8n owner account (agent-cloud-admin)"
+      when: _n8n_settings.json.data.userManagement.showSetupOnFirstLoad | default(false) | bool
+      block:
+        - name: "Authenticate to OpenBao (AppRole)"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+          register: _bao_login
+          no_log: true
+
+        - name: "Read the n8n owner password from OpenBao"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/n8n"
+            headers:
+              X-Vault-Token: "{{ _bao_login.json.auth.client_token }}"
+          register: _n8n_secret
+          no_log: true
+
+        - name: "Create the n8n owner via the setup endpoint"
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/rest/owner/setup"
+            method: POST
+            body_format: json
+            body:
+              email: "{{ _owner_email }}"
+              firstName: agent-cloud
+              lastName: Admin
+              password: "{{ _n8n_secret.json.data.data.owner_password }}"
+            status_code: [200]
+          no_log: true
+
+        - name: "Owner seeded"
+          ansible.builtin.debug:
+            msg: "n8n owner created: {{ _owner_email }} (reach n8n through forward_auth, then log in)."
 
     - name: "Report"
       ansible.builtin.debug:
