@@ -1,0 +1,35 @@
+# Authentik blueprint — the agent-cloud-admin user (config-as-code).
+#
+# akadmin is the break-glass BOOTSTRAP superuser (first-boot provisioning only).
+# THIS is the day-to-day admin: a real user that is a MEMBER of platform-admins,
+# so every SSO'd app grants it top access via the group contract
+# (platform-groups.yaml) — NetBox superuser+staff, Grafana Admin, OpenBao admin
+# policy, etc. The distinction matters: akadmin is an Authentik superuser but is
+# NOT in platform-admins, so its OIDC/forward_auth group claim is empty and apps
+# that gate on the GROUP (not Authentik-superuser) reject it. agent-cloud-admin
+# carries platform-admins in its claims, so it actually gets in everywhere.
+#
+# Password comes from OpenBao via the worker env (AGENT_CLOUD_ADMIN_PASSWORD,
+# templated by deploy-authentik env.j2). Generated once + reused, so re-applying
+# this blueprint is idempotent. Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+version: 1
+metadata:
+  name: agent-cloud - admin user
+context:
+  agent_cloud_admin_email: agent-cloud-admin@agent-cloud.test
+entries:
+  - model: authentik_core.user
+    identifiers:
+      username: agent-cloud-admin
+    attrs:
+      name: agent-cloud Admin
+      email: !Context agent_cloud_admin_email
+      is_active: true
+      path: users
+      # Set on apply; the value is the OpenBao-managed AGENT_CLOUD_ADMIN_PASSWORD
+      # in the worker's env. Re-apply with the same value -> idempotent.
+      password: !Env AGENT_CLOUD_ADMIN_PASSWORD
+      # Membership in platform-admins (is_superuser group) is what every app maps
+      # to its top role. This is the one line that makes SSO grant real access.
+      groups:
+        - !Find [authentik_core.group, [name, platform-admins]]

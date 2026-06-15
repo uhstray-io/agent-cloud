@@ -93,6 +93,17 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "agent-cloud-admin user-seed blueprint puts the daily admin in platform-admins" {
+  bp="$REPO_ROOT/platform/services/authentik/deployment/blueprints/agent-cloud-admin.yaml"
+  [ -f "$bp" ]
+  run grep -q "username: agent-cloud-admin" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "name, platform-admins" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "AGENT_CLOUD_ADMIN_PASSWORD" "$bp"; [ "$status" -eq 0 ]
+  # password sourced from OpenBao via deploy-authentik + env.j2
+  run grep -q "agent_cloud_admin_password" "$PB/deploy-authentik.yml"; [ "$status" -eq 0 ]
+  run grep -q "AGENT_CLOUD_ADMIN_PASSWORD" "$REPO_ROOT/platform/services/authentik/deployment/templates/env.j2"; [ "$status" -eq 0 ]
+}
+
 @test "https forwarder runs from a non-TCC system path, not the repo (~/Documents)" {
   # a root LaunchDaemon can't exec a script under a TCC-protected ~/ dir
   run grep -q '_FORWARDER_BIN="/usr/local/bin/' "$REPO_ROOT/scripts/local-dev.sh"

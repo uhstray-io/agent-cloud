@@ -167,14 +167,20 @@ validate() {
   _run_template "platform/playbooks/validate-all.yml"
 }
 
-# Show the Authentik admin login so the developer can test SSO/login in the
-# browser. The bootstrap password is read live from OpenBao (the source of
-# truth) via the local-semaphore AppRole — never stored in a second place. It's
-# a local-only break-glass superuser on the dev's own machine, so printing it is
-# the point. ASCII-only output (CI rejects Unicode box-drawing characters).
+# Show the Authentik SSO logins so the developer can test login/access in the
+# browser. Passwords are read live from OpenBao (the source of truth) via the
+# local-semaphore AppRole — never stored in a second place. Two accounts:
+#   agent-cloud-admin — the DAY-TO-DAY admin; member of platform-admins, so every
+#                       SSO'd app maps it to its top role (NetBox superuser,
+#                       Grafana Admin, ...). Use this to log into the apps.
+#   akadmin           — break-glass BOOTSTRAP superuser; administers Authentik
+#                       itself but is NOT in platform-admins, so apps that gate on
+#                       the group claim don't grant it access.
+# Local-only creds on the dev's own machine, so printing them is the point.
+# ASCII-only output (CI rejects Unicode box-drawing characters).
 creds() {
   _load_state
-  local zone tok pw
+  local zone tok admin_pw boot_pw
   zone=$(ansible-inventory -i "$INV" --host dns-local 2>/dev/null \
         | python3 -c "import json,sys;print(json.load(sys.stdin).get('dns_zone','agent-cloud.test'))" 2>/dev/null)
   [ -n "$zone" ] || zone="agent-cloud.test"
@@ -183,26 +189,30 @@ creds() {
         "${BAO_ADDR}/v1/auth/approle/login" 2>/dev/null \
         | python3 -c "import json,sys;print(json.load(sys.stdin)['auth']['client_token'])" 2>/dev/null) || true
   [ -n "${tok:-}" ] || die "OpenBao AppRole login failed — is the stack up? (make local-bootstrap)"
-  pw=$(curl -sf -H "X-Vault-Token: ${tok}" "${BAO_ADDR}/v1/secret/data/services/authentik" 2>/dev/null \
-      | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('bootstrap_password',''))" 2>/dev/null) || true
-  [ -n "${pw:-}" ] || die "authentik bootstrap_password not in OpenBao — is authentik deployed? (make local-deploy-authentik)"
+  local secret; secret=$(curl -sf -H "X-Vault-Token: ${tok}" "${BAO_ADDR}/v1/secret/data/services/authentik" 2>/dev/null) || true
+  admin_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('agent_cloud_admin_password',''))" 2>/dev/null) || true
+  boot_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('bootstrap_password',''))" 2>/dev/null) || true
+  [ -n "${boot_pw:-}" ] || die "authentik secrets not in OpenBao — is authentik deployed? (make local-deploy-authentik)"
   cat <<EOF
 
   =====================================================================
-   Authentik -- browser SSO login (the platform IdP)
+   Authentik SSO -- browser logins (IdP: https://auth.${zone}:8443/)
   ---------------------------------------------------------------------
-   URL:       https://auth.${zone}:8443/
-   Username:  akadmin
-   Password:  ${pw}
+   PRIMARY -- full access to every app (member of platform-admins):
+     Username:  agent-cloud-admin
+     Password:  ${admin_pw:-<not seeded yet — re-run make local-deploy-authentik>}
 
-   Local-only bootstrap superuser (break-glass; bypasses the platform
-   gate). Log in here, then SSO / forward-auth carries you into the apps:
-     Semaphore  https://semaphore.${zone}:8443/
-     Grafana    https://grafana.${zone}:8443/
-     ERPNext    https://erp.${zone}:8443/
-     NetBox     https://netbox.${zone}:8443/
-     OpenBao    https://openbao.${zone}:8443/
-     n8n        https://n8n.${zone}:8443/
+   Break-glass -- administers Authentik itself; NOT mapped to app access:
+     Username:  akadmin
+     Password:  ${boot_pw}
+  ---------------------------------------------------------------------
+   Log in as agent-cloud-admin, then reach the apps:
+     OIDC:         Semaphore  https://semaphore.${zone}:8443/
+                   Grafana    https://grafana.${zone}:8443/
+                   ERPNext    https://erp.${zone}:8443/
+     forward_auth: NetBox     https://netbox.${zone}:8443/
+                   OpenBao    https://openbao.${zone}:8443/
+                   n8n        https://n8n.${zone}:8443/
   =====================================================================
    (resolves + trusts TLS after: make local-dns-resolver  make local-tls-trust)
 EOF
