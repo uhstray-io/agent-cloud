@@ -34,6 +34,11 @@ supplied per-query in `input` — never stored in OPA.
   redeploy (git pull + restart). Rego is tested with `opa test /policies`.
 - Not behind Caddy: OPA is a programmatic decision API (no UI), queried by
   container name, so it has no `*.agent-cloud.test` route.
+- **Intentionally excluded from Authentik SSO.** OPA is a machine API, not a
+  human-login surface — there is no forward_auth/OIDC gate (unlike NetBox/
+  OpenBao/n8n which are browser-facing). Authorization for OPA is per-agent
+  bearer tokens from OpenBao (Phase 2), not an IdP login. Documented here so the
+  "no SSO" state reads as a decision, not an oversight (AUTH-SSO-DEPLOYMENT.md).
 
 ## Policy modules
 
