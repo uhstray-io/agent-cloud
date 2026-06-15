@@ -29,3 +29,17 @@ setup() {
     [ "$status" -eq 0 ] || { echo "deploy-${svc}.yml missing COMPOSE_CMD passthrough"; return 1; }
   done
 }
+
+# ── §12A order: foundation genesis-deployed before Semaphore ─────────────────
+@test "bootstrap genesis-deploys the foundation before Semaphore starts" {
+  bp="$PB/bootstrap-local-dev.yml"
+  foundation=$(grep -n "Genesis-deploy the secure foundation" "$bp" | head -1 | cut -d: -f1)
+  semaphore=$(grep -n "Start local Semaphore" "$bp" | head -1 | cut -d: -f1)
+  [ -n "$foundation" ] && [ -n "$semaphore" ]
+  [ "$foundation" -lt "$semaphore" ]
+}
+
+@test "genesis loop covers dns step-ca caddy authentik in dependency order" {
+  run grep -E "loop: \[dns, step-ca, caddy, authentik\]" "$PB/bootstrap-local-dev.yml"
+  [ "$status" -eq 0 ]
+}

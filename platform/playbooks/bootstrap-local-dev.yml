@@ -30,6 +30,10 @@
   vars:
     _bootstrap_play: true
     _state_dir: "{{ lookup('env', 'HOME') }}/.agent-cloud-local"
+    # Working inventory (committed example -> gitignored copy via `make local-init`).
+    # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
+    # this -i so they pick up the foundation host groups + genesis path vars.
+    _inv_file: "{{ playbook_dir }}/../inventory/local-dev.yml"
     _net: local-dev
     _bao_name: local-openbao
     _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:latest') }}"
@@ -295,6 +299,41 @@
         headers: *bao_root_hdr
         status_code: [200]
       register: _secret_id
+
+    # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
+    # §12A: the secure foundation comes up directly here — dns → step-ca →
+    # caddy → authentik (dependency order) — so Semaphore can boot LAST already
+    # OIDC-secured (its trust + issuer exist). Each runs its EXISTING composable
+    # deploy-<svc>.yml UN-FORKED on localhost (connection: local), driven by:
+    #   * the bootstrap's BAO AppRole creds in env — these reach OpenBao at the
+    #     Mac-side 127.0.0.1:8200 (the inventory's openbao_addr) and double as
+    #     the orchestration marker assert-orchestrated accepts (BAO_ROLE_ID);
+    #   * COMPOSE_CMD forced to podman-compose (§12A fix #1, via local_compose_cmd);
+    #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
+    # No no_log here — deploys + their verify phases must stay diagnosable
+    # (CLAUDE.md: scope no_log to credential tasks only).
+    - name: "Discover podman-compose on the Mac (forces the compose provider)"
+      # Genesis REQUIRES podman-compose — fail loud rather than let detect_runtime
+      # fall back to `podman compose` (docker-compose) and hit the label mismatch.
+      ansible.builtin.command: command -v podman-compose
+      register: _pc
+      changed_when: false
+
+    - name: "Genesis-deploy the secure foundation in dependency order"
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook -i {{ _inv_file }}
+          {{ playbook_dir }}/deploy-{{ item }}.yml
+          -e local_compose_cmd={{ _pc.stdout | trim }}
+      environment:
+        BAO_ADDR: "{{ _bao_url_host }}"
+        OPENBAO_ADDR: "{{ _bao_url_host }}"
+        BAO_ROLE_ID: "{{ _role_id.json.data.role_id }}"
+        BAO_SECRET_ID: "{{ _secret_id.json.data.secret_id }}"
+        CONTAINER_ENGINE: podman
+      loop: [dns, step-ca, caddy, authentik]
+      register: _genesis
+      changed_when: true
 
     # ── Stage 2: Semaphore (SQLite slim profile) ────────────────────────
     # The VM's rootful podman socket is mounted in so Semaphore-run deploy
