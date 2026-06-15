@@ -335,9 +335,99 @@
       register: _genesis
       changed_when: true
 
-    # ── Stage 2: Semaphore (SQLite slim profile) ────────────────────────
+    # ── Stage 2: Semaphore — boots LAST, OIDC-secured (§12A) ────────────
     # The VM's rootful podman socket is mounted in so Semaphore-run deploy
     # tasks can drive podman remotely (CONTAINER_HOST in the environment).
+    #
+    # OIDC is wired only when its deps exist (step-ca trust + the Authentik
+    # issuer, both genesis-deployed in Stage 1.5). Absent on a first mid-build
+    # pass -> Semaphore still boots WITHOUT OIDC (FAIL-SAFE: the control plane
+    # must never be left unbootable). The local admin login is always retained
+    # as the fallback (OIDC users are non-admin — Semaphore has no group->role
+    # mapping; promote OIDC admins by hand).
+    - name: "Detect OIDC dependencies (step-ca + authentik up)"
+      ansible.builtin.shell: >-
+        podman container exists step-ca && podman container exists authentik-server
+        && echo ready || echo notready
+      register: _oidc_deps
+      changed_when: false
+
+    - name: "Read the Semaphore OIDC client secret from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/authentik"
+        headers: *bao_root_hdr
+        status_code: [200, 404]
+      register: _ak_secret
+      when: _oidc_deps.stdout | trim == 'ready'
+      no_log: true
+
+    - name: "Build SEMAPHORE_OIDC_PROVIDERS (inner-map JSON, keyed 'authentik')"
+      # provider_url is the Authentik issuer for OIDC auto-discovery; redirect_url
+      # is Semaphore's native callback /api/auth/oidc/<key>/redirect (key matches
+      # the semaphore-oidc.yaml blueprint). Both use :8443 — the in-network port
+      # Caddy also listens on (caddy_routes internal_https_port), reachable from
+      # local-semaphore via Caddy's `auth.<zone>` network alias.
+      vars:
+        _zone: "{{ dev_zone | default('agent-cloud.test') }}"
+        _client_secret: "{{ _ak_secret.json.data.data.semaphore_oidc_client_secret | default('') }}"
+        _oidc_map:
+          authentik:
+            display_name: Authentik
+            provider_url: "https://auth.{{ _zone }}:8443/application/o/semaphore/"
+            client_id: semaphore
+            client_secret: "{{ _client_secret }}"
+            redirect_url: "https://semaphore.{{ _zone }}:8443/api/auth/oidc/authentik/redirect"
+            username_claim: preferred_username
+            scopes: [openid, profile, email]
+      ansible.builtin.set_fact:
+        _sem_oidc_json: "{{ _oidc_map | to_json }}"
+      when:
+        - _oidc_deps.stdout | trim == 'ready'
+        - _client_secret | length > 0
+      no_log: true
+
+    - name: "jq-validate the OIDC JSON (a malformed value panics Semaphore at boot)"
+      ansible.builtin.command: jq -e .
+      args:
+        stdin: "{{ _sem_oidc_json }}"
+      register: _jq
+      changed_when: false
+      when: _sem_oidc_json is defined
+      no_log: true
+
+    - name: "Mark OIDC ready (deps up + validated JSON present)"
+      ansible.builtin.set_fact:
+        _oidc_ready: "{{ _sem_oidc_json is defined }}"
+
+    - name: "Export the step-ca root bundle for Semaphore TLS trust"
+      # Go verifies the ID-token JWKS + discovery over TLS using SSL_CERT_FILE;
+      # the step-ca root is what signs Caddy's auth.<zone> wildcard leaf.
+      ansible.builtin.shell: >-
+        podman exec step-ca cat /home/step/certs/root_ca.crt > {{ _state_dir }}/step-ca-bundle.crt
+      register: _bundle
+      changed_when: true
+      when: _oidc_ready | bool
+
+    - name: "Write the Semaphore OIDC env-file (0600) — avoids shell-quoting the JSON"
+      ansible.builtin.copy:
+        dest: "{{ _state_dir }}/semaphore-oidc.env"
+        mode: "0600"
+        content: "SEMAPHORE_OIDC_PROVIDERS={{ _sem_oidc_json }}\n"
+      when: _oidc_ready | bool
+      no_log: true
+
+    - name: "Compose Semaphore OIDC/TLS run flags (empty when not ready)"
+      # --env-file is read client-side by podman (Mac), so the file lives in the
+      # state dir; the bundle bind-mounts from the same $HOME-anchored dir, which
+      # podman-machine surfaces in the VM at the identical path.
+      ansible.builtin.set_fact:
+        _sem_oidc_flags: >-
+          {{ ('--env-file ' ~ _state_dir ~ '/semaphore-oidc.env '
+              ~ '-v ' ~ _state_dir ~ '/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro '
+              ~ '-e SSL_CERT_FILE=/etc/ssl/certs/step-ca-bundle.crt '
+              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':8443 ')
+             if (_oidc_ready | bool) else '' }}
+
     - name: "Ensure the shared deploy dir exists on the VM"
       # Created on the VM (not the container) so the same absolute path can be
       # mounted into Semaphore — see _deploy_share rationale above. 1777 lets the
@@ -354,6 +444,7 @@
         if podman container exists {{ _sem_name }}; then
           MOUNTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Destination{{ "}}" }} {{ "{{" }}end{{ "}}" }}')
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
+          ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
           if ! echo "$MOUNTS" | grep -q '/run/podman/podman.sock' || \
              ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
              ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
@@ -362,8 +453,19 @@
             echo recreated
             exit 0
           fi
+          # A Semaphore that predates OIDC is recreated once the deps are up so it
+          # boots OIDC-secured (the warm-upgrade path on a live stack). WANT_OIDC
+          # comes from the environment below, keeping jinja out of the shell
+          # condition (inline jinja in a shell brace-group broke the arg splitter).
+          if [ "$WANT_OIDC" = "true" ] && ! echo "$ENV" | grep -q 'SSL_CERT_FILE'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
         fi
         echo ok
+      environment:
+        WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
       register: _sem_recreate
       changed_when: "_sem_recreate.stdout | trim == 'recreated'"
 
@@ -378,6 +480,7 @@
             -v {{ _repo_host_dir }}:{{ _repo_mount }}:ro \
             -v {{ _deploy_share }}:{{ _deploy_share }} \
             --security-opt label=disable \
+            {{ _sem_oidc_flags }} \
             -e SEMAPHORE_DB_DIALECT=sqlite \
             -e SEMAPHORE_ADMIN={{ _sem_admin }} \
             -e SEMAPHORE_ADMIN_PASSWORD={{ _sem_admin_password }} \

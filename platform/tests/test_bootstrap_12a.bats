@@ -43,3 +43,19 @@ setup() {
   run grep -E "loop: \[dns, step-ca, caddy, authentik\]" "$PB/bootstrap-local-dev.yml"
   [ "$status" -eq 0 ]
 }
+
+# ── §12A: Semaphore boots last, OIDC-secured + fail-safe ─────────────────────
+@test "Semaphore start carries fail-safe OIDC env (jq-validated + step-ca trust)" {
+  bp="$PB/bootstrap-local-dev.yml"
+  run grep -q "SEMAPHORE_OIDC_PROVIDERS" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "jq-validate the OIDC JSON" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "SSL_CERT_FILE" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "SEMAPHORE_WEB_ROOT" "$bp"; [ "$status" -eq 0 ]
+}
+
+@test "OIDC is gated on deps being ready (fail-safe: Semaphore boots without it)" {
+  bp="$PB/bootstrap-local-dev.yml"
+  # the OIDC run flags are empty unless _oidc_ready
+  run grep -q "if (_oidc_ready | bool) else ''" "$bp"
+  [ "$status" -eq 0 ]
+}
