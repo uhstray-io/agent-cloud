@@ -27,5 +27,15 @@ services:
     volumes:
       - ./certs:/etc/caddy/certs:ro
     networks:
-      - default
-      - local-dev
+      default:
+      # Resolve the IdP's PUBLIC hostname to Caddy on the internal network, so
+      # OIDC clients that make server-side token/userinfo calls (ERPNext/NetBox/
+      # Semaphore — none support Grafana-style split browser/server URLs) reach
+      # the IdP at the SAME https://auth.agent-cloud.test:8443 the browser uses.
+      # Caddy's step-ca wildcard cert covers auth.agent-cloud.test, so TLS
+      # verifies once the client trusts the step-ca root (the other half of the
+      # OIDC-reachability enabler). Foundational + reusable across every OIDC
+      # service (AUTH-SSO-DEPLOYMENT.md). Local zone is fixed in this overlay.
+      local-dev:
+        aliases:
+          - auth.agent-cloud.test
