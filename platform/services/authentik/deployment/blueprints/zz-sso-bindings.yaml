@@ -109,3 +109,12 @@ entries:
       order: 0
     attrs:
       enabled: true
+  # OpenBao native OIDC login app (separate from the forward_auth proxy app
+  # `openbao` above). platform-user is denied here too.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, openbao-oidc]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true

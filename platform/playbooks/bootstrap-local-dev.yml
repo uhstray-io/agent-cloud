@@ -421,6 +421,88 @@
       ansible.builtin.set_fact:
         _oidc_ready: "{{ _sem_oidc_json is defined }}"
 
+    # ── Stage 2a: OpenBao native OIDC login (platform-admins) ───────────
+    # OpenBao keeps its forward_auth network gate (slug `openbao`); this adds
+    # native OIDC login (Authentik app `openbao-oidc`) so an SSO'd admin maps to
+    # an OpenBao policy instead of needing the root token. Configured here (not a
+    # deploy) because OpenBao is bootstrapped directly; gated on _oidc_ready
+    # (Authentik up + secrets present). LOCAL-DEV scope: the role grants the admin
+    # policy to any OIDC user via token_policies — everyone reaching this login
+    # already passed forward_auth (platform-admins/developers). groups_claim is set
+    # so a prod follow-up can swap to external-group -> policy mapping.
+    - name: "Read the step-ca root for OpenBao's OIDC discovery trust"
+      ansible.builtin.command: "podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt"
+      register: _stepca_root
+      changed_when: false
+      when: _oidc_ready | bool
+
+    - name: "Enable the OpenBao oidc auth method (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/auth/oidc"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body: { type: oidc }
+        status_code: [200, 204, 400]   # 400 = already enabled
+      when: _oidc_ready | bool
+      changed_when: true
+
+    - name: "Write the OpenBao admin policy (platform-admin)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/policies/acl/platform-admin"
+        method: PUT
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          policy: |
+            path "*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
+        status_code: [200, 204]
+      when: _oidc_ready | bool
+      changed_when: true
+
+    - name: "Configure OpenBao auth/oidc against Authentik (validates discovery)"
+      # Validates by fetching the discovery doc — proves Authentik is reachable at
+      # auth.<zone>:8443 (Caddy alias on local-dev) and step-ca is trusted via the
+      # ca_pem. Retries cover the openbao-oidc app/discovery lag after first boot.
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/oidc/config"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:8443/application/o/openbao-oidc/"
+          oidc_discovery_ca_pem: "{{ _stepca_root.stdout }}"
+          oidc_client_id: openbao
+          oidc_client_secret: "{{ _ak_secret.json.data.data.openbao_oidc_client_secret }}"
+          default_role: platform-admins
+        status_code: [200, 204]
+      register: _bao_oidc_cfg
+      when: _oidc_ready | bool
+      retries: 5
+      delay: 6
+      until: _bao_oidc_cfg.status is defined and _bao_oidc_cfg.status in [200, 204]
+      no_log: true
+
+    - name: "Write the OpenBao oidc role (platform-admins -> admin policy)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/oidc/role/platform-admins"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          user_claim: sub
+          groups_claim: groups
+          oidc_scopes: ["openid", "email", "profile"]
+          bound_audiences: ["openbao"]
+          allowed_redirect_uris:
+            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:8443/ui/vault/auth/oidc/oidc/callback"
+            - "http://localhost:8250/oidc/callback"
+          token_policies: ["platform-admin"]
+          token_ttl: 1h
+        status_code: [200, 204]
+      when: _oidc_ready | bool
+      changed_when: true
+
     - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
       # SSL_CERT_FILE REPLACES the whole container trust store, so the bundle MUST
       # carry the PUBLIC roots too — otherwise apk/pip/ansible-galaxy (public TLS)

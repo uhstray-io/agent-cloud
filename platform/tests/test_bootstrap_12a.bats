@@ -95,6 +95,16 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "bootstrap configures OpenBao native OIDC (auth/oidc + role + policy)" {
+  bp="$PB/bootstrap-local-dev.yml"
+  run grep -q "auth/oidc/config" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "auth/oidc/role/platform-admins" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "oidc_discovery_ca_pem" "$bp"; [ "$status" -eq 0 ]
+  # the Authentik-side OIDC provider/app for openbao
+  run grep -q "slug: openbao-oidc" "$REPO_ROOT/platform/services/authentik/deployment/blueprints/openbao-oidc.yaml"
+  [ "$status" -eq 0 ]
+}
+
 @test "bootstrap pre-creates agent-cloud-admin as a Semaphore global admin" {
   # OIDC users land non-admin; pre-creating an external admin user makes the SSO
   # login link to it and see all projects.

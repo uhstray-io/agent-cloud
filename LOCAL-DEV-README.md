@@ -205,9 +205,9 @@ to Authentik and back.
 - **n8n** — community edition has **no SSO**: `forward_auth` gates *access*, then n8n
   has its **own** owner login, seeded as `agent-cloud-admin@agent-cloud.test` with a
   separate password (`make local-creds` shows it).
-- **OpenBao** — `forward_auth` gates the UI; logging into OpenBao *itself* is by token
-  / AppRole today (the escrowed root token is in `~/.agent-cloud-local/openbao-init.json`).
-  Native OpenBao OIDC login is a planned enhancement.
+- **OpenBao** — `forward_auth` gates the UI; once through, pick the **OIDC** login
+  method (`agent-cloud-admin` → the `platform-admin` policy). Token / AppRole still
+  works too (the escrowed root token is in `~/.agent-cloud-local/openbao-init.json`).
 
 ---
 

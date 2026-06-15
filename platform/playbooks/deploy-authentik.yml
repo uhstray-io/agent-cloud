@@ -38,6 +38,7 @@
       - { name: grafana_oidc_client_secret, type: random, length: 40 }
       - { name: erpnext_oidc_client_secret, type: random, length: 40 }
       - { name: semaphore_oidc_client_secret, type: random, length: 40 }
+      - { name: openbao_oidc_client_secret, type: random, length: 40 }
       # Day-to-day admin user (agent-cloud-admin.yaml blueprint), member of
       # platform-admins -> top role in every SSO'd app. Worker reads it via !Env.
       - { name: agent_cloud_admin_password, type: random, length: 32 }

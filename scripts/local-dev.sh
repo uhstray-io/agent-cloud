@@ -218,7 +218,7 @@ creds() {
                    Grafana    https://grafana.${zone}:8443/
                    ERPNext    https://erp.${zone}:8443/
      forward_auth: NetBox     https://netbox.${zone}:8443/
-                   OpenBao    https://openbao.${zone}:8443/   (OIDC login WIP)
+                   OpenBao    https://openbao.${zone}:8443/   (then pick "OIDC" login)
                    n8n        https://n8n.${zone}:8443/
   ---------------------------------------------------------------------
    n8n is community edition (no SSO): pass forward_auth as agent-cloud-admin,
