@@ -12,13 +12,13 @@
 > 2. **ACME challenge = `tls-alpn-01`, not a spike.** In-network `http-01` is unviable (containers don't resolve `*.agent-cloud.test`); wildcards need `dns-01` (DNS plan Phase 2, unbuilt). Use per-host `tls-alpn-01` (step-ca → Caddy on 443, same container, no DNS round-trip); wildcard support is out of scope until DNS Phase 2. Also: the step-ca root cert must be rendered into Caddy's deploy dir (via `manage-secrets`, same-path shared mount) before Caddy starts — a deploy-ordering dependency, not a runtime one.
 > **Context:** Today Caddy is its own throwaway CA (`local_certs`) — the root is ephemeral (regenerated on a `caddy-data` wipe) and per-instance (local ≠ prod, dev ≠ dev), so every machine/redeploy re-trusts a *different* root. This plan replaces that with a **dedicated internal CA — `step-ca` (Smallstep)** — as a composable platform service: one **stable** root, issued to Caddy and any service via ACME, trusted **once** per client and **reusable across local-dev, prod, and every developer**.
 >
-> **For agentic workers:** Execute phase-by-phase; every phase ends at a validation gate. The root certificate is non-secret (distributable); only the root **key** is a secret (OpenBao). Real domains/IPs stay in site-config.
+> **For agentic workers:** Execute phase-by-phase; every phase ends at a validation gate. The root certificate is non-secret (distributable); the root **key** is the secret — encrypted at rest in the `step-ca-data` volume, with its decryption password in OpenBao. Real domains/IPs stay in site-config.
 
 **Goal:** A single, stable, platform-managed internal CA whose root is trusted once per client and which issues short-lived leaf certs to every internal service (Caddy first) via ACME — so `https://*.agent-cloud.test` (local) and `https://*.<internal-zone>` (prod) are trusted with no per-instance, per-machine churn.
 
-**Architecture:** `step-ca` runs as a composable service holding a stable root + intermediate (root key sealed in OpenBao, online intermediate signs leaves). Caddy becomes an **ACME client** of step-ca (`acme_ca` + `acme_ca_root`) instead of self-signing. Clients trust the **step-ca root** once (the existing `make local-tls-trust` tooling adapts to extract+trust *that* root). The same CA serves prod.
+**Architecture:** `step-ca` runs as a composable service holding a stable root + intermediate (root + intermediate keys encrypted at rest in the `step-ca-data` volume; OpenBao holds the key-decryption password + provisioner secrets; the online intermediate signs leaves). Caddy becomes an **ACME client** of step-ca (`acme_ca` + `acme_ca_root`) instead of self-signing — locally, a single token-minted wildcard (see line 8). Clients trust the **step-ca root** once (the existing `make local-tls-trust` tooling adapts to extract+trust *that* root). The same CA serves prod.
 
-**Tech stack:** step-ca (Smallstep) container, ACME provisioner, Caddy ACME client, OpenBao (root key + provisioner secrets), composable Ansible tasks, the existing `local-dev.sh` trust tooling.
+**Tech stack:** step-ca (Smallstep) container, ACME provisioner, Caddy ACME client, OpenBao (key-decryption password + provisioner secrets — NOT the key bytes), composable Ansible tasks, the existing `local-dev.sh` trust tooling.
 
 ---
 
@@ -32,13 +32,13 @@ When Phase 2's gate passes:
 
 - **One root, every environment.** The same step-ca root certificate is trusted on the laptop, on prod hosts, and by every developer — trust it once, it covers `*.agent-cloud.test` (local) and the internal zones (prod). No re-trust on Caddy redeploy / volume wipe.
 - **Caddy (and any service) gets certs via ACME from step-ca** — short-lived leaves, auto-renewed, no manual cert handling.
-- **The root is durable + managed.** Root key sealed in OpenBao (offline-ish; intermediate signs day-to-day), rotation is a documented procedure, the root cert is a committed/distributable artifact (non-secret).
+- **The root is durable + managed.** Keys encrypted at rest in the `step-ca-data` volume, the decryption password in OpenBao (intermediate signs day-to-day), rotation is a documented procedure, the root cert is a committed/distributable artifact (non-secret).
 - **`make local-tls-trust` still one command** — now extracting + trusting the *step-ca* root (stable), so it's truly install-once.
 - **Prod internal TLS solved without public exposure** — the DNS plan's internal-zone TLS gap is filled by this CA (the alternative to Cloudflare DNS-01 for non-public names).
 
 ```mermaid
 flowchart LR
-  P0[P0<br/>step-ca service<br/>stable root+intermediate,<br/>root key -> OpenBao] --> P1[P1<br/>Caddy = ACME client of step-ca<br/>local; trust root; *.agent-cloud.test trusted]
+  P0[P0<br/>step-ca service<br/>stable root+intermediate,<br/>keys encrypted in volume,<br/>password -> OpenBao] --> P1[P1<br/>Caddy = ACME client of step-ca<br/>local; trust root; *.agent-cloud.test trusted]
   P1 --> P2[P2<br/>prod CA + internal zones]
   P2 --> P3[P3<br/>root distribution + rotation runbook]
 ```
@@ -51,17 +51,17 @@ Caddy's `local_certs` is convenient but its CA is (a) **ephemeral** — wiped wi
 
 | Option | Verdict | Why |
 |---|---|---|
-| **step-ca (Smallstep)** | **CHOSEN** — owner-directed | Purpose-built private CA + **ACME server**; Caddy is a first-class ACME client; root key sealable in OpenBao; short-lived leaves + auto-renew; one stable root reusable local+prod+multi-dev; self-hosted, Apache-2.0. The "CA inside the podman environment, robust + reusable" the owner asked for. |
+| **step-ca (Smallstep)** | **CHOSEN** — owner-directed | Purpose-built private CA + **ACME server**; Caddy is a first-class ACME client; keys encrypted at rest in the `step-ca-data` volume (decryption password in OpenBao); short-lived leaves + auto-renew; one stable root reusable local+prod+multi-dev; self-hosted, Apache-2.0. The "CA inside the podman environment, robust + reusable" the owner asked for. |
 | Caddy `local_certs` (current) | Superseded | Simple, zero extra service — but ephemeral + per-instance + unmanaged (§1). Fine as the *fallback* if step-ca is down; not the platform answer. |
 | mkcert | Rejected | Great for a single dev laptop, but it's a *local* tool — no shared/prod root, no ACME, no central management. Doesn't scale to a platform CA. |
 | Public ACME (Let's Encrypt, DNS-01) | Complementary, not this | Only for **publicly-resolvable** names (the prod public storefront/erp). Can't issue for LAN-only `*.agent-cloud.test`/internal zones — which is exactly what an internal CA is for. The two coexist: public ACME for public names, step-ca for internal. |
 | HashiCorp Vault PKI / OpenBao PKI | Viable alt, deferred | OpenBao *can* be a CA (PKI secrets engine) — attractive since OpenBao is already core. But it lacks a built-in ACME server as turnkey as step-ca's (ACME support is newer/less mature), and step-ca is purpose-built. **Recorded as the strongest alternative** — revisit if we'd rather not run a second CA component. |
 
-**Decision:** step-ca as a dedicated platform CA + ACME server; Caddy (and future services) are ACME clients; OpenBao holds the root key. (OpenBao-PKI is the fallback if we later consolidate.)
+**Decision:** step-ca as a dedicated platform CA + ACME server; Caddy (and future services) are ACME clients; OpenBao holds the key-decryption password + provisioner secrets (keys stay encrypted in the `step-ca-data` volume). (OpenBao-PKI is the fallback if we later consolidate.)
 
 ## 3. Design principles
 1. **One root, trusted once, everywhere.** The platform has a single internal root; trusting it is a one-time per-client fact, not a per-deploy chore.
-2. **Root key is the only secret; the root cert is public.** Seal the root *key* in OpenBao; the root *certificate* is a distributable artifact (committed/published for clients to trust).
+2. **Root key is the only secret; the root cert is public.** The root *key* stays encrypted at rest in the `step-ca-data` volume (its decryption password in OpenBao); the root *certificate* is a distributable artifact (committed/published for clients to trust).
 3. **Issue via ACME, short-lived + auto-renewed.** No manual cert files; Caddy and services renew automatically. Leaves are short-lived; compromise window is small.
 4. **Same CA, every environment.** Local and prod use the same step-ca deployment pattern + (ideally) the same root, so trust and tooling transfer.
 5. **Degrade gracefully.** If step-ca is unavailable, a service may fall back to Caddy `local_certs` (untrusted, with a warning) — TLS never *fails*, it just isn't trusted until step-ca is back.
@@ -73,17 +73,17 @@ Caddy's `local_certs` is convenient but its CA is (a) **ephemeral** — wiped wi
 flowchart TB
   subgraph vm[podman environment]
     subgraph ca[step-ca]
-      ROOT[root cert + key<br/>key sealed in OpenBao]
+      ROOT[root cert + key<br/>key encrypted in step-ca-data volume]
       INT[intermediate<br/>signs leaves]
       ACME[ACME provisioner<br/>/acme/acme/directory]
     end
     CAD[Caddy<br/>ACME client:<br/>acme_ca + acme_ca_root]
     SVC[other services<br/>ACME clients / mounted root]
   end
-  BAO[(OpenBao<br/>root key, provisioner pw)]
+  BAO[(OpenBao<br/>key-decryption password,<br/>provisioner secrets)]
   MAC[Mac browser]
 
-  BAO -. root key .-> ROOT
+  BAO -. decryption password .-> ROOT
   ROOT --> INT --> ACME
   CAD -->|ACME order| ACME
   ACME -->|short-lived leaf| CAD
@@ -105,13 +105,13 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 
 ### Phase 0 — step-ca service (composable, stable root)
 - [ ] `platform/services/step-ca/deployment/`: `compose.yml` (smallstep/step-ca, pinned; persistent `step-ca-data` volume), `compose.local.yml` (caps, label=disable, `local-dev` network), `deploy.sh` (container lifecycle only), `templates/` (ca.json provisioner config), `context/architecture.md`
-- [ ] First-run init → root + intermediate; **seal the root key in OpenBao** (`secret/services/step-ca`), persist intermediate + config in the volume; subsequent deploys reuse (idempotent — never regenerate the root)
+- [ ] First-run init → root + intermediate; **store the key-decryption password in OpenBao** (`secret/services/step-ca` → `init_password`), persist the encrypted root/intermediate keys + config in the `step-ca-data` volume; subsequent deploys reuse (idempotent — never regenerate the root)
 - [ ] ACME provisioner enabled; expose the directory endpoint on the `local-dev` network
 - [ ] `deploy-step-ca.yml` composable (place-monorepo → manage-secrets → render ca.json → deploy.sh → verify `/health` + the ACME directory)
 - [ ] Wire local: `templates-local.yml` "Deploy step-ca (Local)", `step_ca_svc` inventory group, bootstrap `_inv_ini`; root cert exported for trust
 - [ ] BATS
 
-**Gate 0:** step-ca healthy via local Semaphore; ACME directory reachable in-network; root key in OpenBao; root cert exported; re-deploy reuses the same root (idempotent).
+**Gate 0:** step-ca healthy via local Semaphore; ACME directory reachable in-network; key-decryption password in OpenBao (keys encrypted in the `step-ca-data` volume); root cert exported; re-deploy reuses the same root (idempotent).
 
 ### Phase 1 — Caddy as ACME client + trust the root (local)
 - [ ] Caddy local profile: replace `local_certs` with `acme_ca` (step-ca directory) + `acme_ca_root` (step-ca root); fallback-to-`local_certs` documented if step-ca down
@@ -135,7 +135,7 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 **Gate 3:** root distribution documented; rotation rehearsed (at least intermediate).
 
 ## 6. Security considerations
-- **Root key is the crown jewel** — sealed in OpenBao, not on disk in the clear; the online intermediate does day-to-day signing so the root key is used rarely. Compromise of the intermediate ≠ compromise of the root.
+- **Root key is the crown jewel** — encrypted at rest in the `step-ca-data` volume (its decryption password in OpenBao), not on disk in the clear; the online intermediate does day-to-day signing so the root key is used rarely. Compromise of the intermediate ≠ compromise of the root.
 - **The root cert is public** — distributing it is fine; never distribute the key.
 - **Trust scope** — trusting the root means clients trust *any* cert step-ca issues; step-ca's provisioners/policies bound what it will issue (name constraints to the internal zones). Add name constraints so the internal CA can't mint certs for arbitrary public domains.
 - **Short-lived leaves** — small compromise window; auto-renew via ACME.
@@ -145,10 +145,10 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 ## 7. Open decisions & risks
 | Item | Status | Resolution |
 |---|---|---|
-| ACME challenge type (http-01 vs dns-01 vs in-network) | **P1 spike** | Test http-01 in-network first (step-ca→Caddy reachable on `local-dev`); fall back to dns-01 via hickory for wildcards (ties DNS plan) |
+| ACME challenge type (local vs prod) | **Resolved (local) / P2 (prod)** | Local issuance is **token-mint** — a single long-lived wildcard, no per-host ACME challenge (in-network per-host ACME can't reach each vhost on :443; see line 8). `dns-01` via hickory remains the prod/future path, gated on DNS Phase 2 (ties DNS plan) |
 | Same root local+prod vs separate | P2 | Reuse maximizes "trust once everywhere"; separate isolates blast radius — owner call at P2 |
 | step-ca vs OpenBao-PKI | Chosen step-ca; OpenBao-PKI noted | Revisit only if consolidating CA into OpenBao later (avoid a 2nd CA component) |
-| Root key in OpenBao: seal/unseal vs file | P0 | Prefer OpenBao-stored root key; if step-ca can't load a key from OpenBao directly, store there + inject at init, persist intermediate online |
+| Root key storage | **Resolved** | Keys stay encrypted at rest in the `step-ca-data` volume (step-ca is not an external-keystore client); OpenBao holds only the key-decryption password (`secret/services/step-ca` → `init_password`), injected at deploy via `manage-secrets.yml` |
 | Relationship to `LOCAL-DEV-TLS-TRUST.md` | This supersedes the *source* | The trust tooling carries over (extract+trust a root); the root is now step-ca's, not Caddy's. Update that plan to point here. |
 | Image pin | P0 | Pin a step-ca release; verify ACME provisioner config across versions |
 
@@ -157,7 +157,7 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 2. *(repo)* `plan/development/LOCAL-DEV-TLS-TRUST.md` — the Caddy-root-trust approach this supersedes (tooling reused); decision table already listed step-ca as the heavier/prod option now promoted.
 3. *(repo)* `plan/development/DNS-SERVER-DEPLOYMENT.md` §2 — internal-zone ACME options; step-ca is option (c), now the chosen internal-CA mechanism.
 4. *(repo)* `platform/services/caddy/deployment/` — Caddy local profile (`local_certs` today → `acme_ca`/`acme_ca_root`); the `make local-tls-trust` tooling that adapts.
-5. *(repo)* `CLAUDE.md` — OpenBao as source of truth (root key); "config/policy as code"; "Foundational Over One-Shot" (a reusable platform CA over a per-machine chore).
+5. *(repo)* `CLAUDE.md` — OpenBao as source of truth (the key-decryption password + provisioner secrets); "config/policy as code"; "Foundational Over One-Shot" (a reusable platform CA over a per-machine chore).
 6. *(repo)* `plan/development/CREDENTIAL-LIFECYCLE-PLAN.md` — rotation lifecycle the CA's keys join.
 7. *(repo)* `plan/development/AUTH-SSO-DEPLOYMENT.md` — Authentik (built after this) benefits from trusted TLS issued by this CA.
 

@@ -18,9 +18,10 @@ the root [`CLAUDE.md`](../../../../CLAUDE.md) and the plan it implements:
   terminates TLS and reaches it by name on `local-dev` (`grafana:3000`). Host
   debug ports: Grafana `127.0.0.1:3002`, Prometheus `9090`, Loki `3100`.
 - **Composable, no fork.** `compose.yml` is env-parameterized; `compose.local.yml`
-  is a slim overlay (caps, `label=disable`, joins `local-dev` so Prometheus
-  scrapes `caddy:2019` and Caddy reaches Grafana; mounts the podman socket so
-  Alloy can discover container logs). `deploy.sh` is container-lifecycle-only.
+  is a slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches
+  Grafana; mounts the podman socket so Alloy can discover container logs).
+  `deploy.sh` is container-lifecycle-only. (Prometheus scrapes only itself
+  today; Caddy/cAdvisor/agent targets are Phase 2 — see `config/prometheus.yml`.)
 - **Config is code.** `config/` (Prometheus scrape, Loki, Alloy, Grafana
   datasource + dashboard provisioning) is committed and mounted read-only —
   provisioned on boot, reproducible on a wipe+redeploy. The ONLY secret is the
@@ -34,6 +35,7 @@ the root [`CLAUDE.md`](../../../../CLAUDE.md) and the plan it implements:
 - Caddy metrics; future Reliability/NetClaw agents (IMPLEMENTATION_PLAN).
 
 ## Files
+
 | File | Role |
 |---|---|
 | `deployment/compose.yml` | grafana + prometheus + loki + alloy; pinned images; healthchecks |

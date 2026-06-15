@@ -9,7 +9,7 @@ overlap — OPA never stores secrets or executes actions; it returns decisions.
 
 Agents query OPA over HTTP before executing a service action:
 
-```
+```text
 POST http://opa:8181/v1/data/agentcloud/decision
 { "input": { "agent": "nemoclaw", "action": "read", "service": "nocodb",
              "template_name": "...", "human_approved": false } }
@@ -26,7 +26,8 @@ supplied per-query in `input` — never stored in OPA.
 ## Local-dev specifics
 
 - Reached by agents + the control plane as `opa:8181` on the `local-dev`
-  network; published to `127.0.0.1:8181` for host diagnostics + smoke checks.
+  network; published to `127.0.0.1:8281` for host diagnostics + smoke checks
+  (8181 is NocoDB's local bind, so the host port defaults to `OPA_PORT=8281`).
 - **Phase 1 is unauthenticated** — internal-only, returns decisions not secrets,
   so there are no OPA credentials yet. Phase 2 adds per-agent bearer tokens
   (OpenBao). Phase 3 ships decision logs to Loki via stdout.

@@ -90,7 +90,7 @@ sequenceDiagram
 
 ### Repository structure
 
-```
+```text
 platform/services/dns/
   deployment/
     compose.yml                 # one service: hickory-dns, pinned tag

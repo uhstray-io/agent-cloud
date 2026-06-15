@@ -178,12 +178,16 @@ reference-machine allocations in the plan (§5).
   `ansible_user` *even when the left side is set* — Jinja evaluates filter
   arguments eagerly.
 - **Cert warning (`NET::ERR_CERT_AUTHORITY_INVALID`) → `make local-tls-trust`.**
-  Caddy signs `*.agent-cloud.test` from its own internal CA. `make local-tls-trust`
-  (sudo, idempotent) extracts Caddy's root from
-  `/data/caddy/pki/authorities/local/root.crt` and trusts it in the macOS System
-  keychain by fingerprint (the root CN is year-stamped + rotates, so trust/
-  untrust key on the SHA-1, not the name). `make local-tls-untrust` reverses it.
-  A `caddy-data` volume wipe ⇒ new CA ⇒ re-run. Plan: `LOCAL-DEV-TLS-TRUST.md`.
+  Caddy serves `*.agent-cloud.test` from a step-ca-minted wildcard leaf (when
+  `caddy_tls_cert` is set; else it falls back to Caddy's own internal CA).
+  `make local-tls-trust` (sudo, idempotent) extracts the internal-CA root —
+  step-ca's STABLE shared root (`/home/step/certs/root_ca.crt`) when step-ca is
+  up, else Caddy's local root (`/data/caddy/pki/authorities/local/root.crt`) —
+  and trusts it in the macOS System keychain by fingerprint (root CNs are
+  year-stamped + rotate, so trust/untrust key on the SHA-1, not the name).
+  `make local-tls-untrust` reverses it. The step-ca root is stable across Caddy
+  redeploys; only a `step-ca-data` volume wipe ⇒ new root ⇒ re-run.
+  Plan: `LOCAL-DEV-TLS-TRUST.md`.
 - **Clean `:443` needs a privileged forwarder.** macOS requires root to bind
   ports <1024 and has no `ip_unprivileged_port_start` equivalent; podman-machine's
   forwarder (gvproxy) is non-root, so local Caddy can only publish `8443`/`8088`.

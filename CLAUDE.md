@@ -73,7 +73,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
 - `platform/services/step-ca/context/architecture.md` — step-ca internal CA (stable root; issues the `*.agent-cloud.test` wildcard Caddy serves; local-dev live)
-- `platform/services/authentik/context/architecture.md` — Authentik central IdP/SSO (server+worker+Postgres+Redis; blueprints config-as-code; local-dev live)
+- `platform/services/authentik/deployment/context/architecture.md` — Authentik central IdP/SSO (server+worker+Postgres+Redis; blueprints config-as-code; local-dev live)
 - `platform/services/opa/deployment/context/architecture.md` — OPA policy engine (Guardrail-layer agent-action authorization; Rego policy-as-code under `policies/`; local-dev live, Phase 1 unauthenticated)
 - `platform/services/erpnext/deployment/context/architecture.md` — ERPNext ERP (composable slim local tier: db+redis+backend+frontend+worker+scheduler+websocket; MinIO/backup prod-only; local-dev code-complete, deploy pending image pull)
 - `platform/services/n8n/deployment/` — n8n workflow automation (composable; stateful `N8N_ENCRYPTION_KEY`; prod migration HELD — see `plan/development/nocodb-n8n-composable-migration.md` + `seed-n8n-secrets.yml`)
@@ -184,12 +184,11 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/semaphore` | Semaphore API token, URL |
 | `secret/services/github` | GitHub PAT |
 | `secret/services/discord` | Discord bot token |
-| `secret/services/authentik` | Authentik IdP (secret_key, bootstrap admin password+token, db_password) + per-client OIDC secrets it owns (e.g. `grafana_oidc_client_secret`); clients read shared secrets via manage-secrets `_shared_reads` |
+| `secret/services/authentik` | Authentik IdP (`secret_key`, bootstrap admin password+token, `db_password`; generated once + reused, stable across redeploys) + per-client OIDC secrets it owns (e.g. `grafana_oidc_client_secret`); clients read shared secrets via manage-secrets `_shared_reads` |
 | `secret/services/uhhcraft` | UhhCraft secrets (DB, Redis, MinIO, Stripe secret+publishable, session, Resend, Discord orders+ops webhooks, USPS client id/secret, Printify, Hubs) |
 | `secret/services/inference-comfyui` | ComfyUI sidecar (own MinIO root creds, COMFYUI_URL) |
 | `secret/services/inference-hunyuan3d` | Hunyuan3D sidecar (own MinIO root creds, model path) |
 | `secret/services/step-ca` | Internal CA key-decryption password (`init_password`); the root/intermediate keys live encrypted in the `step-ca-data` volume, NOT here |
-| `secret/services/authentik` | Authentik IdP secrets (`secret_key`, `bootstrap_password`, `bootstrap_token`, `db_password`); generated once + reused (stable across redeploys) |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |

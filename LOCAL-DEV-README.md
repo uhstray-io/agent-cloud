@@ -112,7 +112,7 @@ To reset: `make local-clean` then `make local-bootstrap`.
 Once `make local-bootstrap` (which deploys dns + caddy) and
 `make local-dns-resolver` have run, each app is reachable **by name over HTTPS**:
 
-```
+```text
 https://semaphore.agent-cloud.test:8443     -> Semaphore UI
 https://openbao.agent-cloud.test:8443       -> OpenBao API
 https://<app>.agent-cloud.test:8443         -> any app with a Caddy route
@@ -251,7 +251,7 @@ data shapes. Full contract + the risk-class table are in the
 |---|---|
 | `make local-preflight` | verify toolchain + podman machine |
 | `make local-init` | create the gitignored working inventory (`REFRESH=1` to regenerate) |
-| `make local-bootstrap` | OpenBao + Semaphore + templates |
+| `make local-bootstrap` | Genesis: OpenBao + secure foundation (dns, step-ca, caddy, authentik) + OIDC-secured Semaphore |
 | `make local-deploy-<svc>` | deploy a service through local Semaphore |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |

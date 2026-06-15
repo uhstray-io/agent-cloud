@@ -1,8 +1,11 @@
 # Local-Dev TLS Trust Plan — fix the `*.agent-cloud.test` cert warning
 
 > **Location:** `plan/development/LOCAL-DEV-TLS-TRUST.md`
-> **Date:** 2026-06-13 · **Status:** PROPOSED · **Owner:** uhstray-io
-> **Context:** Browsing `https://netbox.agent-cloud.test` (and the other local Caddy routes) shows `NET::ERR_CERT_AUTHORITY_INVALID` / "Not Secure". Caddy mints certs from its **own internal CA**, which macOS and browsers don't trust. This plan makes local TLS trusted — the foundational, repeatable way — and points at the prod TLS path.
+> **Date:** 2026-06-13 · **Status:** IMPLEMENTED (root-of-trust now step-ca) · **Owner:** uhstray-io
+>
+> **Root-of-trust update (2026-06-14) — this plan's original Caddy-CA approach is SUPERSEDED by step-ca** (see `INTERNAL-CA-DEPLOYMENT.md`, IMPLEMENTED 2026-06-14). The idempotent, fingerprint-based `make local-tls-trust`/`untrust` mechanism this plan designed **carries over unchanged**; what changed is *which root* it trusts. `scripts/local-dev.sh` (`_internal_root_pem`) now **prefers step-ca's STABLE shared root** (`podman exec step-ca cat /home/step/certs/root_ca.crt`, in the `step-ca-data` volume) and falls back to Caddy's own ephemeral local root (`/data/caddy/pki/authorities/local/root.crt`) only when step-ca isn't deployed. The step-ca root survives Caddy redeploys/volume wipes — the core win over `local_certs`; only a `step-ca-data` wipe forces a re-trust. References to Caddy's `local_certs` root below describe the **fallback** path.
+>
+> **Context:** Browsing `https://netbox.agent-cloud.test` (and the other local Caddy routes) shows `NET::ERR_CERT_AUTHORITY_INVALID` / "Not Secure" until the internal-CA root is trusted. Caddy serves a step-ca-minted `*.agent-cloud.test` wildcard (or, as a fallback, mints from its **own internal CA**), which macOS and browsers don't trust by default. This plan makes local TLS trusted — the foundational, repeatable way — and points at the prod TLS path.
 >
 > **Sequencing — REVISED RECOMMENDATION:** the owner's order was auth-first, then this. The adversarial review (2026-06-13) found trusted TLS is effectively a **prerequisite** for clean local OIDC, not a follow-on: browsers clip `Secure`/`SameSite` cookies on untrusted chains (login loops), and server-to-server OIDC discovery (`https://auth.agent-cloud.test/.well-known/openid-configuration`) fails TLS verification against the untrusted CA unless every service is told to skip-verify. This fix is one small phase. **Recommend doing it FIRST, or at least before AUTH Phase 1's "gate one service" step.** If the owner keeps auth-first, AUTH Phase 1 must add per-service TLS-verify-skip + accept cookie quirks as throwaway. (Owner to confirm the order.)
 >
@@ -10,16 +13,16 @@
 
 **Goal:** `https://<service>.agent-cloud.test` (and `:8443`) loads with a trusted padlock in the browser — no cert warning — via a repeatable, idempotent step, with a clear teardown and a documented prod path.
 
-**Architecture:** Caddy already issues per-host certs from its internal CA (`local_certs`). The only missing piece is **trusting that CA's root** in the macOS system keychain. Extract Caddy's root cert and install it as trusted via an idempotent `make local-tls-trust` (mirrors `make local-dns-resolver` / `make local-https`: one sudo, no-op when already trusted, teardown). Prod uses real ACME (DNS-01) instead — cross-referenced, not duplicated.
+**Architecture:** Caddy serves a step-ca-minted `*.agent-cloud.test` wildcard (or, as a fallback, issues per-host certs from its own internal CA, `local_certs`). The only missing piece is **trusting the internal-CA root** in the macOS system keychain. Extract the root cert — step-ca's stable root when present, else Caddy's — and install it as trusted via an idempotent `make local-tls-trust` (mirrors `make local-dns-resolver` / `make local-https`: one sudo, no-op when already trusted, teardown). Prod uses real ACME (DNS-01) instead — cross-referenced, not duplicated.
 
-**Tech stack:** Caddy internal CA (`pki/authorities/local/root.crt`), macOS `security add-trusted-cert`, the `local-dev.sh` wrapper + Makefile, OpenBao (prod TLS secrets only).
+**Tech stack:** step-ca internal CA (`/home/step/certs/root_ca.crt`, stable, in the `step-ca-data` volume) with Caddy's internal CA (`pki/authorities/local/root.crt`) as the fallback, macOS `security add-trusted-cert`, the `local-dev.sh` wrapper + Makefile, OpenBao (step-ca key-decryption password + prod TLS secrets).
 
 ---
 
 ## Target outcome
 
 - `https://netbox.agent-cloud.test:8443`, `https://semaphore.agent-cloud.test:8443`, `https://openbao.agent-cloud.test:8443`, `https://auth.agent-cloud.test:8443` all load **trusted** (no `ERR_CERT_AUTHORITY_INVALID`), in Safari/Chrome (macOS keychain) — Firefox noted as a caveat (own trust store).
-- The trust step is **idempotent + repeatable + reversible**: `make local-tls-trust` installs, no-ops when already present, `make local-tls-untrust` removes. The CA persists across Caddy redeploys (it lives in Caddy's data volume).
+- The trust step is **idempotent + repeatable + reversible**: `make local-tls-trust` installs, no-ops when already present, `make local-tls-untrust` removes. The step-ca root persists across Caddy redeploys (it lives in the `step-ca-data` volume); the Caddy-fallback root lives in `caddy-data`.
 - Combined with `make local-dns-resolver` + `make local-https`, a developer gets **clean, trusted `https://<app>.agent-cloud.test`** end to end.
 - Prod TLS is explicitly the **ACME** path (`DNS-SERVER-DEPLOYMENT.md`), not internal-CA trust — documented so the two never get conflated.
 
@@ -50,41 +53,47 @@ Caddy's `local_certs` makes it a private CA and signs each `*.agent-cloud.test` 
 ```mermaid
 sequenceDiagram
     participant DEV as make local-tls-trust
-    participant CAD as Caddy (caddy-data vol)
+    participant SCA as step-ca (step-ca-data vol)
+    participant CAD as Caddy (serves the wildcard leaf)
     participant KC as macOS System keychain
     participant BR as Browser
-    DEV->>CAD: read /data/caddy/pki/authorities/local/root.crt
+    DEV->>SCA: read /home/step/certs/root_ca.crt (else Caddy's local root)
     DEV->>DEV: already trusted (by fingerprint)? no-op : install
     DEV->>KC: sudo security add-trusted-cert -d -r trustRoot (System.keychain)
     BR->>CAD: https://netbox.agent-cloud.test:8443
-    CAD-->>BR: leaf (signed by intermediate) + intermediate, chaining to root
-    BR->>KC: chain leaf->intermediate->root trusted? YES
+    CAD-->>BR: leaf (signed by step-ca intermediate) + intermediate, chaining to root
+    BR->>KC: chain leaf->intermediate->step-ca root trusted? YES
     BR-->>DEV: padlock, no warning
 ```
 
-The CA root lives at **`/data/caddy/pki/authorities/local/root.crt`** inside the
-container (the `caddy-data` named volume; `/data` is Caddy's data dir — the path
-is absolute, not relative to the container cwd). The wrapper extracts it
-(`podman exec caddy cat /data/caddy/pki/authorities/local/root.crt`), compares
-by **fingerprint** against what's already trusted (idempotent), and on change
+The CA root to trust is **step-ca's stable root** at
+**`/home/step/certs/root_ca.crt`** inside the `step-ca` container (the
+`step-ca-data` named volume) — falling back to Caddy's own local root at
+`/data/caddy/pki/authorities/local/root.crt` (the `caddy-data` volume) only when
+step-ca isn't deployed. The wrapper extracts it (`podman exec step-ca cat
+/home/step/certs/root_ca.crt`, else `podman exec caddy cat …`), compares by
+**fingerprint** against what's already trusted (idempotent), and on change
 installs it into `/Library/Keychains/System.keychain` as trusted for SSL
 (`security add-trusted-cert -d -r trustRoot -k …`).
 
-Two facts verified against the running container (2026-06-13), load-bearing for
-the implementation:
+Facts verified against the running containers, load-bearing for the
+implementation:
 - **Per-host leaves are signed by an intermediate, not the root.** Caddy serves
   `leaf + intermediate` in the handshake, chaining to the root — so trusting the
   **root** lets macOS build `leaf → intermediate → root`. (Trust the root, never
   just the intermediate.)
-- **The root CN is year-stamped and rotates annually**: today it is
-  `Caddy Local Authority - 2026 ECC Root` (the leaf's issuer is
-  `Caddy Local Authority - ECC Intermediate`). So `untrust` must **not** key on a
-  hardcoded CN — remove by the SHA-256/SHA-1 **fingerprint** of the extracted
-  `root.crt` (or the CN read live at run time). This also handles the
-  "volume wipe ⇒ new CA" caveat (§7).
+- **step-ca's root is STABLE** (ECDSA-P256, 2026→2036), so it does *not* rotate
+  on redeploy — trust it once and it persists across Caddy redeploys and volume
+  wipes (only a `step-ca-data` wipe forces a re-trust). The Caddy fallback root,
+  by contrast, is year-stamped and rotates annually (e.g.
+  `Caddy Local Authority - 2026 ECC Root`, leaf issuer
+  `Caddy Local Authority - ECC Intermediate`). Either way `untrust` must **not**
+  key on a hardcoded CN — remove by the SHA-256/SHA-1 **fingerprint** of the
+  extracted root (or the CN read live at run time); this is what makes the logic
+  robust across both roots and the "volume wipe ⇒ new CA" caveat (§7).
 
 ## 5. Implementation (one phase)
-- [ ] `scripts/local-dev.sh tls-trust` / `tls-untrust`: extract Caddy's root from `/data/caddy/pki/authorities/local/root.crt`; idempotent install/remove into the System keychain **by fingerprint** (not CN — it's year-stamped); sudo; `--yes`/`ASSUME_YES` for scripting; verify with `security find-certificate -Z` / a trusted `curl` (no `-k`)
+- [x] `scripts/local-dev.sh tls-trust` / `tls-untrust`: extract the internal-CA root — step-ca's stable root (`/home/step/certs/root_ca.crt`) when step-ca is up, else Caddy's local root (`/data/caddy/pki/authorities/local/root.crt`); idempotent install/remove into the System keychain **by fingerprint** (not CN); sudo; `--yes`/`ASSUME_YES` for scripting; verify with `security find-certificate -Z` / a trusted `curl` (no `-k`)
 - [ ] `make local-tls-trust` / `make local-tls-untrust`
 - [ ] Pre-check: Caddy must be deployed (root.crt exists) — else point at `make local-deploy-caddy`
 - [ ] Docs: `LOCAL-DEV-README.md` access section (replace "accept the warning" with `make local-tls-trust`), `docs/LOCAL-DEV.md` (the trust fact + caddy-data-volume-wipe ⇒ re-trust caveat), Firefox caveat (separate NSS store — `certutil`/manual import, optional)
@@ -103,7 +112,7 @@ the implementation:
 | Item | Status | Resolution |
 |---|---|---|
 | CA extraction path under Caddy version changes | Verify at execution | Caddy `pki/authorities/local/root.crt` is stable across 2.x; confirm in the running container |
-| `caddy-data` volume wipe loses the CA | Documented caveat | `make local-clean`/volume rm ⇒ re-run `make local-tls-trust` (new CA) |
+| internal-CA root changes (volume wipe) | Documented caveat | step-ca's root is stable across Caddy redeploys; only a `step-ca-data` wipe (or, in the Caddy-fallback case, a `caddy-data` wipe) ⇒ new root ⇒ re-run `make local-tls-trust` |
 | Firefox separate trust store | Caveat, optional | Document `certutil`/manual import; not blocking (Safari/Chrome use keychain) |
 | Linux local-dev contributors | Out of scope now | Add `update-ca-trust` path when a Linux contributor appears |
 | Sequencing | After Authentik | Execute after `AUTH-SSO-DEPLOYMENT.md` per owner; Authentik's `auth.agent-cloud.test` benefits from trusted TLS too |

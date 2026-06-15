@@ -35,6 +35,7 @@ group. Flows, OIDC providers, and per-app gating are added here as services are
 onboarded — never click-configured in the UI (that would drift from code).
 
 ## Files
+
 | File | Role |
 |---|---|
 | `deployment/compose.yml` | server + worker + postgres + redis; `ak healthcheck`; HTTP :9000 |

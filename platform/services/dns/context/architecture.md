@@ -14,7 +14,7 @@ plus explicit records, all rendered from inventory vars) and **forward**
 everything else to upstream resolvers. The recursor is intentionally OFF — it is
 experimental upstream; forwarding rides hickory's production-grade resolver.
 
-```
+```text
 query foo.<zone>   --> authoritative answer from the rendered zone file
 query example.com  --> forwarded to dns_upstreams, answer relayed back
 ```
@@ -34,12 +34,16 @@ query example.com  --> forwarded to dns_upstreams, answer relayed back
 
 ## How it deploys
 
-Composable, through Semaphore (Critical Rule #1): `deploy-dns.yml` renders the
-config + zone + `.env` from inventory vars, runs `deploy.sh`, then verifies with
-`dig` (wildcard answer + a forwarded external name). No OpenBao in Phase 1 — DNS
-holds no runtime credentials. Prod Phase 2 adds a TSIG key (from OpenBao) for
-RFC 2136 dynamic updates so Caddy can solve ACME DNS-01 against the internal
-zone.
+Composable, through Semaphore on the normal/redeploy path (Critical Rule #1):
+`deploy-dns.yml` renders the config + zone + `.env` from inventory vars, runs
+`deploy.sh`, then verifies with `dig` (wildcard answer + a forwarded external
+name). The one sanctioned exception is the **genesis bootstrap** — DNS is part
+of the secure foundation (`OpenBao → dns → step-ca → caddy → authentik`) that
+`bootstrap-local-dev.yml` stands up directly, before Semaphore exists, running
+the same un-forked `deploy-dns.yml` (Genesis-Bootstrap Exemption,
+ACCESS-BOUNDARIES.md). No OpenBao in Phase 1 — DNS holds no runtime credentials.
+Prod Phase 2 adds a TSIG key (from OpenBao) for RFC 2136 dynamic updates so
+Caddy can solve ACME DNS-01 against the internal zone.
 
 ## Conventions specific to this service
 

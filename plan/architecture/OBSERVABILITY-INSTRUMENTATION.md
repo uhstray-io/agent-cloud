@@ -35,7 +35,7 @@ Logs are the one pillar that already works for free — the model to replicate, 
 1. **Zero-touch by default, opt-in by declaration.** Logs need nothing (Alloy). Metrics need only two **compose labels** — discovery + relabel does the rest, exactly mirroring how Alloy labels logs. No `prometheus.yml` edit per service.
 2. **One generic dashboard covers everyone; bespoke is additive.** A templated "Service Overview" (variable = `service`/`container`) gives every service log-rate/error-rate/restarts/resource panels immediately; services add a bespoke dashboard only when they need depth.
 3. **Everything as code.** Datasources, dashboards, alerts, and the MCP service-account token are provisioned/declared in the repo — never clicked in the UI or created by ad-hoc API calls (root `CLAUDE.md` → *Policy and Configuration Changes — Code Only*).
-4. **Consistent label taxonomy.** `service`, `component`, `cluster`, `env` on every signal so logs↔metrics↔alerts correlate and the MCP can pivot across them.
+4. **Consistent label taxonomy.** `service`, `component`, `cluster`, `env` on every signal so logs↔metrics↔alerts correlate and the MCP can pivot across them. The normalization contract that makes this deterministic — how `OTEL_SERVICE_NAME`, the Prometheus relabel, and the Loki labels all resolve to the *same* `service` value — is spelled out under *Grafana datasource + correlation* below.
 5. **The MCP is the triage interface, not a data store.** It reads Loki/Prometheus/dashboards/alerts; all truth stays in the stack. Token is least-privilege and OpenBao-managed.
 6. **Same contract local↔prod.** The instrumentation a service ships is environment-agnostic; only scrape endpoints/labels differ by inventory (no forks).
 
@@ -201,7 +201,15 @@ Tempo's **metrics-generator** derives RED metrics (`traces_spanmetrics_calls_tot
 
 ### Grafana datasource + correlation
 
-Provision a Tempo datasource (`type: tempo`, `url: http://tempo:3200`) with `jsonData.serviceMap.datasourceUid: prometheus` (service-graph view), `tracesToLogsV2` → Loki, and `tracesToMetrics` → Prometheus. **`service.name` is the join key** across all three signals — set it consistently per service (`OTEL_SERVICE_NAME`) and align it with the Loki `service`/`job` label so trace→logs links resolve.
+Provision a Tempo datasource (`type: tempo`, `url: http://tempo:3200`) with `jsonData.serviceMap.datasourceUid: prometheus` (service-graph view), `tracesToLogsV2` → Loki, and `tracesToMetrics` → Prometheus. **`service.name` is the join key** across all three signals — but it lands as a plain `service` label on each, so the three paths MUST normalize to the *same* value:
+
+| Signal | Source of the `service` label | Rule |
+|---|---|---|
+| **Metrics** | Prometheus relabel from `__meta_docker_container_name` → `service`; compose-service → `component` (the relabel block in the scrape config above) | container name == the `service` value |
+| **Logs** | Alloy labels each container's stdout/stderr by container name → `service` | same container name |
+| **Traces** | `OTEL_SERVICE_NAME` env var on the service → trace `service.name` | **set `OTEL_SERVICE_NAME` to the container name** so it matches the other two |
+
+So the contract is: the **container name is the canonical `service` value**, and `OTEL_SERVICE_NAME` is set to it. With all three aligned, `tracesToLogsV2` / `tracesToMetrics` links resolve deterministically with no per-service guesswork.
 
 ### Instrumentation
 

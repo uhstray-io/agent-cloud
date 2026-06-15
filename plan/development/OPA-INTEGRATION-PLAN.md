@@ -390,6 +390,15 @@ This stores NemoClaw's OPA bearer token at a per-agent path, maintaining the lea
 
 ## Policy Design
 
+> **Namespace note (implemented form):** the prod-first sketches below reference
+> permissions directly under `data.agentcloud.<agent>`. The **deployed** Phase-1
+> policy moved the static catalog into the recursion-safe
+> **`data.agentcloud.catalog`** sub-namespace (a SEPARATE namespace from the
+> `agentcloud` *package*, so `data.agentcloud.catalog[input.agent]` can't recurse
+> through the package's own rules) — i.e. `data.agentcloud.catalog[<agent>].allowed_actions`.
+> See `policies/agentcloud/agent_actions.rego` for the authoritative form; the status
+> block at the top of this plan reflects it.
+
 ### Core Policy: Agent Action Authorization
 
 `platform/services/opa/deployment/policies/agentcloud/agent_actions.rego`:

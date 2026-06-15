@@ -71,7 +71,7 @@ Expected: both FAIL (eager form still present; lazy form absent).
 Run (single global, exact-substring — safe because the substring is uniform):
 
 ```bash
-cd /Users/stray/Documents/GitHub/agent-cloud
+cd "$(git rev-parse --show-toplevel)"   # repo root
 grep -rl "'/home/' ~ ansible_user ~ '/agent-cloud'" platform/playbooks \
   | xargs sed -i '' "s/'\/home\/' ~ ansible_user ~ '\/agent-cloud'/'\/home\/' ~ (ansible_user | default('deploy')) ~ '\/agent-cloud'/g"
 ```
@@ -295,9 +295,12 @@ Before the "Start local Semaphore" task, add:
 ```yaml
     # OIDC is added only when its deps exist (step-ca trust + authentik issuer).
     # Absent on a first mid-build pass -> Semaphore still boots (fail-safe).
-    - name: "Detect OIDC dependencies (step-ca + authentik up)"
+    - name: "Detect OIDC dependencies (step-ca + authentik RUNNING)"
       ansible.builtin.shell: |
-        podman container exists step-ca && podman container exists authentik-server && echo ready || echo notready
+        # `container exists` is true for stopped containers too; the downstream
+        # `podman exec step-ca …` needs them actually RUNNING, so check State.
+        running() { [ "$(podman inspect -f '{{ "{{" }}.State.Running{{ "}}" }}' "$1" 2>/dev/null)" = "true" ]; }
+        running step-ca && running authentik-server && echo ready || echo notready
       register: _oidc_deps
       changed_when: false
 
