@@ -70,23 +70,31 @@ podman machine init         # if you don't already have a machine
 podman machine start
 ```
 
-**Stand it up:**
+**Stand it up — one command:**
 
 ```bash
-make local-bootstrap        # GENESIS: OpenBao + the secure foundation
-                            # (dns, step-ca, caddy, authentik) + OIDC-secured
-                            # Semaphore, in dependency order (idempotent)
-make local-dns-resolver     # one-time: point macOS at local DNS (asks for sudo)
-make local-tls-trust        # one-time: trust the internal CA root (asks for sudo)
+make local-all              # EVERYTHING in dependency order: full stack +
+                            # macOS DNS resolver + internal-CA trust (asks for sudo)
 ```
 
-`make local-bootstrap` now stands up the whole secure foundation and brings
-Semaphore up **last, already OIDC-secured** (LOCAL-DEV-DEPLOYMENT.md §12A) — you
-no longer deploy dns/step-ca/caddy/authentik separately. `make help` lists every
-target. Re-running anything is safe — each step is idempotent.
+`make local-all` runs the whole sequence so `*.agent-cloud.test` works in your
+browser: genesis (OpenBao + the secure foundation dns/step-ca/caddy/authentik +
+OIDC-secured Semaphore, §12A) → Tier-3 services → the macOS host wiring (DNS
+resolver + CA trust). Order matters and it handles it. The host steps ask for
+sudo once; everything is idempotent (safe to re-run — and re-running re-trusts
+the current CA root after a `local-clean` rebuild minted a new one).
 
-For the **full stack** (foundation + Tier-3 services o11y/opa/erpnext/netbox/n8n
-through Semaphore): `make local-up`.
+Prefer the steps à la carte? They all still exist:
+
+```bash
+make local-bootstrap        # genesis only (foundation + OIDC Semaphore), no sudo
+make local-up               # bootstrap + Tier-3 (o11y/opa/erpnext/netbox/n8n), no sudo
+make local-dns-resolver     # point macOS at local DNS (sudo)
+make local-tls-trust        # trust the internal CA root (sudo)
+```
+
+`make help` lists every target. You no longer deploy dns/step-ca/caddy/authentik
+separately — genesis owns them.
 
 **Deploy a service** (through local Semaphore, like prod):
 

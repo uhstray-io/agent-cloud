@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-up local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
 .PHONY: local-deploy-% local-clean-deploy-%
 
 help: ## Show available targets
@@ -28,8 +28,8 @@ local-bootstrap: ## Genesis: OpenBao + secure foundation (dns,step-ca,caddy,auth
 #     each needs Caddy routing + Authentik for SSO, so they come after genesis.
 # n8n is best-effort (leading '-'): its image registry can rate-limit pulls;
 # a miss there must not abort the rest of the stack. Host-only steps that need
-# sudo (resolver / TLS-trust / :443 forwarder) are deliberately NOT here — run
-# `make local-dns-resolver local-tls-trust local-https` once, separately.
+# sudo (resolver / TLS-trust / :443 forwarder) are NOT here so local-up stays
+# sudo-free for CI/scripts — `make local-all` chains them after the stack.
 local-up: ## Full stack: genesis (bootstrap) then Tier-3 services through Semaphore (idempotent)
 	@$(MAKE) --no-print-directory local-bootstrap
 	@$(MAKE) --no-print-directory local-deploy-o11y
@@ -38,6 +38,21 @@ local-up: ## Full stack: genesis (bootstrap) then Tier-3 services through Semaph
 	@$(MAKE) --no-print-directory local-netbox
 	-@$(MAKE) --no-print-directory local-deploy-n8n
 	@echo "[local-up] full stack up: foundation via genesis, Tier-3 via Semaphore."
+
+# One-shot in dependency order: the full stack PLUS the host-side wiring that
+# needs sudo (macOS DNS resolver + internal-CA trust). local-up stays sudo-free;
+# local-all is the human "bring everything up and make *.agent-cloud.test work in
+# my browser" command. Order matters: the stack (genesis deploys dns + step-ca +
+# caddy) must exist before the resolver points at local DNS and before the CA root
+# can be trusted. --yes skips the per-step y/N (sudo still prompts for a password
+# once); both host steps are idempotent — no-op when already correct, and re-trust
+# the CURRENT step-ca root after a cold rebuild minted a new one. The persistent
+# :443 forwarder (make local-https) stays opt-in — :8443 works without it.
+local-all: ## EVERYTHING in dependency order: full stack + macOS DNS resolver + internal-CA trust (asks for sudo)
+	@$(MAKE) --no-print-directory local-up
+	@$(LOCAL_DEV) resolver --yes
+	@$(LOCAL_DEV) tls-trust --yes
+	@echo "[local-all] stack up + host wiring done — browse https://<svc>.agent-cloud.test:8443 (port-free :443: make local-https)."
 
 local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local-deploy-uhhcraft)
 	@$(LOCAL_DEV) deploy $*

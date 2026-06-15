@@ -12,19 +12,28 @@ generated value carries the `LOCAL_FAKE_` prefix.
 ```bash
 brew bundle                                  # toolchain (Brewfile; podman-compose + jq required)
 podman machine start                         # if not already running
-make local-bootstrap                         # GENESIS: OpenBao + foundation
-                                             # (dns,step-ca,caddy,authentik) +
-                                             # OIDC-secured Semaphore, in order (§12A)
-make local-dns-resolver                      # opt-in: macOS /etc/resolver (sudo)
-make local-tls-trust                         # opt-in: trust internal CA root (sudo)
-make local-up                                # + Tier-3 (o11y,opa,erpnext,netbox,n8n) via Semaphore
-make local-deploy-<service>                  # or one at a time, e.g. local-deploy-uhhcraft
+make local-all                               # EVERYTHING in dependency order:
+                                             # full stack + macOS DNS resolver +
+                                             # internal-CA trust (asks for sudo)
+```
+
+`make local-all` chains, in dependency order: **genesis** (`local-bootstrap` —
+OpenBao + the secure foundation dns/step-ca/caddy/authentik + OIDC-secured
+Semaphore, Mac-direct, §12A) → **Tier-3** (`local-up` — o11y/opa/erpnext/netbox/n8n
+through Semaphore) → **host wiring** (`local-dns-resolver` + `local-tls-trust`,
+sudo). It's idempotent; re-running also re-trusts the current step-ca root after a
+`local-clean` rebuild minted a new one. À la carte targets still exist:
+
+```bash
+make local-bootstrap                         # genesis only (no sudo)
+make local-up                                # bootstrap + Tier-3 (no sudo)
+make local-dns-resolver                      # macOS /etc/resolver (sudo)
+make local-tls-trust                         # trust internal CA root (sudo)
+make local-deploy-<service>                  # one service, e.g. local-deploy-uhhcraft
 make local-validate
 ```
 
-`make local-bootstrap` is the **genesis**: it brings up the secure foundation
-directly (Mac-direct, un-forked `deploy-<svc>.yml`) and starts Semaphore **last,
-already OIDC-secured**. dns/step-ca/caddy/authentik are no longer separate steps.
+dns/step-ca/caddy/authentik are no longer separate bring-up steps — genesis owns them.
 
 `make local-deploy-dns` is the **reference working deploy** — it runs entirely
 through the local Semaphore, renders the zone + config from inventory vars,
