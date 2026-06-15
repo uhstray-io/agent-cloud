@@ -338,6 +338,11 @@ flowchart LR
 
 **Validation:** full stack reaches healthy; Semaphore API still answers after genesis (control plane survives); Semaphore login page offers the OIDC button; discovery TLS-verifies from the Semaphore container with the bundle; `platform-user` is denied at the IdP (the §P1 policy bindings). Full OIDC login is a browser check.
 
+**Probe findings (2026-06-15) — approach (b) execution model VALIDATED, two integration fixes required.** A Mac-direct `deploy-dns` probe (localhost, `local_workspace_dir=<repo>`, `local_monorepo_dir=$HOME/.agent-cloud-genesis`) confirmed the model works: `$HOME` auto-mounts into the VM at the same path, so place-monorepo (rsync repo→genesis dir), config render, and `deploy.sh` running *from the genesis dir* all succeed and compose bind-mounts resolve. Two fixes the implementation MUST include:
+  1. **Compose-provider consistency.** The local stack is built with **podman-compose** (Python, in the Semaphore container). On the Mac, `detect_runtime` prefers podman-compose *only if it's on PATH* — in the ansible shell-task env the brew `podman-compose` was absent, so it fell back to `podman compose` (which delegates to **docker-compose**), and docker-compose rejected the podman-compose-built `dns` network on a label mismatch. The bootstrap's Mac-direct foundation deploys must force podman-compose: ensure brew's bin is on the task PATH, or pass `COMPOSE_CMD=$(command -v podman-compose)` / a `local_compose_cmd` var. (The probe failed safely at the network check — dns was not recreated/broken.)
+  2. **`ansible_user` for the genesis hosts.** `_monorepo_dir`'s default `'/home/' ~ ansible_user ~ '/...'` is evaluated eagerly even when `local_monorepo_dir` is overridden; the `connection: local` genesis hosts have no `ansible_user`, so set it (any value) or make the default lazy (`ansible_user | default('deploy')`).
+Net: the model is de-risked; the remaining build is the bootstrap re-sequence + these two fixes + Semaphore-OIDC-at-the-end + idempotency.
+
 ## 13. References
 
 Tags: *(repo)* agent-cloud file · *(panel)* multi-agent review artifact · *(local)* measurement on the reference machine · *(assumption)* unverified, tracked in §11. Repo citations verified by the panel's repo reads on 2026-06-12; panel-reported line ranges are anchors, not exact pins.
