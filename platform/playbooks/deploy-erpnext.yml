@@ -33,6 +33,12 @@
     _secret_definitions:
       - { name: mariadb_root_password, type: random, length: 32 }
       - { name: admin_password, type: random, length: 24 }
+    # OIDC: read the client secret Authentik owns (it generated it into
+    # secret/services/authentik for the `erpnext` OAuth2 provider). manage-secrets
+    # merges it flat into `secrets`, so env.j2 can render ERPNEXT_OIDC_CLIENT_SECRET
+    # for post-deploy.sh to configure the Social Login Key. Mirrors o11y/Grafana.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [erpnext_oidc_client_secret] }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
@@ -42,6 +48,17 @@
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # OIDC TLS trust: ERPNext's backend verifies the IdP's step-ca-minted cert
+    # when it makes server-side token/userinfo calls. Drop the step-ca root into
+    # the deploy dir; compose.local.yml mounts it + sets REQUESTS_CA_BUNDLE.
+    # Local-only (prod IdP uses its own trust chain) — skip when not local_mode.
+    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start ERPNext containers"

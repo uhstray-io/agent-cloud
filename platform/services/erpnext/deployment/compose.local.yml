@@ -40,6 +40,20 @@ services:
     mem_limit: 1280m
     security_opt:
       - label=disable
+    # OIDC: the backend makes server-side token/userinfo calls to the IdP, so it
+    # joins local-dev (resolves auth.agent-cloud.test via Caddy's alias + :8443
+    # listener) and trusts the IdP's step-ca cert. The root is distributed into
+    # ./certs by tasks/distribute-ca-root.yml; REQUESTS_CA_BUNDLE points Frappe's
+    # `requests` client at it. Local-only (step-ca trust is a local-dev concern;
+    # prod's IdP uses its own chain). Narrow trust is fine here — the backend's
+    # only outbound HTTPS in local-dev is the internal IdP.
+    networks:
+      - erpnext
+      - local-dev
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt
   frontend:
     mem_limit: 256m
     security_opt:
