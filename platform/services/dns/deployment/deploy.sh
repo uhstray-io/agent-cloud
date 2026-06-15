@@ -48,7 +48,13 @@ step_verify_config() {
   if [ ! -f "${SCRIPT_DIR}/config/named.toml" ]; then
     error "${SCRIPT_DIR}/config/named.toml not found. Run Ansible deploy-dns.yml first; it renders config from inventory vars."
   fi
-  info "  config/named.toml present."
+  if [ ! -f "${SCRIPT_DIR}/.env" ]; then
+    error "${SCRIPT_DIR}/.env not found. Run Ansible deploy-dns.yml first; it renders compose interpolation vars."
+  fi
+  if ! compgen -G "${SCRIPT_DIR}/config/zones/*.zone" > /dev/null; then
+    error "No zone files found under ${SCRIPT_DIR}/config/zones/. Run Ansible deploy-dns.yml first."
+  fi
+  info "  config/named.toml, .env, and zone file(s) present."
 }
 
 step_pull_image() {

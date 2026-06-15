@@ -134,6 +134,15 @@ services:
     <<: *frappe
     container_name: erpnext-websocket
     command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    healthcheck:
+      # The socketio server answers on :9000 once up — `curl -s` (no -f) returns 0
+      # on any HTTP response (the handshake path 400s without query args, which
+      # still proves the listener is live). The image ships curl, not wget.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:9000/socket.io/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   # SLIM: a single worker on `long,default,short` covers every queue (prod splits
   # this into queue-short + queue-long — added in the prod phase, not here).
@@ -141,11 +150,28 @@ services:
     <<: *frappe
     container_name: erpnext-queue
     command: ["bench", "worker", "--queue", "long,default,short"]
+    healthcheck:
+      # No listening port and the image lacks ps/pgrep, so verify the bench worker
+      # is the running main process via /proc/1/cmdline (a crashed worker exits
+      # the container, but this also catches an entrypoint that degraded to a shell).
+      test: ["CMD-SHELL", "grep -q bench_helper /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   scheduler:
     <<: *frappe
     container_name: erpnext-scheduler
     command: ["bench", "schedule"]
+    healthcheck:
+      # Same rationale as queue: no port, no ps/pgrep — confirm the bench schedule
+      # process is PID 1 via /proc/1/cmdline.
+      test: ["CMD-SHELL", "grep -q bench_helper /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 networks:
   erpnext:

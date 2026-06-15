@@ -24,6 +24,24 @@ deny if {
 	_destructive(input.template_name)
 }
 
+# Fail closed: an unapproved run_task whose template_name is missing, non-string,
+# or blank could otherwise dodge the destructive check above (which is undefined
+# for a missing/blank name) and still pass `allow`. object.get defaults a missing
+# key to "" so the same rule covers absent, null, and whitespace-only names —
+# forcing a real, checkable template name on any unapproved run_task.
+deny if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	not input.human_approved
+	not _valid_template_name
+}
+
+_valid_template_name if {
+	t := object.get(input, "template_name", "")
+	is_string(t)
+	trim_space(t) != ""
+}
+
 _destructive(t) if startswith(t, "Clean Deploy")
 
 _destructive(t) if t in data.agentcloud.catalog.semaphore.destructive_templates

@@ -65,6 +65,15 @@ services:
     depends_on:
       loki:
         condition: service_healthy
+    healthcheck:
+      # The alloy image ships no wget/curl/nc — only bash. A /dev/tcp connect to
+      # the HTTP server port (12345, set via --server.http.listen-addr) proves the
+      # server is accepting connections (real liveness, not just "process started").
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/12345' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
 
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}

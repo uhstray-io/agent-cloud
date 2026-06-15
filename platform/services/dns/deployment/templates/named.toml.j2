@@ -25,7 +25,7 @@ zone_type = "External"
 [zones.stores]
 type = "forward"
 name_servers = [
-{% for ns in dns_upstreams | default(['1.1.1.1', '1.0.0.1']) %}
+{% for ns in (dns_upstreams | mandatory) %}
   { ip = "{{ ns }}", connections = [{ protocol = { type = "udp" } }, { protocol = { type = "tcp" } }] },
 {% endfor %}
 ]

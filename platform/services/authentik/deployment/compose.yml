@@ -26,7 +26,7 @@ x-authentik: &authentik
 
 services:
   postgresql:
-    image: docker.io/library/postgres:16-alpine
+    image: ${AUTHENTIK_POSTGRES_IMAGE:-docker.io/library/postgres:16-alpine}
     container_name: authentik-postgresql
     restart: unless-stopped
     environment:
@@ -43,7 +43,7 @@ services:
       retries: 12
 
   redis:
-    image: docker.io/valkey/valkey:8-alpine
+    image: ${AUTHENTIK_REDIS_IMAGE:-docker.io/valkey/valkey:8-alpine}
     container_name: authentik-redis
     restart: unless-stopped
     command: ["--save", "60", "1", "--loglevel", "warning"]

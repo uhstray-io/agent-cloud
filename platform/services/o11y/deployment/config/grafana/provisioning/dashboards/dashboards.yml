@@ -9,7 +9,9 @@ providers:
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
-    allowUiUpdates: true
+    # false keeps dashboards declarative — UI edits are blocked, so changes flow
+    # through the committed JSON (config-as-code), not ad-hoc UI mutations.
+    allowUiUpdates: false
     options:
       path: /var/lib/grafana/dashboards
       foldersFromFilesStructure: false

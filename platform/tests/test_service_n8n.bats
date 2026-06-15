@@ -26,7 +26,7 @@ setup() {
   [ -f "$f" ] && [ -x "$f" ]
   grep -q 'common.sh' "$f"
   grep -qE '\bcompose (pull|up)' "$f"
-  ! grep -qE 'gen_secret|put_secret|generate_n8n_env|owner/setup|rawApiKey|store_token_in_openbao'
+  ! grep -qE 'gen_secret|put_secret|generate_n8n_env|owner/setup|rawApiKey|store_token_in_openbao' "$f"
 }
 
 @test "n8n: env template sources the stateful key + DB creds from OpenBao" {
@@ -35,7 +35,7 @@ setup() {
   grep -qF 'N8N_ENCRYPTION_KEY={{ secrets.encryption_key }}' "$f"
   grep -qF 'POSTGRES_PASSWORD={{ secrets.db_admin_password }}' "$f"
   grep -qF 'POSTGRES_NON_ROOT_PASSWORD={{ secrets.db_user_password }}' "$f"
-  ! grep -qiE 'LOCAL_FAKE|password=[A-Za-z0-9]{8}'
+  ! grep -qiE 'LOCAL_FAKE|password=[A-Za-z0-9]{8}' "$f"
 }
 
 @test "n8n: local overlay adds caps/SELinux/local-dev but does NOT republish ports" {

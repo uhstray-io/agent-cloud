@@ -61,6 +61,38 @@ test_clean_deploy_local_variant_blocked if {
 	}
 }
 
+# Fail-closed regression: an unapproved run_task with no usable template_name must
+# be denied — otherwise it dodges the destructive-name check (undefined for a
+# missing/blank name) and could pass `allow`. Covers absent, null, and blank names.
+test_run_task_missing_template_name_denied if {
+	not agentcloud.allow with input as {
+		"agent": "nemoclaw",
+		"action": "run_task",
+		"service": "semaphore",
+		"human_approved": false,
+	}
+}
+
+test_run_task_null_template_name_denied if {
+	not agentcloud.allow with input as {
+		"agent": "nemoclaw",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": null,
+		"human_approved": false,
+	}
+}
+
+test_run_task_blank_template_name_denied if {
+	not agentcloud.allow with input as {
+		"agent": "nemoclaw",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": "   ",
+		"human_approved": false,
+	}
+}
+
 test_unknown_agent_denied if {
 	not agentcloud.allow with input as {"agent": "rogue-agent", "action": "read", "service": "nocodb"}
 }
