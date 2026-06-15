@@ -15,33 +15,29 @@ local-preflight: ## Verify toolchain (Brewfile) + podman machine
 local-init: ## Create the gitignored working inventory from the committed example
 	@$(LOCAL_DEV) init
 
-local-bootstrap: ## Stand up local OpenBao + Semaphore + templates (idempotent)
+local-bootstrap: ## Genesis: OpenBao + secure foundation (dns,step-ca,caddy,authentik) + OIDC-secured Semaphore (idempotent)
 	@$(LOCAL_DEV) bootstrap
 
-# Full-stack bring-up in DEPENDENCY ORDER (all idempotent — safe to re-run):
-#   Tier 0  control plane : bootstrap (OpenBao + Semaphore) — everything else
-#                           deploys THROUGH Semaphore, so it must exist first.
-#   Tier 1  foundation    : DNS (name resolution) → step-ca (internal CA).
-#   Tier 2  ingress + IdP : Caddy (needs step-ca's CA to mint the wildcard) →
-#                           Authentik (IdP behind Caddy; SSO consumers need it).
-#   Tier 3  services      : o11y, OPA, ERPNext, NetBox, n8n — each needs Caddy
-#                           routing + Authentik for SSO, so they come last.
+# Full-stack bring-up (all idempotent — safe to re-run):
+#   GENESIS (make local-bootstrap, §12A): OpenBao → the secure foundation
+#     (dns → step-ca → caddy → authentik, Mac-direct) → Semaphore LAST, already
+#     OIDC-secured. Everything genesis stands up directly (it's the sanctioned
+#     Rule #1 bootstrap exemption — a service can't deploy through an
+#     orchestrator that isn't up yet).
+#   TIER 3 (here): o11y, OPA, ERPNext, NetBox, n8n — deployed THROUGH Semaphore,
+#     each needs Caddy routing + Authentik for SSO, so they come after genesis.
 # n8n is best-effort (leading '-'): its image registry can rate-limit pulls;
 # a miss there must not abort the rest of the stack. Host-only steps that need
 # sudo (resolver / TLS-trust / :443 forwarder) are deliberately NOT here — run
 # `make local-dns-resolver local-tls-trust local-https` once, separately.
-local-up: ## Bring the FULL local stack up in dependency order (idempotent)
+local-up: ## Full stack: genesis (bootstrap) then Tier-3 services through Semaphore (idempotent)
 	@$(MAKE) --no-print-directory local-bootstrap
-	@$(MAKE) --no-print-directory local-deploy-dns
-	@$(MAKE) --no-print-directory local-deploy-step-ca
-	@$(MAKE) --no-print-directory local-deploy-caddy
-	@$(MAKE) --no-print-directory local-deploy-authentik
 	@$(MAKE) --no-print-directory local-deploy-o11y
 	@$(MAKE) --no-print-directory local-deploy-opa
 	@$(MAKE) --no-print-directory local-deploy-erpnext
 	@$(MAKE) --no-print-directory local-netbox
 	-@$(MAKE) --no-print-directory local-deploy-n8n
-	@echo "[local-up] full stack brought up in dependency order."
+	@echo "[local-up] full stack up: foundation via genesis, Tier-3 via Semaphore."
 
 local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local-deploy-uhhcraft)
 	@$(LOCAL_DEV) deploy $*
