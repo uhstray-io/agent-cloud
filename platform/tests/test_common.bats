@@ -70,6 +70,65 @@ teardown() {
   [ "$CONTAINER_ENGINE" = "podman" ]
 }
 
+@test "detect_runtime: derives COMPOSE_CMD for podman when COMPOSE_CMD unset" {
+  # Regression: the old code returned early when CONTAINER_ENGINE was set,
+  # leaving COMPOSE_CMD empty. Verify the fix: COMPOSE_CMD is derived.
+  export CONTAINER_ENGINE="podman"
+  unset COMPOSE_CMD
+  # Create a fake podman-compose in PATH so the primary branch is taken
+  local fake_bin
+  fake_bin=$(mktemp -d)
+  ln -s /bin/true "${fake_bin}/podman-compose"
+  PATH="${fake_bin}:${PATH}" detect_runtime
+  [ -n "$COMPOSE_CMD" ]
+  rm -rf "$fake_bin"
+}
+
+@test "detect_runtime: COMPOSE_CMD for podman falls back to 'podman compose' when podman-compose absent" {
+  export CONTAINER_ENGINE="podman"
+  unset COMPOSE_CMD
+  # Remove podman-compose from PATH so the fallback branch is taken
+  local saved_path="$PATH"
+  PATH=$(echo "$PATH" | tr ':' '\n' | grep -v 'podman-compose' | tr '\n' ':' | sed 's/:$//')
+  # Strip any dir that might have podman-compose by creating a fake podman only
+  local fake_bin
+  fake_bin=$(mktemp -d)
+  ln -s /bin/true "${fake_bin}/podman"
+  # podman-compose is deliberately NOT created here
+  PATH="${fake_bin}" detect_runtime
+  [ "$COMPOSE_CMD" = "podman compose" ]
+  rm -rf "$fake_bin"
+  PATH="$saved_path"
+}
+
+@test "detect_runtime: derives COMPOSE_CMD for docker when COMPOSE_CMD unset" {
+  export CONTAINER_ENGINE="docker"
+  unset COMPOSE_CMD
+  detect_runtime
+  [ "$COMPOSE_CMD" = "docker compose" ]
+}
+
+@test "detect_runtime: preserves existing COMPOSE_CMD when CONTAINER_ENGINE=podman already set" {
+  export CONTAINER_ENGINE="podman"
+  export COMPOSE_CMD="my-custom-compose"
+  detect_runtime
+  [ "$COMPOSE_CMD" = "my-custom-compose" ]
+}
+
+@test "detect_runtime: preserves existing COMPOSE_CMD when CONTAINER_ENGINE=docker already set" {
+  export CONTAINER_ENGINE="docker"
+  export COMPOSE_CMD="my-custom-compose"
+  detect_runtime
+  [ "$COMPOSE_CMD" = "my-custom-compose" ]
+}
+
+@test "detect_runtime: errors on unknown CONTAINER_ENGINE value" {
+  # error() writes to stderr and exits 1; redirect stderr so run captures it.
+  run bash -c "source '${BATS_TEST_DIRNAME}/../lib/common.sh' && CONTAINER_ENGINE=runc COMPOSE_CMD= detect_runtime 2>&1"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "Unknown CONTAINER_ENGINE" ]]
+}
+
 # ── info/warn ───────────────────────────────────────────────────────
 
 @test "info: outputs timestamped message" {
@@ -80,4 +139,33 @@ teardown() {
 @test "warn: outputs WARN to stderr" {
   run bash -c "source '${BATS_TEST_DIRNAME}/../lib/common.sh' && warn 'test warning' 2>&1 >/dev/null"
   [[ "$output" =~ "WARN" ]]
+}
+
+# ── compose (local-dev overlay) ─────────────────────────────────────
+
+@test "compose: overlay appended only when LOCAL_MODE=true AND compose.local.yml exists" {
+  cd "$TEST_DIR"
+  touch compose.yml
+  # Stub the runtime so compose() echoes its argv instead of invoking an engine
+  detect_runtime() { COMPOSE_CMD="echo"; }
+
+  # No overlay file, no LOCAL_MODE -> base file only
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+
+  # Overlay present but LOCAL_MODE unset -> still base only (prod behavior)
+  touch compose.local.yml
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+
+  # LOCAL_MODE=true + overlay present -> overlay appended
+  export LOCAL_MODE=true
+  run compose up -d
+  [ "$output" = "-f compose.yml -f compose.local.yml up -d" ]
+
+  # LOCAL_MODE=true but overlay absent -> base only
+  rm compose.local.yml
+  run compose up -d
+  [ "$output" = "-f compose.yml up -d" ]
+  unset LOCAL_MODE
 }
