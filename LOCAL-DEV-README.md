@@ -6,10 +6,11 @@ deploy prod, with credentials injected the same way. You develop and test
 against a real control plane, then promote validated changes upstream.
 
 > **Paradigm: "make bootstraps, Semaphore operates."** The `Makefile` only
-> provisions the initial pieces (engine, OpenBao, Semaphore, templates).
-> Everything after that — every service deploy — runs *through* local Semaphore,
-> exactly like prod. No real credentials ever touch your laptop: every generated
-> value carries a `LOCAL_FAKE_` prefix.
+> provisions the secure foundation (engine, OpenBao, DNS, internal CA, ingress,
+> the Authentik IdP, and Semaphore). Everything after that — every Tier-3 service
+> deploy — runs *through* local Semaphore, exactly like prod. No **production**
+> credentials touch your laptop: every secret is generated locally into OpenBao
+> (seed/fixture values carry a `LOCAL_FAKE_` prefix so they can never pass as real).
 
 - **Operate / triage reference:** [`docs/LOCAL-DEV.md`](docs/LOCAL-DEV.md)
 - **Full design + rationale:** [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](plan/development/LOCAL-DEV-DEPLOYMENT.md)
@@ -29,31 +30,33 @@ flowchart TB
     DEV["you: make + browser"]
     RES["/etc/resolver/agent-cloud.test<br/>*.agent-cloud.test -> 127.0.0.1:5300"]
     subgraph vm["podman machine VM"]
-      BAO["OpenBao (persistent file)<br/>fake secrets + AppRole"]
+      BAO["OpenBao (persistent file)<br/>secrets + AppRole"]
       SEM["Semaphore (local)<br/>runs the playbooks"]
       DNS["hickory-dns<br/>*.agent-cloud.test -> 127.0.0.1"]
-      CAD["Caddy<br/>internal-CA TLS<br/>reverse proxy"]
-      SVC["service stacks<br/>uhhcraft / n8n / nocodb / ..."]
+      CAD["Caddy<br/>internal-CA TLS + reverse proxy"]
+      AK["Authentik (IdP)<br/>SSO: OIDC + forward_auth"]
+      SVC["service stacks<br/>netbox / grafana / erpnext / n8n / opa / ..."]
     end
   end
   PROD["Production<br/>(only via the promotion pipeline)"]
 
-  DEV -->|make local-bootstrap| SEM
+  DEV -->|"make local-all (genesis + Tier-3 + host wiring)"| SEM
   DEV -->|make local-deploy-SERVICE| SEM
   SEM -->|"same composable playbooks<br/>manage-secrets -> deploy.sh -> verify"| SVC
-  SEM --> DNS
-  SEM --> CAD
   BAO -->|"OpenBao -> Ansible -> .env"| SVC
   DEV -->|"https://app.agent-cloud.test:8443"| CAD
   RES -.resolves names.-> DNS
   CAD -->|reverse proxy by name| SVC
+  CAD -->|"SSO gate: OIDC / forward_auth"| AK
+  AK -.authenticates the browser.-> DEV
   mac ==>|git push -> CI -> branch deploy| PROD
 ```
 
 | Layer | Local | What it mirrors in prod |
 |---|---|---|
-| Secrets | OpenBao (persistent file backend, `LOCAL_FAKE_` values; survives restart) | OpenBao (real, source of truth) |
+| Secrets | OpenBao (persistent file backend; generated locally, seed fixtures carry `LOCAL_FAKE_`; survives restart) | OpenBao (real, source of truth) |
 | Orchestration | Semaphore (1 container, SQLite) | Semaphore (full) |
+| **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy `forward_auth` (NetBox/OpenBao/n8n)** | **same Authentik + blueprints; real OIDC clients** |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
 | Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
 | Engine | podman (Docker only where root is required) | same split |
@@ -95,6 +98,11 @@ make local-tls-trust        # trust the internal CA root (sudo)
 
 `make help` lists every target. You no longer deploy dns/step-ca/caddy/authentik
 separately — genesis owns them.
+
+**When it finishes, it prints your login.** `make local-all` ends by showing the
+Authentik SSO credentials so you can sign in and test immediately — `agent-cloud-admin`
+(full access to every app) and the break-glass `akadmin`. Re-show them any time with
+`make local-creds`. See [Logging in (SSO)](#logging-in-sso-via-authentik) below.
 
 **Deploy a service** (through local Semaphore, like prod):
 
@@ -162,6 +170,47 @@ containers **by their network name** — no IPs, no port juggling.
 
 ---
 
+## Logging in (SSO via Authentik)
+
+Authentik is the platform's identity provider — **one login reaches every app**.
+`make local-all` prints the credentials at the end; `make local-creds` re-shows
+them any time (read live from OpenBao). Sign in at the IdP
+(`https://auth.agent-cloud.test:8443/`) or just visit any app — you're redirected
+to Authentik and back.
+
+**Two accounts** (both passwords from `make local-creds`):
+
+| Account | Use it for | Access |
+|---|---|---|
+| `agent-cloud-admin` | **day-to-day** — logging into the apps | member of `platform-admins` → top role in every app (NetBox superuser, Grafana Admin, Semaphore all-projects, …) |
+| `akadmin` | break-glass — administering **Authentik itself** | Authentik superuser, but **not** in `platform-admins`, so apps that gate on the group claim don't grant it access (intentional) |
+
+**How each app is gated** (config-as-code in Authentik blueprints):
+
+| Integration | Apps | How |
+|---|---|---|
+| **OIDC** (native SSO) | Semaphore, Grafana, ERPNext | the app redirects to Authentik and gets identity + group claims back |
+| **`forward_auth`** (Caddy gate) | NetBox, OpenBao, n8n | Caddy authenticates each request at Authentik's embedded outpost before proxying |
+
+**RBAC tiers** — the Authentik groups every app maps against (the stable contract):
+
+- `platform-admins` → full access (NetBox superuser, Grafana Admin, Semaphore admin, …)
+- `platform-developers` → read-only (Viewer / view-only)
+- `platform-user` → **denied** (the deny tier — can authenticate but reaches nothing)
+
+**App-specific notes:**
+
+- **NetBox** — `forward_auth` + header `REMOTE_AUTH`: your Authentik groups sync to
+  NetBox groups, and `platform-admins` maps to superuser + staff.
+- **n8n** — community edition has **no SSO**: `forward_auth` gates *access*, then n8n
+  has its **own** owner login, seeded as `agent-cloud-admin@agent-cloud.test` with a
+  separate password (`make local-creds` shows it).
+- **OpenBao** — `forward_auth` gates the UI; logging into OpenBao *itself* is by token
+  / AppRole today (the escrowed root token is in `~/.agent-cloud-local/openbao-init.json`).
+  Native OpenBao OIDC login is a planned enhancement.
+
+---
+
 ## Why some steps ask for `sudo`
 
 **Deploying a service never needs sudo.** Every service deploy runs through
@@ -204,17 +253,24 @@ In practice:
 
 ## What you can run locally today
 
-| Service | Status | Notes |
-|---|---|---|
-| OpenBao + Semaphore | ✅ working | the control plane (`make local-bootstrap`) |
-| hickory-dns | ✅ working | `make local-deploy-dns` (authoritative for `*.agent-cloud.test`) |
-| step-ca | ✅ working | `make local-deploy-step-ca` — internal CA; stable root, issues the `*.agent-cloud.test` wildcard Caddy serves. Trust once: `make local-tls-trust` |
-| Caddy | ✅ working | `make local-deploy-caddy` — reverse proxy serving the step-ca wildcard cert |
-| Authentik | ✅ working | `make local-deploy-authentik` — central IdP/SSO (server+worker+Postgres+Redis); debug API at `127.0.0.1:9300`, reached via Caddy. SSO gating (`forward_auth`) is the next phase |
-| UhhCraft | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
-| NetBox | ✅ working | app tier **under podman** (no Docker needed — see `plan/development/NETBOX-LOCAL-ENGINE.md`). `make local-netbox` → `make local-netbox-discover` lists the running containers as VMs at `127.0.0.1:8000` |
-| n8n / NocoDB | 🚧 in progress | composable local deploy being added |
-| o11y | 📋 planned | observability stack not yet defined |
+`make local-all` brings up the whole table below (foundation via genesis, Tier-3
+through Semaphore), all behind Caddy TLS + Authentik SSO.
+
+| Service | Tier | Status | Notes |
+|---|---|---|---|
+| OpenBao | genesis | ✅ | persistent secrets backend + AppRole injection |
+| hickory-dns | genesis | ✅ | authoritative for `*.agent-cloud.test`, forwards the rest |
+| step-ca | genesis | ✅ | internal CA; stable root issues the wildcard Caddy serves (`make local-tls-trust` to trust it) |
+| Caddy | genesis | ✅ | reverse proxy + internal-CA TLS + the SSO gates |
+| Authentik | genesis | ✅ | central IdP/SSO — OIDC + `forward_auth` live; `agent-cloud-admin` seeded into `platform-admins` |
+| Semaphore | genesis | ✅ | control plane; boots OIDC-secured; `agent-cloud-admin` is a global admin |
+| o11y (Grafana/Prometheus/Loki/Alloy) | Tier-3 | ✅ | observability; Grafana login via Authentik OIDC |
+| OPA | Tier-3 | ✅ | Guardrail-layer agent-action policy engine (`opa test` in the deploy) |
+| ERPNext | Tier-3 | ✅ | slim local tier; login via Authentik OIDC |
+| n8n | Tier-3 | ✅ | workflow automation; `forward_auth` + seeded owner account |
+| NetBox | Tier-3 | ✅ | app tier **under podman** (no Docker — see `plan/development/NETBOX-LOCAL-ENGINE.md`); `forward_auth` + header `REMOTE_AUTH`. `make local-netbox` → `make local-netbox-discover` |
+| UhhCraft | Tier-3 | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
+| NocoDB / Postiz | Tier-3 | 📋 planned | composable local profiles not yet added |
 
 ---
 
@@ -251,8 +307,11 @@ data shapes. Full contract + the risk-class table are in the
 |---|---|
 | `make local-preflight` | verify toolchain + podman machine |
 | `make local-init` | create the gitignored working inventory (`REFRESH=1` to regenerate) |
-| `make local-bootstrap` | Genesis: OpenBao + secure foundation (dns, step-ca, caddy, authentik) + OIDC-secured Semaphore |
-| `make local-deploy-<svc>` | deploy a service through local Semaphore |
+| `make local-all` | **EVERYTHING in dependency order**: genesis + Tier-3 + macOS DNS resolver + CA trust (sudo); prints the SSO login at the end |
+| `make local-bootstrap` | Genesis: OpenBao + secure foundation (dns, step-ca, caddy, authentik) + OIDC-secured Semaphore (no sudo) |
+| `make local-up` | genesis (bootstrap) **+ Tier-3** services through Semaphore (no sudo) |
+| `make local-creds` | show the Authentik SSO logins (`agent-cloud-admin` + `akadmin`) for browser testing |
+| `make local-deploy-<svc>` | deploy a single service through local Semaphore |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |
 | `make local-dns-resolver` | wire `/etc/resolver/<zone>` (sudo; idempotent) |
 | `make local-https` | clean port-free `https://app.agent-cloud.test` via a persistent root forwarder (sudo; idempotent) |
