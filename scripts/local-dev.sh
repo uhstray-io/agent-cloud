@@ -88,7 +88,7 @@ init() {
       warn "refresh it (overwrites $INV — re-apply any local overrides after): REFRESH=1 make local-init"
     fi
   else
-    sed -e "s|__REPO_DIR__|${REPO_ROOT}|g" -e "s|__HOME_DIR__|${HOME}|g" \
+    sed -e "s|__REPO_DIR__|${REPO_ROOT}|g" -e "s|__GENESIS_DIR__|${HOME}/.agent-cloud-genesis|g" \
       "$EXAMPLE" > "$INV"
     info "wrote $INV from example"
   fi

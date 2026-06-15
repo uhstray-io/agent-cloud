@@ -1,7 +1,7 @@
 ---
 # Local-dev inventory TEMPLATE — committed, localhost-only by construction.
 # `make local-init` copies this to platform/inventory/local-dev.yml (gitignored)
-# and substitutes __REPO_DIR__ / __HOME_DIR__. No real IPs, domains, or
+# and substitutes __REPO_DIR__ / __GENESIS_DIR__. No real IPs, domains, or
 # credentials may ever appear here (plan/development/LOCAL-DEV-DEPLOYMENT.md).
 
 all:
@@ -9,8 +9,18 @@ all:
     local_mode: true
     monorepo_repo: "https://github.com/uhstray-io/agent-cloud.git"
     openbao_addr: "http://127.0.0.1:8200"
-    local_monorepo_dir: "__REPO_DIR__"
-    local_home_dir: "__HOME_DIR__"
+    # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
+    # composable deploy: rsync local_workspace_dir (the working tree) into a
+    # SEPARATE writable copy at local_monorepo_dir, then run deploy.sh from
+    # there. The genesis dir sits under $HOME, which podman-machine auto-mounts
+    # into the VM at the SAME absolute path — so deploy.sh's compose bind-mounts
+    # (./config, ./certs) resolve on the VM engine. The two MUST differ: never
+    # point local_monorepo_dir at the working tree (deploys render .env/certs
+    # into it). Tier-3 (Semaphore) deploys use their own paths baked into
+    # bootstrap-local-dev.yml's _inv_ini (/var/lib/agent-cloud-deploy), not these.
+    local_workspace_dir: "__REPO_DIR__"
+    local_monorepo_dir: "__GENESIS_DIR__"
+    local_home_dir: "__GENESIS_DIR__"
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
   children:
