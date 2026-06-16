@@ -8,7 +8,21 @@
 # platform/lib/common.sh:detect_runtime picks whichever is available, so we
 # don't pin a specific one — we just need the host to have one.
 #
-# Idempotent. Tested on Ubuntu 22.04 / 24.04.
+# OS support:
+#   - Linux (Ubuntu 22.04/24.04): apt, requires become
+#   - macOS (local dev): Homebrew, no become. Binary install only — `podman
+#     machine init/start` is handled by tasks/local-prereqs.yml (see
+#     plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 0B).
+#
+# Idempotent. Callers run gather_facts: false, so minimal facts are gathered
+# here when OS detection is needed.
+
+- name: "Gather minimal facts for OS detection"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+  when: ansible_system is not defined
 
 - name: "Check podman presence"
   ansible.builtin.command: which podman
@@ -16,7 +30,7 @@
   changed_when: false
   failed_when: false
 
-- name: "Install podman + plugin (Ubuntu)"
+- name: "Install podman + plugin (Linux/apt)"
   ansible.builtin.apt:
     name:
       - podman
@@ -24,7 +38,17 @@
     state: present
     update_cache: true
   become: true
-  when: _podman_check.rc != 0
+  when:
+    - _podman_check.rc != 0
+    - ansible_system == 'Linux'
+
+- name: "Install podman + podman-compose (macOS/Homebrew)"
+  ansible.builtin.command: brew install podman podman-compose
+  become: false
+  when:
+    - _podman_check.rc != 0
+    - ansible_system == 'Darwin'
+  changed_when: true
 
 - name: "Check that `podman compose` plugin or `podman-compose` is available"
   ansible.builtin.shell: |
@@ -43,8 +67,9 @@
   ansible.builtin.fail:
     msg: |
       Neither `podman compose` nor `podman-compose` is callable on this host.
-      Install one before continuing — apt install podman-compose (or upgrade
-      podman to >= 4.4 for the built-in plugin).
+      Install one before continuing — apt install podman-compose (Linux) or
+      brew install podman-compose (macOS), or upgrade podman to >= 4.4 for
+      the built-in plugin.
   when: _compose_check.stdout | trim == 'MISSING'
 
 - name: "Compose entrypoint"

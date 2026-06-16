@@ -137,6 +137,7 @@ _committed_files() {
         | grep -v 'placeholder' \
         | grep -v 'dummyKey' \
         | grep -v 'dummy_key' \
+        | grep -v 'LOCAL_FAKE' \
         | sed "s|^|$f:|" || true
     done
   )

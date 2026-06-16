@@ -117,6 +117,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards.
 |---|---|---|
 | [architecture-reference.md](architecture-reference.md) | ACTIVE | This document. Master index and document standards. |
 | [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) | ACTIVE | Composable task library, 4-phase deploy pattern, secret lifecycle, runtime directory separation. The foundational deployment architecture. |
+| [AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md](AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md) | ACTIVE | Reference standard. Where to use declarative vs imperative automation: two-axis taxonomy (loop-ownership × authoring-discipline), classification of every surface, FORCED-vs-DEBT split, ranked action backlog (incl. the manage-approle security defect), the AI-never-closes-a-loop invariant. |
 | [BRANCH-TESTING-WORKFLOW.md](BRANCH-TESTING-WORKFLOW.md) | ACTIVE | Branch deploy and validation workflow via Semaphore survey variables. |
 | [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) | ACTIVE | Credential governance: TTL requirements, Create-Verify-Retire rotation, metadata standard, vault paths, audit requirements. |
 | [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) | ACTIVE | Standard onboarding checklist for new services. Tier classification, phases, anti-patterns. |
@@ -156,6 +157,14 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [UHHCRAFT-GO-LIVE-PLAN.md](../development/UHHCRAFT-GO-LIVE-PLAN.md) | ACTIVE | Phase 10 production-validation runbook: decisions, provisioning chain, deploy sequence, smoke + rollback, Definition of Done. Execution pending hardware. |
 | [UHHCRAFT-GO-LIVE-WALKTHROUGH.md](../development/UHHCRAFT-GO-LIVE-WALKTHROUGH.md) | ACTIVE | Step-by-step operator session script for the go-live: sequential [YOU]/[CLAUDE] steps with hand-off cues. Companion to the go-live plan. |
 | [UHHCRAFT-GPU-PASSTHROUGH.md](../development/UHHCRAFT-GPU-PASSTHROUGH.md) | PLANNING | Proxmox PCIe passthrough procedure for the two inference VMs. §1 decision pending. |
+| [ERPNEXT-DEPLOYMENT.md](../development/ERPNEXT-DEPLOYMENT.md) | PROPOSED | ERPNext + LLM integration: dev/prod VMs, accounting cutover, backup cross-mirror, read-only MCP, llm-gate service. |
+| [LOCAL-DEV-DEPLOYMENT.md](../development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
+| [DNS-SERVER-DEPLOYMENT.md](../development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
+| [NETBOX-LOCAL-ENGINE.md](../development/NETBOX-LOCAL-ENGINE.md) | PROPOSED | Fix for local NetBox: podman-VM Semaphore can't reach Docker Desktop — run app-tier under podman (profile-gated, discovery excluded). |
+| [AUTH-SSO-DEPLOYMENT.md](../development/AUTH-SSO-DEPLOYMENT.md) | IMPLEMENTED | Authentik central IdP / SSO. Phase 0 (local): composable service deployed + healthy via local Semaphore (server+worker+Postgres+Redis); blueprints config-as-code. Caddy `forward_auth`/OIDC gating is the next phase. |
+| [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | SUPERSEDED | `make local-tls-trust` built + working; the CA *source* is now step-ca (INTERNAL-CA-DEPLOYMENT), and tls-trust extracts the step-ca root. |
+| [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | IMPLEMENTED | step-ca internal CA deployed via local Semaphore: stable root, serves the `*.agent-cloud.test` wildcard Caddy presents (token-mint locally; ACME dns-01 is the prod path). |
+| [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
 
 ### Archived Plans
 

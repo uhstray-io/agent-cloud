@@ -1,0 +1,23 @@
+---
+# clean-deploy-authentik.yml — Destroy and redeploy Authentik from scratch.
+#
+# WARNING: Destroys ALL Authentik data — the Postgres + Redis + media volumes
+#          (users, groups, applied blueprints, sessions). A fresh deploy
+#          re-migrates and re-bootstraps the akadmin user from OpenBao. Local-dev
+#          shares one deploy tree, so the clone is NOT removed (clean-service.yml
+#          branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-authentik.yml.
+
+- name: "Clean Authentik deployment"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-authentik.yml

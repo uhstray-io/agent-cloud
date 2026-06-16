@@ -1,0 +1,5 @@
+# Rendered per-deploy by deploy-caddy.yml. Never committed.
+.env
+Caddyfile.local
+# step-ca-minted wildcard leaf + key, minted per-deploy by mint-internal-cert.yml.
+certs/

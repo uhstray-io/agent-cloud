@@ -1,0 +1,37 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/ports are env-parameterized in the BASE (.env); this overlay carries
+# only what overlays CAN add: memory caps, the SELinux opt (the podman-machine
+# VM enforces SELinux on bind mounts), and the extra `local-dev` network so
+# central Caddy reaches the IdP by name (authentik-server:9000) for OIDC +
+# forward_auth. Postgres/redis stay on the internal `authentik` net only.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  server:
+    mem_limit: 1g
+    security_opt:
+      - label=disable
+    networks:
+      - authentik
+      - default
+      - local-dev
+  worker:
+    mem_limit: 1g
+    security_opt:
+      - label=disable
+    networks:
+      - authentik
+      - default
+  postgresql:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+  redis:
+    mem_limit: 128m
+    security_opt:
+      - label=disable

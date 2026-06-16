@@ -161,6 +161,21 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
 | `install-podman.yml` | Install Podman + podman-compose (idempotent) |
 
+### Local-Dev Conventions (Phase 0A, `LOCAL-DEV-DEPLOYMENT.md`)
+
+- **Path vars:** playbooks reference `local_monorepo_dir` (clone location) and `local_home_dir` (convenience-symlink base) with `/home/{{ ansible_user }}` defaults — unset means byte-identical prod behavior; local inventories override them for macOS paths.
+- **Compose overlay:** `lib/common.sh`'s `compose()` appends `compose.local.yml` only when `LOCAL_MODE=true` **and** the overlay file exists; covered by `platform/tests/test_common.bats`.
+
+### Local-Dev Bootstrap
+
+`bootstrap-local-dev.yml` (run with `--tags bootstrap`; the only playbook
+permitted to run unorchestrated — Critical Rule #1 bootstrap exemption via
+`_bootstrap_play: true` + the tag) provisions the local control plane:
+dev-mode OpenBao + local AppRole + `LOCAL_FAKE_` seeds, a pinned single-container
+Semaphore (SQLite), an automatically-created API token, project resources, and
+the full template catalog (`templates.yml` + `templates-local.yml`).
+State: `~/.agent-cloud-local/credentials.env`. See `docs/LOCAL-DEV.md`.
+
 ### Composable Task Library
 
 These reusable tasks are the building blocks for all playbooks. See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full architecture.
@@ -178,7 +193,8 @@ These reusable tasks are the building blocks for all playbooks. See `plan/archit
 | `tasks/update-vault-field.yml` | Implemented | Read a vault secret, update a specific field, write back |
 | `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
 | `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
-| `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable |
+| `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
+| `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`LOCAL-DEV-DEPLOYMENT.md` §11) |
 
 Planned tasks (not yet implemented):
 

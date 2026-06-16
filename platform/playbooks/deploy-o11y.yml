@@ -1,0 +1,100 @@
+---
+# deploy-o11y.yml — observability stack (Grafana+Prometheus+Loki+Alloy) deploy.
+#
+# Phase 1: Place repo + manage-secrets (Grafana admin password from OpenBao) +
+#          template .env. The committed config/ (scrape/loki/alloy/grafana
+#          provisioning) travels with the repo.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait Grafana healthy;
+#          datasources + dashboards provision on boot).
+# Phase 3: Verify Grafana / Prometheus / Loki all answer.
+#
+# Plan: plan/development/O11Y-DEPLOYMENT.md.
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage o11y secrets"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _secret_definitions:
+      - { name: grafana_admin_password, type: random, length: 32 }
+    # OIDC client secret is owned by authentik (the IdP); read it here so
+    # Grafana's generic_oauth secret matches the provider blueprint.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start o11y"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify o11y"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Grafana health (/api/health -> 200)"
+      ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://127.0.0.1:3000/api/health"
+      register: _gf
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _gf.rc == 0
+
+    - name: "Prometheus ready (/-/ready)"
+      ansible.builtin.command: "{{ _engine }} exec o11y-prometheus wget -q -O /dev/null http://127.0.0.1:9090/-/ready"
+      register: _prom
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _prom.rc == 0
+
+    - name: "Loki ready (/ready)"
+      ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"
+      register: _loki
+      changed_when: false
+      retries: 8
+      delay: 5
+      until: _loki.rc == 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "o11y healthy — Grafana, Prometheus, and Loki all answering (Grafana behind Caddy for TLS)."

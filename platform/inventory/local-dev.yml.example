@@ -1,0 +1,222 @@
+---
+# Local-dev inventory TEMPLATE — committed, localhost-only by construction.
+# `make local-init` copies this to platform/inventory/local-dev.yml (gitignored)
+# and substitutes __REPO_DIR__ / __GENESIS_DIR__. No real IPs, domains, or
+# credentials may ever appear here (plan/development/LOCAL-DEV-DEPLOYMENT.md).
+
+all:
+  vars:
+    local_mode: true
+    monorepo_repo: "https://github.com/uhstray-io/agent-cloud.git"
+    openbao_addr: "http://127.0.0.1:8200"
+    # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
+    # composable deploy: rsync local_workspace_dir (the working tree) into a
+    # SEPARATE writable copy at local_monorepo_dir, then run deploy.sh from
+    # there. The genesis dir sits under $HOME, which podman-machine auto-mounts
+    # into the VM at the SAME absolute path — so deploy.sh's compose bind-mounts
+    # (./config, ./certs) resolve on the VM engine. The two MUST differ: never
+    # point local_monorepo_dir at the working tree (deploys render .env/certs
+    # into it). Tier-3 (Semaphore) deploys use their own paths baked into
+    # bootstrap-local-dev.yml's _inv_ini (/var/lib/agent-cloud-deploy), not these.
+    local_workspace_dir: "__REPO_DIR__"
+    local_monorepo_dir: "__GENESIS_DIR__"
+    local_home_dir: "__GENESIS_DIR__"
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  children:
+    # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
+    # Local zone: `agent-cloud.test` — under the RFC 6761 reserved `.test` TLD
+    # (never publicly resolvable -> safe split-DNS, no mDNS clash like `.local`,
+    # no forced-HTTPS like a real `.dev`), carrying the agent-cloud name. The zone
+    # is written LITERALLY here and in caddy_internal_zone / caddy_routes /
+    # stepca_dns_names below, plus bootstrap-local-dev.yml's _inv_ini — keep them
+    # in sync. (It must be a literal, NOT a `{{ var }}` ref: host-side scripts read
+    # it via `ansible-inventory --host`, which dumps vars raw without evaluating
+    # Jinja.) Override in this gitignored working copy for a different local zone.
+    dns_svc:
+      hosts:
+        dns-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: dns
+          monorepo_deploy_path: platform/services/dns/deployment
+          container_engine: podman
+          dns_zone: agent-cloud.test
+          dns_listen: 0.0.0.0       # VM bind; podman-machine forwards to the Mac
+          dns_port: 5300            # host publish port (mDNS/VPN-safe on macOS)
+          dns_wildcard_target: 127.0.0.1
+          dns_upstreams: ["1.1.1.1", "1.0.0.1"]
+
+    # step-ca — internal CA (stable root; issues certs for the dev zone). Caddy
+    # reaches it by container name on the local-dev network (step-ca:9000); the
+    # published loopback port is for host debugging.
+    step_ca_svc:
+      hosts:
+        step-ca-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: step-ca
+          monorepo_deploy_path: platform/services/step-ca/deployment
+          container_engine: podman
+          stepca_bind: 127.0.0.1
+          stepca_port: 9000
+          stepca_name: "agent-cloud Internal CA (local)"
+          stepca_dns_names: "step-ca,localhost,step-ca.agent-cloud.test"
+
+    # Local Caddy — internal-CA TLS on loopback high ports; reverse-proxies the
+    # control-plane containers by their local-dev network name. Add routes for
+    # other local services as they come up.
+    caddy_svc:
+      hosts:
+        caddy-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: caddy
+          monorepo_deploy_path: platform/services/caddy/deployment
+          container_engine: podman
+          caddy_image: docker.io/library/caddy:2.11.4-alpine
+          caddy_file: ./Caddyfile.local
+          caddy_http_bind: 127.0.0.1
+          caddy_http_port: 8088
+          caddy_https_bind: 127.0.0.1
+          caddy_https_port: 8443
+          # Serve the step-ca-minted wildcard leaf (stable shared root). Set
+          # these to switch off Caddy's own ephemeral internal CA (local_certs).
+          # Container paths (mounted from ./certs by compose.local.yml); the
+          # leaf is minted by tasks/mint-internal-cert.yml on each deploy.
+          # Requires step-ca deployed first (make local-deploy-step-ca).
+          caddy_internal_zone: agent-cloud.test
+          caddy_tls_cert: /etc/caddy/certs/wildcard.crt
+          caddy_tls_key: /etc/caddy/certs/wildcard.key
+          # Each entry is {host, upstream}. Most upstreams are local-dev
+          # container names; NetBox is the exception — it runs in its own compose
+          # project (not local-dev), so it's reached via the host gateway
+          # (host.containers.internal). Drop the NetBox line if you don't run it.
+          caddy_routes:
+            - { host: "semaphore.agent-cloud.test", upstream: "local-semaphore:3000" }
+            # forward_auth gates the OpenBao UI through Authentik (network gate;
+            # OpenBao's own token auth still applies). Internal control-plane
+            # access uses local-openbao:8200 directly, so it's unaffected.
+            - { host: "openbao.agent-cloud.test", upstream: "local-openbao:8200", forward_auth: "authentik-server:9000" }
+            # forward_auth gates NetBox through Authentik's embedded outpost
+            # (NetBox can't do OIDC locally — see netbox-forward-auth.yaml).
+            - { host: "netbox.agent-cloud.test", upstream: "host.containers.internal:8000", forward_auth: "authentik-server:9000" }
+            - { host: "grafana.agent-cloud.test", upstream: "o11y-grafana:3000" }
+            # internal_https_port: also listen on :8443 in-network so OIDC
+            # clients (ERPNext/Semaphore/… backends) reach the IdP at the same
+            # host:port the browser uses (AUTH-SSO-DEPLOYMENT.md OIDC enabler).
+            - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000", internal_https_port: 8443 }
+            # forward_auth gates n8n through Authentik's embedded outpost
+            # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
+            - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }
+            - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
+
+    # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
+    # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
+    # `auth.agent-cloud.test` Caddy route + forward_auth gating land in AUTH
+    # Phase 1/2 (AUTH-SSO-DEPLOYMENT.md), not here.
+    authentik_svc:
+      hosts:
+        authentik-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: authentik
+          monorepo_deploy_path: platform/services/authentik/deployment
+          container_engine: podman
+          authentik_bind: 127.0.0.1
+          authentik_port: 9300          # host debug port; step-ca owns 9000. Caddy reaches the container's :9000 by name.
+
+    # Observability stack — Grafana + Prometheus + Loki + Alloy. Grafana fronts
+    # via Caddy (grafana.agent-cloud.test); host debug ports below. Deploy:
+    # make local-deploy-o11y. Plan: O11Y-DEPLOYMENT.md.
+    o11y_svc:
+      hosts:
+        o11y-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: o11y
+          monorepo_deploy_path: platform/services/o11y/deployment
+          container_engine: podman
+          o11y_grafana_port: 3002
+          o11y_prom_port: 9090
+          o11y_loki_port: 3100
+
+    # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as
+    # opa:8181 on local-dev; published to 127.0.0.1:8281 for host diagnostics.
+    opa_svc:
+      hosts:
+        opa-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: opa
+          monorepo_deploy_path: platform/services/opa/deployment
+          container_engine: podman
+          opa_bind: 127.0.0.1
+          opa_port: 8281
+
+    # n8n — workflow automation (composable; greenfield locally). Behind Caddy
+    # at n8n.agent-cloud.test. The encryption key is stateful (see deploy-n8n.yml).
+    n8n_svc:
+      hosts:
+        n8n-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: n8n
+          monorepo_deploy_path: platform/services/n8n/deployment
+          container_engine: podman
+          n8n_bind: 127.0.0.1
+          # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
+          # mirror is the same image. Base compose default stays docker.n8n.io.
+          n8n_image: docker.io/n8nio/n8n:2.25.7
+
+    # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
+    # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
+    # at erp.agent-cloud.test. frappe/erpnext is multi-arch (arm64 OK).
+    erpnext_svc:
+      hosts:
+        erpnext-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: erpnext
+          monorepo_deploy_path: platform/services/erpnext/deployment
+          container_engine: podman
+          erpnext_bind: 127.0.0.1
+          erpnext_port: 8080
+          erpnext_version: v16   # moving major tag; pin to a patch + verify at deploy
+          erpnext_site_name: erp.agent-cloud.test
+          erpnext_public_url: https://erp.agent-cloud.test:8443
+
+    uhhcraft_svc:
+      hosts:
+        uhhcraft-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: uhhcraft
+          service_url: "http://127.0.0.1:3001"
+          health_path: "/healthz"
+          monorepo_deploy_path: platform/services/uhhcraft/deployment
+          container_engine: podman
+          uhhcraft_port: 3001
+
+    # Phase 2 coverage — uncomment as services gain local profiles
+    # (port map registry of record: docs/LOCAL-DEV.md):
+    #
+    # nocodb_svc:
+    #   hosts:
+    #     nocodb-local:
+    #       ansible_host: 127.0.0.1
+    #       ansible_connection: local
+    #       service_name: nocodb
+    #       service_url: "http://127.0.0.1:8081"
+    #       monorepo_deploy_path: platform/services/nocodb/deployment
+    #       container_engine: podman
+    #
+    # netbox_svc:   # root-requiring: Docker Desktop profile, app tier only
+    #   hosts:
+    #     netbox-local:
+    #       ansible_host: 127.0.0.1
+    #       ansible_connection: local
+    #       service_name: netbox
+    #       service_url: "http://127.0.0.1:8000"
+    #       monorepo_deploy_path: platform/services/netbox/deployment
+    #       container_engine: docker

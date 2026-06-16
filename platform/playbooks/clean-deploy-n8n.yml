@@ -1,0 +1,24 @@
+---
+# clean-deploy-n8n.yml — Destroy and redeploy n8n.
+#
+# DANGER: destroys the n8n DB + data volumes (n8n_db_data / n8n_data /
+#         n8n_redis_data) — ALL workflows, credentials, and executions. Intended
+#         for LOCAL greenfield only. NEVER run against a populated/prod n8n
+#         (use deploy-n8n.yml for in-place redeploys). Local-dev shares one
+#         deploy tree, so the clone is NOT removed (clean-service.yml branches
+#         on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-n8n.yml.
+
+- name: "Clean n8n deployment"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-n8n.yml

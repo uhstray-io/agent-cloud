@@ -177,15 +177,15 @@ platform/playbooks/tasks/
   manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
   manage-approle.yml       Create/update AppRole + policy, store credentials     
   manage-diode-credentials.yml  Create fresh Diode orb-agent credentials         
-  write-secret-metadata.yml     Write KV v2 custom metadata after secret store   
-  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper    
-  revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients
+  write-secret-metadata.yml     Write KV v2 custom metadata after secret store [PLANNED]   
+  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper [PLANNED]    
+  revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients [PLANNED]
   clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check           
   clean-service.yml        Destroy containers, volumes, clone + runtime dir       
-  sparse-checkout.yml      Sparse-clone monorepo for specific service paths       
-  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone           
-  run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR)  
-  verify-health.yml        Health check a service endpoint                        
+  sparse-checkout.yml      Sparse-clone monorepo for specific service paths [PLANNED]       
+  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone [PLANNED]           
+  run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR) [PLANNED]  
+  verify-health.yml        Health check a service endpoint [PLANNED]                        
 
 platform/playbooks/
   deploy-<service>.yml     Composable: clone + secrets + deploy + verify            [NETBOX DONE]
@@ -201,16 +201,18 @@ platform/playbooks/
   audit-credentials.yml         Weekly credential inventory + stale detection    
 ```
 
+`[PLANNED]` tasks are design targets that do **not** yet exist in `platform/playbooks/tasks/` — current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/LOCAL-DEV-DEPLOYMENT.md` Phase 0A.
+
 ### Task Responsibilities
 
-**`sparse-checkout.yml`**
+**`sparse-checkout.yml`** *(planned — not yet implemented)*
 - Sparse-clone `~/agent-cloud` via HTTPS with `--filter=blob:none --sparse`
 - Configure `git sparse-checkout set` with service-specific `_sparse_paths`
 - Idempotent: first run clones, subsequent runs pull
 - No credentials needed (public repo)
 - No convenience symlink — the runtime dir at `~/services/<name>/` replaces it
 
-**`setup-runtime-dir.yml`**
+**`setup-runtime-dir.yml`** *(planned — not yet implemented)*
 - Create `~/services/{{ service_name }}/` directory structure (mode `0700`)
 - Symlink `docker-compose.yml` from runtime dir to clone
 - Symlink `lib/` from runtime dir to clone's `platform/lib/`
@@ -314,6 +316,7 @@ vars:
 - name: "Clone source code"
   hosts: <service>_svc
   tasks:
+    # PLANNED — task does not exist yet; live playbooks use ansible.builtin.git
     - include_tasks: tasks/sparse-checkout.yml
       vars:
         _sparse_paths:
@@ -328,12 +331,14 @@ vars:
       vars:
         _secret_definitions: [...]   # service-specific
         _env_templates: [...]        # service-specific (dest relative to _runtime_dir)
+    # PLANNED — task does not exist yet
     - include_tasks: tasks/setup-runtime-dir.yml
 
 # Phase 3: Container Operations (from runtime dir)
 - name: "Deploy containers"
   hosts: <service>_svc
   tasks:
+    # PLANNED — task does not exist yet; live playbooks run deploy.sh via ansible.builtin.shell
     - include_tasks: tasks/run-deploy.yml
 
 # Phase 4: Verify
@@ -394,8 +399,8 @@ These workflows get their own Semaphore templates and run on independent schedul
 | Create admin users | Yes | No |
 | Register OAuth2 clients | Yes | No |
 | Start privileged agents | Yes (sudo) | No |
-| **Clone monorepo** | **No** | **Yes (sparse-checkout.yml)** |
-| **Setup runtime directory** | **No** | **Yes (setup-runtime-dir.yml)** |
+| **Clone monorepo** | **No** | **Yes (sparse-checkout.yml — planned; today: ansible.builtin.git)** |
+| **Setup runtime directory** | **No** | **Yes (setup-runtime-dir.yml — planned)** |
 | **Health check verification** | **No** | **Yes (verify-health.yml)** |
 | **Docker/Podman installation** | **No** | **Yes (standalone playbook)** |
 | **Secret validation** | **No** | **Yes (validate-secrets.yml)** |
@@ -697,7 +702,7 @@ Don't resolve `${VARIABLE}` references via sed in config files. Use either:
 Each service/component should have its own AppRole with least-privilege policy. The `semaphore-read` AppRole is the exception — it's the orchestrator.
 
 ### Brittle: Writing generated files into the git clone
-Never template `.env`, `agent.yaml`, or any generated config into `~/agent-cloud/`. The clone is read-only source code. All generated files go to `~/services/<name>/`. Violation causes git conflicts on pull, root ownership issues, and treats the clone as mutable. Use `setup-runtime-dir.yml` to create the runtime directory and `manage-secrets.yml` to template there.
+Never template `.env`, `agent.yaml`, or any generated config into `~/agent-cloud/`. The clone is read-only source code. All generated files go to `~/services/<name>/`. Violation causes git conflicts on pull, root ownership issues, and treats the clone as mutable. Use `manage-secrets.yml` to template into the runtime location (`setup-runtime-dir.yml` is planned, not yet implemented).
 
 ### Brittle: Running deploy.sh from the clone directory
 deploy.sh must run from the runtime directory (`~/services/<name>/`), not the clone. The compose file in the runtime dir is a symlink to the clone, but `.env` and `env/*.env` are local to the runtime dir. Running from the clone means compose won't find its env files.

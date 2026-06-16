@@ -1,0 +1,36 @@
+# Authentik blueprint — n8n UI via forward_auth (proxy provider).
+#
+# Community n8n has NO native OIDC/SSO (it's an enterprise-only feature), so a
+# forward_auth network gate is the only way to put n8n behind Authentik: central
+# Caddy authenticates each request against the embedded outpost before proxying
+# to workflow-n8n:5678. This is a NETWORK gate (defense-in-depth) — it does not
+# log you into n8n; n8n's own owner/user login still applies. Same pattern as
+# OpenBao/NetBox (AUTH-SSO-DEPLOYMENT.md). True per-user n8n SSO needs n8n
+# Enterprise — out of scope.
+#
+# The outpost binding + access gate live in zz-sso-bindings.yaml.
+version: 1
+metadata:
+  name: agent-cloud - n8n forward_auth
+context:
+  n8n_external_host: https://n8n.agent-cloud.test:8443/
+entries:
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-n8n
+    identifiers:
+      name: n8n
+    attrs:
+      mode: forward_single
+      external_host: !Context n8n_external_host
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+  - model: authentik_core.application
+    identifiers:
+      slug: n8n
+    attrs:
+      name: n8n
+      provider: !KeyOf provider-n8n
+      meta_launch_url: !Context n8n_external_host
+      open_in_new_tab: true

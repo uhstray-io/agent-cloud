@@ -1,0 +1,72 @@
+---
+# templates-local.yml — Semaphore templates that exist ONLY on local-dev
+# instances (plan/development/LOCAL-DEV-DEPLOYMENT.md).
+#
+# Merged by setup-templates.yml exclusively when
+# `semaphore_include_local_templates: true` — which only
+# platform/playbooks/bootstrap-local-dev.yml sets. The shared templates.yml
+# stays prod-clean; applying THIS file to production is structurally prevented
+# by that flag defaulting to false.
+
+templates:
+  # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
+  # Plan: DNS-SERVER-DEPLOYMENT.md (local half: LOCAL-DEV-DEPLOYMENT.md §5.1).
+  - name: "Deploy DNS (Local)"
+    playbook: platform/playbooks/deploy-dns.yml
+
+  # step-ca — internal CA (stable root; issues certs for *.agent-cloud.test).
+  - name: "Deploy step-ca (Local)"
+    playbook: platform/playbooks/deploy-step-ca.yml
+
+  # Local Caddy — internal-CA TLS, reverse-proxies the control plane by name.
+  - name: "Deploy Caddy (Local)"
+    playbook: platform/playbooks/deploy-caddy.yml
+
+  # Authentik — central IdP / SSO (server+worker+Postgres+Redis behind Caddy).
+  - name: "Deploy Authentik (Local)"
+    playbook: platform/playbooks/deploy-authentik.yml
+
+  # o11y — observability stack (Grafana + Prometheus + Loki + Alloy).
+  - name: "Deploy o11y (Local)"
+    playbook: platform/playbooks/deploy-o11y.yml
+
+  # OPA — Guardrail-layer policy engine (agent action authorization).
+  - name: "Deploy OPA (Local)"
+    playbook: platform/playbooks/deploy-opa.yml
+
+  # n8n — workflow automation (composable; greenfield locally). The legacy
+  # secret-gen deploy.sh path is replaced by manage-secrets + a templated .env.
+  - name: "Deploy n8n (Local)"
+    playbook: platform/playbooks/deploy-n8n.yml
+
+  # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
+  - name: "Deploy ERPNext (Local)"
+    playbook: platform/playbooks/deploy-erpnext.yml
+
+  # Clean-deploy (destructive): wipe a local service's containers+volumes, then
+  # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
+  - name: "Clean Deploy DNS (Local)"
+    playbook: platform/playbooks/clean-deploy-dns.yml
+  - name: "Clean Deploy step-ca (Local)"
+    playbook: platform/playbooks/clean-deploy-step-ca.yml
+  - name: "Clean Deploy Caddy (Local)"
+    playbook: platform/playbooks/clean-deploy-caddy.yml
+  - name: "Clean Deploy Authentik (Local)"
+    playbook: platform/playbooks/clean-deploy-authentik.yml
+  - name: "Clean Deploy o11y (Local)"
+    playbook: platform/playbooks/clean-deploy-o11y.yml
+  - name: "Clean Deploy OPA (Local)"
+    playbook: platform/playbooks/clean-deploy-opa.yml
+  - name: "Clean Deploy n8n (Local)"
+    playbook: platform/playbooks/clean-deploy-n8n.yml
+  - name: "Clean Deploy ERPNext (Local)"
+    playbook: platform/playbooks/clean-deploy-erpnext.yml
+
+# Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
+#   - name: "Bootstrap Data (Local)"
+#     playbook: platform/playbooks/bootstrap-data.yml
+#     survey_vars:
+#       - name: erpnext_target
+#         title: "Target group"
+#         type: string
+#         required: false

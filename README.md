@@ -20,27 +20,56 @@ Platform Layer   Docker/Podman (dev), Kubernetes/k0s (prod), Proxmox VMs
 
 ## Getting Started
 
-### Prerequisites
+agent-cloud runs the **same way on your laptop and in production** — the same
+Ansible playbooks, the same OpenBao credential flow. The fastest way to adopt it
+is to run the whole platform locally first, then promote changes upstream.
+
+### Quick start — run it locally
+
+A local control plane (OpenBao + Semaphore) deploys every service with the same
+playbooks as prod, behind real DNS + TLS and Authentik SSO. On macOS:
+
+```bash
+# prerequisites (one time)
+brew bundle                          # toolchain: ansible, podman, podman-compose, jq, gh, ...
+podman machine init && podman machine start
+
+# stand up the whole stack + macOS DNS/TLS wiring (idempotent; asks for sudo once)
+make local-all
+
+# `make local-all` prints your SSO login at the end (re-show with `make local-creds`):
+#   agent-cloud-admin  ->  full access to every app
+# then open any app in the browser, e.g.:
+#   https://semaphore.agent-cloud.test:8443
+
+# deploy a single service through local Semaphore, exactly like prod:
+make local-deploy-<name>             # e.g. make local-deploy-uhhcraft
+make local-validate                  # health-check everything deployed
+```
+
+> **Full local guide → [LOCAL-DEV-README.md](LOCAL-DEV-README.md).** How to adopt
+> and work with agent-cloud locally: the architecture, SSO logins and per-app
+> access, clean port-free `:443` URLs, why a few steps need `sudo`, what runs
+> locally today, and the **local-dev → production promotion pipeline**. Operate/
+> triage in [`docs/LOCAL-DEV.md`](docs/LOCAL-DEV.md); full design in
+> [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](plan/development/LOCAL-DEV-DEPLOYMENT.md).
+
+### Deploy to production
+
+**Prerequisites:**
 
 - A Proxmox cluster (or any Linux VMs with Docker/Podman)
 - OpenBao deployed and initialized (see `platform/services/openbao/deployment/`)
-- Ansible installed locally (for development) or Semaphore deployed (for production)
+- Semaphore deployed (production deploys go through Semaphore, never SSH-and-run)
 - A private `site-config` repository with your real IPs, inventory, and credentials
 
-### Deploy a Service
+**Every service deploys the same way — through Semaphore:**
 
-Every service follows the same pattern. From the target VM:
-
-```bash
-git clone https://github.com/uhstray-io/agent-cloud.git ~/agent-cloud
-cd ~/agent-cloud/platform/services/nocodb/deployment
-bash deploy.sh
-```
-
-Or via Semaphore (production):
 1. Push changes to this repo
 2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
-3. Semaphore clones the repo, SSHes to the target VM, runs `deploy.sh`
+3. Semaphore injects OpenBao credentials, SSHes to the target VM, and runs the composable playbook (`manage-secrets` → `deploy.sh` → verify)
+
+Production deploys always go through Semaphore so OpenBao credentials are injected and the run is auditable — never SSH into a VM and run `deploy.sh` directly.
 
 ### Composable Deploy Pattern
 
@@ -74,6 +103,9 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **Semaphore** | Deployment orchestration -- Ansible playbook execution |
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
+| **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
+| **step-ca** | Internal CA -- stable root, issues the `*.agent-cloud.test` wildcard Caddy serves (local-dev live; prod via ACME) |
+| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live) |
 | **WisAI** | Local LLM inference backbone -- Ollama workers + Open WebUI coordinator (OpenAI-compatible API) |
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
@@ -90,7 +122,10 @@ agent-cloud/
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
+      dns/                hickory-dns internal resolution (zones-as-code)
+      step-ca/            Internal CA (Smallstep; stable root, *.agent-cloud.test)
       caddy/              Reverse proxy
+      authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
       inference-ollama/   WisAI worker nodes (GPU, Ollama)
       inference-webui/    WisAI coordinator (Open WebUI + Postgres)
       inference-vllm/     Reserved (future 24 GB+ hardware)
@@ -180,7 +215,7 @@ Every pull request to main runs three automated checks:
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (79 tests), BATS (36 tests) | Discovery worker logic, bash helper functions |
+| **Unit Tests** | pytest (79 tests), BATS (133 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/BRANCH-TESTING-WORKFLOW.md`.
 

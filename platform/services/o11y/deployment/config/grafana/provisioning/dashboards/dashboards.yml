@@ -1,0 +1,17 @@
+# Grafana dashboard provider (committed config-as-code). Loads JSON dashboards
+# from /var/lib/grafana/dashboards on boot. Plan: O11Y-DEPLOYMENT.md.
+apiVersion: 1
+
+providers:
+  - name: agent-cloud
+    orgId: 1
+    folder: agent-cloud
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    # false keeps dashboards declarative — UI edits are blocked, so changes flow
+    # through the committed JSON (config-as-code), not ad-hoc UI mutations.
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# local-netbox-up.sh — bring up the NetBox APP TIER locally under podman.
+#
+# NetBox is the platform's one Docker-required service, and the local Semaphore
+# (in the podman VM) can't reach Docker Desktop's daemon — so per
+# plan/development/NETBOX-LOCAL-ENGINE.md we run the app tier under PODMAN,
+# discovery/orb-agent EXCLUDED. Driven from the Mac so the deployment dir's
+# bind-mounts resolve via the /Users virtiofs share at identical paths.
+#
+# Idempotent: clones the upstream context if absent, writes fake env only if
+# absent, builds the image only if absent, then (re)starts the app tier.
+# The full Semaphore-wired composable path is the plan's remaining work.
+#
+# After this: `make local-netbox-discover` feeds the running containers in.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="${REPO_ROOT}/platform/services/netbox/deployment"
+VERSION="v4.5-4.0.0"
+cd "$DEPLOY_DIR"
+
+# Pin the app-tier publish to loopback locally (compose substitution in
+# docker-compose.yml). With the REMOTE_AUTH forward_auth overlay enabled, a
+# LAN-reachable :8000 would let anyone spoof X-authentik-* and become a NetBox
+# superuser — Caddy's forward_auth gate must be the only ingress. Prod (deploy.sh)
+# leaves this unset → 0.0.0.0.
+export NETBOX_HOST_IP=127.0.0.1
+
+log() { printf '[netbox-up] %s\n' "$*"; }
+
+# 1. Upstream netbox-docker context (provides the runtime /etc/netbox/config mount).
+if [ ! -d netbox-docker/.git ]; then
+  log "cloning netbox-docker (release)..."
+  git clone --depth 1 --branch release https://github.com/netbox-community/netbox-docker.git netbox-docker
+fi
+
+# 2. Fake LOCAL_FAKE_ env (gitignored). Each artifact is written only if absent —
+#    checked independently so a partial state (one file present, others missing)
+#    still converges. Never clobbers an existing file.
+#    SECRET_KEY and API_TOKEN_PEPPER_1 must be >=50 chars (NetBox requirement).
+mkdir -p env secrets
+if [ ! -f env/netbox.env ]; then
+  log "writing fake local env/netbox.env..."
+  cat > env/netbox.env <<'EOF'
+DB_HOST=postgres
+DB_NAME=netbox
+DB_USER=netbox
+DB_PASSWORD=LOCAL_FAKE_netbox_db
+REDIS_HOST=redis
+REDIS_DATABASE=0
+REDIS_PASSWORD=LOCAL_FAKE_redis
+REDIS_SSL=false
+REDIS_INSECURE_SKIP_TLS_VERIFY=false
+REDIS_CACHE_HOST=redis-cache
+REDIS_CACHE_DATABASE=1
+REDIS_CACHE_PASSWORD=LOCAL_FAKE_rediscache
+REDIS_CACHE_SSL=false
+REDIS_CACHE_INSECURE_SKIP_TLS_VERIFY=false
+SECRET_KEY=LOCAL_FAKE_netbox_secret_key_0000000000000000000000000000
+API_TOKEN_PEPPER_1=LOCAL_FAKE_api_token_pepper_00000000000000000000000000
+SKIP_SUPERUSER=false
+GRAPHQL_ENABLED=true
+METRICS_ENABLED=false
+WEBHOOKS_ENABLED=true
+MEDIA_ROOT=/opt/netbox/netbox/media
+CORS_ORIGIN_ALLOW_ALL=true
+EOF
+fi
+if [ ! -f env/postgres.env ]; then
+  log "writing fake local env/postgres.env..."
+  cat > env/postgres.env <<'EOF'
+POSTGRES_DB=netbox
+POSTGRES_USER=netbox
+POSTGRES_PASSWORD=LOCAL_FAKE_netbox_db
+DIODE_POSTGRES_DB_NAME=diode
+DIODE_POSTGRES_USER=diode
+DIODE_POSTGRES_PASSWORD=LOCAL_FAKE_diode_db
+HYDRA_POSTGRES_DB_NAME=hydra
+HYDRA_POSTGRES_USER=hydra
+HYDRA_POSTGRES_PASSWORD=LOCAL_FAKE_hydra_db
+EOF
+fi
+# discovery.env must exist (compose env_file); app-tier doesn't use it.
+[ -f env/discovery.env ] || : > env/discovery.env
+if [ ! -f .env ]; then
+  log "writing fake local .env..."
+  cat > .env <<'EOF'
+REDIS_PASSWORD=LOCAL_FAKE_redis
+REDIS_CACHE_PASSWORD=LOCAL_FAKE_rediscache
+SUPERUSER_PASSWORD=LOCAL_FAKE_admin
+EOF
+fi
+if [ ! -f secrets/netbox_to_diode_client_secret.txt ]; then
+  printf 'LOCAL_FAKE_n2d_secret' > secrets/netbox_to_diode_client_secret.txt
+  chmod 600 secrets/netbox_to_diode_client_secret.txt
+fi
+
+# 3. Custom plugins image (built once; reused).
+if ! podman image exists netbox:latest-plugins 2>/dev/null && \
+   ! podman image exists localhost/netbox:latest-plugins 2>/dev/null; then
+  log "building netbox:latest-plugins (one-time, several minutes)..."
+  podman build -t netbox:latest-plugins -f Dockerfile-Plugins --build-arg VERSION="$VERSION" .
+fi
+
+# Base compose + the local-only forward_auth overlay (REMOTE_AUTH_* so NetBox
+# trusts the X-authentik-* headers central Caddy injects). The overlay is
+# committed and never used by the prod deploy.sh path.
+compose() {
+  podman compose --project-name netbox \
+    -f docker-compose.yml \
+    -f docker-compose.local-auth.yml "$@"
+}
+
+# 4. App tier only — backing services first, then netbox + worker (--no-deps so
+#    the discovery pipeline is never pulled in).
+log "starting backing services (postgres, redis, redis-cache)..."
+compose up -d postgres redis redis-cache
+log "waiting for postgres..."
+for _ in $(seq 1 30); do
+  [ "$(podman inspect -f '{{.State.Health.Status}}' netbox-postgres-1 2>/dev/null)" = healthy ] && break
+  sleep 3
+done
+log "starting netbox + worker..."
+compose up -d --no-deps netbox netbox-worker
+
+# RBAC: developers get read-only. forward_auth syncs a platform-developers user
+# into a same-named NetBox group (REMOTE_AUTH_GROUP_SYNC); pre-create that group
+# with a view-all ObjectPermission so members are read-only. Admins are NetBox
+# superusers (REMOTE_AUTH_SUPERUSER_GROUPS); platform-user is denied at the
+# Authentik gate and never reaches NetBox. Idempotent. (ObjectType vs ContentType
+# differs across NetBox versions, so resolve the M2M's related model.)
+ensure_dev_readonly() {
+  log "ensuring platform-developers read-only ObjectPermission..."
+  compose exec -T netbox /opt/netbox/netbox/manage.py shell -c "
+from users.models import ObjectPermission, Group
+g, _ = Group.objects.get_or_create(name='platform-developers')
+# actions is NOT NULL with no default — must be in defaults at create time.
+p, _ = ObjectPermission.objects.get_or_create(name='platform-developers-readonly', defaults={'enabled': True, 'actions': ['view']})
+OT = ObjectPermission._meta.get_field('object_types').related_model
+p.object_types.set(OT.objects.all()); p.groups.set([g])
+print('readonly perm ->', p.object_types.count(), 'types, group', list(p.groups.values_list('name', flat=True)))
+" 2>/dev/null | grep -v '🧬' || log "WARN: read-only perm setup failed (set it manually)"
+}
+
+log "waiting for netbox to become healthy (first boot runs migrations — up to 10 min)..."
+for _ in $(seq 1 120); do
+  s=$(podman inspect -f '{{.State.Health.Status}}' netbox-netbox-1 2>/dev/null || echo none)
+  if [ "$s" = healthy ]; then
+    log "NetBox healthy at http://127.0.0.1:8000 (admin / LOCAL_FAKE_admin)"
+    ensure_dev_readonly
+    exit 0
+  fi
+  sleep 5
+done
+log "ERROR: NetBox did not become healthy in time — check: podman logs netbox-netbox-1" >&2
+exit 1

@@ -1,0 +1,98 @@
+# Authentik — central IdP / SSO (Podman-compatible compose).
+#
+# Server + worker share one image (different commands), backed by Postgres +
+# Redis. Ansible's deploy-authentik.yml templates .env from OpenBao and renders
+# blueprints (config-as-code) BEFORE this stack starts. deploy.sh is container
+# lifecycle only — no secret generation.
+#
+# Behind central Caddy: Authentik serves plain HTTP on 9000 (Caddy terminates
+# TLS). Ports are env-parameterized (compose overlays merge ports append-only,
+# so the local loopback shift lives in .env, not compose.local.yml).
+# Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+
+name: authentik
+
+x-authentik: &authentik
+  image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server:2024.12.3}
+  restart: unless-stopped
+  env_file:
+    - .env
+  networks: [authentik]
+  depends_on:
+    postgresql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgresql:
+    image: ${AUTHENTIK_POSTGRES_IMAGE:-docker.io/library/postgres:16-alpine}
+    container_name: authentik-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AUTHENTIK_POSTGRES_DB:-authentik}
+      POSTGRES_USER: ${AUTHENTIK_POSTGRES_USER:-authentik}
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+    volumes:
+      - authentik-postgres:/var/lib/postgresql/data
+    networks: [authentik]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: ${AUTHENTIK_REDIS_IMAGE:-docker.io/valkey/valkey:8-alpine}
+    container_name: authentik-redis
+    restart: unless-stopped
+    command: ["--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - authentik-redis:/data
+    networks: [authentik]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  server:
+    <<: *authentik
+    container_name: authentik-server
+    command: server
+    ports:
+      # Loopback-only; central Caddy proxies in. Local shifts via .env.
+      - "${AUTHENTIK_BIND:-127.0.0.1}:${AUTHENTIK_PORT:-9000}:9000"
+    volumes:
+      - authentik-media:/media
+      - ./blueprints:/blueprints/custom:ro
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 30s
+      retries: 8
+      start_period: 90s
+
+  worker:
+    <<: *authentik
+    container_name: authentik-worker
+    command: worker
+    # The worker applies blueprints; same custom-blueprint mount as the server.
+    volumes:
+      - authentik-media:/media
+      - ./blueprints:/blueprints/custom:ro
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 30s
+      retries: 8
+      start_period: 90s
+
+networks:
+  authentik:
+    driver: bridge
+
+volumes:
+  authentik-postgres:
+  authentik-redis:
+  authentik-media:

@@ -1,0 +1,33 @@
+# docker-compose.local-auth.yml — LOCAL-DEV ONLY overlay.
+#
+# Loaded by scripts/local-netbox-up.sh (never by the prod deploy.sh path), so
+# the shared docker-compose.yml stays prod-clean. Wires NetBox to Authentik via
+# forward_auth: central Caddy authenticates the request against Authentik's
+# embedded outpost and forwards X-authentik-* identity headers; NetBox trusts
+# them (REMOTE_AUTH_*). NetBox makes no outbound calls to Authentik.
+#
+# Every value here is non-secret config (header + group names), so it lives in
+# git. Group names are the contract defined in the Authentik platform-groups
+# blueprint. Prod SSO is OIDC (plan/development/AUTH-SSO-DEPLOYMENT.md).
+#
+# compose merges `environment` onto the base service, so this only adds keys.
+x-remote-auth: &remote-auth
+  # Trust the headers Caddy's forward_auth copies from the Authentik outpost.
+  REMOTE_AUTH_ENABLED: "true"
+  REMOTE_AUTH_HEADER: "HTTP_X_AUTHENTIK_USERNAME"
+  REMOTE_AUTH_USER_EMAIL: "HTTP_X_AUTHENTIK_EMAIL"
+  REMOTE_AUTH_AUTO_CREATE_USER: "true"
+  # Sync group membership from the X-authentik-groups header (| separated).
+  REMOTE_AUTH_AUTO_CREATE_GROUPS: "true"
+  REMOTE_AUTH_GROUP_SYNC_ENABLED: "true"
+  REMOTE_AUTH_GROUP_HEADER: "HTTP_X_AUTHENTIK_GROUPS"
+  REMOTE_AUTH_GROUP_SEPARATOR: "|"
+  # platform-admins -> NetBox superuser + staff (matches platform-groups.yaml).
+  REMOTE_AUTH_SUPERUSER_GROUPS: "platform-admins"
+  REMOTE_AUTH_STAFF_GROUPS: "platform-admins"
+
+services:
+  netbox:
+    environment: *remote-auth
+  netbox-worker:
+    environment: *remote-auth

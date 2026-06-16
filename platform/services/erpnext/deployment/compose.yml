@@ -1,0 +1,183 @@
+# ERPNext — Frappe/ERPNext financial system of record (first stateful books on
+# the platform). frappe_docker adapted to the platform's podman-compose rules:
+# explicit container_name everywhere, fully-qualified pinned images, healthchecks
+# on every long-running service, and NO reliance on `depends_on:` conditions
+# (podman-compose 1.0.6 ignores them — deploy.sh stages startup instead).
+# deploy.sh is container-lifecycle only; site bootstrap is post-deploy.sh.
+# Plan: plan/development/ERPNEXT-DEPLOYMENT.md (§7) + LOCAL-DEV-DEPLOYMENT.md (P4).
+#
+# LOCAL SLIM TIER NOTE: this base compose is the slim shape ratified for local
+# dev (LOCAL-DEV-DEPLOYMENT.md, 2026-06-12) — a SINGLE queue worker (queue
+# `long,default,short` covers every queue) instead of the prod plan's separate
+# queue-short/queue-long, and NO MinIO/backup/cross-mirror service (those are
+# prod-only DR pieces — backup.sh + the peer-VM cross-mirror; see §8.3 of the
+# plan). The prod MinIO + split-worker topology is added in its phase via an
+# inventory-keyed env override / additional compose services, never a fork.
+name: erpnext
+
+# Shared definition for every Frappe/ERPNext container (backend, frontend,
+# workers, scheduler, websocket, configurator) — same image + sites volume.
+x-frappe: &frappe
+  image: ${ERPNEXT_IMAGE:-docker.io/frappe/erpnext}:${ERPNEXT_VERSION:?set ERPNEXT_VERSION in .env}
+  restart: unless-stopped
+  networks: [erpnext]
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+
+services:
+  db:
+    image: ${MARIADB_IMAGE:-docker.io/library/mariadb:10.6}
+    container_name: erpnext-db
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks: [erpnext]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis-cache:
+    image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+    container_name: erpnext-redis-cache
+    restart: unless-stopped
+    networks: [erpnext]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis-queue:
+    image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+    container_name: erpnext-redis-queue
+    restart: unless-stopped
+    volumes:
+      - redis-queue-data:/data
+    networks: [erpnext]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # One-shot: writes common_site_config.json. deploy.sh runs it with
+  # `compose run --rm configurator` between the backing tier and the app tier.
+  configurator:
+    <<: *frappe
+    container_name: erpnext-configurator
+    restart: "no"
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+        bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+        bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
+        bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: "9000"
+
+  backend:
+    <<: *frappe
+    container_name: erpnext-backend
+    healthcheck:
+      # Connection-level check: gunicorn answers before the site exists; full app
+      # health is gated via /api/method/ping through the frontend (post-deploy).
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend:
+    <<: *frappe
+    container_name: erpnext-frontend
+    command: ["nginx-entrypoint.sh"]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME}
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: "120"
+      CLIENT_MAX_BODY_SIZE: 50m
+    ports:
+      # Loopback by default; central Caddy proxies to <vm-ip>:8080 (prod) or
+      # reaches erpnext-frontend:8080 by name on local-dev. deploy-erpnext.yml
+      # passes ERPNEXT_BIND/ERPNEXT_PORT from inventory.
+      - "${ERPNEXT_BIND:-127.0.0.1}:${ERPNEXT_PORT:-8080}:8080"
+    healthcheck:
+      # Unhealthy until post-deploy.sh creates the site — expected on first deploy.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/method/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+
+  websocket:
+    <<: *frappe
+    container_name: erpnext-websocket
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    healthcheck:
+      # The socketio server answers on :9000 once up — `curl -s` (no -f) returns 0
+      # on any HTTP response (the handshake path 400s without query args, which
+      # still proves the listener is live). The image ships curl, not wget.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:9000/socket.io/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # SLIM: a single worker on `long,default,short` covers every queue (prod splits
+  # this into queue-short + queue-long — added in the prod phase, not here).
+  queue:
+    <<: *frappe
+    container_name: erpnext-queue
+    command: ["bench", "worker", "--queue", "long,default,short"]
+    healthcheck:
+      # No listening port and the image lacks ps/pgrep, so verify the bench worker
+      # is the running main process via /proc/1/cmdline (a crashed worker exits
+      # the container, but this also catches an entrypoint that degraded to a shell).
+      test: ["CMD-SHELL", "grep -q bench_helper /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  scheduler:
+    <<: *frappe
+    container_name: erpnext-scheduler
+    command: ["bench", "schedule"]
+    healthcheck:
+      # Same rationale as queue: no port, no ps/pgrep — confirm the bench schedule
+      # process is PID 1 via /proc/1/cmdline.
+      test: ["CMD-SHELL", "grep -q bench_helper /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  erpnext:
+    driver: bridge
+
+volumes:
+  sites:
+  db-data:
+  redis-queue-data:

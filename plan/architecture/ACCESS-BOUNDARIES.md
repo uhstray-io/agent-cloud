@@ -44,6 +44,14 @@ Operator clicks "Deploy NetBox" in Semaphore UI
 
 Without Semaphore, the operator would need to manually export AppRole credentials, losing the audit trail and risking credential exposure in shell history.
 
+### Genesis-Bootstrap Exemption (the one sanctioned non-Semaphore path)
+
+Rule #1 has exactly one carve-out: a service cannot deploy *through* an orchestrator that does not exist yet. The **genesis bootstrap** therefore stands up the secure foundation directly, before Semaphore — and Semaphore comes up **last, already OIDC-secured** (local-dev: `make local-bootstrap`; LOCAL-DEV-DEPLOYMENT.md §12A).
+
+- **Scope of the exemption:** OpenBao → dns → step-ca → caddy → authentik (the secure foundation) **+ Semaphore**. This *widens* the prior "OpenBao + Semaphore only" exemption to the whole foundation, and no further — everything after genesis (Tier-3 services, all redeploys) still goes through Semaphore.
+- **Not a fork, not manual SSH:** genesis runs each service's existing `deploy-<svc>.yml` un-forked, on `localhost`, carrying the bootstrap's own BAO AppRole creds (which is also the marker `tasks/assert-orchestrated.yml` accepts). The only difference from the Semaphore path is the invocation context, not the playbooks.
+- **Still code, still auditable:** the genesis sequence is committed in `bootstrap-local-dev.yml`; nothing is hand-run. (Prod's genesis is the analogous out-of-Semaphore bootstrap of OpenBao + Semaphore.)
+
 ---
 
 ## 2. Direct SSH Access (PERMITTED scenarios)

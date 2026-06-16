@@ -1,0 +1,39 @@
+// Grafana Alloy config (River) — committed config-as-code. Plan: O11Y-DEPLOYMENT.md.
+//
+// Phase 0/1: discover local containers over the mounted engine socket and ship
+// their stdout/stderr to Loki. The socket is mounted at /var/run/docker.sock by
+// compose.local.yml (the podman API is docker-API-compatible).
+//
+// Phase 2 (O11Y-DEPLOYMENT.md): add `otelcol.receiver.otlp` (with real metric/
+// log/trace consumers) for orb-agent telemetry, and tail the OpenBao audit log.
+// It is omitted here on purpose — an OTLP receiver with no output errors at boot.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Relabel: expose the container name as a `container` label on every line.
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "default" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    cluster = "agent-cloud-local",
+  }
+}

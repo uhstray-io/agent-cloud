@@ -1,0 +1,46 @@
+# hickory-dns — internal/dev DNS, Podman-compatible compose.
+#
+# Authoritative for one internal zone (wildcard + explicit records), forwarding
+# everything else upstream. Config + zone files are rendered by Ansible
+# (deploy-dns.yml) from inventory vars BEFORE this stack starts — no secrets in
+# Phase 1 (TSIG arrives in prod Phase 2, plan/development/DNS-SERVER-DEPLOYMENT.md).
+#
+# Ports are env-parameterized: compose overlays MERGE the `ports` list (they can
+# never remove a base entry), so the local loopback shift lives in .env
+# (DNS_LISTEN/DNS_PORT), not in compose.local.yml.
+
+name: dns
+
+services:
+  dns:
+    # Pinned (no :latest) for reproducibility. 0.26.x is the line whose named.toml
+    # forward-store + TSIG format this service targets; multi-arch incl. arm64.
+    image: ${DNS_IMAGE:-docker.io/hickorydns/hickory-dns:0.26.0}
+    container_name: dns
+    restart: unless-stopped
+    # Args to the image's `hickory-dns` entrypoint. Config + zone root are mounts.
+    command: ["-c", "/etc/named.toml", "-z", "/var/named"]
+    environment:
+      # Only consumed by the healthcheck below (escaped $$ so compose does not
+      # interpolate it — it must reach the container shell intact).
+      DNS_ZONE: ${DNS_ZONE:-agent-cloud.test}
+    volumes:
+      - ./config/named.toml:/etc/named.toml:ro
+      - ./config/zones:/var/named:ro
+    ports:
+      - "${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/udp"
+      - "${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/tcp"
+    healthcheck:
+      # Query-based, not --validate: proves the daemon ANSWERS authoritatively
+      # for its own zone, not merely that the config parses. dig ships in the
+      # image (bind-tools). +tcp dodges any UDP quirk in the health context.
+      test: ["CMD-SHELL", "dig +tcp +short +time=2 +tries=1 @127.0.0.1 SOA \"$$DNS_ZONE\" | grep -q . || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+networks:
+  default:
+    name: dns
+    driver: bridge

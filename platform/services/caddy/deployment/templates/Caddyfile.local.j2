@@ -1,0 +1,57 @@
+{# Local-dev Caddyfile, rendered by deploy-caddy.yml from inventory vars.
+   TLS source:
+     - caddy_tls_cert set -> serve the step-ca-minted wildcard leaf (a STABLE,
+       shared root trusted once via `make local-tls-trust`). The cert is minted
+       into ./certs by tasks/mint-internal-cert.yml and mounted at the container
+       path in caddy_tls_cert/caddy_tls_key.
+     - caddy_tls_cert unset -> fall back to Caddy's own internal CA (local_certs;
+       ephemeral per-instance root).
+   Each caddy_routes entry is {host, upstream}; the upstream is usually a
+   local-dev container name (Caddy joins that network via compose.local.yml),
+   but it can be any address — e.g. host.containers.internal:PORT for a service
+   that runs in its own compose project (NetBox) rather than on local-dev.
+   Optional {forward_auth: <outpost addr>} gates the route through Authentik's
+   embedded outpost (Caddy authenticates each request and copies the
+   X-authentik-* identity headers upstream) — used for services that can't do
+   OIDC themselves. Do NOT edit by hand — re-run the playbook. #}
+{% set _cert = caddy_tls_cert | default('') %}
+{
+{% if not _cert %}	local_certs
+{% endif %}	metrics
+}
+
+{% for r in caddy_routes | default([]) %}
+{# A route may opt into a second, internal-only HTTPS listener (e.g. :8443) so
+   in-network OIDC clients reach the IdP at the SAME host:port the browser uses
+   — Caddy publishes host:8443 -> container:443, but in-network peers hit the
+   container directly, so the container must also listen on :8443. The wildcard
+   cert covers the host on any port; no extra host publish is needed. #}
+{{ r.host }}{% if r.internal_https_port | default('') %}, {{ r.host }}:{{ r.internal_https_port }}{% endif %} {
+{% if _cert %}	tls {{ _cert }} {{ caddy_tls_key }}
+{% endif %}{% if r.forward_auth | default('') %}	route {
+		# Strip client-supplied identity headers up front: only the outpost may
+		# set them. Without this a caller could spoof X-authentik-username and
+		# bypass auth (copy_headers only overwrites headers the outpost returns).
+		request_header -X-authentik-username
+		request_header -X-authentik-groups
+		request_header -X-authentik-email
+		request_header -X-authentik-name
+		request_header -X-authentik-uid
+		# Authentik embedded-outpost endpoints (login flow + callbacks).
+		reverse_proxy /outpost.goauthentik.io/* {{ r.forward_auth }}
+		# Authenticate every other request; on success the outpost returns the
+		# X-authentik-* identity headers we copy to the upstream.
+		forward_auth {{ r.forward_auth }} {
+			uri /outpost.goauthentik.io/auth/caddy
+			copy_headers X-authentik-username X-authentik-groups X-authentik-email X-authentik-name X-authentik-uid
+			trusted_proxies private_ranges
+		}
+		reverse_proxy {{ r.upstream }}
+	}
+{% else %}	reverse_proxy {{ r.upstream }}
+{% endif %}}
+
+{% endfor %}
+# Per-service fragments distributed by tasks/distribute-caddy-site.yml (none yet
+# locally — the glob tolerates zero matches).
+import sites/*.caddy
