@@ -451,10 +451,19 @@ promote() {
   # Mandatory (not best-effort) + repository-wide via git ls-files, so a missing
   # linter or an un-globbed file (https-forward.sh, inventories, compose, blueprints)
   # can't slip a lint failure past local promotion that CI would then catch.
+  # Guard each xargs on a non-empty match: macOS xargs has no -r/--no-run-if-empty,
+  # so an empty `ls-files` (sparse checkout, future refactor) would invoke the
+  # linter with no args and BLOCK reading stdin. The plain (non -z) ls-files is a
+  # safe existence test; the -z pipe does the real, batched, NUL-safe run.
+  # (Not `mapfile -d ''` — macOS default bash is 3.2, where that doesn't exist.)
   command -v shellcheck >/dev/null || die "shellcheck not found — run: brew bundle"
-  git -C "$REPO_ROOT" ls-files -z '*.sh' | xargs -0 shellcheck -S warning
+  if [ -n "$(git -C "$REPO_ROOT" ls-files '*.sh')" ]; then
+    git -C "$REPO_ROOT" ls-files -z '*.sh' | xargs -0 shellcheck -S warning
+  fi
   command -v yamllint >/dev/null || die "yamllint not found — run: brew bundle"
-  git -C "$REPO_ROOT" ls-files -z '*.yml' '*.yaml' | xargs -0 yamllint -c "${REPO_ROOT}/.yamllint.yml"
+  if [ -n "$(git -C "$REPO_ROOT" ls-files '*.yml' '*.yaml')" ]; then
+    git -C "$REPO_ROOT" ls-files -z '*.yml' '*.yaml' | xargs -0 yamllint -c "${REPO_ROOT}/.yamllint.yml"
+  fi
   local branch
   branch=$(git -C "$REPO_ROOT" branch --show-current)
   case "$branch" in
