@@ -20,83 +20,22 @@ setup() {
   grep -q 'LOCAL_DEV.*scripts/local-dev.sh' "$MF"
 }
 
-# ── Declared .PHONY targets ───────────────────────────────────────────────────
+# ── Declared targets (data-driven: one test, the expected set as data) ────────
 
-@test "Makefile: help target is declared" {
-  grep -qE '^help:' "$MF"
+@test "Makefile: all documented concrete targets are declared" {
+  # Data-driven instead of ~20 near-identical greps. A missing target names
+  # itself in the failure. Keep this list in sync with the Makefile's targets.
+  local targets=(help local-preflight local-init local-bootstrap local-up local-all
+                 local-creds local-validate local-smoke local-netbox local-netbox-discover
+                 local-dns local-dns-resolver local-https local-https-down
+                 local-tls-trust local-tls-untrust local-clean promote)
+  for t in "${targets[@]}"; do
+    grep -qE "^${t}:" "$MF" || { echo "missing concrete target: $t"; return 1; }
+  done
 }
 
-@test "Makefile: local-preflight target is declared" {
-  grep -qE '^local-preflight:' "$MF"
-}
-
-@test "Makefile: local-init target is declared" {
-  grep -qE '^local-init:' "$MF"
-}
-
-@test "Makefile: local-bootstrap target is declared" {
-  grep -qE '^local-bootstrap:' "$MF"
-}
-
-@test "Makefile: local-up target is declared" {
-  grep -qE '^local-up:' "$MF"
-}
-
-@test "Makefile: local-validate target is declared" {
-  grep -qE '^local-validate:' "$MF"
-}
-
-@test "Makefile: local-dns target is declared" {
-  grep -qE '^local-dns:' "$MF"
-}
-
-@test "Makefile: local-dns-resolver target is declared" {
-  grep -qE '^local-dns-resolver:' "$MF"
-}
-
-@test "Makefile: local-https target is declared" {
-  grep -qE '^local-https:' "$MF"
-}
-
-@test "Makefile: local-https-down target is declared" {
-  grep -qE '^local-https-down:' "$MF"
-}
-
-@test "Makefile: local-tls-trust target is declared" {
-  grep -qE '^local-tls-trust:' "$MF"
-}
-
-@test "Makefile: local-tls-untrust target is declared" {
-  grep -qE '^local-tls-untrust:' "$MF"
-}
-
-@test "Makefile: local-clean target is declared" {
-  grep -qE '^local-clean:' "$MF"
-}
-
-@test "Makefile: promote target is declared" {
-  grep -qE '^promote:' "$MF"
-}
-
-@test "Makefile: local-smoke target is declared" {
-  grep -qE '^local-smoke:' "$MF"
-}
-
-@test "Makefile: local-netbox target is declared" {
-  grep -qE '^local-netbox:' "$MF"
-}
-
-@test "Makefile: local-netbox-discover target is declared" {
-  grep -qE '^local-netbox-discover:' "$MF"
-}
-
-# ── Pattern rules ─────────────────────────────────────────────────────────────
-
-@test "Makefile: local-deploy-% pattern rule is declared" {
+@test "Makefile: pattern rules (local-deploy-%, local-clean-deploy-%) are declared" {
   grep -qE '^local-deploy-%:' "$MF"
-}
-
-@test "Makefile: local-clean-deploy-% pattern rule is declared" {
   grep -qE '^local-clean-deploy-%:' "$MF"
 }
 
@@ -118,26 +57,27 @@ setup() {
   grep -qF '##' "$MF"
 }
 
-@test "Makefile: every concrete target (not pattern) has a ## comment" {
-  # Concrete targets without ## are invisible in 'make help' output.
-  # Collect all concrete-target lines (exclude pattern rules and comment blocks).
-  while IFS= read -r line; do
-    target=$(echo "$line" | sed 's/:.*//')
-    # Skip if the same line or the rule body already has ##
-    grep -qE "^${target}:.*##" "$MF" || {
-      echo "Target '$target' missing ## doc comment"
-      return 1
-    }
-  done < <(grep -E '^[a-zA-Z][a-zA-Z0-9_-]+:[^#]*$' "$MF" | grep -v '^#')
+@test "Makefile: every concrete target carries a ## doc comment (for make help)" {
+  # Targets without an inline ## are invisible in 'make help'. Collect the actual
+  # target headers ('%' pattern rules are excluded by the char class) and assert
+  # each has '##' on its header line. (The previous version selected lines
+  # WITHOUT ## then checked FOR ## — a contradiction that made it a no-op.)
+  while IFS= read -r t; do
+    grep -qE "^${t}:.*##" "$MF" || { echo "target '$t' has no ## doc comment"; return 1; }
+  done < <(grep -oE '^[a-zA-Z][a-zA-Z0-9_-]*:' "$MF" | sed 's/:$//' | sort -u)
 }
 
 # ── local-up: Tier-3 services deployed through Semaphore ─────────────────────
 
-@test "Makefile: local-up invokes local-bootstrap first" {
-  # local-up's recipe block must contain local-bootstrap before the deploy targets.
+@test "Makefile: local-up runs local-bootstrap BEFORE the deploy targets" {
   run grep -A10 '^local-up:' "$MF"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "local-bootstrap" ]]
+  # Enforce ORDER, not mere presence: the bootstrap line must precede the first
+  # local-deploy line within the recipe block.
+  local boot_ln deploy_ln
+  boot_ln=$(printf '%s\n' "$output" | grep -n 'local-bootstrap' | head -1 | cut -d: -f1)
+  deploy_ln=$(printf '%s\n' "$output" | grep -n 'local-deploy' | head -1 | cut -d: -f1)
+  [ -n "$boot_ln" ] && [ -n "$deploy_ln" ] && [ "$boot_ln" -lt "$deploy_ln" ]
 }
 
 @test "Makefile: local-up deploys o11y, opa, erpnext after bootstrap" {
@@ -156,22 +96,12 @@ setup() {
 
 # ── Delegation convention: targets delegate to scripts/local-dev.sh ──────────
 
-@test "Makefile: local-bootstrap delegates to LOCAL_DEV bootstrap" {
-  run grep -A2 '^local-bootstrap:' "$MF"
-  [[ "$output" =~ 'bootstrap' ]]
-}
-
-@test "Makefile: local-clean delegates to LOCAL_DEV clean" {
-  run grep -A2 '^local-clean:' "$MF"
-  [[ "$output" =~ 'clean' ]]
-}
-
-@test "Makefile: promote delegates to LOCAL_DEV promote" {
-  run grep -A2 '^promote:' "$MF"
-  [[ "$output" =~ 'promote' ]]
-}
-
-@test "Makefile: local-deploy-% delegates to LOCAL_DEV deploy" {
-  run grep -A2 '^local-deploy-%:' "$MF"
-  [[ "$output" =~ 'deploy' ]]
+@test "Makefile: core targets delegate to \$(LOCAL_DEV) with the right subcommand" {
+  # Assert the recipe actually invokes $(LOCAL_DEV) <subcommand> — a loose word
+  # match (e.g. 'bootstrap') could be satisfied by a comment or unrelated text,
+  # missing a regression in the recipe command itself.
+  grep -A2 '^local-bootstrap:' "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+bootstrap'
+  grep -A2 '^local-clean:'     "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+clean'
+  grep -A2 '^promote:'         "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+promote'
+  grep -A2 '^local-deploy-%:'  "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+deploy'
 }

@@ -22,30 +22,16 @@ setup() {
   ! grep -qE '^platform/inventory/local-dev\.yml\.example' "$GITIGNORE"
 }
 
-@test ".gitignore: local-dev.yml entry is not commented out" {
-  # A commented-out entry would silently allow the working inventory to be committed.
-  run grep 'platform/inventory/local-dev.yml' "$GITIGNORE"
-  [ "$status" -eq 0 ]
-  # The matching line must not start with #
-  while IFS= read -r line; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" =~ platform/inventory/local-dev\.yml ]] && return 0
-  done <<< "$output"
-  return 1
+@test ".gitignore: local-dev.yml entry is active (not commented out)" {
+  # A commented-out entry would silently allow the working inventory to be
+  # committed. One anchored grep: optional leading whitespace then the path with
+  # no leading '#'. The trailing (\s|$) avoids matching the .yml.example line.
+  grep -qE '^[[:space:]]*platform/inventory/local-dev\.yml([[:space:]]|$)' "$GITIGNORE"
 }
 
-@test ".gitignore: existing secret patterns are still present" {
-  # -F: these are literal .gitignore glob patterns; '*' and '.' must not be
-  # treated as BRE metacharacters (the unanchored BRE happened to match, but
-  # the */deployment/.env pattern below does not — match all of them literally).
-  grep -qF 'secrets/' "$GITIGNORE"
-  grep -qF '*.secret' "$GITIGNORE"
-  grep -qF '*.key' "$GITIGNORE"
-}
-
-@test ".gitignore: .env files for service deployments are still gitignored" {
-  grep -qF 'platform/services/*/deployment/.env' "$GITIGNORE"
-}
+# NOTE: the generic secret-file patterns (secrets/, *.secret, *.key, *.pem, and
+# runtime .env) are owned + asserted by test_credential_leaks.bats — not
+# duplicated here (this file covers only the local-dev-specific entries).
 
 # ── Brewfile — developer toolchain ───────────────────────────────────────────
 

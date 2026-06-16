@@ -42,13 +42,20 @@ setup() {
 @test "inventory example: openbao_addr is localhost-only" {
   run grep -E 'openbao_addr:' "$INVENTORY"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "127.0.0.1" ]]
+  # EVERY openbao_addr must point at loopback — an aggregate "contains 127.0.0.1"
+  # would pass even if one entry pointed elsewhere.
+  while IFS= read -r line; do
+    [[ "$line" =~ 127\.0\.0\.1 ]] || { echo "Non-localhost openbao_addr: $line"; return 1; }
+  done < <(grep 'openbao_addr:' "$INVENTORY")
 }
 
 @test "inventory example: local_mode is true" {
   run grep -E 'local_mode:' "$INVENTORY"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "true" ]]
+  # EVERY local_mode entry must be explicitly true (not just "contains true").
+  while IFS= read -r line; do
+    [[ "$line" =~ local_mode:[[:space:]]*true([[:space:]]|$) ]] || { echo "local_mode not true: $line"; return 1; }
+  done < <(grep 'local_mode:' "$INVENTORY")
 }
 
 @test "inventory example: no real credentials (no values that look like passwords or tokens)" {
