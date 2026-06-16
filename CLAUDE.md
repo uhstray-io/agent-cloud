@@ -322,7 +322,7 @@ Every PR to main is gated by GitHub Actions CI (`.github/workflows/lint-and-test
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (36 tests, Bash)
+- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (133 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

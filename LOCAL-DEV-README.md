@@ -321,6 +321,6 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-validate` | health-check all deployed services |
 | `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |
 | `make local-netbox` | bring up the NetBox app tier under podman |
-| `make local-netbox-discover` | discover the running containers into NetBox as VMs |
+| `make local-netbox-discover` | discover the running containers into NetBox as VMs (interim; slated to become a Diode-based read-only reflection — see [`SOURCE-OF-TRUTH.md`](plan/development/SOURCE-OF-TRUTH.md) D5) |
 | `make local-clean` | tear down the control plane |
 | `make promote` | fast checks → push feature branch → PR into `dev` |
