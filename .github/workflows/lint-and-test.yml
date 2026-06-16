@@ -24,7 +24,7 @@ jobs:
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -217,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
@@ -308,7 +308,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
@@ -341,7 +341,7 @@ jobs:
         # Docker is used in CI (not Podman) — buildx is the path-of-least-resistance
         # for cache and multi-stage builds in GitHub-hosted runners. The runtime
         # in prod is Podman; the resulting image is OCI-compliant and works on either.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: platform/services/uhhcraft/deployment
           file: platform/services/uhhcraft/deployment/Dockerfile
