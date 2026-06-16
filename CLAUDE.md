@@ -81,6 +81,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
+- `plan/development/SOURCE-OF-TRUTH.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
 - `plan/architecture/architecture-reference.md` — Master architecture document index and standards
 - `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules
 - `plan/architecture/CADDY-REVERSE-PROXY.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps
