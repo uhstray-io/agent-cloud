@@ -109,3 +109,13 @@ setup() {
   grep -q 'is_superuser' "$f"
   grep -q 'authentik_policies.policybinding' "$f"
 }
+
+@test "authentik: openbao-oidc is gated admins-only (its role grants root to all)" {
+  # The OpenBao OIDC role maps every OIDC user to the platform-admin policy
+  # (path "*"), so the deny of developers must happen at the gate. openbao-oidc
+  # must bind policy-platform-admin, NOT the shared platform-member.
+  local f="$DEPLOY_DIR/blueprints/zz-sso-bindings.yaml"
+  grep -q 'name: platform-admin' "$f"
+  # the openbao-oidc binding references the admin policy (block-scoped grep)
+  grep -A3 '\[slug, openbao-oidc\]' "$f" | grep -q 'policy-platform-admin'
+}

@@ -426,10 +426,12 @@
     # native OIDC login (Authentik app `openbao-oidc`) so an SSO'd admin maps to
     # an OpenBao policy instead of needing the root token. Configured here (not a
     # deploy) because OpenBao is bootstrapped directly; gated on _oidc_ready
-    # (Authentik up + secrets present). LOCAL-DEV scope: the role grants the admin
-    # policy to any OIDC user via token_policies — everyone reaching this login
-    # already passed forward_auth (platform-admins/developers). groups_claim is set
-    # so a prod follow-up can swap to external-group -> policy mapping.
+    # (Authentik up + secrets present). The role grants the admin policy to any
+    # OIDC user via token_policies, so the openbao-oidc APP is gated admins-only
+    # in Authentik (zz-sso-bindings policy-platform-admin) — developers can't
+    # complete this login and so can't inherit root. groups_claim is set so a prod
+    # follow-up can swap to external-group -> per-policy mapping (admins=admin,
+    # developers=read-only) and relax the app gate back to platform-member.
     - name: "Read the step-ca root for OpenBao's OIDC discovery trust"
       ansible.builtin.command: "podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt"
       register: _stepca_root

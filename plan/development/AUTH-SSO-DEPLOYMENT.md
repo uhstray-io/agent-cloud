@@ -139,7 +139,7 @@ Enforcement happens in **two tiers**: (1) *can you reach the service* and (2) *w
 - **Tier 2 — role** maps the surviving groups to a native role. The group **names are the contract**; renaming breaks every consumer. The same list rides both the OIDC `groups` claim (Authentik's default `profile` scope emits it) and the forward_auth `X-authentik-groups` header:
   - **Grafana** — `ROLE_ATTRIBUTE_PATH`: `platform-admins`→Admin, else→Viewer (read-only). `ALLOWED_GROUPS` excludes business.
   - **NetBox** — `REMOTE_AUTH_GROUP_SYNC_ENABLED` syncs the header into Django groups; `REMOTE_AUTH_SUPERUSER_GROUPS=platform-admins` → superuser; a `platform-developers` group pre-seeded with a view-all `ObjectPermission` (in `local-netbox-up.sh`) → read-only. business never arrives (Tier-1 denied).
-  - **OpenBao** — forward_auth is a *network gate* on the UI (Tier 1); OpenBao's own token auth governs read/write (Tier 2). True group→policy mapping is a later OIDC/JWT-auth-method step.
+  - **OpenBao** — forward_auth is a *network gate* on the UI (Tier 1); OpenBao's own token auth governs read/write (Tier 2). Native **OIDC login is now live** (`openbao-oidc` app + OpenBao `auth/oidc`): its role maps every OIDC user to the `platform-admin` policy (`path "*"`), so that app is gated **admins-only** (`policy-platform-admin`, not `platform-member`) — a developer would otherwise inherit root. **Prod follow-up:** swap the OpenBao role to external-group→per-policy mapping (admins→admin, developers→read-only) and relax the `openbao-oidc` app gate back to `platform-member`.
 
 Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 
