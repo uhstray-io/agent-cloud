@@ -261,23 +261,27 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 ### Branch Workflow
 
-**All code changes go through feature branches and pull requests — never push directly to main.**
+**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
-1. Create a feature branch from `main`: `git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
+- `main` is the production branch — Semaphore deploys from it.
+- `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `LOCAL-DEV-README.md` / `plan/development/LOCAL-DEV-DEPLOYMENT.md`, and/or via prod branch deploys per `plan/architecture/BRANCH-TESTING-WORKFLOW.md`) before promotion to `main`.
+
+1. Create a feature branch from `dev`: `git checkout dev && git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
 2. Commit changes on the feature branch
 3. **Before creating a PR**, update documentation:
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
    - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
 4. Run `/simplify` and `/security-review` on the branch changes
-5. Push the branch: `git push -u origin feat/<description>`
-6. Create a PR via `gh pr create`
+5. Push the branch: `git push -u origin <type>/<description>`
+6. Create a PR **into `dev`**: `gh pr create --base dev`
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
 9. Confirm all checks pass after fixes
-10. Only then merge the PR
+10. Only then merge the PR into `dev`
+11. **Promotion to production**: once the `dev` changes are validated, open a `dev` → `main` PR — the same checks-complete-and-pass rules apply before merging
 
-**Never merge a PR before its checks have completed and passed.** This applies to all development: new features, bug fixes, plan updates, and documentation changes.
+**Never merge a PR before its checks have completed and passed.** This applies to all development — new features, bug fixes, plan updates, documentation changes — and to promotion PRs from `dev` to `main`.
 
 ### Mandatory Pre-Push Audit
 
@@ -318,7 +322,7 @@ Key paths:
 
 ## Testing and Linting
 
-Every PR to main is gated by GitHub Actions CI (`.github/workflows/lint-and-test.yml`):
+Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/lint-and-test.yml`):
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
