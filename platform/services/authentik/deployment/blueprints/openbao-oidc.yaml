@@ -49,5 +49,8 @@ entries:
     attrs:
       name: OpenBao (OIDC login)
       provider: !KeyOf provider-openbao-oidc
-      meta_launch_url: https://openbao.agent-cloud.test:8443/ui/vault/auth/oidc
+      # The OpenBao UI login route is /ui/vault/auth with the method preselected
+      # via ?with=<mount> — there is NO /ui/vault/auth/oidc route (it 404s in the
+      # Ember router). ?with=oidc lands on the login page with OIDC chosen.
+      meta_launch_url: https://openbao.agent-cloud.test:8443/ui/vault/auth?with=oidc
       open_in_new_tab: true
