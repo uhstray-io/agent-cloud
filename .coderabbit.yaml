@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/configuration
+#
+# request_changes_workflow is the enforceable hook behind the protect-main
+# ruleset: when CodeRabbit requests changes it opens review threads that must be
+# resolved, and the ruleset's "require conversation resolution" rule then blocks
+# the merge button until they are.
+# See plan/development/MAIN-BRANCH-PROTECTION-PLAN.md and .github/rulesets/.
+language: en-US
+reviews:
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
