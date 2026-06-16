@@ -1,0 +1,33 @@
+{
+  "catalog": {
+    "nemoclaw": {
+      "allowed_actions": {
+        "nocodb": ["read", "create", "update"],
+        "github": ["list_issues", "create_issue", "update_issue", "add_comment"],
+        "discord": ["send_message", "read_messages"],
+        "n8n": ["list_workflows", "trigger_workflow", "list_executions"],
+        "semaphore": ["list_projects", "list_templates", "run_task", "check_task"],
+        "netbox": ["read"]
+      }
+    },
+    "netclaw": {
+      "allowed_actions": {
+        "netbox": ["read", "create", "update"],
+        "nocodb": ["read", "create", "update"],
+        "pfsense": ["read_config", "read_status"],
+        "snmp": ["poll"],
+        "nmap": ["scan_subnet"]
+      }
+    },
+    "semaphore": {
+      "destructive_templates": [
+        "Clean Deploy NetBox",
+        "Clean Deploy NocoDB",
+        "Clean Deploy n8n",
+        "Clean Deploy OPA",
+        "Clean Deploy ERPNext",
+        "Wipe and Rebuild"
+      ]
+    }
+  }
+}

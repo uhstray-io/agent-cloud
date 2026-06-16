@@ -1,0 +1,23 @@
+# Prometheus scrape config (committed config-as-code). Mounted read-only.
+# Plan: plan/development/O11Y-DEPLOYMENT.md. Targets are reached by container
+# name on the shared network (Caddy joins it via compose.local.yml locally).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: agent-cloud-local
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Phase 2 (O11Y-DEPLOYMENT.md) — per-target metrics:
+  #   - Caddy: its admin API (:2019/metrics) binds LOOPBACK-ONLY, so it is not
+  #     scrapeable cross-container. Phase 2 adds a dedicated routable metrics
+  #     listener in the Caddyfile (e.g. `:2021 { metrics }`) and scrapes that.
+  #     (The `metrics` global option is already enabled in Caddyfile.local.j2.)
+  #   - Containers/host: cAdvisor + node-exporter once validated on the VM.
+  #   - Agents: the orb-agent OTLP path via Alloy.
+  # Each also needs a Prometheus reload (--web.enable-lifecycle / POST /-/reload)
+  # wired into the deploy when scrape targets change.

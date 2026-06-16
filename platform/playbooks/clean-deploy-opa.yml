@@ -1,0 +1,21 @@
+---
+# clean-deploy-opa.yml — Destroy and redeploy OPA.
+#
+# OPA is stateless (policies are read-only mounts, no data volume), so this is
+# low-risk — it just recreates the container. Local-dev shares one deploy tree,
+# so the clone is NOT removed (clean-service.yml branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-opa.yml.
+
+- name: "Clean OPA deployment"
+  hosts: opa_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-opa.yml

@@ -59,3 +59,7 @@ platform/services/inference-*/deployment/app/__pycache__/
 # Local .env files (Compose reads these; gitignored per CLAUDE.md secret rules)
 platform/services/*/deployment/.env
 platform/services/*/deployment/.env.local
+
+# Local-dev working files (plan/development/LOCAL-DEV-DEPLOYMENT.md) —
+# only the committed *.example template belongs in git
+platform/inventory/local-dev.yml

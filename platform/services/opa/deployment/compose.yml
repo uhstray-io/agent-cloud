@@ -1,0 +1,37 @@
+# OPA — Open Policy Agent: the cross-service authorization decision point of the
+# Guardrail Layer (OpenBao owns credentials, Kyverno owns k8s admission, OPA owns
+# everything else — "are you allowed to do this?"). Policies are Rego under
+# ./policies, mounted read-only (policy-as-code). Phase 1: unauthenticated
+# internal decision API (it returns decisions, not secrets). deploy.sh is
+# container-lifecycle only. Plan: plan/development/OPA-INTEGRATION-PLAN.md.
+name: opa
+
+services:
+  opa:
+    # -static = multi-arch (incl. arm64 for the podman-machine VM) distroless
+    # build; the plain tag is amd64-only and crashes under emulation.
+    image: ${OPA_IMAGE:-openpolicyagent/opa:1.0.0-static}
+    container_name: opa
+    restart: unless-stopped
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --diagnostic-addr=0.0.0.0:8282
+      - --log-level=${OPA_LOG_LEVEL:-info}
+      # Decision + status logs to stdout -> Docker/Alloy -> Loki (the missing
+      # "unified audit of agent decisions"). Static config only; dynamic context
+      # comes from each query's `input`.
+      - --set=decision_logs.console=true
+      - --set=status.console=true
+      - /policies
+    ports:
+      # Loopback by default (prod can widen); agents on the same network reach it
+      # as opa:8181. The published host port is for diagnostics + smoke checks —
+      # 8281 by default (8181 is NocoDB's local bind). deploy-opa.yml passes
+      # OPA_BIND/OPA_PORT from inventory.
+      - "${OPA_BIND:-127.0.0.1}:${OPA_PORT:-8281}:8181"
+    volumes:
+      - ./policies:/policies:ro
+    # No compose healthcheck: the OPA image is distroless (no shell/wget). The
+    # deploy playbook verifies GET /health on :8181 instead.

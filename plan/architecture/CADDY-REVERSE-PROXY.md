@@ -186,6 +186,17 @@ Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot 
 
 ## TLS and DNS Integration
 
+### TLS strategy: two needs, neither is being a public CA (decided 2026-06-13)
+
+TLS for agent-cloud decomposes into two distinct needs. Conflating hosting with *being a CA* briefly over-scoped the work; the decided architecture:
+
+| Need | Solution | Notes |
+|---|---|---|
+| **Public TLS** — the hosted SaaS app + customer/tenant domains (browser-trusted) | **Caddy automatic-HTTPS + Let's Encrypt** (DNS-01 below). For SaaS tenant *custom domains*, **Caddy On-Demand TLS** issues per-domain certs from LE on first request, gated by an `ask` authorization endpoint. | TLS **consumption** — you obtain public certs from LE; you do **not** run a CA. This is the canonical SaaS custom-domain pattern. |
+| **Internal TLS** — services/operators on `*.agent-cloud.test` / internal zones / LAN | **step-ca internal CA** (`INTERNAL-CA-DEPLOYMENT.md`) — the default: a **stable** shared root trusted once (`make local-tls-trust`) that persists across redeploys/volume-wipes and is reusable across local-dev, prod, and every developer; Caddy serves a step-ca-issued wildcard. **Caddy's own internal CA** (`tls internal` / `local_certs`) is a narrow fallback only — its root is ephemeral + per-instance (re-trust on every wipe), fine if step-ca is down. | Internal-only; LE can't validate non-public names. |
+
+**Key principle:** hosting agent-cloud as SaaS + Enterprise needs TLS **consumption** (Caddy + Let's Encrypt), not TLS **production** (running a public CA — out of scope). Enterprise self-hosted installs use the same Caddy automatic-HTTPS (their LE certs + their internal CA); even air-gapped installs that can't reach LE want an *internal* CA (step-ca), not a public-CA product.
+
 ### Why DNS-01 Challenge
 
 Caddy uses the **CloudFlare DNS-01 ACME challenge** for certificate issuance and renewal. This is required because:

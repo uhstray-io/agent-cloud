@@ -1,0 +1,75 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose() when
+# LOCAL_MODE=true. Images/ports/site are env-parameterized in the BASE; this
+# overlay carries only what overlays CAN add: memory caps, the SELinux opt (the
+# podman-machine VM enforces SELinux on the `sites` volume), and the extra
+# `local-dev` network so central Caddy reaches the frontend by name
+# (erpnext-frontend:8080). DB + both Redis stay on the internal `erpnext`
+# network only.
+#
+# The base compose is ALREADY the slim shape (single `queue` worker, no MinIO);
+# this overlay only adds caps/network. Measured budget target: ≤3.5 GB total
+# (LOCAL-DEV-DEPLOYMENT.md P4). The caps below sum to ~3.4 GB.
+
+networks:
+  # Declare ONLY the new network here. Re-declaring the base `erpnext` network
+  # (a dict in compose.yml) as null collides on merge ("can't merge dict and
+  # NoneType"); the frontend can reference the base-declared `erpnext` net
+  # without re-declaring it (same pattern as the authentik/opa overlays).
+  local-dev:
+    external: true
+
+services:
+  db:
+    mem_limit: 768m
+    security_opt:
+      - label=disable
+  redis-cache:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+  redis-queue:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+  configurator:
+    # One-shot; cap it too so the `compose run` step stays inside budget.
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  backend:
+    mem_limit: 1280m
+    security_opt:
+      - label=disable
+    # OIDC: the backend makes server-side token/userinfo calls to the IdP, so it
+    # joins local-dev (resolves auth.agent-cloud.test via Caddy's alias + :8443
+    # listener) and trusts the IdP's step-ca cert. The root is distributed into
+    # ./certs by tasks/distribute-ca-root.yml; REQUESTS_CA_BUNDLE points Frappe's
+    # `requests` client at it. Local-only (step-ca trust is a local-dev concern;
+    # prod's IdP uses its own chain). Narrow trust is fine here — the backend's
+    # only outbound HTTPS in local-dev is the internal IdP.
+    networks:
+      - erpnext
+      - local-dev
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt
+  frontend:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+    networks:
+      - erpnext
+      - local-dev
+  websocket:
+    mem_limit: 256m
+    security_opt:
+      - label=disable
+  queue:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  scheduler:
+    mem_limit: 256m
+    security_opt:
+      - label=disable

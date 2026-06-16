@@ -1,0 +1,23 @@
+---
+# clean-deploy-caddy.yml — Destroy and redeploy Caddy from scratch.
+#
+# WARNING: Destroys Caddy's containers + volumes (caddy-data/caddy-config — incl.
+#          its own internal-CA state if not serving step-ca certs). The rendered
+#          Caddyfile + minted cert are re-created on redeploy. Local-dev shares
+#          one deploy tree, so the clone is NOT removed (clean-service.yml
+#          branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-caddy.yml.
+
+- name: "Clean Caddy deployment"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-caddy.yml

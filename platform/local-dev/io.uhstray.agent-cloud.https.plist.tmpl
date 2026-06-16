@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LaunchDaemon template for the local-dev privileged-port forwarder.
+     Rendered + installed idempotently by `make local-https` (scripts/local-dev.sh
+     https): __PLACEHOLDERS__ are substituted, then it is copied to
+     /Library/LaunchDaemons and bootstrapped into the system domain (root).
+     Removed by `make local-https-down`. Persists across reboots (RunAtLoad). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.uhstray.agent-cloud.https</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__WRAPPER__</string>
+    <string>__HTTPS_LISTEN__</string>
+    <string>__HTTPS_TARGET__</string>
+    <string>__HTTP_LISTEN__</string>
+    <string>__HTTP_TARGET__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/agent-cloud-https-forward.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/agent-cloud-https-forward.log</string>
+</dict>
+</plist>

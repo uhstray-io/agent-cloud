@@ -16,7 +16,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
@@ -53,26 +53,15 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
-    - name: "Install git if needed"
-      ansible.builtin.apt:
-        name: git
-        state: present
-      become: true
-
-    - name: "Clone or update agent-cloud monorepo"
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ _branch }}"
-        force: true
-
-    - name: "Ensure podman + compose entrypoint"
-      ansible.builtin.include_tasks: tasks/install-podman-compose.yml
+    # Place the repo (prod clone / local working-tree copy) + ensure the
+    # podman/compose entrypoint. Shared with every composable service deploy.
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Convenience symlink"
       ansible.builtin.file:
         src: "{{ _deploy_dir }}"
-        dest: "/home/{{ ansible_user }}/{{ service_name }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
         state: link
         force: true
       register: _symlink_result
@@ -93,7 +82,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _service_url: "{{ service_url | default('http://localhost:3000') }}"
 
@@ -117,7 +106,7 @@
   gather_facts: false
   become: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _service_url: "{{ service_url | default('http://localhost:3000') }}"
 

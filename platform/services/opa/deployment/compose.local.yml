@@ -1,0 +1,20 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/ports are env-parameterized in the BASE; this overlay carries only what
+# overlays CAN add: a memory cap, the SELinux opt (the podman-machine VM enforces
+# SELinux on the ./policies bind mount), and the extra `local-dev` network so
+# agents + the control plane reach OPA by name (opa:8181).
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  opa:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev

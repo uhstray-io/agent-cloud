@@ -1,0 +1,20 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/ports are env-parameterized in the base (.env); this overlay carries
+# caps, the SELinux opt, and the extra network so Caddy (on local-dev) can reach
+# step-ca by name for ACME/cert issuance.
+
+networks:
+  # podman-compose needs every referenced network declared, incl. the default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  step-ca:
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev

@@ -1,6 +1,145 @@
 ---
-# deploy-n8n.yml — Thin wrapper for deploy-service.yml
-- name: "Deploy n8n"
-  import_playbook: deploy-service.yml
+# deploy-n8n.yml — n8n deploy (composable). Replaces the legacy
+# deploy-service.yml + secret-generating deploy.sh path.
+#
+# Phase 1: Place repo + manage-secrets (DB admin/user passwords + the STATEFUL
+#          N8N_ENCRYPTION_KEY — generated once into OpenBao and reused) + template
+#          .env. For the EXISTING prod instance these must be pre-seeded from the
+#          live values FIRST (seed-n8n-secrets.yml / migration Task 0) so this
+#          run FETCHES rather than generates — re-keying bricks stored creds.
+# Phase 2: deploy.sh — container lifecycle (pull, up postgres+redis+n8n+worker).
+# Phase 3: Verify n8n /healthz.
+#
+# Plan: plan/development/nocodb-n8n-composable-migration.md (Migration Safety).
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage n8n secrets"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
   vars:
-    target_service: n8n_svc
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # encryption_key is STATEFUL — manage-secrets reuses an existing OpenBao value
+    # and only generates when truly absent (fresh/greenfield host).
+    _secret_definitions:
+      - { name: db_admin_password, type: random, length: 32 }
+      - { name: db_user_password, type: random, length: 32 }
+      - { name: encryption_key, type: random, length: 48 }
+      # n8n owner account (agent-cloud-admin). Community n8n has no SSO — Caddy
+      # forward_auth gates ACCESS, but n8n still needs its own owner or it shows
+      # /setup. Seeded in Phase 3 so an SSO'd admin lands on a ready instance.
+      - { name: owner_password, type: random, length: 24 }
+    _env_templates:
+      - { src: n8n.env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start n8n"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        N8N_LISTEN: "{{ n8n_bind | default('127.0.0.1') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify n8n"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    # Reachable by container name on local-dev (this play runs in the Semaphore
+    # container); prod overrides with the n8n host URL.
+    _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
+    _owner_email: "agent-cloud-admin@{{ dev_zone | default('agent-cloud.test') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "n8n health (/healthz -> 200)"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/healthz"
+        status_code: [200]
+      register: _n8n
+      retries: 12
+      delay: 5
+      until: _n8n.status == 200
+
+    # Community n8n has no SSO: forward_auth gates ACCESS, then n8n needs its own
+    # owner account or it serves /setup. Seed agent-cloud-admin as the owner so an
+    # SSO'd admin lands ready. Idempotent: only runs when n8n still wants setup,
+    # so re-deploys never clobber an existing owner. Password from OpenBao.
+    - name: "Check whether n8n still needs owner setup"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/rest/settings"
+        status_code: [200]
+      register: _n8n_settings
+
+    - name: "Seed the n8n owner account (agent-cloud-admin)"
+      when: _n8n_settings.json.data.userManagement.showSetupOnFirstLoad | default(false) | bool
+      block:
+        - name: "Authenticate to OpenBao (AppRole)"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+          register: _bao_login
+          no_log: true
+
+        - name: "Read the n8n owner password from OpenBao"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/n8n"
+            headers:
+              X-Vault-Token: "{{ _bao_login.json.auth.client_token }}"
+          register: _n8n_secret
+          no_log: true
+
+        - name: "Create the n8n owner via the setup endpoint"
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/rest/owner/setup"
+            method: POST
+            body_format: json
+            body:
+              email: "{{ _owner_email }}"
+              firstName: agent-cloud
+              lastName: Admin
+              password: "{{ _n8n_secret.json.data.data.owner_password }}"
+            status_code: [200]
+          no_log: true
+
+        - name: "Owner seeded"
+          ansible.builtin.debug:
+            msg: "n8n owner created: {{ _owner_email }} (reach n8n through forward_auth, then log in)."
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "n8n healthy — stack up, /healthz answering (encryption key preserved from OpenBao)."

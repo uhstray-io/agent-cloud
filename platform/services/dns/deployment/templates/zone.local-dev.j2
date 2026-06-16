@@ -1,0 +1,18 @@
+{# RFC 1035 master file, rendered by deploy-dns.yml. The wildcard points every
+   *.<zone> name at one target (127.0.0.1 locally) so a new service needs no
+   per-name record; explicit dns_records override/extend it. Do NOT edit by
+   hand — re-run the playbook. #}
+$TTL {{ dns_ttl | default('60') }}
+@   IN  SOA ns.{{ dns_zone }}. hostmaster.{{ dns_zone }}. (
+        {{ dns_zone_serial | default('1') }} ; serial
+        3600    ; refresh
+        600     ; retry
+        604800  ; expire
+        {{ dns_ttl | default('60') }} )       ; minimum / negative TTL
+@   IN  NS  ns.{{ dns_zone }}.
+ns  IN  A   {{ dns_ns_target | default('127.0.0.1') }}
+@   IN  A   {{ dns_apex_target | default('127.0.0.1') }}
+*   IN  A   {{ dns_wildcard_target | default('127.0.0.1') }}
+{% for rec in dns_records | default([]) %}
+{{ "%-20s"|format(rec.name) }} IN  {{ "%-5s"|format(rec.type | default('A')) }} {{ rec.value }}
+{% endfor %}

@@ -15,7 +15,7 @@
   hosts: openbao_svc
   gather_facts: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -30,7 +30,7 @@
   gather_facts: false
   strategy: linear
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -44,7 +44,7 @@
   hosts: netbox_svc
   gather_facts: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -58,7 +58,7 @@
   hosts: nemoclaw_svc
   gather_facts: false
   vars:
-    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"

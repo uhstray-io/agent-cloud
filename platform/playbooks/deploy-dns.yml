@@ -1,0 +1,141 @@
+---
+# deploy-dns.yml — hickory-dns deploy (composable pattern).
+#
+# Phase 1: Place repo (clone in prod / workspace copy in local) + render
+#          named.toml + zone files + .env from inventory vars. NO secrets in
+#          Phase 1 — DNS has no runtime credentials; TSIG for RFC 2136 dynamic
+#          updates arrives in prod Phase 2.
+# Phase 2: Run deploy.sh — container lifecycle (compose up, wait healthy).
+# Phase 3: Verify resolution with dig (wildcard answer + a forwarded name).
+#
+# Source of truth: plan/development/DNS-SERVER-DEPLOYMENT.md
+# (local half: plan/development/LOCAL-DEV-DEPLOYMENT.md §5.1).
+
+# ── Phase 1: Place repo + render config ─────────────────────────────────────
+- name: "Phase 1: Place repo + render DNS config"
+  hosts: dns_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _templates: "{{ playbook_dir }}/../services/dns/deployment/templates"
+
+  tasks:
+    # Place the repo (prod clone / local working-tree copy) + ensure the
+    # podman/compose entrypoint. Shared with every composable service deploy.
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Ensure config + zones directories"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config/zones"
+        state: directory
+        mode: "0755"
+
+    - name: "Render named.toml"
+      ansible.builtin.template:
+        src: "{{ _templates }}/named.toml.j2"
+        dest: "{{ _deploy_dir }}/config/named.toml"
+        mode: "0644"
+
+    - name: "Render zone file"
+      ansible.builtin.template:
+        src: "{{ _templates }}/zone.local-dev.j2"
+        dest: "{{ _deploy_dir }}/config/zones/{{ dns_zone }}.zone"
+        mode: "0644"
+
+    - name: "Render compose .env"
+      ansible.builtin.template:
+        src: "{{ _templates }}/env.j2"
+        dest: "{{ _deploy_dir }}/.env"
+        mode: "0644"
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start DNS container"
+  hosts: dns_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path (§12A fix #1):
+        # detect_runtime falls back to `podman compose` (docker-compose) when
+        # brew's podman-compose isn't on the task PATH, which then rejects the
+        # podman-compose-built network. Empty (Semaphore path, var unset) is
+        # treated as unset by detect_runtime ([ -z ]) -> it derives normally.
+        # NOT default(omit): omit leaks its placeholder string into environment
+        # (it isn't stripped there), which deploy.sh then tries to run -> rc 127.
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify resolution ──────────────────────────────────────────────
+- name: "Phase 3: Verify resolution"
+  hosts: dns_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    # Query the running daemon through its own bundled dig (the image ships
+    # bind-tools), so the check needs no resolver tooling on the host/container
+    # that ran the deploy.
+    - name: "Resolve a wildcard name in the zone"
+      ansible.builtin.command: >-
+        {{ _engine }} exec dns
+        dig +short +tcp +time=2 +tries=1 @127.0.0.1 probe.{{ dns_zone }} A
+      register: _dig_wild
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: _dig_wild.stdout | trim | length > 0
+
+    - name: "Assert the wildcard resolves to the configured target"
+      ansible.builtin.assert:
+        that:
+          - (_dig_wild.stdout | trim) == (dns_wildcard_target | default('127.0.0.1'))
+        fail_msg: >-
+          probe.{{ dns_zone }} resolved to '{{ _dig_wild.stdout | trim }}',
+          expected '{{ dns_wildcard_target | default('127.0.0.1') }}'
+        success_msg: "*.{{ dns_zone }} -> {{ _dig_wild.stdout | trim }}"
+
+    - name: "Verify forwarding of an external name"
+      ansible.builtin.command: >-
+        {{ _engine }} exec dns
+        dig +short +tcp +time=3 +tries=2 @127.0.0.1 {{ dns_forward_probe | default('one.one.one.one') }} A
+      register: _dig_fwd
+      changed_when: false
+      failed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          DNS healthy: *.{{ dns_zone }} -> {{ _dig_wild.stdout | trim }};
+          forward {{ dns_forward_probe | default('one.one.one.one') }} ->
+          {{ _dig_fwd.stdout | trim if (_dig_fwd.stdout | trim | length > 0) else '(no answer — check egress/upstream)' }}
+
+    # Host-side resolver wiring can't run through Semaphore (it's the Mac's
+    # /etc/resolver, outside this VM) — point the developer at the idempotent
+    # make target instead.
+    - name: "Local-dev hint: wire macOS resolution"
+      ansible.builtin.debug:
+        msg: >-
+          To resolve *.{{ dns_zone }} natively on the Mac, run (idempotent):
+          make local-dns-resolver
+      when: local_mode | default(false) | bool

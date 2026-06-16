@@ -1,0 +1,14 @@
+# Authentik blueprint (config-as-code) — mounted read-only at
+# /blueprints/custom and applied by the worker on boot. This seed creates an
+# `agent-cloud` platform group; extend with flows / OIDC providers / app
+# gating as services are onboarded (plan/development/AUTH-SSO-DEPLOYMENT.md
+# Phase 1+). Committed (NOT a secret); real per-client secrets stay in OpenBao.
+version: 1
+metadata:
+  name: agent-cloud seed
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: agent-cloud
+    attrs:
+      is_superuser: false

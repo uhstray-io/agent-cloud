@@ -1,16 +1,16 @@
 # Local Dev Deployment + Promotion Pipeline Implementation Plan
 
 > **Location:** `plan/development/LOCAL-DEV-DEPLOYMENT.md`
-> **Date:** 2026-06-12 · **Status:** PROPOSED · **Owner:** uhstray-io
+> **Date:** 2026-06-12 · **Status:** ACTIVE (Phases 0A–1 in execution on `feat/local-dev-phase0`) · **Owner:** uhstray-io
 > **Context:** A local development instance of agent-cloud on developer machines (Apple Silicon macOS; podman machine default, Docker Desktop where root is required), driven by a **local Semaphore** so the laptop mirrors production's entire control plane, plus a promotion pipeline that carries locally-validated changes to production.
 >
 > **For agentic workers:** Execute phase-by-phase with `superpowers:executing-plans` or `superpowers:subagent-driven-development`. Every phase ends at a validation gate — do not start a phase until the prior gate passes.
 
 **Goal:** One command takes a fresh clone to a running local agent-cloud stack — OpenBao, Semaphore, and services deployed by the same templates and playbooks as production — and a defined gate sequence promotes validated changes from laptop to prod.
 
-**Architecture:** Two-stage paradigm — **make bootstraps, Semaphore operates**. The Makefile provisions initial resources only (engines, pinned deps, inventory, dev-mode OpenBao, local Semaphore, registered templates, local AppRole) — exactly what prod itself bootstraps outside Semaphore. From that point **every platform stands up through local Semaphore templates running the unchanged Ansible playbooks**, with credentials injected just like prod. Containers run under podman machine (Docker Desktop only for root-requiring services — today: NetBox app tier); each service carries a `compose.local.yml` slim overlay (resource caps, trimmed workers/optional sidecars, named volumes, loopback ports) so the stack fits laptop budgets. Owned GHCR images build multi-arch (arm64+amd64) in CI. Promotion: local validate → pre-push lint/secrets → CI → risk-classed prod branch-deploy → merge.
+**Architecture:** Two-stage paradigm — **make bootstraps, Semaphore operates**. The Makefile provisions initial resources only (engines, pinned deps, inventory, persistent file-backed OpenBao, local Semaphore, registered templates, local AppRole) — exactly what prod itself bootstraps outside Semaphore. From that point **every platform stands up through local Semaphore templates running the unchanged Ansible playbooks**, with credentials injected just like prod. Containers run under podman machine (Docker Desktop only for root-requiring services — today: NetBox app tier); each service carries a `compose.local.yml` slim overlay (resource caps, trimmed workers/optional sidecars, named volumes, loopback ports) so the stack fits laptop budgets. Owned GHCR images build multi-arch (arm64+amd64) in CI. Promotion: local validate → pre-push lint/secrets → CI → risk-classed prod branch-deploy → merge.
 
-**Tech stack:** podman machine + podman-compose (default), Docker Desktop (root-requiring services), Semaphore (local instance), OpenBao (dev mode), Ansible composable tasks unchanged, make + bash wrapper, existing BATS/pytest/CI suites.
+**Tech stack:** podman machine + podman-compose (default), Docker Desktop (root-requiring services), Semaphore (local instance), OpenBao (persistent file backend; init/unseal key escrowed to `~/.agent-cloud-local/openbao-init.json`), Ansible composable tasks unchanged, make + bash wrapper, existing BATS/pytest/CI suites.
 
 ---
 
@@ -22,7 +22,7 @@ When Phase 3's gate passes:
 - **Slim by default.** Every locally-deployable service ships a `compose.local.yml` overlay — memory/CPU caps, trimmed worker counts and optional sidecars, alpine-class images where prod already uses them — with a measured budget per service: minimal tier ≤4 GB RAM, full tier ≤14 GB (fits a 16 GB machine).
 - **The laptop runs production's control plane, not a substitute.** Same playbooks, same `manage-secrets.yml` flow, same templates-as-code, same credential injection (local AppRole) — differences confined to inventory vars, one prerequisites task, and fake secret values. Multi-dev ready: pinned tool versions, preflight diagnostics, self-serve docs.
 - **Critical Rule #1 becomes code.** Deploy playbooks refuse to run unless a Semaphore environment is detected (prod or local) or the play is tagged bootstrap — laptop-to-prod accidents are structurally impossible, not policy-discouraged.
-- **No real values on the laptop.** Dev-mode OpenBao holds generated fakes seeded by the bootstrap playbook; the committed inventory is localhost-only and publishable.
+- **No real values on the laptop.** Persistent (file-backed) OpenBao holds generated fakes seeded by the bootstrap playbook — secrets survive a podman-machine restart; the committed inventory is localhost-only and publishable.
 - **Promotion is a pipeline.** Five gates (§8) with stricter-tier risk classes: any service code change proves itself on a prod branch-deploy until the local stack earns trust.
 - **The held NocoDB/n8n migration gets rehearsed.** Local greenfield composable deploys (fresh instances — no stateful secrets to lose) exercise the migration's playbooks, unblocking the prod cutover.
 - **The dev Proxmox cluster slots in later.** When `DEV-PROXMOX-CLUSTER-PLAN.md` executes, its cluster becomes a promotion stage; nothing here depends on it.
@@ -33,7 +33,7 @@ flowchart LR
   P0B --> P1[P1<br/>core live: OpenBao + Semaphore<br/>+ first service via template]
   P1 --> P2[P2<br/>service coverage + seeds<br/>nocodb/n8n rehearsal]
   P2 --> P3[P3<br/>promotion pipeline proven]
-  P3 --> P4[P4 - optional<br/>Caddy TLS, ERPNext tier,<br/>dev-Proxmox stage]
+  P3 --> P4[P4<br/>hickory-dns + Caddy TLS,<br/>ERPNext + OPA local tiers,<br/>dev-Proxmox stage - optional]
 ```
 
 ## 1. Problem
@@ -76,7 +76,7 @@ The plan instantiates the platform's existing doctrine rather than inventing one
 | Image architecture | **Owned GHCR images (uhhcraft, wisbot, future erpnext/llm-gate) build multi-arch (arm64+amd64) in CI** [16] | Emulation-only — slow, flaky for DB containers, undermines the bootstrap gate; build-from-source locally — minutes per rebuild, diverges from the pull-based prod path (kept as a per-service dev override, not the default) |
 | Orchestrator locally | **Local Semaphore in the core tier**: bootstrap CLI-deploys OpenBao + Semaphore (exactly what prod bootstraps outside Semaphore), `setup-templates.yml` registers templates locally, all further deploys run through local Semaphore with local-AppRole credential injection | No local Semaphore + CLI wrapper (panel unanimous) — **overruled by owner**: maximal automation parity wanted; the wrapper survives as the bootstrap/convenience layer, not the deploy path |
 | Rule #1 enforcement | **Code: shared assertion task — deploy plays run only under a detected Semaphore environment (prod or local) or a `bootstrap` tag** | Wrapper/doc-only guard — leaves the laptop→prod accident surface open; manual prod deploys were never permitted anyway (ACCESS-BOUNDARIES) |
-| Secrets locally | **Dev-mode OpenBao seeded with fakes by `bootstrap-local-dev.yml`; `manage-secrets.yml` unchanged; local Semaphore env carries the local AppRole** | Dummy strings without OpenBao — skips the flow the platform exists to enforce; file-backed default — slower bootstrap (available via `LOCAL_OPENBAO_PERSIST=1`) |
+| Secrets locally | **Persistent file-backed OpenBao seeded with fakes by `bootstrap-local-dev.yml` (init/unseal key escrowed locally, survives restarts); `manage-secrets.yml` unchanged; local Semaphore env carries the local AppRole** | Dummy strings without OpenBao — skips the flow the platform exists to enforce; dev/in-memory mode — a machine restart wipes every secret and bricks stateful volumes (the bug that motivated the file backend) |
 | Inventory | **`platform/inventory/local-dev.yml.example` committed (localhost-only = publishable); `make local-init` copies to a gitignored working file** | Tracking the live file — machine drift in git; home-dir-only — breaks fresh-clone bootstrap |
 | Service tiers | **Minimal (OpenBao + Semaphore + target service + backing stores, ~12 containers) / full (pre-merge integration) / excluded (GPU inference, orb-agent discovery; postiz/nextcloud/wikijs optional)** | Whole-stack default — unusable daily (panel withdrew it on challenge) |
 | NocoDB/n8n locally | **Greenfield composable deploys — P2 writes the playbooks the migration plan designed; rehearsal un-HELDs the prod migration** | Waiting for prod migration first — inverts the safe order |
@@ -84,6 +84,9 @@ The plan instantiates the platform's existing doctrine rather than inventing one
 | Promotion risk classes | **Stricter tier**: low = docs-only; medium = any service code or automation/compose change → prod branch-deploy required; high = secret-flow/OpenBao/multi-service → branch-deploy + stated rollback | As-drafted (app code = low) — deferred until the local stack demonstrates local-pass→prod-pass agreement; loosen via §11 revisit |
 | macOS adaptation style | **Centralized `tasks/local-prereqs.yml` + optional inventory vars (Linux defaults); named volumes for databases** (10–50× bind-mount I/O penalty) | Scattered OS-conditionals — unreviewable; forked playbooks — drift |
 | Local footprint | **Per-service `compose.local.yml` slim overlay** (resource caps, reduced worker counts, trimmed optional sidecars, named volumes, loopback ports), applied by the shared `compose` wrapper in `local_mode`; budgets measured at P2 | Prod-shaped stacks locally — RAM blowout (the panel already killed the whole-stack default); forked slim compose files — drift, the panel's #1 risk |
+| Local DNS / hostnames | **hickory-dns container** (official multi-arch image, ~12 MiB) authoritative for the local dev zone (wildcard → `127.0.0.1`), forwarding `.` upstream; macOS `/etc/resolver/<zone>` port-targeted entry; deployed via a local Semaphore template and **shared with the production DNS plan** (`DNS-SERVER-DEPLOYMENT.md`) so local rehearses prod DNS [17] | `/etc/hosts` entries — no wildcards, sudo edit per service; dnsmasq — C codebase, diverges from the production DNS choice; CoreDNS — heavier, another config dialect; mDNS/`.local` names — collide with Bonjour semantics |
+| ERPNext locally | **Slim tier via `compose.local.yml`** (single queue worker, MinIO/backup off, ~8 containers) behind the **same** `deploy-erpnext.yml` composable deploy as the VMs — **overrules the prior P4 deferral** (owner, 2026-06-12): a paradigm-fit local version is wanted | dev-VM-only (the original deferral) — no laptop inner loop for ERPNext work; prod-shaped stack locally — RAM blowout |
+| OPA locally | **Same composable deploy, port-shifted to `127.0.0.1:8281`** (NocoDB's compose already binds 8181 locally [18]); policies mount from the working-tree copy → `opa test` + live decision queries join the local inner loop | wait-for-prod-first — inverts the safe order everything else in this plan establishes |
 
 ## 5. Local architecture
 
@@ -96,7 +99,7 @@ flowchart TB
     WRAP[scripts/local-dev.sh<br/>preflight checks, refuses non-local inventories]
     INV[platform/inventory/local-dev.yml<br/>gitignored copy of committed example<br/>localhost groups, engine split, port map]
     subgraph pm[podman machine - default engine]
-      BAO[OpenBao dev-mode<br/>seeded fake secrets + local AppRole]
+      BAO[OpenBao persistent file<br/>seeded fake secrets + local AppRole]
       SEM[Local Semaphore<br/>templates via setup-templates.yml<br/>injects local AppRole creds]
       SVC[Service stacks - minimal or full tier<br/>127.0.0.1 port map]
     end
@@ -120,7 +123,7 @@ The handoff at the heart of the paradigm — where make's job ends and Semaphore
 sequenceDiagram
     participant DEV as Developer
     participant MAKE as make / local-dev.sh
-    participant BAO as OpenBao (dev mode)
+    participant BAO as OpenBao (persistent)
     participant SEM as Local Semaphore
     participant SVC as Service stacks
 
@@ -142,49 +145,61 @@ sequenceDiagram
 
 **Slim overlays:** in `local_mode` the shared `compose` wrapper appends `-f compose.local.yml` when the file exists; overlays carry only local deltas (caps, worker counts, sidecar trims, ports, named volumes). Base compose files stay untouched — one codebase, two shapes.
 
+### 5.1 Local DNS — hickory-dns
+
+Loopback ports alone give services addresses, not names. A local DNS server gives every local service a stable hostname under one dev zone (e.g. `semaphore.<local-dev-zone>`, `erp.<local-dev-zone>`), which is what the Phase 4 Caddy/TLS profile needs to terminate per-service HTTPS, and what makes cookie/CORS/base-URL behavior match prod patterns. The server is **hickory-dns** — the same engine the production DNS plan (`DNS-SERVER-DEPLOYMENT.md`) deploys, so the local container rehearses prod DNS the way local Semaphore rehearses prod orchestration [17]:
+
+- **Image:** `docker.io/hickorydns/hickory-dns` (official, pinned tag; multi-arch incl. arm64; ~12 MiB Alpine; config at `/etc/named.toml`, zones under `/var/named`).
+- **Zones:** one `Primary` zone for the local dev zone, rendered from a Jinja2 zone-file template (RFC 1035 master format — wildcard `*.<local-dev-zone> A 127.0.0.1` plus optional per-service records); a `.` `External`/forward zone sends everything else to an inventory-var upstream. This authoritative + forward split is hickory's first-class, production-grade path (full recursion stays off — experimental upstream).
+- **Ports:** `127.0.0.1:5300` → 53/udp+tcp in-container, via env-parameterized base-compose bindings (`DNS_LISTEN`/`DNS_PORT` — compose overlays *append* `ports` entries and can never remove the base one, so port shifts are env-driven, the NocoDB/UhhCraft pattern). Host :53 stays untouched — it's contended territory on developer Macs (Internet Sharing, VPN clients, Docker Desktop) and 5300 keeps the whole flow conflict-free.
+- **macOS resolution:** `make local-dns-resolver` writes `/etc/resolver/<local-dev-zone>` (`nameserver 127.0.0.1` + `port 5300`) — macOS's native split-DNS hook and the only sudo step in the whole local story. **Repeatable, not a one-off:** idempotent (no-op + no sudo when already correct), `--yes`/`ASSUME_YES` for scripting, post-write verify via `dscacheutil`. It cannot run through Semaphore (`/etc/resolver` is a host file outside the VM) — it's a host-bootstrap step, sudo intrinsic. The working inventory it reads is derived from the committed example; `make local-init` warns on group drift and `REFRESH=1 make local-init` regenerates it.
+- **Paradigm fit:** make does **not** bootstrap DNS — the control plane never depends on names. It deploys like any service: `make local-deploy-dns` → "Deploy DNS (Local)" template in `templates-local.yml` → composable playbook (zone template → container → `dig` verify).
+- **Zone value hygiene:** the real dev zone (a `<parent-domain>` subdomain) lives in the gitignored inventory working copy/site-config; the committed example carries a placeholder, per the no-real-domains rule. The laptop is the **only** authority for this zone — prod DNS does not serve it (`DNS-SERVER-DEPLOYMENT.md` §3).
+
 **Reference machine & VM allocations:** the current dev machine (Apple Silicon 18-core / 48 GB RAM / ~580 GB free disk, measured [15]) hosts: podman machine sized **6 CPUs / 16 GB RAM / 100 GB disk** (runs minimal *and* full tier within the §10 budgets) and Docker Desktop at **2 CPUs / 4 GB** (started only for the NetBox profile). Worst case — both VMs + full tier — uses ≤20 GB of 48, leaving >50% headroom for macOS and tooling. The ≤4 GB / ≤14 GB tier budgets remain the portable floor so 16 GB-machine contributors are never excluded (multi-dev decision, §4).
 
 ## 6. Implementation phases
 
 ### Phase 0A — Prod-shared fixes (own PR; render-unchanged gate)
 
-- [ ] De-reference `sparse-checkout.yml`/`setup-runtime-dir.yml` from `AUTOMATION-COMPOSABILITY.md` (implement-on-demand later; nothing uses them today)
-- [ ] `tasks/install-podman-compose.yml`: gate `apt`/`become` on `ansible_os_family`; add brew path (Linux behavior byte-identical)
-- [ ] Path vars `local_services_dir`/`local_monorepo_dir` with `/home/{{ ansible_user }}/...` defaults in path-hardcoding playbooks
-- [ ] `tasks/assert-orchestrated.yml` — shared pre-task: fail unless a Semaphore-injected environment is detected (e.g., `BAO_ROLE_ID`/`SEMAPHORE_*` — exact marker TBD) or the play is `bootstrap-local-dev.yml` running under its `bootstrap` tag (exemption scoped to that playbook by name — the tag alone is not sufficient); wire into deploy playbooks. **Blocking precondition: verify the marker against a real prod Semaphore task before wiring** (§11)
+- [x] De-reference `sparse-checkout.yml`/`setup-runtime-dir.yml` from `AUTOMATION-COMPOSABILITY.md` (implement-on-demand later; nothing uses them today)
+- [x] `tasks/install-podman-compose.yml`: gate `apt`/`become` on `ansible_os_family`; add brew path (Linux behavior byte-identical)
+- [x] Path vars `local_services_dir`/`local_monorepo_dir` with `/home/{{ ansible_user }}/...` defaults in path-hardcoding playbooks *(execution note: the eager-default gotcha — `default('/home/' ~ ansible_user)` errors when `ansible_user` is undefined even if the left side is set, because Jinja evaluates filter arguments eagerly. **Resolved (§12A fix #2, 2026-06-15):** the default is now lazy (`ansible_user | default('deploy')`) across all playbooks, so local inventories no longer need to define `ansible_user` — see §12A note below)*
+- [ ] `tasks/assert-orchestrated.yml` — shared pre-task: fail unless a Semaphore-injected environment is detected (e.g., `BAO_ROLE_ID`/`SEMAPHORE_*` — exact marker TBD) or the play is `bootstrap-local-dev.yml` running under its `bootstrap` tag (exemption scoped to that playbook by name — the tag alone is not sufficient); wire into deploy playbooks. **Blocking precondition: verify the marker against a real prod Semaphore task before wiring** (§11) *(status 2026-06-12: task file written; UNWIRED pending the marker verification)*
 - [ ] Named-volume overrides for database/storage services under `local_mode`
-- [ ] `platform/lib/common.sh`: `compose` wrapper appends `compose.local.yml` when present and `local_mode` is set — unset/absent = byte-identical behavior (render-unchanged gate covers it)
+- [x] `platform/lib/common.sh`: `compose` wrapper appends `compose.local.yml` when present and `local_mode` is set — unset/absent = byte-identical behavior (render-unchanged gate covers it) *(also fixed a latent prod bug: preset `CONTAINER_ENGINE` left `COMPOSE_CMD` empty)*
 
 **Gate 0A:** CI green; rendered prod plays byte-identical (diff of `ansible-playbook --check` output against a Linux container with prod-shaped inventory, before vs after); assertion task proven in both directions (passes under Semaphore env, fails bare, passes with bootstrap tag).
 
 ### Phase 0B — Local artifacts + multi-arch (own PR; additive only)
 
-- [ ] `tasks/local-prereqs.yml` — OS/engine detection (podman machine running; Docker Desktop only when the target service needs it), brew installs, runtime dirs
-- [ ] `platform/inventory/local-dev.yml.example` — all local service groups on `localhost`, `ansible_connection: local`, `local_mode: true`, per-group `container_engine` (podman default, `docker` for NetBox), port vars. Working copy is `platform/inventory/local-dev.yml`; its `.gitignore` entry lands in the same PR
-- [ ] `scripts/local-dev.sh` + `Makefile` (`local-init`, `local-bootstrap`, `local-up [TIER=minimal|full]` — meta-target chaining local Semaphore deploys for the tier, `local-deploy-<service>` → local Semaphore API, `local-validate` → local "Validate All" template, `local-clean`, `promote`); wrapper refuses non-local inventories and non-local `openbao_addr`
-- [ ] `platform/playbooks/bootstrap-local-dev.yml` — dev-mode OpenBao up; local AppRole + policy; fake secrets seeded for every local group (**all fake values carry a `LOCAL_FAKE_` prefix** so they can never pass as real); deploy local Semaphore; run `setup-templates.yml` against it; configure its environment with the local AppRole (idempotent, re-runnable after VM reset). `setup-templates.yml` applies the shared `templates.yml` **plus** `platform/semaphore/templates-local.yml` (committed, localhost-only content; included by `setup-templates.yml` **only when `local_mode` is set**) — the shared template list stays prod-clean
-- [ ] `compose.local.yml` convention documented + first overlay (UhhCraft): loopback port shift, named volumes, mem/CPU caps, single app worker
-- [ ] Multi-arch CI: owned-image workflows publish arm64+amd64 manifests (uhhcraft, wisbot; pattern documented for future images)
-- [ ] Multi-dev floor: `Brewfile` + pinned tool versions; wrapper preflight prints actionable diagnostics
-- [ ] Docs: `docs/LOCAL-DEV.md` (bootstrap, port map, engine split, triage); `ACCESS-BOUNDARIES.md` local-exemption-for-bootstrap amendment; root `CLAUDE.md` (local dev section, multi-arch image policy)
-- [ ] BATS: wrapper refusal behavior; inventory example validity
+- [ ] `tasks/local-prereqs.yml` — OS/engine detection (podman machine running; Docker Desktop only when the target service needs it), brew installs, runtime dirs *(status 2026-06-12: bootstrap's preflight covers the podman-machine check; the standalone task is still to extract)*
+- [x] `platform/inventory/local-dev.yml.example` — all local service groups on `localhost`, `ansible_connection: local`, `local_mode: true`, per-group `container_engine` (podman default, `docker` for NetBox), port vars. Working copy is `platform/inventory/local-dev.yml`; its `.gitignore` entry lands in the same PR
+- [x] `scripts/local-dev.sh` + `Makefile` (`local-init`, `local-bootstrap`, `local-deploy-<service>` → local Semaphore API, `local-validate`, `local-clean`, `promote`); wrapper refuses non-local inventories and non-local `openbao_addr` *(remaining: `local-up [TIER=…]` meta-target)*
+- [x] `platform/playbooks/bootstrap-local-dev.yml` — persistent file-backed OpenBao up (init/unseal key escrowed to `~/.agent-cloud-local/openbao-init.json`; secrets survive a podman-machine restart); local AppRole + policy; fake secrets seeded (**`LOCAL_FAKE_` prefix**); local Semaphore deployed (pinned v2.18.12, sqlite — `latest`/bolt both panic); `setup-templates.yml` run against it with `templates-local.yml` merged only under `local_mode`; API token auto-created; environment carries the local AppRole + engine socket (idempotent, re-runnable after VM reset). *(Execution additions beyond the original design: the VM's rootful podman socket is mounted into Semaphore (`label=disable` — SELinux blocks cross-container sockets otherwise) so in-container deploys drive the real engine; the **working tree is bind-mounted and registered as a Semaphore local-path repository** — tasks execute uncommitted changes, the entire point of the inner loop; local-mode plays copy the workspace via tar, never `git clone` from GitHub)*
+- [ ] `compose.local.yml` convention documented + first overlay (UhhCraft) *(status 2026-06-12: UhhCraft's port shift landed as env-parameterized base-compose bindings instead — the overlay pattern remains for caps/workers/sidecars)*
+- [ ] Multi-arch CI: owned-image workflows publish arm64+amd64 manifests *(status 2026-06-12: blocked on [16] — `ghcr.io/uhstray-io/uhhcraft` is private; access decision needed before the manifest question is even observable)*
+- [x] Multi-dev floor: `Brewfile` + pinned tool versions; wrapper preflight prints actionable diagnostics
+- [x] Docs: `docs/LOCAL-DEV.md` (bootstrap, port map, engine split, triage) *(remaining: `ACCESS-BOUNDARIES.md` bootstrap-exemption amendment; root `CLAUDE.md` local-dev section)*
+- [ ] BATS: wrapper refusal behavior; inventory example validity *(status 2026-06-12: compose-overlay BATS landed; wrapper-guard BATS still to write)*
 
 **Gate 0B:** CI green; `make local-init` produces a valid working inventory on a clean machine; multi-arch manifests verified (`podman manifest inspect` shows both arches).
 
 ### Phase 1 — Core live
 
-- [ ] `make local-bootstrap` on a clean machine: OpenBao seeded → local Semaphore up → templates registered → its environment carries the local AppRole
-- [ ] `make local-deploy-uhhcraft` (cleanest composable exemplar) — runs **through the local Semaphore template**, arm64-native image
+- [x] `make local-bootstrap` on a clean machine: OpenBao seeded → local Semaphore up → templates registered (45) → its environment carries the local AppRole *(proven: Check Secrets ran through local Semaphore with AppRole injection — 3 `LOCAL_FAKE_` keys PRESENT)*
+- [ ] `make local-deploy-uhhcraft` (cleanest composable exemplar) — runs **through the local Semaphore template** *(status 2026-06-12: pipeline proven through Phase 1 + image pulls over the mounted engine socket — postgres/redis/minio pulled; **blocked at the app image: `ghcr.io/uhstray-io/uhhcraft` is private (403)**, see §11/[16])*
 - [ ] `make local-validate` — local "Validate All" template, skip-unreachable for undeployed services
-- [ ] Idempotency + reset: re-deploy no-ops; `make local-clean` then re-bootstrap recovers
+- [ ] Idempotency + reset: re-deploy no-ops; `make local-clean` then re-bootstrap recovers *(bootstrap idempotency proven across ≥6 re-runs; clean-path round-trip still to exercise)*
 
 **Gate 1:** fresh clone → healthy core in **<10 min cold / <3 min warm** and **minimal tier within the ≤4 GB RAM target** (measured, recorded in docs); the deploy demonstrably ran via local Semaphore (task visible in its UI/API) with credentials injected from local OpenBao; same playbook SHA as prod; `secrets.*` in rendered `.env` provably from local OpenBao (change a seed → redeploy → value changes).
 
 ### Phase 2 — Service coverage, seeds, migration rehearsal
 
 - [ ] **Write** the NocoDB + n8n composable playbooks designed in `nocodb-n8n-composable-migration.md`; deploy greenfield locally via local Semaphore; record findings in that plan (HELD → rehearsed)
-- [ ] NetBox app-only profile under Docker Desktop (discovery/orb-agent excluded by inventory var)
+- [ ] NetBox app-only profile — **engine blocker found + fix planned** (`NETBOX-LOCAL-ENGINE.md`): the podman-VM Semaphore can't reach Docker Desktop (unix socket dead over virtiofs; no TCP daemon), so the robust fix runs NetBox's app tier under **podman** (its lib already honors `CONTAINER_ENGINE`), discovery/orb-agent excluded via a compose `profiles:` gate — not Docker Desktop
 - [ ] `platform/seeds/` — per-service demo fixtures (distinct from P0B's credential seeding), applied by `bootstrap-data.yml` **run as a local Semaphore template** ("Bootstrap Data (Local)"); ownership: fixtures live with each service's deployment dir owner
+- [ ] **Postiz onboarding, local-first** [18]: today it is compose-only with hardcoded credentials and no playbook — run the full Adding-a-New-Service checklist (deploy.sh, `env.j2` → OpenBao-managed secrets, `deploy-postiz.yml`, Semaphore template), developed and validated against the local stack before it ever touches prod. Local port `127.0.0.1:5001` (`${POSTIZ_PORT:-5000}` pattern — macOS AirPlay Receiver squats `:5000` on default installs)
 - [ ] Slim profiles for every covered service: define + measure `compose.local.yml` budgets (table in `docs/LOCAL-DEV.md`: image variant, worker counts, sidecars on/off, mem cap)
 - [ ] Full tier (`make local-up TIER=full`); measure and document the resource budget
 
@@ -199,9 +214,20 @@ sequenceDiagram
 
 **Gate 3:** one real change ridden end-to-end — local edit → validated via local Semaphore → promoted → CI green → prod branch-deploy (per risk class) → merged → main redeploy — with per-gate evidence in the PR. (Gate 1 already proved the Semaphore mechanics; this gate proves policy and pipeline integration.)
 
-### Phase 4 — Optional extensions (build on demand)
+### Phase 4 — Local DNS, TLS, and extended roster
 
-Caddy + mkcert local TLS; ERPNext local tier (likely redundant — ERPNext has its own dev VM); the dev-Proxmox promotion stage when that plan executes.
+Promoted from "optional extensions" (owner, 2026-06-12): local DNS, a paradigm-fit ERPNext tier, and OPA are now planned work; only the dev-Proxmox stage stays build-on-demand.
+
+- [x] **hickory-dns local** (§5.1): `platform/services/dns/` scaffolding shared with `DNS-SERVER-DEPLOYMENT.md` (compose + named.toml/zone `.j2` + `deploy-dns.yml`), "Deploy DNS (Local)" in `templates-local.yml`, `dns_svc` inventory group, `make local-dns-resolver` for `/etc/resolver`, registry `127.0.0.1:5300`. *Done 2026-06-12 — first fully-working downstream deploy through local Semaphore: image pulled over the mounted socket, zone+config rendered from inventory, hickory healthy, `dig` verifies `*.agent-cloud.test → 127.0.0.1` + upstream forwarding, reachable from the Mac (udp+tcp). Forced a general fix — host bind-mounts need a same-path shared deploy dir (`/var/lib/agent-cloud-deploy`) since podman-compose runs in the Semaphore container but the engine resolves mount sources on the VM.*
+- [x] **Caddy local profile** [18]: **done 2026-06-12.** Converted Caddy to the composable pattern (it had no deploy.sh/playbook/template): `deploy-caddy.yml` + "Deploy Caddy (Local)" template, `deploy.sh` (container-only), env-parameterized image/ports/**Caddyfile source** in the base compose (so the local variant swaps in without an overlay mount-append conflict — overlays can't replace `ports`/`volumes`), `templates/Caddyfile.local.j2` (global `local_certs` internal CA, routes from `caddy_routes` inventory var, `import sites/*.caddy`), and a `compose.local.yml` that attaches Caddy to the `local-dev` network so it reverse-proxies the control plane **by container name** (not the unreachable Mac loopback). Live-validated: `https://semaphore.agent-cloud.test:8443` + `https://openbao.agent-cloud.test:8443` → 200, TLS by Caddy's internal CA. Prod path (Cloudflare DNS-01 secret via manage-secrets) is the remaining prod-only follow-up. (Resolves the prod DNS plan's Phase-2 Caddy-automation precondition.) Found + fixed a reusable gotcha: the admin-API healthcheck must use `127.0.0.1`, not `localhost` (IPv4-only bind; `localhost`→`::1` refuses)
+- [x] **step-ca internal CA** (`INTERNAL-CA-DEPLOYMENT.md`): **done 2026-06-14.** Composable service deployed + healthy via local Semaphore (`platform/services/step-ca/`, `deploy-step-ca.yml`, "Deploy step-ca (Local)" template, `step_ca_svc` group). Stable ECDSA-P256 root in the `step-ca-data` volume; Caddy now serves a step-ca-minted `*.agent-cloud.test` wildcard (replacing the ephemeral per-instance `local_certs` root), chain-verified `ssl_verify_result=0`; `make local-tls-trust` trusts the *step-ca* root. Local issuance is token-mint (`tasks/mint-internal-cert.yml`; in-network ACME for `*.agent-cloud.test` is unvalidatable); ACME dns-01 is the prod path. Also drove the local zone to `agent-cloud.test` (reserved `.test`, single-knob literal). `127.0.0.1:9000`.
+- [x] **Authentik IdP/SSO** (`AUTH-SSO-DEPLOYMENT.md` Phase 0): **done 2026-06-14.** Composable service deployed + healthy via local Semaphore (`platform/services/authentik/`, `deploy-authentik.yml`, "Deploy Authentik (Local)" template, `authentik_svc` group): server+worker+Postgres+Redis, `ak healthcheck` green, `/api/v3/root/config/` → 200, server on `local-dev` (Caddy reaches `authentik-server:9000`). Secrets generated once into `secret/services/authentik` and reused; seed blueprint (agent-cloud group); BATS (8). Host debug `127.0.0.1:9300` (step-ca owns `:9000`). The `auth.agent-cloud.test` Caddy route + `forward_auth` SSO gating are the next phase.
+- [ ] **ERPNext local tier** (`ERPNEXT-DEPLOYMENT.md` §7): `compose.local.yml` — one queue worker (`long,default,short` covers all queues), MinIO/backup/cross-mirror off, mem caps; frontend at `127.0.0.1:8080`; same `deploy-erpnext.yml` through a local template; `LOCAL_FAKE_` secret set at `secret/services/erpnext`; verify `docker.io/frappe/erpnext` ships arm64 manifests at execution (assumption, §11); budget target ≤3.5 GB measured
+- [ ] **OPA local** (`OPA-INTEGRATION-PLAN.md`): once its Phase 0 scaffolding exists, deploy via local template at `127.0.0.1:8281` — which requires its base compose to adopt the env-parameterized binding pattern (`${OPA_LISTEN:-127.0.0.1}:${OPA_PORT:-8181}:8181`, ditto the 8282 diagnostics port; its current draft hardcodes both); policies volume-mount from the working-tree copy, so Rego edits are live-testable; add `opa test platform/services/opa/deployment/policies/` to `local-validate` when the dir exists
+- [ ] **o11y** [18]: deployment dir is an empty stub — **stack now defined in `O11Y-DEPLOYMENT.md`** (Grafana + Prometheus + Loki + Alloy, composable local-first; Mimir/Tempo/MinIO/Alertmanager are prod). Phase 0 scaffold → Phase 1 local deploy next. Registry reserves `3002` (grafana), `9090` (prometheus), `3100` (loki)
+- [ ] dev-Proxmox promotion stage when `DEV-PROXMOX-CLUSTER-PLAN.md` executes
+
+**Gate 4:** `dig @127.0.0.1 -p 5300 anything.<local-dev-zone>` answers `127.0.0.1` and macOS resolves it via `/etc/resolver`; ≥2 services served over HTTPS through local Caddy with internal-CA certs; ERPNext local healthy within its measured ≤3.5 GB budget via local Semaphore; an OPA decision query answers locally; every bound port matches the registry of record.
 
 ## 7. What local validates — and what it cannot
 
@@ -260,8 +286,12 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 | Semaphore-environment detection marker | Verify at P0A | Confirm against a real prod Semaphore task before wiring `assert-orchestrated.yml` |
 | Owned-image inventory for multi-arch | P0B start | Audit which GHCR images exist + which build workflows need the manifest change |
 | Risk-class boundaries | Ratified (stricter) | Revisit after sustained local-pass→prod-pass agreement; relax medium to exclude app code |
-| Local data persistence | Ephemeral default | `LOCAL_OPENBAO_PERSIST=1` + named volumes when multi-day sessions need it |
-| ERPNext local tier | Deferred (P4) | ERPNext has its own dev VM; revisit only if laptop-side iteration becomes real |
+| Local data persistence | **Persistent by default** — file-backed OpenBao + named service volumes; survives a podman-machine restart | `make local-clean` is the only intentional wipe (removes the vault volume + init material); deeper resilience (snapshot, self-heal unseal, single-node Raft) in OPENBAO-HA-DEPLOYMENT.md Track A |
+| ERPNext local tier | Planned (P4, ratified 2026-06-12) | `compose.local.yml` slim tier behind the unchanged `deploy-erpnext.yml`; the dev VM remains the pre-prod stage with real-shaped data |
+| `frappe/erpnext` arm64 manifests | Verify at P4 start | `podman manifest inspect docker.io/frappe/erpnext:<pinned>` must show arm64; fallback = local build override or emulation for the app tier only |
+| Local dev zone value | Working-copy/site-config only | Committed example ships a placeholder; `local-init` substitutes the real `*.uhstray.io` dev zone from the private side |
+| Postiz hardcoded credentials in committed compose [18] | Fix at P2 onboarding | Replace with `${VAR}` references + `env.j2`; until then the file must not be deployed anywhere |
+| o11y stack definition | Blocked (stub dir) | Own plan/PR defines grafana/prometheus/loki shape; local profile follows |
 | Slim-profile budgets (targets: minimal ≤4 GB; full ≤14 GB on a 16 GB machine) | Targets set, unmeasured | Gates 1–2 measure; per-service `compose.local.yml` budgets defined at P2 |
 | `validate-all.yml` skip semantics | Minor — P1 | Skip-unreachable behind `local_mode` |
 | Image signing / build attestation for GHCR images | Future hardening | Multi-arch P0B change doesn't add signing; track cosign/SLSA as its own plan when supply-chain work starts |
@@ -270,7 +300,7 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 
 | Platform rule | How this plan satisfies it |
 |---|---|
-| All deployments through Semaphore (rule #1) | **Strengthened**: local deploys also run through (local) Semaphore; rule enforced in code via `assert-orchestrated.yml`; bootstrap exemption documented in ACCESS-BOUNDARIES |
+| All deployments through Semaphore (rule #1) | **Strengthened**: local deploys also run through (local) Semaphore; rule enforced in code via `assert-orchestrated.yml`; **genesis-bootstrap exemption** (widened to the secure foundation — OpenBao/dns/step-ca/caddy/authentik + Semaphore — per §12A) documented in ACCESS-BOUNDARIES |
 | deploy.sh containers-only (rule #2) | Same scripts run locally; no variants |
 | Independent workflows (rule #3) | bootstrap, per-service templates, validate, seeds are separate playbooks/templates |
 | No intermediary secret files (rule #4) | manage-secrets flow preserved against local OpenBao; fakes only |
@@ -280,6 +310,40 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 | Make bootstraps, Semaphore operates | Wrapper logic is bootstrap-only; platforms, validation, and data seeding all run via local Semaphore templates |
 | Pre-Push Audit | Automated via `.pre-commit-config.yaml` (P3); CLAUDE.md updated |
 | Plan doc standards | Status header, mermaid-only diagrams, phase gates, validation table, security section, decision criteria with rejected alternatives + owner overrides, revision history |
+
+## 12A. Bootstrap ordering — secure foundation before the orchestrator (2026-06-15)
+
+**Decision.** Semaphore's job is to *securely operate* the platform, so its security substrate must exist **before** it — not be reconfigured afterward. The genesis bootstrap therefore brings up the secure foundation **directly**, and Semaphore comes up **last, already OIDC-secured**. This supersedes the earlier "OpenBao+Semaphore first, everything else through Semaphore" ordering for the security-foundational services.
+
+**Rejected alternative.** Bring Semaphore up first (unsecured), then enable OIDC in a post-stack pass. Rejected: it leaves a window where the orchestrator runs without SSO, needs a fragile recreate-with-validated-JSON step, and is worse for prod-parity. Bringing dependencies up first removes the chicken-and-egg entirely.
+
+The genesis order (all brought up by `make local-bootstrap`, directly — not through Semaphore):
+
+```mermaid
+flowchart LR
+  BAO["OpenBao<br/>secrets"] --> DNS["dns<br/>naming"] --> CA["step-ca<br/>trust"] --> CADDY["caddy<br/>ingress + serves the IdP URL"] --> AK["authentik<br/>identity (OIDC)"] --> SEM["Semaphore<br/>orchestrator — LAST,<br/>OIDC-secured at boot"]
+  SEM -.->|operates| T3["Tier 3 (through Semaphore):<br/>o11y · opa · erpnext · netbox · n8n"]
+```
+
+**Mechanism.** The bootstrap runs each foundation service's **existing composable deploy playbook** directly (with the BAO AppRole creds the bootstrap already holds, under the `bootstrap` tag / context that `assert-orchestrated.yml` accepts) — it does **not** fork the deploys. Semaphore is then started last with OIDC env already present (step-ca + authentik are up): `SEMAPHORE_OIDC_PROVIDERS` (the inner-map JSON, **jq-validated before inject** — a malformed value panics Semaphore at startup), `SEMAPHORE_WEB_ROOT=https://semaphore.<zone>:8443`, and the step-ca trust **bundle** mounted with `SSL_CERT_FILE` (Go verifies the ID-token JWKS over TLS). The local `SEMAPHORE_ADMIN`/password login is retained as the fallback (OIDC users are non-admin — Semaphore has no group→role mapping; promote OIDC admins manually).
+
+**Critical Rule #1 nuance.** "All deployments go through Semaphore" still holds for operations; the **genesis bootstrap is the sanctioned exception** (a service can't deploy through an orchestrator that isn't up yet). This change *widens* that exception from "OpenBao+Semaphore" to "the secure foundation (OpenBao, dns, step-ca, caddy, authentik) + Semaphore." Everything after genesis (Tier 3 + redeploys) still goes through Semaphore. ACCESS-BOUNDARIES + §12 updated.
+
+**Requirements (the implementation must satisfy):**
+- **Idempotent + re-runnable.** Re-running `make local-bootstrap` converges; each foundation step is its own idempotent deploy. A re-run after the stack is up must not duplicate or error.
+- **No forks.** Foundation services use their existing `deploy-<svc>.yml`; only the *invocation context* (direct, bootstrap-tagged) differs from the Semaphore path.
+- **Fail-safe Semaphore OIDC.** `jq`-validate `SEMAPHORE_OIDC_PROVIDERS` before passing it; if step-ca/authentik aren't up yet (first genesis pass mid-build), Semaphore still starts (OIDC added once its deps exist) — the control plane must never be left unbootable.
+- **Foundation set:** OpenBao, dns, step-ca, caddy, authentik (+ Semaphore). Tier 3 (o11y, opa, erpnext, netbox, n8n) stays Semaphore-deployed.
+- **`make local-bootstrap`** = genesis (foundation + OIDC-secured Semaphore); **`make local-up`** = bootstrap + Tier-3 deploys through Semaphore; sudo host steps (resolver/TLS-trust/:443) stay separate.
+
+**Validation:** full stack reaches healthy; Semaphore API still answers after genesis (control plane survives); Semaphore login page offers the OIDC button; discovery TLS-verifies from the Semaphore container with the bundle; `platform-user` is denied at the IdP (the §P1 policy bindings). Full OIDC login is a browser check.
+
+**Probe findings (2026-06-15) — approach (b) execution model VALIDATED, two integration fixes required.** A Mac-direct `deploy-dns` probe (localhost, `local_workspace_dir=<repo>`, `local_monorepo_dir=$HOME/.agent-cloud-genesis`) confirmed the model works: `$HOME` auto-mounts into the VM at the same path, so place-monorepo (rsync repo→genesis dir), config render, and `deploy.sh` running *from the genesis dir* all succeed and compose bind-mounts resolve. Two fixes the implementation MUST include:
+  1. **Compose-provider consistency.** The local stack is built with **podman-compose** (Python, in the Semaphore container). On the Mac, `detect_runtime` prefers podman-compose *only if it's on PATH* — in the ansible shell-task env the brew `podman-compose` was absent, so it fell back to `podman compose` (which delegates to **docker-compose**), and docker-compose rejected the podman-compose-built `dns` network on a label mismatch. The bootstrap's Mac-direct foundation deploys must force podman-compose: ensure brew's bin is on the task PATH, or pass `COMPOSE_CMD=$(command -v podman-compose)` / a `local_compose_cmd` var. (The probe failed safely at the network check — dns was not recreated/broken.)
+  2. **`ansible_user` for the genesis hosts.** `_monorepo_dir`'s default `'/home/' ~ ansible_user ~ '/...'` is evaluated eagerly even when `local_monorepo_dir` is overridden; the `connection: local` genesis hosts have no `ansible_user`, so set it (any value) or make the default lazy (`ansible_user | default('deploy')`).
+Net: the model is de-risked; the remaining build is the bootstrap re-sequence + these two fixes + Semaphore-OIDC-at-the-end + idempotency.
+
+**IMPLEMENTED + validated (2026-06-15).** Execution plan: `LOCAL-DEV-12A-IMPLEMENTATION.md`. `bootstrap-local-dev.yml` gained Stage 1.5 (genesis-deploys dns→step-ca→caddy→authentik Mac-direct, BAO creds in env) before a Semaphore stage that boots OIDC-secured (jq-validated `SEMAPHORE_OIDC_PROVIDERS` via env-file, step-ca **trust bundle** = system roots + step-ca root via `SSL_CERT_FILE`, `SEMAPHORE_WEB_ROOT`; fail-safe when deps absent). `make local-up` now deploys only Tier-3. Both probe fixes landed (lazy `ansible_user` default across all playbooks; `local_compose_cmd`→`COMPOSE_CMD` passthrough). Two more issues surfaced during validation and were fixed: the `command -v` discovery must use `shell` (builtin), and the bundle must carry the system roots (a step-ca-only `SSL_CERT_FILE` broke apk/pip public TLS); preflight now requires podman-compose + jq. **Validated warm (idempotent re-run, 3×) and cold (full `local-clean` + rebuild):** genesis order confirmed by container uptimes, Semaphore boots OIDC-secured with no panic, discovery TLS-verifies from the container, OIDC login → HTTP 307 to Authentik, Tier-3 deploys through the cold Semaphore onto the same network (31 containers, one rootful scope). *Out-of-scope finding:* netbox/openbao Caddy `forward_auth` gates return 404 (AUTH-SSO Phase 1/2 behavior, §12A-independent — caddy renders identical config either way).
 
 ## 13. References
 
@@ -297,10 +361,12 @@ Tags: *(repo)* agent-cloud file · *(panel)* multi-agent review artifact · *(lo
 10. *(repo)* `platform/playbooks/tasks/` — absence of `sparse-checkout.yml`/`setup-runtime-dir.yml` (13 task files present; panel-verified).
 11. *(repo)* `platform/lib/common.sh` — `compose` wrapper + `wait_for_healthy` helpers; P0A's overlay-append touch point.
 12. *(repo)* `platform/semaphore/setup-templates.yml` — templates-as-code apply mechanism reused against the local instance.
-13. *(repo)* `plan/development/ERPNEXT-DEPLOYMENT.md` — current plan conventions; ERPNext's dev story stays VM-based (why its local tier is deferred).
+13. *(repo)* `plan/development/ERPNEXT-DEPLOYMENT.md` — current plan conventions; its dev-VM story originally justified deferring an ERPNext local tier (deferral overruled 2026-06-12 — see §4/§6 Phase 4; the dev VM remains the pre-prod stage with real-shaped data).
 14. *(panel)* Workflow `wf_455fca80-37b` (2026-06-12) — three role investigations + cross-challenge round; 6 agents, repo-grounded findings with file evidence.
 15. *(local)* Reference-machine measurement, 2026-06-12 — `sysctl`/`df` on the dev machine: Apple Silicon 18-core, 48 GB RAM, ~580 GB free.
-16. *(assumption)* Owned GHCR images are amd64-only — inferred from prod-only build targets, not verified against the registry; **the P0B image audit confirms before the CI change** (§11).
+16. *(assumption)* Owned GHCR images are amd64-only — inferred from prod-only build targets, not verified against the registry; **the P0B image audit confirms before the CI change** (§11). *Partially resolved 2026-06-12: `ghcr.io/uhstray-io/uhhcraft` is **private** — the local pull fails on auth (403) before architecture is even observable; local access needs a `read:packages` PAT or a local build override.*
+17. *(web)* hickory-dns research, accessed 2026-06-12 — github.com/hickory-dns/hickory-dns (v0.26.1; authoritative + forwarding production-grade per maintainers, recursion experimental; TOML config, RFC 1035 zone files, wildcards supported; TSIG/RFC 2136 dynamic updates ≥0.26), hub.docker.com/r/hickorydns/hickory-dns (official multi-arch image incl. arm64, ~12 MiB), memorysafety.org/blog/hickory-update-2025 (ISRG/Prossimo production-readiness status).
+18. *(repo)* Service survey, 2026-06-12 — `platform/services/{n8n,nocodb,netbox,caddy,o11y,postiz}`: n8n/nocodb legacy `deploy.sh` path (ports 5678 / 8181+5433); NetBox composable (8000); Caddy prod-only (Cloudflare DNS-01 image, no playbook, no Semaphore template); o11y empty stub; Postiz compose-only with hardcoded credentials, no automation (5000).
 
 ## 14. Revision history
 
@@ -309,6 +375,11 @@ Tags: *(repo)* agent-cloud file · *(panel)* multi-agent review artifact · *(lo
 | 2026-06-12 | Initial plan synthesized from the three-agent panel (architecture / automation / developer-experience with cross-challenge round) |
 | 2026-06-12 | Interactive review: owner overruled panel on engine (podman default, Docker only for root-requiring services) and orchestrator (**local Semaphore drives local deploys**; templates-as-code validated locally); multi-arch CI builds added (panel review gap); Rule #1 code-enforced via assert-orchestrated.yml; multi-dev from day one; stricter risk classes ratified; P0 split into 0A (prod-shared, render-unchanged gate) / 0B (additive local artifacts); honesty fixes (BATS is static; cold/warm bootstrap targets); simplification pass |
 | 2026-06-12 | Paradigm + footprint update: "make bootstraps, Semaphore operates" promoted to a design principle (Makefile provisions initial resources only; platforms, validation, and seeds run via local Semaphore templates); per-service `compose.local.yml` slim overlays (resource caps, trimmed workers/sidecars) applied by the shared compose wrapper in local_mode, with measured budgets |
+| 2026-06-14 | OpenBao moved to a persistent file backend (genesis-bootstrapped; dev-mode references corrected throughout) |
+| 2026-06-15 | §12A added: bootstrap reordered so the **secure foundation (OpenBao→dns→step-ca→caddy→authentik) is genesis-bootstrapped before Semaphore**, which comes up last already OIDC-secured (eliminates the Semaphore-OIDC chicken-and-egg). Rule #1 genesis exemption widened accordingly |
+| 2026-06-15 | §12A **implemented + validated** (`LOCAL-DEV-12A-IMPLEMENTATION.md`): genesis Stage 1.5 in `bootstrap-local-dev.yml`; Semaphore boots OIDC-secured (jq-validated providers, step-ca trust bundle, fail-safe); `make local-up` = Tier-3 only; both probe fixes + two validation-found fixes (shell discovery, system-roots bundle) landed; preflight requires podman-compose + jq. Proven warm (idempotent ×3) + cold (full rebuild, 31 containers). ACCESS-BOUNDARIES genesis-exemption section + AUTH-SSO Semaphore-OIDC row updated. Out-of-scope: netbox/openbao forward_auth 404 (AUTH-SSO, §12A-independent) |
 | 2026-06-12 | /simplify + consistency pass: risk classes defined in prose (not just the diagram); §7 branch-deploy coverage consolidated to one note; Gate 2 full-tier budget made crisp (≤14 GB) and aligned across Target outcome/§10/§11; `local-up TIER` added to Makefile contract + diagram; local-only Semaphore templates split into `templates-local.yml` so the shared `templates.yml` stays prod-clean (templates-as-code adherence); assert-orchestrated marker verification made an explicit blocking precondition |
 | 2026-06-12 | /security-review fixes + sizing: bootstrap exemption scoped to bootstrap-local-dev.yml by name (tag alone insufficient); working-inventory filename + .gitignore entry specified; templates-local.yml fate fixed (committed, applied only under local_mode); fake seeds carry LOCAL_FAKE_ prefix; image-signing tracked as future hardening; reference-machine VM allocations added (48 GB host — both VMs + full tier ≤20 GB) |
 | 2026-06-12 | Self-explaining pass: `[n]` citations threaded through §2/§4/§5 with a tagged References section (§13, absorbing the cross-ref list; [16] marked as the one explicit assumption); bootstrap-handoff sequence diagram added to §5 showing where make's job ends and Semaphore's begins |
+| 2026-06-12 | Roster + DNS expansion (owner-directed): §5.1 local DNS via hickory-dns (shared engine with the new `DNS-SERVER-DEPLOYMENT.md`); Phase 4 promoted from optional to planned — DNS, Caddy `tls internal` profile, **ERPNext local slim tier** (deferral overruled), **OPA local** (port 8281, working-tree policy mount); Postiz local-first onboarding added to Phase 2; o11y recorded as stub-blocked; service-survey + hickory references ([17][18]); [16] partially resolved (uhhcraft GHCR image is private, found by the first live local deploy) |
+| 2026-06-12 | **hickory-dns local shipped + validated end-to-end through local Semaphore** (`platform/services/dns/`, `deploy-dns.yml`, `make local-deploy-dns`/`local-dns-resolver`, BATS): first working downstream deploy. Surfaced + fixed the host-bind-mount limitation of the socket model — a same-path shared deploy dir (`/var/lib/agent-cloud-deploy`) makes `./config` mounts resolve on the VM engine; SELinux needs `label=disable` on bind-mount-reading containers (local overlay only) |

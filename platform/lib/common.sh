@@ -39,7 +39,26 @@ needs_gen() {
 # ── Container Runtime Detection ───────────────────────────────────────────────
 
 detect_runtime() {
-  [ -n "${CONTAINER_ENGINE:-}" ] && return 0
+  # Engine may be preset by the deploy playbooks (environment: CONTAINER_ENGINE).
+  # Still derive COMPOSE_CMD when unset — early-returning without it left
+  # compose() running an empty command (latent bug found by local-dev).
+  if [ -n "${CONTAINER_ENGINE:-}" ]; then
+    if [ -z "${COMPOSE_CMD:-}" ]; then
+      case "$CONTAINER_ENGINE" in
+        podman)
+          COMPOSE_CMD="podman-compose"
+          command -v podman-compose &>/dev/null || COMPOSE_CMD="podman compose"
+          ;;
+        docker)
+          COMPOSE_CMD="docker compose"
+          ;;
+        *)
+          error "Unknown CONTAINER_ENGINE: ${CONTAINER_ENGINE}"
+          ;;
+      esac
+    fi
+    return 0
+  fi
   if command -v podman &>/dev/null; then
     CONTAINER_ENGINE=podman
     COMPOSE_CMD="podman-compose"
@@ -58,9 +77,16 @@ detect_runtime() {
 # ── Compose Wrapper ───────────────────────────────────────────────────────────
 
 # compose [args...] — wraps compose with explicit -f to prevent override auto-discovery
+# Local-dev overlay (plan/development/LOCAL-DEV-DEPLOYMENT.md): compose.local.yml
+# is appended only when LOCAL_MODE=true AND the overlay exists on disk.
+# LOCAL_MODE unset or file absent => byte-identical prod behavior.
 compose() {
   detect_runtime
-  $COMPOSE_CMD -f compose.yml "$@"
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
+    $COMPOSE_CMD -f compose.yml -f compose.local.yml "$@"
+  else
+    $COMPOSE_CMD -f compose.yml "$@"
+  fi
 }
 
 # ── Health Waiters ────────────────────────────────────────────────────────────

@@ -17,7 +17,13 @@ services:
     env_file: env/netbox.env
     user: "netbox:root"
     ports:
-      - "8000:8080"
+      # NETBOX_HOST_IP defaults to 0.0.0.0 (unchanged prod behaviour). Local-dev
+      # pins it to 127.0.0.1 (set in scripts/local-netbox-up.sh) so the
+      # REMOTE_AUTH header-trust enabled by docker-compose.local-auth.yml is NOT
+      # reachable from the LAN — Caddy's forward_auth gate must be the only path
+      # that can set X-authentik-* (otherwise a direct :8000 request spoofing
+      # the header is an unauthenticated superuser bypass).
+      - "${NETBOX_HOST_IP:-0.0.0.0}:8000:8080"
     healthcheck:
       test: |
         curl -f http://localhost:8080/login/ || exit 1

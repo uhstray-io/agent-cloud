@@ -1,0 +1,106 @@
+---
+# deploy-opa.yml — OPA policy engine deploy (composable).
+#
+# Phase 1: Place repo. The committed policies/ travel with it (policy-as-code);
+#          OPA Phase 1 has NO secrets (it returns decisions, not credentials),
+#          so there is no manage-secrets step.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait running).
+# Phase 3: Verify — HTTP /health, a sample allow + deny decision, and the Rego
+#          unit tests (opa test) inside the container.
+#
+# Plan: plan/development/OPA-INTEGRATION-PLAN.md.
+
+# ── Phase 1: Place repo ─────────────────────────────────────────────────────
+- name: "Phase 1: Place repo"
+  hosts: opa_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start OPA"
+  hosts: opa_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Compose substitution for the published host port (no .env — OPA has no
+        # secrets). Inventory opa_bind/opa_port flow straight into compose.
+        OPA_BIND: "{{ opa_bind | default('127.0.0.1') }}"
+        OPA_PORT: "{{ opa_port | default('8281') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify OPA"
+  hosts: opa_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    # Reachable by name on local-dev (this play runs in the Semaphore container).
+    _opa_url: "{{ opa_internal_url | default('http://opa:8181') }}"
+
+  tasks:
+    - name: "OPA health (/health -> 200)"
+      ansible.builtin.uri:
+        url: "{{ _opa_url }}/health"
+        status_code: [200]
+      register: _opa_health
+      retries: 10
+      delay: 3
+      until: _opa_health.status == 200
+
+    - name: "Sample decision: nemoclaw read nocodb -> allow"
+      ansible.builtin.uri:
+        url: "{{ _opa_url }}/v1/data/agentcloud/decision"
+        method: POST
+        body_format: json
+        body:
+          input: {agent: nemoclaw, action: read, service: nocodb}
+        status_code: [200]
+      register: _opa_allow
+      failed_when: not (_opa_allow.json.result.allowed | default(false) | bool)
+
+    - name: "Sample decision: unknown agent -> deny"
+      ansible.builtin.uri:
+        url: "{{ _opa_url }}/v1/data/agentcloud/decision"
+        method: POST
+        body_format: json
+        body:
+          input: {agent: rogue-agent, action: read, service: nocodb}
+        status_code: [200]
+      register: _opa_deny
+      failed_when: _opa_deny.json.result.allowed | default(true) | bool
+
+    - name: "Run Rego unit tests (opa test /policies)"
+      ansible.builtin.command: "{{ _engine }} exec opa /opa test /policies"
+      register: _opa_test
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          OPA healthy — allow+deny decisions verified; rego tests:
+          {{ _opa_test.stdout_lines | default(['(no output)']) | last }}

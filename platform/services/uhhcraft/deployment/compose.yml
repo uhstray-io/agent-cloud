@@ -83,7 +83,9 @@ services:
       - .env
     ports:
       # Bind to loopback only; central Caddy on the same host proxies in.
-      - "127.0.0.1:3000:3000"
+      # Local-dev overrides via env (UHHCRAFT_PORT=3001 dodges Semaphore's 3000;
+      # UHHCRAFT_BIND for in-VM reachability) — prod defaults are identical.
+      - "${UHHCRAFT_BIND:-127.0.0.1}:${UHHCRAFT_PORT:-3000}:3000"
     networks:
       - uhhcraft
     depends_on:

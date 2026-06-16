@@ -1,0 +1,1119 @@
+---
+# bootstrap-local-dev.yml — "make bootstraps, Semaphore operates."
+#
+# Provisions the LOCAL control plane on the developer machine
+# (plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 0B):
+#   1. persistent OpenBao container (file storage; init/unseal key kept in
+#      the local state dir so a podman-machine restart no longer wipes secrets)
+#   2. local AppRole (policy `local-semaphore`) — the credential the local
+#      Semaphore injects into every task, exactly like prod
+#   3. local Semaphore container (BoltDB — single container, slim profile)
+#   4. an API token created automatically via the Semaphore API
+#   5. project / key / repository / static inventory / environment resources
+#   6. task templates registered from templates.yml + templates-local.yml
+#
+# Everything after this playbook runs THROUGH the local Semaphore.
+# Idempotent: safe to re-run after a podman-machine reset.
+#
+# This is the ONLY playbook permitted to run unorchestrated (Critical Rule #1
+# bootstrap exemption): `_bootstrap_play: true` below + `--tags bootstrap`.
+#
+# State (gitignored, outside the repo): ~/.agent-cloud-local/credentials.env
+# All generated values carry the LOCAL_FAKE_ prefix — they can never pass as
+# real credentials.
+
+- name: "Bootstrap local-dev control plane (OpenBao + Semaphore)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [bootstrap]
+  vars:
+    _bootstrap_play: true
+    _state_dir: "{{ lookup('env', 'HOME') }}/.agent-cloud-local"
+    # Working inventory (committed example -> gitignored copy via `make local-init`).
+    # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
+    # this -i so they pick up the foundation host groups + genesis path vars.
+    _inv_file: "{{ playbook_dir }}/../inventory/local-dev.yml"
+    # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
+    # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
+    # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
+    _stepca_name: step-ca
+    _net: local-dev
+    _bao_name: local-openbao
+    _bao_image: "{{ local_openbao_image | default('quay.io/openbao/openbao:2.5.4') }}"
+    # Persistent file storage (not dev/in-memory). The init-generated root token
+    # + single unseal key are persisted to _bao_init_file (0600) so re-bootstrap
+    # after a restart unseals the SAME vault. _bao_root_token is set as a fact in
+    # Stage 1 (no fixed token); only this play ever uses it — services auth via
+    # the AppRole. `make local-clean` is the sole intentional wipe.
+    _bao_data_vol: local-openbao-data
+    _bao_config_dir: "{{ _state_dir }}/openbao-config"
+    _bao_init_file: "{{ _state_dir }}/openbao-init.json"
+    _bao_url_host: "http://127.0.0.1:8200"           # from the Mac
+    _bao_url_net: "http://local-openbao:8200"        # from containers on _net
+    _sem_name: local-semaphore
+    # Pinned: latest (v2.19 beta) and bolt dialect both panic ("unknown store
+    # type", pro Terraform-store factory); sqlite is the supported embedded
+    # store. The -ansible variant ships ansible for task execution.
+    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.18.12-ansible2.16.5') }}"
+    _sem_url: "http://127.0.0.1:3000"
+    _sem_admin: localadmin
+    _sem_admin_password: LOCAL_FAKE_semaphore_admin
+    # The Semaphore repository points at the WORKING TREE, not GitHub — local
+    # tasks must test uncommitted changes (the whole point of local-dev). The
+    # repo root is bind-mounted read-only into the container; a git_url
+    # starting with "/" makes Semaphore treat it as a local repository (no
+    # clone, runs playbooks from the path in place).
+    _repo_host_dir: "{{ playbook_dir | dirname | dirname }}"
+    _repo_mount: /workspace/agent-cloud
+    _repo_branch: "{{ local_repo_branch | default('main') }}"
+    # Shared deploy dir — the crux of running deploys through the mounted engine
+    # socket. podman-compose runs INSIDE the Semaphore container, but bind-mount
+    # source paths are resolved on the VM engine, which can't see the
+    # container's private filesystem. Mounting one VM directory into Semaphore
+    # at the SAME absolute path makes the compose project dir identical on both
+    # sides, so `./config`-style host mounts resolve correctly. local-mode
+    # deploys copy the working tree here (writable) instead of ~/agent-cloud.
+    _deploy_share: /var/lib/agent-cloud-deploy
+
+  tasks:
+    # ── Stage 0: preflight ──────────────────────────────────────────────
+    - name: "Assert podman machine is running"
+      ansible.builtin.command: podman machine inspect --format '{{ "{{" }}.State{{ "}}" }}'
+      register: _machine
+      changed_when: false
+      failed_when: "'running' not in _machine.stdout"
+
+    - name: "Ensure state dir"
+      ansible.builtin.file:
+        path: "{{ _state_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Ensure local-dev network"
+      ansible.builtin.shell: |
+        podman network exists {{ _net }} || podman network create {{ _net }}
+      register: _netres
+      changed_when: "'created' in _netres.stdout | default('')"
+
+    # ── Stage 1: OpenBao (persistent file storage) ──────────────────────
+    - name: "Ensure local OpenBao config dir"
+      # 0755 (not 0700): the container mounts this :ro and the unprivileged
+      # in-container `openbao` user must traverse it to read openbao.hcl. The
+      # file is non-secret (it only names storage paths) — the secret unseal
+      # material lives in _bao_init_file (0600), never here.
+      ansible.builtin.file:
+        path: "{{ _bao_config_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Write local OpenBao config (file storage)"
+      # Storage path is /openbao/file — pre-created in the image and owned by the
+      # unprivileged `openbao` user the server drops to. A fresh root-owned named
+      # volume at /openbao/data would be unwritable ("permission denied").
+      # disable_mlock: rootless podman has no IPC_LOCK cap. The container loads
+      # every *.hcl in /openbao/config.
+      ansible.builtin.copy:
+        dest: "{{ _bao_config_dir }}/openbao.hcl"
+        mode: "0644"
+        content: |
+          ui = true
+          disable_mlock = true
+          listener "tcp" {
+            address     = "0.0.0.0:8200"
+            tls_disable = 1
+          }
+          storage "file" {
+            path = "/openbao/file"
+          }
+          api_addr = "http://0.0.0.0:8200"
+
+    - name: "Start persistent OpenBao (recreate if still dev-mode)"
+      # Recreate when an existing container lacks the persistent data volume —
+      # migrates a pre-existing dev-mode container to file storage in place.
+      ansible.builtin.shell: |
+        set -o pipefail
+        RECREATE=0
+        if podman container exists {{ _bao_name }}; then
+          if ! podman inspect {{ _bao_name }} \
+               --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Name{{ "}}" }} {{ "{{" }}end{{ "}}" }}' \
+               | grep -q '{{ _bao_data_vol }}'; then
+            podman rm -f {{ _bao_name }}
+            RECREATE=1
+          fi
+        fi
+        if ! podman container exists {{ _bao_name }}; then
+          podman volume exists {{ _bao_data_vol }} || podman volume create {{ _bao_data_vol }}
+          podman run -d --name {{ _bao_name }} --network {{ _net }} \
+            -p 127.0.0.1:8200:8200 \
+            -v {{ _bao_data_vol }}:/openbao/file \
+            -v {{ _bao_config_dir }}:/openbao/config:ro \
+            -e BAO_ADDR=http://0.0.0.0:8200 \
+            -e SKIP_SETCAP=true \
+            -e SKIP_CHOWN=true \
+            {{ _bao_image }} server
+          [ "$RECREATE" = 1 ] && echo recreated || echo started
+        elif [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _bao_name }})" != "running" ]; then
+          podman start {{ _bao_name }}
+          echo restarted
+        else
+          echo running
+        fi
+      register: _bao_start
+      changed_when: "(_bao_start.stdout | trim) != 'running'"
+
+    - name: "Wait for OpenBao to accept API requests"
+      # seal-status answers 200 even while uninitialized/sealed; /sys/health
+      # would return 501/503 in those states and never converge on first boot.
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/seal-status"
+        status_code: [200]
+      register: _bao_listen
+      until: _bao_listen.status == 200
+      retries: 30
+      delay: 2
+
+    # _bao_listen.json (from the wait above) IS the seal-status body — reuse it
+    # rather than re-GET the same endpoint; nothing mutates state in between.
+    - name: "Initialize OpenBao (first run only)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/init"
+        method: PUT
+        body_format: json
+        body: { secret_shares: 1, secret_threshold: 1 }
+      register: _bao_init
+      when: not _bao_listen.json.initialized
+      no_log: true
+
+    - name: "Persist init material (root token + unseal key, 0600)"
+      ansible.builtin.copy:
+        dest: "{{ _bao_init_file }}"
+        mode: "0600"
+        content: "{{ {'root_token': _bao_init.json.root_token, 'unseal_key': _bao_init.json.keys_base64[0]} | to_nice_json }}"
+      when: not _bao_listen.json.initialized
+      no_log: true
+
+    - name: "Check for persisted init material"
+      ansible.builtin.stat:
+        path: "{{ _bao_init_file }}"
+      register: _bao_init_stat
+
+    - name: "Fail clearly if initialized but the unseal key was lost"
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao is initialized but {{ _bao_init_file }} is missing — the unseal
+          key/root token are unrecoverable. Run `make local-clean && make local-up`
+          to wipe and rebuild the local vault (then clean-deploy stateful services).
+      when:
+        - _bao_listen.json.initialized
+        - not _bao_init_stat.stat.exists
+
+    - name: "Load + decode persisted init material (once)"
+      ansible.builtin.slurp:
+        src: "{{ _bao_init_file }}"
+      register: _bao_init_slurp
+      no_log: true
+
+    - name: "Set OpenBao root token + unseal key facts"
+      ansible.builtin.set_fact:
+        _bao_init_data: "{{ _bao_init_slurp.content | b64decode | from_json }}"
+      no_log: true
+
+    - name: "Derive root token + unseal key"
+      ansible.builtin.set_fact:
+        _bao_root_token: "{{ _bao_init_data.root_token }}"
+        _bao_unseal_key: "{{ _bao_init_data.unseal_key }}"
+      no_log: true
+
+    - name: "Unseal OpenBao if sealed"
+      # Skip when the wait already saw an unsealed vault (warm run); fires on
+      # first init (uninitialized => sealed) and after a container restart.
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/unseal"
+        method: PUT
+        body_format: json
+        body: { key: "{{ _bao_unseal_key }}" }
+      register: _bao_unseal
+      until: not _bao_unseal.json.sealed
+      retries: 5
+      delay: 2
+      when: _bao_listen.json.sealed
+      no_log: true
+
+    - name: "Enable KV v2 at secret/ (idempotent; dev mode auto-mounted this)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/mounts/secret"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_root_token }}"
+        body_format: json
+        body: { type: kv, options: { version: 2 } }
+        status_code: [200, 204, 400]   # 400 = already mounted
+      register: _kv_enable
+      changed_when: _kv_enable.status in [200, 204]
+
+    - name: "Enable AppRole auth (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/auth/approle"
+        method: POST
+        headers: &bao_root_hdr
+          X-Vault-Token: "{{ _bao_root_token }}"
+        body_format: json
+        body: { type: approle }
+        status_code: [200, 204, 400]   # 400 = already enabled
+      register: _approle_enable
+      changed_when: _approle_enable.status in [200, 204]
+
+    - name: "Write local-semaphore policy"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/policies/acl/local-semaphore"
+        method: PUT
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          policy: |
+            path "secret/data/services/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
+            path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+        status_code: [200, 204]
+      changed_when: true
+
+    - name: "Create local-semaphore AppRole"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          token_policies: "local-semaphore"
+          token_ttl: 30m
+          token_max_ttl: 2h
+        status_code: [200, 204]
+      changed_when: true
+
+    - name: "Read AppRole role-id"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/role-id"
+        headers: *bao_root_hdr
+      register: _role_id
+      no_log: true
+
+    - name: "Generate AppRole secret-id"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/secret-id"
+        method: POST
+        headers: *bao_root_hdr
+        status_code: [200]
+      register: _secret_id
+      no_log: true
+
+    # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
+    # §12A: the secure foundation comes up directly here — dns → step-ca →
+    # caddy → authentik (dependency order) — so Semaphore can boot LAST already
+    # OIDC-secured (its trust + issuer exist). Each runs its EXISTING composable
+    # deploy-<svc>.yml UN-FORKED on localhost (connection: local), driven by:
+    #   * the bootstrap's BAO AppRole creds in env — these reach OpenBao at the
+    #     Mac-side 127.0.0.1:8200 (the inventory's openbao_addr) and double as
+    #     the orchestration marker assert-orchestrated accepts (BAO_ROLE_ID);
+    #   * COMPOSE_CMD forced to podman-compose (§12A fix #1, via local_compose_cmd);
+    #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
+    # No no_log here — deploys + their verify phases must stay diagnosable
+    # (CLAUDE.md: scope no_log to credential tasks only).
+    - name: "Locate podman-compose on the Mac (forces the compose provider)"
+      # shell (not command): `command -v` is a shell builtin. Genesis REQUIRES
+      # podman-compose — without it detect_runtime falls back to `podman compose`
+      # (docker-compose) and hits the network label mismatch (§12A fix #1).
+      ansible.builtin.shell: command -v podman-compose
+      register: _pc
+      changed_when: false
+      failed_when: false
+
+    - name: "Require podman-compose for the Mac-direct genesis path"
+      ansible.builtin.assert:
+        that: _pc.rc == 0
+        fail_msg: >-
+          podman-compose not found on PATH. The genesis foundation deploys run
+          Mac-direct and require it. Install it: `brew install podman-compose`
+          (it's in the repo Brewfile — `brew bundle` installs the full toolchain).
+        success_msg: "podman-compose: {{ _pc.stdout | trim }}"
+
+    - name: "Genesis-deploy the secure foundation in dependency order"
+      # Shell-out to ansible-playbook (not import_playbook): import_playbook is a
+      # parse-time, un-loopable static include — it can't take per-run -e vars
+      # (local_compose_cmd) or this play's runtime AppRole creds. The command
+      # module surfaces the child's stdout/stderr on failure, so a deploy.sh error
+      # stays diagnosable (validated). Each deploy-<svc>.yml runs un-forked.
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook -i {{ _inv_file }}
+          {{ playbook_dir }}/deploy-{{ item }}.yml
+          -e local_compose_cmd={{ _pc.stdout | trim }}
+      environment:
+        BAO_ADDR: "{{ _bao_url_host }}"
+        OPENBAO_ADDR: "{{ _bao_url_host }}"
+        BAO_ROLE_ID: "{{ _role_id.json.data.role_id }}"
+        BAO_SECRET_ID: "{{ _secret_id.json.data.secret_id }}"
+        CONTAINER_ENGINE: podman
+      loop: [dns, step-ca, caddy, authentik]
+      register: _genesis
+      changed_when: true
+
+    # ── Stage 2: Semaphore — boots LAST, OIDC-secured (§12A) ────────────
+    # The VM's rootful podman socket is mounted in so Semaphore-run deploy
+    # tasks can drive podman remotely (CONTAINER_HOST in the environment).
+    #
+    # OIDC is wired only when its deps exist (step-ca trust + the Authentik
+    # issuer, both genesis-deployed in Stage 1.5). Absent on a first mid-build
+    # pass -> Semaphore still boots WITHOUT OIDC (FAIL-SAFE: the control plane
+    # must never be left unbootable). The local admin login is always retained
+    # as the fallback (OIDC users are non-admin — Semaphore has no group->role
+    # mapping; promote OIDC admins by hand).
+    - name: "Detect OIDC dependencies (step-ca + authentik up)"
+      ansible.builtin.shell: >-
+        podman container exists {{ _stepca_name }} && podman container exists authentik-server
+        && echo ready || echo notready
+      register: _oidc_deps
+      changed_when: false
+
+    - name: "Read the Semaphore OIDC client secret from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/authentik"
+        headers: *bao_root_hdr
+        status_code: [200, 404]
+      register: _ak_secret
+      when: _oidc_deps.stdout | trim == 'ready'
+      no_log: true
+
+    - name: "Build SEMAPHORE_OIDC_PROVIDERS (inner-map JSON, keyed 'authentik')"
+      # provider_url is the Authentik issuer for OIDC auto-discovery; redirect_url
+      # is Semaphore's native callback /api/auth/oidc/<key>/redirect (key matches
+      # the semaphore-oidc.yaml blueprint). Both use :8443 — the in-network port
+      # Caddy also listens on (caddy_routes internal_https_port), reachable from
+      # local-semaphore via Caddy's `auth.<zone>` network alias.
+      vars:
+        _zone: "{{ dev_zone | default('agent-cloud.test') }}"
+        _client_secret: "{{ _ak_secret.json.data.data.semaphore_oidc_client_secret | default('') }}"
+        _oidc_map:
+          authentik:
+            display_name: Authentik
+            provider_url: "https://auth.{{ _zone }}:8443/application/o/semaphore/"
+            client_id: semaphore
+            client_secret: "{{ _client_secret }}"
+            redirect_url: "https://semaphore.{{ _zone }}:8443/api/auth/oidc/authentik/redirect"
+            username_claim: preferred_username
+            scopes: [openid, profile, email]
+      ansible.builtin.set_fact:
+        _sem_oidc_json: "{{ _oidc_map | to_json }}"
+      when:
+        - _oidc_deps.stdout | trim == 'ready'
+        - _client_secret | length > 0
+      no_log: true
+
+    - name: "jq-validate the OIDC JSON (a malformed value panics Semaphore at boot)"
+      ansible.builtin.command: jq -e .
+      args:
+        stdin: "{{ _sem_oidc_json }}"
+      register: _jq
+      changed_when: false
+      when: _sem_oidc_json is defined
+      no_log: true
+
+    - name: "Mark OIDC ready (deps up + validated JSON present)"
+      ansible.builtin.set_fact:
+        _oidc_ready: "{{ _sem_oidc_json is defined }}"
+
+    # ── Stage 2a: OpenBao native OIDC login (platform-admins) ───────────
+    # OpenBao keeps its forward_auth network gate (slug `openbao`); this adds
+    # native OIDC login (Authentik app `openbao-oidc`) so an SSO'd admin maps to
+    # an OpenBao policy instead of needing the root token. Configured here (not a
+    # deploy) because OpenBao is bootstrapped directly; gated on _oidc_ready
+    # (Authentik up + secrets present). The role grants the admin policy to any
+    # OIDC user via token_policies, so the openbao-oidc APP is gated admins-only
+    # in Authentik (zz-sso-bindings policy-platform-admin) — developers can't
+    # complete this login and so can't inherit root. groups_claim is set so a prod
+    # follow-up can swap to external-group -> per-policy mapping (admins=admin,
+    # developers=read-only) and relax the app gate back to platform-member.
+    - name: "Read the step-ca root for OpenBao's OIDC discovery trust"
+      ansible.builtin.command: "podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt"
+      register: _stepca_root
+      changed_when: false
+      when: _oidc_ready | bool
+
+    - name: "Enable the OpenBao oidc auth method (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/auth/oidc"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body: { type: oidc }
+        status_code: [200, 204, 400]   # 400 = already enabled
+      when: _oidc_ready | bool
+      changed_when: true
+
+    - name: "Write the OpenBao admin policy (platform-admin)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/sys/policies/acl/platform-admin"
+        method: PUT
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          policy: |
+            path "*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
+        status_code: [200, 204]
+      when: _oidc_ready | bool
+      changed_when: true
+
+    - name: "Configure OpenBao auth/oidc against Authentik (validates discovery)"
+      # Validates by fetching the discovery doc — proves Authentik is reachable at
+      # auth.<zone>:8443 (Caddy alias on local-dev) and step-ca is trusted via the
+      # ca_pem. Retries cover the openbao-oidc app/discovery lag after first boot.
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/oidc/config"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:8443/application/o/openbao-oidc/"
+          oidc_discovery_ca_pem: "{{ _stepca_root.stdout }}"
+          oidc_client_id: openbao
+          oidc_client_secret: "{{ _ak_secret.json.data.data.openbao_oidc_client_secret }}"
+          default_role: platform-admins
+        status_code: [200, 204]
+      register: _bao_oidc_cfg
+      when: _oidc_ready | bool
+      retries: 5
+      delay: 6
+      until: _bao_oidc_cfg.status is defined and _bao_oidc_cfg.status in [200, 204]
+      no_log: true
+
+    - name: "Write the OpenBao oidc role (platform-admins -> admin policy)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/auth/oidc/role/platform-admins"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          user_claim: sub
+          groups_claim: groups
+          oidc_scopes: ["openid", "email", "profile"]
+          bound_audiences: ["openbao"]
+          allowed_redirect_uris:
+            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:8443/ui/vault/auth/oidc/oidc/callback"
+            - "http://localhost:8250/oidc/callback"
+          token_policies: ["platform-admin"]
+          token_ttl: 1h
+        status_code: [200, 204]
+      when: _oidc_ready | bool
+      changed_when: true
+
+    - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
+      # SSL_CERT_FILE REPLACES the whole container trust store, so the bundle MUST
+      # carry the PUBLIC roots too — otherwise apk/pip/ansible-galaxy (public TLS)
+      # break with cert-verify errors. Both reads come from the already-running
+      # step-ca (deployed earlier in the genesis loop, so always up under the
+      # _oidc_ready gate): its image ships a full public CA set, and root_ca.crt is
+      # the internal root Go must trust for Caddy's auth.<zone> leaf (OIDC JWKS).
+      # Reading from step-ca avoids a throwaway `podman run` of the Semaphore image
+      # on every warm re-run and keeps the bundle always-fresh (no stale cache).
+      # (tasks/distribute-ca-root.yml is the canonical reader for the service-side
+      # case — it builds a root+intermediate bundle into a service certs dir; here
+      # we need public-roots+root for SSL_CERT_FILE, so it can't be reused as-is.)
+      ansible.builtin.shell: |
+        set -o pipefail
+        {
+          podman exec {{ _stepca_name }} cat /etc/ssl/certs/ca-certificates.crt
+          podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt
+        } > {{ _state_dir }}/step-ca-bundle.crt
+      register: _bundle
+      changed_when: true
+      when: _oidc_ready | bool
+
+    - name: "Write the Semaphore OIDC env-file (0600) — avoids shell-quoting the JSON"
+      ansible.builtin.copy:
+        dest: "{{ _state_dir }}/semaphore-oidc.env"
+        mode: "0600"
+        content: "SEMAPHORE_OIDC_PROVIDERS={{ _sem_oidc_json }}\n"
+      when: _oidc_ready | bool
+      no_log: true
+
+    - name: "Compose Semaphore OIDC/TLS run flags (empty when not ready)"
+      # --env-file is read client-side by podman (Mac), so the file lives in the
+      # state dir; the bundle bind-mounts from the same $HOME-anchored dir, which
+      # podman-machine surfaces in the VM at the identical path.
+      ansible.builtin.set_fact:
+        _sem_oidc_flags: >-
+          {{ ('--env-file ' ~ _state_dir ~ '/semaphore-oidc.env '
+              ~ '-v ' ~ _state_dir ~ '/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro '
+              ~ '-e SSL_CERT_FILE=/etc/ssl/certs/step-ca-bundle.crt '
+              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':8443 ')
+             if (_oidc_ready | bool) else '' }}
+
+    - name: "Ensure the shared deploy dir exists on the VM"
+      # Created on the VM (not the container) so the same absolute path can be
+      # mounted into Semaphore — see _deploy_share rationale above. 1777 lets the
+      # non-root semaphore-container uid write the copied tree.
+      ansible.builtin.command: >-
+        podman machine ssh
+        "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
+      register: _share_mkdir
+      changed_when: false
+
+    - name: "Recreate Semaphore if any required mount or label=disable is missing"
+      ansible.builtin.shell: |
+        set -o pipefail
+        if podman container exists {{ _sem_name }}; then
+          MOUNTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Destination{{ "}}" }} {{ "{{" }}end{{ "}}" }}')
+          SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
+          ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
+          if ! echo "$MOUNTS" | grep -q '/run/podman/podman.sock' || \
+             ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
+             ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
+             ! echo "$SECOPT" | grep -q 'label=disable'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+          # A Semaphore that predates OIDC is recreated once the deps are up so it
+          # boots OIDC-secured (the warm-upgrade path on a live stack). WANT_OIDC
+          # comes from the environment below, keeping jinja out of the shell
+          # condition (inline jinja in a shell brace-group broke the arg splitter).
+          if [ "$WANT_OIDC" = "true" ] && ! echo "$ENV" | grep -q 'SSL_CERT_FILE'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+        fi
+        echo ok
+      environment:
+        WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
+      register: _sem_recreate
+      changed_when: "_sem_recreate.stdout | trim == 'recreated'"
+
+    - name: "Start local Semaphore"
+      ansible.builtin.shell: |
+        if ! podman container exists {{ _sem_name }}; then
+          podman volume exists local-semaphore-data || podman volume create local-semaphore-data
+          podman run -d --name {{ _sem_name }} --network {{ _net }} \
+            -p 127.0.0.1:3000:3000 \
+            -v local-semaphore-data:/var/lib/semaphore \
+            -v /run/podman/podman.sock:/run/podman/podman.sock \
+            -v {{ _repo_host_dir }}:{{ _repo_mount }}:ro \
+            -v {{ _deploy_share }}:{{ _deploy_share }} \
+            --security-opt label=disable \
+            {{ _sem_oidc_flags }} \
+            -e SEMAPHORE_DB_DIALECT=sqlite \
+            -e SEMAPHORE_ADMIN={{ _sem_admin }} \
+            -e SEMAPHORE_ADMIN_PASSWORD={{ _sem_admin_password }} \
+            -e SEMAPHORE_ADMIN_NAME="Local Admin" \
+            -e SEMAPHORE_ADMIN_EMAIL=admin@localhost \
+            {{ _sem_image }}
+          echo started
+        elif [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _sem_name }})" != "running" ]; then
+          podman start {{ _sem_name }}
+          echo restarted
+        else
+          echo running
+        fi
+      register: _sem_start
+      changed_when: "_sem_start.stdout | trim != 'running'"
+
+    - name: "Wait for Semaphore API"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/ping"
+        status_code: [200]
+      register: _sem_ping
+      until: _sem_ping.status == 200
+      retries: 30
+      delay: 2
+
+    - name: "Install task-execution deps inside Semaphore (hvac + collections)"
+      # Check + install each dependency independently so a warm rerun after a
+      # partial install (or an image change) converges every missing piece — a
+      # single hvac guard would skip the whole block and leave gaps behind.
+      ansible.builtin.command: >-
+        podman exec {{ _sem_name }} sh -c
+        "python3 -c 'import hvac' >/dev/null 2>&1 || { pip3 install --quiet hvac; echo INSTALLED; };
+         command -v podman-compose >/dev/null 2>&1 || { pip3 install --quiet podman-compose; echo INSTALLED; };
+         ansible-galaxy collection list community.hashi_vault >/dev/null 2>&1 ||
+           { ansible-galaxy collection install community.hashi_vault; echo INSTALLED; };
+         ansible-galaxy collection list ansible.posix >/dev/null 2>&1 ||
+           { ansible-galaxy collection install ansible.posix; echo INSTALLED; }"
+      register: _sem_deps
+      changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
+
+    - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
+      ansible.builtin.command: >-
+        podman exec --user root {{ _sem_name }} sh -c
+        "command -v podman >/dev/null || apk add --no-cache podman"
+      register: _sem_podman
+      changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
+
+    # ── Stage 3: automatic API token ────────────────────────────────────
+    - name: "Login to Semaphore (session cookie)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          auth: "{{ _sem_admin }}"
+          password: "{{ _sem_admin_password }}"
+        status_code: [204]
+      register: _login
+      no_log: true
+
+    - name: "Create API token automatically"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/user/tokens"
+        method: POST
+        headers:
+          Cookie: "{{ _login.cookies_string }}"
+        status_code: [201]
+      register: _token_resp
+      no_log: true
+
+    - name: "Set token fact"
+      ansible.builtin.set_fact:
+        _sem_token: "{{ _token_resp.json.id }}"
+
+    # ── Stage 3b: agent-cloud-admin Semaphore admin (OIDC links to it) ──
+    # OIDC users land NON-admin (Semaphore has no group->role mapping), so an
+    # SSO login sees no projects. Pre-create agent-cloud-admin as a GLOBAL admin
+    # (external=true -> authenticated via OIDC, no password) so its SSO login
+    # matches this user by username and it can see + work on ALL projects.
+    # Idempotent by username. akadmin intentionally stays non-admin.
+    - name: "List Semaphore users"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+      register: _sem_users
+
+    - name: "Create agent-cloud-admin Semaphore admin user (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        body_format: json
+        body:
+          name: "agent-cloud Admin"
+          username: agent-cloud-admin
+          email: "agent-cloud-admin@{{ dev_zone | default('agent-cloud.test') }}"
+          admin: true
+          external: true
+        status_code: [201, 204]
+      when: _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
+      changed_when: true
+
+    # ── Stage 4: project + resources (idempotent by name) ───────────────
+    - name: "List projects"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        headers: &sem_hdr
+          Authorization: "Bearer {{ _sem_token }}"
+      register: _projects
+
+    - name: "Create agent-cloud project"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body: { name: agent-cloud }
+        status_code: [201]
+      when: _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+      register: _proj_create
+
+    - name: "Resolve project id"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/projects"
+        headers: *sem_hdr
+      register: _projects2
+
+    - name: "Set project id"
+      ansible.builtin.set_fact:
+        _pid: "{{ _projects2.json | selectattr('name', 'equalto', 'agent-cloud') | map(attribute='id') | first }}"
+
+    - name: "Ensure 'none' key"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        headers: *sem_hdr
+      register: _keys
+
+    - name: "Create 'none' key"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body: { name: none, type: none, project_id: "{{ _pid | int }}" }
+        status_code: [201, 204]
+      when: _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
+
+    - name: "Resolve key id"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
+        headers: *sem_hdr
+      register: _keys2
+
+    - name: "Ensure repository"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
+        headers: *sem_hdr
+      register: _repos
+
+    # Create-or-PUT: re-runs correct an existing record (e.g. one that still
+    # points at GitHub) to the local working-tree mount.
+    - name: "Create agent-cloud repository"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
+        method: POST
+        headers: *sem_hdr
+        body_format: json
+        body:
+          name: agent-cloud
+          project_id: "{{ _pid | int }}"
+          git_url: "{{ _repo_mount }}"
+          git_branch: "{{ _repo_branch }}"
+          ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
+        status_code: [201, 204]
+      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+
+    - name: "Update agent-cloud repository to the working-tree mount"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories/{{ _existing_repo.id }}"
+        method: PUT
+        headers: *sem_hdr
+        body_format: json
+        body:
+          id: "{{ _existing_repo.id | int }}"
+          name: agent-cloud
+          project_id: "{{ _pid | int }}"
+          git_url: "{{ _repo_mount }}"
+          git_branch: "{{ _repo_branch }}"
+          ssh_key_id: "{{ _existing_repo.ssh_key_id | int }}"
+        status_code: [201, 204]
+      vars:
+        _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud') | first }}"
+      when:
+        - _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length > 0
+        - _existing_repo.git_url != _repo_mount
+      changed_when: true
+
+    - name: "Ensure static local inventory"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/inventory"
+        headers: *sem_hdr
+      register: _invs
+
+    - name: "Create or update local inventory"
+      ansible.builtin.uri:
+        url: >-
+          {{ _sem_url }}/api/project/{{ _pid }}/inventory{{
+            '/' ~ (_invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first)
+            if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else '' }}
+        method: "{{ 'PUT' if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else 'POST' }}"
+        headers: *sem_hdr
+        body_format: json
+        body: "{{ _inv_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _existing_inv: "{{ _invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | list }}"
+        # Single source for the local zone (mirrors dev_zone in the inventory
+        # all.vars); baked into the static INI below so every hostname derives
+        # from one value. Defaults to the RFC 6761 reserved agent-cloud.test.
+        _dev_zone: "{{ dev_zone | default('agent-cloud.test') }}"
+        # Mirrors platform/inventory/local-dev.yml.example, expressed as the
+        # static INI Semaphore stores; openbao_addr uses the container-network
+        # address because tasks execute inside the Semaphore container.
+        # ansible_user must be DEFINED even for local connections: playbook
+        # defaults like  local_monorepo_dir | default('/home/' ~ ansible_user)
+        # evaluate the default argument eagerly (Jinja), so an undefined
+        # ansible_user errors even when local_monorepo_dir is set.
+        _inv_ini: |
+          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true
+
+          [dns_svc]
+          dns-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [dns_svc:vars]
+          ansible_user=semaphore
+          service_name=dns
+          monorepo_deploy_path=platform/services/dns/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          dns_zone={{ _dev_zone }}
+          dns_listen=0.0.0.0
+          dns_port=5300
+          dns_wildcard_target=127.0.0.1
+          dns_upstreams=["1.1.1.1", "1.0.0.1"]
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [step_ca_svc]
+          step-ca-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [step_ca_svc:vars]
+          ansible_user=semaphore
+          service_name=step-ca
+          monorepo_deploy_path=platform/services/step-ca/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          stepca_bind=127.0.0.1
+          stepca_port=9000
+          stepca_name=agent-cloud Internal CA (local)
+          stepca_dns_names=step-ca,localhost,step-ca.{{ _dev_zone }}
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [caddy_svc]
+          caddy-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [caddy_svc:vars]
+          ansible_user=semaphore
+          service_name=caddy
+          monorepo_deploy_path=platform/services/caddy/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          caddy_image=docker.io/library/caddy:2-alpine
+          caddy_file=./Caddyfile.local
+          caddy_http_bind=127.0.0.1
+          caddy_http_port=8088
+          caddy_https_bind=127.0.0.1
+          caddy_https_port=8443
+          caddy_internal_zone={{ _dev_zone }}
+          caddy_tls_cert=/etc/caddy/certs/wildcard.crt
+          caddy_tls_key=/etc/caddy/certs/wildcard.key
+          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}]
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [authentik_svc]
+          authentik-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [authentik_svc:vars]
+          ansible_user=semaphore
+          service_name=authentik
+          monorepo_deploy_path=platform/services/authentik/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          authentik_bind=127.0.0.1
+          authentik_port=9300
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [o11y_svc]
+          o11y-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [o11y_svc:vars]
+          ansible_user=semaphore
+          service_name=o11y
+          monorepo_deploy_path=platform/services/o11y/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          o11y_grafana_port=3002
+          o11y_prom_port=9090
+          o11y_loki_port=3100
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [opa_svc]
+          opa-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [opa_svc:vars]
+          ansible_user=semaphore
+          service_name=opa
+          monorepo_deploy_path=platform/services/opa/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          opa_bind=127.0.0.1
+          opa_port=8281
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [n8n_svc]
+          n8n-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [n8n_svc:vars]
+          ansible_user=semaphore
+          service_name=n8n
+          monorepo_deploy_path=platform/services/n8n/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          n8n_bind=127.0.0.1
+          n8n_image=docker.io/n8nio/n8n:latest
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [erpnext_svc]
+          erpnext-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [erpnext_svc:vars]
+          ansible_user=semaphore
+          service_name=erpnext
+          monorepo_deploy_path=platform/services/erpnext/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          erpnext_bind=127.0.0.1
+          erpnext_port=8080
+          erpnext_version=v16
+          erpnext_site_name=erp.{{ _dev_zone }}
+          erpnext_public_url=https://erp.{{ _dev_zone }}:8443
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [uhhcraft_svc]
+          uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [uhhcraft_svc:vars]
+          ansible_user=semaphore
+          service_name=uhhcraft
+          service_url=http://host.containers.internal:3001
+          monorepo_deploy_path=platform/services/uhhcraft/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          uhhcraft_port=3001
+          uhhcraft_bind=0.0.0.0
+          uhhcraft_base_url=http://127.0.0.1:3001
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+        _inv_body: >-
+          {{ {'name': 'local',
+              'project_id': (_pid | int),
+              'type': 'static',
+              'ssh_key_id': (_keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int),
+              'inventory': _inv_ini}
+             | combine({'id': (_existing_inv | first | int)} if (_existing_inv | length > 0) else {}) }}
+      changed_when: true
+
+    - name: "Ensure environment (AppRole injection, as in prod)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
+        headers: *sem_hdr
+      register: _envs
+
+    - name: "Create or update local-openbao environment"
+      ansible.builtin.uri:
+        url: >-
+          {{ _sem_url }}/api/project/{{ _pid }}/environment{{
+            '/' ~ (_envs.json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first)
+            if (_envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length > 0) else '' }}
+        method: "{{ 'PUT' if (_envs.json | selectattr('name', 'equalto', 'local-openbao') | list | length > 0) else 'POST' }}"
+        headers: *sem_hdr
+        body_format: json
+        body: "{{ _env_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _existing_env: "{{ _envs.json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | list }}"
+        # AppRole injection exactly as prod, plus the remote-podman wiring so
+        # deploy tasks inside the container drive the VM's engine.
+        _env_body: >-
+          {{ {'name': 'local-openbao',
+              'project_id': (_pid | int),
+              'json': '{}',
+              'env': ({'BAO_ROLE_ID': _role_id.json.data.role_id,
+                       'BAO_SECRET_ID': _secret_id.json.data.secret_id,
+                       'BAO_ADDR': _bao_url_net,
+                       'OPENBAO_ADDR': _bao_url_net,
+                       'CONTAINER_HOST': 'unix:///run/podman/podman.sock',
+                       'CONTAINER_ENGINE': 'podman',
+                       'LOCAL_MODE': 'true'} | to_json)}
+             | combine({'id': (_existing_env | first | int)} if (_existing_env | length > 0) else {}) }}
+      changed_when: true
+      no_log: true
+
+    - name: "Resolve inventory + environment ids"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _pid }}/{{ item }}"
+        headers: *sem_hdr
+      register: _res
+      loop: [inventory, environment]
+
+    - name: "Set resource ids"
+      ansible.builtin.set_fact:
+        _inv_id: "{{ _res.results[0].json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first }}"
+        _env_id: "{{ _res.results[1].json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first }}"
+
+    # ── Stage 4b: seed LOCAL_FAKE secrets (absent paths only) ───────────
+    - name: "Check existing service secrets"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item }}"
+        headers: *bao_root_hdr
+        status_code: [200, 404]
+      register: _seed_check
+      loop: [uhhcraft]
+
+    - name: "Seed LOCAL_FAKE secrets for absent services"
+      ansible.builtin.uri:
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.item }}"
+        method: POST
+        headers: *bao_root_hdr
+        body_format: json
+        body:
+          data:
+            postgres_password: "LOCAL_FAKE_{{ item.item }}_postgres"
+            redis_password: "LOCAL_FAKE_{{ item.item }}_redis"
+            session_secret: "LOCAL_FAKE_{{ item.item }}_session"
+        status_code: [200, 204]
+      when: item.status == 404
+      loop: "{{ _seed_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      no_log: true
+
+    # ── Stage 5: persist state for the wrapper ──────────────────────────
+    - name: "Write local credentials state (0600, outside the repo)"
+      no_log: true
+      ansible.builtin.copy:
+        dest: "{{ _state_dir }}/credentials.env"
+        mode: "0600"
+        content: |
+          # agent-cloud local-dev state — generated by bootstrap-local-dev.yml
+          # All values are LOCAL_FAKE-class; never used outside this machine.
+          SEMAPHORE_URL={{ _sem_url }}
+          SEMAPHORE_TOKEN={{ _sem_token }}
+          SEMAPHORE_PROJECT_ID={{ _pid }}
+          SEMAPHORE_INVENTORY_ID={{ _inv_id }}
+          SEMAPHORE_ENVIRONMENT_ID={{ _env_id }}
+          BAO_ADDR={{ _bao_url_host }}
+          BAO_ROLE_ID={{ _role_id.json.data.role_id }}
+          BAO_SECRET_ID={{ _secret_id.json.data.secret_id }}
+
+    # ── Stage 6: templates-as-code against the local instance ───────────
+    - name: "Register templates (shared + local-only)"
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ playbook_dir }}/../semaphore/setup-templates.yml
+          -e semaphore_project_id={{ _pid }}
+          -e semaphore_inventory_id={{ _inv_id }}
+          -e semaphore_environment_id={{ _env_id }}
+          -e semaphore_include_local_templates=true
+      environment:
+        SEMAPHORE_URL: "{{ _sem_url }}"
+        SEMAPHORE_TOKEN: "{{ _sem_token }}"
+      changed_when: true
+
+    - name: "Bootstrap complete"
+      ansible.builtin.debug:
+        msg: >-
+          Local control plane up: OpenBao {{ _bao_url_host }} (persistent),
+          Semaphore {{ _sem_url }} (project {{ _pid }}, inventory {{ _inv_id }},
+          environment {{ _env_id }}). State: {{ _state_dir }}/credentials.env.
+          Everything from here runs THROUGH Semaphore.
