@@ -132,7 +132,11 @@ step_oidc_admin() {
   # one known admin here, mirroring the platform model (akadmin/Administrator =
   # break-glass; agent-cloud-admin = the daily SSO admin with full access). The
   # email MUST equal the Authentik agent-cloud-admin email (agent-cloud-admin.yaml)
-  # or the claim won't match this User. System Manager = full desk admin.
+  # or the claim won't match this User. We grant EVERY assignable role (not just
+  # System Manager): System Manager is an ADMIN role only — the functional module
+  # doctypes (Purchase/Stock/Accounts/Projects/...) each gate on their own roles,
+  # so "full access" is the union of all roles. Only the special Administrator
+  # USER bypasses permission checks; a normal SSO user gets exactly its roles.
   : "${ERPNEXT_OIDC_ADMIN_EMAIL:?ERPNEXT_OIDC_ADMIN_EMAIL missing when ERPNEXT_OIDC_CLIENT_SECRET is set}"
   info "Step 4b: Pre-provisioning OIDC admin ${ERPNEXT_OIDC_ADMIN_EMAIL} (idempotent)..."
   bench_exec bash -lc 'cat > /tmp/oidc_admin.py' <<'PYEOF'
@@ -157,11 +161,15 @@ else:
     user.flags.no_welcome_mail = True
     user.insert(ignore_permissions=True)
     action = "created"
-# System Manager = full desk admin. add_roles() dedups + saves -> idempotent.
-user.add_roles("System Manager")
+# Full access = the union of ALL assignable roles. Administrator/All/Guest are
+# special and must not be assigned directly. add_roles() dedups + saves once at
+# the end -> idempotent across re-runs.
+SKIP = {"Administrator", "All", "Guest"}
+roles = [r for r in frappe.get_all("Role", filters={"disabled": 0}, pluck="name") if r not in SKIP]
+user.add_roles(*roles)
 frappe.db.commit()
 assert frappe.db.exists("User", email), "OIDC admin not persisted"
-print("OK: OIDC admin '%s' %s with System Manager" % (email, action))
+print("OK: OIDC admin '%s' %s with %d roles (full access)" % (email, action, len(roles)))
 PYEOF
   compose exec -T \
     -e ADMIN_EMAIL="${ERPNEXT_OIDC_ADMIN_EMAIL}" \

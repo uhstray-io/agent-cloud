@@ -152,7 +152,9 @@ setup() {
   local f="$REPO_ROOT/platform/services/erpnext/deployment/post-deploy.sh"
   grep -q 'step_oidc_admin' "$f"
   grep -q 'ERPNEXT_OIDC_ADMIN_EMAIL' "$f"
-  grep -q 'add_roles("System Manager")' "$f"
+  # full access = union of all assignable roles (System Manager alone is admin-only)
+  grep -q 'user.add_roles(\*roles)' "$f"
+  grep -q '"Administrator", "All", "Guest"' "$f"
   # the email is templated to match the Authentik agent-cloud-admin identity
   grep -q 'ERPNEXT_OIDC_ADMIN_EMAIL=' "$REPO_ROOT/platform/services/erpnext/deployment/templates/env.j2"
 }
