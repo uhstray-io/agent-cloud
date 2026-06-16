@@ -31,6 +31,11 @@ for cmd in gh jq; do
 done
 
 for file in "${files[@]}"; do
+  # Explicit args are documented to sit beside this script; if a bare name isn't
+  # found relative to the current directory, resolve it against SCRIPT_DIR.
+  if [ ! -f "$file" ] && [ -f "$SCRIPT_DIR/$file" ]; then
+    file="$SCRIPT_DIR/$file"
+  fi
   [ -f "$file" ] || { echo "ERROR: not a file: $file" >&2; exit 1; }
 
   name="$(jq -r '.name // empty' "$file")"
