@@ -144,3 +144,15 @@ setup() {
   local f="$REPO_ROOT/platform/services/erpnext/deployment/post-deploy.sh"
   grep -q 'doc.custom_base_url = 1' "$f"
 }
+
+@test "erpnext: post-deploy pre-provisions the OIDC admin (else signup-disabled 403)" {
+  # Frappe matches the OIDC identity by email; if absent it self-registers, which
+  # Website Settings disables -> 403. Pre-create the SSO admin as a System Manager
+  # so login binds to it (signup stays disabled). Email must match Authentik.
+  local f="$REPO_ROOT/platform/services/erpnext/deployment/post-deploy.sh"
+  grep -q 'step_oidc_admin' "$f"
+  grep -q 'ERPNEXT_OIDC_ADMIN_EMAIL' "$f"
+  grep -q 'add_roles("System Manager")' "$f"
+  # the email is templated to match the Authentik agent-cloud-admin identity
+  grep -q 'ERPNEXT_OIDC_ADMIN_EMAIL=' "$REPO_ROOT/platform/services/erpnext/deployment/templates/env.j2"
+}

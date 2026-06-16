@@ -116,9 +116,58 @@ PYEOF
     -e OIDC_REDIRECT="${PUBLIC_URL}/api/method/frappe.integrations.oauth2_logins.custom/${_provider}" \
     backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_setup.py"
   rm_oidc_tmp
+  step_oidc_admin
 }
 
-rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py 2>/dev/null || true; }
+rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py /tmp/oidc_admin.py 2>/dev/null || true; }
+
+step_oidc_admin() {
+  # Pre-provision the SSO admin so OIDC login binds to an existing account.
+  #
+  # WHY: Frappe matches the OIDC identity BY EMAIL (apps/frappe/.../utils/oauth.py
+  # update_oauth_user). If the User is absent it tries to SELF-REGISTER, gated by
+  # Website Settings.disable_signup — which is on by default, so the login 403s
+  # ("Signup from Website is disabled") instead of creating the account. We keep
+  # self-signup DISABLED (no open registration on the ERP) and instead create the
+  # one known admin here, mirroring the platform model (akadmin/Administrator =
+  # break-glass; agent-cloud-admin = the daily SSO admin with full access). The
+  # email MUST equal the Authentik agent-cloud-admin email (agent-cloud-admin.yaml)
+  # or the claim won't match this User. System Manager = full desk admin.
+  : "${ERPNEXT_OIDC_ADMIN_EMAIL:?ERPNEXT_OIDC_ADMIN_EMAIL missing when ERPNEXT_OIDC_CLIENT_SECRET is set}"
+  info "Step 4b: Pre-provisioning OIDC admin ${ERPNEXT_OIDC_ADMIN_EMAIL} (idempotent)..."
+  bench_exec bash -lc 'cat > /tmp/oidc_admin.py' <<'PYEOF'
+import os, frappe
+email = os.environ["ADMIN_EMAIL"]
+if frappe.db.exists("User", email):
+    user = frappe.get_doc("User", email)
+    user.enabled = 1
+    user.user_type = "System User"
+    user.save(ignore_permissions=True)
+    action = "updated"
+else:
+    user = frappe.get_doc({
+        "doctype": "User",
+        "email": email,
+        "first_name": "agent-cloud",
+        "last_name": "Admin",
+        "user_type": "System User",
+        "enabled": 1,
+        "send_welcome_email": 0,
+    })
+    user.flags.no_welcome_mail = True
+    user.insert(ignore_permissions=True)
+    action = "created"
+# System Manager = full desk admin. add_roles() dedups + saves -> idempotent.
+user.add_roles("System Manager")
+frappe.db.commit()
+assert frappe.db.exists("User", email), "OIDC admin not persisted"
+print("OK: OIDC admin '%s' %s with System Manager" % (email, action))
+PYEOF
+  compose exec -T \
+    -e ADMIN_EMAIL="${ERPNEXT_OIDC_ADMIN_EMAIL}" \
+    backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_admin.py"
+  rm_oidc_tmp
+}
 
 step_reload_proxy() {
   # The backend gets a NEW container IP on every recreate; the frontend (nginx)
