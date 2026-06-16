@@ -53,7 +53,7 @@ setup() {
 @test "Semaphore start carries fail-safe OIDC env (jq-validated + step-ca trust)" {
   bp="$PB/bootstrap-local-dev.yml"
   run grep -q "SEMAPHORE_OIDC_PROVIDERS" "$bp"; [ "$status" -eq 0 ]
-  run grep -q "jq-validate the OIDC JSON" "$bp"; [ "$status" -eq 0 ]
+  run grep -q "Validate the OIDC JSON with jq" "$bp"; [ "$status" -eq 0 ]
   run grep -q "SSL_CERT_FILE" "$bp"; [ "$status" -eq 0 ]
   run grep -q "SEMAPHORE_WEB_ROOT" "$bp"; [ "$status" -eq 0 ]
 }

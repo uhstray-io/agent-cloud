@@ -318,7 +318,7 @@
     #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
     # No no_log here — deploys + their verify phases must stay diagnosable
     # (CLAUDE.md: scope no_log to credential tasks only).
-    - name: "Locate podman-compose on the Mac (forces the compose provider)"
+    - name: "Locate podman-compose on the Mac (forces the compose provider)"  # noqa: command-instead-of-shell
       # shell (not command): `command -v` is a shell builtin. Genesis REQUIRES
       # podman-compose — without it detect_runtime falls back to `podman compose`
       # (docker-compose) and hits the network label mismatch (§12A fix #1).
@@ -408,7 +408,7 @@
         - _client_secret | length > 0
       no_log: true
 
-    - name: "jq-validate the OIDC JSON (a malformed value panics Semaphore at boot)"
+    - name: "Validate the OIDC JSON with jq (a malformed value panics Semaphore at boot)"
       ansible.builtin.command: jq -e .
       args:
         stdin: "{{ _sem_oidc_json }}"

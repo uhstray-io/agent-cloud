@@ -208,7 +208,7 @@ git commit -m "feat(local-dev): genesis monorepo dir under \$HOME for Mac-direct
 Insert after "Generate AppRole secret-id" (and before the current Stage 2 Semaphore tasks). Use a loop so it's ordered and idempotent; each foundation deploy is itself idempotent.
 
 ```yaml
-    # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
+    # -- Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) --
     # §12A: the secure foundation comes up directly here — dns → step-ca →
     # caddy → authentik — so Semaphore can boot LAST already OIDC-secured.
     # Each runs its EXISTING composable deploy-<svc>.yml un-forked, on localhost

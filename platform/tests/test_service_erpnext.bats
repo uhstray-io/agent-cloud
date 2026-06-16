@@ -96,10 +96,14 @@ setup() {
 }
 
 @test "erpnext: env template uses approved Jinja2 namespaces only" {
-  run grep -oE '\{\{ *[a-z_.]+' "$DEPLOY_DIR/templates/env.j2"
+  # Strip the `{{`+spaces inside the pipeline so each token is a clean
+  # identifier — otherwise word-splitting orphans a bare `{{` that fails the
+  # regex. Fail explicitly (return 1) so the result is deterministic regardless
+  # of bats errexit behavior or grep dialect (GNU vs BSD).
+  run bash -c "grep -oE '\\{\\{ *[a-z_.]+' '$DEPLOY_DIR/templates/env.j2' | sed -E 's/^\\{\\{[[:space:]]*//'"
+  [ "$status" -eq 0 ]
   for var in $output; do
-    cleaned="${var#\{\{ }"
-    [[ "$cleaned" =~ ^(secrets\.|erpnext_|ansible_) ]]
+    [[ "$var" =~ ^(secrets\.|erpnext_|ansible_) ]] || { echo "unapproved namespace: $var"; return 1; }
   done
 }
 

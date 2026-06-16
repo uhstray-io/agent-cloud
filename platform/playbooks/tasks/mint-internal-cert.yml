@@ -37,7 +37,7 @@
   failed_when: _mint_ca_present.rc != 0
   # A clear failure beats a confusing exec error if step-ca isn't up yet.
 
-- name: "Mint *.{{ _mint_zone }} (+ apex) wildcard leaf from step-ca"
+- name: "Mint the wildcard (+ apex) leaf from step-ca for zone {{ _mint_zone }}"
   # Password comes from the CA container's own env — the key never leaves the
   # CA host. /tmp/pw is removed in the same shell regardless of mint result.
   # Literal block + inner-sh `\` continuation (a folded scalar keeps the
@@ -61,7 +61,7 @@
     state: directory
     mode: "0750"
 
-- name: "Copy the leaf cert + key out of the CA into {{ _mint_dest_dir }}/certs"
+- name: "Copy the leaf cert + key out of the CA into the certs dir under {{ _mint_dest_dir }}"
   ansible.builtin.command: "{{ item }}"
   loop:
     - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.crt {{ _mint_dest_dir }}/certs/wildcard.crt"

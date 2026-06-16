@@ -58,7 +58,11 @@ setup() {
 }
 
 @test "o11y: committed config-as-code present (prometheus/loki/alloy/grafana)" {
-  grep -q 'caddy:2019' "$DEPLOY_DIR/config/prometheus.yml"
+  # Prometheus self-scrape is the committed config-as-code. Per-target scrapes
+  # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in prometheus.yml
+  # because Caddy's admin API is loopback-only and not yet cross-container
+  # routable — so do NOT assert caddy:2019 here (O11Y-DEPLOYMENT.md Phase 2).
+  grep -q 'job_name: prometheus' "$DEPLOY_DIR/config/prometheus.yml"
   grep -q 'schema: v13' "$DEPLOY_DIR/config/loki-config.yml"
   grep -q 'loki.write' "$DEPLOY_DIR/config/config.alloy"
   grep -qE 'url: http://prometheus:9090' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"

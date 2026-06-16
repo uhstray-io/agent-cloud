@@ -43,28 +43,28 @@ This maps directly onto the four-layer guardrails model and the AI-loop invarian
 
 There are **six concern layers**, each with exactly one authority. They form a directed dependency chain, not a set of peers:
 
-```
-                  OpenBao (secrets) ─────────────┐  consumed by all
-                  OPA / Kyverno (policy) ────────┤  gates writes to all
-                                                  v
-  NetBox (NETWORK: IPs/subnets/hosts/VMs)  →  feeds names/identity
-        │  (Diode reflects reality IN)            │
-        v                                         v
-  hickory-dns (NAMES)  →  step-ca (IDENTITY/PKI)  →  consumed by services
-        │
-        v
-  Harbor (IMAGE provenance/digest)
-        │  gates what Git may reference
-        v
-  Git monorepo (DESIRED workload state)
-        │  reconciled by ArgoCD (k8s) / Semaphore+Ansible (compose)
-        v
-  Runtime (LIVE workload state: podman / k8s-API+etcd)
-        │  observed by
-        v
-  o11y (Prometheus + Loki + Grafana + Alloy)
-        ┊  optional read-only reflection ┊
-        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─→ NetBox (unified pane, never authoritative)
+```mermaid
+flowchart TD
+    BAO["OpenBao — secrets<br/>consumed by all"]
+    POL["OPA / Kyverno — policy<br/>gates writes to all"]
+    NB["NetBox — NETWORK<br/>IPs / subnets / hosts / VMs<br/>Diode reflects reality IN"]
+    DNS["hickory-dns — NAMES"]
+    CA["step-ca — IDENTITY / PKI"]
+    HARBOR["Harbor — IMAGE provenance / sha256 digest"]
+    GIT["Git monorepo — DESIRED workload state"]
+    RT["Runtime — LIVE workload state<br/>podman / k8s API + etcd"]
+    O11Y["o11y — Prometheus + Loki + Grafana + Alloy"]
+
+    NB --> DNS
+    DNS --> CA
+    NB -- feeds names and identity --> GIT
+    HARBOR -- gates what Git references --> GIT
+    GIT -- reconciled by ArgoCD or Semaphore+Ansible --> RT
+    RT -- observed by --> O11Y
+    BAO -. consumed by all .-> GIT
+    POL -. gates writes .-> GIT
+    O11Y -. optional read-only reflection, never authoritative .-> NB
+    RT -. read-only reflection .-> NB
 ```
 
 The chain is **directed**: Harbor gates what Git references; Git gates what the reconciler applies; the reconciler gates what the runtime holds; the runtime is observed by o11y; o11y/runtime may be *reflected* read-only into NetBox. NetBox supplies network/name/identity facts *upward* to everything. Reflections only ever close the loop **into** NetBox, never back out.

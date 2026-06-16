@@ -84,7 +84,7 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "n8n health (/healthz -> 200)"
+    - name: "Check n8n health (/healthz -> 200)"
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/healthz"
         status_code: [200]
