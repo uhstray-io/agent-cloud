@@ -340,6 +340,8 @@ See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
 
 - `plan/architecture/TESTING-AND-LINTING-PLAN.md` — Full testing strategy and implementation status
 - `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — Branch deploy and validation workflow
+- `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md` — Branch protection & rulesets plan (config-as-code `protect-main`; evaluate→active rollout; CI-gated merges)
+- `.github/rulesets/README.md` — Branch protection rulesets as config-as-code (`protect-main.json` + idempotent `apply.sh`)
 - `plan/architecture/SERVICE-INTEGRATION-PLAN.md` — Service onboarding checklist
 - `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` — Secret generation, storage, rotation, and retirement
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
