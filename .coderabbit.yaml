@@ -8,6 +8,10 @@
 # See plan/development/MAIN-BRANCH-PROTECTION-PLAN.md and .github/rulesets/.
 language: en-US
 reviews:
+  # chill keeps reviews on substantive issues — important because, with
+  # request_changes_workflow + the ruleset's conversation-resolution rule, every
+  # unresolved thread blocks the merge button once protect-main is active.
+  profile: chill
   request_changes_workflow: true
   high_level_summary: true
   auto_review:
