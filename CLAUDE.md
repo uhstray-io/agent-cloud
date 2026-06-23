@@ -16,7 +16,7 @@ Private configuration (real IPs, credentials, production inventory) lives in the
 graph TD
     subgraph AI["AI Layer"]
         A1["NemoClaw (headless), NetClaw (network),<br/>WisBot (Discord), Claude Cowork (interactive)"]
-        A2["Backed by: WisAI — Ollama + Open WebUI<br/>(local inference, OpenAI-compatible API;<br/>vLLM reserved for future 24 GB+ hardware)"]
+        A2["Backed by: skynet — OpenAI-compatible /v1<br/>(local-first inference; multi-backend placement + policy gates;<br/>supersedes WisAI's Ollama + Open WebUI LLM plane)"]
     end
 
     subgraph GR["Guardrail Layer"]
@@ -81,6 +81,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
+- `plan/development/SKYNET-REPLACEMENT-PLAN.md` — Doc reframe: skynet supersedes WisAI's LLM plane + the NemoClaw/OpenClaw framework; preserve OPA + non-LLM sidecars; harvest use-cases into skynet's catalog
+- `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` — Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
 - `plan/development/SOURCE-OF-TRUTH.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
 - `plan/architecture/architecture-reference.md` — Master architecture document index and standards
 - `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules

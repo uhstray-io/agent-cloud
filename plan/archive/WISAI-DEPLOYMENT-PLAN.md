@@ -1,7 +1,9 @@
 # WisAI Deployment Plan
 
+> **⚠️ SUPERSEDED (2026-06-23).** WisAI's LLM plane (Ollama + Open WebUI) is replaced by **skynet**'s OpenAI-compatible `/v1` gateway — see `plan/development/SKYNET-REPLACEMENT-PLAN.md`. This document is retained as **provenance**: the Ollama-vs-vLLM hardware/placement reasoning below is still useful, but skynet now owns the placement decision and is the inference backbone. Do not execute this plan as-is. The non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected.
+
 **Date:** 2026-04-07 (revised 2026-04-16 after cross-specialist review)
-**Status:** PLANNING — revised to align with `AUTOMATION-COMPOSABILITY.md` and `CREDENTIAL-LIFECYCLE-PLAN.md`
+**Status:** SUPERSEDED (2026-06-23) by skynet — see banner above (was: PLANNING)
 **Context:** WisAI is the current self-hosted LLM inference stack (Ollama + Open WebUI) deployed across consumer NVIDIA GPU VMs on Proxmox. This plan integrates WisAI into the agent-cloud Semaphore pipeline using the composable 4-phase deployment pattern and the full credential lifecycle (metadata, TTLs, rotation, audit).
 
 > **Review provenance:** This revision incorporates findings from four specialist reviews (architect, automation, security, LLM/data). Decisions that differed between reviewers were resolved in Round 2 — see "Review Decisions Ledger" at the end of the document for the audit trail.
