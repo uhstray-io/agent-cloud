@@ -141,7 +141,9 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [IMPLEMENTATION_PLAN.md](../development/IMPLEMENTATION_PLAN.md) | COMPLETE | Master implementation plan. Agent roles, service topology, guardrails model, phase roadmap. |
 | [OPA-INTEGRATION-PLAN.md](../development/OPA-INTEGRATION-PLAN.md) | PROPOSED | OPA policy engine deployment, agent authorization, Rego policies, Semaphore governance. |
 | [NETCLAW-INTEGRATION-PLAN.md](../development/NETCLAW-INTEGRATION-PLAN.md) | PROPOSED | NetClaw network agent deployment, MCP server selection, device inventory, cross-agent coordination. |
-| [WISAI-DEPLOYMENT-PLAN.md](../development/WISAI-DEPLOYMENT-PLAN.md) | PLANNING | WisAI inference backbone (Ollama + Open WebUI), GPU node management, model profiles. |
+| [WISAI-DEPLOYMENT-PLAN.md](../archive/WISAI-DEPLOYMENT-PLAN.md) | SUPERSEDED | WisAI LLM plane (Ollama + Open WebUI) — superseded by skynet `/v1`; see `SKYNET-REPLACEMENT-PLAN.md`. Retained as provenance. |
+| [SKYNET-REPLACEMENT-PLAN.md](../development/SKYNET-REPLACEMENT-PLAN.md) | PROPOSED | Reframe agent-cloud docs for skynet replacing WisAI's LLM plane + NemoClaw/OpenClaw; preserve OPA; harvest use-cases into skynet's catalog. |
+| [WISAI-TO-SKYNET-MIGRATION-PLAN.md](../development/WISAI-TO-SKYNET-MIGRATION-PLAN.md) | PLANNING | Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao endpoint lever, dependency gates, rollback, X2 telemetry gap. |
 | [DEV-PROXMOX-CLUSTER-PLAN.md](../development/DEV-PROXMOX-CLUSTER-PLAN.md) | PLANNING | Dev Proxmox cluster with ZimaBoard + nested VMs, VLAN isolation, MAAS assessment. |
 | [SPARSE-CHECKOUT-MIGRATION.md](../development/SPARSE-CHECKOUT-MIGRATION.md) | PROPOSED | Migrate from full clone to sparse checkout + runtime directory separation. |
 | [NETBOX-DISCOVERY-EXPANSION.md](../development/NETBOX-DISCOVERY-EXPANSION.md) | IMPLEMENTED | NetBox discovery pipeline architecture (Diode, proxmox_discovery, pfsense_sync). |

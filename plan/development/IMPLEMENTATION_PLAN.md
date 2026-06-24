@@ -79,7 +79,7 @@ The 10 uhstray.io platform design principles are the constitutional constraints 
 | 1 | **Develop every system "as-code"** | All infrastructure, config, policies, and workflows in version-controlled files. No manual UI-only configuration. |
 | 2 | **Use open-source and free systems first** | Every component is OSS. No vendor lock-in. Proprietary tools only when no viable OSS option exists. |
 | 3 | **Deploy via Kubernetes and containerized frameworks** | Compose for single-site/smaller production, K8s for multi-site/larger scale. Both are production-viable deployment paradigms. |
-| 4 | **Keep platforms as simple as possible** | Prefer single-purpose tools. WisAI (Ollama + Open WebUI) over complex ML platforms. NocoDB over custom CRUD apps. |
+| 4 | **Keep platforms as simple as possible** | Prefer single-purpose tools. skynet (local-first inference) over complex managed ML platforms. NocoDB over custom CRUD apps. |
 | 5 | **All deployments version or release controlled** | Compose files pin image versions (`${VERSION:-tag}`). K8s manifests reference tagged images from registry. |
 | 6 | **Track and document work using agile processes** | NocoDB as task tracker, Semaphore for deployment tracking, Git history as audit trail. |
 | 7 | **Single source of truth for all documentation** | Monorepo = one repo to search. CLAUDE.md as the AI agent's single guidance file. |
@@ -101,7 +101,7 @@ graph TD
         A2["NetClaw (network)"]
         A3["WisBot (community)"]
         A4["Claude Cowork (interactive)"]
-        A5["Backed by: WisAI — Ollama nodes + Open WebUI"]
+        A5["Backed by: skynet — OpenAI-compatible /v1 (placement + policy gates)"]
         A6["Manages: context, planning, triage, development"]
     end
 
@@ -148,7 +148,7 @@ The platform targets **13 agent roles** (5 existing, 4 planned, 2 deferred, 2 fu
 | **NetClaw** (Network) | ✅ Existing | Device monitoring, topology, config backup, security audit | Docker sandbox |
 | **Claude + Claude Cowork** (Interactive) | ✅ Existing | Research, architecture, document generation, GUI tasks | Personal device |
 | **WisBot** (Community) | ✅ Existing | Discord voice/chat, user-facing AI — **external repo** (C#/.NET 10) | Podman/k8s |
-| **WisAI** (Inference Backbone) | ✅ Existing (upstream); integrating | Ollama worker nodes + Open WebUI coordinator (OpenAI-compat API) — see `WISAI-DEPLOYMENT-PLAN.md`. vLLM reserved additively for 24 GB+ hardware. | GPU VMs + DMZ VM (Docker) |
+| **skynet** (Inference Backbone) | 🔄 Replacing WisAI's LLM plane | OpenAI-compatible `/v1` gateway with multi-backend placement scheduling + policy gates — see `SKYNET-REPLACEMENT-PLAN.md`. Legacy Ollama + Open WebUI plane (`WISAI-DEPLOYMENT-PLAN.md`, superseded); vLLM a candidate skynet backend. | skynet (external `uhstray-io/skynet`) |
 | **Reliability Agent** (SRE) | ⚠️ Planned P1 | HolmesGPT - Pending Research — root-cause analysis, alert investigation, auto-remediation | OpenClaw sandbox |
 | **Governance Agent** (Policy) | ⚠️ Planned P1 | OPA enforcement + NeMo Guardrails for AI output validation + Research Kyverno for viability | OpenClaw sandbox |
 | **Marketing Agent** | ⚠️ Planned P2 | n8n workflows initially, then OpenClaw — content creation via Mixpost | n8n → OpenClaw |
@@ -162,10 +162,10 @@ The platform targets **13 agent roles** (5 existing, 4 planned, 2 deferred, 2 fu
 
 | Agent | OpenBao Role | Inference | Primary Integrations | Guardrails |
 |---|---|---|---|---|
-| **NemoClaw** | `nemoclaw-read` (read-only) | WisAI (Ollama via Open WebUI, OpenAI-compat) | NocoDB, n8n, GitHub, NetBox, Proxmox (read-only) | Destructive ops → Semaphore → human approval |
-| **NetClaw** | `netclaw-readwrite` | WisAI (Ollama via Open WebUI, OpenAI-compat) | NetBox (bidirectional), pyATS (SSH/SNMP), nmap, NocoDB, n8n | Config changes → ITSM gate → approval |
-| **WisBot** | via platform services | WisAI (Ollama via Open WebUI, OpenAI-compat) | Discord, MinIO (recordings), PostgreSQL, n8n webhooks | Voice channel join requires user command |
-| **Claude + Claude Cowork** | N/A (personal device) | WisAI when available (OpenAI-compat); optional remote APIs | Local files, browser, monorepo, NocoDB (task creation) | Interactive — human in the loop |
+| **NemoClaw** | `nemoclaw-read` (read-only) | skynet `/v1` (OpenAI-compat) | NocoDB, n8n, GitHub, NetBox, Proxmox (read-only) | Destructive ops → Semaphore → human approval |
+| **NetClaw** | `netclaw-readwrite` | skynet `/v1` (OpenAI-compat) | NetBox (bidirectional), pyATS (SSH/SNMP), nmap, NocoDB, n8n | Config changes → ITSM gate → approval |
+| **WisBot** | via platform services | skynet `/v1` (OpenAI-compat) | Discord, MinIO (recordings), PostgreSQL, n8n webhooks | Voice channel join requires user command |
+| **Claude + Claude Cowork** | N/A (personal device) | skynet `/v1` when available (OpenAI-compat); optional remote APIs | Local files, browser, monorepo, NocoDB (task creation) | Interactive — human in the loop |
 
 ### AI Agent Boundaries
 
@@ -225,25 +225,26 @@ Agent communication uses two complementary protocols:
 
 ## Inference Backbone
 
-> **Canonical source:** `plan/development/WISAI-DEPLOYMENT-PLAN.md` contains the full deployment detail (directory layout, Ansible playbooks, credential lifecycle, validation criteria). This section is a pointer.
+> **Canonical source:** `plan/development/SKYNET-REPLACEMENT-PLAN.md` (the WisAI→skynet reframe). The legacy `plan/archive/WISAI-DEPLOYMENT-PLAN.md` is **superseded** — retained as provenance for the Ollama-vs-vLLM hardware reasoning skynet's placement scheduler now owns.
 
-The platform's local inference backbone is **WisAI**: Ollama worker nodes fanned out behind an Open WebUI coordinator, running on Proxmox VMs with NVIDIA GPU passthrough (consumer GPUs, 8–16 GB VRAM today, scaling as hardware improves).
+The platform's local inference backbone is **skynet**: an OpenAI-compatible `/v1` gateway that adds multi-backend **placement scheduling** and **policy gates** in front of local model backends, keeping inference on-box. It supersedes WisAI's LLM plane (Ollama workers + Open WebUI coordinator). Model backends still run on Proxmox VMs with NVIDIA GPU passthrough (consumer GPUs, 8–16 GB VRAM today, scaling as hardware improves).
 
 | Service | Role | Port | Use Cases |
 |---|---|---|---|
-| **inference-ollama** | GPU worker node (one per GPU VM, scales horizontally) | :11434 | Runs GGUF-quantized models; model set chosen by per-host `inference_model_profile` (small/medium/large). |
-| **inference-webui** | Coordinator + agent API surface (single DMZ VM) | :3000 (WebUI), :3000/api (OpenAI-compat) | Fans out to all Ollama nodes via `OLLAMA_BASE_URLS`; serves humans and agents. |
-| **inference-vllm** | RESERVED — additive backbone for 24 GB+ cards | :8000 (future) | Becomes viable when hardware supports it; does not replace WisAI, runs alongside. |
+| **skynet `/v1`** | Inference gateway — placement scheduling + policy gates (external `uhstray-io/skynet`) | OpenAI-compatible `/v1` | The backbone agents consume; routes to local model backends, keeps data on-box. |
+| **inference-ollama** (legacy) | Superseded WisAI GPU worker (Ollama) — candidate skynet model backend | :11434 | Runs GGUF-quantized models; retained as provenance. |
+| **inference-webui** (legacy) | Superseded WisAI coordinator (Open WebUI) — replaced by skynet's `/v1` | :3000 | Provenance only. |
+| **inference-vllm** | RESERVED — candidate skynet backend for 24 GB+ cards | :8000 (future) | Becomes viable when hardware supports it. |
 
-**No LiteLLM / no separate inference gateway.** Agents consume Open WebUI's OpenAI-compatible `/api/chat/completions` endpoint directly. Endpoint URL and bearer token live in OpenBao at `secret/services/inference/endpoint` — a single value that swaps if the load-balancing topology changes later.
+**skynet IS the inference gateway** — this **reverses** the earlier "no separate inference gateway" decision. WisAI-era guidance had agents consume Open WebUI directly; skynet's `/v1` is now the gateway *by design*, because it adds the placement scheduling + policy gates Open WebUI lacks. The endpoint URL and bearer token still live in OpenBao at `secret/services/inference/endpoint` — one value that repoints to skynet's `/v1` at cutover, and all consumers follow. (LiteLLM stays rejected; skynet fills that role.)
 
-**Architecture:** Proxmox host (GPU passthrough via vfio-pci) → Ubuntu Server VM (UEFI/q35) → Docker + NVIDIA Container Toolkit → Ollama (:11434) on each GPU node; Open WebUI (:3000) + dedicated Postgres on a DMZ VM.
+**Architecture:** skynet `/v1` gateway in front of local model backends. Backends run on Proxmox hosts (GPU passthrough via vfio-pci) → Ubuntu Server VM (UEFI/q35) → Docker + NVIDIA Container Toolkit → model runtime (e.g. Ollama :11434) on each GPU node. The legacy Open WebUI coordinator is superseded by skynet's gateway.
 
-**Integration:** All agents and workflows consume the inference backbone via the OpenAI-compatible endpoint on Open WebUI. Endpoint URL in OpenBao; adding a GPU node is inventory-only (no agent-side change, no OpenBao write).
+**Integration:** All agents and workflows consume the inference backbone via skynet's OpenAI-compatible `/v1` endpoint, resolved through OpenBao (`secret/services/inference/endpoint`). skynet handles placement across backends, so scaling a backend is no agent-side change.
 
-**Monorepo location:** `platform/services/inference-ollama/` (workers) and `platform/services/inference-webui/` (coordinator). `platform/services/inference-vllm/` is reserved with a `.gitkeep` until 24 GB+ hardware lands.
+**Monorepo location (legacy):** `platform/services/inference-ollama/` + `inference-webui/` hold the superseded WisAI plane; `inference-vllm/` is reserved (candidate skynet backend). skynet itself lives in the external `uhstray-io/skynet` repo (private).
 
-**Upstream reference:** The `uhstray-io/WisAI` repo hosts the upstream compose files and model scripts; the monorepo integration in `inference-ollama/` and `inference-webui/` wraps them in the platform's composable deployment pattern (OpenBao secrets → Jinja2 env files → deploy.sh → verify).
+**Legacy upstream:** `uhstray-io/WisAI` (Ollama + Open WebUI) is the superseded LLM plane; its monorepo integration is retained as provenance. Inference now flows through skynet.
 
 ---
 
@@ -382,7 +383,7 @@ Phase C (target):  All services on k8s
 7. Semaphore → k8s + PVC
 8. NetBox → k8s (complex — Diode pipeline, orb-agent needs host network)
 9. OpenBao → k8s (critical — careful HA setup with Raft)
-10. WisAI (inference-ollama nodes, inference-webui coordinator) → k8s on GPU nodes (NVIDIA device plugin)
+10. skynet inference backends → k8s on GPU nodes (NVIDIA device plugin); the legacy WisAI dirs (`inference-ollama`/`inference-webui`) were never built — superseded by skynet
 11. NemoClaw → k8s (Kata Containers for sandboxing)
 12. NetClaw → k8s (Kata + host network for device polling)
 
@@ -598,8 +599,8 @@ graph TD
                 N8N_SVC["n8n/ -- compose.yml, deploy.sh, config/"]
                 SEM_SVC["semaphore/ -- compose.yml, deploy.sh"]
                 CADDY_SVC["caddy/ -- Caddyfile, compose.yml"]
-                OLLAMA_SVC["inference-ollama/ -- WisAI GPU workers"]
-                WEBUI_SVC["inference-webui/ -- WisAI coordinator"]
+                OLLAMA_SVC["inference-ollama/ -- legacy (never built; superseded by skynet)"]
+                WEBUI_SVC["inference-webui/ -- legacy (never built; superseded by skynet)"]
                 VLLM_SVC["inference-vllm/ -- Reserved (future)"]
                 AUX_SVC["a2a-registry/, o11y/, nextcloud/, wikijs/, postiz/"]
             end
@@ -628,7 +629,7 @@ graph TD
 
         subgraph PLANS["plan/"]
             ARCH["architecture/ -- composability, credentials, testing, services"]
-            DEV["development/ -- implementation, OPA, NetClaw, WisAI, etc."]
+            DEV["development/ -- implementation, OPA, NetClaw, skynet, etc."]
         end
     end
 ```
@@ -1494,7 +1495,7 @@ flowchart TD
 | `semaphore:hvac` | Planned | Not yet built | Custom Semaphore with `hvac` pre-installed (fixes ephemeral pip install) |
 | `nemoclaw:sandbox` | `agents/nemoclaw/` | Manual | OpenClaw sandbox with security policies |
 | `orb-agent:custom` | Planned | Stock image + mounted workers | May switch to custom image with workers baked in |
-| `inference-ollama` | Planned (WisAI) | Stock Ollama image | May need custom model-preloaded variant |
+| `inference-ollama` (legacy) | Superseded by skynet | Stock Ollama image | WisAI plane never built; skynet manages model backends |
 
 **Vulnerability scanning:** Harbor's built-in Trivy scanner runs on every push. Images with critical CVEs are blocked from promotion to `prod/`.
 
@@ -1516,16 +1517,16 @@ flowchart TD
 - Deploy first service to k8s (Caddy or NocoDB) alongside compose deployment
 - Validate: same service running on both compose (VM) and k8s paths
 
-### 3D. Inference Backbone Deployment (WisAI)
+### 3D. Inference Backbone Deployment (skynet)
 
-Canonical plan: `plan/development/WISAI-DEPLOYMENT-PLAN.md`. Summary:
+Canonical plans: `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` (operational cutover) + `SKYNET-REPLACEMENT-PLAN.md` (reframe). The legacy WisAI deployment (`plan/archive/WISAI-DEPLOYMENT-PLAN.md`) was **never built** and is superseded. Summary:
 
-- Deploy `inference-ollama` worker nodes on GPU VMs with NVIDIA passthrough (one service per GPU VM, scales horizontally via inventory)
-- Deploy `inference-webui` coordinator on a DMZ VM (Open WebUI + dedicated Postgres); it fans out to Ollama nodes via `OLLAMA_BASE_URLS` and exposes an OpenAI-compatible API for agents
-- Store inference endpoint URL + bearer token in OpenBao (`secret/services/inference/endpoint`) — a single value all agents consume; swaps if topology changes
-- Agents (NemoClaw, NetClaw, WisBot, Cowork) hit Open WebUI directly — **no LiteLLM, no separate gateway service**
-- Semaphore templates (10 total): deploy-wisai-node, deploy-wisai-webui, pull-wisai-models, update-*, clean-deploy-*, rotate-webui-credentials, validate-wisai, install-nvidia-toolkit
-- `inference-vllm/` remains reserved (`.gitkeep`) until 24 GB+ hardware lands — additive to WisAI, not a replacement
+- Deploy skynet's `/v1` gateway + its model backends via skynet's Semaphore templates (skynet repo owns these); GPU backends reuse NVIDIA passthrough
+- skynet adds multi-backend **placement scheduling** + pre-inference **policy gates** in front of the model backends (capabilities Open WebUI lacked)
+- Store the inference endpoint URL + bearer token in OpenBao (`secret/services/inference/endpoint`) — one value all consumers resolve; **repointed to skynet `/v1` at cutover** (the migration lever)
+- Agents (NemoClaw, NetClaw, WisBot, Cowork) consume skynet's `/v1` — **skynet IS the gateway** (reverses the earlier "no separate gateway" decision)
+- The legacy WisAI dirs (`inference-ollama/`, `inference-webui/`) were never created; `inference-vllm/` is a candidate skynet backend
+- Cutover mechanics, feature-parity matrix, dependency gates, and rollback: see `WISAI-TO-SKYNET-MIGRATION-PLAN.md`
 
 **Validation:** Harbor accepting image pushes; QA→prod promotion working for at least one image (netbox:plugins). k8s cluster running with ArgoCD syncing. ESO creating k8s Secrets from OpenBao. At least one service deployed to both runtimes. Inference backbone responding to OpenAI-compatible API calls.
 
@@ -1725,7 +1726,7 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Data/project management | NocoDB | ✅ Deployed |
 | Infrastructure modeling | NetBox + Diode discovery | ✅ Deployed |
 | AI agents | NemoClaw + NetClaw + Claude Cowork + WisBot | ✅ Active |
-| LLM inference | WisAI (inference-ollama workers + inference-webui coordinator) | ✅ Architecture defined; vLLM reserved additively |
+| LLM inference | skynet `/v1` gateway (placement + policy gates) | 🔄 Replacing WisAI's LLM plane (never built); see `WISAI-TO-SKYNET-MIGRATION-PLAN.md` |
 | Observability | Grafana + Prometheus + Loki + Tempo + Mimir | ✅ Deployed |
 | VM provisioning | Proxmox API + Ansible playbooks | ✅ Deployed |
 | Reverse proxy | Caddy (CloudFlare DNS) | ✅ Deployed |
@@ -1784,7 +1785,7 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Container Registry | **Harbor** | Vuln scanning, Helm charts, replication, CNCF graduated |
 | CNI / Service Mesh | **Cilium** | eBPF-based, mTLS, network policies, observability |
 | Message queue | **NATS** | Lightweight, JetStream for persistence, no JVM dependency |
-| LLM Inference | **WisAI** — Ollama workers + Open WebUI coordinator (OpenAI-compat) | Ollama (GGUF + llama.cpp internally) handles current consumer-GPU tier; Open WebUI is both the human UI and the agent API surface. vLLM reserved additively at `platform/services/inference-vllm/` for future 24 GB+ hardware. |
+| LLM Inference | **skynet** — OpenAI-compatible `/v1` gateway (placement + policy gates) | skynet fronts local model backends (engine can stay Ollama/GGUF for the consumer-GPU tier); supersedes WisAI's Ollama + Open WebUI plane. No browser chat UI — WisBot/Cowork are the human surfaces. vLLM a candidate backend for 24 GB+ hardware. |
 | Vector DB | **Qdrant** | Rust-based, simple API, good filtering |
 | Data warehouse | **PostgreSQL** | Already deployed, shared tooling, pg extensions |
 | Object storage | **MinIO** | Already in o11y, promoting to shared service |
@@ -1849,7 +1850,8 @@ Unresolved design decisions carried forward from architecture evaluation. These 
 | Repo | Rationale |
 |---|---|
 | **WisBot** (`uhstray-io/WisBot`) | Independent .NET 10 build toolchain, own release cadence. Integrates via A2A as external dependency. |
-| **WisAI** (`uhstray-io/WisAI`) | Upstream reference for the platform inference backbone (Ollama + Open WebUI). Repo stays separate; its compose files are integrated at `platform/services/inference-ollama/` + `platform/services/inference-webui/`. See `WISAI-DEPLOYMENT-PLAN.md`. |
+| **skynet** (`uhstray-io/skynet`, private) | The inference backbone — OpenAI-compatible `/v1` gateway (placement + policy gates). Supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework. See `WISAI-TO-SKYNET-MIGRATION-PLAN.md`. |
+| **WisAI** (`uhstray-io/WisAI`) | **Legacy** — Ollama + Open WebUI LLM plane, superseded by skynet `/v1`; was never deployed in agent-cloud. Retained upstream as reference. See `plan/archive/WISAI-DEPLOYMENT-PLAN.md`. |
 | **NemoClaw** (`uhstray-io/NemoClaw`) | Upstream NVIDIA fork — separate lifecycle for upstream tracking. |
 | **site-config** (private) | Real IPs, production inventory, Semaphore env configs. ONLY repo with environment-specific data. |
 

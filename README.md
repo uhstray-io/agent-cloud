@@ -10,7 +10,7 @@ agent-cloud is an AI infrastructure platform that runs on the uhstray.io datacen
 
 ```
 AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
-                 Backed by: WisAI -- Ollama worker nodes + Open WebUI coordinator
+                 Backed by: skynet -- OpenAI-compatible /v1 gateway (placement scheduling + policy gates)
 Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                  AI proposes -> guardrails validate -> automation runs
 Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
@@ -106,7 +106,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
 | **step-ca** | Internal CA -- stable root, issues the `*.agent-cloud.test` wildcard Caddy serves (local-dev live; prod via ACME) |
 | **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live) |
-| **WisAI** | Local LLM inference backbone -- Ollama workers + Open WebUI coordinator (OpenAI-compatible API) |
+| **skynet** | Local-first, policy-gated LLM inference backbone -- OpenAI-compatible `/v1` gateway with multi-backend placement scheduling + policy gates (supersedes WisAI's Ollama + Open WebUI LLM plane) |
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
@@ -126,9 +126,9 @@ agent-cloud/
       step-ca/            Internal CA (Smallstep; stable root, *.agent-cloud.test)
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
-      inference-ollama/   WisAI worker nodes (GPU, Ollama)
-      inference-webui/    WisAI coordinator (Open WebUI + Postgres)
-      inference-vllm/     Reserved (future 24 GB+ hardware)
+      inference-ollama/   Legacy WisAI workers (GPU, Ollama) -- superseded by skynet /v1
+      inference-webui/    Legacy WisAI coordinator (Open WebUI + Postgres) -- superseded by skynet /v1
+      inference-vllm/     Reserved (future 24 GB+ hardware; candidate skynet backend)
       inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
       inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
       uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
@@ -219,7 +219,7 @@ Every pull request to main runs three automated checks:
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/BRANCH-TESTING-WORKFLOW.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. See `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
 
 For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
 
@@ -231,7 +231,7 @@ SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, ArgoCD (planned)
 DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
-INFERENCE             WisAI (Ollama workers + Open WebUI, OpenAI-compat)
+INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
@@ -242,7 +242,8 @@ OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 |------|-----------|---------|
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
 | [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | Upstream inference stack (Ollama + Open WebUI) — integrated as the platform inference backbone via `platform/services/inference-ollama/` + `platform/services/inference-webui/` |
+| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Inference backbone + agent framework — OpenAI-compatible `/v1` gateway (placement + policy gates); supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
+| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (dirs `inference-ollama/` + `inference-webui/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
 
 ## Contributing
 

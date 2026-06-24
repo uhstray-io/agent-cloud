@@ -16,7 +16,7 @@ Private configuration (real IPs, credentials, production inventory) lives in the
 graph TD
     subgraph AI["AI Layer"]
         A1["NemoClaw (headless), NetClaw (network),<br/>WisBot (Discord), Claude Cowork (interactive)"]
-        A2["Backed by: WisAI — Ollama + Open WebUI<br/>(local inference, OpenAI-compatible API;<br/>vLLM reserved for future 24 GB+ hardware)"]
+        A2["Backed by: skynet — OpenAI-compatible /v1<br/>(local-first inference; multi-backend placement + policy gates;<br/>supersedes WisAI's Ollama + Open WebUI LLM plane)"]
     end
 
     subgraph GR["Guardrail Layer"]
@@ -81,6 +81,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
 - `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
 - `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
+- `plan/development/SKYNET-REPLACEMENT-PLAN.md` — Doc reframe: skynet supersedes WisAI's LLM plane + the NemoClaw/OpenClaw framework; preserve OPA + non-LLM sidecars; harvest use-cases into skynet's catalog
+- `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` — Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
 - `plan/development/SOURCE-OF-TRUTH.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
 - `plan/architecture/architecture-reference.md` — Master architecture document index and standards
 - `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules
@@ -283,7 +285,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development — new features, bug fixes, plan updates, documentation changes — and to promotion PRs from `dev` to `main`.
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges are squash-only with linear history. The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges are squash-only with linear history. (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
 
 ### Mandatory Pre-Push Audit
 

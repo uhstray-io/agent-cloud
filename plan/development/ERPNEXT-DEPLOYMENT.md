@@ -8,7 +8,7 @@
 
 **Goal:** Stand up ERPNext at `<erpnext-prod-domain>` through the standard composable deployment pattern — dev first, then prod with real books — then layer on LLM capability without any sensitive financial data ever leaving the perimeter.
 
-**Architecture:** Two ERPNext VMs (dev with synthetic books and isolated credentials; prod with cutover books), each running frappe_docker adapted for podman-compose with its own MariaDB, Redis pair, and MinIO; backups cross-mirror between the VMs. Three LLM planes: (A) local inference via the planned WisAI stack, (B) read-only MCP consumed by Claude Desktop/Cowork, (C) **llm-gate** — a new platform service on its own minimal VM that holds the only Anthropic API key and enforces per-tenant allowlists, PII scrubbing, and budgets in code (ERPNext tenant #1, NetClaw #2).
+**Architecture:** Two ERPNext VMs (dev with synthetic books and isolated credentials; prod with cutover books), each running frappe_docker adapted for podman-compose with its own MariaDB, Redis pair, and MinIO; backups cross-mirror between the VMs. Three LLM planes: (A) local inference via skynet (the `/v1` gateway that supersedes the planned WisAI stack), (B) read-only MCP consumed by Claude Desktop/Cowork, (C) **llm-gate** — a new platform service on its own minimal VM that holds the only Anthropic API key and enforces per-tenant allowlists, PII scrubbing, and budgets in code (ERPNext tenant #1, NetClaw #2).
 
 **Tech stack:** ERPNext v16 (pinned tag), MariaDB 10.6, Redis 7, Podman + podman-compose, Ansible/Semaphore, OpenBao, Caddy (DNS-01/Cloudflare), FastAPI + `anthropic` SDK (llm-gate), Ollama (Plane A).
 
@@ -28,11 +28,11 @@ When Phase 6's gate passes, the platform has its first financial system of recor
 - **The books survive VM loss.** Nightly backups land in MinIO on *both* VMs (cross-mirror), restores are proven quarterly via the dev mirror refresh, and an offsite/NAS target is planned future work.
 - **Writes stay human.** Phase 7's draft-then-approve design exists on paper only until the read-only planes have production mileage.
 
-The phase graph below shows how that end state is reached: solid arrows are hard sequencing enforced by validation gates (§19), the dotted edges are the one external dependency (WisAI) and the one soft input (Plane A feeding later use cases), and the tail phases are design-first future work.
+The phase graph below shows how that end state is reached: solid arrows are hard sequencing enforced by validation gates (§19), the dotted edges are the one external dependency (skynet inference) and the one soft input (Plane A feeding later use cases), and the tail phases are design-first future work.
 
 ```mermaid
 flowchart LR
-  WIS[WisAI deployment<br/>WISAI-DEPLOYMENT-PLAN] -. unblocks .-> P2
+  WIS[skynet inference<br/>WISAI-TO-SKYNET-MIGRATION-PLAN] -. unblocks .-> P2
   P0[P0<br/>scaffolding + CI] --> P1A[P1A<br/>dev VM live - synthetic books + DR]
   P1A --> P1B[P1B<br/>prod live - cutover books + cross-mirror]
   P1B --> P3[P3<br/>Plane B read-only MCP - validated on dev]
@@ -65,9 +65,9 @@ Decisions made during the 2026-06-11 plan review (dev topology, books population
 
 ### GPU / inference engineering notes
 
-- Consumer RTX 30xx/40xx/50xx cards do **not** support MIG. The VRAM target (10–20% of the serving node's total) is enforced at the serving layer: Ollama model sizing/`keep_alive`, vLLM `--gpu-memory-utilization`, or Dynamo worker config. The earlier "10–20% of 36 GB ≈ 3.6–7.2 GB" figure assumes the final WisAI GPU topology — **confirm against the hardware decision gate in `UHHCRAFT-GPU-PASSTHROUGH.md` §1** before sizing. A 7–8B model at Q4/Q5 (≈4.5–5.5 GB + KV cache) fits any plausible outcome.
-- The **ERPNext VMs need no GPU.** Inference runs on the WisAI GPU nodes; consumers call the OpenAI-compatible endpoint over the LAN.
-- Serving starts on **Ollama** (the WisAI path); **NVIDIA Dynamo** is a Phase 6 validation spike, not a commitment.
+- Consumer RTX 30xx/40xx/50xx cards do **not** support MIG. The VRAM target (10–20% of the serving node's total) is enforced at the serving layer: Ollama model sizing/`keep_alive`, vLLM `--gpu-memory-utilization`, or Dynamo worker config. The earlier "10–20% of 36 GB ≈ 3.6–7.2 GB" figure assumes the final skynet GPU-backend topology — **confirm against the hardware decision gate in `UHHCRAFT-GPU-PASSTHROUGH.md` §1** before sizing. A 7–8B model at Q4/Q5 (≈4.5–5.5 GB + KV cache) fits any plausible outcome.
+- The **ERPNext VMs need no GPU.** Inference runs on skynet's GPU backends; consumers call the OpenAI-compatible `/v1` endpoint over the LAN.
+- Serving starts on **Ollama** (a skynet model backend); **NVIDIA Dynamo** is a Phase 6 validation spike, not a commitment.
 
 ## 3. Platform reality and dependencies
 
@@ -75,7 +75,7 @@ This plan was validated against what actually exists in agent-cloud and site-con
 
 | Assumed component | Actual status | Impact on this plan |
 |---|---|---|
-| WisAI (Ollama + Open WebUI) | **Planned only** — `WISAI-DEPLOYMENT-PLAN.md`; `platform/services/inference/` is empty | Phase 2 **floats**: P3–P5 proceed without it; Plane-A-dependent backlog items wait |
+| skynet `/v1` (Plane A inference) | **Replacing WisAI's LLM plane** — `WISAI-TO-SKYNET-MIGRATION-PLAN.md`; WisAI was never built | Phase 2 **floats**: P3–P5 proceed without it; Plane-A-dependent backlog items wait |
 | NVIDIA Dynamo | No code anywhere | Phase 6 spike with explicit go/no-go |
 | Platform-wide MinIO / offsite backup | Neither exists; per-service MinIO is the established pattern (UhhCraft, ComfyUI, Hunyuan3D) | ERPNext VMs run their own MinIO; **cross-mirror between dev and prod** covers VM loss; NAS/offsite is planned future work |
 | Banking data access | None — no bank API/aggregator integration anywhere | Cutover uses **CSV/OFX statement import** (no new credentials); bank/aggregator API is planned future work; dev uses synthetic data |
@@ -151,7 +151,7 @@ flowchart TB
       N8N[n8n - legacy deploy, running]
       SEM[Semaphore - all operations]
     end
-    subgraph wis[WisAI GPU nodes - PLANNED, WISAI-DEPLOYMENT-PLAN]
+    subgraph wis[skynet inference Plane A - WISAI-TO-SKYNET-MIGRATION-PLAN]
       OLL[Ollama via Open WebUI<br/>OpenAI-compatible API]
     end
   end
@@ -173,7 +173,7 @@ flowchart TB
 
 **Three planes**
 
-- **Plane A — Local inference (WisAI).** OpenAI-compatible endpoint on the GPU nodes. Sensitive, high-volume, low-stakes tasks (categorization, embeddings, drafting). Data never leaves the perimeter. *Dependency: WisAI deployment; floats.*
+- **Plane A — Local inference (skynet).** OpenAI-compatible `/v1` endpoint. Sensitive, high-volume, low-stakes tasks (categorization, embeddings, drafting). Data never leaves the perimeter. *Dependency: skynet inference; floats.*
 - **Plane B — MCP + Claude (read-only).** Claude Desktop/Cowork drive ERPNext via MCP tools scoped to a non-sensitive/aggregated allowlist, authenticated, audit-logged. Validated against dev's synthetic books before prod ever connects.
 - **Plane C — Claude API via llm-gate.** Server-side callers (n8n workflows, ERPNext server scripts, Cowork flows) POST to the llm-gate service; the gate validates the caller's tenant config, enforces its field allowlist, scrubs PII, enforces per-tenant + global budget ledgers, holds the only copy of the API key, and forwards to `/v1/messages`.
 
@@ -1043,9 +1043,9 @@ Quarterly, documented in `context/runbooks/restore.md` [21]. Through P5 the dril
 
 ## 9. Phase 2 — Local inference (Plane A) — *floats*
 
-**Hard dependency:** WisAI Phases 1–2 (`WISAI-DEPLOYMENT-PLAN.md`) [19]. **Non-blocking for this plan:** P3–P5 proceed without it; only Plane-A backlog items (categorization, RAG, bank-feed assistance) wait. This phase consumes inference infrastructure; it does not build it.
+**Hard dependency:** skynet inference availability (`WISAI-TO-SKYNET-MIGRATION-PLAN.md`) [19]. **Non-blocking for this plan:** P3–P5 proceed without it; only Plane-A backlog items (categorization, RAG, bank-feed assistance) wait. This phase consumes inference infrastructure; it does not build it.
 
-- [ ] Confirm WisAI through its endpoint-live gate; endpoint + key at `secret/services/inference/*` per that plan
+- [ ] Confirm skynet through its endpoint-live gate; endpoint + key at `secret/services/inference/*` per the migration plan
 - [ ] Select the 7–8B model (candidates: Qwen3 8B, Llama 3.1 8B) by a 10-prompt categorization/extraction eval recorded in `context/prompts/plane-a-eval.md`
 - [ ] Enforce the VRAM budget at the serving layer (model choice + Ollama `keep_alive`/`num_ctx`); document measured VRAM in the eval file
 - [ ] Surface the endpoint to consumers (llm-gate env + n8n); ERPNext core config untouched until a use case needs it
@@ -1542,7 +1542,7 @@ Each becomes its own mini-increment with its own gate; none ship bundled.
 | Item | Status | Resolution path |
 |---|---|---|
 | MCP server pick (repo names unverified) | Open — blocks P3 | Decision task §10.1; verify repos at kickoff [27] |
-| WisAI not yet deployed | Blocks P2 only (P2 floats) | Execute `WISAI-DEPLOYMENT-PLAN.md`; P0–P5 proceed regardless |
+| skynet inference not yet deployed | Blocks P2 only (P2 floats) | Stand up skynet per `WISAI-TO-SKYNET-MIGRATION-PLAN.md`; P0–P5 proceed regardless |
 | ERPNext v16 tag stability | Open — P1A start | Pin exact tag; v15 LTS fallback documented |
 | podman-compose 1.0.6 gaps | Mitigated | Staged startup; explicit container names; upgrade tracked in `PODMAN-UPGRADE-PLAN.md` |
 | GPU topology / VRAM basis | Open (external) | `UHHCRAFT-GPU-PASSTHROUGH.md` §1 decision; P2 sizes against it |
@@ -1605,7 +1605,7 @@ Tags: *(repo)* agent-cloud file · *(private)* site-config · *(web)* external �
 16. *(repo)* `platform/services/uhhcraft/deployment/` — compose.yml / deploy.sh / env.j2 / caddy-site.j2 exemplars; per-service MinIO precedent (also `inference-comfyui`, `inference-hunyuan3d`).
 17. *(repo)* `platform/semaphore/templates.yml` + `setup-templates.yml:48-77` — templates-as-code schema; idempotent create-or-update apply.
 18. *(repo)* `platform/lib/common.sh` — `detect_runtime`, `compose`, `wait_for_healthy`, `wait_for_http` used by all scripts.
-19. *(repo)* `plan/development/WISAI-DEPLOYMENT-PLAN.md` — Plane A architecture; LiteLLM rejection; `secret/services/inference/*` paths (Phase 2 dependency).
+19. *(repo)* `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` (+ archived `plan/archive/WISAI-DEPLOYMENT-PLAN.md`) — Plane A inference (skynet `/v1`); LiteLLM rejection; `secret/services/inference/*` paths (Phase 2 dependency).
 20. *(repo)* `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — GPU hardware decision gate feeding §2/§9; VRAM constraints.
 21. *(repo)* `plan/development/DISASTER-RECOVERY-PLAN.md` — backup/restore strategy and drill cadence (§8.3–§8.4, §13).
 22. *(repo)* `plan/development/OPA-INTEGRATION-PLAN.md` — policy-as-code option (§13).

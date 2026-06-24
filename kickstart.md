@@ -10,7 +10,7 @@ If you only read one other document, read the top-level [`README.md`](README.md)
 
 **agent-cloud** is the unified platform monorepo for [uhstray-io](https://github.com/uhstray-io) — a privacy-focused, open-source AI platform. One repo holds:
 
-- **Service deployments** (NetBox, OpenBao, NocoDB, n8n, Semaphore, Caddy, WisAI inference, ...)
+- **Service deployments** (NetBox, OpenBao, NocoDB, n8n, Semaphore, Caddy, skynet inference, ...)
 - **AI agent configurations** (NemoClaw, NetClaw, Claude Cowork, WisBot)
 - **Ansible playbooks** that orchestrate every deploy
 - **Kubernetes manifests** (Kustomize) for the future multi-site path
@@ -23,7 +23,7 @@ Real IPs, production inventory, and credential backups live in a **separate priv
 
 ```
 AI Layer          NemoClaw, NetClaw, Claude Cowork, WisBot
-                  Backed by WisAI (Ollama + Open WebUI; OpenAI-compatible API)
+                  Backed by skynet (OpenAI-compatible /v1; placement + policy gates)
 
 Guardrail Layer   OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                   AI proposes -> guardrails validate -> automation runs
@@ -189,7 +189,7 @@ plan/
 ├── development/           Active implementation plans (per feature)
 │   ├── IMPLEMENTATION_PLAN.md
 │   ├── NETBOX-DISCOVERY-EXPANSION.md
-│   ├── WISAI-DEPLOYMENT-PLAN.md
+│   ├── WISAI-TO-SKYNET-MIGRATION-PLAN.md
 │   ├── NETCLAW-INTEGRATION-PLAN.md
 │   ├── OPA-INTEGRATION-PLAN.md
 │   └── ... (one per initiative)
@@ -411,7 +411,7 @@ Model everything on `platform/services/netbox/deployment/` + `platform/playbooks
 | **WebSmith** | Website builder | `agents/websmith/` | Prompt-only — walks users through a 5-phase workflow producing a signed `SPEC.md` for a new website service |
 | **WisBot** | Community interface | [separate repo](https://github.com/uhstray-io/WisBot) | Discord voice/chat bot |
 
-All four are clients of **WisAI** — the local-inference backbone (`platform/services/inference-ollama/` + `inference-webui/`), which exposes an OpenAI-compatible API via Open WebUI. Future GPU hardware will add vLLM workers (`inference-vllm/`, currently reserved).
+All four reach inference through **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI dirs (`platform/services/inference-ollama/` + `inference-webui/`) are **legacy, superseded by skynet**; `inference-vllm/` (reserved) is a candidate skynet backend.
 
 Each agent's `context/` directory follows the same shape:
 - `architecture/` — system docs the agent grounds itself in
