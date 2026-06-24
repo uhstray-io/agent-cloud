@@ -219,7 +219,7 @@ Every pull request to main runs three automated checks:
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/BRANCH-TESTING-WORKFLOW.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. See `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
 
 For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
 

@@ -228,7 +228,7 @@ Option 1 is recommended initially for simplicity; the gitleaks/IP-audit job shou
 | `git push --force origin main` | Rejected |
 | Delete `main` via UI/API | Rejected |
 | Open PR, attempt merge with an unresolved CodeRabbit thread | Merge button blocked |
-| (Phase 2) Open PR, attempt merge before `lint`/`security`/`test` report | Merge button blocked |
+| Open PR, attempt merge before `Static Analysis` / `Security Scan` / `Unit Tests` report | Merge button blocked |
 | Open PR, resolve threads, checks green, merge | Succeeds |
 | Semaphore deploy from `main` post-merge | Unaffected (read-only clone) |
 
