@@ -18,6 +18,41 @@ test_netclaw_snmp_poll_allowed if {
 	agentcloud.allow with input as {"agent": "netclaw", "action": "poll", "service": "snmp"}
 }
 
+# --- Build #1 (netbox-device-add) + skynet orchestration identity (X1) ---
+
+# The logical device-create gate skynet queries (as the netclaw role).
+test_netclaw_netbox_create_allowed if {
+	agentcloud.allow with input as {"agent": "netclaw", "action": "create", "service": "netbox"}
+}
+
+# X1: skynet's own identity may request a (non-destructive) Semaphore run.
+test_skynet_run_task_allowed if {
+	agentcloud.allow with input as {
+		"agent": "skynet",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": "Create NetBox Device",
+		"human_approved": false,
+	}
+}
+
+# Boundary: skynet's orchestration identity has NO netbox actions — the device
+# create is authorized as netclaw, not skynet (least-privilege, no super-identity).
+test_skynet_netbox_create_denied if {
+	not agentcloud.allow with input as {"agent": "skynet", "action": "create", "service": "netbox"}
+}
+
+# The destructive-template guard generalizes to skynet too.
+test_skynet_destructive_run_task_denied if {
+	not agentcloud.allow with input as {
+		"agent": "skynet",
+		"action": "run_task",
+		"service": "semaphore",
+		"template_name": "Clean Deploy NetBox",
+		"human_approved": false,
+	}
+}
+
 test_destructive_template_blocked_without_approval if {
 	not agentcloud.allow with input as {
 		"agent": "nemoclaw",
