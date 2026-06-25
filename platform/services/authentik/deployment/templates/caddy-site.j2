@@ -1,0 +1,11 @@
+{# Authentik IdP central-Caddy fragment — rendered by deploy-authentik.yml on the
+   Authentik host, distributed to the central Caddy + reloaded by
+   tasks/distribute-caddy-site.yml. auth.uhstray.io -> this VM:9000. TLS via
+   Caddy's internal CA (`tls internal` — trust Caddy's root once per client).
+   This IS the identity provider — NO forward_auth; all paths (login-flow UI and
+   the embedded-outpost endpoints under /outpost.goauthentik.io/) proxy to :9000.
+   Do NOT edit by hand — re-run deploy-authentik.yml. #}
+{{ authentik_public_host }} {
+	tls internal
+	reverse_proxy {{ authentik_caddy_upstream }}
+}

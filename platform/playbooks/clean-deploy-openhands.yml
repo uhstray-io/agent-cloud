@@ -1,0 +1,23 @@
+---
+# clean-deploy-openhands.yml — Destroy and redeploy OpenHands from scratch.
+#
+# WARNING: Destroys OpenHands' container + the openhands-state volume (settings,
+#          conversation history, stored LLM API keys). Re-created empty on
+#          redeploy. The per-session runtime containers OpenHands spawned are
+#          NOT volumes of this project; clean them separately if needed.
+#
+# Uses composable tasks/clean-service.yml (container_engine: docker from
+# inventory) then runs deploy-openhands.yml.
+
+- name: "Clean OpenHands deployment"
+  hosts: openhands_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-openhands.yml

@@ -17,8 +17,10 @@ context:
   # Browser-facing IdP URL. Without it the embedded outpost builds its login
   # redirect from its internal listen socket (http://0.0.0.0:9000), which the
   # browser can't reach. The embedded outpost reaches core in-process, so this
-  # only affects the browser redirect. LOCAL value; prod parameterizes the zone.
-  authentik_browser_host: https://auth.agent-cloud.test:8443/
+  # only affects the browser redirect. Parameterized via !Env: prod sets
+  # AUTHENTIK_BROWSER_HOST (env.j2 from inventory, e.g. https://auth.uhstray.io/);
+  # the default keeps local-dev byte-identical.
+  authentik_browser_host: !Env [AUTHENTIK_BROWSER_HOST, "https://auth.agent-cloud.test:8443/"]
 entries:
   # Access gate (RBAC tier 1 — can you reach the service at all?):
   #   platform-admins      -> full access (downstream role = superuser/Admin)
@@ -67,6 +69,7 @@ entries:
         - !Find [authentik_providers_proxy.proxyprovider, [name, netbox]]
         - !Find [authentik_providers_proxy.proxyprovider, [name, openbao]]
         - !Find [authentik_providers_proxy.proxyprovider, [name, n8n]]
+        - !Find [authentik_providers_proxy.proxyprovider, [name, openhands]]
       # Embedded outpost is in-process + non-Kubernetes, so only the host/log
       # keys matter; the serializer replaces config wholesale, so we set the
       # meaningful keys and let the inert kubernetes_* defaults fall away.
@@ -102,6 +105,13 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_core.application, [slug, n8n]]
+      policy: !KeyOf policy-platform-member
+      order: 0
+    attrs:
+      enabled: true
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, openhands]]
       policy: !KeyOf policy-platform-member
       order: 0
     attrs:

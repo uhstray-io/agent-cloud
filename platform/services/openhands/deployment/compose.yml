@@ -1,0 +1,48 @@
+name: openhands
+
+# OpenHands (Agent Canvas) — Docker per platform decision (NOT podman): the GUI
+# server launches a per-session "agent server" runtime container via the host
+# Docker socket, so it needs a real Docker daemon. Ansible's deploy-openhands.yml
+# renders .env from inventory (no secrets — LLM keys are entered in the UI and
+# persisted in the state volume) before this runs. deploy.sh is lifecycle only.
+#
+# Behind the central Caddy (separate VM): published on the LAN (.env-controlled
+# bind/port) and gated by Authentik forward_auth at Caddy. Restrict the published
+# port to the Caddy host with a VM firewall.
+# Image facts pinned from the official OpenHands docs (v1.x scheme):
+#   server  = docker.openhands.dev/openhands/openhands
+#   runtime = ghcr.io/openhands/agent-server (launched via the socket, by tag)
+
+services:
+  openhands:
+    image: ${OPENHANDS_IMAGE:-docker.openhands.dev/openhands/openhands:1.8}
+    container_name: openhands
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # 0.0.0.0:3000 so the central Caddy on its own VM can reach this over the
+      # LAN. ponytail: LAN-exposed; lock to the Caddy host IP via UFW on the VM.
+      - "${OPENHANDS_BIND:-0.0.0.0}:${OPENHANDS_PORT:-3000}:3000"
+    volumes:
+      # REQUIRED: OpenHands spawns per-session runtime containers through the host
+      # Docker socket. This is root-equivalent on this VM — the VM is the blast
+      # radius, contained by Authentik at the edge + its own dedicated host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent settings, conversations, secrets (LLM API keys live here).
+      - openhands-state:/.openhands
+    extra_hosts:
+      # Lets spawned runtime containers reach back to the host (per OpenHands docs).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # python3 is guaranteed in the (python-based) image; avoids assuming curl.
+      # ponytail: TCP-accept check, not a deep health probe — upgrade to the real
+      # health endpoint if OpenHands documents one.
+      test: ["CMD-SHELL", "python3 -c \"import socket; socket.create_connection(('127.0.0.1',3000),5).close()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+volumes:
+  openhands-state:

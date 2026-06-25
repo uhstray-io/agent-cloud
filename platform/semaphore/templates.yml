@@ -76,6 +76,26 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy Authentik
+    playbook: platform/playbooks/deploy-authentik.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy OpenHands
+    playbook: platform/playbooks/deploy-openhands.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy WisBot
     playbook: platform/playbooks/deploy-wisbot.yml
     survey_vars:
@@ -171,6 +191,16 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy OpenHands
+    playbook: platform/playbooks/clean-deploy-openhands.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   # ── Updates ────────────────────────────────────────────────────
   - name: Update NocoDB
     playbook: platform/playbooks/update-nocodb.yml
@@ -252,6 +282,15 @@ templates:
 
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
+
+  - name: Generate Service SSH Key
+    playbook: platform/playbooks/generate-service-ssh-key.yml
+    survey_vars:
+      - name: service_name
+        title: "Service name"
+        description: "Per-service key to create at secret/services/ssh/<name> (e.g. authentik, openhands, caddy)"
+        type: string
+        required: true
 
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
