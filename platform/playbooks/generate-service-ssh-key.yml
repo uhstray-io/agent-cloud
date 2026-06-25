@@ -1,0 +1,105 @@
+---
+# generate-service-ssh-key.yml — Generate + store a per-service ed25519 SSH
+# keypair in OpenBao at secret/services/ssh/<service_name>, if absent.
+#
+# distribute-ssh-keys.yml deploys BOTH the management key (secret/services/ssh)
+# and a per-service key (secret/services/ssh/<service>) — but it only *fetches*
+# them, so the per-service keypair must exist first. This is the missing
+# generation step (CLAUDE.md "Adding a New Service" step 8), encoded as a
+# reusable, idempotent playbook instead of a manual one-off.
+#
+# Idempotent + safe: if the key already exists it is left UNTOUCHED (never
+# rotates a live key). Runs from the Semaphore runner (localhost), which holds
+# the OpenBao AppRole.
+#
+# Usage (via Semaphore): -e service_name=authentik
+
+- name: "Generate + store a per-service SSH key in OpenBao"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - service_name is defined
+          - service_name | length > 0
+          - _bao_url | length > 0
+        fail_msg: "Pass -e service_name=... and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      no_log: true
+
+    - name: "Check whether the per-service key already exists"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/ssh/{{ service_name }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _existing
+      no_log: true
+
+    - name: "Generate + store keypair when absent"
+      when: >-
+        _existing.status == 404
+        or (_existing.json.data.data.public_key | default('') | length == 0)
+      block:
+        - name: "Create a temp dir for keygen (runner-local)"
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: ".svckey_"
+          register: _kd
+
+        - name: "Generate ed25519 keypair"
+          ansible.builtin.command:
+            cmd: "ssh-keygen -t ed25519 -N '' -C {{ service_name }}@agent-cloud -f {{ _kd.path }}/id_ed25519"
+          changed_when: true
+
+        - name: "Read public key"
+          ansible.builtin.slurp:
+            src: "{{ _kd.path }}/id_ed25519.pub"
+          register: _pub
+
+        - name: "Read private key"
+          ansible.builtin.slurp:
+            src: "{{ _kd.path }}/id_ed25519"
+          register: _priv
+          no_log: true
+
+        - name: "Store keypair in OpenBao (secret/services/ssh/{{ service_name }})"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/ssh/{{ service_name }}"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+            body_format: json
+            body:
+              data:
+                public_key: "{{ _pub.content | b64decode | trim }}"
+                private_key: "{{ _priv.content | b64decode }}"
+          no_log: true
+
+        - name: "Wipe runner-local temp keys"
+          ansible.builtin.file:
+            path: "{{ _kd.path }}"
+            state: absent
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          secret/services/ssh/{{ service_name }}:
+          {{ 'generated' if (_existing.status == 404) else 'already present (left untouched)' }}

@@ -1,0 +1,151 @@
+---
+# deploy-openhands.yml — OpenHands (Agent Canvas) deploy (composable, Docker).
+#
+# Phase 1: Clone repo (Docker host — direct git, NOT place-monorepo, which forces
+#          podman) + render .env from inventory (no secrets — LLM keys are entered
+#          in the UI and persisted in the state volume) + convenience symlink.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait healthy). Docker.
+# Phase 3: Verify the server answers on its published port.
+# Phase 4: Render + distribute the canvas.uhstray.io Caddy fragment (forward_auth
+#          via Authentik) + reload Caddy. Skipped until a caddy_svc host exists.
+#
+# Prereq: Docker installed on the host — run the "Install Docker" template first.
+# OpenHands needs a real Docker daemon (it launches per-session runtime
+# containers via the host socket), which is why this is a Docker, not podman,
+# service (the NetBox-style exception).
+
+# ── Phase 1: Clone + render env + symlink ───────────────────────────────────
+- name: "Phase 1: Clone repo + render OpenHands env"
+  hosts: openhands_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _templates: "{{ playbook_dir }}/../services/openhands/deployment/templates"
+
+  tasks:
+    - name: "Install git if needed"
+      ansible.builtin.apt:
+        name: git
+        state: present
+      become: true
+
+    - name: "Clone or update agent-cloud monorepo"
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ _branch }}"
+        force: true
+
+    - name: "Assert Docker + compose are available (run 'Install Docker' first)"
+      ansible.builtin.command: docker compose version
+      register: _docker_check
+      changed_when: false
+      failed_when: _docker_check.rc != 0
+
+    - name: "Render compose .env"
+      ansible.builtin.template:
+        src: "{{ _templates }}/env.j2"
+        dest: "{{ _deploy_dir }}/.env"
+        mode: "0600"
+
+    - name: "Create convenience symlink ~/openhands -> deploy dir"
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start OpenHands"
+  hosts: openhands_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle, Docker)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: docker
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify OpenHands"
+  hosts: openhands_svc
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: "Server answers on the published port"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openhands_port | default('3000') }}/"
+        method: GET
+        status_code: [200, 301, 302, 307, 401, 403]
+      register: _oh
+      changed_when: false
+      retries: 12
+      delay: 6
+      until: _oh.status is defined and _oh.status > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "openhands healthy — server answering on :{{ openhands_port | default('3000') }} (gated by Authentik via central Caddy)."
+
+# ── Phase 4: Render + distribute Caddy fragment ─────────────────────────────
+- name: "Phase 4: Render + distribute Caddy fragment"
+  hosts: openhands_svc
+  gather_facts: false
+  become: false
+  vars:
+    _fragment_src: "/tmp/openhands-caddy-site.caddy"
+    _fragment_name: "openhands.caddy"
+    # Composable sites/ model only. A flat hand-managed Caddyfile sets
+    # caddy_composable=false and gets its routes via manage-caddy-sites.yml.
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) and (caddy_composable | default(true) | bool) }}"
+
+  tasks:
+    - name: "Require forward_auth + upstream vars before distributing to Caddy"
+      ansible.builtin.assert:
+        that:
+          - openhands_public_host is defined
+          - openhands_caddy_upstream is defined
+          - authentik_outpost_url is defined
+        fail_msg: >-
+          Set openhands_public_host, openhands_caddy_upstream and
+          authentik_outpost_url in inventory before enabling Caddy distribution.
+      when: _has_caddy | bool
+
+    - name: "Render caddy-site.j2 to the OpenHands host"
+      # src is resolved on the CONTROLLER (the checked-out monorepo) — template
+      # always reads src locally, never from the remote clone.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/openhands/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      when: _has_caddy | bool
+
+    - name: "Push fragment to central Caddy + reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory — skipping central-Caddy fragment distribution."
+      when: not (_has_caddy | bool)

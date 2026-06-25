@@ -42,6 +42,10 @@
       # Day-to-day admin user (agent-cloud-admin.yaml blueprint), member of
       # platform-admins -> top role in every SSO'd app. Worker reads it via !Env.
       - { name: agent_cloud_admin_password, type: random, length: 32 }
+      # Operator admin 'stray' (stray-admin.yaml) + platform service account API
+      # token (service-account.yaml). Stable across redeploys; worker reads !Env.
+      - { name: stray_admin_password, type: random, length: 32 }
+      - { name: service_account_token, type: random, length: 60 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
@@ -51,6 +55,20 @@
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Create convenience symlink ~/authentik -> deploy dir"
+      # Satisfies "a folder for authentik at ~/authentik" while keeping the
+      # composable monorepo clone — ~/authentik points at the deployment dir.
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start authentik"
@@ -137,3 +155,46 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "authentik healthy — server up, API answering on :9000, embedded outpost serving forward_auth (behind Caddy for TLS)."
+
+# ── Phase 4: Render + distribute Caddy fragment (prod only) ─────────────────
+# auth.uhstray.io -> this VM:9000, tls internal. Skipped unless a central Caddy
+# host (caddy_svc) exists AND not local_mode (local-dev routes the IdP via
+# Caddyfile.local's caddy_routes, not a sites/ fragment).
+- name: "Phase 4: Render + distribute Caddy fragment"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _fragment_src: "/tmp/authentik-caddy-site.caddy"
+    _fragment_name: "authentik.caddy"
+    # Composable sites/ model only. A flat hand-managed Caddyfile sets
+    # caddy_composable=false and gets its routes via manage-caddy-sites.yml.
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) and (caddy_composable | default(true) | bool) }}"
+
+  tasks:
+    - name: "Require public host + upstream vars before distributing to Caddy"
+      ansible.builtin.assert:
+        that:
+          - authentik_public_host is defined
+          - authentik_caddy_upstream is defined
+        fail_msg: >-
+          Set authentik_public_host and authentik_caddy_upstream in inventory
+          before enabling Caddy distribution.
+      when: _has_caddy | bool
+
+    - name: "Render caddy-site.j2 to the Authentik host"
+      # src resolved on the CONTROLLER (checked-out monorepo), not the remote clone.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      when: _has_caddy | bool
+
+    - name: "Push fragment to central Caddy + reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory (or local_mode) — skipping central-Caddy fragment distribution."
+      when: not (_has_caddy | bool)
