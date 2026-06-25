@@ -53,4 +53,6 @@
     cat "$DEST/.root.crt" "$DEST/.intermediate.crt" > "$DEST/step-ca-bundle.crt"
     rm -f "$DEST/.root.crt" "$DEST/.intermediate.crt"
     chmod 0644 "$DEST/step-ca-bundle.crt"
+  args:
+    executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   changed_when: true
