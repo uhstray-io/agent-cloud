@@ -216,6 +216,12 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Workflow | Playbook | Purpose |
 |----------|----------|---------|
 | Deploy NetBox | `deploy-netbox.yml` | 5-phase: secrets → containers → app config → Diode creds → verify |
+| Deploy Authentik | `deploy-authentik.yml` | Central IdP/SSO (podman): secrets → server+worker+pg+redis → blueprints → verify → Caddy fragment (composable) |
+| Deploy OpenHands | `deploy-openhands.yml` | Agent Canvas (Docker; host docker.sock): clone → env → container → verify → Caddy fragment (composable) |
+| Clean Deploy OpenHands | `clean-deploy-openhands.yml` | Destructive: wipe openhands-state volume + fresh deploy |
+| Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
+| Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
+| Manage Caddy Sites | `manage-caddy-sites.yml` | Insert/update marked site blocks in a flat (non-composable) Caddyfile; validate + restart |
 | Deploy Orb Agent | `deploy-orb-agent.yml` | Standalone: Diode creds + agent.yaml template + start agent |
 | Provision Orb Agent AppRole | `provision-orb-agent-approle.yml` | Code-managed: scoped policy + AppRole from `orb-agent.hcl`, creds → `secret/services/approles/orb-agent` |
 | Clean Deploy NetBox | `clean-deploy-netbox.yml` | Destructive: wipe volumes + fresh deploy |
@@ -242,6 +248,9 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
 - **Semaphore pipeline** — 25+ task templates, SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
+- **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
+- **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
+- **Caddy (flat-Caddyfile site)** — `auth`/`canvas` routes managed via `manage-caddy-sites.yml` (tls internal); composable Phase-4 fragment distribution gated behind `caddy_composable`
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 
