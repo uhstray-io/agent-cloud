@@ -35,6 +35,20 @@
       - { regexp: '^#?\s*PermitRootLogin', line: 'PermitRootLogin no' }
 
   tasks:
+    # Source the sudo password from OpenBao (stored by store-ssh-password.yml) so
+    # the first become — writing the NOPASSWD drop-in — works on a host that still
+    # requires a sudo password. become:false here so this fetch itself needs no
+    # sudo. On an already-NOPASSWD host the value is simply unused. Empty/missing
+    # become_password => become fails loudly (correct: run store-ssh-password.yml).
+    - name: "Fetch sudo (become) password from OpenBao"
+      ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:become_password',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      become: false
+      no_log: true
+
     - name: "Configure NOPASSWD sudo for user — {{ ansible_user }}"
       ansible.builtin.copy:
         content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"

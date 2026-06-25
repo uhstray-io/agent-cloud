@@ -60,6 +60,9 @@
     else
       echo "MISSING"
     fi
+  args:
+    # `set -o pipefail` needs bash; Ubuntu's /bin/sh is dash (Illegal option).
+    executable: /bin/bash
   register: _compose_check
   changed_when: false
 

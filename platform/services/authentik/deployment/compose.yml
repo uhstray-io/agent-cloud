@@ -67,7 +67,10 @@ services:
       - authentik-media:/media
       - ./blueprints:/blueprints/custom:ro
     healthcheck:
-      test: ["CMD", "ak", "healthcheck"]
+      # CMD-SHELL, not exec form: podman-compose mis-quotes the ["CMD","ak",
+      # "healthcheck"] list into `/bin/sh -c ak' 'healthcheck`, so the container
+      # never reports healthy even though `ak healthcheck` itself passes.
+      test: ["CMD-SHELL", "ak healthcheck"]
       interval: 30s
       timeout: 30s
       retries: 8
@@ -82,7 +85,10 @@ services:
       - authentik-media:/media
       - ./blueprints:/blueprints/custom:ro
     healthcheck:
-      test: ["CMD", "ak", "healthcheck"]
+      # CMD-SHELL, not exec form: podman-compose mis-quotes the ["CMD","ak",
+      # "healthcheck"] list into `/bin/sh -c ak' 'healthcheck`, so the container
+      # never reports healthy even though `ak healthcheck` itself passes.
+      test: ["CMD-SHELL", "ak healthcheck"]
       interval: 30s
       timeout: 30s
       retries: 8
