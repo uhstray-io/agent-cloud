@@ -36,7 +36,10 @@ setup() {
 @test "authentik: healthcheck uses ak healthcheck" {
   local f="$DEPLOY_DIR/compose.yml"
   grep -q 'healthcheck:' "$f"
-  grep -q '"ak", "healthcheck"' "$f"
+  # CMD-SHELL form (not the ["CMD","ak","healthcheck"] exec list): podman-compose
+  # mis-quotes the exec form into `/bin/sh -c ak' 'healthcheck`, so the container
+  # never reports healthy. See compose.yml for the rationale.
+  grep -q '"CMD-SHELL", "ak healthcheck"' "$f"
 }
 
 @test "authentik: deploy.sh is executable, bash, sources common.sh, uses compose, no secrets" {
