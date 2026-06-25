@@ -116,7 +116,9 @@
   vars:
     _fragment_src: "/tmp/openhands-caddy-site.caddy"
     _fragment_name: "openhands.caddy"
-    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) }}"
+    # Composable sites/ model only. A flat hand-managed Caddyfile sets
+    # caddy_composable=false and gets its routes via manage-caddy-sites.yml.
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) and (caddy_composable | default(true) | bool) }}"
 
   tasks:
     - name: "Require forward_auth + upstream vars before distributing to Caddy"

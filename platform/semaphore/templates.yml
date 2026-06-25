@@ -292,6 +292,16 @@ templates:
         type: string
         required: true
 
+  - name: Manage Caddy Sites
+    playbook: platform/playbooks/manage-caddy-sites.yml
+    survey_vars:
+      - name: target_service
+        title: "Caddy group"
+        description: "Inventory group of the central Caddy (default caddy_svc)"
+        type: string
+        required: false
+        default_value: "caddy_svc"
+
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml

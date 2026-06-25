@@ -1,0 +1,87 @@
+---
+# manage-caddy-sites.yml — Insert/update a marked block of site definitions in an
+# EXISTING (flat, hand-managed) Caddyfile, then validate + reload.
+#
+# For a Caddy that is NOT on the composable sites/*.caddy model (e.g. a
+# long-standing Caddyfile with per-host blocks). Composable services use
+# tasks/distribute-caddy-site.yml instead.
+#
+# Idempotent + non-destructive: blockinfile manages ONLY its marked region (and
+# writes a backup); existing hand-maintained routes are untouched. The full
+# config is validated IN-CONTAINER before reloading; if the new block is invalid
+# the backup is restored and the play fails WITHOUT reloading — the running
+# config and next restart are unaffected.
+#
+# Inventory (site-config) provides, on the caddy host:
+#   caddy_caddyfile_path   path to the Caddyfile on the host (mounted into caddy)
+#   caddy_managed_sites    multiline string: the site block(s) to manage
+#   caddy_container        container name (default 'caddy')
+#   container_engine       default 'podman'
+#
+# Usage (via Semaphore): -e target_service=caddy_svc
+
+- name: "Manage flat-Caddyfile site blocks on {{ target_service | default('caddy_svc') }}"
+  hosts: "{{ target_service | default('caddy_svc') }}"
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ caddy_container | default('caddy') }}"
+    _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
+
+  tasks:
+    - name: "Require managed-sites content"
+      ansible.builtin.assert:
+        that:
+          - caddy_managed_sites is defined
+          - caddy_managed_sites | trim | length > 0
+        fail_msg: "Set caddy_managed_sites (the site block[s]) in inventory for this host."
+
+    - name: "Insert/update the managed site block in the Caddyfile"
+      ansible.builtin.blockinfile:
+        path: "{{ _caddyfile }}"
+        marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
+        block: "{{ caddy_managed_sites }}"
+        backup: true
+        create: false
+      register: _bi
+
+    - name: "Validate the full Caddy config in-container"
+      ansible.builtin.command: >-
+        {{ _engine }} exec {{ _container }}
+        caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      register: _val
+      changed_when: false
+      failed_when: false
+
+    - name: "Restore the backup if the new block made the config invalid"
+      ansible.builtin.copy:
+        src: "{{ _bi.backup_file }}"
+        dest: "{{ _caddyfile }}"
+        remote_src: true
+        mode: "0644"
+      when:
+        - _bi.changed
+        - _val.rc != 0
+        - _bi.backup_file is defined
+
+    - name: "Fail when the new block is invalid (rolled back; running config intact)"
+      ansible.builtin.fail:
+        msg: >-
+          Caddy rejected the managed site block; rolled back. validate output:
+          {{ _val.stderr | default(_val.stdout) | default('(none)') }}
+      when: _val.rc != 0
+
+    # noqa: no-handler — gated on the blockinfile change by design; the reload
+    # must run in sequence right after the validate gate, not deferred to a flush.
+    - name: "Reload Caddy (only if the block changed)"  # noqa: no-handler
+      ansible.builtin.command: >-
+        {{ _engine }} exec {{ _container }}
+        caddy reload --config /etc/caddy/Caddyfile
+      register: _reload
+      changed_when: _bi.changed
+      when: _bi.changed
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Caddy managed sites {{ 'updated + reloaded' if _bi.changed else 'unchanged' }} in {{ _caddyfile }}."
