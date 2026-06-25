@@ -99,7 +99,8 @@
         or (caddy_probe_host | default('') | length > 0
             and caddy_probe_host not in (_running.stdout | default('')))
 
-    - name: "Wait for the Caddy admin API to answer after restart"
+    # noqa: no-handler — a sequential post-restart readiness wait, not a handler.
+    - name: "Wait for the Caddy admin API to answer after restart"  # noqa: no-handler
       ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
       register: _post
       changed_when: false
