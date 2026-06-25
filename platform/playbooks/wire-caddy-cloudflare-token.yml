@@ -10,11 +10,11 @@
 # from the container env. Net: the secret lives in OpenBao (SoT) + a 0600 .env +
 # the container env (owner-only `inspect`) — never in a world-readable file.
 #
-# Flow (idempotent): read the literal token (first run) or fetch from OpenBao
+# Flow (idempotent): grep the literal token (first run) / fetch from OpenBao
 # (re-run) -> store in OpenBao -> write .env (0600) -> ensure compose env_file ->
-# rewrite Caddyfile literals to {$CLOUDFLARE_API_KEY} -> VALIDATE the rewritten
-# file in a throwaway container (token injected) -> compose up --force-recreate ->
-# verify the admin API serves the routes. On a validation failure the Caddyfile
+# rewrite Caddyfile literals to {$CLOUDFLARE_API_KEY} -> VALIDATE the rewrite in a
+# throwaway container (token via env passthrough) -> compose up --force-recreate
+# -> verify the admin API serves the routes. On a validation failure the Caddyfile
 # backup is restored and the play fails BEFORE recreating (routes stay up).
 #
 # Targets a flat podman-compose Caddy (caddy_compose_dir holds compose.yml +
@@ -40,15 +40,17 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Read the current Caddyfile"
-      ansible.builtin.slurp:
-        src: "{{ _caddyfile }}"
-      register: _cf
-
-    - name: "Extract a literal Cloudflare token (empty once already migrated)"
-      ansible.builtin.set_fact:
-        # Matches `dns cloudflare <token>` but NOT `dns cloudflare {$...}`.
-        _literal_token: "{{ _cf.content | b64decode | regex_search('dns cloudflare\\s+(?!\\{)(\\S+)', '\\1') | default('', true) }}"
+    - name: "Extract the literal Cloudflare token from an active route (empty once migrated)"
+      # Host-side grep is exact; an active route line starts with whitespace (not
+      # '#') and the token is the 3rd field, not '{...'. Avoids fragile Jinja regex.
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -E '^[[:space:]]*dns cloudflare [^{[:space:]]' "{{ _caddyfile }}" | head -1 | awk '{print $3}'
+      args:
+        executable: /bin/bash
+      register: _lit
+      changed_when: false
+      failed_when: false
       no_log: true
 
     - name: "Authenticate to OpenBao (AppRole)"
@@ -63,21 +65,7 @@
       delegate_to: localhost
       no_log: true
 
-    - name: "Store the literal token in OpenBao (first run; idempotent thereafter)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/caddy"
-        method: POST
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        body_format: json
-        body:
-          data:
-            cloudflare_api_token: "{{ _literal_token }}"
-      delegate_to: localhost
-      when: _literal_token | length > 0
-      no_log: true
-
-    - name: "Fetch the token from OpenBao (source of truth)"
+    - name: "Fetch any existing caddy secret from OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/services/caddy"
         method: GET
@@ -88,9 +76,12 @@
       delegate_to: localhost
       no_log: true
 
-    - name: "Resolve the token (OpenBao value, else the just-read literal)"
+    - name: "Resolve the token — the live literal wins, else OpenBao"
       ansible.builtin.set_fact:
-        _cf_token: "{{ _bao_caddy.json.data.data.cloudflare_api_token | default(_literal_token, true) }}"
+        _cf_token: >-
+          {{ (_lit.stdout | default('') | trim)
+             if ((_lit.stdout | default('') | trim) | length > 0)
+             else (_bao_caddy.json.data.data.cloudflare_api_token | default('', true)) }}
       no_log: true
 
     - name: "Require a token before changing anything"
@@ -98,6 +89,19 @@
         that:
           - _cf_token | length > 0
         fail_msg: "No Cloudflare token found in the Caddyfile or OpenBao — nothing to wire."
+
+    - name: "Store the token in OpenBao (source of truth; idempotent, corrects drift)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/caddy"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          data:
+            cloudflare_api_token: "{{ _cf_token }}"
+      delegate_to: localhost
+      no_log: true
 
     - name: "Write the compose .env (0600) with the token"
       ansible.builtin.copy:
@@ -123,34 +127,46 @@
         backup: true
       register: _rewrite
 
-    - name: "Validate the rewritten Caddyfile in a throwaway container (token injected)"
-      # Validate the actual rewritten file with the token present, BEFORE touching
-      # the running container — a bad config never reaches a recreate.
+    - name: "Validate the rewritten Caddyfile in a throwaway container"
+      # Token via env passthrough (`-e CLOUDFLARE_API_KEY`, no value) + argv form —
+      # the secret never touches the command line. Validates BEFORE any recreate.
       ansible.builtin.command:
-        cmd: >-
-          {{ _engine }} run --rm -e CLOUDFLARE_API_KEY={{ _cf_token }}
-          -v {{ _caddyfile }}:/etc/caddy/Caddyfile:ro
-          {{ _image }}
-          caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+        argv:
+          - "{{ _engine }}"
+          - run
+          - --rm
+          - -e
+          - CLOUDFLARE_API_KEY
+          - -v
+          - "{{ _caddyfile }}:/etc/caddy/Caddyfile:ro"
+          - "{{ _image }}"
+          - caddy
+          - validate
+          - --config
+          - /etc/caddy/Caddyfile
+          - --adapter
+          - caddyfile
+      environment:
+        CLOUDFLARE_API_KEY: "{{ _cf_token }}"
       register: _val
       changed_when: false
       failed_when: false
-      no_log: true   # token on the command line
+      no_log: true
 
     - name: "Restore the Caddyfile backup if the rewrite is invalid"
       ansible.builtin.copy:
-        src: "{{ _rewrite.backup }}"
+        src: "{{ _rewrite.backup_file }}"
         dest: "{{ _caddyfile }}"
         remote_src: true
         mode: "0664"
       when:
         - _rewrite.changed
         - _val.rc != 0
-        - _rewrite.backup is defined
+        - _rewrite.backup_file is defined
 
     - name: "Fail when the rewritten Caddyfile is invalid (restored; routes untouched)"
       ansible.builtin.fail:
-        msg: "Rewritten Caddyfile failed `caddy validate`; restored the backup. Investigate before re-running."
+        msg: "Rewritten Caddyfile failed `caddy validate` (rc={{ _val.rc }}); restored the backup."
       when: _val.rc != 0
 
     - name: "Recreate caddy via compose (loads .env -> CLOUDFLARE_API_KEY -> {$...})"
@@ -176,6 +192,6 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          Cloudflare token now sourced from OpenBao via 0600 .env;
+          Cloudflare token now sourced from OpenBao via a 0600 .env;
           {{ _placeholders.stdout | trim }} route(s) use {$CLOUDFLARE_API_KEY};
           caddy recreated and serving (probe: {{ _probe }}).
