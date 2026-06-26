@@ -1,0 +1,49 @@
+---
+# Authentik app catalog — the full set of SSO apps the platform knows how to
+# provision, with how each integrates. deploy-authentik.yml selects which to
+# actually apply per environment from `authentik_apps` (inventory): it copies the
+# matching blueprint files into blueprints-active/ and renders zz-sso-bindings
+# from the enabled set. Promote a service to prod = add its slug to the prod
+# `authentik_apps` list in site-config. Unset `authentik_apps` => all of these
+# (local-dev keeps the full set unchanged).
+#
+# Per app:
+#   file  — the blueprint file under blueprints/ that creates its provider + app
+#   type  — oidc (native, app reads token) | forward_auth (Caddy outpost gate)
+#   tier  — member (platform-admins+developers) | admin (platform-admins only)
+#   tombstone_member — emit a state:absent removal of a stale platform-member
+#                      binding (migration artifact; openbao-oidc only)
+authentik_app_catalog:
+  erpnext:
+    file: erpnext-oidc.yaml
+    type: oidc
+    tier: member
+  grafana:
+    file: grafana-oidc.yaml
+    type: oidc
+    tier: member
+  n8n:
+    file: n8n-forward-auth.yaml
+    type: forward_auth
+    tier: member
+  netbox:
+    file: netbox-forward-auth.yaml
+    type: forward_auth
+    tier: member
+  openbao:
+    file: openbao-forward-auth.yaml
+    type: forward_auth
+    tier: member
+  openbao-oidc:
+    file: openbao-oidc.yaml
+    type: oidc
+    tier: admin
+    tombstone_member: true
+  openhands:
+    file: openhands-forward-auth.yaml
+    type: forward_auth
+    tier: member
+  semaphore:
+    file: semaphore-oidc.yaml
+    type: oidc
+    tier: member
