@@ -1123,7 +1123,7 @@ Also confirm the agents' happy path end-to-end once: NemoClaw/Claude Code pushes
 
 ## Open Questions
 
-1. **Merge method:** ~~squash-only vs. keeping merge commits~~ — **DECIDED 2026-06-16: squash-only + linear history.** `"merge"` removed from `allowed_merge_methods`; `required_linear_history` enabled.
+1. **Merge method:** ~~squash-only vs. keeping merge commits~~ — ~~DECIDED 2026-06-16: squash-only + linear history.~~ **SUPERSEDED 2026-06-26: merge commits re-allowed (the default) + `required_linear_history` dropped.** Squashing the long-lived `dev` into `main` severed ancestry every promotion (new sha, frozen merge-base) and forced a recurring manual back-merge; merge-commit promotions keep `dev`↔`main` ancestry intact so promotions never diverge. `allowed_merge_methods: ["merge", "squash"]`; squash reserved for scrubbing accidental sensitive content. A `sync-main-to-dev.yml` Action keeps `dev` current with `main`-only changes (e.g. dependabot). See the root CLAUDE.md "Branch Workflow".
 2. **CodeRabbit status check:** does the current CodeRabbit offer a commit status / check-run that can be a required check, or is conversation-resolution the only enforceable hook? Verify against current CodeRabbit docs during Phase 3. *(Still open.)*
 3. **Strict up-to-date checks:** ~~leave `strict: false`?~~ — **DECIDED: keep `false`** until concurrent PR volume (multiple agents) makes stale-branch merges a real risk; revisit then.
 4. **site-config protection:** ~~accept "unprotectable on Free plan"~~ — **RESOLVED 2026-06-16: the org is Enterprise, so the private `site-config` repo *can* be protected the same way.** Tracked as a Phase 4 follow-up (separate repo, out of this branch's scope).
