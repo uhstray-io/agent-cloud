@@ -283,6 +283,15 @@ templates:
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
 
+  - name: Apply Firewall
+    playbook: platform/playbooks/apply-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to firewall (e.g. openhands_svc, authentik_svc)"
+        type: string
+        required: true
+
   - name: Generate Service SSH Key
     playbook: platform/playbooks/generate-service-ssh-key.yml
     survey_vars:

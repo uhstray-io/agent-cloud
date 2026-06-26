@@ -1,0 +1,111 @@
+---
+# apply-firewall.yml — Reusable host firewall (UFW) lockdown for a service VM.
+#
+# Default-deny inbound, allow-outbound. Permits SSH (22) only from admin CIDRs and
+# each service's published port only from its intended source (e.g. the central
+# Caddy host). Idempotent and re-runnable.
+#
+# Recovery / break-glass: a guest UFW only filters the VM's NETWORK path. The
+# Proxmox web console reaches the VM out-of-band through the hypervisor, so no
+# firewall rule can lock you out of the console — if SSH is ever blocked, open the
+# Proxmox console and run `ufw disable`. This is what makes locking the network
+# path safe (cf. "verify keys before disabling password auth").
+#
+# Anti-lockout: SSH-allow rules are added BEFORE enabling, then a fresh SSH
+# handshake is forced (meta: reset_connection) to prove the firewall didn't lock
+# the runner out. Refuses to run without at least one SSH CIDR.
+#
+# Uses the `ufw` CLI (not community.general.ufw) so no extra collection is needed
+# on the Semaphore runner (which installs only collections/requirements.yml).
+#
+# Inventory (site-config):
+#   firewall_ssh_cidrs     REQUIRED list of CIDRs allowed to SSH (group var)
+#   firewall_allow_rules   per-host list of {port, proto(=tcp), from, comment}
+#   firewall_verify_ssh    reset-connection check after enable (default true)
+#   ICMP echo is left at UFW's default (allowed) so ping-based monitoring works.
+#
+# Usage (via Semaphore): -e target_service=openhands_svc
+
+- name: "Apply UFW firewall to {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: true
+  become: true
+  vars:
+    target_service: "ungrouped"
+    _ssh_cidrs: "{{ firewall_ssh_cidrs | default([]) }}"
+    _rules: "{{ firewall_allow_rules | default([]) }}"
+    _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
+
+  tasks:
+    - name: "Skip non-Linux / local-connection hosts (UFW targets real Linux VMs)"
+      # local-dev runs services as containers via ansible_connection=local on
+      # macOS — there is no per-service Linux host to firewall there.
+      ansible.builtin.meta: end_host
+      when: >-
+        (ansible_system | default('')) != 'Linux'
+        or (ansible_connection | default('ssh')) == 'local'
+
+    - name: "Refuse to proceed without SSH allow CIDRs (anti-lockout)"
+      ansible.builtin.assert:
+        that:
+          - _ssh_cidrs | length > 0
+        fail_msg: >-
+          firewall_ssh_cidrs must list >=1 CIDR, or enabling UFW would lock SSH out.
+
+    - name: "Install ufw"
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: "Allow SSH (22/tcp) from each admin CIDR — BEFORE enabling"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw allow from {{ item }} to any port 22 proto tcp"
+      register: _sshrule
+      changed_when: "'Rule added' in _sshrule.stdout or 'Rules updated' in _sshrule.stdout"
+      loop: "{{ _ssh_cidrs }}"
+
+    - name: "Allow each service port from its intended source"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw allow from {{ item.from }} to any port {{ item.port }} proto {{ item.proto | default('tcp') }}"
+      register: _svcrule
+      changed_when: "'Rule added' in _svcrule.stdout or 'Rules updated' in _svcrule.stdout"
+      loop: "{{ _rules }}"
+      loop_control:
+        label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} ({{ item.comment | default('') }})"
+
+    - name: "Default-deny incoming"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw default deny incoming"
+      register: _din
+      changed_when: "'changed' in _din.stdout"
+
+    - name: "Default-allow outgoing"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw default allow outgoing"
+      register: _dout
+      changed_when: "'changed' in _dout.stdout"
+
+    - name: "Enable UFW"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw --force enable"
+      register: _en
+      changed_when: "'active' in _en.stdout"
+
+    # ── Anti-lockout verify: force a NEW SSH connection through the live firewall.
+    # The task that ran `ufw enable` used an already-established (allowed)
+    # connection; resetting forces a fresh handshake that must pass the new rules.
+    # meta: reset_connection cannot be conditional (Ansible ignores `when`), so it
+    # always runs — harmless (just forces a reconnect on the next task). The
+    # explicit verify below is what firewall_verify_ssh gates.
+    - name: "Drop the SSH connection to force a fresh handshake"
+      ansible.builtin.meta: reset_connection
+
+    - name: "Verify SSH still works after enabling the firewall"
+      ansible.builtin.command: "true"
+      changed_when: false
+      when: _verify
+
+    - name: "Capture UFW status"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw status verbose"
+      register: _status
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} firewall: {{ _status.stdout_lines }}"
