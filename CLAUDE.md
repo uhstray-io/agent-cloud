@@ -76,32 +76,32 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/authentik/deployment/context/architecture.md` — Authentik central IdP/SSO (server+worker+Postgres+Redis; blueprints config-as-code; local-dev live)
 - `platform/services/opa/deployment/context/architecture.md` — OPA policy engine (Guardrail-layer agent-action authorization; Rego policy-as-code under `policies/`; local-dev live, Phase 1 unauthenticated)
 - `platform/services/erpnext/deployment/context/architecture.md` — ERPNext ERP (composable slim local tier: db+redis+backend+frontend+worker+scheduler+websocket; MinIO/backup prod-only; local-dev code-complete, deploy pending image pull)
-- `platform/services/n8n/deployment/` — n8n workflow automation (composable; stateful `N8N_ENCRYPTION_KEY`; prod migration HELD — see `plan/development/nocodb-n8n-composable-migration.md` + `seed-n8n-secrets.yml`)
+- `platform/services/n8n/deployment/` — n8n workflow automation (composable; stateful `N8N_ENCRYPTION_KEY`; prod migration HELD — see `plan/development/09-service-migrations-tooling.md` + `seed-n8n-secrets.yml`)
 - `platform/playbooks/README.md` — Playbook conventions and reference
-- `plan/architecture/AUTOMATION-COMPOSABILITY.md` — Composable deployment architecture
-- `plan/architecture/AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
-- `plan/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
-- `plan/development/SKYNET-REPLACEMENT-PLAN.md` — Doc reframe: skynet supersedes WisAI's LLM plane + the NemoClaw/OpenClaw framework; preserve OPA + non-LLM sidecars; harvest use-cases into skynet's catalog
-- `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` — Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
-- `plan/development/SOURCE-OF-TRUTH.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
-- `plan/architecture/architecture-reference.md` — Master architecture document index and standards
-- `plan/architecture/ACCESS-BOUNDARIES.md` — Semaphore vs SSH access rules
-- `plan/architecture/CADDY-REVERSE-PROXY.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps
-- `plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md` — Container runtime considerations
-- `plan/architecture/SECURITY-TESTING-STANDARDS.md` — Security testing requirements
-- `plan/architecture/CI-TESTING-SPECIFICATION.md` — Testing standards for new services
+- `plan/architecture/01-automation-model.md` — Composable deployment architecture
+- `plan/architecture/01-automation-model.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
+- `plan/archive/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)
+- `plan/development/06-inference-skynet.md` — Doc reframe: skynet supersedes WisAI's LLM plane + the NemoClaw/OpenClaw framework; preserve OPA + non-LLM sidecars; harvest use-cases into skynet's catalog
+- `plan/development/06-inference-skynet.md` — Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
+- `plan/development/03-guardrails-governance.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
+- `plan/architecture/00-foundation-standards.md` — Master architecture document index and standards
+- `plan/architecture/04-credentials-access.md` — Semaphore vs SSH access rules
+- `plan/architecture/05-platform-infra.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps
+- `plan/architecture/05-platform-infra.md` — Container runtime considerations
+- `plan/architecture/03-testing-ci-quality.md` — Security testing requirements
+- `plan/architecture/03-testing-ci-quality.md` — Testing standards for new services
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
-- `plan/development/WEBSMITH-INTEGRATION-PLAN.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
-- `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — Proxmox PCIe passthrough procedure for the two inference VMs
+- `plan/development/07-websmith-uhhcraft.md` — Multi-phase integration of WebSmith + UhhCraft into agent-cloud
+- `plan/development/07-websmith-uhhcraft.md` — Proxmox PCIe passthrough procedure for the two inference VMs
 - `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
-- `plan/development/LOCAL-DEV-DEPLOYMENT.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/LOCAL-DEV-12A-IMPLEMENTATION.md`
-- `plan/development/DNS-SERVER-DEPLOYMENT.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
+- `plan/development/00-foundation-local-dev.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/00-foundation-local-dev.md`
+- `plan/development/00-foundation-local-dev.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
 Defer to those files when working within those directories.
 
-When developing new changes, consult `plan/architecture/architecture-reference.md` for document standards and `plan/architecture/SERVICE-INTEGRATION-PLAN.md` for the service onboarding checklist. All implementation work should have an implementation plan in `plan/development/` before coding begins.
+When developing new changes, consult `plan/architecture/00-foundation-standards.md` for document standards and `plan/architecture/02-service-onboarding.md` for the service onboarding checklist. All implementation work should have an implementation plan in `plan/development/` before coding begins.
 
 ## Engineering Principles — Foundational Over One-Shot
 
@@ -198,7 +198,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 
 ## Composable Task Library
 
-All deployment automation is built from reusable Ansible tasks. See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full architecture.
+All deployment automation is built from reusable Ansible tasks. See `plan/architecture/01-automation-model.md` for the full architecture.
 
 | Task | Purpose |
 |------|---------|
@@ -255,7 +255,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 
 ### In Progress
-- NocoDB and n8n deployment via composable pattern — both are deployed today via the **legacy** `deploy.sh` path (bash-generated secrets in an on-VM `secrets/` dir). Migration to the composable pattern is planned in `plan/development/nocodb-n8n-composable-migration.md` but **execution is HELD**: it's an in-place migration of live services with stateful secrets (n8n `N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) that must be pre-seeded into OpenBao before cutover or they'd be regenerated — needs live OpenBao access first (see that plan's "Migration Safety").
+- NocoDB and n8n deployment via composable pattern — both are deployed today via the **legacy** `deploy.sh` path (bash-generated secrets in an on-VM `secrets/` dir). Migration to the composable pattern is planned in `plan/development/09-service-migrations-tooling.md` but **execution is HELD**: it's an in-place migration of live services with stateful secrets (n8n `N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) that must be pre-seeded into OpenBao before cutover or they'd be regenerated — needs live OpenBao access first (see that plan's "Migration Safety").
 - Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
 
 ### Planned
@@ -275,7 +275,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
 - `main` is the production branch — Semaphore deploys from it.
-- `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `LOCAL-DEV-README.md` / `plan/development/LOCAL-DEV-DEPLOYMENT.md`, and/or via prod branch deploys per `plan/architecture/BRANCH-TESTING-WORKFLOW.md`) before promotion to `main`.
+- `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `LOCAL-DEV-README.md` / `plan/development/00-foundation-local-dev.md`, and/or via prod branch deploys per `plan/architecture/03-testing-ci-quality.md`) before promotion to `main`.
 
 1. Create a feature branch from `dev`: `git checkout dev && git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
 2. Commit changes on the feature branch
@@ -294,7 +294,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development — new features, bug fixes, plan updates, documentation changes — and to promotion PRs from `dev` to `main`.
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges are squash-only with linear history. (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges are squash-only with linear history. (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Mandatory Pre-Push Audit
 
@@ -313,7 +313,7 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ## Adding a New Service
 
-Follow `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
+Follow `plan/architecture/01-automation-model.md`:
 
 1. Create `platform/services/<name>/deployment/deploy.sh` — container operations only
 2. Create `platform/services/<name>/deployment/templates/*.j2` — Jinja2 env file templates
@@ -349,12 +349,12 @@ See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
 
 ### Sub-directory Documentation (additional)
 
-- `plan/architecture/TESTING-AND-LINTING-PLAN.md` — Full testing strategy and implementation status
-- `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — Branch deploy and validation workflow
-- `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md` — Branch protection & rulesets plan (config-as-code `protect-main`; evaluate→active rollout; CI-gated merges)
+- `plan/architecture/03-testing-ci-quality.md` — Full testing strategy and implementation status
+- `plan/architecture/03-testing-ci-quality.md` — Branch deploy and validation workflow
+- `plan/development/03-guardrails-governance.md` — Branch protection & rulesets plan (config-as-code `protect-main`; evaluate→active rollout; CI-gated merges)
 - `.github/rulesets/README.md` — Branch protection rulesets as config-as-code (`protect-main.json` + idempotent `apply.sh`)
-- `plan/architecture/SERVICE-INTEGRATION-PLAN.md` — Service onboarding checklist
-- `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` — Secret generation, storage, rotation, and retirement
+- `plan/architecture/02-service-onboarding.md` — Service onboarding checklist
+- `plan/architecture/04-credentials-access.md` — Secret generation, storage, rotation, and retirement
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 
 ## Dependencies
