@@ -33,11 +33,15 @@ one-line, composable change.
    subset. Promote = add a slug. (Chosen over per-blueprint labels / split dirs.)
 2. **Rollout order:** composable mechanism → **Semaphore** (already OIDC-proven
    locally, lowest risk) → NetBox → Proxmox (riskiest last) → Grafana/o11y later.
-3. **Split-horizon DNS: DEFERRED.** Keep the current Cloudflare path. `*.uhstray.io`
-   resolves to Cloudflare proxy IPs today; SSO works over that path (DNS-01 LE
-   certs are independent of resolution). Revisit pfSense Unbound overrides
-   (`*.uhstray.io → the Caddy host`) only if internal latency / real-client-IP
-   audit becomes a concern. (Researched: recommended-but-not-required.)
+3. **Split-horizon DNS: DEFERRED, with one scoped exception (found in testing).**
+   Browsers reach `*.uhstray.io` fine via Cloudflare. But **server-side** calls
+   from a service to `auth.uhstray.io` (OIDC discovery + token exchange) get
+   Cloudflare's bot-challenge (verified: `cf-mitigated: challenge`). So each
+   OIDC *client* must resolve `auth.uhstray.io` to the internal Caddy — done
+   per-container via compose `extra_hosts` (Authentik derives the issuer from the
+   Host header, so tokens stay `https://auth.uhstray.io/...` and still validate).
+   The broader pfSense Unbound split-horizon (`*.uhstray.io → Caddy host`) remains
+   deferred — `extra_hosts` covers the server-side need without it.
 
 ## The composable mechanism (manifest-driven blueprint selection)
 
@@ -77,14 +81,16 @@ vs prod `*.uhstray.io`) — same pattern already used for `AUTHENTIK_BROWSER_HOS
   **Applied from the operator/genesis layer, NEVER via a Semaphore job** —
   Semaphore is the control plane; a job that restarts its own container is
   circular (same reason `make local-bootstrap` brings it up last from outside).
-  Mechanism (site-config `scripts/update-semaphore-oidc.sh`): an additive
-  `compose.override.yml` injects only the env — `compose.yml`/`entrypoint.sh`/
-  `config.json` are untouched, so `access_key_encryption` (decrypts Semaphore's
-  stored SSH keys) is never at risk. Pre-flight gates (valid OIDC JSON, the
-  Semaphore host can reach the Authentik issuer server-side, Semaphore currently
-  healthy) abort
-  before any change; post-flight verify (`/api/ping` + the provider login route
-  redirects) auto-rolls-back on failure; rollback = remove the override + recreate.
+  Mechanism (site-config `scripts/semaphore-upgrade.sh` — a REUSABLE safe-upgrade
+  tool, `CHANGE=oidc|image|restart`): an additive `compose.override.yml` injects
+  only the env (+ `extra_hosts` for internal issuer resolution) — `compose.yml`/
+  `entrypoint.sh`/`config.json` are untouched, so `access_key_encryption`
+  (decrypts Semaphore's stored SSH keys) is never at risk. The envelope is the
+  reusable part: pre-flight gates (valid OIDC JSON; the container's internal path
+  to the issuer resolves; Semaphore healthy) → **pre-upgrade Proxmox snapshot
+  (create/wait/validate)** → stage → recreate → post-flight verify (`/api/ping` +
+  provider login route redirects) with **auto-rollback** on failure;
+  rollback = restore the previous override + recreate.
   The OIDC map mirrors the local-genesis shape in `bootstrap-local-dev.yml`.
 - **NetBox** (`netbox.uhstray.io`): move forward_auth → **native OIDC**
   (community NetBox bundles `python-social-auth` generic OIDC). `configuration.py`:
@@ -129,8 +135,8 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
 2. **Prod Authentik prune + Semaphore SSO**: set prod `authentik_apps` to the prod
    set; parameterize semaphore redirect; branch-deploy Authentik to the Authentik
    VM (verify it shows ONLY prod apps + `ak healthcheck` + outpost — DONE).
-   Then wire Semaphore prod OIDC: **snapshot the Semaphore VM (wait + validate)**,
-   then `update-semaphore-oidc.sh apply` (operator-side; env-override + auto-rollback);
+   Then wire Semaphore prod OIDC with `semaphore-upgrade.sh apply` (operator-side;
+   snapshot+validate → env-override → restart → verify → auto-rollback);
    verify SSO login (local admin fallback intact). Gate.
 3. **NetBox OIDC** (forward_auth → OIDC), verify API/token auth + SSO. Gate.
 4. **Proxmox OIDC realm** (additive), verify: existing PAM/PVE login + **TOTP**
@@ -139,3 +145,19 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
 
 Each prod step: branch-deploy → verify → `feat → dev → main` PR → revert Semaphore
 repo to `main`. No credential changes. Nothing destructive.
+
+## GitHub Actions path (future, for bootstrapping/upgrading Semaphore)
+
+Semaphore can't safely upgrade itself (a self-restarting job is circular), so today
+the operator runs `semaphore-upgrade.sh` from a workstation. A more consistent
+future home for that **same envelope** is a GitHub Actions workflow on a
+**self-hosted runner** inside the network (the runner reaches the Semaphore
+host/Proxmox/OpenBao; secrets via GitHub Environments or OpenBao):
+- The job runs `semaphore-upgrade.sh` (or the `snapshot-vm.yml` + override logic
+  directly) — identical gates: pre-flight → **snapshot+validate** → apply →
+  verify → auto-rollback. No logic forks; the runner just replaces the laptop.
+- Gains: consistent environment, audited/approved runs (GH Environments + required
+  reviewers), one button, runs even when no operator is at a workstation.
+- Constraints unchanged: never via Semaphore itself; additive + reversible;
+  snapshot first. Keep the bash tool as the source of truth the workflow calls,
+  so local and CI paths stay identical.

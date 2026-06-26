@@ -28,7 +28,7 @@
     ansible.builtin.uri:
       validate_certs: false
       headers:
-        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+        Authorization: "PVEAPIToken={{ _pve_tid }}={{ _pve_sec }}"
   vars:
     # Operator-side secret (extra-var or env). When present, the OpenBao lookup is
     # skipped — so this runs without Semaphore/AppRole creds.
@@ -46,24 +46,44 @@
     _pve_host: "{{ pve_api_host | default(_pve_data.url | default(''), true) }}"
     _pve_token_id: "{{ pve_token_id | default(_pve_data.token_id | default('stray@pve!workflow-agent'), true) }}"
     _pve_secret: "{{ _pve_secret_in if (_pve_secret_in | length > 0) else (_pve_data.api_token | default('')) }}"
-    _snapname: "{{ snapshot_name | default('preupgrade-' ~ (pve_vmid | default('vm')) ~ '-' ~ ansible_date_time.iso8601_basic_short, true) }}"
+    _snapname: "{{ snapshot_name | default('preup-' ~ (pve_vmid | default('vm')) ~ '-' ~ ansible_facts.date_time.iso8601_basic_short, true) }}"
     _vmstate: "{{ snapshot_vmstate | default(0) }}"
 
   tasks:
+    # Resolve the connection ONCE into static facts. The lazy vars above re-run
+    # their OpenBao lookup each time they are templated; in a `until` retry loop
+    # that recurses ("maximum recursion depth exceeded"). Freezing fixes it and
+    # does the lookup exactly once.
+    - name: "Resolve + freeze the Proxmox connection"
+      ansible.builtin.set_fact:
+        _pve_url: "{{ _pve_host }}"
+        _pve_tid: "{{ _pve_token_id }}"
+        _pve_sec: "{{ _pve_secret }}"
+      no_log: true
+
     - name: "Require target + credentials"
       ansible.builtin.assert:
         that:
           - pve_vmid is defined
           - pve_node is defined
-          - _pve_host | length > 0
-          - _pve_secret | length > 0
+          - _pve_url | length > 0
+          - _pve_sec | length > 0
         fail_msg: >-
           Need pve_vmid + pve_node, and either PVE_TOKEN_SECRET/pve_token_secret
           (operator) or OpenBao reachable (Semaphore). Host/secret resolved empty.
 
+    - name: "Validate snapshot name (Proxmox: <=40 chars, starts with a letter)"
+      ansible.builtin.assert:
+        that:
+          - _snapname | length <= 40
+          - _snapname is match('^[A-Za-z][A-Za-z0-9_-]*$')
+        fail_msg: >-
+          Snapshot name '{{ _snapname }}' ({{ _snapname | length }} chars) is invalid
+          for Proxmox (max 40, pattern ^[A-Za-z][A-Za-z0-9_-]*$). Shorten snapshot_name.
+
     - name: "Confirm Proxmox API reachable + the VM exists (pre-check)"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/status/current"
+        url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/status/current"
         method: GET
       register: _vm_status
 
@@ -76,7 +96,7 @@
 
     - name: "Create the snapshot (returns a task UPID)"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
+        url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
         method: POST
         body_format: form-urlencoded
         body:
@@ -92,23 +112,23 @@
 
     - name: "Wait for the snapshot task to FINISH (poll until stopped)"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/tasks/{{ _upid }}/status"
+        url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/tasks/{{ _upid }}/status"
         method: GET
-      register: _task
-      until: _task.json.data.status is defined and _task.json.data.status == 'stopped'
+      register: _wait
+      until: _wait.json.data.status is defined and _wait.json.data.status == 'stopped'
       retries: 120          # up to 10 min (120 * 5s) for large disks
       delay: 5
 
     - name: "Assert the snapshot task SUCCEEDED (exitstatus OK)"
       ansible.builtin.assert:
         that:
-          - _task.json.data.exitstatus is defined
-          - _task.json.data.exitstatus == 'OK'
-        fail_msg: "Snapshot task ended with exitstatus '{{ _task.json.data.exitstatus | default('?') }}' — do NOT upgrade."
+          - _wait.json.data.exitstatus is defined
+          - _wait.json.data.exitstatus == 'OK'
+        fail_msg: "Snapshot task ended with exitstatus '{{ _wait.json.data.exitstatus | default('?') }}' — do NOT upgrade."
 
     - name: "VALIDATE the snapshot exists in the VM's snapshot list"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
+        url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
         method: GET
       register: _snaps
 
