@@ -1,3 +1,8 @@
 # Rendered per-deploy from OpenBao by deploy-authentik.yml. Never committed.
 # (blueprints/ ARE committed — config-as-code; only secrets stay out.)
 .env
+
+# Assembled per-deploy from the enabled apps (deploy-authentik.yml). The full
+# blueprint library lives in blueprints/; this is the active subset + rendered
+# zz-sso-bindings. Never committed.
+blueprints-active/

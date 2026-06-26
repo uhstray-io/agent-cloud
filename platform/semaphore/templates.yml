@@ -283,6 +283,15 @@ templates:
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
 
+  - name: Apply Firewall
+    playbook: platform/playbooks/apply-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to firewall (e.g. openhands_svc, authentik_svc)"
+        type: string
+        required: true
+
   - name: Generate Service SSH Key
     playbook: platform/playbooks/generate-service-ssh-key.yml
     survey_vars:
@@ -324,3 +333,24 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+
+  # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
+  # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Snapshot VM
+    playbook: platform/playbooks/snapshot-vm.yml
+    survey_vars:
+      - name: pve_vmid
+        title: "VM ID"
+        description: "Proxmox VMID to snapshot (e.g. 203 for semaphore)"
+        type: int
+        required: true
+      - name: pve_node
+        title: "PVE node"
+        description: "Proxmox node the VM runs on (e.g. apollo)"
+        type: string
+        required: true
+      - name: snapshot_name
+        title: "Snapshot name"
+        description: "Optional; defaults to preupgrade-<vmid>-<timestamp>"
+        type: string
+        required: false
