@@ -67,10 +67,13 @@
           - pve_vmid is defined
           - pve_node is defined
           - _pve_url | length > 0
+          # The API token rides in the Authorization header on every request — never
+          # let it go to a plaintext http:// endpoint.
+          - _pve_url is match('^https://')
           - _pve_sec | length > 0
         fail_msg: >-
-          Need pve_vmid + pve_node, and either PVE_TOKEN_SECRET/pve_token_secret
-          (operator) or OpenBao reachable (Semaphore). Host/secret resolved empty.
+          Need pve_vmid + pve_node, an HTTPS pve_api_host, and either
+          PVE_TOKEN_SECRET/pve_token_secret (operator) or OpenBao reachable (Semaphore).
 
     - name: "Validate snapshot name (Proxmox: <=40 chars, starts with a letter)"
       ansible.builtin.assert:
@@ -86,6 +89,10 @@
         url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/status/current"
         method: GET
       register: _vm_status
+      # no_log on the authenticated requests: the PVE token is in the Authorization
+      # header (module_defaults) and uri logs request params on failure. The next
+      # debug/assert tasks surface status/exitstatus (no token) for diagnostics.
+      no_log: true
 
     - name: "Show what is being snapshotted"
       ansible.builtin.debug:
@@ -105,6 +112,7 @@
           vmstate: "{{ _vmstate }}"
         status_code: [200]
       register: _create
+      no_log: true
 
     - name: "Record the snapshot task UPID"
       ansible.builtin.set_fact:
@@ -115,6 +123,7 @@
         url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/tasks/{{ _upid }}/status"
         method: GET
       register: _wait
+      no_log: true
       until: _wait.json.data.status is defined and _wait.json.data.status == 'stopped'
       retries: 120          # up to 10 min (120 * 5s) for large disks
       delay: 5
@@ -131,6 +140,7 @@
         url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
         method: GET
       register: _snaps
+      no_log: true
 
     - name: "Assert our snapshot is present"
       ansible.builtin.assert:

@@ -71,7 +71,12 @@ Per-OIDC-app **redirect URIs are parameterized** (`!Env [<SVC>_REDIRECT_URI,
 "<local default>"]`), set per-environment from `env.j2` (local `*.agent-cloud.test`
 vs prod `*.uhstray.io`) — same pattern already used for `AUTHENTIK_BROWSER_HOST`.
 
-## Per-service auth (all native OIDC; never forward_auth — keeps APIs/CLIs working)
+## Per-service auth — target: native OIDC over forward_auth (keeps APIs/CLIs working)
+
+The intended direction is native OIDC per service, not forward_auth, because OIDC
+leaves each service's API/CLI/token auth intact. Some services start on forward_auth
+and migrate (e.g. NetBox below); the goal state is native OIDC where the service
+supports it.
 
 - **Semaphore** (`semaphore.uhstray.io`): native OIDC via the
   `SEMAPHORE_OIDC_PROVIDERS` env var. Redirect

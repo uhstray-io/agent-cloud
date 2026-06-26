@@ -75,8 +75,12 @@
         file: "{{ _authentik_tpls }}/app-catalog.yml"
 
     - name: "Resolve the enabled apps (default: every catalog app)"
+      # default WITHOUT the boolean: only an UNDEFINED authentik_apps falls back to
+      # the full catalog (local-dev). An explicit `authentik_apps: []` is a real
+      # (empty) selection — do NOT treat it as unset, or "expose nothing" silently
+      # becomes "expose everything".
       ansible.builtin.set_fact:
-        _enabled_apps: "{{ authentik_apps | default(authentik_app_catalog.keys() | list, true) }}"
+        _enabled_apps: "{{ authentik_apps | default(authentik_app_catalog.keys() | list) }}"
 
     - name: "Validate every enabled app exists in the catalog"
       ansible.builtin.assert:
@@ -85,6 +89,12 @@
         fail_msg: "authentik_apps entry '{{ item }}' is not in app-catalog.yml"
       loop: "{{ _enabled_apps }}"
 
+    # NOTE: this rebuilds the FILE set the worker applies. Authentik blueprints are
+    # additive — dropping a file does NOT delete the app/provider already created in
+    # the DB, so de-selected apps remain as harmless ORPHANS (no outpost binding /
+    # access policy, so they grant nothing). This is intentional for the prod prune
+    # (see PROD-SSO-ROLLOUT-PLAN.md). Full deprovisioning (state: absent tombstones
+    # per removed slug, like openbao-oidc's tombstone) is a tracked future enhancement.
     - name: "Reset the active-blueprints dir (drop de-selected/removed apps)"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/blueprints-active"
