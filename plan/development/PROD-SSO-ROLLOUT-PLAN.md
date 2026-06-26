@@ -63,10 +63,23 @@ vs prod `*.uhstray.io`) — same pattern already used for `AUTHENTIK_BROWSER_HOS
 
 ## Per-service auth (all native OIDC; never forward_auth — keeps APIs/CLIs working)
 
-- **Semaphore** (`semaphore.uhstray.io`): native OIDC via `SEMAPHORE_OIDC_PROVIDERS`
-  / `config.json` `oidc_providers`. Redirect
-  `https://semaphore.uhstray.io/api/auth/oidc/authentik/redirect/`. Local admin
-  fallback retained; admin promoted once. Blueprint `semaphore-oidc.yaml` exists.
+- **Semaphore** (`semaphore.uhstray.io`): native OIDC via the
+  `SEMAPHORE_OIDC_PROVIDERS` env var. Redirect
+  `https://semaphore.uhstray.io/api/auth/oidc/authentik/redirect` (no trailing
+  slash — byte-matches the parameterized `semaphore-oidc.yaml` blueprint). Local
+  admin fallback retained (OIDC only ADDS a provider; OIDC-only is never forced).
+  **Applied from the operator/genesis layer, NEVER via a Semaphore job** —
+  Semaphore is the control plane; a job that restarts its own container is
+  circular (same reason `make local-bootstrap` brings it up last from outside).
+  Mechanism (site-config `scripts/update-semaphore-oidc.sh`): an additive
+  `compose.override.yml` injects only the env — `compose.yml`/`entrypoint.sh`/
+  `config.json` are untouched, so `access_key_encryption` (decrypts Semaphore's
+  stored SSH keys) is never at risk. Pre-flight gates (valid OIDC JSON, the
+  Semaphore host can reach the Authentik issuer server-side, Semaphore currently
+  healthy) abort
+  before any change; post-flight verify (`/api/ping` + the provider login route
+  redirects) auto-rolls-back on failure; rollback = remove the override + recreate.
+  The OIDC map mirrors the local-genesis shape in `bootstrap-local-dev.yml`.
 - **NetBox** (`netbox.uhstray.io`): move forward_auth → **native OIDC**
   (community NetBox bundles `python-social-auth` generic OIDC). `configuration.py`:
   `REMOTE_AUTH_BACKEND = social_core.backends.open_id_connect.OpenIdConnectAuth`,
