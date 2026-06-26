@@ -324,3 +324,24 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+
+  # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
+  # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Snapshot VM
+    playbook: platform/playbooks/snapshot-vm.yml
+    survey_vars:
+      - name: pve_vmid
+        title: "VM ID"
+        description: "Proxmox VMID to snapshot (e.g. 203 for semaphore)"
+        type: int
+        required: true
+      - name: pve_node
+        title: "PVE node"
+        description: "Proxmox node the VM runs on (e.g. apollo)"
+        type: string
+        required: true
+      - name: snapshot_name
+        title: "Snapshot name"
+        description: "Optional; defaults to preupgrade-<vmid>-<timestamp>"
+        type: string
+        required: false

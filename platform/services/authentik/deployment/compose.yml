@@ -65,7 +65,9 @@ services:
       - "${AUTHENTIK_BIND:-127.0.0.1}:${AUTHENTIK_PORT:-9000}:9000"
     volumes:
       - authentik-media:/media
-      - ./blueprints:/blueprints/custom:ro
+      # blueprints-active/ is assembled per-deploy from the enabled apps
+      # (deploy-authentik.yml + app-catalog.yml); blueprints/ is the full library.
+      - ./blueprints-active:/blueprints/custom:ro
     healthcheck:
       # CMD-SHELL, not exec form: podman-compose mis-quotes the ["CMD","ak",
       # "healthcheck"] list into `/bin/sh -c ak' 'healthcheck`, so the container
@@ -83,7 +85,9 @@ services:
     # The worker applies blueprints; same custom-blueprint mount as the server.
     volumes:
       - authentik-media:/media
-      - ./blueprints:/blueprints/custom:ro
+      # blueprints-active/ is assembled per-deploy from the enabled apps
+      # (deploy-authentik.yml + app-catalog.yml); blueprints/ is the full library.
+      - ./blueprints-active:/blueprints/custom:ro
     healthcheck:
       # CMD-SHELL, not exec form: podman-compose mis-quotes the ["CMD","ak",
       # "healthcheck"] list into `/bin/sh -c ak' 'healthcheck`, so the container

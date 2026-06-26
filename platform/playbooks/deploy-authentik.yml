@@ -48,6 +48,16 @@
       - { name: service_account_token, type: random, length: 60 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
+    # Blueprints always applied regardless of environment (groups, flows, admin
+    # users, service account). Per-app blueprints are selected from the catalog
+    # by `authentik_apps`. zz-sso-bindings is RENDERED (not copied) from the set.
+    _shared_blueprints:
+      - agent-cloud.yaml
+      - platform-groups.yaml
+      - agent-cloud-admin.yaml
+      - stray-admin.yaml
+      - service-account.yaml
+    _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
     - name: "Place the monorepo + ensure podman/compose"
@@ -55,6 +65,50 @@
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # ── Composable blueprint selection (manifest-driven) ─────────────────────
+    # Assemble blueprints-active/ from the enabled apps so prod shows only prod
+    # services. Unset authentik_apps => all catalog apps (local-dev unchanged).
+    # See plan/development/PROD-SSO-ROLLOUT-PLAN.md.
+    - name: "Load the Authentik app catalog"
+      ansible.builtin.include_vars:
+        file: "{{ _authentik_tpls }}/app-catalog.yml"
+
+    - name: "Resolve the enabled apps (default: every catalog app)"
+      ansible.builtin.set_fact:
+        _enabled_apps: "{{ authentik_apps | default(authentik_app_catalog.keys() | list, true) }}"
+
+    - name: "Validate every enabled app exists in the catalog"
+      ansible.builtin.assert:
+        that:
+          - item in authentik_app_catalog
+        fail_msg: "authentik_apps entry '{{ item }}' is not in app-catalog.yml"
+      loop: "{{ _enabled_apps }}"
+
+    - name: "Reset the active-blueprints dir (drop de-selected/removed apps)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/blueprints-active"
+        state: "{{ item }}"
+        mode: "0755"
+      loop: [absent, directory]
+      loop_control:
+        label: "{{ item }}"
+
+    - name: "Assemble active blueprints (shared + enabled apps)"
+      ansible.builtin.copy:
+        src: "{{ _deploy_dir }}/blueprints/{{ item }}"
+        dest: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
+        remote_src: true
+        mode: "0644"
+      loop: "{{ _shared_blueprints + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}"
+
+    - name: "Render zz-sso-bindings from the enabled set"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/templates/zz-sso-bindings.yaml.j2"
+        dest: "{{ _deploy_dir }}/blueprints-active/zz-sso-bindings.yaml"
+        mode: "0644"
+      vars:
+        authentik_apps: "{{ _enabled_apps }}"
 
     - name: "Create convenience symlink ~/authentik -> deploy dir"
       # Satisfies "a folder for authentik at ~/authentik" while keeping the

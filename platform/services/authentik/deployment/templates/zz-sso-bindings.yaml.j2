@@ -1,0 +1,84 @@
+{# Rendered by deploy-authentik.yml into blueprints-active/zz-sso-bindings.yaml
+   from the ENABLED apps (authentik_apps ∩ app-catalog). The `zz-` prefix makes
+   Authentik apply it LAST, after the per-app blueprints create their providers/
+   apps. Because it is generated from the enabled set, it never !Find's a provider
+   or app that this environment didn't create (which is what would break a prod
+   deploy if we naively applied the all-apps static file). Do NOT edit the
+   rendered file — change app-catalog.yml / authentik_apps and re-deploy.
+   See plan/development/PROD-SSO-ROLLOUT-PLAN.md + AUTH-SSO-DEPLOYMENT.md. #}
+version: 1
+metadata:
+  name: agent-cloud - SSO bindings
+context:
+  # Browser-facing IdP URL — the embedded outpost builds its login redirect from
+  # this. Parameterized via !Env (prod sets AUTHENTIK_BROWSER_HOST in env.j2).
+  authentik_browser_host: !Env [AUTHENTIK_BROWSER_HOST, "https://auth.agent-cloud.test:8443/"]
+entries:
+  # Access gate (tier 1): platform-admins + platform-developers may pass;
+  # platform-user denied. Superusers always pass (break-glass akadmin).
+  - model: authentik_policies_expression.expressionpolicy
+    id: policy-platform-member
+    identifiers:
+      name: platform-member
+    attrs:
+      expression: |
+        allowed = {"platform-admins", "platform-developers"}
+        return request.user.is_superuser or bool(
+            allowed & {g.name for g in request.user.ak_groups.all()}
+        )
+
+  # Admins-only gate (tier 0) for apps whose login grants a full-admin downstream
+  # role to everyone who passes (e.g. openbao-oidc maps every user to root).
+  - model: authentik_policies_expression.expressionpolicy
+    id: policy-platform-admin
+    identifiers:
+      name: platform-admin
+    attrs:
+      expression: |
+        return request.user.is_superuser or (
+            "platform-admins" in {g.name for g in request.user.ak_groups.all()}
+        )
+
+  # Embedded outpost serves exactly the ENABLED forward_auth proxy providers.
+  - model: authentik_outposts.outpost
+    identifiers:
+      name: authentik Embedded Outpost
+    attrs:
+      providers:
+{% for slug in (authentik_apps | sort) %}
+{% if authentik_app_catalog[slug].type == 'forward_auth' %}
+        - !Find [authentik_providers_proxy.proxyprovider, [name, {{ slug }}]]
+{% endif %}
+{% endfor %}
+      config:
+        authentik_host: !Context authentik_browser_host
+        authentik_host_browser: ""
+        authentik_host_insecure: false
+        log_level: info
+        object_naming_template: ak-outpost-%(name)s
+        docker_map_ports: true
+        refresh_interval: minutes=5
+
+  # Per-app access gate — one binding per ENABLED app, at its catalog tier.
+  # Bound to EVERY app (forward_auth AND OIDC): Authentik evaluates app policy
+  # bindings during the authorization flow, before issuing an OIDC token.
+{% for slug in (authentik_apps | sort) %}
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, {{ slug }}]]
+      policy: !KeyOf {{ 'policy-platform-admin' if authentik_app_catalog[slug].tier == 'admin' else 'policy-platform-member' }}
+      order: 0
+    attrs:
+      enabled: true
+{% if authentik_app_catalog[slug].tombstone_member | default(false) %}
+  # Tombstone the prior platform-member binding on {{ slug }} (blueprints are
+  # ADDITIVE; with the app's default `any` policy mode the stale binding would
+  # re-admit developers). state: absent deletes it; no-op on a fresh instance.
+  - model: authentik_policies.policybinding
+    state: absent
+    identifiers:
+      target: !Find [authentik_core.application, [slug, {{ slug }}]]
+      policy: !Find [authentik_policies_expression.expressionpolicy, [name, platform-member]]
+      order: 0
+{% endif %}
+{% endfor %}
