@@ -14,14 +14,14 @@ or merged before checks pass.
 
 | File | Target | Protects |
 |------|--------|----------|
-| [`protect-main.json`](./protect-main.json) | default branch (`main`) | no direct push / force-push / deletion; PR required; conversations resolved; squash-only linear history; required status checks |
+| [`protect-main.json`](./protect-main.json) | default branch (`main`) | no direct push / force-push / deletion; PR required; conversations resolved; merge-commit or squash merges; required status checks |
 
 ### `protect-main` rules
 
 - **Restrict deletions** + **block force pushes** — `main` history is never rewritten or removed.
 - **Require a pull request** — `required_approving_review_count: 0` (solo maintainer: GitHub forbids self-approval, so a non-zero count would deadlock every PR). Raise to `1` only when a second human maintainer joins.
 - **Require conversation resolution** — the enforceable CodeRabbit hook: unresolved review threads block the merge button.
-- **Require linear history** + **squash-only** merges — clean monorepo history.
+- **Allow merge commits (default) or squash; linear history NOT required** — `dev` → `main` promotions use merge commits so the long-lived `dev` branch shares ancestry with `main` and promotions never diverge (which is what used to force a manual back-merge). Squash a merge only to scrub a branch whose history accidentally contains sensitive content. (Superseded the 2026-06-16 squash-only+linear decision on 2026-06-26.)
 - **Required status checks** — `Static Analysis`, `Security Scan`, `Unit Tests` (the three jobs in `lint-and-test.yml` that run on **every** PR). The path-gated `Go *` jobs are deliberately **not** required: they don't report on non-Go PRs and would deadlock the merge. Contexts are pinned to the GitHub Actions app (`integration_id: 15368`).
 - **Bypass actors** — Repository admin role only (`actor_id: 5`), break-glass. AI agents (NemoClaw / Claude Code) and any automation PAT are intentionally **off** the bypass list. Prefer flipping `enforcement` to `disabled` over using bypass, so bypass events stay rare and meaningful in the audit log.
 
