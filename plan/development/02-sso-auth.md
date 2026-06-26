@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: AUTH-SSO-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: AUTH-SSO-DEPLOYMENT.md ======================= -->
 
 # Auth / SSO Deployment Plan — Authentik Central IdP
 
@@ -267,7 +267,7 @@ Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 | 2026-06-14 | Implemented Phase 2 for Grafana (OIDC) + NetBox (forward_auth). NetBox moved OIDC→forward_auth locally (runs off `local-dev`, can't reach the in-network IdP server-side); added `platform-groups.yaml` RBAC (platform-admins/developers/business) with per-service mapping; embedded-outpost `authentik_host` config (browser-redirect fix); Caddy `forward_auth` route + inbound-header strip; `local-smoke` §7. Mechanism fix: `place-monorepo` local copy switched tar→`rsync --delete` (honors `.gitignore`) so removed deploy inputs (e.g. retired blueprints) propagate. |
 | 2026-06-13 | Adversarial-review fixes: added Redis to the Phase-0 compose (Authentik requires a broker); flagged TLS-trust as a prerequisite (OIDC cookies/discovery) and surfaced the auth-vs-TLS sequencing as an owner decision; added the `forward_auth` Caddyfile-template task (the real Phase-2 touch point); NocoDB OIDC marked enterprise-gated like n8n; Phase 3 reconciled with UhhCraft's signed self-built-auth SPEC (override-or-descope); Authentik HTTP `:9000` behind Caddy + port-free issuer |
 
-<!-- ═══════════════════════ source: PROD-SSO-ROLLOUT-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: PROD-SSO-ROLLOUT-PLAN.md ======================= -->
 
 # Production SSO Rollout Plan — Authentik for Semaphore, Proxmox, NetBox (+ Grafana)
 

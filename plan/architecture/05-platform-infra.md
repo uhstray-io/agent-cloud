@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: CADDY-REVERSE-PROXY.md ═══════════════════════ -->
+<!-- ======================= source: CADDY-REVERSE-PROXY.md ======================= -->
 
 # Caddy Reverse Proxy Architecture
 
@@ -467,7 +467,7 @@ When the platform migrates to Kubernetes (k0s), Caddy's role shifts:
 
 The CloudFlare DNS-01 integration remains relevant in Kubernetes via [cert-manager](https://cert-manager.io/) with a CloudFlare DNS01 solver, or by running Caddy as the ingress controller directly.
 
-<!-- ═══════════════════════ source: PODMAN-VS-DOCKER-COMPOSE.md ═══════════════════════ -->
+<!-- ======================= source: PODMAN-VS-DOCKER-COMPOSE.md ======================= -->
 
 # Podman vs Docker Compose Compatibility Guide
 

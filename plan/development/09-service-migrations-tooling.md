@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: nocodb-n8n-composable-migration.md ═══════════════════════ -->
+<!-- ======================= source: nocodb-n8n-composable-migration.md ======================= -->
 
 ---
 title: NocoDB & n8n Composable Deployment Migration
@@ -1195,7 +1195,7 @@ Total: 7 files created, 5 files modified, 9 commits.
 | 2026-05-10 | Initial creation. 9-task migration plan for NocoDB and n8n composable deployments. |
 | 2026-06-02 | Added "Migration Safety" + Task 0 (pre-seed existing stateful secrets) after an audit found the `type: random` definitions would regenerate the live n8n encryption key / NocoDB JWT / Postgres passwords on cutover. Status set to EXECUTION HELD pending live OpenBao access to complete Task 0. |
 
-<!-- ═══════════════════════ source: PODMAN-UPGRADE-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: PODMAN-UPGRADE-PLAN.md ======================= -->
 
 # Podman-Compose Upgrade Plan
 
@@ -1494,7 +1494,7 @@ podman_hosts:
 | `plan/architecture/01-automation-model.md` | Composable playbook patterns; the upgrade playbook follows the same conventions |
 | `platform/playbooks/install-docker.yml` | Pattern reference for idempotent infrastructure playbooks |
 
-<!-- ═══════════════════════ source: SPARSE-CHECKOUT-MIGRATION.md ═══════════════════════ -->
+<!-- ======================= source: SPARSE-CHECKOUT-MIGRATION.md ======================= -->
 
 # Sparse Checkout & Runtime Directory Migration Plan
 

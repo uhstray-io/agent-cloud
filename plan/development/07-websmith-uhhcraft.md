@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: WEBSMITH-INTEGRATION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: WEBSMITH-INTEGRATION-PLAN.md ======================= -->
 
 # WebSmith + UhhCraft Integration Plan
 
@@ -670,7 +670,7 @@ User reviews this plan and either:
 
 Open questions in §4 can be answered now or at the start of the relevant phase, but **#4 (SPEC deviation signoff)** and **#5 (GPU host capacity)** should be resolved before Phase 2 starts.
 
-<!-- ═══════════════════════ source: UHHCRAFT-GO-LIVE-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: UHHCRAFT-GO-LIVE-PLAN.md ======================= -->
 
 ---
 title: UhhCraft Go-Live — Phase 10 Production Validation Plan
@@ -919,7 +919,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 | --- | --- |
 | 2026-06-02 | Initial comprehensive go-live plan. Consolidates the Phase 10 work items, the four open decisions, the full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and the open gaps (notably the unclear central-Caddy deploy path). |
 
-<!-- ═══════════════════════ source: UHHCRAFT-GO-LIVE-WALKTHROUGH.md ═══════════════════════ -->
+<!-- ======================= source: UHHCRAFT-GO-LIVE-WALKTHROUGH.md ======================= -->
 
 ---
 title: UhhCraft Go-Live — Session Walkthrough (You + Claude)
@@ -1095,7 +1095,7 @@ Walk the plan §D checklist together: catalog → generate (ComfyUI) → 3D (Hun
 | --- | --- |
 | 2026-06-04 | Initial session walkthrough — sequential [YOU]/[CLAUDE] steps with hand-off cues, companion to UHHCRAFT-GO-LIVE-PLAN.md. |
 
-<!-- ═══════════════════════ source: UHHCRAFT-GPU-PASSTHROUGH.md ═══════════════════════ -->
+<!-- ======================= source: UHHCRAFT-GPU-PASSTHROUGH.md ======================= -->
 
 # UhhCraft GPU Passthrough — sub-plan
 

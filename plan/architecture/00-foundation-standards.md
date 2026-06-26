@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: architecture-reference.md ═══════════════════════ -->
+<!-- ======================= source: architecture-reference.md ======================= -->
 
 # Architecture Reference
 

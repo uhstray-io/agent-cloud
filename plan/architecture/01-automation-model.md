@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: AUTOMATION-COMPOSABILITY.md ═══════════════════════ -->
+<!-- ======================= source: AUTOMATION-COMPOSABILITY.md ======================= -->
 
 # Automation Composability Plan
 
@@ -724,7 +724,7 @@ deploy.sh must run from the runtime directory (`~/services/<name>/`), not the cl
 ### Brittle: Creating convenience symlinks to the clone
 The old pattern (`~/netbox` → clone deploy path) is replaced by the runtime directory at `~/services/<name>/`. Convenience symlinks made the clone look like a working directory, which it is not.
 
-<!-- ═══════════════════════ source: AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md ═══════════════════════ -->
+<!-- ======================= source: AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md ======================= -->
 
 # Declarative vs Imperative Automation in agent-cloud
 

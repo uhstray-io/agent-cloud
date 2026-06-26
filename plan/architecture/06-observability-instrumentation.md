@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: OBSERVABILITY-INSTRUMENTATION.md ═══════════════════════ -->
+<!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 
 # Observability Instrumentation Standard
 

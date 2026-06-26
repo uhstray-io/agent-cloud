@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: CREDENTIAL-LIFECYCLE-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: CREDENTIAL-LIFECYCLE-PLAN.md ======================= -->
 
 # Credential Lifecycle Governance
 
@@ -191,7 +191,7 @@ When decommissioning a site or service:
 - `plan/architecture/03-testing-ci-quality.md` — credential leak prevention in code
 - `plan/architecture/01-automation-model.md` — composable secret management pattern
 
-<!-- ═══════════════════════ source: ACCESS-BOUNDARIES.md ═══════════════════════ -->
+<!-- ======================= source: ACCESS-BOUNDARIES.md ======================= -->
 
 # Access Boundaries
 
