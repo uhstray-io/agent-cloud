@@ -1,0 +1,120 @@
+---
+# snapshot-vm.yml — Take a validated Proxmox snapshot of a VM BEFORE a prod
+# upgrade. Standard practice: every production upgrade snapshots first, waits for
+# the snapshot task to finish, and validates the snapshot exists — only then does
+# the upgrade proceed. The snapshot is the catastrophic-failure rollback point
+# (in addition to whatever app-level rollback the upgrade itself provides).
+#
+# Reusable in BOTH contexts (no fork):
+#   * Via Semaphore — creds come from OpenBao (secret/services/proxmox), AppRole
+#     injected by the Semaphore environment. Pass pve_vmid + pve_node.
+#   * Operator-side (e.g. the Semaphore self-upgrade, which cannot run via
+#     Semaphore) — pass PVE_TOKEN_SECRET (env) + pve_api_host/pve_token_id (-e);
+#     that bypasses the OpenBao lookup entirely.
+#
+# Usage (operator-side):
+#   PVE_TOKEN_SECRET=… ansible-playbook platform/playbooks/snapshot-vm.yml \
+#     -e pve_api_host=https://<pve>:8006 -e pve_node=<node> -e pve_vmid=<id> \
+#     -e pve_token_id='stray@pve!…' -e snapshot_name=preupgrade-<svc>-<ts>
+#
+# Rollback (manual, only on catastrophic failure): in the Proxmox UI / API,
+# qemu/<vmid>/snapshot/<name>/rollback. This playbook only CREATES + validates.
+
+- name: "Proxmox pre-upgrade snapshot (create, wait, validate)"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: false
+      headers:
+        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  vars:
+    # Operator-side secret (extra-var or env). When present, the OpenBao lookup is
+    # skipped — so this runs without Semaphore/AppRole creds.
+    _pve_secret_in: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET'), true) | default('', true) }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    # Short-circuit ternary: the lookup is evaluated ONLY when no direct secret was
+    # supplied (Semaphore path). Operator path -> {} -> no OpenBao call.
+    _pve_data: >-
+      {{ {} if (_pve_secret_in | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox',
+                     url=_bao_url, auth_method='approle',
+                     role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+    _pve_host: "{{ pve_api_host | default(_pve_data.url | default(''), true) }}"
+    _pve_token_id: "{{ pve_token_id | default(_pve_data.token_id | default('stray@pve!workflow-agent'), true) }}"
+    _pve_secret: "{{ _pve_secret_in if (_pve_secret_in | length > 0) else (_pve_data.api_token | default('')) }}"
+    _snapname: "{{ snapshot_name | default('preupgrade-' ~ (pve_vmid | default('vm')) ~ '-' ~ ansible_date_time.iso8601_basic_short, true) }}"
+    _vmstate: "{{ snapshot_vmstate | default(0) }}"
+
+  tasks:
+    - name: "Require target + credentials"
+      ansible.builtin.assert:
+        that:
+          - pve_vmid is defined
+          - pve_node is defined
+          - _pve_host | length > 0
+          - _pve_secret | length > 0
+        fail_msg: >-
+          Need pve_vmid + pve_node, and either PVE_TOKEN_SECRET/pve_token_secret
+          (operator) or OpenBao reachable (Semaphore). Host/secret resolved empty.
+
+    - name: "Confirm Proxmox API reachable + the VM exists (pre-check)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/status/current"
+        method: GET
+      register: _vm_status
+
+    - name: "Show what is being snapshotted"
+      ansible.builtin.debug:
+        msg: >-
+          Snapshotting VM {{ pve_vmid }} ({{ _vm_status.json.data.name | default('?') }},
+          status={{ _vm_status.json.data.status | default('?') }}) on node {{ pve_node }}
+          as snapshot '{{ _snapname }}' (vmstate={{ _vmstate }}).
+
+    - name: "Create the snapshot (returns a task UPID)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          snapname: "{{ _snapname }}"
+          description: "{{ snapshot_description | default('Pre-upgrade snapshot (snapshot-vm.yml)') }}"
+          vmstate: "{{ _vmstate }}"
+        status_code: [200]
+      register: _create
+
+    - name: "Record the snapshot task UPID"
+      ansible.builtin.set_fact:
+        _upid: "{{ _create.json.data }}"
+
+    - name: "Wait for the snapshot task to FINISH (poll until stopped)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/tasks/{{ _upid }}/status"
+        method: GET
+      register: _task
+      until: _task.json.data.status is defined and _task.json.data.status == 'stopped'
+      retries: 120          # up to 10 min (120 * 5s) for large disks
+      delay: 5
+
+    - name: "Assert the snapshot task SUCCEEDED (exitstatus OK)"
+      ansible.builtin.assert:
+        that:
+          - _task.json.data.exitstatus is defined
+          - _task.json.data.exitstatus == 'OK'
+        fail_msg: "Snapshot task ended with exitstatus '{{ _task.json.data.exitstatus | default('?') }}' — do NOT upgrade."
+
+    - name: "VALIDATE the snapshot exists in the VM's snapshot list"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"
+        method: GET
+      register: _snaps
+
+    - name: "Assert our snapshot is present"
+      ansible.builtin.assert:
+        that:
+          - _snapname in (_snaps.json.data | map(attribute='name') | list)
+        fail_msg: "Snapshot '{{ _snapname }}' not found after creation — do NOT upgrade."
+        success_msg: "Snapshot '{{ _snapname }}' created + validated on {{ pve_node }}/{{ pve_vmid }}. Safe to upgrade."

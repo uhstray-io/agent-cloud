@@ -19,6 +19,12 @@ one-line, composable change.
   realm*; the existing PAM/PVE realms + their TOTP are never touched.
 - Production deploys go through Semaphore from a repo branch (branch-deploy to
   test, then `feat → dev → main`). Gate each prod step explicitly.
+- **Snapshot before every prod upgrade.** Standard practice: take a Proxmox
+  snapshot of the target VM, **wait for it to finish, and validate it exists**
+  *before* the upgrade — the catastrophic-failure rollback point. Reusable
+  mechanism: `platform/playbooks/snapshot-vm.yml` (create → wait → validate; via
+  Semaphore with OpenBao creds, or operator-side with env creds). The upgrade
+  aborts if the snapshot can't be validated.
 
 ## Decisions (confirmed 2026-06-25)
 
@@ -121,9 +127,11 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    assembly + templated `zz-sso-bindings`. Validate locally (render local-vs-prod;
    lint). PR `feat → dev`.
 2. **Prod Authentik prune + Semaphore SSO**: set prod `authentik_apps` to the prod
-   set; parameterize semaphore redirect; branch-deploy Authentik to `.186`
-   (verify it shows ONLY prod apps + `ak healthcheck` + outpost), then wire
-   Semaphore prod OIDC; verify SSO login (local admin fallback intact). Gate.
+   set; parameterize semaphore redirect; branch-deploy Authentik to the Authentik
+   VM (verify it shows ONLY prod apps + `ak healthcheck` + outpost — DONE).
+   Then wire Semaphore prod OIDC: **snapshot the Semaphore VM (wait + validate)**,
+   then `update-semaphore-oidc.sh apply` (operator-side; env-override + auto-rollback);
+   verify SSO login (local admin fallback intact). Gate.
 3. **NetBox OIDC** (forward_auth → OIDC), verify API/token auth + SSO. Gate.
 4. **Proxmox OIDC realm** (additive), verify: existing PAM/PVE login + **TOTP**
    still work, API tokens work, noVNC console works, OIDC login works. Gate.
