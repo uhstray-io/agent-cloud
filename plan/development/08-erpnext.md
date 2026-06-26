@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: ERPNEXT-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: ERPNEXT-DEPLOYMENT.md ======================= -->
 
 # ERPNext + LLM Integration Implementation Plan
 

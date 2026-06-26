@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: TESTING-AND-LINTING-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: TESTING-AND-LINTING-PLAN.md ======================= -->
 
 # Testing and Linting Plan
 
@@ -329,7 +329,7 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 - `docs/LINTING-AND-TESTING.md` — Local setup and pre-PR checklist
 - `plan/architecture/03-testing-ci-quality.md` — Branch deploy and validation workflow
 
-<!-- ═══════════════════════ source: CI-TESTING-SPECIFICATION.md ═══════════════════════ -->
+<!-- ======================= source: CI-TESTING-SPECIFICATION.md ======================= -->
 
 # CI Testing Specification
 
@@ -808,7 +808,7 @@ ansible-lint platform/playbooks/
 4. **Test pure functions first** -- they have clear inputs/outputs and no side effects.
 5. **Keep test files focused** -- one test file per source module.
 
-<!-- ═══════════════════════ source: LINTING-AND-TESTING.md ═══════════════════════ -->
+<!-- ======================= source: LINTING-AND-TESTING.md ======================= -->
 
 # Linting and Testing Guide
 
@@ -1059,7 +1059,7 @@ Tests use multi-assertion patterns — each BATS function verifies multiple rela
 
 See `plan/architecture/03-testing-ci-quality.md` for the full testing roadmap.
 
-<!-- ═══════════════════════ source: SECURITY-TESTING-STANDARDS.md ═══════════════════════ -->
+<!-- ======================= source: SECURITY-TESTING-STANDARDS.md ======================= -->
 
 # Security Testing Standards
 
@@ -1465,7 +1465,7 @@ This will be added to the CI pipeline after the callback plugin migration is com
 |------|--------|
 | 2026-05-06 | Initial version -- pre-commit hooks, CI expansion, callback plugin spec, no_log ban |
 
-<!-- ═══════════════════════ source: BRANCH-TESTING-WORKFLOW.md ═══════════════════════ -->
+<!-- ======================= source: BRANCH-TESTING-WORKFLOW.md ======================= -->
 
 # Branch Testing Workflow
 
@@ -1619,7 +1619,7 @@ After branch validation succeeds:
 
 On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — currently in `evaluate`/dry-run (logging would-be violations, not yet blocking) until flipped to `active`: required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
 
-<!-- ═══════════════════════ source: OPENSSF-SCORECARD-PLAN.md (was in plan/development/) ═══════════════════════ -->
+<!-- ======================= source: OPENSSF-SCORECARD-PLAN.md (was in plan/development/) ======================= -->
 
 # OpenSSF Scorecard Implementation Plan
 

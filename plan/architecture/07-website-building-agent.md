@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: WEBSITE-BUILDING-AGENT.md ═══════════════════════ -->
+<!-- ======================= source: WEBSITE-BUILDING-AGENT.md ======================= -->
 
 # Website-Building Agent
 

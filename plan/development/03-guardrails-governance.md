@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: OPA-INTEGRATION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: OPA-INTEGRATION-PLAN.md ======================= -->
 
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
@@ -881,7 +881,7 @@ graph TD
 | **NETCLAW-INTEGRATION-PLAN.md** | OPA enforces CIDR scoping and ITSM gating for NetClaw network operations; NetClaw queries OPA before any scan or config push |
 | **UNIFICATION-PLAN.md** | OPA is listed as P0 priority alongside Kyverno in the "Recommended Additions" section; Governance Agent (P1) wraps OPA + NeMo Guardrails |
 
-<!-- ═══════════════════════ source: MAIN-BRANCH-PROTECTION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: MAIN-BRANCH-PROTECTION-PLAN.md ======================= -->
 
 # Branch Protection & Rulesets Plan — `uhstray-io/agent-cloud`
 
@@ -1137,7 +1137,7 @@ Also confirm the agents' happy path end-to-end once: NemoClaw/Claude Code pushes
 - `.github/rulesets/README.md` — **DONE** — config-as-code reference (rules, idempotent apply, evaluate→active, verification matrix).
 - ~~`plan/NEXT-STEPS.md`~~ — file does not exist; the Phase 2 hook is moot because required status checks ship in the initial ruleset.
 
-<!-- ═══════════════════════ source: SOURCE-OF-TRUTH.md ═══════════════════════ -->
+<!-- ======================= source: SOURCE-OF-TRUTH.md ======================= -->
 
 # Source of Truth — Architecture Decision Record & Development Plan
 

@@ -7,7 +7,7 @@
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
-<!-- ═══════════════════════ source: SERVICE-INTEGRATION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: SERVICE-INTEGRATION-PLAN.md ======================= -->
 
 # Service Integration Plan
 

@@ -18,7 +18,7 @@
 > runtime, read that as the pre-skynet state being migrated away from.
 
 
-<!-- ═══════════════════════ source: SKYNET-REPLACEMENT-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: SKYNET-REPLACEMENT-PLAN.md ======================= -->
 
 # Plan — align agent-cloud docs with the skynet replacement + harvest its use-cases
 
@@ -223,7 +223,7 @@ with no lingering WisAI/OpenClaw assumptions to mislead them.
   has no OTLP receiver enabled + no Tempo) — unrelated to this doc work, but don't let the
   reframe imply skynet telemetry lands in agent-cloud today.
 
-<!-- ═══════════════════════ source: WISAI-TO-SKYNET-MIGRATION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: WISAI-TO-SKYNET-MIGRATION-PLAN.md ======================= -->
 
 # WisAI → skynet Feature Migration Plan
 
@@ -393,7 +393,7 @@ flowchart TD
 7. **Inferred consumer list** — empty `context/use-cases/` stubs mean §7's consumer inventory is partly inferred; validate with owners before treating as canonical.
 8. **Don't over-reframe consumers** — WisBot + Cowork are consumers, not sub-agent roles; sidecars are not replaced.
 
-<!-- ═══════════════════════ source: NETCLAW-INTEGRATION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: NETCLAW-INTEGRATION-PLAN.md ======================= -->
 
 # NetClaw Integration Plan — Network Management & Automation
 

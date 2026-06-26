@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: NETBOX-DISCOVERY-EXPANSION.md ═══════════════════════ -->
+<!-- ======================= source: NETBOX-DISCOVERY-EXPANSION.md ======================= -->
 
 # NetBox Discovery Pipeline Architecture
 
@@ -335,7 +335,7 @@ The following phases were completed during initial development and are documente
 
 4. **NetBox v2 API tokens** with pepper-based hashing may return "Invalid v1 token" -- workaround: use Django management shell via Semaphore for admin operations.
 
-<!-- ═══════════════════════ source: NETBOX-LOCAL-ENGINE.md ═══════════════════════ -->
+<!-- ======================= source: NETBOX-LOCAL-ENGINE.md ======================= -->
 
 # NetBox Local Engine — Fix Plan
 
@@ -471,7 +471,7 @@ One codebase (profile-gated, no fork), Semaphore-operated, manage-secrets for th
 | 2026-06-12 | Initial plan: debugged the podman-VM↔Docker-Desktop blocker (unix socket dead over virtiofs; no TCP daemon); chose Option A (NetBox app-tier under podman) with rejected alternatives; implementation phases + risks |
 | 2026-06-13 | Executed Option A: image builds + app tier healthy under podman; container discovery via ORM (`make local-netbox` / `local-netbox-discover`) — 9 containers as VMs, idempotent (§4a). Added the "does NetBox need Docker?" finding (§4b): no hard need — podman fits the app + container discovery; orb-agent privilege is met by `sudo podman` on Linux; recommend validating the full stack + agent under podman then dropping the Docker special-case. Open gaps: `env/*.env.example` templates missing from the repo (live values only in site-config — fresh `deploy.sh` can't `copy_example`); full Semaphore-wired composable local path; Diode pipeline under podman unproven |
 
-<!-- ═══════════════════════ source: SNMPV3-UPGRADE-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: SNMPV3-UPGRADE-PLAN.md ======================= -->
 
 # SNMPv3 Upgrade Plan
 

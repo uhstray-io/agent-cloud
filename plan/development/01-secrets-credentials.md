@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: OPENBAO-HA-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: OPENBAO-HA-DEPLOYMENT.md ======================= -->
 
 # OpenBao HA & Resilience Deployment Plan
 
@@ -286,7 +286,7 @@ flowchart LR
 |------|---------|
 | 2026-06-14 | Initial draft. A1 (persistent local file backend) landed; Tracks A/B and decision criteria authored from OpenBao docs + repo current-state assessment. |
 
-<!-- ═══════════════════════ source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ═══════════════════════ -->
+<!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 
 # OpenBao KV Mount Parameterization Implementation Plan
 
@@ -628,7 +628,7 @@ local mount="${BAO_KV_MOUNT:-secret}"
 | Semaphore env missing `BAO_KV_MOUNT` → bash libs default to `secret` while Ansible uses the instance mount (split-brain) | Task 9 makes the env explicit; second-instance smoke (Task 12 Step 2) would catch a split |
 | KV-enable creates a new empty mount on a typo'd `bao_kv_mount` | Documented; per-instance value is set deliberately in site-config, reviewed |
 
-<!-- ═══════════════════════ source: CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md ═══════════════════════ -->
+<!-- ======================= source: CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md ======================= -->
 
 # Credential Lifecycle Implementation Plan
 
@@ -790,7 +790,7 @@ Per governance requirements: stop services → revoke credentials → archive fo
 - `plan/architecture/04-credentials-access.md` — access and escalation policies
 - `plan/architecture/01-automation-model.md` — composable task library used by all phases
 
-<!-- ═══════════════════════ source: APPROLE-TTL-ENFORCEMENT-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: APPROLE-TTL-ENFORCEMENT-PLAN.md ======================= -->
 
 # AppRole TTL Enforcement Plan
 
@@ -999,7 +999,7 @@ Apply the new settings to existing AppRoles one at a time, in order of increasin
 - [ ] Rotation playbook exists and is scheduled in Semaphore
 - [ ] All existing CI tests pass after the change
 
-<!-- ═══════════════════════ source: ANSIBLE-CREDENTIAL-REDACTION-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: ANSIBLE-CREDENTIAL-REDACTION-PLAN.md ======================= -->
 
 # Ansible Credential Redaction Plan
 

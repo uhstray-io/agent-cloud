@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: LOCAL-DEV-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: LOCAL-DEV-DEPLOYMENT.md ======================= -->
 
 # Local Dev Deployment + Promotion Pipeline Implementation Plan
 
@@ -396,7 +396,7 @@ Tags: *(repo)* agent-cloud file · *(panel)* multi-agent review artifact · *(lo
 | 2026-06-12 | Roster + DNS expansion (owner-directed): §5.1 local DNS via hickory-dns (shared engine with the new `DNS-SERVER-DEPLOYMENT.md`); Phase 4 promoted from optional to planned — DNS, Caddy `tls internal` profile, **ERPNext local slim tier** (deferral overruled), **OPA local** (port 8281, working-tree policy mount); Postiz local-first onboarding added to Phase 2; o11y recorded as stub-blocked; service-survey + hickory references ([17][18]); [16] partially resolved (uhhcraft GHCR image is private, found by the first live local deploy) |
 | 2026-06-12 | **hickory-dns local shipped + validated end-to-end through local Semaphore** (`platform/services/dns/`, `deploy-dns.yml`, `make local-deploy-dns`/`local-dns-resolver`, BATS): first working downstream deploy. Surfaced + fixed the host-bind-mount limitation of the socket model — a same-path shared deploy dir (`/var/lib/agent-cloud-deploy`) makes `./config` mounts resolve on the VM engine; SELinux needs `label=disable` on bind-mount-reading containers (local overlay only) |
 
-<!-- ═══════════════════════ source: LOCAL-DEV-12A-IMPLEMENTATION.md ═══════════════════════ -->
+<!-- ======================= source: LOCAL-DEV-12A-IMPLEMENTATION.md ======================= -->
 
 # §12A Bootstrap-Reorder Implementation Plan
 
@@ -910,7 +910,7 @@ git commit -m "docs(local-dev): §12A bootstrap reorder implemented; Semaphore O
 - **Open risk to confirm at execution:** exact `SEMAPHORE_OIDC_PROVIDERS` field names for Semaphore v2.18 (`provider_url` vs `issuer`, `username_claim`) — verify against the running image's docs before trusting Task 5 Step 1; the jq-validate guard prevents a panic but not a wrong-field silent no-login. The Authentik side (issuer/discovery) is already validated per AUTH-SSO.
 - **Env-file vs inline OIDC:** chosen env-file to avoid shell-quoting corruption of the JSON.
 
-<!-- ═══════════════════════ source: LOCAL-DEV-TLS-TRUST.md ═══════════════════════ -->
+<!-- ======================= source: LOCAL-DEV-TLS-TRUST.md ======================= -->
 
 # Local-Dev TLS Trust Plan — fix the `*.agent-cloud.test` cert warning
 
@@ -1044,7 +1044,7 @@ implementation:
 | 2026-06-13 | Initial plan: fix `*.agent-cloud.test` cert warning by trusting Caddy's internal-CA root via an idempotent `make local-tls-trust` (mirrors resolver/https tooling); decision criteria (trust-root vs mkcert vs step-ca vs ACME); prod = ACME (cross-ref DNS plan); sequenced after Authentik per owner |
 | 2026-06-13 | Adversarial-review fixes (verified against the live container): corrected CA path to `/data/caddy/pki/authorities/local/root.crt`; root CN is year-stamped (`Caddy Local Authority - 2026 ECC Root`) so untrust by **fingerprint** not CN; noted leaves are intermediate-signed (trust the root, Caddy serves the chain); revised sequencing to recommend TLS-trust FIRST (OIDC prerequisite) — owner to confirm |
 
-<!-- ═══════════════════════ source: INTERNAL-CA-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: INTERNAL-CA-DEPLOYMENT.md ======================= -->
 
 # Internal CA Deployment Plan — step-ca Platform CA
 
@@ -1214,7 +1214,7 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 |---|---|
 | 2026-06-13 | Initial plan: step-ca chosen as the platform internal CA (owner-directed; decision criteria + rejected alternatives incl OpenBao-PKI); architecture (Caddy ACME client, root key in OpenBao, one stable reusable root); the client-trust-is-unavoidable nuance stated; phases local→prod→rotation; supersedes the Caddy-root *source* in LOCAL-DEV-TLS-TRUST (trust tooling reused); ties to DNS internal-ACME + Authentik |
 
-<!-- ═══════════════════════ source: DNS-SERVER-DEPLOYMENT.md ═══════════════════════ -->
+<!-- ======================= source: DNS-SERVER-DEPLOYMENT.md ======================= -->
 
 # DNS Server Deployment Plan — hickory-dns
 

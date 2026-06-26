@@ -8,7 +8,7 @@
 > detail; read in numbered order to execute.
 
 
-<!-- ═══════════════════════ source: DEV-PROXMOX-CLUSTER-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: DEV-PROXMOX-CLUSTER-PLAN.md ======================= -->
 
 # Dev Proxmox Cluster Plan
 
@@ -58,7 +58,7 @@ graph TD
 - `plan/architecture/04-credentials-access.md` — Semaphore vs direct access for dev cluster
 - `site-config/plan/DEV-PROXMOX-CLUSTER-PLAN.md` — full implementation details (private)
 
-<!-- ═══════════════════════ source: DISASTER-RECOVERY-PLAN.md ═══════════════════════ -->
+<!-- ======================= source: DISASTER-RECOVERY-PLAN.md ======================= -->
 
 # Disaster Recovery Plan
 
