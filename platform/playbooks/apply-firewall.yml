@@ -28,9 +28,29 @@
 #   firewall_upstream_source source allowed to reach the DETECTED ports — the
 #                            reverse proxy, e.g. the Caddy host (group var).
 #   firewall_allow_rules     optional STATIC extras [{port, proto(=tcp), from, comment}]
-#                            for ports to allow regardless of detection.
+#                            for ports to allow regardless of detection (INPUT).
+#   firewall_rootful         host runs containers under ROOTFUL podman or Docker
+#                            (default: true when container_engine == 'docker', else
+#                            false). Rootful/Docker publish ports via DNAT, so the
+#                            traffic crosses the FORWARD chain (see below) and the
+#                            engine must be queried as root. Set true for rootful
+#                            podman hosts (the engine name alone can't reveal it).
+#   firewall_route_rules     optional STATIC route (FORWARD-chain) rules, same shape
+#                            as firewall_allow_rules. REQUIRED instead of (or with)
+#                            firewall_allow_rules on rootful/Docker hosts where
+#                            detection is off — a plain INPUT `ufw allow` never
+#                            matches a DNAT'd container port. Detected ports get a
+#                            matching route rule automatically when firewall_rootful.
 #   firewall_verify_ssh      reset-connection check after enable (default true)
 #   ICMP echo is left at UFW's default (allowed) so ping-based monitoring works.
+#
+# Rootful podman / Docker & the FORWARD chain: published container ports are DNAT'd
+# to the container's netns, so inbound traffic traverses UFW's `route` (FORWARD)
+# chain — which `default deny (routed)` DROPS — not the INPUT chain that `ufw allow`
+# governs. Rootless podman instead proxies the port on the host (INPUT), so plain
+# allows suffice there. This playbook emits `ufw route allow` rules on rootful/Docker
+# hosts (firewall_route_rules + a route mirror of each detected port) so the reverse
+# proxy can actually reach the container.
 #
 # Usage (via Semaphore): -e target_service=openhands_svc
 
@@ -42,7 +62,14 @@
     target_service: "ungrouped"
     _ssh_cidrs: "{{ firewall_ssh_cidrs | default([]) }}"
     _rules: "{{ firewall_allow_rules | default([]) }}"
+    _route_rules: "{{ firewall_route_rules | default([]) }}"
     _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    # Rootful podman & Docker publish ports via DNAT, so their traffic crosses the
+    # FORWARD chain (needs `ufw route allow`, not just INPUT `ufw allow`) and the
+    # engine must be queried as root. Docker is always rootful; rootful podman hosts
+    # set firewall_rootful: true (the engine name alone can't distinguish it).
+    _rootful: "{{ firewall_rootful | default(_engine == 'docker') | bool }}"
 
   tasks:
     - name: "Skip non-Linux / local-connection hosts (UFW targets real Linux VMs)"
@@ -80,13 +107,27 @@
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} ({{ item.comment | default('') }})"
 
+    - name: "Allow each STATIC route rule on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
+      # Published ports on rootful/Docker are DNAT'd to the container and routed
+      # (FORWARD), so a plain `ufw allow` (INPUT) never matches them. These route
+      # rules are what actually let the reverse proxy reach the container. Applied
+      # whenever provided (the list is empty on rootless hosts), BEFORE enable so
+      # the anti-lockout ordering holds. Route rules never affect host SSH (INPUT).
+      ansible.builtin.command: "ufw route allow proto {{ item.proto | default('tcp') }} from {{ item.from }} to any port {{ item.port }}"
+      register: _routerule
+      changed_when: "'Rule added' in _routerule.stdout or 'Rules updated' in _routerule.stdout"
+      loop: "{{ _route_rules }}"
+      loop_control:
+        label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} (route, {{ item.comment | default('') }})"
+
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
     # (Caddy). So a service serving 8000/tcp or 443/udp gets the matching rule
-    # automatically — no hardcoded port. become:false so it queries the SERVICE
-    # user's engine (rootless podman containers belong to uhstray, not root;
-    # docker works too via the docker group). Loopback-only binds are skipped
-    # (not externally reachable). Container must be running when this is applied.
+    # automatically — no hardcoded port. `become` follows _rootful: rootless podman
+    # containers belong to the service user (become:false), but rootful podman and
+    # Docker containers belong to root (become:true) — querying them as the service
+    # user finds NOTHING, so detection would silently yield no rules. Loopback-only
+    # binds are skipped (not externally reachable). Container must be running.
     - name: "Detect published host ports + protocols of running containers"
       ansible.builtin.shell: |
         set -o pipefail
@@ -101,7 +142,7 @@
           | sort -u
       args:
         executable: /bin/bash
-      become: false
+      become: "{{ _rootful }}"
       register: _detected
       changed_when: false
       when: firewall_detect_ports | default(true) | bool
@@ -123,6 +164,22 @@
       loop_control:
         label: "{{ item }} from {{ firewall_upstream_source }}"
       when:
+        - firewall_detect_ports | default(true) | bool
+        - (_detected.stdout_lines | default([])) | length > 0
+
+    - name: "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
+      # The INPUT allow above doesn't match DNAT'd container traffic on rootful/
+      # Docker hosts — it crosses FORWARD. Mirror each detected port as a route
+      # rule so the reverse proxy can actually reach the container. Rootless hosts
+      # (_rootful false) skip this: their published ports terminate on the host.
+      ansible.builtin.command: "ufw route allow proto {{ item.split()[1] }} from {{ firewall_upstream_source }} to any port {{ item.split()[0] }}"
+      register: _detroute
+      changed_when: "'Rule added' in _detroute.stdout or 'Rules updated' in _detroute.stdout"
+      loop: "{{ _detected.stdout_lines | default([]) }}"
+      loop_control:
+        label: "{{ item }} from {{ firewall_upstream_source }} (route)"
+      when:
+        - _rootful
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
 
