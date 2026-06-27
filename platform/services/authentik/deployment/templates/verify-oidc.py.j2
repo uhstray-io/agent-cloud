@@ -1,0 +1,47 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# Rendered by deploy-authentik.yml (post-apply VERIFY). Confirms each enabled OIDC
+# provider's LIVE redirect_uris (Authentik API) carries the intended prod URL, and
+# fails the deploy otherwise — the safety net for the "silent local-dev URL in prod"
+# class of mistake. Run inside the authentik-server container so it reads the
+# bootstrap token from the container env:
+#   <engine> exec -i authentik-server python - < verify-oidc.py
+import os, http.client, json, sys
+
+# {provider_name: intended_redirect_url} rendered from the catalog + inventory.
+EXPECT = {
+{% for a in _verify_apps %}
+    "{{ a.provider }}": "{{ vars[a.verify_redirect] | default('') }}",
+{% endfor %}
+}
+
+tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
+if not tok:
+    print("VERIFY: AUTHENTIK_BOOTSTRAP_TOKEN not in the server env")
+    sys.exit(3)
+
+conn = http.client.HTTPConnection("localhost", 9000, timeout=10)
+conn.request("GET", "/api/v3/providers/oauth2/?page_size=100",
+             headers={"Authorization": "Bearer " + tok})
+resp = conn.getresponse()
+if resp.status != 200:
+    print("VERIFY: provider list API returned %s" % resp.status)
+    sys.exit(3)
+live = {p["name"]: [u["url"] for u in p.get("redirect_uris", [])]
+        for p in json.load(resp)["results"]}
+
+bad = []
+for name, want in EXPECT.items():
+    got = live.get(name)
+    if got is None:
+        bad.append("%s: provider MISSING (intended redirect %s)" % (name, want))
+    elif want not in got:
+        bad.append("%s: live redirect_uris %s do NOT contain intended %s" % (name, got, want))
+    else:
+        print("OK   %s -> %s" % (name, want))
+
+if bad:
+    print("VERIFY FAILED (live OIDC config diverged from intent):")
+    for b in bad:
+        print("  - " + b)
+    sys.exit(2)
+print("VERIFY OK: all enabled OIDC providers carry their intended redirect_uri")

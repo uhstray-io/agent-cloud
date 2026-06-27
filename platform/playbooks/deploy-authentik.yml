@@ -89,6 +89,38 @@
         fail_msg: "authentik_apps entry '{{ item }}' is not in app-catalog.yml"
       loop: "{{ _enabled_apps }}"
 
+    # ── Promotion safety (prod) — see app-catalog.yml "Promotion runbook" ────
+    # Resolve the enabled OIDC apps' prod inputs + the post-apply verify set.
+    # _verify_apps is reused by Phase 3 (host facts persist across plays).
+    - name: "Resolve enabled OIDC apps' prod-required vars + verify set"
+      ansible.builtin.set_fact:
+        _oidc_prod_required: >-
+          {{ _enabled_apps | map('extract', authentik_app_catalog)
+             | selectattr('type', 'equalto', 'oidc')
+             | selectattr('prod_required', 'defined')
+             | map(attribute='prod_required') | flatten | list }}
+        _verify_apps: >-
+          {{ _enabled_apps | map('extract', authentik_app_catalog)
+             | selectattr('type', 'equalto', 'oidc')
+             | selectattr('verify_redirect', 'defined') | list }}
+
+    # GUARD: refuse to promote an OIDC app to prod unless its prod URLs are set and
+    # not still pointing at agent-cloud.test. Skipped for local_mode (local-dev uses
+    # the blueprint defaults on purpose). This is what would have caught the semaphore
+    # redirect_uri at deploy time instead of in the browser.
+    - name: "Promotion guard (prod): OIDC prod URLs are set + not local-dev defaults"
+      ansible.builtin.assert:
+        that:
+          - "(vars[item] | default('')) | length > 0"
+          - "'agent-cloud.test' not in (vars[item] | default(''))"
+        fail_msg: >-
+          Promotion guard: inventory var '{{ item }}' must be set to a prod URL (in
+          site-config) and not an agent-cloud.test default. Refusing to deploy a
+          local-dev URL to prod — set it, or drop the app from prod authentik_apps.
+        quiet: true
+      loop: "{{ _oidc_prod_required }}"
+      when: not (local_mode | default(false) | bool)
+
     # NOTE: this rebuilds the FILE set the worker applies. Authentik blueprints are
     # additive — dropping a file does NOT delete the app/provider already created in
     # the DB, so de-selected apps remain as harmless ORPHANS (no outpost binding /
@@ -176,6 +208,11 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # Verify live OIDC providers against intent in prod by default; opt in for
+    # local-dev via authentik_verify_oidc=true. No OIDC apps enabled => nothing to do.
+    _do_oidc_verify: >-
+      {{ (authentik_verify_oidc | default(not (local_mode | default(false) | bool))) | bool
+         and (_verify_apps | default([]) | length > 0) }}
 
   tasks:
     - name: "Server healthcheck (ak healthcheck)"
@@ -222,6 +259,32 @@
       retries: 20
       delay: 6
       until: _ak_outpost.rc == 0
+
+    # ── Promotion VERIFY: live OIDC config matches intent ────────────────────
+    # Query the live Authentik API and FAIL the deploy if any enabled OIDC
+    # provider's redirect_uris does not carry its intended (inventory) URL. Catches
+    # an object that did not actually update — e.g. a provider first created with the
+    # local default that a content-unchanged blueprint never re-applied (the exact
+    # semaphore failure). Runs inside authentik-server so the script reads the
+    # bootstrap token from the container env (nothing secret on the command line).
+    - name: "Promotion verify (prod): render the live-OIDC checker"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-oidc.py.j2"
+        dest: /tmp/verify-oidc.py
+        mode: "0644"
+      when: _do_oidc_verify | bool
+
+    - name: "Promotion verify (prod): live OIDC redirect_uris match intent"
+      ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-oidc.py"
+      register: _oidc_verify
+      changed_when: false
+      failed_when: _oidc_verify.rc != 0
+      when: _do_oidc_verify | bool
+
+    - name: "Promotion verify: result"
+      ansible.builtin.debug:
+        var: _oidc_verify.stdout_lines
+      when: _do_oidc_verify | bool
 
     - name: "Report"
       ansible.builtin.debug:

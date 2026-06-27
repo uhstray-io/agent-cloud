@@ -1,27 +1,54 @@
 ---
 # Authentik app catalog — the full set of SSO apps the platform knows how to
 # provision, with how each integrates. deploy-authentik.yml selects which to
-# actually apply per environment from `authentik_apps` (inventory): it copies the
-# matching blueprint files into blueprints-active/ and renders zz-sso-bindings
-# from the enabled set. Promote a service to prod = add its slug to the prod
-# `authentik_apps` list in site-config. Unset `authentik_apps` => all of these
-# (local-dev keeps the full set unchanged).
+# actually apply per environment from `authentik_apps` (inventory): it renders the
+# matching blueprint files into blueprints-active/ and renders zz-sso-bindings from
+# the enabled set. Unset `authentik_apps` => all of these (local-dev unchanged).
+#
+# ── Promotion runbook (add an SSO app to prod) ───────────────────────────────
+# 1. Add the app's slug to the prod `authentik_apps` list in site-config inventory.
+# 2. Set its `prod_required` inventory vars in site-config to the prod URLs
+#    (*.uhstray.io). These bake into the blueprint at deploy (config-as-code) — the
+#    blueprint's built-in defaults are LOCAL-DEV ONLY and must never reach prod.
+# 3. Snapshot the Authentik VM (snapshot-vm.yml), then run deploy-authentik.yml.
+#
+# Two guards stop the "silent local-dev URL in prod" mistake (what bit semaphore):
+#   GUARD  (pre-apply, prod only): the deploy ASSERTS every enabled OIDC app's
+#          `prod_required` vars are defined AND not still pointing at
+#          agent-cloud.test. Forget one => the deploy fails loudly instead of
+#          provisioning a local-dev URL.
+#   VERIFY (post-apply, prod only): the deploy queries the live Authentik API and
+#          fails if a provider's redirect_uris does not carry the `verify_redirect`
+#          value — catching an object that did not actually update (Authentik
+#          re-applies a blueprint only when the file CONTENT changes; the URLs are
+#          rendered into the content from inventory so they do — see
+#          deploy-authentik.yml + the *-oidc.yaml context blocks).
 #
 # Per app:
-#   file  — the blueprint file under blueprints/ that creates its provider + app
-#   type  — oidc (native, app reads token) | forward_auth (Caddy outpost gate)
-#   tier  — member (platform-admins+developers) | admin (platform-admins only)
-#   tombstone_member — emit a state:absent removal of a stale platform-member
-#                      binding (migration artifact; openbao-oidc only)
+#   file             blueprint under blueprints/ that creates its provider + app
+#   type             oidc (native, app reads token) | forward_auth (Caddy outpost gate)
+#   tier             member (platform-admins+developers) | admin (platform-admins only)
+#   provider         (oidc) Authentik OAuth2 provider name — for the post-apply VERIFY
+#   prod_required    (oidc) inventory vars that MUST be set to promote to prod
+#   verify_redirect  (oidc) the prod_required var whose value must appear in the live
+#                    provider's redirect_uris after apply
+#   tombstone_member emit a state:absent removal of a stale platform-member binding
+#                    (migration artifact; openbao-oidc only)
 authentik_app_catalog:
   erpnext:
     file: erpnext-oidc.yaml
     type: oidc
     tier: member
+    provider: erpnext
+    prod_required: [erpnext_redirect_uri, erpnext_launch_url]
+    verify_redirect: erpnext_redirect_uri
   grafana:
     file: grafana-oidc.yaml
     type: oidc
     tier: member
+    provider: grafana
+    prod_required: [grafana_redirect_uri, grafana_launch_url]
+    verify_redirect: grafana_redirect_uri
   n8n:
     file: n8n-forward-auth.yaml
     type: forward_auth
@@ -38,6 +65,9 @@ authentik_app_catalog:
     file: openbao-oidc.yaml
     type: oidc
     tier: admin
+    provider: openbao-oidc
+    prod_required: [openbao_oidc_redirect_ui, openbao_oidc_launch_url]
+    verify_redirect: openbao_oidc_redirect_ui
     tombstone_member: true
   openhands:
     file: openhands-forward-auth.yaml
@@ -47,3 +77,6 @@ authentik_app_catalog:
     file: semaphore-oidc.yaml
     type: oidc
     tier: member
+    provider: semaphore
+    prod_required: [semaphore_redirect_uri, semaphore_launch_url]
+    verify_redirect: semaphore_redirect_uri
