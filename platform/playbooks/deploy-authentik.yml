@@ -104,11 +104,18 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: "Assemble active blueprints (shared + enabled apps)"
-      ansible.builtin.copy:
-        src: "{{ _deploy_dir }}/blueprints/{{ item }}"
+    # RENDERED (not copied) so environment-specific values (OIDC redirect_uris,
+    # meta_launch_url) bake into the file content from inventory. Authentik gates
+    # blueprint re-application on the file's content hash; a verbatim copy is
+    # byte-identical local vs prod, so the worker never re-applies it and the value
+    # resolved at first-apply (the local default) freezes — that is exactly why the
+    # prod semaphore provider stayed on the agent-cloud.test redirect_uri. Baking the
+    # URL in makes the content differ per env, which re-triggers application.
+    # Blueprints with no Jinja render unchanged (verified: none use {{ }} / {% %}).
+    - name: "Assemble active blueprints (shared + enabled apps) — rendered from inventory"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/blueprints/{{ item }}"
         dest: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
-        remote_src: true
         mode: "0644"
       loop: "{{ _shared_blueprints + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}"
 
