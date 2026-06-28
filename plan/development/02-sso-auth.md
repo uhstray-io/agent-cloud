@@ -266,6 +266,7 @@ Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 | 2026-06-14 | Added OpenBao (forward_auth, UI gate) + the 3-tier access model (admin=full / developer=read-only / business=denied). Extracted the shared `zz-sso-bindings.yaml` (embedded-outpost provider list + `platform-member` access gate — fixes the silent-unbind risk when a 2nd forward_auth service is added). Grafana `ALLOWED_GROUPS`+role path; NetBox `platform-developers` view-all ObjectPermission for read-only. Security fix: loopback-bind the local NetBox publish (closed a LAN header-spoof bypass of forward_auth). |
 | 2026-06-14 | Implemented Phase 2 for Grafana (OIDC) + NetBox (forward_auth). NetBox moved OIDC→forward_auth locally (runs off `local-dev`, can't reach the in-network IdP server-side); added `platform-groups.yaml` RBAC (platform-admins/developers/business) with per-service mapping; embedded-outpost `authentik_host` config (browser-redirect fix); Caddy `forward_auth` route + inbound-header strip; `local-smoke` §7. Mechanism fix: `place-monorepo` local copy switched tar→`rsync --delete` (honors `.gitignore`) so removed deploy inputs (e.g. retired blueprints) propagate. |
 | 2026-06-13 | Adversarial-review fixes: added Redis to the Phase-0 compose (Authentik requires a broker); flagged TLS-trust as a prerequisite (OIDC cookies/discovery) and surfaced the auth-vs-TLS sequencing as an owner decision; added the `forward_auth` Caddyfile-template task (the real Phase-2 touch point); NocoDB OIDC marked enterprise-gated like n8n; Phase 3 reconciled with UhhCraft's signed self-built-auth SPEC (override-or-descope); Authentik HTTP `:9000` behind Caddy + port-free issuer |
+| 2026-06-26 | OIDC blueprint redirect/launch URLs now **rendered from inventory** (blueprint `context:`) instead of `!Env`-with-local-default: Authentik only re-applies a blueprint on file-content change, so the byte-identical `!Env` file froze the local-dev URL in prod (broke `semaphore`'s redirect_uri — hotfixed live, then made durable). Added the **safe-promotion mechanism** — catalog `prod_required`/`verify_redirect`, a pre-apply GUARD (prod URLs set + not `agent-cloud.test`) and a post-apply VERIFY (`verify-oidc.py` vs the live API). |
 
 <!-- ======================= source: PROD-SSO-ROLLOUT-PLAN.md ======================= -->
 
@@ -334,13 +335,32 @@ Design:
   `zz-sso-bindings.yaml` from the enabled set (outpost provider list = enabled
   forward_auth apps; one PolicyBinding per enabled app at its tier). compose
   mounts `blueprints-active/` (not the full `blueprints/` library).
-- **Promote** = add the slug to prod `authentik_apps`; next deploy includes it.
+- **Promote** = add the slug to prod `authentik_apps` **and set its `prod_required`
+  URL vars in site-config** (the GUARD below enforces this); next deploy includes it.
   The rendered bindings never reference a non-existent provider/app (fixes the
   `!Find` failure that listing-all would cause in prod).
 
-Per-OIDC-app **redirect URIs are parameterized** (`!Env [<SVC>_REDIRECT_URI,
-"<local default>"]`), set per-environment from `env.j2` (local `*.agent-cloud.test`
-vs prod `*.uhstray.io`) — same pattern already used for `AUTHENTIK_BROWSER_HOST`.
+Per-OIDC-app **redirect URIs + launch URLs are rendered from inventory at deploy**
+(in the blueprint `context:` block, e.g. `{{ <svc>_redirect_uri | default('<local>') }}`),
+so the file CONTENT is environment-specific. This matters: **Authentik re-applies a
+blueprint only when its file content hash changes.** The earlier `!Env [VAR, default]`
+form produced byte-identical files across environments, so once a provider was first
+applied with the local default it NEVER re-applied — freezing the local-dev URL in prod
+(exactly what broke `semaphore`'s `redirect_uri`). Rendering the value into the file
+makes the content differ per env, so the worker re-applies and self-corrects. Local-dev
+keeps the `*.agent-cloud.test` defaults; prod sets `*.uhstray.io` in site-config.
+
+**Safe promotion — the standard way to promote an OIDC app to prod without the
+silent-local-URL mistake** (`app-catalog.yml` carries the per-app runbook):
+
+- The catalog declares `provider` / `prod_required` / `verify_redirect` per OIDC app.
+- **GUARD (pre-apply, prod only):** `deploy-authentik` asserts every enabled OIDC app's
+  `prod_required` inventory vars are set AND not still pointing at `agent-cloud.test` —
+  a missing or local URL fails the deploy loudly instead of provisioning it.
+- **VERIFY (post-apply, prod only):** `verify-oidc.py` runs inside `authentik-server`,
+  queries the live API, and fails the deploy if any provider's `redirect_uris` lacks
+  its intended URL — catching an object that didn't actually update. Gated by
+  `authentik_verify_oidc` (default: on in prod, off local).
 
 ## Per-service auth — target: native OIDC over forward_auth (keeps APIs/CLIs working)
 

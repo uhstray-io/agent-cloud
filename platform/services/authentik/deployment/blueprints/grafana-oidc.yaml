@@ -7,8 +7,11 @@ version: 1
 metadata:
   name: agent-cloud - Grafana OIDC
 context:
+  # Rendered from inventory at deploy (deploy-authentik.yml templates this file) so
+  # the content is env-specific and Authentik re-applies it. Default is local-dev.
   # Grafana's OAuth callback (GF_SERVER_ROOT_URL is :8443 behind Caddy).
-  grafana_redirect: https://grafana.agent-cloud.test:8443/login/generic_oauth
+  grafana_redirect: "{{ grafana_redirect_uri | default('https://grafana.agent-cloud.test:8443/login/generic_oauth') }}"
+  grafana_launch: "{{ grafana_launch_url | default('https://grafana.agent-cloud.test:8443/') }}"
 entries:
   - model: authentik_providers_oauth2.oauth2provider
     id: provider-grafana
@@ -37,5 +40,5 @@ entries:
     attrs:
       name: Grafana
       provider: !KeyOf provider-grafana
-      meta_launch_url: https://grafana.agent-cloud.test:8443/
+      meta_launch_url: !Context grafana_launch
       open_in_new_tab: true

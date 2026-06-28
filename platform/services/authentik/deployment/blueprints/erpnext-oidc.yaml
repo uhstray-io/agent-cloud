@@ -14,7 +14,10 @@ version: 1
 metadata:
   name: agent-cloud - ERPNext OIDC
 context:
-  erpnext_redirect: https://erp.agent-cloud.test:8443/api/method/frappe.integrations.oauth2_logins.custom/authentik
+  # Rendered from inventory at deploy (deploy-authentik.yml templates this file) so
+  # the content is env-specific and Authentik re-applies it. Default is local-dev.
+  erpnext_redirect: "{{ erpnext_redirect_uri | default('https://erp.agent-cloud.test:8443/api/method/frappe.integrations.oauth2_logins.custom/authentik') }}"
+  erpnext_launch: "{{ erpnext_launch_url | default('https://erp.agent-cloud.test:8443/') }}"
 entries:
   - model: authentik_providers_oauth2.oauth2provider
     id: provider-erpnext
@@ -43,5 +46,5 @@ entries:
     attrs:
       name: ERPNext
       provider: !KeyOf provider-erpnext
-      meta_launch_url: https://erp.agent-cloud.test:8443/
+      meta_launch_url: !Context erpnext_launch
       open_in_new_tab: true
