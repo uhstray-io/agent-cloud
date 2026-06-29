@@ -124,9 +124,10 @@ setup_approle() {
     bao_auth "$token" auth enable approle
   fi
 
-  # NemoClaw role — read-only across all service secrets
+  # NemoClaw role — read-only across all service secrets. Bounded TTL + use count per
+  # PRINCIPLES.md Section 3 (TTL=0 is a defect); refreshed on each OpenBao redeploy.
   bao_auth "$token" write auth/approle/role/nemoclaw \
-    secret_id_ttl=0 token_num_uses=0 token_ttl=30m token_max_ttl=2h \
+    secret_id_ttl=2160h secret_id_num_uses=0 token_num_uses=25 token_ttl=30m token_max_ttl=2h \
     token_policies=nemoclaw-read
 
   local role_id secret_id
@@ -136,11 +137,13 @@ setup_approle() {
   put_secret "$SECRETS_DIR" nemoclaw-secret-id "$secret_id"
   info "  NemoClaw AppRole created."
 
-  # Per-service write roles — each service can only write to its own path
+  # Per-service write roles — each service can only write to its own path. Bounded
+  # secret_id TTL + use count per PRINCIPLES.md Section 3 (TTL=0 is a defect); refreshed
+  # on each OpenBao redeploy (well within 90d).
   local svc
-  for svc in nocodb n8n semaphore; do
+  for svc in nocodb n8n; do
     bao_auth "$token" write "auth/approle/role/${svc}" \
-      secret_id_ttl=0 token_num_uses=0 token_ttl=30m token_max_ttl=2h \
+      secret_id_ttl=2160h secret_id_num_uses=0 token_num_uses=25 token_ttl=30m token_max_ttl=2h \
       "token_policies=${svc}-write"
 
     role_id=$(bao_auth "$token" read -format=json "auth/approle/role/${svc}/role-id" | jq -r '.data.role_id')
@@ -149,6 +152,19 @@ setup_approle() {
     put_secret "$SECRETS_DIR" "${svc}-secret-id" "$secret_id"
     info "  ${svc} AppRole created."
   done
+
+  # Semaphore is the platform ORCHESTRATOR — the single documented unlimited-TTL
+  # exception (PRINCIPLES.md Section 3): it needs broad, always-available cross-service
+  # access from an isolated runner, compensated by Semaphore's own access controls + audit.
+  # allow: orchestrator-unlimited-ttl
+  bao_auth "$token" write "auth/approle/role/semaphore" \
+    secret_id_ttl=0 secret_id_num_uses=0 token_num_uses=0 token_ttl=30m token_max_ttl=2h \
+    "token_policies=semaphore-write"
+  role_id=$(bao_auth "$token" read -format=json "auth/approle/role/semaphore/role-id" | jq -r '.data.role_id')
+  secret_id=$(bao_auth "$token" write -format=json -f "auth/approle/role/semaphore/secret-id" | jq -r '.data.secret_id')
+  put_secret "$SECRETS_DIR" "semaphore-role-id" "$role_id"
+  put_secret "$SECRETS_DIR" "semaphore-secret-id" "$secret_id"
+  info "  semaphore AppRole created (orchestrator: unlimited TTL, documented exception)."
 }
 
 # ── Step 7: Seed placeholder secrets ──────────────────────────────────────────
