@@ -61,3 +61,23 @@ setup() {
   # The fresh-handshake check that proves SSH survives the firewall must remain.
   grep -q 'ansible.builtin.meta: reset_connection' "$PLAYBOOK"
 }
+
+@test "firewall: rootful podman gets a bridge-DNS INPUT allow, podman-gated, before enable" {
+  # Podman runs aardvark-dns on the bridge GATEWAY (a host IP), so a container
+  # resolving a sibling by name sends a DNS query INPUT to the host that
+  # default-deny DROPS. Rootful podman hosts must allow INPUT on each podman bridge.
+  # Docker (in-netns 127.0.0.11) and rootless podman (own netns) never cross host
+  # UFW, so the task is gated on _rootful AND _engine == 'podman'.
+  grep -qF '_allow_bridge_dns: "{{ firewall_allow_bridge_dns | default(true) | bool }}"' "$PLAYBOOK"
+  grep -qF 'ufw allow in on {{ item }}' "$PLAYBOOK"
+  # Detection iterates the podman networks' bridge interfaces.
+  grep -qF 'podman network inspect' "$PLAYBOOK"
+  # Gated on the podman engine (so Docker/rootless hosts skip it).
+  grep -qE "^\s*- _engine == 'podman'\s*$" "$PLAYBOOK"
+  # The bridge allow must be added BEFORE enabling UFW (anti-lockout ordering).
+  local enable_line bridge_line
+  enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  bridge_line=$(grep -n 'ufw allow in on {{ item }}' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  [ -n "$enable_line" ] && [ -n "$bridge_line" ]
+  [ "$bridge_line" -lt "$enable_line" ]
+}
