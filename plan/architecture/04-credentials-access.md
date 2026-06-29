@@ -256,6 +256,17 @@ Examples:
   uhstray-developers                   # HOW MUCH: Developer tier for the uhstray org
 ```
 
+The provisioning mechanism is the hinge between identity and access: it reads the two-axis identity from Authentik groups and derives concrete per-service roles, so no downstream service is ever hand-granted. The flow:
+
+```mermaid
+flowchart LR
+  WHO["WHO axis: org / dept / team / role"] --> PROV["Provisioning<br/>(reads Authentik groups, derives roles)"]
+  LVL["HOW-MUCH axis: Admin / Maintainer / Developer / User"] --> PROV
+  PROV --> SEMA["Semaphore: admin-flag / owner / manager / task_runner"]
+  PROV --> NB["NetBox permissions"]
+  PROV --> BAO["OpenBao path scope (per-tenant)"]
+```
+
 ### Access Level -> Per-Service Role Mapping
 
 The provisioning mechanism maps each Access Level to concrete per-service roles. Authoritative mapping table:

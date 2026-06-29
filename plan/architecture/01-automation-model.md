@@ -62,6 +62,19 @@ this doc should be read against it:
 secret file on persistent disk. It also shrinks each host's blast radius to the one service it
 runs.*
 
+The target moves all rendering to the orchestrator and ships only runtime artifacts plus RAM-only secrets to a dumb host - the contrast with today's "clone the repo, write a `.env`" path:
+
+```mermaid
+flowchart LR
+  REPO["Semaphore holds the repo"] --> REND["Ansible renders compose + non-secret config"]
+  BAO["OpenBao"] --> SEC["Ansible creates engine secret (podman/docker)"]
+  REND -->|copy runtime artifacts only| HOST["Dumb container host: per-service runtime dir 0700"]
+  SEC -->|tmpfs mount| RUN["/run/secrets (RAM-only)"]
+  HOST --> UP["deploy.sh: compose up (lifecycle-only)"]
+  RUN --> UP
+  UP --> CTR["Container running: no repo tree, no persistent .env"]
+```
+
 **As-built: NOT YET TRUE.** Today `manage-secrets.yml` renders `.env` **into the clone**, the
 artifact-render/copy and engine-secret (`/run/secrets` tmpfs) delivery do not exist, and the
 sparse-checkout/runtime-dir tasks are `[PLANNED]`. Until they ship, `.gitignore` + the
