@@ -3,6 +3,10 @@
 >
 > **Depends on:** 00
 >
+> **Constitution:** `PRINCIPLES.md` is the platform constitution; this doc elaborates its
+> Config-as-Code, Composability, Identity/Secrets, AI-Invariant, and Automation/Promotion
+> principles. When this doc and `PRINCIPLES.md` disagree, the constitution wins.
+>
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
@@ -12,24 +16,72 @@
 # Automation Composability Plan
 
 **Date:** 2026-04-02 (updated 2026-05-06)
-**Status:** ACTIVE — Core composable deployment pattern proven for NetBox. Task library and playbook patterns are the standard for all service deployments. Implementation status of individual tasks and service migrations is tracked in development plans.
-**Context:** The NetBox deployment exposed that deploy.sh scripts mix infrastructure concerns (credential management, OpenBao) with container operations (compose, migrations). This plan decomposes service deployments into reusable Ansible building blocks that Semaphore orchestrates.
+**Status:** ACTIVE — Composable deployment pattern proven for NetBox; task library + playbook patterns are the standard for all service deployments. Per-task/per-service implementation status lives in the development plans.
+**Context:** NetBox exposed that deploy.sh scripts mix infrastructure concerns (credential management, OpenBao) with container operations (compose, migrations). This plan decomposes deployments into reusable Ansible building blocks that Semaphore orchestrates.
 
 ---
 
 ## Problem
 
-Each service's deploy.sh is a monolith that handles everything from secret generation to container lifecycle to API bootstrapping. This creates:
+Each service's deploy.sh is a monolith spanning secret generation to container lifecycle to API bootstrapping. This causes:
 
-1. **Secret drift** — deploy.sh generates new secrets on each run if intermediary files are missing, causing password mismatches with existing databases
-2. **Duplication** — Every deploy.sh reimplements OpenBao auth, secret generation, health waiting
-3. **Tight coupling** — deploy.sh needs OpenBao credentials but Ansible already has them natively
-4. **No validation** — Secrets are generated and used without verifying they work
-5. **Intermediary files** — secrets/ directory on VM is a redundant copy of what's in OpenBao
+1. **Secret drift** — deploy.sh regenerates secrets when intermediary files are missing, mismatching existing database passwords
+2. **Duplication** — every deploy.sh reimplements OpenBao auth, secret generation, health waiting
+3. **Tight coupling** — deploy.sh needs OpenBao credentials that Ansible already has natively
+4. **No validation** — secrets are generated and used without verifying they work
+5. **Intermediary files** — the on-VM `secrets/` directory is a redundant copy of OpenBao
 
 ## Solution: OpenBao-Driven Secret Lifecycle
 
-**OpenBao is the single source of truth.** No `secrets/` directory on VMs. No local secret generation. Ansible fetches from OpenBao via `community.hashi_vault`, templates compose-ready config files, and deploy.sh only runs container operations.
+**OpenBao is the single source of truth.** No `secrets/` directory on VMs, no local secret generation. Ansible fetches from OpenBao via `community.hashi_vault`, templates compose-ready config files, and deploy.sh only runs container operations.
+
+### [TARGET] Runtime/secret delivery model (PRINCIPLES.md Section 6)
+
+The diagrams/prose below describe the *current* runtime-dir design (Ansible renders `.env` /
+`env/*.env` into `~/services/<name>/`, compose symlinked back to a sparse clone). The agreed
+end-state in `PRINCIPLES.md` Section 6 **supersedes** that; read the rest of this doc against it:
+
+- **Target hosts receive RENDERED RUNTIME ARTIFACTS, not a repo clone.** The orchestrator
+  (Semaphore, which already holds the repo) renders the service's `compose.yml` + non-secret
+  config and **copies only those artifacts** to a per-service runtime dir (`~/services/<name>/`,
+  mode 0700). It does **not** clone the monorepo. The host is a dumb container host.
+- **Secrets flow OpenBao -> Ansible -> container-engine secret, never a persistent `.env`.**
+  Ansible delivers each secret to the engine's secret store (`podman secret` / `docker secret`),
+  mounted at `/run/secrets` on **tmpfs** — RAM-only, vanishing on reboot, no persistent secret
+  file on disk to leak.
+- **`deploy.sh` runs `compose up` over the copied artifacts** — lifecycle-only, unchanged
+  (verify -> pull/build -> `compose up` -> wait healthy -> migrate); still never touches OpenBao.
+- **`git sparse-checkout` (service dir + `platform/lib` only) is the FALLBACK**, used **only**
+  where on-target source is genuinely unavoidable (e.g. a build context needing the source tree).
+  Never the default, never the whole repo.
+
+*Why: fails closed by construction — no repo tree on the target to `git add` into, no secret
+file on persistent disk; also shrinks each host's blast radius to its one service.*
+
+<a name="build-caveats"></a>**Two build caveats** (referenced throughout): (a) services that
+expect env-vars or a `.env` (not `/run/secrets`) need a thin **entrypoint shim** to read the
+secret file into the env; (b) podman-compose `secrets:` support must be **verified on the fleet's
+engine version** before relying on it.
+
+The target moves all rendering to the orchestrator and ships only runtime artifacts plus RAM-only secrets to a dumb host — contrast with today's "clone the repo, write a `.env`" path:
+
+```mermaid
+flowchart LR
+  REPO["Semaphore holds the repo"] --> REND["Ansible renders compose + non-secret config"]
+  BAO["OpenBao"] --> SEC["Ansible creates engine secret (podman/docker)"]
+  REND -->|copy runtime artifacts only| HOST["Dumb container host: per-service runtime dir 0700"]
+  SEC -->|tmpfs mount| RUN["/run/secrets (RAM-only)"]
+  HOST --> UP["deploy.sh: compose up (lifecycle-only)"]
+  RUN --> UP
+  UP --> CTR["Container running: no repo tree, no persistent .env"]
+```
+
+**As-built: NOT YET TRUE.** Today `manage-secrets.yml` renders `.env` **into the clone**; the
+artifact-render/copy and engine-secret (`/run/secrets` tmpfs) delivery do not exist, and the
+sparse-checkout/runtime-dir tasks are `[PLANNED]`. Until they ship, `.gitignore` + the
+pre-commit/CI **trufflehog** gate are the real (fragile) secret boundary — not filesystem
+isolation. Resolve the [two build caveats](#build-caveats) first; build this first — the liveness
+loop and every honest secret-isolation claim in this doc depend on it.
 
 ### Architecture
 
@@ -77,14 +129,20 @@ See `plan/SPARSE-CHECKOUT-MIGRATION.md` for the full directory layout and migrat
 
 ### Why Env Files on Disk?
 
-Docker Compose does not integrate with OpenBao natively. The `.env` and `env/*.env` files are the **minimal required bridge** between Ansible-managed secrets and compose-consumed configuration. These files:
+Docker Compose has no native OpenBao integration. The `.env` and `env/*.env` files are the **minimal required bridge** between Ansible-managed secrets and compose-consumed config. These files:
 - Live in the runtime directory (`~/services/<name>/`), structurally separate from the git clone
-- Are written by Ansible on every deploy (no drift)
-- Contain resolved secrets but no generation logic
-- Are the ONLY local secret storage — no `secrets/` directory
-- Have mode `0600` (owner-read/write only)
+- Are written by Ansible every deploy (no drift), contain resolved secrets but no generation logic
+- Are the ONLY local secret storage (no `secrets/` directory), mode `0600`
 
-This cannot be eliminated without switching to Docker Swarm secrets, Kubernetes + ESO, or a compose-external injection mechanism. For the Docker Compose pattern, env files on disk are the standard approach. The runtime directory separation ensures secrets never exist in the git working tree — filesystem isolation replaces `.gitignore` as the security boundary.
+Eliminating them needs Docker Swarm secrets, k8s + ESO, or a compose-external injection mechanism. For the Compose pattern, env files on disk are standard. Runtime-dir separation keeps secrets out of the git working tree — filesystem isolation replaces `.gitignore` as the boundary.
+
+> **[TARGET] supersedes this paragraph (PRINCIPLES.md Section 6).** The end-state keeps **no**
+> persistent `.env`: secrets flow OpenBao -> Ansible -> the **container engine secret store**
+> (`podman`/`docker secret`) at `/run/secrets` on **tmpfs**. The compose-external injection named
+> above is exactly the chosen path — *not* deferred to Swarm/k8s/ESO. The "minimal bridge" `.env`
+> is **as-built**, not the target. Until engine-secret delivery ships, the disk `.env` (mode 0600)
+> remains and `.gitignore` + trufflehog — not filesystem isolation — are the actual boundary. The
+> [two build caveats](#build-caveats) apply.
 
 ### What Ansible/Semaphore Manages Natively
 
@@ -115,41 +173,30 @@ This cannot be eliminated without switching to Docker Swarm secrets, Kubernetes 
 6. Phase 4 confirms creds in OpenBao (no-op patch)
 
 **Credential rotation (scheduled — see Credential Lifecycle Plan):**
-1. Rotation playbook creates new credential (Phase 1: CREATE)
-2. New credential stored in OpenBao with `pending_verification` in metadata
-3. Verification against live service (Phase 2: VERIFY)
-4. If verified: old credential deleted from service + archived in OpenBao (Phase 3: RETIRE)
-5. If verification fails: STOP, alert operator, old credential remains active
-6. Env files re-templated with new credential values
-7. Containers restarted to pick up new credentials
+1. Phase 1 CREATE: rotation playbook creates new credential, stored in OpenBao with `pending_verification` metadata
+2. Phase 2 VERIFY: verify against live service
+3. Phase 3 RETIRE: if verified, old credential deleted from service + archived in OpenBao; if verification fails, STOP, alert operator, old credential stays active
+4. Env files re-templated with new values; containers restarted to pick them up
 
 **Credential retirement (decommission — see Credential Lifecycle Plan):**
 1. `revoke-service-credentials.yml` revokes AppRole secret_ids for the scope
 2. Deletes service-level credentials (Hydra clients, API tokens)
-3. Archives metadata (audit trail retained 90 days)
-4. After retention period: permanent deletion
+3. Archives metadata (audit trail retained 90 days); permanent deletion after retention
 
-**Secret validation (check-secrets.yml / validate-secrets.yml):**
-1. `check-secrets.yml` — Reads OpenBao, reports present/missing/empty (read-only)
-2. `validate-secrets.yml` — Tests each credential against live services (DB, Redis, HTTP)
+**Secret validation:**
+1. `check-secrets.yml` — reads OpenBao, reports present/missing/empty (read-only)
+2. `validate-secrets.yml` — tests each credential against live services (DB, Redis, HTTP)
 3. Neither modifies anything — pure verification
 
 ### No Local Secret Generation
 
-deploy.sh and post-deploy.sh do NOT:
-- Call `generate-secrets.sh`
-- Write to a `secrets/` directory
-- Generate random passwords
-- Interact with OpenBao directly
+deploy.sh / post-deploy.sh do **NOT**: call `generate-secrets.sh`, write a `secrets/` dir, generate random passwords, or touch OpenBao directly.
 
-They DO:
-- Verify env files exist (fail if missing — means Ansible didn't run)
-- Read credentials from `.env` (for compose exec commands that need passwords)
-- Write runtime-created credentials to `.env` (orb-agent OAuth2 — synced to OpenBao by Ansible Phase 4)
+They **DO**: verify env files exist (fail if missing — Ansible didn't run); read credentials from `.env` (compose exec commands needing passwords); write runtime-created credentials to `.env` (orb-agent OAuth2 — synced to OpenBao by Ansible Phase 4).
 
 ### deploy.sh Split: Infrastructure + Application
 
-deploy.sh is split into two scripts for independent retry and clear separation:
+deploy.sh splits into two scripts for independent retry and clear separation:
 
 **deploy.sh (Infrastructure — steps 1-10):**
 ```
@@ -174,10 +221,7 @@ deploy.sh is split into two scripts for independent retry and clear separation:
 16. Start Orb Agent (privileged, host networking)
 ```
 
-The split enables:
-- Retry post-deploy independently (if OAuth2 registration fails, don't rebuild containers)
-- Different timeout profiles (infrastructure needs 10+ min, post-deploy is fast)
-- Clear failure isolation (container startup vs application config)
+The split enables: independent post-deploy retry (OAuth2 failure doesn't rebuild containers); different timeout profiles (infra needs 10+ min, post-deploy is fast); clear failure isolation (container startup vs application config).
 
 ---
 
@@ -216,100 +260,57 @@ platform/playbooks/
 
 ### Task Responsibilities
 
-**`sparse-checkout.yml`** *(planned — not yet implemented)*
-- Sparse-clone `~/agent-cloud` via HTTPS with `--filter=blob:none --sparse`
-- Configure `git sparse-checkout set` with service-specific `_sparse_paths`
-- Idempotent: first run clones, subsequent runs pull
-- No credentials needed (public repo)
+**`sparse-checkout.yml`** *(planned)*
+- Sparse-clone `~/agent-cloud` via HTTPS (`--filter=blob:none --sparse`), `git sparse-checkout set` with service-specific `_sparse_paths`
+- Idempotent (first run clones, later pulls); no credentials (public repo)
 - No convenience symlink — the runtime dir at `~/services/<name>/` replaces it
 
-**`setup-runtime-dir.yml`** *(planned — not yet implemented)*
-- Create `~/services/{{ service_name }}/` directory structure (mode `0700`)
-- Symlink `docker-compose.yml` from runtime dir to clone
-- Symlink `lib/` from runtime dir to clone's `platform/lib/`
-- Symlink service-specific read-only dirs (workers, snmp-extensions) as needed
-- Idempotent: Ansible `file: state: link` recreates symlinks on every run
-- Accepts `_symlinks` list defining source (clone) and dest (runtime) pairs
+**`setup-runtime-dir.yml`** *(planned)*
+- Create `~/services/{{ service_name }}/` (mode `0700`)
+- Symlink `docker-compose.yml` to clone, `lib/` to clone's `platform/lib/`, plus service-specific read-only dirs (workers, snmp-extensions) as needed
+- Idempotent (`file: state: link` recreates symlinks each run); accepts `_symlinks` list of source(clone)/dest(runtime) pairs
 
 **`manage-secrets.yml`**
-- Authenticate to OpenBao via AppRole
-- Fetch existing secrets from `secret/data/{{ vault_secret_prefix }}/{{ service_name }}` (default prefix: `"services"`)
-- Generate missing secrets (random or Django-style, per `_secret_definitions`)
-- Store all secrets (existing + generated) back to OpenBao
-- Write KV v2 custom metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`) after storing secrets — see Credential Lifecycle Plan
-- Template service-specific env files into `_runtime_dir` (not the clone directory)
-- Backward compatible: uses `vault_secret_prefix | default('services')` for paths, `_runtime_dir | default(...)` for template destinations
-- Accepts `_secret_definitions` list: `[{name, type, length}]`
-  - `type: random` — generated if missing (passwords, tokens)
-  - `type: django` — Django secret key format if missing
-  - `type: user` — user-managed, never auto-generated (SNMP, API keys)
-  - `type: dynamic` — (Phase 6) OpenBao database engine credentials, not stored in KV — see Credential Lifecycle Plan
-- Accepts `_env_templates` list of Jinja2 templates to render
-- Accepts `_secret_metadata` dict: `{purpose, rotation_schedule}` — lifecycle tracking metadata written to KV v2
+- Authenticate to OpenBao via AppRole; fetch existing secrets from `secret/data/{{ vault_secret_prefix }}/{{ service_name }}` (default prefix `"services"`)
+- Generate missing secrets per `_secret_definitions`, store all (existing + generated) back to OpenBao
+- Write KV v2 custom metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`) after storing — see Credential Lifecycle Plan
+- Template service-specific env files into `_runtime_dir` (not the clone)
+- Backward compatible: `vault_secret_prefix | default('services')` for paths, `_runtime_dir | default(...)` for template destinations
+- `_secret_definitions` list `[{name, type, length}]`: `random` (generated if missing — passwords, tokens), `django` (Django key if missing), `user` (user-managed, never auto-generated — SNMP, API keys), `dynamic` (Phase 6 OpenBao DB-engine creds, not in KV — see Credential Lifecycle Plan)
+- `_env_templates` list of Jinja2 templates to render; `_secret_metadata` dict `{purpose, rotation_schedule}` written to KV v2
 
 **`run-deploy.yml`**
-- `cd` to `_runtime_dir` (e.g., `~/services/netbox/`), run deploy.sh from clone path
-- Passes `CONTAINER_ENGINE` and `CLONE_DIR` as env vars
-- deploy.sh resolves `LIB_DIR` from `$CLONE_DIR/platform/lib` (not relative path)
-- deploy.sh validates `CLONE_DIR` contains a `.git` directory before sourcing libs
-- deploy.sh verifies env files exist in runtime dir (but does NOT generate secrets)
+- `cd` to `_runtime_dir` (e.g. `~/services/netbox/`), run deploy.sh from clone path; passes `CONTAINER_ENGINE` + `CLONE_DIR` env vars
+- deploy.sh resolves `LIB_DIR` from `$CLONE_DIR/platform/lib` (not relative), validates `CLONE_DIR` has a `.git` dir before sourcing libs, verifies env files exist (does NOT generate secrets)
 - deploy.sh handles: upstream repos, image pull/build, compose lifecycle, migrations, superuser, OAuth2, agent start
 
 **`verify-health.yml`**
-- HTTP GET to `service_url + health_path`
-- Retries with backoff
-- Reports HEALTHY/UNHEALTHY
+- HTTP GET to `service_url + health_path`, retries with backoff, reports HEALTHY/UNHEALTHY
 
 **`clean-service.yml`**
-- Finds and stops compose stack (checks runtime dir then clone for compose file)
-- Destroys all volumes (`compose down -v`)
-- Removes any leftover containers with service name prefix
-- Removes the runtime directory (`~/services/<name>/`)
-- Removes the agent-cloud clone (sparse or full)
-- Removes legacy convenience symlink (`~/<service>`) if present
-- Requires `become: true` for killing stale port processes
-- Used by `clean-deploy-<service>.yml` before a fresh deploy
-- Note: does NOT revoke credentials — `clean-deploy-<service>.yml` calls `revoke-service-credentials.yml` first
+- Finds + stops compose stack (checks runtime dir then clone for compose file), destroys all volumes (`compose down -v`), removes leftover containers with the service-name prefix
+- Removes the runtime dir (`~/services/<name>/`), the agent-cloud clone (sparse or full), and any legacy convenience symlink (`~/<service>`)
+- Requires `become: true` (killing stale port processes); used by `clean-deploy-<service>.yml` before a fresh deploy
+- Does NOT revoke credentials — `clean-deploy-<service>.yml` calls `revoke-service-credentials.yml` first
 
 **`write-secret-metadata.yml`**
-- Writes KV v2 custom metadata to `secret/metadata/{{ vault_secret_prefix }}/{{ service_name }}`
-- Fields: `created_at` (ISO 8601, set on first creation only), `creator` (playbook name), `purpose`, `rotation_schedule`
-- Called by `manage-secrets.yml` after storing secrets, and by rotation tasks after storing new credentials
-- Preserves existing `created_at` on subsequent runs (idempotent)
+- Writes KV v2 custom metadata to `secret/metadata/{{ vault_secret_prefix }}/{{ service_name }}`: `created_at` (ISO 8601, set on first creation only), `creator` (playbook name), `purpose`, `rotation_schedule`
+- Called by `manage-secrets.yml` after storing secrets and by rotation tasks after storing new creds; preserves existing `created_at` (idempotent)
 
 **`rotate-credential.yml`**
-- Generic Create→Verify→Retire rotation wrapper following the credential lifecycle pattern
-- Phase 1 (Create): runs `_create_tasks` block to generate and store new credential
-- Phase 2 (Verify): runs `_verify_tasks` block to test new credential against live service
-- Phase 3 (Retire): runs `_retire_tasks` block to delete old credential — **only if Phase 2 passed**
-- If verification fails: STOP, alert operator, old credential remains active
-- Dual-valid window bounded by single playbook execution
+- Generic Create→Verify→Retire rotation wrapper: Phase 1 runs `_create_tasks` (generate + store new), Phase 2 runs `_verify_tasks` (test against live service), Phase 3 runs `_retire_tasks` (delete old) — **only if Phase 2 passed**
+- If verification fails: STOP, alert operator, old credential stays active; dual-valid window bounded by a single playbook execution
 - Accepts `_create_tasks`, `_verify_tasks`, `_retire_tasks` as task include paths
 
 **`revoke-service-credentials.yml`**
-- Revokes the service's AppRole secret_id in OpenBao
-- Deletes the service's Hydra/OAuth2 clients if applicable
-- Archives credential metadata (retains audit trail)
-- Called by `clean-deploy-<service>.yml` before `clean-service.yml`
-- Requires OpenBao access (unlike `clean-service.yml` which is pure filesystem/container)
+- Revokes the service's AppRole secret_id in OpenBao, deletes its Hydra/OAuth2 clients if applicable, archives credential metadata (retains audit trail)
+- Called by `clean-deploy-<service>.yml` before `clean-service.yml`; requires OpenBao access (unlike `clean-service.yml`, which is pure filesystem/container)
 
 ### Validation Playbooks
 
-**`check-secrets.yml`** — Read-only secret inventory
-- Lists all secrets in OpenBao for a service
-- Reports which are present, which are missing, which are empty
-- Does NOT generate or modify anything
-- Usage: pre-deploy check, audit, troubleshooting
+**`check-secrets.yml`** — read-only secret inventory. Lists all of a service's OpenBao secrets, reports present/missing/empty, modifies nothing. Usage: pre-deploy check, audit, troubleshooting.
 
-**`validate-secrets.yml`** — Active credential testing
-- Fetches secrets from OpenBao
-- Tests each against its service:
-  - DB passwords: `psql` connection test
-  - API tokens: HTTP request with auth header
-  - Redis passwords: `redis-cli ping` with auth
-- Reports: valid, invalid, unreachable
-- Does NOT modify anything — read-only verification
-- Usage: post-deploy verification, scheduled health checks
+**`validate-secrets.yml`** — active credential testing. Fetches from OpenBao and tests each against its service (DB passwords via `psql`, API tokens via authed HTTP, Redis via `redis-cli ping`); reports valid/invalid/unreachable; modifies nothing. Usage: post-deploy verification, scheduled health checks.
 
 ---
 
@@ -359,15 +360,13 @@ vars:
     - include_tasks: tasks/verify-health.yml
 ```
 
-**Variable contract:** Every playbook defines `_monorepo_dir`, `_deploy_dir`, and `_runtime_dir`. The `_monorepo_dir` is the read-only sparse checkout. The `_runtime_dir` is the mutable working directory where env files are templated and deploy.sh executes. `_deploy_dir` points to source code within the clone.
+**Variable contract:** every playbook defines `_monorepo_dir` (read-only sparse checkout), `_deploy_dir` (source code within the clone), and `_runtime_dir` (mutable working dir where env files are templated and deploy.sh runs). Services needing Docker add `install-docker.yml` as a pre-phase; services needing `become` for specific steps set it per-task.
 
-Services that need Docker add `install-docker.yml` as a pre-phase. Services that need `become` for specific steps set it per-task.
-
-**Legacy services** (not yet migrated to sparse checkout) omit `_runtime_dir` and continue using `clone-and-deploy.yml`. The `manage-secrets.yml` task falls back to the old path via `_runtime_dir | default(_monorepo_dir + '/' + monorepo_deploy_path)`.
+**Legacy services** (not yet on sparse checkout) omit `_runtime_dir` and keep using `clone-and-deploy.yml`; `manage-secrets.yml` falls back via `_runtime_dir | default(_monorepo_dir + '/' + monorepo_deploy_path)`.
 
 ### Lifecycle Workflow Patterns (Non-Deploy)
 
-Not all workflows follow the 4-phase deploy pattern. Credential lifecycle workflows operate on existing deployments and follow their own patterns. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md` for full details.
+Not all workflows follow the 4-phase deploy pattern. Credential lifecycle workflows operate on existing deployments with their own patterns — see `plan/CREDENTIAL-LIFECYCLE-PLAN.md`.
 
 **Rotation pattern (scheduled):**
 ```yaml
@@ -390,7 +389,7 @@ Not all workflows follow the 4-phase deploy pattern. Credential lifecycle workfl
     - include_tasks: tasks/audit-credentials.yml
 ```
 
-These workflows get their own Semaphore templates and run on independent schedules. They do NOT require sparse checkout or runtime directory setup.
+These get their own Semaphore templates on independent schedules and need NO sparse checkout or runtime-dir setup.
 
 ---
 
@@ -450,7 +449,7 @@ step 8: start stack (staged)
 step 9+: wait, migrate, create superuser, OAuth2, agent
 ```
 
-No `generate-secrets.sh` call. No OpenBao code. No `BAO_ROLE_ID`. Pure container lifecycle. Libraries sourced from the read-only clone via `CLONE_DIR`.
+No `generate-secrets.sh`, no OpenBao code, no `BAO_ROLE_ID` — pure container lifecycle, libraries sourced from the read-only clone via `CLONE_DIR`.
 
 ---
 
@@ -468,74 +467,57 @@ platform/services/netbox/deployment/
     hydra.yaml.j2
 ```
 
-These replace `generate-secrets.sh`'s env file writing logic. Variables come from the `_resolved_secrets` dict populated by `manage-secrets.yml`.
+These replace `generate-secrets.sh`'s env-writing logic. Variables come from the `_resolved_secrets` dict populated by `manage-secrets.yml`.
 
 ---
 
 ## Configuration-as-Code for Deployments and Templates
 
-All deployment configurations, Semaphore templates, and service settings are managed as code — not through manual UI actions or ad-hoc API calls.
+All deployment configs, Semaphore templates, and service settings are managed as code — never via manual UI actions or ad-hoc API calls (see PRINCIPLES.md Config-as-Code; CLAUDE.md "Policy and Configuration Changes — Code Only").
 
 ### Principle: Templates Define the Deployment Surface
 
-Semaphore task templates are the interface between operators and the automation. Each template maps a human-readable name to a composable playbook. Templates are defined in `platform/semaphore/templates.yml` (public repo, no secrets) and applied via `platform/semaphore/setup-templates.yml`.
+Semaphore task templates are the operator/automation interface, each mapping a human-readable name to a composable playbook. Defined declaratively in `platform/semaphore/templates.yml` (public repo, no secrets — playbook paths only; credentials come from Semaphore environments) and applied idempotently (update existing, create new) via `platform/semaphore/setup-templates.yml`.
 
-**Implementation:**
-- `platform/semaphore/templates.yml` — Declarative list of all task templates (name → playbook mapping)
-- `platform/semaphore/setup-templates.yml` — Ansible playbook that creates/updates templates via Semaphore API
-- Idempotent: existing templates are updated, new ones are created
-- No secrets in templates — playbook paths only; credentials come from Semaphore environments
-
-**Adding a new template:**
-1. Add entry to `platform/semaphore/templates.yml`
-2. Run `ansible-playbook semaphore/setup-templates.yml`
-3. Verify in Semaphore UI
-
-**Why not API calls:** Ad-hoc API calls are not tracked, not repeatable, and drift from the codebase. The config file is the source of truth for what templates should exist.
+**Add a template:** add an entry to `templates.yml`, run `ansible-playbook semaphore/setup-templates.yml`, verify in the Semaphore UI. Ad-hoc API calls are untracked, unrepeatable, and drift from the codebase; the config file is the source of truth.
 
 ### Principle: Env Files as Jinja2 Templates
 
-Service configuration files (`.env`, `env/*.env`, config YAML) are rendered from Jinja2 templates by Ansible's `manage-secrets.yml` task. This replaces bash `generate-secrets.sh` scripts.
+Service config files (`.env`, `env/*.env`, config YAML) render from Jinja2 templates via `manage-secrets.yml`, replacing bash `generate-secrets.sh`.
 
-**Template design rules:**
-- Templates live in `platform/services/<name>/deployment/templates/`
-- Variables come from the `_resolved` dict (OpenBao secrets merged with generated values)
-- Secret-containing files get mode `0600` (default)
-- Config files that containers read (e.g., `hydra.yaml`) get mode `0644` via the `mode` field in `_env_templates`
-- Templates are Jinja2, not bash heredocs — supports conditionals, defaults, loops
-- Each template maps to one compose-consumed file
+**Rules:**
+- Templates live in `platform/services/<name>/deployment/templates/`; variables come from the `_resolved` dict (OpenBao secrets merged with generated values)
+- Secret-bearing files default to mode `0600`; container-read config (e.g. `hydra.yaml`) gets `0644` via the `mode` field in `_env_templates`
+- Jinja2 (not bash heredocs) — conditionals, defaults, loops; each template maps to one compose-consumed file
 
-**Template flow:**
+**Flow:**
 ```
 templates/*.j2 (in sparse checkout, read-only)
   + secrets (from OpenBao, in Ansible memory)
   = env files (in ~/services/<name>/, mode 0600, compose-readable)
 ```
 
-Templates are read from the clone (`_deploy_dir/templates/`). Rendered files are written to the runtime dir (`_runtime_dir/`). No template should write outside the runtime dir boundary.
+Templates are read from the clone (`_deploy_dir/templates/`); rendered files write to the runtime dir (`_runtime_dir/`) — never outside that boundary.
 
 ### Principle: Clean Deploy for State Reset
 
-When secrets or database schemas change incompatibly, a clean deploy destroys volumes and starts fresh. This is a deliberate, tracked operation — not a manual `docker compose down -v`.
+When secrets or DB schemas change incompatibly, a clean deploy destroys volumes and starts fresh — a deliberate, tracked operation, not a manual `docker compose down -v`. Destructive; requires explicit operator action, never automatic.
 
-**Implementation:**
-- `tasks/revoke-service-credentials.yml` — revokes AppRole secret_ids and Hydra clients in OpenBao (credential cleanup)
-- `tasks/clean-service.yml` — destroys containers, volumes, runtime dir, and clone (filesystem cleanup)
-- `clean-deploy-<service>.yml` — revoke credentials + clean + deploy wrapper
-- Semaphore template "Clean Deploy <Service>" exposes this as a UI action
-- Destructive: requires explicit operator action, not triggered automatically
+- `tasks/revoke-service-credentials.yml` — credential cleanup (AppRole secret_ids + Hydra clients in OpenBao)
+- `tasks/clean-service.yml` — filesystem cleanup (containers, volumes, runtime dir, clone)
+- `clean-deploy-<service>.yml` — revoke + clean + deploy wrapper; Semaphore template "Clean Deploy <Service>" exposes it as a UI action
 
 ---
 
 ## Implementation Status
 
-The core composable pattern is proven (NetBox reference implementation). Migration of remaining services and implementation of planned tasks is tracked in development plans:
+The core composable pattern is proven (NetBox reference impl). Remaining service migrations and planned tasks are tracked in:
 
-- `plan/development/09-service-migrations-tooling.md` — sparse checkout and runtime directory separation
-- `plan/architecture/02-service-onboarding.md` — per-service migration status and onboarding checklist
-- `plan/development/01-secrets-credentials.md` — credential rotation and metadata tasks
+- `plan/development/09-service-migrations-tooling.md` — sparse checkout + runtime-dir separation
+- `plan/architecture/02-service-onboarding.md` — per-service migration status + onboarding checklist
+- `plan/development/01-secrets-credentials.md` — credential rotation + metadata tasks
 
-During migration, services not yet converted continue using `clone-and-deploy.yml` — the `manage-secrets.yml` backward-compatible `default()` pattern ensures both old and new services work.
+During migration, unconverted services keep using `clone-and-deploy.yml`; the `manage-secrets.yml` `default()` fallback keeps both old and new services working.
 
 ---
 
@@ -572,26 +554,35 @@ During migration, services not yet converted continue using `clone-and-deploy.ym
 
 ## Security Considerations
 
-- **Source/runtime separation:** The git clone (`~/agent-cloud/`) is read-only source code. All secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the security boundary. No accidental `git add .` can capture secrets.
-- **No `secrets/` directory in the clone:** Eliminated entirely. The bind-mount secret (`netbox_to_diode_client_secret.txt`) lives in `_runtime_dir/secrets/`, not the clone.
-- **Runtime dir permissions:** `chmod 700` on the directory, `chmod 600` on all env files. Symlinked files (compose, libs) are world-readable since they contain no secrets.
-- **Reduced attack surface per VM:** Sparse checkout means each VM only has code for its own service. A compromised NetBox VM cannot read deploy scripts for OpenBao, NemoClaw, or other services.
-- **Root ownership eliminated:** deploy.sh never runs with `become`. Only specific sudo commands (orb-agent start) require privilege. No root-owned files in the clone.
-- **CLONE_DIR validation:** deploy.sh validates that `CLONE_DIR` points to a directory containing `.git` before sourcing libraries. Prevents library injection via environment variable manipulation.
-- **Minimal disk footprint:** Only `.env` and `env/*.env` files exist in the runtime dir (required by Docker Compose). These are overwritten on every deploy.
-- **Secrets never in bash variables long-term:** Ansible holds secrets in memory during template rendering, then discards. deploy.sh reads from `.env` only when needed (compose exec).
-- **Ansible `no_log: true`** on all secret-handling tasks — prevents credential leakage in Semaphore logs.
-- **AppRole least privilege:** Semaphore's AppRole can read/write all service paths (orchestrator role). Per-service AppRoles are more restrictive.
-- **AppRole TTL enforcement:** All AppRoles created via `manage-approle.yml` set `secret_id_ttl` (90 days) and `token_num_uses` (25). A `secret_id` with TTL=0 means a single leaked credential grants indefinite access. `token_num_uses` bounds the damage window if a token is intercepted. Semaphore's orchestrator AppRole is the documented exception (unlimited uses due to its cross-service orchestration role).
-- **Verify before retiring (all credentials):** When rotating Diode OAuth2 clients, AppRole secret_ids, or any credential: (1) create the new credential, (2) verify it works against the live service, (3) only then revoke the old one. Never atomically swap — always maintain a dual-valid window with explicit verification. If verification fails, the old credential remains active. Dual-valid window is bounded by single playbook execution.
-- **Audit metadata on every secret:** Every `manage-secrets.yml` invocation writes KV v2 custom metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`). This enables the weekly credential inventory to distinguish active secrets from orphaned ones.
-- **Audit logging:** OpenBao's file audit backend must be enabled and piped to the observability stack (Loki). Alerting rules fire on: same secret read >10x/minute (potential exfiltration), access from unknown AppRoles, and failed authentication attempts.
-- **Scheduled credential inventory:** Weekly `audit-credentials.yml` (Semaphore-scheduled) compares OpenBao contents against inventory to detect orphaned credentials, missing metadata, and stale secrets.
-- **Dynamic database credentials (planned):** Static Postgres passwords are the highest-risk credential type — they persist indefinitely. The credential lifecycle plan migrates these to OpenBao's database engine (1-hour leases). When implemented, DB credentials will not be templated into `.env` files; containers will fetch fresh credentials at startup. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md`.
-- **Validation catches drift:** `validate-secrets.yml` detects when a password in OpenBao no longer matches the database.
-- **deploy.sh has no credential access:** Cannot authenticate to OpenBao, cannot generate secrets, cannot write to the source clone. Runs from the runtime dir only. Reduces blast radius if a deploy script is compromised.
-- **Runtime credentials (orb-agent):** Created by post-deploy.sh, written to `_runtime_dir/.env`, synced to OpenBao by Ansible Phase 4. The `.env` is the transient holding area, not the source of truth.
-- **Git pull is a security property:** With the clone always clean, `git pull` integrity is trivial to verify. Operators never need `git checkout .` or `git reset --hard`, which could mask malicious modifications.
+> **[TARGET] note (PRINCIPLES.md Section 6).** The bullets below treat the **runtime-dir design**
+> as the secret boundary (filesystem isolation, `.env` mode 0600 in `~/services/<name>/`). The
+> end-state goes further: the host gets **copied rendered artifacts, not a clone**, with secrets
+> in the **container-engine secret store** at `/run/secrets` on **tmpfs** — never a persistent
+> `.env`. Consequences: (a) "filesystem isolation is the boundary" is the *target*; **as-built the
+> real (fragile) boundary is `.gitignore` + trufflehog**, since `manage-secrets.yml` still renders
+> `.env` into the clone; (b) once engine-secrets ship there is no persistent secret file at all.
+> The [two build caveats](#build-caveats) apply.
+
+- **Source/runtime separation:** the clone (`~/agent-cloud/`) is read-only source; all secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the boundary; no accidental `git add .` captures secrets.
+- **No `secrets/` directory in the clone:** eliminated; the bind-mount secret (`netbox_to_diode_client_secret.txt`) lives in `_runtime_dir/secrets/`.
+- **Runtime dir permissions:** `chmod 700` on the dir, `600` on env files. Symlinked files (compose, libs) are world-readable — no secrets.
+- **Reduced attack surface per VM:** sparse checkout means each VM holds only its own service's code — a compromised NetBox VM can't read OpenBao/NemoClaw/other deploy scripts.
+- **Root ownership eliminated:** deploy.sh never runs with `become`; only specific sudo commands (orb-agent start) need privilege; no root-owned files in the clone.
+- **CLONE_DIR validation:** deploy.sh checks `CLONE_DIR` contains `.git` before sourcing libs — prevents library injection via env-var manipulation.
+- **Minimal disk footprint:** only `.env` + `env/*.env` (Compose-required) exist in the runtime dir, overwritten every deploy.
+- **Secrets never in bash variables long-term:** Ansible holds secrets in memory during rendering then discards; deploy.sh reads `.env` only when needed (compose exec).
+- **Ansible `no_log: true`** on all secret-handling tasks — prevents leakage in Semaphore logs (scoping: CLAUDE.md "Credential Handling").
+- **AppRole least privilege:** Semaphore's AppRole reads/writes all service paths (orchestrator role); per-service AppRoles are more restrictive.
+- **AppRole TTL enforcement:** `manage-approle.yml` sets `secret_id_ttl` (90 days) + `token_num_uses` (25). TTL=0 means one leaked credential grants indefinite access; `token_num_uses` bounds the damage window if a token is intercepted. Semaphore's orchestrator AppRole is the documented exception (unlimited uses, cross-service role).
+- **Verify before retiring (all credentials):** rotating Diode OAuth2 clients, AppRole secret_ids, or any credential: (1) create new, (2) verify against live service, (3) only then revoke old. Never atomically swap — keep a dual-valid window with explicit verification, bounded by a single playbook execution; if verification fails the old credential stays active.
+- **Audit metadata on every secret:** every `manage-secrets.yml` run writes KV v2 metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`), letting the weekly inventory distinguish active from orphaned secrets.
+- **Audit logging:** OpenBao's file audit backend must be enabled and piped to Loki. Alerts fire on: same secret read >10x/minute (exfiltration), access from unknown AppRoles, failed auth attempts.
+- **Scheduled credential inventory:** weekly Semaphore-scheduled `audit-credentials.yml` compares OpenBao against inventory to detect orphaned, missing-metadata, and stale secrets.
+- **Dynamic database credentials (planned):** static Postgres passwords are highest-risk (persist indefinitely). The credential lifecycle plan migrates them to OpenBao's database engine (1-hour leases); once done, DB creds aren't templated into `.env` — containers fetch fresh creds at startup. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md`.
+- **Validation catches drift:** `validate-secrets.yml` detects when an OpenBao password no longer matches the database.
+- **deploy.sh has no credential access:** can't auth to OpenBao, generate secrets, or write to the clone; runs from the runtime dir only — limits blast radius if compromised.
+- **Runtime credentials (orb-agent):** created by post-deploy.sh, written to `_runtime_dir/.env`, synced to OpenBao by Ansible Phase 4 — the `.env` is a transient holding area, not the source of truth.
+- **Git pull is a security property:** an always-clean clone makes `git pull` integrity trivial to verify; operators never need `git checkout .` / `git reset --hard`, which could mask malicious modifications.
 
 ---
 
@@ -599,16 +590,11 @@ During migration, services not yet converted continue using `clone-and-deploy.ym
 
 ### Principle: Self-Service AppRole Provisioning
 
-Services should not depend on OpenBao's `deploy.sh` to create their AppRole. Instead, any service playbook can provision its own AppRole via `tasks/manage-approle.yml`. This decouples identity management from the secrets backbone deployment.
+No service depends on OpenBao's `deploy.sh` to create its AppRole — any service playbook provisions its own via `tasks/manage-approle.yml`, decoupling identity management from the secrets-backbone deployment.
 
-**Implementation:** `tasks/manage-approle.yml`
-- Creates/updates an HCL policy with the exact paths the service needs
-- Creates/updates the AppRole with the policy attached
-- Configures TTLs: `_approle_secret_id_ttl` (default: `"2160h"` / 90 days), `_approle_token_num_uses` (default: `25`)
-- Returns `role_id` and `secret_id`
-- Stores credentials at `secret/{{ vault_secret_prefix }}/approles/<name>` in OpenBao
+**Implementation:** `tasks/manage-approle.yml` creates/updates an HCL policy with the exact paths the service needs and the AppRole with that policy attached; configures TTLs `_approle_secret_id_ttl` (default `"2160h"` / 90 days) and `_approle_token_num_uses` (default `25`); returns `role_id` + `secret_id`; stores creds at `secret/{{ vault_secret_prefix }}/approles/<name>`.
 
-**Semaphore's policy** (`semaphore-read.hcl`) includes `sys/policies/acl/*` and `auth/approle/role/*` capabilities so it can manage AppRoles for any service without root access. Semaphore's orchestrator AppRole overrides `_approle_token_num_uses: 0` (unlimited) since it already has the broadest policy and needs to make many API calls across all services.
+**Semaphore's policy** (`semaphore-read.hcl`) includes `sys/policies/acl/*` and `auth/approle/role/*` so it manages any service's AppRoles without root. Its orchestrator AppRole overrides `_approle_token_num_uses: 0` (unlimited) — it has the broadest policy and makes many cross-service API calls.
 
 **Example — provisioning an orb-agent AppRole:**
 ```yaml
@@ -628,11 +614,11 @@ Services should not depend on OpenBao's `deploy.sh` to create their AppRole. Ins
 
 ### Principle: Least-Privilege by Default
 
-Each AppRole gets ONLY the paths it needs. The `manage-approle.yml` task enforces this by requiring the caller to specify the exact HCL policy. No blanket `secret/data/services/*` access unless explicitly requested.
+Each AppRole gets ONLY the paths it needs; `manage-approle.yml` enforces this by requiring the caller to specify the exact HCL policy — no blanket `secret/data/services/*` unless explicitly requested.
 
 ### Principle: TTL Enforcement
 
-All AppRoles must have bounded `secret_id_ttl` and `token_num_uses`. A `secret_id` with TTL=0 means a single leaked credential grants indefinite access. The secure defaults (`90d` / `25 uses`) are set via `| default()` so existing callers automatically get them. AppRole `secret_id` values must be rotated before their TTL expires — this is a Semaphore-scheduled playbook responsibility, not a deploy-time concern. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md` for TTL rationale and rotation schedules.
+All AppRoles must have bounded `secret_id_ttl` + `token_num_uses` (TTL=0 means a single leaked credential grants indefinite access). Secure defaults (`90d` / `25 uses`) come via `| default()` so existing callers get them automatically. `secret_id` values rotate before TTL expiry — a Semaphore-scheduled playbook responsibility, not deploy-time. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md` for rationale + schedules.
 
 ---
 
@@ -640,7 +626,7 @@ All AppRoles must have bounded `secret_id_ttl` and `token_num_uses`. A `secret_i
 
 ### Principle: Independent Workflows Over Monolithic Playbooks
 
-Each deployment concern should be its own playbook that can run independently. Don't embed optional components (like the orb-agent) into the service deploy — create a separate workflow.
+Each deployment concern is its own independently-runnable playbook. Don't embed optional components (e.g. orb-agent) into a service deploy — make a separate workflow.
 
 **Before (brittle):**
 
@@ -660,15 +646,11 @@ flowchart LR
     D3["run-pfsense-sync.yml"] --> P3["scheduled every 15 min"]
 ```
 
-**Benefits:**
-- Retry individual workflows without re-running the whole stack
-- Schedule workflows independently (orb-agent after every NetBox deploy, pfsense-sync every 15 min)
-- Different failure domains — orb-agent failure doesn't block NetBox availability
-- Clear ownership — each playbook has one responsibility
+**Benefits:** retry individual workflows without the whole stack; independent scheduling (orb-agent after each NetBox deploy, pfsense-sync every 15 min); separate failure domains (orb-agent failure doesn't block NetBox); clear single-responsibility ownership.
 
 ### Principle: Semaphore Templates as Workflow Triggers
 
-Each independent workflow gets its own Semaphore task template. Operators run "Deploy NetBox", then "Deploy Orb Agent", then schedule "Run pfSense Sync" — each independently observable and retryable in the Semaphore UI.
+Each independent workflow gets its own Semaphore task template — operators run "Deploy NetBox", "Deploy Orb Agent", "Run pfSense Sync" separately, each observable and retryable in the UI.
 
 ### Implemented Workflows
 
@@ -695,34 +677,32 @@ deploy.sh should NOT: generate secrets, authenticate to OpenBao, manage AppRoles
 All templates, policies, and AppRoles should be managed as code (`.yml`/`.hcl` files) and applied via playbooks. No `curl` one-liners.
 
 ### Brittle: Reusing stale credentials from OpenBao
-Always verify credentials against the live service (e.g., `list_clients` from the Diode plugin), not just OpenBao. A clean deploy wipes the Hydra database but OpenBao retains old credentials. Beyond verification, **credential cleanup must be automated:**
-- Diode OAuth2 clients: rotation playbook uses `hydra admin clients delete` (the Diode plugin has no `delete_client` API)
-- AppRole secret_ids: old secret_ids must be revoked when new ones are generated; TTL enforcement (90 days) provides a safety net
+Always verify against the live service (e.g. Diode plugin `list_clients`), not just OpenBao — a clean deploy wipes the Hydra DB but OpenBao retains old creds. Beyond verification, **automate cleanup:**
+- Diode OAuth2 clients: rotation uses `hydra admin clients delete` (the Diode plugin has no `delete_client` API)
+- AppRole secret_ids: revoke old when generating new; TTL enforcement (90 days) is the safety net
 - Decommissioned services: `clean-deploy-<service>.yml` calls `revoke-service-credentials.yml` before `clean-service.yml`
-- Weekly `audit-credentials.yml` catches credentials that survive all other cleanup mechanisms
+- Weekly `audit-credentials.yml` catches credentials that survive all other cleanup
 
 ### Brittle: Atomic credential replacement without verification
-Never delete an old credential and create a new one in the same task. The Create→Verify→Retire pattern requires three separate phases with a verification gate between Create and Retire. A failed rotation must leave the service operational with the old credential.
+Never delete-old + create-new in one task. Create→Verify→Retire requires three phases with a verification gate between Create and Retire; a failed rotation must leave the old credential operational.
 
 ### Brittle: Sed-based credential injection
-Don't resolve `${VARIABLE}` references via sed in config files. Use either:
-- Ansible Jinja2 templates (for values known at deploy time)
-- Service-native secret managers (e.g., orb-agent's vault integration)
+Don't resolve `${VARIABLE}` via sed in config files. Use Ansible Jinja2 templates (deploy-time values) or service-native secret managers (e.g. orb-agent's vault integration).
 
 ### Brittle: Shared AppRoles across unrelated services
-Each service/component should have its own AppRole with least-privilege policy. The `semaphore-read` AppRole is the exception — it's the orchestrator.
+Each service/component gets its own least-privilege AppRole; `semaphore-read` is the exception (orchestrator).
 
 ### Brittle: Writing generated files into the git clone
-Never template `.env`, `agent.yaml`, or any generated config into `~/agent-cloud/`. The clone is read-only source code. All generated files go to `~/services/<name>/`. Violation causes git conflicts on pull, root ownership issues, and treats the clone as mutable. Use `manage-secrets.yml` to template into the runtime location (`setup-runtime-dir.yml` is planned, not yet implemented).
+Never template `.env`, `agent.yaml`, or any generated config into `~/agent-cloud/` — the clone is read-only source; all generated files go to `~/services/<name>/`. Violation causes pull conflicts, root-ownership issues, and treats the clone as mutable. Use `manage-secrets.yml` to template into the runtime location (`setup-runtime-dir.yml` planned).
 
 ### Brittle: Running deploy.sh from the clone directory
-deploy.sh must run from the runtime directory (`~/services/<name>/`), not the clone. The compose file in the runtime dir is a symlink to the clone, but `.env` and `env/*.env` are local to the runtime dir. Running from the clone means compose won't find its env files.
+deploy.sh runs from the runtime dir (`~/services/<name>/`), not the clone. The runtime compose file is a symlink to the clone, but `.env` / `env/*.env` are local — running from the clone means compose can't find its env files.
 
 ### Brittle: Using monorepo_deploy_path as the deploy working directory
-`monorepo_deploy_path` identifies source code location within the clone. The runtime working directory is `~/services/<name>/`. Tasks that write files or run scripts must use `_runtime_dir`, not `_monorepo_dir/monorepo_deploy_path`.
+`monorepo_deploy_path` is source-code location within the clone; the working dir is `~/services/<name>/`. Tasks that write files or run scripts use `_runtime_dir`, not `_monorepo_dir/monorepo_deploy_path`.
 
 ### Brittle: Creating convenience symlinks to the clone
-The old pattern (`~/netbox` → clone deploy path) is replaced by the runtime directory at `~/services/<name>/`. Convenience symlinks made the clone look like a working directory, which it is not.
+The old `~/netbox` → clone-deploy-path symlink is replaced by `~/services/<name>/`. Convenience symlinks made the clone look like a working directory, which it is not.
 
 <!-- ======================= source: AUTOMATION-DECLARATIVE-VS-IMPERATIVE.md ======================= -->
 
@@ -731,19 +711,17 @@ The old pattern (`~/netbox` → clone deploy path) is replaced by the runtime di
 > **Location:** `plan/architecture/01-automation-model.md`
 > **Date:** 2026-06-14 · **Status:** ADOPTED (reference standard) · **Owner:** uhstray-io
 >
-> **Purpose:** Decide *where* agent-cloud should use **declarative** automation and where **imperative** automation is correct — as a standing reference for classifying existing surfaces and authoring new ones. Read with `AUTOMATION-COMPOSABILITY.md` (the composable mechanics this builds on) and the root `CLAUDE.md` ("Foundational Over One-Shot").
+> **Purpose:** decide *where* agent-cloud uses **declarative** vs **imperative** automation — a standing reference for classifying existing surfaces and authoring new ones. Read with the Composability half of this doc (the mechanics it builds on) and root `CLAUDE.md` ("Foundational Over One-Shot").
 
-**Goal:** A shared vocabulary and a set of rules that tell an engineer, for any automation surface in agent-cloud, *which style it should be and why* — and that name the platform's real automation debt honestly.
+**Goal:** a shared vocabulary + rules telling an engineer, for any automation surface, *which style it should be and why* — and naming the platform's real automation debt honestly.
 
-**TL;DR:** agent-cloud is **declarative at the description layer** (compose, Jinja2 env templates, `.hcl` policies, `templates.yml`, Kustomize) with a deliberately **thin imperative execution layer** (`deploy.sh` = container lifecycle only). The honest architectural baseline: **there are *zero* standing reconcilers in the running platform today** — everything converges *when Semaphore fires a playbook*, not continuously. That is the **correct** posture for single-site Compose/Podman; continuous reconciliation (ArgoCD/Kyverno/ESO) is the multi-site-Kubernetes future. The remaining imperative surfaces are either **forced** by host/OS/network constraints (not negotiable) or **known debt** (fixable) — and the single most urgent item is a real security defect in `manage-approle.yml` (see §7).
+**TL;DR:** agent-cloud is **declarative at the description layer** (compose, Jinja2 env templates, `.hcl` policies, `templates.yml`, Kustomize) with a deliberately **thin imperative execution layer** (`deploy.sh` = container lifecycle only). Honest baseline: **zero standing config reconcilers run today** — config converges *when Semaphore fires a playbook*, not continuously. **Owner decision (PRINCIPLES.md Section 5):** that posture is correct *only* for CONFIG-drift correction *today* and is **not** auto-deferred to k8s. **Liveness self-heals continuously** (Quadlet/systemd `Restart=`); **continuous CONFIG reconciliation of a HUMAN-authored Git target is pursued on the VM/Podman estate if safely feasible** — a scheduled, deterministic re-apply of Git desired-state via Semaphore (or `ansible-pull`): **"authored convergence on a timer."** This does **not** violate the AI Invariant (Semaphore firing on a schedule, not a trigger, against a human-authored target) — the open question is feasibility, not safety. ArgoCD/Kyverno/ESO on multi-site k8s is the **richer eventual substrate, not a prerequisite** (defer to it only if scheduled re-apply proves insufficient). Remaining imperative surfaces are either **forced** by host/OS/network constraints or **known debt** (fixable) — the single most urgent being a real security defect in `manage-approle.yml` (§7).
 
 ---
 
 ## 1. The two axes (the taxonomy this plan adopts)
 
-"Declarative vs imperative" is too coarse for an ops repo. The useful model is **two orthogonal axes**. Axis 1 is the architectural truth (who closes the loop); Axis 2 is the task-author's discipline (how you write the step you must write today). Every automation surface gets a coordinate on both.
-
-This document distinguishes *loop ownership* (does anything self-heal drift?) from *authoring discipline* (is this step honestly re-runnable?). The two are independent, and conflating them is what makes "is Ansible declarative?" an unanswerable question.
+"Declarative vs imperative" is too coarse for an ops repo. The useful model is **two orthogonal axes**: Axis 1 = architectural truth (who closes the loop / does anything self-heal drift?); Axis 2 = the task-author's discipline (is the step you must write today honestly re-runnable?). Every surface gets a coordinate on both. The two are independent; conflating them is what makes "is Ansible declarative?" unanswerable.
 
 ```mermaid
 flowchart TB
@@ -787,7 +765,7 @@ flowchart TB
 - **Zero standing reconcilers in the live (Compose/Podman) plane.** `validate-secrets.yml` / `audit-credentials.yml` / `validate-all.yml` are scheduled **scans** (detect, never correct). The one unprompted reconciler that exists — the Diode **orb-agent** on a cron cadence — reconciles **NetBox inventory data**, not deployment/config state. So the compose tier has **detection without correction**; correction happens only on the next Semaphore-triggered deploy.
 - **Kubernetes is greenfield.** `platform/k8s/` is empty `.gitkeep` scaffolding; ArgoCD/Kyverno/ESO are planned (Phase 3). Treat RECONCILED as **aspirational** for this platform today — it arrives with k0s.
 
-Mapping to the **four-layer guardrails model**: the *Platform* layer is where RECONCILED pays off (k8s workloads, admission). The *Automation* layer is the TRIGGER-CONVERGED spine and should **stay** imperative-spine-with-declarative-leaves — it is the deterministic executor the AI layer is forbidden to bypass. The *Guardrail* layer is declarative-authored policy (some DECISION-ENGINE, some — in future — RECONCILED enforcement). The *AI* layer **proposes only** (§8).
+Mapping to the **four-layer guardrails model** (see ARCHITECTURE.md): *Platform* is where RECONCILED pays off (k8s workloads, admission); *Automation* is the TRIGGER-CONVERGED spine and should **stay** imperative-spine-with-declarative-leaves (the deterministic executor the AI layer can't bypass); *Guardrail* is declarative-authored policy (some DECISION-ENGINE, some future RECONCILED enforcement); *AI* **proposes only** (§8).
 
 ---
 
@@ -825,7 +803,7 @@ Mapping to the **four-layer guardrails model**: the *Platform* layer is where RE
 4. **`changed_when` must be *true*, not `true`.** A mutating `shell`/`command` asserting `changed_when: true` is GI-debt unless the op genuinely always changes. Fix order: make the *operation* idempotent (read-guard before mutate), *then* report change honestly where a "changed" triggers a handler/restart/rotation. Enforce in CI (§7, rule AC-1).
 5. **One reconciler per surface; never two sources of truth.** Secrets reconcile from OpenBao via `manage-secrets`; never *also* via `deploy.sh`. The n8n/nocodb dual path is the canonical violation.
 6. **Imperative sequencing is legitimate only at genuine ordering boundaries** — genesis (first unseal/token/AppRole), `Create→Verify→Retire` rotation, staged stack start, destructive resets. Everywhere else, order is an *emergent property of declared state*, not a script.
-7. **Single-site converges by trigger (permanent); reconcile *liveness*, not *config*.** Config-drift correction waits for multi-site k8s (RECONCILED pays off where a control plane already runs and drift surface is high). On single-site, the *only* worthwhile standing loop is **liveness** — Podman Quadlet / systemd `Restart=on-failure` so a crashed container self-heals without a Semaphore run. Keep config strictly trigger-driven so the executor stays deterministic.
+7. **Liveness self-heals continuously; CONFIG convergence is authored — and pursued on this estate if safely feasible (PRINCIPLES.md Section 5).** The always-on loop is **liveness** (Podman Quadlet / systemd `Restart=on-failure` — crashed/post-reboot containers self-heal without a Semaphore run). CONFIG convergence is always from a **human-authored** Git target (never AI-authored — §8) and does **not** auto-wait for k8s — see the TL;DR "authored convergence on a timer" decision (scheduled re-apply does not violate the AI Invariant; feasibility, not safety, is open; k8s is richer-substrate-not-prerequisite). [TARGET]/INVESTIGATE: build + prove the scheduled reconcile loop (drift detect + safe, reversible-aware re-apply) on a non-customer service first; ship after the runtime-dir/engine-secret split.
 8. **Genesis decomposes.** Process-genesis (running OpenBao+Semaphore) → declarative compose + a thin reconcile play. Only identity/trust-genesis (first unseal, first token, first `secret_id`) is irreducibly imperative-one-directional. Don't accept a 594-line hand-rolled bootstrap as inherent.
 9. **Detection ≠ correction — say which you have.** The compose tier *detects* drift (scan playbooks) but does not *correct* it. Document that honestly; don't imply self-healing the platform doesn't yet have.
 
@@ -833,7 +811,7 @@ Mapping to the **four-layer guardrails model**: the *Platform* layer is where RE
 
 ## 5. FORCED (non-negotiable) vs DEBT (fixable)
 
-The imperative surfaces split cleanly. **FORCED** are correct and must not be "refactored to declarative." **DEBT** is fixable and tracked in §7.
+The imperative surfaces split cleanly. **FORCED** are correct — never "refactor to declarative." **DEBT** is fixable, tracked in §7.
 
 | FORCED — imperative by real constraint | DEBT — imperative by choice/incompleteness |
 |---|---|
@@ -850,7 +828,7 @@ The imperative surfaces split cleanly. **FORCED** are correct and must not be "r
 
 ## 6. The unavoidable imperative core
 
-Some imperative surfaces are **laws of the environment**, not preferences (all FORCED above). The clearest cluster is **macOS host-state**: `/etc/resolver/<zone>`, the System keychain, `/Library/LaunchDaemons`, and privileged-port binding all live *outside* the podman VM where Semaphore and the engine run — so they *cannot* be reconciled by the control plane and are correctly one-time, idempotent, host-bootstrap `make` targets. Likewise, daemons that reload config on a **signal** (step-ca SIGHUP, `caddy reload`) make the *apply* step imperative even when the config file itself is declarative. Trying to "declarative-ize" these is a category error.
+Some imperative surfaces are **laws of the environment**, not preferences (all FORCED above). The clearest cluster is **macOS host-state**: `/etc/resolver/<zone>`, the System keychain, `/Library/LaunchDaemons`, and privileged-port binding all live *outside* the podman VM where Semaphore/the engine run — so the control plane *cannot* reconcile them; they are correctly one-time, idempotent, host-bootstrap `make` targets. Likewise, daemons that reload config on a **signal** (step-ca SIGHUP, `caddy reload`) make the *apply* step imperative even when the config file is declarative. "Declarative-izing" these is a category error.
 
 ---
 
@@ -860,16 +838,19 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 2. **Retire the legacy nocodb secret-generating path** (`common.sh:generate_*_env`, the on-VM `secrets/` dir, BAO creds passed into `deploy.sh` via `clone-and-deploy.yml`, the programmatic admin/API-token creation). Replace with `manage-secrets.yml` + `.env.j2` (→ D) and an idempotent post-deploy API bootstrap (→ GI). Held only on pre-seeding stateful secrets into OpenBao before cutover. (n8n already converted — composable `deploy.sh` + `manage-secrets`.)
 3. **Wire `assert-orchestrated.yml`** as a declarative precondition in every deploy play (Critical Rule #1 is enforced today only by the `local-dev.sh` bash guard + convention).
 4. **CI rule AC-1 (`changed_when` honesty):** a `shell`/`command`/`raw` task must not carry `changed_when: true` unless it bears an inline `# always-changes: <reason>` allow-comment. Carve-outs (annotate, don't change): `mint-internal-cert` (re-mints by design), `place-monorepo` local `tar|tar` (full re-sync), `clean-service` (destructive). ansible-lint's `no-changed-when` covers the *missing* case; AC-1 covers the *dishonest-`true`* case.
-5. **Reconcile `AUTOMATION-COMPOSABILITY.md` with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or mark the doc as describing an unbuilt target.
+5. **Reconcile the Composability half of this doc with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or keep it clearly marked as an unbuilt target.
 6. **Decompose bootstrap** (§4.8): control-plane containers → a `compose.bootstrap.yml`; Semaphore resources → an "ensure resources" reconcile play (or a provider). Keep only the identity/seal kernel imperative.
 7. **n8n workflows as managed declarative state:** export flows as JSON-in-repo, apply via an idempotent API task mirroring `setup-templates.yml`. Today they live only in n8n's DB — an unmanaged declarative surface.
-8. **Liveness reconciliation (optional, single-site):** Podman Quadlet / systemd `Restart=on-failure` for crash self-heal — the one cheap standing loop that doesn't smuggle in autonomous config mutation.
+8. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split.
+9. **[TARGET]/INVESTIGATE — scheduled CONFIG reconcile on the VM/Podman estate (PRINCIPLES.md Section 5, owner decision — NOT deferred to k8s):** build and prove "authored convergence on a timer" — a Semaphore-scheduled (or `ansible-pull`) deterministic re-apply of the **human-authored** Git desired-state, with drift detection + safe reversible-aware re-apply, on a non-customer service first. Rationale/AI-Invariant compatibility per §4.7.
 
 ---
 
 ## 8. The AI-layer invariant (load-bearing)
 
-**The AI layer may only emit desired-state *proposals* into TRIGGER-CONVERGED / one-time pipelines that pass through the Guardrail layer. It must never *be* a RECONCILED controller nor author RECONCILED policy unmediated.** RECONCILED controllers (ArgoCD, Kyverno) act only on **human-merged** desired state. A standing autonomous convergence engine with an LLM authoring its target — able to act without a per-action trigger — is the one shape the four-layer model exists to forbid (an unattended loop with `down -v` reach and an LLM upstream). "AI proposes → guardrails validate → automation executes" is, precisely, *imperative control flow with declarative gates* — the right shape for a privacy/safety-critical platform. This is the default; weakening it requires an explicit, recorded decision.
+**The AI layer may only emit desired-state *proposals* into TRIGGER-CONVERGED / one-time pipelines that pass through the Guardrail layer. It must never *be* a RECONCILED controller nor author RECONCILED policy unmediated.** This is a **hard constitutional limit** (PRINCIPLES.md Section 4): AI **proposes**, guardrails (OpenBao/OPA/Kyverno) **validate**, automation (Ansible/Semaphore) **executes** — and never the inverse. RECONCILED controllers (ArgoCD, Kyverno) act only on **human-merged** desired state. A standing autonomous convergence engine with an LLM authoring its target — able to act without a per-action trigger — is the one shape the four-layer model exists to forbid (an unattended loop with `down -v` reach and an LLM upstream).
+
+**Self-improvement is PROPOSE-ONLY.** An agent **may recommend improvements to agent-cloud — including its own pipelines, prompts, and configuration** — but **never apply them without human review and permission**. No agent may **be** a standing autonomous reconciler. The "authored convergence on a timer" loop (§4.7, §7.9) is compatible with this invariant *because its target is human-authored* — an agent must never author that target. "AI proposes → guardrails validate → automation executes" is precisely *imperative control flow with declarative gates* — the right shape for a privacy/safety-critical platform. This is the default; weakening it requires an explicit, recorded human decision.
 
 ---
 
@@ -877,13 +858,14 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 
 ```mermaid
 flowchart LR
-  N["NOW (single-site)<br/>TRIGGER-CONVERGED + GI<br/>detect-only drift; deterministic executor"]
-  L["+ Liveness reconcile<br/>Quadlet/systemd Restart"]
-  K["k0s + ArgoCD/Kyverno/ESO<br/>RECONCILED config + admission + secret sync"]
-  N --> L --> K
+  N["NOW (single-site)<br/>TRIGGER-CONVERGED + GI<br/>detect-only config drift; deterministic executor"]
+  L["+ Liveness reconcile<br/>Quadlet/systemd Restart (continuous self-heal)"]
+  S["+ Authored convergence on a timer<br/>scheduled re-apply of HUMAN-authored Git target<br/>(Semaphore/ansible-pull) — INVESTIGATE, pursued on this estate"]
+  K["k0s + ArgoCD/Kyverno/ESO<br/>richer RECONCILED substrate (not a prerequisite)"]
+  N --> L --> S --> K
 ```
 
-The runtime split *is* a decl/imp split, and that alignment is a feature: single-site Compose on Proxmox VMs has low drift surface and no cheap place to host a per-concern reconciler — TRIGGER-CONVERGED is *correct*. Multi-site k8s has high drift surface and a built-in control plane — RECONCILED wins decisively. Don't bolt continuous reconciliation onto the compose tier; let it arrive with Kubernetes.
+The runtime split *is* a decl/imp split, and that alignment is a feature: single-site Compose on Proxmox VMs has low drift surface and a thin, deterministic executor. The owner decision (TL;DR / §4.7 / §7.9) governs the path: liveness self-heals continuously; CONFIG reconciliation of a human-authored Git target is pursued on this estate if safely feasible, **not** auto-deferred to k8s. The standing constraint is unchanged — AI never authors the reconciled target (§8).
 
 ---
 
@@ -899,19 +881,19 @@ The two-axis model was chosen because the project's central risk is **convergenc
 
 ## Source context
 
-This plan synthesizes a three-lens analysis of the repository, each verified against source, then cross-challenged:
+This plan synthesizes a three-lens analysis, each verified against source then cross-challenged:
 
-- **Architecture lens** — declarative-vs-imperative as a property of *who closes the loop*; the four-layer mapping; the AI-invariant; liveness-vs-config reconciliation. Grounded in `AUTOMATION-COMPOSABILITY.md`, `IMPLEMENTATION_PLAN.md` (Idempotency Contract), `platform/k8s/` (empty), live deploy playbooks.
-- **Automation lens** — the D/I/GI authoring discipline and the `changed_when: true` smell; refactor candidates. Grounded in `platform/playbooks/tasks/*` (`manage-secrets`, `manage-approle`, `place-monorepo`, `mint-internal-cert`, `run-migrations`), `harden-ssh.yml`, `common.sh`, `setup-templates.yml`.
-- **Agent-cloud (ground-truth) lens** — current-state map, the FORCED-vs-DEBT split, and confirmation of the live `manage-approle` defect (`secret_id_ttl: 0` at lines ~60–61; unconditional `/secret-id` POST at ~75–85), the unwired `assert-orchestrated.yml`, and the unbuilt runtime-dir tasks. Grounded across `platform/playbooks/`, `platform/services/*/deployment/`, `platform/semaphore/`, `scripts/local-dev.sh`.
+- **Architecture lens** — declarative-vs-imperative as *who closes the loop*; four-layer mapping; AI-invariant; liveness-vs-config reconciliation. Grounded in the Composability half of this doc, `IMPLEMENTATION_PLAN.md` (Idempotency Contract), `platform/k8s/` (empty), live deploy playbooks.
+- **Automation lens** — the D/I/GI discipline and the `changed_when: true` smell; refactor candidates. Grounded in `platform/playbooks/tasks/*` (`manage-secrets`, `manage-approle`, `place-monorepo`, `mint-internal-cert`, `run-migrations`), `harden-ssh.yml`, `common.sh`, `setup-templates.yml`.
+- **Agent-cloud (ground-truth) lens** — current-state map, FORCED-vs-DEBT split, confirmation of the live `manage-approle` defect (`secret_id_ttl: 0` ~lines 60–61; unconditional `/secret-id` POST ~75–85), the unwired `assert-orchestrated.yml`, and the unbuilt runtime-dir tasks. Grounded across `platform/playbooks/`, `platform/services/*/deployment/`, `platform/semaphore/`, `scripts/local-dev.sh`.
 
-Consensus: adopt Axis-1 loop-ownership as the architectural truth (zero standing reconcilers today — names the k8s gap), layer D/I/GI authoring discipline within it, treat the `changed_when: true`-on-mutating-shell as the #1 debt signal, and rank the `manage-approle` defect as the most urgent fix.
+Consensus: adopt Axis-1 loop-ownership as the architectural truth (zero standing reconcilers today — names the k8s gap), layer D/I/GI within it, treat `changed_when: true`-on-mutating-shell as the #1 debt signal, rank the `manage-approle` defect most urgent.
 
 ## Target outcome
 
 After this plan is adopted as the reference standard:
 
 - Every new automation surface is authored with an explicit Axis-1/Axis-2 coordinate, and reviews reject **I masquerading as GI** (bare `changed_when: true` on mutating shell) via CI rule AC-1.
-- The `manage-approle` security defect is fixed (`Create→Verify→Retire`, bounded TTL); the legacy n8n/nocodb secret path is retired; `assert-orchestrated.yml` is wired.
-- `AUTOMATION-COMPOSABILITY.md` describes the system that actually exists (runtime-dir built, or the design dropped).
-- The platform's drift story is stated honestly — *detect-only on the compose tier today; continuous reconciliation arrives with k0s/ArgoCD* — and the AI layer is constrained, by invariant, to proposing into gated pipelines rather than closing loops.
+- The `manage-approle` defect is fixed (`Create→Verify→Retire`, bounded TTL); the legacy n8n/nocodb secret path is retired; `assert-orchestrated.yml` is wired.
+- The Composability half of this doc describes the system that actually exists (runtime-dir built, or the design dropped).
+- The drift story is stated honestly — *liveness self-heals continuously; config is detect-only on the compose tier, with "authored convergence on a timer" pursued on this estate if safely feasible, not auto-deferred to k8s (the richer substrate, not a prerequisite)* — and the AI layer is constrained by **hard** invariant to **proposing** into gated pipelines (incl. propose-only self-improvement), never closing loops or authoring a reconciled target.

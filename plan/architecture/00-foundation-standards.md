@@ -1,10 +1,11 @@
 # 00 — Architecture Foundation & Doc Standards
+> **Constitution:** the repo-root [`PRINCIPLES.md`](../../PRINCIPLES.md) is the platform constitution this doc set elaborates. When a doc disagrees with PRINCIPLES.md, PRINCIPLES.md wins; when PRINCIPLES.md is silent, defer to these architecture docs.
+>
 > **Consolidates:** architecture-reference.md (originals archived in `plan/archive/`)
 >
 > **Depends on:** —
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
-> merged verbatim below under provenance dividers to preserve all detail.
+> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs merged verbatim below under provenance dividers to preserve all detail.
 
 
 <!-- ======================= source: architecture-reference.md ======================= -->
@@ -19,7 +20,9 @@
 
 ## Purpose
 
-This document serves as the master index and standard reference for all architecture and development plan documents in `plan/`. It ensures consistency across documents, makes the full document set discoverable, and defines the lifecycle for plan documents from proposal through completion or supersession.
+Master index and standard reference for all architecture and development plan documents in `plan/`. Ensures cross-document consistency, makes the full set discoverable, and defines the plan-document lifecycle from proposal through completion or supersession.
+
+The repo-root [`PRINCIPLES.md`](../../PRINCIPLES.md) constitution sits above these docs and is the tiebreaker (see the doc header). [`ARCHITECTURE.md`](../../ARCHITECTURE.md) is the entry-point map into this set.
 
 ---
 
@@ -27,36 +30,30 @@ This document serves as the master index and standard reference for all architec
 
 ### Naming Convention
 
-All plan documents use **SCREAMING-KEBAB-CASE** filenames with a `.md` extension:
-
-- `AUTOMATION-COMPOSABILITY.md`
-- `CREDENTIAL-LIFECYCLE-PLAN.md`
-- `DEV-PROXMOX-CLUSTER-PLAN.md`
-
-Exceptions: `IMPLEMENTATION_PLAN.md` (legacy underscore, retained for link stability).
+Plan documents use **SCREAMING-KEBAB-CASE** filenames with `.md` (e.g. `AUTOMATION-COMPOSABILITY.md`, `CREDENTIAL-LIFECYCLE-PLAN.md`, `DEV-PROXMOX-CLUSTER-PLAN.md`). Exception: `IMPLEMENTATION_PLAN.md` (legacy underscore, retained for link stability).
 
 ### Required Sections
 
-Every architecture or development plan document must include the following sections. Not all sections need extensive content, but each must be present:
+Every architecture or development plan document must include all of these (content may be brief, but each must be present):
 
 1. **Title** -- H1 heading matching the document purpose
-2. **Frontmatter** -- Date, Status (see Status Values below), Context (one paragraph explaining why this document exists)
+2. **Frontmatter** -- Date, Status (see below), Context (one paragraph on why this document exists)
 3. **Problem** -- What gap or issue this plan addresses
-4. **Design Principles** -- Guiding constraints for the solution (align with platform design principles in IMPLEMENTATION_PLAN.md)
+4. **Design Principles** -- Guiding constraints (align with platform design principles in IMPLEMENTATION_PLAN.md)
 5. **Architecture** -- Solution design with at least one mermaid diagram
-6. **Implementation Phases** -- Ordered steps with acceptance criteria per phase
+6. **Implementation Phases** -- Ordered steps with per-phase acceptance criteria
 7. **Validation Criteria** -- Table of checks and pass conditions
 8. **Security Considerations** -- Credential handling, blast radius, access control, network exposure
-9. **Cross-references** -- Links to related documents in `plan/` and root `CLAUDE.md`
+9. **Cross-references** -- Links to related `plan/` documents and root `CLAUDE.md`
 10. **Revision History** -- Date and summary of significant changes (optional for initial drafts)
 
-Stub documents (status: PLANNING or TODO) may defer sections 5-8 with a note indicating they are pending.
+Stub documents (PLANNING or TODO) may defer sections 5-8 with a pending note.
 
 ---
 
 ## Status Values
 
-Every document carries a `**Status:**` field in its frontmatter. Valid values:
+Every document carries a `**Status:**` frontmatter field. Valid values:
 
 ```mermaid
 flowchart LR
@@ -93,9 +90,7 @@ flowchart LR
 
 ## Diagram Standards
 
-**ALL diagrams MUST use mermaid fenced blocks.** ASCII art box-drawing (Unicode U+2500-U+257F) is NOT permitted in `plan/` markdown files. CI enforces this via the `No ASCII art in plan docs` lint step.
-
-Existing ASCII art must be converted to mermaid in the next PR that touches the file.
+**ALL diagrams MUST use mermaid fenced blocks.** ASCII art box-drawing (Unicode U+2500-U+257F) is NOT permitted in `plan/` markdown files; CI enforces this via the `No ASCII art in plan docs` lint step. Convert existing ASCII art to mermaid in the next PR that touches the file.
 
 ### Supported Mermaid Types
 
@@ -122,7 +117,12 @@ Existing ASCII art must be converted to mermaid in the next PR that touches the 
 
 ## Architecture Documents Index
 
-Documents in `plan/architecture/` define cross-cutting patterns and standards.
+Documents in `plan/architecture/` define cross-cutting patterns and standards. Above the numbered set sit two repo-root documents:
+
+| Document | Status | Purpose |
+|---|---|---|
+| [PRINCIPLES.md](../../PRINCIPLES.md) | ACTIVE | **00-prime / the constitution.** Durable rules + deliberate trade-offs every service, playbook, and AI agent must obey. The tiebreaker (see doc header). |
+| [ARCHITECTURE.md](../../ARCHITECTURE.md) | ACTIVE | Central architecture reference: the entry-point map into this doc set, pointing from the constitution into the *how* and *why-in-depth*. |
 
 | Document | Status | Purpose |
 |---|---|---|
@@ -260,33 +260,29 @@ graph TD
 
 ## Composability and Translation
 
-These architecture documents are designed for the uhstray.io datacenter platform but follow patterns that translate to other projects:
+Designed for the uhstray.io datacenter platform, but the patterns translate to other projects:
 
-- **4-phase deploy pattern** (AUTOMATION-COMPOSABILITY.md) applies to any Docker Compose + Ansible stack
-- **Create-Verify-Retire rotation** (CREDENTIAL-LIFECYCLE-PLAN.md) applies to any secrets manager (Vault, AWS Secrets Manager, Azure Key Vault)
-- **Service integration checklist** (SERVICE-INTEGRATION-PLAN.md) applies to any multi-service platform
-- **Branch testing workflow** (BRANCH-TESTING-WORKFLOW.md) applies to any Semaphore/CI orchestrated deployment
+- **4-phase deploy pattern** (AUTOMATION-COMPOSABILITY.md) -- any Docker Compose + Ansible stack
+- **Create-Verify-Retire rotation** (CREDENTIAL-LIFECYCLE-PLAN.md) -- any secrets manager (Vault, AWS Secrets Manager, Azure Key Vault)
+- **Service integration checklist** (SERVICE-INTEGRATION-PLAN.md) -- any multi-service platform
+- **Branch testing workflow** (BRANCH-TESTING-WORKFLOW.md) -- any Semaphore/CI orchestrated deployment
 
-To adapt for another project:
-1. Replace `OpenBao` references with your secrets manager
-2. Replace `Semaphore` references with your CI/CD orchestrator
-3. Replace `Proxmox` references with your hypervisor/cloud provider
-4. Keep the structural patterns (composable tasks, runtime/source separation, tiered service classification)
+To adapt for another project: replace `OpenBao` with your secrets manager, `Semaphore` with your CI/CD orchestrator, `Proxmox` with your hypervisor/cloud provider; keep the structural patterns (composable tasks, runtime/source separation, tiered service classification).
 
 ---
 
 ## Testing Requirements
 
-All changes to plan documents must pass CI before merging:
+All plan-document changes must pass CI before merging:
 
-1. **No ASCII art** -- The `No ASCII art in plan docs` CI step rejects Unicode box-drawing characters (U+2500-U+257F) in `plan/**/*.md`
-2. **No credentials or IPs** -- The security scan steps reject hardcoded private IPs and credential patterns
-3. **YAML lint** -- yamllint validates any embedded YAML blocks
-4. **BASH lint** -- shellcheck validates any bash script code/blocks
-5. **Python lint** -- ruff validates any Python code (pylint is not currently in CI but may be added)
-6. **Markdown rendering** -- Mermaid diagrams must use valid syntax (test locally with a mermaid-capable renderer)
+1. **No ASCII art** -- `No ASCII art in plan docs` step rejects Unicode box-drawing (U+2500-U+257F) in `plan/**/*.md`
+2. **No credentials or IPs** -- security scan rejects hardcoded private IPs and credential patterns
+3. **YAML lint** -- yamllint validates embedded YAML blocks
+4. **BASH lint** -- shellcheck validates bash code blocks
+5. **Python lint** -- ruff validates Python code (pylint not currently in CI, may be added)
+6. **Markdown rendering** -- mermaid diagrams must use valid syntax (test locally with a mermaid-capable renderer)
 
-See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md), [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) and [CI-TESTING-SPECIFICATION.md](CI-TESTING-SPECIFICATION.md) for the full testing strategy and CI pipeline reference.
+See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md), [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md), and [CI-TESTING-SPECIFICATION.md](CI-TESTING-SPECIFICATION.md) for the full testing strategy and CI pipeline reference.
 
 ---
 
