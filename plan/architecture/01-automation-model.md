@@ -467,7 +467,7 @@ platform/services/netbox/deployment/
     hydra.yaml.j2
 ```
 
-These replace `generate-secrets.sh`'s env-writing logic. Variables come from the `_resolved` dict populated by `manage-secrets.yml`.
+These replace `generate-secrets.sh`'s env-writing logic. Variables come from the `_resolved` dict populated by `manage-secrets.yml` (OpenBao secrets + generated values + any cross-service `_shared_reads` merged in).
 
 ---
 
