@@ -98,9 +98,10 @@ and thereafter reused. Env files are templated fresh every deploy (mode 0600), g
 secret-generating `deploy.sh`, an on-VM `secrets/` dir, a token written back from `deploy.sh`) is a
 defect.
 *Why: generate-if-missing/reuse-always is the cure for the original NetBox failure (deploy.sh
-regenerated secrets, drifting passwords against live DB volumes). As-built: nocodb and semaphore
-`deploy.sh` still `source bao-client.sh` - retiring that is the concrete acceptance test that this
-principle is real.*
+regenerated secrets, drifting passwords against live DB volumes). As-built: `nocodb` deploy.sh still
+`source`s `bao-client.sh` (a violation to retire); `semaphore` is genesis-exempt per the
+bootstrap-services principle below. Retiring nocodb's self-fetch is the concrete acceptance test that
+this principle is real.*
 
 **deploy.sh is container-lifecycle-only; the credential boundary is Ansible.** A `deploy.sh` may
 verify env files exist, pull/build images, run `compose up`, wait for health, and run migrations. It
@@ -109,6 +110,19 @@ Semaphore. Every credential takes exactly one path: OpenBao -> Ansible memory ->
 *Why: the keystone seam all lenses converge on. It bounds blast radius (a compromised deploy script
 can't reach OpenBao), keeps redeploys idempotent, and keeps the imperative residue thin. CI-enforced
 by grepping `deploy.sh` for `gen_secret`/`put_secret`/`get_secret`/`bao-client`.*
+
+**Bootstrap (genesis) services manage their own credentials; anything provisioned from a running
+instance does not.** OpenBao and Semaphore are the genesis layer - the secret store and the
+orchestrator cannot fetch their own secrets from a system that does not exist yet, so on a **fresh
+local deployment** they generate and manage their own credentials (committed as code in
+`bootstrap-local-dev.yml`, run on localhost). This is the single sanctioned exception to the
+`deploy.sh`-lifecycle-only / Ansible-owns-secrets rule. Once an agent-cloud instance is running,
+**provisioning a new tenant or service from it MUST follow the strict boundary** (OpenBao -> Ansible
+-> Jinja -> `.env`; `deploy.sh` never touches OpenBao).
+*Why: the chicken-and-egg of trust is real and must be named, not smuggled in per-service. As-built:
+`semaphore` deploy.sh sourcing `bao-client.sh` is defensible as genesis; `nocodb` deploy.sh doing so
+is NOT - it is a normal service provisioned from a running instance, so refactor it to the strict
+boundary. The CI grep above carries an allowlist naming only the genesis services (OpenBao, Semaphore).*
 
 **One authority per concern; reflections are read-only and never invert authority.** Each
 cross-cutting concern has a single source of truth: OpenBao (secrets), NetBox (network/IPAM), Git
@@ -144,19 +158,23 @@ the wildcard.
 As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, and add a CI lint over
 `policies/*.hcl` flagging any `services/*` grant except the allowlisted semaphore policy.*
 
-**Human access is provisioned by role, never granted by hand: Organization > User Type > Access
-Level.** RBAC has one hierarchy - **Organization** (the highest division; tenants are orgs) > **User
-Type** > **Access Level**, highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied
-per tenant and per project. Authentik groups are the source of truth
-(`<org>-admins/-maintainers/-developers/-users`); a provisioning mechanism maps each group to
-per-service roles (Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox
-permissions, ...). Any Admin-level user is provisioned with admin rights and all-project visibility
-automatically - never a per-service hand-grant.
+**Human access is provisioned by role, never granted by hand.** Identity decomposes as
+**Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
+highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per tenant and per project.
+Organization is the hard tenant-isolation boundary (tenants are orgs); Department/Team/Role place a
+person within an org; Access Level is how much they may do. Authentik groups are the source of truth;
+a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
+roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
+Admin-level user is provisioned with admin rights and all-project visibility automatically - never a
+per-service hand-grant.
 *Why: provisioning is the only way user management scales across many tenants/projects without drift;
-it is the no-monkey-patch rule (Section 2) applied to people. **[TARGET]** the provisioning automation
-and the `<org>-<level>` group set are not built yet - Semaphore user `stray` was hand-set to admin (a
-stopgap), and `platform-admins` is today's sole admin group, being renamed `uhstray-admins` (the
-uhstray-org Admin tier). Do not reason as if role-based provisioning already holds.*
+it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
+"user type") lets access be derived from real org structure instead of bespoke per-person grants.
+**[TARGET]** the provisioning automation + the group schema are not built yet - Semaphore user `stray`
+was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, being renamed
+`uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
+mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
+provisioning already holds.*
 
 **`no_log` is a scalpel for the credential boundary - never a blanket, never a ban.** Scope `no_log`
 to OpenBao auth/fetch/generate/store, shared-reads, and secret-templating. Deploys, health checks,
@@ -172,8 +190,11 @@ callback, when built and verified, is additive defense-in-depth, never a replace
 a CI gate (trufflehog + RFC1918 + credential-pattern grep) + log-value redaction. The manual pre-push
 grep is a human backstop, never the primary control. A new service without leak tests cannot merge.
 *Why: on a public repo a leaked credential is exposed the instant it's pushed; one skippable gate is
-not enough. Note: commit `aecd47d` added real-looking `.env` files to public history - treat as a
-live exposure incident (inspect, rotate any real values, scrub via the admin break-glass path).*
+not enough. Note: commit `aecd47d` committed dev-test `.env` files to public history; **verified
+2026-06-28 to hold only placeholders** (`POSTGRES_PASSWORD=abc123456xyz`, `nocodb.example.com`) - NOT
+a breach, no real credential/IP/domain exposed, and current prod uses unrelated OpenBao-managed creds.
+The lesson still stands: the pre-commit/CI gate must reject committing ANY `.env` at all, so the next
+one - which might be real - never lands.*
 
 **Site identity is enforced structurally, not by a broad regex.** Keep the trufflehog + RFC1918 +
 public-IP grep. Add (a) a curated denylist of real site-domain suffixes / prod IP ranges - kept in
@@ -191,9 +212,12 @@ structural and low-false-positive; the denylist targets actual leaks.*
 **AI proposes, guardrails validate, automation executes - and never the inverse.** An AI agent
 (NemoClaw, NetClaw, Cowork, WebSmith, Wisbot) may only emit desired-state proposals into
 trigger-converged or one-time pipelines that pass through the guardrail layer (OpenBao, OPA, Kyverno)
-before the automation layer executes them. No AI agent may **be** a standing autonomous reconciler,
-**nor author the human-unmediated target** of a RECONCILED controller (ArgoCD/Kyverno, post-k8s).
-Weakening this requires an explicit, recorded human decision.
+before the automation layer executes them. An agent **may recommend improvements to agent-cloud
+itself** - including to its own pipelines, prompts, and configuration - **but may never apply them
+without human review and permission: self-improvement is propose-only.** No AI agent may **be** a
+standing autonomous reconciler, **nor author the human-unmediated target** of a RECONCILED controller
+(ArgoCD/Kyverno, post-k8s). This is a **hard constitutional limit**; weakening it requires an
+explicit, recorded human decision.
 *Why: this is the single load-bearing safety property and the reason the architecture is four layers
 not three. The shape it forbids is an unattended convergence loop with an LLM authoring its own
 target and `down -v` reach. Every future agent capability is checked against this rule.*
@@ -230,19 +254,24 @@ the proof). The CI rule targets the real defect: fail a *mutating* command/shell
 the deploy.sh invoker, which is inherently always-changing). Teach the read-guard pattern, not a
 reflexive allow-comment.*
 
-**Single-site reconciles liveness, not config.** Continuous config reconciliation
-(ArgoCD/Kyverno/ESO) is deferred to multi-site k8s. The only standing loop on the compose tier is
-**liveness**: a crashed or post-reboot container self-heals. Config converges only when Semaphore
-fires.
-*Why: daemonless Podman means `restart:` policies do not survive a host reboot, so a 3am crash stays
-dead until a human notices. Liveness is the one cheap loop that doesn't smuggle autonomous config
-mutation into a deterministic executor. Constraints: the liveness unit must `start` the existing
-container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable
-task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase - **not** inside
-deploy.sh (which would breach the lifecycle-only boundary and needs no business owning
-`enable-linger`); it is engine-parameterized (Quadlet/systemd for Podman, native `restart` + systemd
-wrapper for Docker/NetBox); and it ships **after** the runtime-dir split, since the unit's
-EnvironmentFile must point at Semaphore-exclusive state.*
+**Liveness self-heals continuously; config reconciliation is authored - and pursued on this estate if
+it can be done safely.** The only always-on loop is **liveness**: a crashed or post-reboot container
+self-heals. For CONFIG, convergence is always from a **human-authored** Git target (never AI-authored
+- Section 4), but it need not wait for k8s: if continuous config reconciliation can be done safely on
+the VM/container estate - a scheduled, deterministic re-apply of Git desired-state via Semaphore (or
+`ansible-pull`), i.e. "authored convergence on a timer," not a free-running mutator - we **pull it
+forward**. ArgoCD/Kyverno/ESO on multi-site k8s is the richer eventual substrate, **not** a
+prerequisite; defer to it only if scheduled re-apply proves insufficient.
+*Why: daemonless Podman means `restart:` survives a crash but not a host reboot, so liveness is the
+cheap must-have. Reconciling a HUMAN-authored target does not violate the AI Invariant or
+authored-convergence - it is Semaphore firing on a schedule instead of on a trigger - so the open
+question is feasibility, not safety. **[TARGET]/INVESTIGATE:** build + prove a scheduled reconcile
+loop (drift detect + safe, reversible-aware re-apply) on a non-customer service first. Liveness-loop
+constraints: the unit must `start` the existing container, never `up` (which re-reads possibly-drifted
+on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible
+as the final deploy phase - **not** inside deploy.sh (lifecycle-only boundary); it is
+engine-parameterized (Quadlet/systemd for Podman, native `restart` + systemd wrapper for
+Docker/NetBox); and it ships **after** the runtime-dir split.*
 
 **Branch deploys to prod are classified reversible vs irreversible.** Each deploy playbook carries a
 `reversible: true|false` flag. When `service_branch != main` and `reversible == false` (migrations,
@@ -280,15 +309,25 @@ root that all internal TLS trusts); Caddy's LE certs live only in `caddy-data` (
 rate limits with no traffic served). The DR plan is still PLANNING - this principle forces the backup
 question at onboarding instead of after the first volume loss.*
 
-**[TARGET] The git clone is read-only source; generated state lives in a separate runtime dir.**
-Generated secrets and rendered env land only in the per-service runtime dir (`~/services/<name>/`,
-mode 0700); the clone (`~/agent-cloud/`) is read-only source. Filesystem isolation - not `.gitignore`
-- is the boundary, because isolation fails closed while `.gitignore` fails open.
-*As-built: NOT YET TRUE. `manage-secrets.yml` renders env into the clone today; `setup-runtime-dir.yml`
-/ `sparse-checkout.yml` / `run-deploy.yml` do not exist. Until they ship, `.gitignore` + the
-pre-commit trufflehog gate are the real (fragile) boundary and the `.gitignore` coverage check is a
-**hard** CI gate, not a backstop. Build the runtime-dir split - the liveness loop and any honest
-secret-isolation claim depend on it. Do not reason as if the clone is secret-free today.*
+**[TARGET] Target hosts receive rendered runtime artifacts, not a repo clone; secrets are tmpfs-mounted
+from OpenBao, never a persistent file.** A service host is a dumb container host. The orchestrator
+(Semaphore, which already holds the repo) renders the service's compose + non-secret config and copies
+**only those runtime artifacts** to a per-service runtime dir (`~/services/<name>/`, mode 0700) - it
+does **not** clone the monorepo to the target. Secrets flow OpenBao -> Ansible -> the container
+engine's secret store (`podman`/`docker secret`, mounted at `/run/secrets` on **tmpfs**) - never
+rendered to a persistent `.env`. `deploy.sh` runs `compose up` over the copied artifacts
+(lifecycle-only, unchanged).
+*Why: this fails **closed by construction** - there is no repo tree on the target to `git add` into and
+no secret file on persistent disk to leak; secrets live in RAM and vanish on reboot. It also shrinks
+each host's blast radius to the single service it runs. (Where on-target source is genuinely
+unavoidable - e.g. a build context - use `git sparse-checkout` of just `platform/services/<name>/` +
+`platform/lib/`, never the whole repo.) **As-built: NOT YET TRUE** - `manage-secrets.yml` renders
+`.env` into the full clone today; the artifact-render/copy, sparse-checkout, and engine-secret delivery
+tasks do not exist. Until they ship, `.gitignore` + the pre-commit trufflehog gate are the real
+(fragile) boundary and the `.gitignore` coverage check is a **hard** CI gate. Caveats to resolve when
+building: services that expect env-vars or a `.env` (not `/run/secrets`) need a thin entrypoint shim,
+and podman-compose `secrets:` support must be verified on the fleet's engine version. **Build this
+first** - the liveness loop and every honest secret-isolation claim depend on it.*
 
 ---
 
@@ -337,10 +376,12 @@ load-bearing at 21 services.
 
 ## Open tensions
 
-- **Runtime-dir split vs. shipping velocity.** The secret-isolation boundary (Section 6) is the
-  stated #1 security property but is unbuilt; until it lands, several other principles (liveness
-  self-heal, "secrets never in the clone") are aspirational. Building it is prioritized, but every
-  day it is deferred, `.gitignore` is the only real control.
+- **Runtime-dir model: designed, not yet built (top priority).** The target is decided (Section 6:
+  rendered runtime artifacts on dumb hosts + tmpfs OpenBao secrets, no repo clone) and is the #1 build
+  priority - but until it lands, `.gitignore` is the only real secret boundary and the liveness loop +
+  "secrets never in the clone" remain aspirational. The residual tension is purely shipping velocity
+  plus the two build caveats (entrypoint shims for env-expecting services; podman-compose `secrets:`
+  support on the fleet version).
 - **Conformance ceremony vs. auxiliary-tier velocity.** The tier-aware conformance lint is the
   reconciliation, but the exact line between "auxiliary minimal" and "full ceremony" will be
   re-litigated as trivial services (docs sites) are onboarded. Watch for the lint being felt as
