@@ -61,9 +61,15 @@
         - "{{ _approle_name }}"
       token_ttl: "{{ _approle_token_ttl | default('30m') }}"
       token_max_ttl: "{{ _approle_token_max_ttl | default('2h') }}"
-      # Bounded by default per PRINCIPLES.md Section 3 (TTL=0 is a defect). A caller may
-      # override; the sole unlimited-TTL exception is the Semaphore orchestrator.
+      # Bounded by default per PRINCIPLES.md Section 3 (TTL=0 is a defect). The ENFORCED
+      # bound is secret_id_ttl (90d — forces rotation). secret_id_num_uses caps SecretID
+      # *logins*; token_num_uses caps the *issued token*. A caller may override; the sole
+      # unlimited-secret_id_ttl exception is the Semaphore orchestrator.
       secret_id_ttl: "{{ _approle_secret_id_ttl | default('2160h') }}"
+      # 0 = unlimited logins WITHIN the TTL window. Default 0 because runtime-auth roles
+      # (e.g. orb-agent) re-login as tokens expire — a low SecretID-use cap would lock
+      # them out. Set per role once its login frequency / a renewal path is known.
+      secret_id_num_uses: "{{ _approle_secret_id_num_uses | default(0) }}"
       token_num_uses: "{{ _approle_token_num_uses | default(25) }}"
     status_code: [200, 204]
   delegate_to: localhost

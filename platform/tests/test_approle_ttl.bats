@@ -24,7 +24,11 @@ setup() {
     file=$(printf '%s' "$hit" | cut -d: -f1)
     line=$(printf '%s' "$hit" | cut -d: -f2)
     start=$(( line > 6 ? line - 6 : 1 ))
-    if ! sed -n "${start},${line}p" "$file" | grep -q 'allow: orchestrator-unlimited-ttl'; then
+    # The exemption is role-specific: the window must carry the marker AND name the
+    # Semaphore role, so a non-Semaphore role can't bypass by pasting the marker alone.
+    window=$(sed -n "${start},${line}p" "$file")
+    if ! { printf '%s\n' "$window" | grep -q 'allow: orchestrator-unlimited-ttl' \
+        && printf '%s\n' "$window" | grep -qi 'semaphore'; }; then
       offenders="${offenders}${file}:${line}"$'\n'
     fi
   done <<< "$hits"
