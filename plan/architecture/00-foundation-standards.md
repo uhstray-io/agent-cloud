@@ -1,4 +1,6 @@
 # 00 — Architecture Foundation & Doc Standards
+> **Constitution:** the repo-root [`PRINCIPLES.md`](../../PRINCIPLES.md) is the platform constitution this doc set elaborates. When a doc disagrees with PRINCIPLES.md, PRINCIPLES.md wins; when PRINCIPLES.md is silent, defer to these architecture docs.
+>
 > **Consolidates:** architecture-reference.md (originals archived in `plan/archive/`)
 >
 > **Depends on:** —
@@ -20,6 +22,8 @@
 ## Purpose
 
 This document serves as the master index and standard reference for all architecture and development plan documents in `plan/`. It ensures consistency across documents, makes the full document set discoverable, and defines the lifecycle for plan documents from proposal through completion or supersession.
+
+The repo-root `PRINCIPLES.md` is the platform constitution and sits **above** these architecture docs: it states the small set of durable rules and deliberate trade-offs every service, playbook, and AI agent must obey. It is the **tiebreaker** -- when one of these architecture docs disagrees with `PRINCIPLES.md`, `PRINCIPLES.md` wins; when `PRINCIPLES.md` is silent, defer to these docs (the *how* and the *why-in-depth*). A repo-root `ARCHITECTURE.md` (central reference) is being added alongside as the entry-point map into this doc set.
 
 ---
 
@@ -123,6 +127,13 @@ Existing ASCII art must be converted to mermaid in the next PR that touches the 
 ## Architecture Documents Index
 
 Documents in `plan/architecture/` define cross-cutting patterns and standards.
+
+Above the numbered set sit two repo-root documents:
+
+| Document | Status | Purpose |
+|---|---|---|
+| [PRINCIPLES.md](../../PRINCIPLES.md) | ACTIVE | **00-prime / the constitution.** The durable rules and deliberate trade-offs every service, playbook, and AI agent must obey. Sits ABOVE these docs and is the tiebreaker: when a doc disagrees, PRINCIPLES.md wins; when it is silent, defer to these docs. |
+| [ARCHITECTURE.md](../../ARCHITECTURE.md) | ACTIVE | Central architecture reference (being added). The entry-point map into this `plan/architecture/` doc set, pointing readers from the constitution into the *how* and the *why-in-depth*. |
 
 | Document | Status | Purpose |
 |---|---|---|

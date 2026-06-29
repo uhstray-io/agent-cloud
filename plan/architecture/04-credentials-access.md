@@ -3,6 +3,8 @@
 >
 > **Depends on:** 00, 01
 >
+> **Constitution:** `PRINCIPLES.md` is the platform constitution; this document elaborates its Section 3 (Identity, Secrets & the Guardrail Triad) — credential lifecycle, the OpenBao -> Ansible -> Jinja -> `.env` boundary, the genesis exemption, and the role-based access model. Where the two disagree, PRINCIPLES.md wins.
+>
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
@@ -25,6 +27,19 @@
 4. **Per-site isolation:** compromise of one site's credentials doesn't affect others
 5. **OpenBao is the sole authority:** no credentials managed outside OpenBao
 6. **Automation over manual:** rotation, cleanup, and auditing are scheduled playbooks
+
+---
+
+## Bootstrap (Genesis) Services
+
+Two services are the **genesis layer**: the secret store (**OpenBao**) and the orchestrator (**Semaphore**). They face a chicken-and-egg problem — neither can fetch its own credentials from a system that does not exist yet, and Semaphore cannot deploy *through* an orchestrator that is not yet running. On a **fresh LOCAL deploy** they therefore generate and manage their own credentials directly. This is the **sole sanctioned exception** to the `deploy.sh`-lifecycle-only / Ansible-owns-secrets boundary (PRINCIPLES.md Section 3).
+
+- **Committed as code, never hand-typed.** The genesis sequence is committed in `bootstrap-local-dev.yml` and run on `localhost` (`make local-bootstrap`). It is auditable and idempotent like any other playbook — the only difference from the normal path is the invocation context, not forked playbooks.
+- **Anything provisioned from a RUNNING instance follows the strict boundary.** Once an agent-cloud instance is up, provisioning a new tenant or service from it MUST take the single path: **OpenBao -> Ansible memory -> Jinja2 -> `.env`**; `deploy.sh` never calls OpenBao. The genesis carve-out does not generalize beyond OpenBao and Semaphore.
+- **Genesis-exempt vs. violation.** `semaphore` deploy.sh sourcing `bao-client.sh` is **defensible as genesis**. `nocodb` deploy.sh doing the same is **a violation to retire** — NocoDB is a normal service provisioned from a running instance, so its self-fetch must be refactored to the strict boundary (`manage-secrets.yml` + Jinja templates), not grandfathered.
+- **CI allowlist.** The `deploy.sh`-secret-free grep (Section 7 of PRINCIPLES.md) carries an allowlist naming **only** OpenBao and Semaphore; every other `deploy.sh` matching `gen_secret`/`put_secret`/`get_secret`/`bao-client` is a hard failure.
+
+(Section 1's "Genesis-Bootstrap Exemption" below describes the *access-path* side of the same carve-out — that genesis runs un-forked `deploy-<svc>.yml` on localhost outside Semaphore. This subsection is the *credential-ownership* side: genesis services own their own secrets; everything else does not.)
 
 ---
 
@@ -204,6 +219,67 @@ When decommissioning a site or service:
 - [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation, TTLs
 - [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
 - [DISASTER-RECOVERY-PLAN.md](../development/DISASTER-RECOVERY-PLAN.md) -- DR procedures (planned)
+
+---
+
+## 0. RBAC & Access Governance Model
+
+This section codifies *who* a person is and *how much they may do*, which the rest of this document (Semaphore-vs-SSH paths, SSH key scope, AppRole boundaries) then enforces. It elaborates PRINCIPLES.md Section 3's "Human access is provisioned by role, never granted by hand."
+
+### Identity Decomposition (two orthogonal axes)
+
+Identity is **not** one opaque "user type." It decomposes along two independent axes:
+
+```
+Axis 1 - WHO (job placement):   Organization > Department > Team > Role
+Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest -> lowest)
+```
+
+- **Role = job function** (e.g. `platform-engineer`, `network-operator`, `data-analyst`). It says *what a person does*.
+- **Access Level = privilege tier**. It says *how much they may do*. It is **orthogonal** to Role: the same Role can hold different Access Levels in different projects, and the same Access Level spans many Roles.
+- **Organization is the hard tenant-isolation boundary** — **tenants are orgs**. An identity in org A can never see org B's secrets, projects, or infrastructure. Department/Team/Role only place a person *within* their org; they are not isolation boundaries.
+- The model is applied **per tenant and per project**: a person carries an (org, department, team, role, access-level) tuple, and Access Level is resolved per project (User on project X, Maintainer on project Y).
+
+### Authentik Is the Source of Truth
+
+**Authentik groups are the single source of truth** for the (org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant in any downstream service. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
+
+Group-schema convention (the encoding of the tuple in Authentik group names):
+
+```
+<org>-<department>-<team>-<role>       # placement (Axis 1)
+<org>-<access-level>                   # privilege within the org (Axis 2)
+
+Examples:
+  uhstray-platform-infra-engineer      # WHO: uhstray / platform dept / infra team / engineer role
+  uhstray-admins                       # HOW MUCH: Admin tier for the uhstray org
+  uhstray-developers                   # HOW MUCH: Developer tier for the uhstray org
+```
+
+### Access Level -> Per-Service Role Mapping
+
+The provisioning mechanism maps each Access Level to concrete per-service roles. Authoritative mapping table:
+
+| Access Level | Semaphore | NetBox | OpenBao (per-tenant prefix) | Project visibility |
+|--------------|-----------|--------|-----------------------------|--------------------|
+| **Admin** | `admin` flag on user (global admin) | superuser / Full Access on all object types | read across the tenant's `{{ vault_secret_prefix }}/*` (via orchestrator, not direct) | **ALL projects, automatically** |
+| **Maintainer** | Project **Owner** | staff + change perms on assigned object types | read scoped to assigned services | assigned projects |
+| **Developer** | Project **Manager** | change perms on assigned object types (no delete) | read scoped to assigned services | assigned projects |
+| **User** | `task_runner` (run pre-defined templates) / `guest` (read-only) | view-only on assigned object types | none (no direct secret access) | assigned projects, read-only |
+
+Rules that fall out of the table:
+
+- **Admin is fully derived, never hand-granted.** Any identity in the org's Admin group (`uhstray-admins`) is provisioned with the Semaphore `admin` flag **and** all-project visibility **automatically** — there is no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
+- **Role scopes *which* projects/services; Access Level scopes *what* you may do in them.** A `network-operator` Role with Developer Access Level gets Project-Manager rights on the NetBox/network projects their team owns — not on unrelated projects.
+- **User is genuinely least-privilege:** no direct OpenBao path, run-only or read-only in Semaphore/NetBox.
+
+### As-Built (honest status)
+
+**[TARGET] / NOT BUILT:** the provisioning automation (Authentik groups -> per-service roles) and the full group schema above are **not implemented yet**. Do not reason as if role-based provisioning already holds. Today's reality:
+
+- **`platform-admins` is the sole admin group**, and it is **being renamed `uhstray-admins`** (the uhstray-org Admin tier in the schema above).
+- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as a stopgap, not the foundational fix. The foundational fix is the provisioning mechanism in this section: derive `stray`'s admin flag from membership in `uhstray-admins` instead of hand-setting it.
+- There is no Department/Team/Role decomposition wired into Authentik groups yet, and no automated (tuple -> per-service role) mapper. Until it ships, downstream service roles are set by hand and this section is the design target they converge to.
 
 ---
 

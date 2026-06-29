@@ -3,6 +3,10 @@
 >
 > **Depends on:** 00
 >
+> **Constitution:** `PRINCIPLES.md` is the platform constitution; this doc elaborates its
+> Config-as-Code, Composability, Identity/Secrets, AI-Invariant, and Automation/Promotion
+> principles. When this doc and `PRINCIPLES.md` disagree, the constitution wins.
+>
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
@@ -30,6 +34,43 @@ Each service's deploy.sh is a monolith that handles everything from secret gener
 ## Solution: OpenBao-Driven Secret Lifecycle
 
 **OpenBao is the single source of truth.** No `secrets/` directory on VMs. No local secret generation. Ansible fetches from OpenBao via `community.hashi_vault`, templates compose-ready config files, and deploy.sh only runs container operations.
+
+### [TARGET] Runtime/secret delivery model (PRINCIPLES.md Section 6)
+
+This section's diagrams and prose below describe the *current* runtime-dir design (Ansible
+renders `.env` / `env/*.env` into `~/services/<name>/`, compose symlinked back to a sparse
+clone). The agreed end-state in `PRINCIPLES.md` Section 6 **supersedes** that, and the rest of
+this doc should be read against it:
+
+- **Target hosts receive RENDERED RUNTIME ARTIFACTS, not a repo clone.** The orchestrator
+  (Semaphore, which already holds the repo) renders the service's `compose.yml` + non-secret
+  config and **copies only those runtime artifacts** to a per-service runtime dir
+  (`~/services/<name>/`, mode 0700). It does **not** clone the monorepo to the target. The
+  service host is a dumb container host.
+- **Secrets flow OpenBao -> Ansible -> container-engine secret, never a persistent `.env`.**
+  Ansible delivers each secret to the engine's secret store (`podman secret` / `docker secret`),
+  mounted at `/run/secrets` on **tmpfs**. Secrets live in RAM and vanish on reboot - there is
+  **no** persistent secret file on disk to leak.
+- **`deploy.sh` runs `compose up` over the copied artifacts** - lifecycle-only, unchanged
+  (verify -> pull/build -> `compose up` -> wait healthy -> migrate). It still never touches
+  OpenBao.
+- **`git sparse-checkout` (service dir + `platform/lib` only) is the FALLBACK**, used **only**
+  where on-target source is genuinely unavoidable (e.g. a build context that needs the source
+  tree). It is never the default and never the whole repo.
+
+*Why: this fails closed by construction - no repo tree on the target to `git add` into, no
+secret file on persistent disk. It also shrinks each host's blast radius to the one service it
+runs.*
+
+**As-built: NOT YET TRUE.** Today `manage-secrets.yml` renders `.env` **into the clone**, the
+artifact-render/copy and engine-secret (`/run/secrets` tmpfs) delivery do not exist, and the
+sparse-checkout/runtime-dir tasks are `[PLANNED]`. Until they ship, `.gitignore` + the
+pre-commit/CI **trufflehog** gate are the real (fragile) secret boundary - not filesystem
+isolation. **Build caveats to resolve:** (a) services that expect env-vars or a `.env` (not
+`/run/secrets`) need a thin **entrypoint shim** to read the secret file into the env; (b)
+podman-compose `secrets:` support must be **verified on the fleet's engine version** before
+relying on it. Build this first - the liveness loop and every honest secret-isolation claim in
+this doc depend on it.
 
 ### Architecture
 
@@ -85,6 +126,16 @@ Docker Compose does not integrate with OpenBao natively. The `.env` and `env/*.e
 - Have mode `0600` (owner-read/write only)
 
 This cannot be eliminated without switching to Docker Swarm secrets, Kubernetes + ESO, or a compose-external injection mechanism. For the Docker Compose pattern, env files on disk are the standard approach. The runtime directory separation ensures secrets never exist in the git working tree — filesystem isolation replaces `.gitignore` as the security boundary.
+
+> **[TARGET] supersedes this paragraph (PRINCIPLES.md Section 6).** The agreed end-state does
+> *not* keep a persistent `.env` on disk: secrets flow OpenBao -> Ansible -> the **container
+> engine's secret store** (`podman`/`docker secret`), mounted at `/run/secrets` on **tmpfs**.
+> The compose-external injection mechanism named above is exactly the chosen path - it is *not*
+> deferred to Swarm/k8s/ESO. The "minimal bridge" `.env` is the **as-built** reality, not the
+> target. Until the engine-secret delivery ships, the disk `.env` (mode 0600) remains, and
+> `.gitignore` + trufflehog - not filesystem isolation - are the actual boundary. The two build
+> caveats apply: an **entrypoint shim** for services that expect env-vars/`.env` rather than
+> `/run/secrets`, and verifying podman-compose `secrets:` support on the fleet engine version.
 
 ### What Ansible/Semaphore Manages Natively
 
@@ -572,6 +623,17 @@ During migration, services not yet converted continue using `clone-and-deploy.ym
 
 ## Security Considerations
 
+> **[TARGET] note (PRINCIPLES.md Section 6).** The bullets below describe the **runtime-dir
+> design** as the secret boundary (filesystem isolation, `.env` mode 0600 in `~/services/<name>/`).
+> The agreed end-state goes further: the target host gets **copied rendered artifacts, not a
+> clone**, and secrets are delivered to the **container-engine secret store** (`podman`/`docker
+> secret`) at `/run/secrets` on **tmpfs** - never a persistent `.env`. Two consequences for the
+> claims below: (a) "filesystem isolation is the boundary" is the *target*; **as-built the real
+> (fragile) boundary is `.gitignore` + the trufflehog gate**, because `manage-secrets.yml` still
+> renders `.env` into the clone today; (b) once engine-secrets ship there is no persistent secret
+> file at all. Build caveats: entrypoint shim for env-/`.env`-expecting services; verify
+> podman-compose `secrets:` support on the fleet engine version.
+
 - **Source/runtime separation:** The git clone (`~/agent-cloud/`) is read-only source code. All secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the security boundary. No accidental `git add .` can capture secrets.
 - **No `secrets/` directory in the clone:** Eliminated entirely. The bind-mount secret (`netbox_to_diode_client_secret.txt`) lives in `_runtime_dir/secrets/`, not the clone.
 - **Runtime dir permissions:** `chmod 700` on the directory, `chmod 600` on all env files. Symlinked files (compose, libs) are world-readable since they contain no secrets.
@@ -735,7 +797,7 @@ The old pattern (`~/netbox` → clone deploy path) is replaced by the runtime di
 
 **Goal:** A shared vocabulary and a set of rules that tell an engineer, for any automation surface in agent-cloud, *which style it should be and why* — and that name the platform's real automation debt honestly.
 
-**TL;DR:** agent-cloud is **declarative at the description layer** (compose, Jinja2 env templates, `.hcl` policies, `templates.yml`, Kustomize) with a deliberately **thin imperative execution layer** (`deploy.sh` = container lifecycle only). The honest architectural baseline: **there are *zero* standing reconcilers in the running platform today** — everything converges *when Semaphore fires a playbook*, not continuously. That is the **correct** posture for single-site Compose/Podman; continuous reconciliation (ArgoCD/Kyverno/ESO) is the multi-site-Kubernetes future. The remaining imperative surfaces are either **forced** by host/OS/network constraints (not negotiable) or **known debt** (fixable) — and the single most urgent item is a real security defect in `manage-approle.yml` (see §7).
+**TL;DR:** agent-cloud is **declarative at the description layer** (compose, Jinja2 env templates, `.hcl` policies, `templates.yml`, Kustomize) with a deliberately **thin imperative execution layer** (`deploy.sh` = container lifecycle only). The honest architectural baseline: **there are *zero* standing config reconcilers in the running platform today** — config converges *when Semaphore fires a playbook*, not continuously. **Owner decision (PRINCIPLES.md Section 5):** that is the correct posture *only* for CONFIG-drift correction *today* - it is **not** auto-deferred to k8s. **Liveness self-heals continuously** (Quadlet/systemd `Restart=` so a crashed container recovers without a Semaphore run), and **continuous CONFIG reconciliation of a HUMAN-authored Git target is pursued on the VM/Podman estate if it can be done safely** - a scheduled, deterministic re-apply of Git desired-state via Semaphore (or `ansible-pull`), i.e. **"authored convergence on a timer."** That does **not** violate the AI Invariant (it is Semaphore firing on a schedule instead of a trigger, against a human-authored target), so the open question is feasibility, not safety. ArgoCD/Kyverno/ESO on multi-site k8s is the **richer eventual substrate, not a prerequisite** - defer to it only if scheduled re-apply proves insufficient. The remaining imperative surfaces are either **forced** by host/OS/network constraints (not negotiable) or **known debt** (fixable) — and the single most urgent item is a real security defect in `manage-approle.yml` (see §7).
 
 ---
 
@@ -825,7 +887,7 @@ Mapping to the **four-layer guardrails model**: the *Platform* layer is where RE
 4. **`changed_when` must be *true*, not `true`.** A mutating `shell`/`command` asserting `changed_when: true` is GI-debt unless the op genuinely always changes. Fix order: make the *operation* idempotent (read-guard before mutate), *then* report change honestly where a "changed" triggers a handler/restart/rotation. Enforce in CI (§7, rule AC-1).
 5. **One reconciler per surface; never two sources of truth.** Secrets reconcile from OpenBao via `manage-secrets`; never *also* via `deploy.sh`. The n8n/nocodb dual path is the canonical violation.
 6. **Imperative sequencing is legitimate only at genuine ordering boundaries** — genesis (first unseal/token/AppRole), `Create→Verify→Retire` rotation, staged stack start, destructive resets. Everywhere else, order is an *emergent property of declared state*, not a script.
-7. **Single-site converges by trigger (permanent); reconcile *liveness*, not *config*.** Config-drift correction waits for multi-site k8s (RECONCILED pays off where a control plane already runs and drift surface is high). On single-site, the *only* worthwhile standing loop is **liveness** — Podman Quadlet / systemd `Restart=on-failure` so a crashed container self-heals without a Semaphore run. Keep config strictly trigger-driven so the executor stays deterministic.
+7. **Liveness self-heals continuously; CONFIG convergence is authored — and pursued on this estate if it can be done safely (PRINCIPLES.md Section 5).** The always-on loop is **liveness** — Podman Quadlet / systemd `Restart=on-failure` so a crashed (or post-reboot) container self-heals without a Semaphore run. For CONFIG, convergence is always from a **human-authored** Git target (never AI-authored — §8); but it does **not** auto-wait for k8s. **Owner decision:** if continuous config reconciliation can be done safely on the VM/Podman estate — a **scheduled, deterministic re-apply** of Git desired-state via Semaphore (or `ansible-pull`), i.e. **"authored convergence on a timer,"** not a free-running mutator — **pull it forward**. Reconciling a human-authored target is Semaphore firing on a schedule instead of a trigger, so it does **not** violate authored-convergence or the AI Invariant; the open question is feasibility, not safety. ArgoCD/Kyverno/ESO on multi-site k8s is the **richer eventual substrate, not a prerequisite** — defer to it only if scheduled re-apply proves insufficient. [TARGET]/INVESTIGATE: build + prove the scheduled reconcile loop (drift detect + safe, reversible-aware re-apply) on a non-customer service first; ship it after the runtime-dir/engine-secret split.
 8. **Genesis decomposes.** Process-genesis (running OpenBao+Semaphore) → declarative compose + a thin reconcile play. Only identity/trust-genesis (first unseal, first token, first `secret_id`) is irreducibly imperative-one-directional. Don't accept a 594-line hand-rolled bootstrap as inherent.
 9. **Detection ≠ correction — say which you have.** The compose tier *detects* drift (scan playbooks) but does not *correct* it. Document that honestly; don't imply self-healing the platform doesn't yet have.
 
@@ -863,13 +925,16 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 5. **Reconcile `AUTOMATION-COMPOSABILITY.md` with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or mark the doc as describing an unbuilt target.
 6. **Decompose bootstrap** (§4.8): control-plane containers → a `compose.bootstrap.yml`; Semaphore resources → an "ensure resources" reconcile play (or a provider). Keep only the identity/seal kernel imperative.
 7. **n8n workflows as managed declarative state:** export flows as JSON-in-repo, apply via an idempotent API task mirroring `setup-templates.yml`. Today they live only in n8n's DB — an unmanaged declarative surface.
-8. **Liveness reconciliation (optional, single-site):** Podman Quadlet / systemd `Restart=on-failure` for crash self-heal — the one cheap standing loop that doesn't smuggle in autonomous config mutation.
+8. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split.
+9. **[TARGET]/INVESTIGATE — scheduled CONFIG reconcile on the VM/Podman estate (PRINCIPLES.md Section 5, owner decision — NOT deferred to k8s):** build and prove "authored convergence on a timer" — a Semaphore-scheduled (or `ansible-pull`) deterministic re-apply of the **human-authored** Git desired-state, with drift detection and a safe, reversible-aware re-apply, on a non-customer service first. This does not violate the AI Invariant (the target is human-authored; the schedule replaces the trigger) — the open question is feasibility, not safety. Pursue it here; let ArgoCD/Kyverno/ESO be the richer eventual substrate, not a prerequisite.
 
 ---
 
 ## 8. The AI-layer invariant (load-bearing)
 
-**The AI layer may only emit desired-state *proposals* into TRIGGER-CONVERGED / one-time pipelines that pass through the Guardrail layer. It must never *be* a RECONCILED controller nor author RECONCILED policy unmediated.** RECONCILED controllers (ArgoCD, Kyverno) act only on **human-merged** desired state. A standing autonomous convergence engine with an LLM authoring its target — able to act without a per-action trigger — is the one shape the four-layer model exists to forbid (an unattended loop with `down -v` reach and an LLM upstream). "AI proposes → guardrails validate → automation executes" is, precisely, *imperative control flow with declarative gates* — the right shape for a privacy/safety-critical platform. This is the default; weakening it requires an explicit, recorded decision.
+**The AI layer may only emit desired-state *proposals* into TRIGGER-CONVERGED / one-time pipelines that pass through the Guardrail layer. It must never *be* a RECONCILED controller nor author RECONCILED policy unmediated.** This is a **hard constitutional limit** (PRINCIPLES.md Section 4): AI **proposes**, guardrails (OpenBao/OPA/Kyverno) **validate**, automation (Ansible/Semaphore) **executes** — and never the inverse. RECONCILED controllers (ArgoCD, Kyverno) act only on **human-merged** desired state. A standing autonomous convergence engine with an LLM authoring its target — able to act without a per-action trigger — is the one shape the four-layer model exists to forbid (an unattended loop with `down -v` reach and an LLM upstream).
+
+**Self-improvement is PROPOSE-ONLY.** An agent **may recommend improvements to agent-cloud — including to its own pipelines, prompts, and configuration** — but **may never apply them without human review and permission**. No AI agent may **be** a standing autonomous reconciler. The "authored convergence on a timer" reconcile loop pursued on this estate (§4.7, §7.9) is explicitly compatible with this invariant *because its target is human-authored* — an agent must never author that target. "AI proposes → guardrails validate → automation executes" is, precisely, *imperative control flow with declarative gates* — the right shape for a privacy/safety-critical platform. This is the default; weakening it requires an explicit, recorded human decision.
 
 ---
 
@@ -877,13 +942,14 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 
 ```mermaid
 flowchart LR
-  N["NOW (single-site)<br/>TRIGGER-CONVERGED + GI<br/>detect-only drift; deterministic executor"]
-  L["+ Liveness reconcile<br/>Quadlet/systemd Restart"]
-  K["k0s + ArgoCD/Kyverno/ESO<br/>RECONCILED config + admission + secret sync"]
-  N --> L --> K
+  N["NOW (single-site)<br/>TRIGGER-CONVERGED + GI<br/>detect-only config drift; deterministic executor"]
+  L["+ Liveness reconcile<br/>Quadlet/systemd Restart (continuous self-heal)"]
+  S["+ Authored convergence on a timer<br/>scheduled re-apply of HUMAN-authored Git target<br/>(Semaphore/ansible-pull) — INVESTIGATE, pursued on this estate"]
+  K["k0s + ArgoCD/Kyverno/ESO<br/>richer RECONCILED substrate (not a prerequisite)"]
+  N --> L --> S --> K
 ```
 
-The runtime split *is* a decl/imp split, and that alignment is a feature: single-site Compose on Proxmox VMs has low drift surface and no cheap place to host a per-concern reconciler — TRIGGER-CONVERGED is *correct*. Multi-site k8s has high drift surface and a built-in control plane — RECONCILED wins decisively. Don't bolt continuous reconciliation onto the compose tier; let it arrive with Kubernetes.
+The runtime split *is* a decl/imp split, and that alignment is a feature: single-site Compose on Proxmox VMs has low drift surface and a thin, deterministic executor. **Owner decision (PRINCIPLES.md Section 5):** liveness self-heals continuously, and continuous CONFIG reconciliation of a **human-authored** Git target is **pursued on this estate if it can be done safely** — scheduled, deterministic re-apply ("authored convergence on a timer"), which does not violate the AI Invariant because the target is human-authored and the schedule merely replaces the trigger. So this is **not** auto-deferred to Kubernetes: ArgoCD/Kyverno/ESO is the **richer eventual substrate, not a prerequisite**, reached only if scheduled re-apply proves insufficient. The standing constraint is unchanged — AI never authors the reconciled target (§8).
 
 ---
 
@@ -914,4 +980,4 @@ After this plan is adopted as the reference standard:
 - Every new automation surface is authored with an explicit Axis-1/Axis-2 coordinate, and reviews reject **I masquerading as GI** (bare `changed_when: true` on mutating shell) via CI rule AC-1.
 - The `manage-approle` security defect is fixed (`Create→Verify→Retire`, bounded TTL); the legacy n8n/nocodb secret path is retired; `assert-orchestrated.yml` is wired.
 - `AUTOMATION-COMPOSABILITY.md` describes the system that actually exists (runtime-dir built, or the design dropped).
-- The platform's drift story is stated honestly — *detect-only on the compose tier today; continuous reconciliation arrives with k0s/ArgoCD* — and the AI layer is constrained, by invariant, to proposing into gated pipelines rather than closing loops.
+- The platform's drift story is stated honestly — *liveness self-heals continuously today; config is detect-only on the compose tier, with continuous reconciliation of a human-authored Git target pursued on this estate ("authored convergence on a timer") if safely feasible — not auto-deferred to k8s, which is the richer eventual substrate, not a prerequisite* — and the AI layer is constrained, by **hard** invariant, to **proposing** into gated pipelines (including propose-only self-improvement) rather than closing loops or authoring a reconciled target.
