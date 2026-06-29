@@ -30,7 +30,7 @@
 
 ## Bootstrap (Genesis) Services
 
-The **genesis layer** is two services: the secret store (**OpenBao**) and the orchestrator (**Semaphore**). They face a chicken-and-egg problem — neither can fetch its own credentials from a system that does not exist yet, and Semaphore cannot deploy *through* an orchestrator not yet running. On a **fresh LOCAL deploy** they generate and manage their own credentials directly. This is the **sole sanctioned exception** to the `deploy.sh`-lifecycle-only / Ansible-owns-secrets boundary (PRINCIPLES.md Section 3).
+The **genesis layer** is two services: the secret store (**OpenBao**) and the orchestrator (**Semaphore**). They face a chicken-and-egg problem — neither can fetch its own credentials from a system that does not exist yet, and Semaphore cannot deploy *through* an orchestrator not yet running. On a **fresh LOCAL deploy** they generate and manage their own credentials directly. This is the sole **credential-ownership** carve-out from the `deploy.sh`-lifecycle-only / Ansible-owns-secrets boundary (PRINCIPLES.md Section 3): **only OpenBao and Semaphore self-generate their own secrets** — every other genesis service (dns, step-ca, caddy, authentik) still reads its secrets *from* OpenBao. (A separate, wider *orchestration-path* carve-out — the whole foundation deploying outside Semaphore during genesis — is Section 1's "Genesis-Bootstrap Exemption". Different axis, different scope, by design — see below.)
 
 - **Committed as code, never hand-typed.** The sequence lives in `bootstrap-local-dev.yml`, run on `localhost` (`make local-bootstrap`) — auditable and idempotent like any playbook; the only difference from the normal path is invocation context, not forked playbooks.
 - **Anything provisioned from a RUNNING instance follows the strict boundary.** Once an instance is up, provisioning a new tenant or service from it MUST take the single path **OpenBao -> Ansible memory -> Jinja2 -> `.env`**; `deploy.sh` never calls OpenBao. The carve-out does not generalize beyond OpenBao and Semaphore.
@@ -318,7 +318,7 @@ Without Semaphore, the operator would manually export AppRole credentials, losin
 
 Rule #1 has exactly one carve-out: a service cannot deploy *through* an orchestrator that does not exist yet. The **genesis bootstrap** stands up the secure foundation directly, before Semaphore — and Semaphore comes up **last, already OIDC-secured** (local-dev: `make local-bootstrap`; `plan/development/00-foundation-local-dev.md` §12A).
 
-- **Scope:** OpenBao → dns → step-ca → caddy → authentik (the secure foundation) **+ Semaphore**. This *widens* the prior "OpenBao + Semaphore only" exemption to the whole foundation, no further — everything after genesis (Tier-3 services, all redeploys) still goes through Semaphore.
+- **Scope (orchestration path — which services deploy *outside* Semaphore during genesis):** OpenBao → dns → step-ca → caddy → authentik (the secure foundation) **+ Semaphore** — the whole foundation, because it must come up before Semaphore exists; no further (Tier-3 services + all redeploys still go through Semaphore). This is a **different axis** from the *credential-ownership* carve-out (the §0 Bootstrap section: OpenBao + Semaphore only): the rest of the foundation deploys outside Semaphore but still reads its secrets *from* OpenBao — it does not self-generate them.
 - **Not a fork, not manual SSH:** genesis runs each service's existing `deploy-<svc>.yml` un-forked, on `localhost`, carrying the bootstrap's own BAO AppRole creds (also the marker `tasks/assert-orchestrated.yml` accepts). The only difference from the Semaphore path is invocation context, not the playbooks.
 - **Still code, still auditable:** committed in `bootstrap-local-dev.yml`; nothing hand-run. (Prod's genesis is the analogous out-of-Semaphore bootstrap of OpenBao + Semaphore.)
 
@@ -400,7 +400,7 @@ AppRoles enforce least-privilege access to OpenBao secrets. Three tiers exist, e
 | **Runtime (current)** | `orb-agent` | `secret/data/services/netbox/orb_agent_*`, `secret/data/services/netbox/snmp_community` | token: 30m, secret_id: 0 (see note) | 0 (see note) | Agent fetches Diode + SNMP credentials at runtime via vault references |
 | **Runtime (planned)** | Per-service (e.g., `netbox-deploy`, `nocodb-deploy`) | Scoped to single service path | token: 30m, secret_id: 90d | 25 | Deploy-time credential fetch for a single service |
 
-**Note on TTL enforcement:** `manage-approle.yml` currently hardcodes `secret_id_ttl: 0` and `token_num_uses: 0`, contradicting the 90-day TTL requirement in the TTL table above. Remediation plan: `plan/development/01-secrets-credentials.md` (Phase 3).
+**Note on TTL enforcement:** `manage-approle.yml` currently hardcodes `secret_id_ttl: 0` and `token_num_uses: 0` for **every** AppRole it provisions. That is correct *only* for the Semaphore orchestrator (the documented unlimited-TTL exception in the table above); for any other (per-service / deploy) role it contradicts the 90-day requirement and is the defect to fix — bound those roles (90d / 25 uses) while keeping the orchestrator as the single named exception. Remediation plan: `plan/development/01-secrets-credentials.md` (Phase 3).
 
 ### Scope Isolation Principle
 
