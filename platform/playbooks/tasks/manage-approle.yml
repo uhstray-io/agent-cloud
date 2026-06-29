@@ -9,6 +9,10 @@
 #   _approle_name       — name for the new AppRole (e.g., "orb-agent")
 #   _approle_policy     — HCL policy content (what paths this role can access)
 #   _approle_token_ttl  — token TTL (default: "30m")
+#   _approle_secret_id_ttl   — secret_id TTL (default: "2160h" = 90d). Bounded per
+#                              PRINCIPLES.md Section 3 ("TTL=0 is a defect"); the only
+#                              unlimited-TTL exception is the Semaphore orchestrator.
+#   _approle_token_num_uses  — secret_id use cap (default: 25)
 
 - name: "Authenticate to OpenBao (admin)"
   ansible.builtin.uri:
@@ -57,8 +61,10 @@
         - "{{ _approle_name }}"
       token_ttl: "{{ _approle_token_ttl | default('30m') }}"
       token_max_ttl: "{{ _approle_token_max_ttl | default('2h') }}"
-      secret_id_ttl: 0
-      token_num_uses: 0
+      # Bounded by default per PRINCIPLES.md Section 3 (TTL=0 is a defect). A caller may
+      # override; the sole unlimited-TTL exception is the Semaphore orchestrator.
+      secret_id_ttl: "{{ _approle_secret_id_ttl | default('2160h') }}"
+      token_num_uses: "{{ _approle_token_num_uses | default(25) }}"
     status_code: [200, 204]
   delegate_to: localhost
 
@@ -72,7 +78,20 @@
   register: _role_id_resp
   delegate_to: localhost
 
-- name: "Generate secret_id"
+- name: "Read existing stored credentials (idempotency read-guard)"
+  # Avoid minting a fresh, orphaned secret_id on every run: only generate one when
+  # none is already stored. (Expiry-driven re-generation is the rotation playbook's job.)
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/approles/{{ _approle_name }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _existing_creds
+  delegate_to: localhost
+  no_log: true
+
+- name: "Generate secret_id (only when none is already stored)"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/auth/approle/role/{{ _approle_name }}/secret-id"
     method: POST
@@ -84,14 +103,17 @@
   register: _secret_id_resp
   delegate_to: localhost
   no_log: true
+  when: >-
+    (_existing_creds.status | default(404)) != 200
+    or (_existing_creds.json.data.data.secret_id | default('')) | length == 0
 
-- name: "Set AppRole credentials"
+- name: "Set AppRole credentials (reuse the stored secret_id when present)"
   ansible.builtin.set_fact:
     _new_role_id: "{{ _role_id_resp.json.data.role_id }}"
-    _new_secret_id: "{{ _secret_id_resp.json.data.secret_id }}"
+    _new_secret_id: "{{ _secret_id_resp.json.data.secret_id if (_secret_id_resp is not skipped) else _existing_creds.json.data.data.secret_id }}"
   no_log: true
 
-- name: "Store AppRole credentials in OpenBao"
+- name: "Store AppRole credentials in OpenBao (only when a new secret_id was generated)"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/secret/data/services/approles/{{ _approle_name }}"
     method: POST
@@ -105,7 +127,8 @@
     status_code: [200]
   delegate_to: localhost
   no_log: true
+  when: _secret_id_resp is not skipped
 
 - name: "AppRole provisioned"
   ansible.builtin.debug:
-    msg: "AppRole '{{ _approle_name }}' created/updated. Credentials stored at secret/services/approles/{{ _approle_name }}"
+    msg: "AppRole '{{ _approle_name }}' ready (secret_id reused if already present). Credentials at secret/services/approles/{{ _approle_name }}"
