@@ -20,7 +20,7 @@
 
 ## Purpose
 
-Master index and standard reference for all architecture and development plan documents in `plan/`. Ensures cross-document consistency, makes the full set discoverable, and defines the plan-document lifecycle from proposal through completion or supersession.
+Master index and standard reference for the architecture/doc set, including the repo-root constitution (`PRINCIPLES.md`) and map (`ARCHITECTURE.md`). Ensures cross-document consistency, makes the full set discoverable, and defines the plan-document lifecycle from proposal through completion or supersession.
 
 The repo-root [`PRINCIPLES.md`](../../PRINCIPLES.md) constitution sits above these docs and is the tiebreaker (see the doc header). [`ARCHITECTURE.md`](../../ARCHITECTURE.md) is the entry-point map into this set.
 
@@ -39,7 +39,7 @@ Every architecture or development plan document must include all of these (conte
 1. **Title** -- H1 heading matching the document purpose
 2. **Frontmatter** -- Date, Status (see below), Context (one paragraph on why this document exists)
 3. **Problem** -- What gap or issue this plan addresses
-4. **Design Principles** -- Guiding constraints (align with platform design principles in IMPLEMENTATION_PLAN.md)
+4. **Design Principles** -- Guiding constraints (align with the platform constitution in `PRINCIPLES.md`)
 5. **Architecture** -- Solution design with at least one mermaid diagram
 6. **Implementation Phases** -- Ordered steps with per-phase acceptance criteria
 7. **Validation Criteria** -- Table of checks and pass conditions

@@ -467,7 +467,7 @@ platform/services/netbox/deployment/
     hydra.yaml.j2
 ```
 
-These replace `generate-secrets.sh`'s env-writing logic. Variables come from the `_resolved_secrets` dict populated by `manage-secrets.yml`.
+These replace `generate-secrets.sh`'s env-writing logic. Variables come from the `_resolved` dict populated by `manage-secrets.yml`.
 
 ---
 
@@ -491,7 +491,7 @@ Service config files (`.env`, `env/*.env`, config YAML) render from Jinja2 templ
 - Jinja2 (not bash heredocs) — conditionals, defaults, loops; each template maps to one compose-consumed file
 
 **Flow:**
-```
+```text
 templates/*.j2 (in sparse checkout, read-only)
   + secrets (from OpenBao, in Ansible memory)
   = env files (in ~/services/<name>/, mode 0600, compose-readable)
