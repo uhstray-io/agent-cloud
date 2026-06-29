@@ -25,13 +25,13 @@
 
 ## Purpose
 
-Caddy is the sole HTTPS ingress point for the uhstray-io platform. Every external request to a platform service passes through Caddy for TLS termination, routing, and security header enforcement. This document defines the architecture, integration patterns, and automation gaps for the Caddy reverse proxy.
+Caddy is the sole HTTPS ingress for the uhstray-io platform: every external request passes through it for TLS termination, routing, and security-header enforcement. This document defines its architecture, integration patterns, and automation gaps.
 
 ---
 
 ## Role in the 4-Layer Model
 
-Caddy operates at the **Platform Layer** -- it is infrastructure, not automation or AI. It has no business logic; its sole responsibility is accepting inbound HTTPS connections, terminating TLS, and forwarding requests to internal service VMs over HTTP.
+Caddy operates at the **Platform Layer** -- infrastructure, not automation or AI. It has no business logic; it accepts inbound HTTPS, terminates TLS, and forwards to internal service VMs over HTTP.
 
 ```text
 AI Layer         NemoClaw, NetClaw, WisBot, Claude Cowork
@@ -70,10 +70,10 @@ flowchart LR
 ```
 
 Key properties:
-- **All external traffic enters through Caddy on port 443.** Port 80 redirects to 443 (Caddy default behavior).
-- **TLS terminates at Caddy.** Backend services receive plain HTTP. No double encryption overhead.
-- **CloudFlare is DNS only.** Traffic does not proxy through CloudFlare's network -- Caddy handles TLS directly using certificates obtained via DNS-01 challenge.
-- **Internal services are not exposed to the internet.** Only Caddy's ports 80/443 are forwarded through the router.
+- **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
+- **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
+- **CloudFlare is DNS only.** Traffic does not proxy through CloudFlare; Caddy handles TLS directly with DNS-01 certs.
+- **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
 
@@ -100,7 +100,7 @@ The Caddyfile uses environment variable substitution for all domains, IPs, and p
 
 ### WebSocket-Aware Block
 
-For services that require WebSocket support (e.g., collaborative editing, real-time dashboards):
+For services needing WebSocket support (e.g., collaborative editing, real-time dashboards):
 
 ```caddyfile
 {$SERVICE_DOMAIN} {
@@ -125,11 +125,11 @@ For services that require WebSocket support (e.g., collaborative editing, real-t
 
 ### Variable Resolution
 
-Environment variables are resolved at container startup. The current deployment uses `start-caddy.sh` to parse CLI arguments and export variables before running `docker compose up`. The target state replaces this with Ansible-templated `.env` files following the composable pattern.
+Variables resolve at container startup. Currently `start-caddy.sh` parses CLI args and exports them before `docker compose up`. [TARGET] replace this with Ansible-templated `.env` files following the composable pattern.
 
 ### Per-Site Fragment (Composable Pattern)
 
-The two patterns above use the central `Caddyfile` with `{$VAR}`-driven substitution and are appropriate for legacy services. **All new services should use the per-site fragment pattern** instead — it keeps the main Caddyfile small, gives each service its own rollout/rollback unit, and lets each service template arbitrary Caddy directives (CSP, route handlers, asset proxies) without touching shared infrastructure.
+The two patterns above use the central `Caddyfile` with `{$VAR}` substitution, appropriate for legacy services. **All new services should use the per-site fragment pattern** instead: it keeps the main Caddyfile small, gives each service its own rollout/rollback unit, and lets each service template arbitrary Caddy directives (CSP, route handlers, asset proxies) without touching shared infrastructure.
 
 **Mechanism:**
 
@@ -169,22 +169,16 @@ Each fragment is a standalone Caddy site block. Example shape (from `platform/se
 }
 ```
 
-**Reload safety:**
+**Reload safety:** `caddy reload --config /etc/caddy/Caddyfile` is zero-downtime -- inflight requests complete, new requests use the new config, cert state is preserved. A malformed fragment makes Caddy refuse to reload and keep serving the previous config, so a broken deploy degrades to "no new fragment" rather than an outage.
 
-`caddy reload --config /etc/caddy/Caddyfile` is zero-downtime — inflight requests complete; new requests use the new config; cert state is preserved. If a fragment is malformed, Caddy refuses to reload and keeps serving the previous config, so a broken deploy degrades to "no new fragment" rather than an outage.
+**File ownership:** `sites/` is mounted read-only into the container (`./sites:/etc/caddy/sites:ro`). The only writer is `tasks/distribute-caddy-site.yml`, running as `ansible_user` on the Caddy host. Humans don't edit files here.
 
-**File ownership:**
+**Conflict resolution:** Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot share a domain -- Caddy fails to start if a domain is declared twice. Coordinate domain allocations in inventory, not in fragments.
 
-The `sites/` directory is mounted read-only into the Caddy container (`./sites:/etc/caddy/sites:ro`). The only writer is `tasks/distribute-caddy-site.yml`, which runs as `ansible_user` on the Caddy host. Humans don't edit files here.
-
-**Conflict resolution:**
-
-Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot occupy the same domain — Caddy will fail to start if a domain is declared twice. Coordinate domain allocations in inventory, not in fragments.
-
-**When to keep using the legacy `{$VAR}` pattern instead:**
+**When to keep the legacy `{$VAR}` pattern instead:**
 
 - Existing services already in the main Caddyfile. Migrate when their deploy is rewritten to the composable pattern.
-- One-off / temporary routes (e.g., a maintenance redirect) where a fragment would be overkill.
+- One-off / temporary routes (e.g., a maintenance redirect) where a fragment is overkill.
 
 | Variable | Source | Example Placeholder |
 |----------|--------|-------------------|
@@ -199,22 +193,22 @@ Fragments are namespaced by filename (`sites/<svc>.caddy`). Two services cannot 
 
 ### TLS strategy: two needs, neither is being a public CA (decided 2026-06-13)
 
-TLS for agent-cloud decomposes into two distinct needs. Conflating hosting with *being a CA* briefly over-scoped the work; the decided architecture:
+TLS for agent-cloud decomposes into two distinct needs. Conflating hosting with *being a CA* briefly over-scoped the work; the decided architecture is below.
 
 | Need | Solution | Notes |
 |---|---|---|
 | **Public TLS** — the hosted SaaS app + customer/tenant domains (browser-trusted) | **Caddy automatic-HTTPS + Let's Encrypt** (DNS-01 below). For SaaS tenant *custom domains*, **Caddy On-Demand TLS** issues per-domain certs from LE on first request, gated by an `ask` authorization endpoint. | TLS **consumption** — you obtain public certs from LE; you do **not** run a CA. This is the canonical SaaS custom-domain pattern. |
 | **Internal TLS** — services/operators on `*.agent-cloud.test` / internal zones / LAN | **step-ca internal CA** (`INTERNAL-CA-DEPLOYMENT.md`) — the default: a **stable** shared root trusted once (`make local-tls-trust`) that persists across redeploys/volume-wipes and is reusable across local-dev, prod, and every developer; Caddy serves a step-ca-issued wildcard. **Caddy's own internal CA** (`tls internal` / `local_certs`) is a narrow fallback only — its root is ephemeral + per-instance (re-trust on every wipe), fine if step-ca is down. | Internal-only; LE can't validate non-public names. |
 
-**Key principle:** hosting agent-cloud as SaaS + Enterprise needs TLS **consumption** (Caddy + Let's Encrypt), not TLS **production** (running a public CA — out of scope). Enterprise self-hosted installs use the same Caddy automatic-HTTPS (their LE certs + their internal CA); even air-gapped installs that can't reach LE want an *internal* CA (step-ca), not a public-CA product.
+**Key principle:** hosting agent-cloud as SaaS + Enterprise needs TLS **consumption** (Caddy + Let's Encrypt), not TLS **production** (running a public CA -- out of scope). Enterprise self-hosted installs use the same Caddy automatic-HTTPS (their LE certs + their internal CA); even air-gapped installs that can't reach LE want an *internal* CA (step-ca), not a public-CA product.
 
 ### Why DNS-01 Challenge
 
-Caddy uses the **CloudFlare DNS-01 ACME challenge** for certificate issuance and renewal. This is required because:
+Caddy uses the **CloudFlare DNS-01 ACME challenge** for issuance and renewal, required because:
 
-1. **Wildcard certificates** -- DNS-01 is the only ACME challenge type that supports wildcard certs (`*.example.com`).
-2. **No port 80 dependency** -- HTTP-01 requires port 80 to be publicly reachable. DNS-01 works entirely via DNS record creation, making it compatible with NAT and firewall configurations.
-3. **Automatic renewal** -- Caddy handles certificate renewal automatically before expiry. The DNS-01 plugin creates and cleans up TXT records via the CloudFlare API.
+1. **Wildcard certs** -- DNS-01 is the only ACME challenge supporting wildcards (`*.example.com`).
+2. **No port 80 dependency** -- HTTP-01 needs port 80 publicly reachable; DNS-01 works via DNS records only, compatible with NAT and firewalls.
+3. **Automatic renewal** -- Caddy renews before expiry; the DNS-01 plugin creates and cleans up TXT records via the CloudFlare API.
 
 ### Certificate Lifecycle
 
@@ -237,25 +231,25 @@ sequenceDiagram
 
 ### CloudFlare API Key Scope
 
-The CloudFlare API key needs **Zone:DNS:Edit** permission for the target zone. It does not need account-level access or any permissions beyond DNS record management. A scoped API token (not a Global API Key) is the recommended credential type.
+The CloudFlare API key needs **Zone:DNS:Edit** for the target zone -- no account-level access or anything beyond DNS record management. Use a scoped API token (not a Global API Key).
 
 ---
 
 ## Adding a New Service to the Proxy
 
-When a new platform service needs external HTTPS access, follow these steps in coordination with the SERVICE-INTEGRATION-PLAN.md onboarding checklist.
+For a new service needing external HTTPS, follow these steps alongside the SERVICE-INTEGRATION-PLAN.md onboarding checklist.
 
-**New services should use the per-site fragment pattern** (recommended path below). The legacy `{$VAR}`-in-main-Caddyfile path is preserved only for the existing services that haven't been migrated yet.
+**New services should use the per-site fragment pattern** (recommended path below). The legacy `{$VAR}`-in-main-Caddyfile path remains only for existing un-migrated services.
 
 ### Recommended path — per-site fragment
 
 #### Step 1: Allocate DNS Record
 
-In CloudFlare (or via Terraform/API), create an A record pointing the service's FQDN to the Caddy VM's public IP. Record the FQDN in site-config inventory.
+In CloudFlare (or via Terraform/API), create an A record pointing the FQDN to the Caddy VM's public IP. Record the FQDN in site-config inventory.
 
 #### Step 2: Write `templates/caddy-site.j2` in your service
 
-Inside `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2`. It's a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). UhhCraft's is the reference shape — read `platform/services/uhhcraft/deployment/templates/caddy-site.j2`.
+In `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2` -- a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). UhhCraft's is the reference shape (`platform/services/uhhcraft/deployment/templates/caddy-site.j2`).
 
 Minimum useful skeleton:
 
@@ -277,7 +271,7 @@ Minimum useful skeleton:
 
 #### Step 3: Wire distribution into your deploy playbook
 
-In `platform/playbooks/deploy-<svc>.yml`, add a phase that renders the fragment locally and then includes `tasks/distribute-caddy-site.yml`:
+In `platform/playbooks/deploy-<svc>.yml`, add a phase that renders the fragment locally then includes `tasks/distribute-caddy-site.yml`:
 
 ```yaml
 - name: "Distribute Caddy fragment"
@@ -302,25 +296,25 @@ In `platform/playbooks/deploy-<svc>.yml`, add a phase that renders the fragment 
 
 #### Step 4: Deploy
 
-Run `deploy-<svc>.yml` via Semaphore. The fragment is rendered, copied to the central Caddy host's `sites/` directory, and Caddy is reloaded — all zero-downtime.
+Run `deploy-<svc>.yml` via Semaphore. The fragment is rendered, copied to the central Caddy host's `sites/` dir, and Caddy reloaded -- all zero-downtime.
 
 #### Step 5: Verify
 
 - Confirm HTTPS access at `https://svc.example.com`.
-- Check the Let's Encrypt certificate is issued.
-- Confirm the security headers and CSP are what the service expects.
+- Check the Let's Encrypt cert is issued.
+- Confirm security headers and CSP match what the service expects.
 
 ### Legacy path — `{$VAR}`-driven block
 
-For services already on the legacy pattern (or for one-off routes):
+For services already on the legacy pattern (or one-off routes):
 
 1. Allocate the DNS record (same as Step 1 above).
-2. Add a new block to `platform/services/caddy/deployment/Caddyfile` using `{$NEWSERVICE_DOMAIN}`, `{$NEWSERVICE_IP}`, `{$NEWSERVICE_PORT}`.
-3. Add the variables to the `.env` template (or to `start-caddy.sh` CLI flags).
-4. Reload Caddy: `<engine> exec caddy caddy reload --config /etc/caddy/Caddyfile` (`<engine>` is `podman` by default on this platform; `docker` only on the NetBox host).
+2. Add a block to `platform/services/caddy/deployment/Caddyfile` using `{$NEWSERVICE_DOMAIN}`, `{$NEWSERVICE_IP}`, `{$NEWSERVICE_PORT}`.
+3. Add the variables to the `.env` template (or `start-caddy.sh` CLI flags).
+4. Reload: `<engine> exec caddy caddy reload --config /etc/caddy/Caddyfile` (`<engine>` is `podman` by default; `docker` only on the NetBox host).
 5. Verify the same way.
 
-The legacy path is being phased out as each service migrates to the composable deploy pattern. Don't add new services here unless there's a strong reason.
+This path is being phased out as each service migrates to the composable pattern. Don't add new services here without a strong reason.
 
 ---
 
@@ -328,15 +322,15 @@ The legacy path is being phased out as each service migrates to the composable d
 
 ### Current State
 
-The CloudFlare API key is currently managed outside the composable pattern:
-- The standalone `caddy` repo has the key hardcoded in its Caddyfile
-- The agent-cloud template uses `{$CLOUDFLARE_API_KEY}` substitution
-- The `start-caddy.sh` script accepts the key as a CLI argument (`-k`)
+The CloudFlare API key is managed outside the composable pattern:
+- Standalone `caddy` repo hardcodes the key in its Caddyfile
+- agent-cloud template uses `{$CLOUDFLARE_API_KEY}` substitution
+- `start-caddy.sh` accepts the key as a CLI arg (`-k`)
 - site-config has a placeholder Caddyfile (0 bytes)
 
 ### Target State
 
-The CloudFlare API key should follow the standard credential flow:
+The key should follow the standard credential flow:
 
 ```mermaid
 flowchart TD
@@ -356,19 +350,19 @@ flowchart TD
 |------|-----|------|----------|
 | `secret/services/caddy` | `cloudflare_api_key` | `user` (externally managed) | 90-day rotation cycle |
 
-The CloudFlare API key is classified as `type: user` in `_secret_definitions` because it is created externally (in CloudFlare's dashboard), not auto-generated. The `manage-secrets.yml` task fetches it from OpenBao but never generates it.
+The key is `type: user` in `_secret_definitions` because it's created externally (CloudFlare dashboard), not auto-generated. `manage-secrets.yml` fetches it but never generates it.
 
 ### Rotation Policy
 
-- **Rotation cycle:** 90 days (critical-tier credential per CREDENTIAL-LIFECYCLE-PLAN.md)
-- **Rotation method:** Generate new scoped API token in CloudFlare, store in OpenBao, redeploy Caddy, verify certificates still renew, then revoke old token in CloudFlare
-- **Dual-valid window:** Both old and new tokens are active during rotation. Caddy uses the new token after redeployment. The old token is revoked only after confirming successful certificate renewal with the new one.
+- **Cycle:** 90 days (critical-tier credential per CREDENTIAL-LIFECYCLE-PLAN.md)
+- **Method:** Generate new scoped token in CloudFlare, store in OpenBao, redeploy Caddy, verify certs still renew, then revoke the old token.
+- **Dual-valid window:** Both tokens stay active during rotation. Caddy uses the new token after redeploy; the old token is revoked only after confirming cert renewal with the new one.
 
 ---
 
 ## Automation Gap
 
-Caddy is the only infrastructure-tier service that lacks full composable automation. The following items are needed to bring it into compliance with the platform deployment pattern.
+Caddy is the only infrastructure-tier service lacking full composable automation. These items bring it into compliance with the platform deployment pattern.
 
 ### Missing Components
 
@@ -388,14 +382,14 @@ Caddy is the only infrastructure-tier service that lacks full composable automat
 
 Per SERVICE-INTEGRATION-PLAN.md, Caddy is an **auxiliary-to-infrastructure** tier service:
 
-- **No database** -- state is in the `caddy-data` volume (certificates) and `caddy-config` volume
-- **No runtime OpenBao access** -- credentials injected at deploy time via `.env`
+- **No database** -- state lives in `caddy-data` (certs) and `caddy-config` volumes
+- **No runtime OpenBao access** -- creds injected at deploy time via `.env`
 - **Single container** -- simple compose stack
-- **3-phase playbook** (simplified pattern): manage-secrets -> deploy -> verify
+- **3-phase playbook** (simplified): manage-secrets -> deploy -> verify
 
 ### Priority
 
-Caddy automation should be implemented as part of the next service onboarding wave (alongside NocoDB and n8n migration). The CloudFlare API key must be stored in OpenBao before Caddy can use the composable credential flow.
+Implement Caddy automation in the next onboarding wave (alongside NocoDB and n8n migration). The CloudFlare API key must be in OpenBao before Caddy can use the composable credential flow.
 
 ---
 
@@ -409,25 +403,25 @@ Caddy automation should be implemented as part of the next service onboarding wa
 | **HTTPS with TLS skip verify** | `reverse_proxy https://IP:PORT { transport http { tls_insecure_skip_verify } }` | Backend has self-signed cert (e.g., Proxmox API). Use sparingly -- only when the backend requires HTTPS and you control the certificate. |
 | **HTTPS with trusted CA** | `reverse_proxy https://IP:PORT { transport http { tls_trusted_ca_certs /path/to/ca.pem } }` | Backend uses internal CA. Preferred over skip verify when an internal CA exists. |
 
-**Default policy:** All platform services run plain HTTP on the internal network. Caddy handles TLS termination. Do not configure backends with HTTPS unless the service explicitly requires it (e.g., Proxmox's management API).
+**Default policy:** All platform services run plain HTTP on the internal network; Caddy terminates TLS. Do not configure HTTPS backends unless the service requires it (e.g., Proxmox's management API).
 
 ### HSTS Policy
 
-All Caddyfile blocks include the `Strict-Transport-Security` header:
+All Caddyfile blocks include `Strict-Transport-Security`:
 
 ```text
 Strict-Transport-Security max-age=15552000;
 ```
 
-This tells browsers to always use HTTPS for the domain for 180 days. Notes:
+This forces HTTPS for 180 days. Notes:
 
 - **Do not enable `includeSubDomains`** unless all subdomains are also served via HTTPS through Caddy.
-- **Do not enable `preload`** until the HSTS policy has been stable for at least 6 months and all services are confirmed working under HTTPS.
-- The 180-day `max-age` is a conservative starting point. Increase to 1 year (`31536000`) after confirming no services need HTTP fallback.
+- **Do not enable `preload`** until HSTS has been stable for 6+ months and all services confirmed working under HTTPS.
+- The 180-day `max-age` is a conservative start. Increase to 1 year (`31536000`) after confirming no service needs HTTP fallback.
 
 ### Security Headers
 
-Beyond HSTS, consider adding these headers as the proxy matures:
+Beyond HSTS, consider these headers as the proxy matures:
 
 ```caddyfile
 header {
@@ -438,15 +432,15 @@ header {
 }
 ```
 
-These should be evaluated per-service -- some services (e.g., collaborative editors, iframe-embedded dashboards) may need `X-Frame-Options` set to `SAMEORIGIN` instead of `DENY`.
+Evaluate per-service -- some (e.g., collaborative editors, iframe-embedded dashboards) need `X-Frame-Options: SAMEORIGIN` instead of `DENY`.
 
 ---
 
 ## Caddyfile Management: Public vs Private
 
-The Caddyfile in `agent-cloud/platform/services/caddy/deployment/Caddyfile` is the **public template** -- it contains only environment variable references (`{$VAR}`), no real domains or IPs.
+The Caddyfile in `agent-cloud/platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
 
-The production Caddyfile with real routing configuration lives in **site-config**. This split follows the public/private repository boundary:
+The production Caddyfile with real routing lives in **site-config**, following the public/private repo boundary:
 
 | Repository | File | Contains |
 |------------|------|----------|
@@ -454,7 +448,7 @@ The production Caddyfile with real routing configuration lives in **site-config*
 | agent-cloud | `platform/services/caddy/deployment/compose.yml` | Compose stack definition |
 | site-config | Caddy configuration files | Real FQDNs, IPs, and routing rules |
 
-When the composable automation is implemented, the production Caddyfile will be rendered from Jinja2 templates using values from site-config inventory, matching the pattern used by all other services.
+Once composable automation lands, the production Caddyfile will be rendered from Jinja2 templates using site-config inventory values, matching all other services.
 
 ---
 
@@ -462,10 +456,10 @@ When the composable automation is implemented, the production Caddyfile will be 
 
 When the platform migrates to Kubernetes (k0s), Caddy's role shifts:
 
-- **Current (Compose):** Caddy runs as a standalone container on a dedicated VM, routing to other VMs by IP.
-- **Future (Kubernetes):** Caddy becomes an Ingress controller, routing to Kubernetes Services by name. The Caddyfile is replaced by Ingress resources or a CRD-based configuration.
+- **Current (Compose):** standalone container on a dedicated VM, routing to other VMs by IP.
+- **Future (Kubernetes):** an Ingress controller routing to Services by name; the Caddyfile is replaced by Ingress resources or CRD config.
 
-The CloudFlare DNS-01 integration remains relevant in Kubernetes via [cert-manager](https://cert-manager.io/) with a CloudFlare DNS01 solver, or by running Caddy as the ingress controller directly.
+The CloudFlare DNS-01 integration stays relevant via [cert-manager](https://cert-manager.io/) with a CloudFlare DNS01 solver, or by running Caddy as the ingress controller directly.
 
 <!-- ======================= source: PODMAN-VS-DOCKER-COMPOSE.md ======================= -->
 
@@ -480,9 +474,9 @@ The CloudFlare DNS-01 integration remains relevant in Kubernetes via [cert-manag
 
 ## Overview
 
-This document captures the behavioral differences between Docker Compose (Go-based `docker compose` plugin) and podman-compose (Python CLI wrapper, `pip install podman-compose`) as they affect agent-cloud service deployments. It serves as the single reference for writing compose files that work correctly under both runtimes.
+This document captures behavioral differences between Docker Compose (Go-based `docker compose` plugin) and podman-compose (Python CLI wrapper, `pip install podman-compose`) as they affect agent-cloud deployments. It's the single reference for compose files that work under both runtimes.
 
-The platform uses a split-runtime strategy: NetBox runs on Docker (due to privileged container requirements), while all other services run on Podman with podman-compose. This guide ensures compose files are portable and deploy scripts handle runtime-specific quirks.
+The platform uses a split-runtime strategy: NetBox runs on Docker (privileged container requirements), all other services on Podman with podman-compose. This guide keeps compose files portable and deploy scripts handling runtime-specific quirks.
 
 ---
 
@@ -512,22 +506,22 @@ flowchart TD
 | Caddy | Podman | Single container, binds ports 80/443. |
 | Postiz | Podman | Three-container stack (app + postgres + redis). |
 
-**Runtime is controlled per-host** via the `container_engine` variable in the site-config inventory. Ansible passes this to deploy scripts as the `CONTAINER_ENGINE` environment variable. The platform-level `lib/common.sh` auto-detects if not set (prefers Podman), while the NetBox-specific `lib/common.sh` requires Docker and errors if it is not found.
+**Runtime is per-host** via `container_engine` in the site-config inventory. Ansible passes it to deploy scripts as the `CONTAINER_ENGINE` env var. The platform-level `lib/common.sh` auto-detects if unset (prefers Podman); the NetBox-specific `lib/common.sh` requires Docker and errors if absent.
 
 ---
 
 ## 2. Container Naming
 
-Docker Compose and podman-compose use different naming conventions for containers when `container_name` is not set:
+The two runtimes name containers differently when `container_name` is unset:
 
 | Runtime | Default Pattern | Example |
 |---------|----------------|---------|
 | Docker Compose | `{project}-{service}-{replica}` | `netbox-postgres-1` |
 | podman-compose | `{project}_{service}_{replica}` | `netbox_postgres_1` |
 
-The separator difference (`-` vs `_`) breaks any script that constructs container names dynamically.
+The separator difference (`-` vs `_`) breaks any script that builds container names dynamically.
 
-**Best practice:** Always set explicit `container_name` in compose files.
+**Best practice:** Always set explicit `container_name`.
 
 ```yaml
 # CORRECT: explicit names, runtime-agnostic
@@ -543,9 +537,9 @@ services:
     # Name will be "project-postgres-1" (Docker) or "project_postgres_1" (Podman)
 ```
 
-All agent-cloud compose files use a `workflow-` prefix for container names (e.g., `workflow-nocodb`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This convention prevents naming collisions across services on the same host and makes container names deterministic regardless of runtime.
+All agent-cloud compose files use a `workflow-` prefix (e.g., `workflow-nocodb`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This prevents naming collisions across services on a host and makes names deterministic regardless of runtime.
 
-When scripts must reference containers without knowing the name, use the `CONTAINER_SEP` variable from `lib/common.sh`:
+When scripts must reference containers without knowing the name, use `CONTAINER_SEP` from `lib/common.sh`:
 - Docker: `CONTAINER_SEP="-"`
 - Podman: `CONTAINER_SEP="_"`
 
@@ -555,7 +549,7 @@ When scripts must reference containers without knowing the name, use the `CONTAI
 
 ### The `name:` property problem
 
-Docker Compose supports the `name:` property in the top-level `volumes:` section to set explicit volume names:
+Docker Compose supports `name:` in top-level `volumes:` to set explicit volume names:
 
 ```yaml
 volumes:
@@ -563,9 +557,9 @@ volumes:
     name: my-explicit-volume-name  # Docker: works. podman-compose 1.0.6: IGNORED.
 ```
 
-In podman-compose 1.0.6, the `name:` property is silently ignored. The volume gets the default auto-generated name (`{project}_{volume}`), which can cause data loss on redeployment if the project name changes.
+In podman-compose 1.0.6, `name:` is silently ignored: the volume gets the auto-generated name (`{project}_{volume}`), risking data loss on redeploy if the project name changes.
 
-**Best practice:** Always declare volumes in the top-level `volumes:` section but do NOT use the `name:` property. Instead, control the project name via `--project-name` flag in the compose wrapper.
+**Best practice:** Declare volumes in top-level `volumes:` but do NOT use `name:`. Control the project name via the `--project-name` flag in the compose wrapper.
 
 ```yaml
 # CORRECT: no name: property, project name controls prefix
@@ -595,7 +589,7 @@ compose() {
 | Docker Compose | `{directory}_db_data` | `foo_db_data` |
 | podman-compose | `{directory}_db_data` | `foo_db_data` |
 
-Both runtimes use the same pattern when `--project-name` is set. The difference only matters when relying on directory-based inference, which varies by cwd.
+Both runtimes use the same pattern when `--project-name` is set. The difference only matters with directory-based inference, which varies by cwd.
 
 ---
 
@@ -603,7 +597,7 @@ Both runtimes use the same pattern when `--project-name` is set. The difference 
 
 **This is the most critical compatibility issue.**
 
-The `depends_on` condition `service_healthy` tells the compose engine to wait until a dependency's healthcheck reports healthy before starting the dependent service:
+The `depends_on` condition `service_healthy` waits until a dependency's healthcheck reports healthy before starting the dependent service:
 
 ```yaml
 services:
@@ -613,13 +607,13 @@ services:
         condition: service_healthy  # Docker: waits. podman-compose < 1.3.0: IGNORED.
 ```
 
-**podman-compose 1.0.6 behavior:** The `condition: service_healthy` directive is parsed but not enforced. Containers start in dependency order but without waiting for health. This means application containers start before their database is ready, causing connection errors or crashes.
+**podman-compose 1.0.6:** parses but does not enforce `condition: service_healthy`. Containers start in dependency order without waiting for health, so app containers start before their database is ready -- connection errors or crashes.
 
-**podman-compose >= 1.3.0 behavior:** The `condition: service_healthy` directive is properly enforced, matching Docker Compose behavior.
+**podman-compose >= 1.3.0:** enforces it properly, matching Docker Compose.
 
 ### Current workaround
 
-All deploy scripts that run on Podman VMs use explicit health-wait functions from `lib/common.sh` instead of relying on compose dependency conditions:
+Deploy scripts on Podman VMs use explicit health-wait functions from `lib/common.sh` instead of compose dependency conditions:
 
 ```bash
 # From deploy.sh — start backing services, wait, then start app
@@ -629,11 +623,11 @@ compose up -d nocodb
 wait_for_http "${NOCODB_URL}/api/v1/health" "NocoDB" 120
 ```
 
-The `wait_for_healthy()` function polls `$CONTAINER_ENGINE inspect --format='{{.State.Health.Status}}'` until the container reports `healthy` or times out. The `wait_for_http()` function polls an HTTP endpoint with curl.
+`wait_for_healthy()` polls `$CONTAINER_ENGINE inspect --format='{{.State.Health.Status}}'` until `healthy` or timeout; `wait_for_http()` polls an HTTP endpoint with curl.
 
 ### Staged startup pattern
 
-For services with deep dependency chains (like NetBox's 12-container stack), compose files declare `depends_on` for documentation and Docker compatibility, but deploy scripts implement staged startup:
+For deep dependency chains (like NetBox's 12-container stack), compose files declare `depends_on` for documentation and Docker compatibility, but deploy scripts stage startup:
 
 ```bash
 # Stage 1: backing services
@@ -650,7 +644,7 @@ compose up -d
 
 ### Migration path
 
-Once all VMs are upgraded to podman-compose >= 1.3.0 (see `plan/development/09-service-migrations-tooling.md`), deploy scripts can optionally simplify to `compose up -d` and let compose enforce the dependency chain. The explicit staged startup pattern will remain as a documented fallback and for NetBox, which benefits from the staged approach due to first-boot migration timing.
+Once all VMs run podman-compose >= 1.3.0 (see `plan/development/09-service-migrations-tooling.md`), deploy scripts can optionally simplify to `compose up -d` and let compose enforce the dependency chain. Staged startup stays as a documented fallback and for NetBox, which benefits from it due to first-boot migration timing.
 
 ---
 
@@ -683,13 +677,13 @@ Once all VMs are upgraded to podman-compose >= 1.3.0 (see `plan/development/09-s
 ```
 
 Key differences:
-- Docker uses `Name` (string), Podman uses `Names` (array)
-- Docker uses `Service`, Podman uses `Labels["io.podman.compose.service"]`
-- Docker has a dedicated `Health` field, Podman embeds health in the `Status` string
+- Docker `Name` (string) vs Podman `Names` (array)
+- Docker `Service` vs Podman `Labels["io.podman.compose.service"]`
+- Docker has a dedicated `Health` field; Podman embeds health in the `Status` string
 
 ### Python parser pattern
 
-The NetBox-specific `lib/common.sh` includes an inline Python parser that handles both formats:
+The NetBox-specific `lib/common.sh` includes an inline Python parser for both formats:
 
 ```python
 c_svc = c.get('Service', '') or c.get('Labels', {}).get('io.podman.compose.service', '')
@@ -699,14 +693,14 @@ if not isinstance(c_names, list): c_names = [c_names]
 
 ### Inspect format
 
-The `inspect` command works identically across both runtimes for health status:
+`inspect` works identically across both runtimes for health status:
 
 ```bash
 $CONTAINER_ENGINE inspect --format='{{.State.Health.Status}}' container_name
 # Returns: "healthy", "unhealthy", "starting", or "" (no healthcheck)
 ```
 
-This is the preferred method for health polling in deploy scripts (`wait_for_healthy()`), as it avoids the JSON format differences entirely.
+This is the preferred health-polling method in deploy scripts (`wait_for_healthy()`) -- it avoids the JSON format differences entirely.
 
 ---
 
@@ -714,13 +708,13 @@ This is the preferred method for health polling in deploy scripts (`wait_for_hea
 
 ### Format requirements
 
-podman-compose 1.0.6 requires strict `KEY=VALUE` format in env files. It does not support:
+podman-compose 1.0.6 requires strict `KEY=VALUE` env files. It does not support:
 - Quoted values with embedded newlines
-- Multi-line values using `\` continuation
-- Variable interpolation within env files (`${OTHER_VAR}`)
-- Comments after values (`KEY=value # comment`)
+- Multi-line values via `\` continuation
+- Variable interpolation (`${OTHER_VAR}`)
+- Trailing comments (`KEY=value # comment`)
 
-**Best practice:** Use simple `KEY=VALUE` format with no quotes, no interpolation, no trailing comments.
+**Best practice:** simple `KEY=VALUE`, no quotes, no interpolation, no trailing comments.
 
 ```bash
 # CORRECT: simple KEY=VALUE
@@ -736,7 +730,7 @@ POSTGRES_DB=nocodb # the database     # Trailing comment
 
 ### env_file vs environment
 
-Both runtimes support the `environment:` section in compose files for non-secret configuration. Use `env_file:` for secret-containing files (templated by Ansible from OpenBao) and `environment:` for static, non-secret values:
+Both runtimes support the `environment:` section for non-secret config. Use `env_file:` for secret files (Ansible-templated from OpenBao) and `environment:` for static, non-secret values:
 
 ```yaml
 services:
@@ -749,7 +743,7 @@ services:
 
 ### YAML anchors in env_file
 
-podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) for the `environment:` section but does NOT support the merge key (`<<: *anchor`). The n8n compose file uses this pattern:
+podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) in `environment:` but NOT the merge key (`<<: *anchor`). The n8n compose file uses this pattern:
 
 ```yaml
 x-n8n-env: &n8n-env
@@ -770,9 +764,9 @@ If this causes issues on podman-compose 1.0.6, move shared env vars into the `en
 
 ### The `--ignore-buildable` flag
 
-Docker Compose supports `compose pull --ignore-buildable` to skip pulling images for services that have a `build:` section. podman-compose does not support this flag.
+Docker Compose supports `compose pull --ignore-buildable` to skip pulling images for services with a `build:` section; podman-compose does not.
 
-**Workaround:** Fall back to pulling specific service names:
+**Workaround:** fall back to pulling specific service names:
 
 ```bash
 # Try --ignore-buildable first (Docker), fall back to explicit list (Podman)
@@ -782,7 +776,7 @@ compose pull --ignore-buildable 2>/dev/null || \
 
 ### Build behavior
 
-Both runtimes support `compose build` and `$CONTAINER_ENGINE build`. For services with a `build:` section and `pull_policy: never` (like NetBox), always build explicitly before `compose up`:
+Both runtimes support `compose build` and `$CONTAINER_ENGINE build`. For services with `build:` and `pull_policy: never` (like NetBox), build explicitly before `compose up`:
 
 ```bash
 $CONTAINER_ENGINE build --no-cache -t netbox:latest-plugins \
@@ -791,7 +785,7 @@ $CONTAINER_ENGINE build --no-cache -t netbox:latest-plugins \
 
 ### Image references
 
-Always use fully qualified image references (`docker.io/library/postgres:16`) to avoid differences in default registry resolution between Docker (docker.io) and Podman (configurable via `registries.conf`).
+Always use fully qualified image references (`docker.io/library/postgres:16`) -- default registry resolution differs between Docker (docker.io) and Podman (configurable via `registries.conf`).
 
 ---
 
@@ -799,10 +793,10 @@ Always use fully qualified image references (`docker.io/library/postgres:16`) to
 
 ### Stale container problem
 
-podman-compose `down` may silently leave containers behind when pod dependency chains block removal. This is particularly common after:
-- Changing volume mount paths in the compose file
+podman-compose `down` may silently leave containers behind when pod dependency chains block removal, especially after:
+- Changing volume mount paths
 - Renaming services
-- Interrupted previous deployments
+- An interrupted previous deployment
 
 **Detection and cleanup pattern:**
 
@@ -822,11 +816,11 @@ if [ -n "$leftover" ]; then
 fi
 ```
 
-This pattern is implemented in the NetBox deploy.sh (step 6) and should be replicated in all deploy scripts.
+This pattern is in the NetBox deploy.sh (step 6) and should be replicated in all deploy scripts.
 
 ### Pod cleanup (Podman-specific)
 
-podman-compose creates an implicit pod for each project. When containers are force-removed but the pod remains, the next `compose up` may fail. Always clean up the pod after force-removing containers.
+podman-compose creates an implicit pod per project. If containers are force-removed but the pod remains, the next `compose up` may fail. Always clean up the pod after force-removing containers.
 
 ---
 
@@ -834,7 +828,7 @@ podman-compose creates an implicit pod for each project. When containers are for
 
 ### DNS resolution
 
-Both runtimes provide DNS resolution between containers on the same compose network, but the underlying mechanisms differ:
+Both runtimes resolve DNS between containers on the same compose network, but the mechanisms differ:
 
 | Runtime | DNS Provider | Default Network |
 |---------|-------------|-----------------|
@@ -848,11 +842,11 @@ podman info --format '{{.Host.NetworkBackend}}'
 # Should return: netavark
 ```
 
-If using the older CNI backend, install the `dnsname` plugin or upgrade to Podman 4.0+ which defaults to netavark.
+On the older CNI backend, install the `dnsname` plugin or upgrade to Podman 4.0+ (defaults to netavark).
 
 ### Cross-service resolution
 
-Container-to-container DNS uses the service name as defined in the compose file (not the `container_name`). Both runtimes resolve `postgres` to the IP of the container running the `postgres` service:
+Container-to-container DNS uses the compose service name, not `container_name`. Both runtimes resolve `postgres` to the IP of the container running the `postgres` service:
 
 ```yaml
 services:
@@ -865,7 +859,7 @@ services:
 
 ### Custom networks
 
-podman-compose 1.0.6 supports the `networks:` section but may not support all properties (like `external: true` in some configurations). Keep network definitions simple:
+podman-compose 1.0.6 supports `networks:` but may not support all properties (e.g., `external: true` in some configs). Keep network definitions simple:
 
 ```yaml
 networks:
@@ -879,7 +873,7 @@ networks:
 
 ### CAP_NET_RAW limitation
 
-Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true` in the compose file. This capability is required for:
+Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true`. This capability is required for:
 - ICMP ping (host discovery)
 - Raw socket SYN scans (nmap)
 - Network packet capture
@@ -897,7 +891,7 @@ Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true` in the c
 
 ### sudo compose is not viable
 
-Running `sudo podman-compose up` creates containers in root's storage, which is separate from the rootless user's storage (different images, networks, volumes). This breaks the deployment model. Only use `sudo` for individual `podman run` commands that genuinely need privileges (like orb-agent).
+`sudo podman-compose up` creates containers in root's storage, separate from the rootless user's storage (different images, networks, volumes), breaking the deployment model. Use `sudo` only for individual `podman run` commands that genuinely need privileges (like orb-agent).
 
 ---
 
@@ -905,11 +899,11 @@ Running `sudo podman-compose up` creates containers in root's storage, which is 
 
 ### The problem
 
-Docker containers with `restart: always` automatically restart when the Docker daemon starts at boot. Podman has no persistent daemon (daemonless architecture), so containers do not auto-restart after a host reboot.
+Docker containers with `restart: always` auto-restart when the daemon starts at boot. Podman is daemonless, so containers do not auto-restart after a host reboot.
 
 ### systemd integration
 
-Podman containers must be managed by systemd for restart-after-reboot behavior:
+Podman containers need systemd management for restart-after-reboot:
 
 ```bash
 # Generate systemd unit from running container
@@ -923,7 +917,7 @@ systemctl --user enable container-workflow-nocodb.service
 
 ### podman-compose + systemd
 
-For compose-managed stacks, generate a systemd unit for the entire compose project:
+For compose-managed stacks, generate a systemd unit for the whole project:
 
 ```bash
 # Option A: systemd unit that runs compose up/down
@@ -947,7 +941,7 @@ EOF
 
 ### Current state
 
-systemd integration is not yet automated in agent-cloud playbooks. Services are restarted after reboot by re-running the deploy playbook via Semaphore. A planned playbook (`configure-podman-systemd.yml`) will automate systemd unit generation for all Podman services.
+systemd integration is not yet automated in agent-cloud playbooks. After reboot, services restart by re-running the deploy playbook via Semaphore. A planned `configure-podman-systemd.yml` will automate systemd unit generation for all Podman services.
 
 ---
 
@@ -965,13 +959,13 @@ systemd integration is not yet automated in agent-cloud playbooks. Services are 
 
 podman-compose 1.3.0 (released 2024-08-15) introduced:
 - Proper enforcement of `depends_on: condition: service_healthy`
-- Support for the `name:` property in top-level `volumes:`
-- Improved `--format json` output parsing
+- Support for `name:` in top-level `volumes:`
+- Improved `--format json` parsing
 - Better handling of compose spec extensions (`x-` prefixes)
 
 ### Upgrade path
 
-**Upgrade automation must be built before standardizing on >= 1.3.0.** See `plan/development/09-service-migrations-tooling.md` for the phased upgrade plan.
+**Upgrade automation must be built before standardizing on >= 1.3.0.** See `plan/development/09-service-migrations-tooling.md` for the phased plan.
 
 The upgrade is a pip install since podman-compose is a Python package:
 
@@ -1018,19 +1012,19 @@ pip3 install --upgrade podman-compose>=1.3.0
 
 ## 14. Cross-Runtime Best Practices
 
-These 10 rules ensure compose files and deploy scripts work correctly under both Docker and Podman runtimes.
+These 10 rules keep compose files and deploy scripts working under both runtimes.
 
 ### Rule 1: Always set explicit `container_name`
 
-Prevents the underscore-vs-hyphen naming divergence. Every service must have a deterministic, predictable container name.
+Prevents underscore-vs-hyphen divergence. Every service gets a deterministic name.
 
 ### Rule 2: Never use the `name:` property on volumes
 
-Use `--project-name` to control the volume name prefix. Declare volumes in the top-level section but leave them bare.
+Control the volume prefix via `--project-name`. Declare volumes in the top-level section but leave them bare.
 
 ### Rule 3: Use fully qualified image references
 
-Always include the registry domain (`docker.io/`, `ghcr.io/`). Podman's default registry resolution differs from Docker's.
+Always include the registry domain (`docker.io/`, `ghcr.io/`); Podman's default resolution differs from Docker's.
 
 ```yaml
 image: docker.io/postgres:16    # CORRECT
@@ -1039,27 +1033,27 @@ image: postgres:16              # INCORRECT: ambiguous registry
 
 ### Rule 4: Implement staged startup in deploy scripts
 
-Never rely solely on `depends_on: service_healthy` for startup ordering. Deploy scripts must explicitly start backing services, wait for health, then start application services.
+Never rely solely on `depends_on: service_healthy` for ordering. Explicitly start backing services, wait for health, then start app services.
 
 ### Rule 5: Use `wait_for_healthy()` or `wait_for_http()` instead of compose dependency conditions
 
-Poll health via `$CONTAINER_ENGINE inspect` or HTTP checks. These work identically across runtimes.
+Poll health via `$CONTAINER_ENGINE inspect` or HTTP checks -- identical across runtimes.
 
 ### Rule 6: Keep env files in simple KEY=VALUE format
 
-No quotes, no variable interpolation, no trailing comments. This is the lowest common denominator that works everywhere.
+No quotes, no interpolation, no trailing comments -- the lowest common denominator.
 
 ### Rule 7: Clean up stale containers after compose down
 
-Always check for leftover containers after `compose down` and force-remove them. Clean up orphaned pods and networks on Podman.
+Check for leftovers after `compose down` and force-remove them; clean up orphaned pods and networks on Podman.
 
 ### Rule 8: Detect runtime via `CONTAINER_ENGINE` variable
 
-Never hardcode `docker` or `podman` in compose files or scripts. Use the `detect_runtime()` function from `lib/common.sh` or accept `CONTAINER_ENGINE` from Ansible.
+Never hardcode `docker`/`podman`. Use `detect_runtime()` from `lib/common.sh` or accept `CONTAINER_ENGINE` from Ansible.
 
 ### Rule 9: Handle `compose pull` flag differences
 
-Use the fallback pattern: try Docker-specific flags first, fall back to explicit service names.
+Try Docker-specific flags first, fall back to explicit service names:
 
 ```bash
 compose pull --ignore-buildable 2>/dev/null || \
@@ -1068,7 +1062,7 @@ compose pull --ignore-buildable 2>/dev/null || \
 
 ### Rule 10: Test compose changes on both runtimes
 
-Before merging compose file changes, verify they work on both a Docker host (NetBox VM) and a Podman host (all other VMs). The CI pipeline runs linting but does not currently test runtime behavior.
+Before merging, verify on both a Docker host (NetBox VM) and a Podman host (all other VMs). CI runs linting but does not currently test runtime behavior.
 
 ---
 
@@ -1081,7 +1075,7 @@ The codebase uses two naming patterns for compose files:
 | `compose.yml` | OpenBao, NocoDB, n8n, Semaphore, Caddy, Postiz | Modern compose spec default filename |
 | `docker-compose.yml` | NetBox | Legacy filename; NetBox's compose wrapper uses explicit `-f docker-compose.yml` |
 
-Both are valid. New services should use `compose.yml`. The `compose()` wrapper in `lib/common.sh` uses `compose.yml` by default; the NetBox-specific wrapper overrides this.
+Both are valid; new services use `compose.yml`. The `compose()` wrapper in `lib/common.sh` defaults to `compose.yml`; the NetBox-specific wrapper overrides this.
 
 ## Appendix: Runtime Decision Flowchart
 
@@ -1107,7 +1101,7 @@ flowchart TD
 
 ## Appendix: UhhCraft — reference Podman service
 
-[`platform/services/uhhcraft/deployment/`](../../platform/services/uhhcraft/deployment/) is the first agent-cloud service designed Podman-first from the start. Its `compose.yml` illustrates every pattern this document recommends:
+[`platform/services/uhhcraft/deployment/`](../../platform/services/uhhcraft/deployment/) is the first agent-cloud service designed Podman-first. Its `compose.yml` illustrates every pattern this document recommends:
 
 | Pattern | UhhCraft applies it as |
 |---------|------------------------|
@@ -1120,6 +1114,6 @@ flowchart TD
 | **`env_file: [.env]`** | The Ansible-templated `.env` is the single source of compose env-vars; no literal values in `compose.yml` |
 | **`nvidia.com/gpu=all` device** | Sister services [`inference-comfyui`](../../platform/services/inference-comfyui/deployment/compose.yml) and [`inference-hunyuan3d`](../../platform/services/inference-hunyuan3d/deployment/compose.yml) use the CDI handoff for GPU passthrough under Podman |
 
-UhhCraft also demonstrates how to handle the Go + templ + sqlc generation lifecycle inside a multi-stage `Dockerfile` (Stage 1 installs the tool-chain, Stage 2 generates + builds, Stage 3 is distroless runtime). See [`platform/services/uhhcraft/deployment/Dockerfile`](../../platform/services/uhhcraft/deployment/Dockerfile) for the pattern any future Go service should mirror.
+UhhCraft also shows the Go + templ + sqlc generation lifecycle in a multi-stage `Dockerfile` (Stage 1 installs the toolchain, Stage 2 generates + builds, Stage 3 is distroless runtime). See [`platform/services/uhhcraft/deployment/Dockerfile`](../../platform/services/uhhcraft/deployment/Dockerfile) -- the pattern any future Go service should mirror.
 
-Compose file: [`platform/services/uhhcraft/deployment/compose.yml`](../../platform/services/uhhcraft/deployment/compose.yml). Use it as a template when starting a new Podman-first service.
+Compose file: [`platform/services/uhhcraft/deployment/compose.yml`](../../platform/services/uhhcraft/deployment/compose.yml). Use it as a template for a new Podman-first service.

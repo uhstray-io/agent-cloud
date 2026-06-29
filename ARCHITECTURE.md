@@ -1,14 +1,13 @@
 # agent-cloud Architecture
 
-This is the 5-minute map. Read it first, whether you are a human onboarding or an
-AI agent picking up a task. It tells you *what* agent-cloud is, *how the pieces fit*,
-and *where to go next* for depth.
+The 5-minute map — read it first, human or AI. It tells you *what* agent-cloud is,
+*how the pieces fit*, and *where to go next* for depth.
 
 agent-cloud is the uhstray.io **"business-as-code" homelab platform**: a single public
-monorepo that runs real privacy-focused infrastructure (NetBox, Authentik, OpenBao,
-Semaphore, Caddy, an inference plane, AI agents) where every control is version-controlled
+monorepo running real privacy-focused infrastructure (NetBox, Authentik, OpenBao,
+Semaphore, Caddy, an inference plane, AI agents), where every control is version-controlled
 config a tool applies idempotently — never a UI click. It is deliberately open *because*
-site identity (real IPs, FQDNs, credentials, topology) is a parameter that lives only in the
+site identity (real IPs, FQDNs, credentials, topology) is a parameter living only in the
 private **site-config** repo; this repo holds templates, placeholders, and code.
 
 ## The Three Doc Layers (read in this order)
@@ -62,23 +61,23 @@ Every privileged change flows top-to-bottom and **never the inverse**:
 ### Why four layers and not three (the AI Invariant)
 
 A conventional platform has three layers: something proposes, automation runs it,
-infrastructure hosts it. agent-cloud inserts a **fourth, non-optional** layer — the
-guardrails — *between* AI and automation, and makes the AI a strictly upstream proposer.
+infrastructure hosts it. agent-cloud inserts a **fourth, non-optional** guardrail layer
+*between* AI and automation, making the AI a strictly upstream proposer.
 
-This exists because of one load-bearing safety property, the **AI Invariant**
-(`PRINCIPLES.md` §4): *AI proposes, guardrails validate, automation executes — and never
-the inverse.* An agent may recommend improvements to anything, **including its own pipelines
-and prompts, but may never apply them without human review** — self-improvement is
-propose-only. No AI agent may *be* a standing autonomous reconciler, nor author the
-human-unmediated target of a reconciliation controller. The shape this forbids is an
+It exists for one load-bearing safety property, the **AI Invariant**
+([PRINCIPLES §4](PRINCIPLES.md#4-the-ai-invariant)): *AI proposes, guardrails validate,
+automation executes — never the inverse.* An agent may recommend improvements to anything,
+**including its own pipelines and prompts, but may never apply them without human review** —
+self-improvement is propose-only. No AI agent may *be* a standing autonomous reconciler, nor
+author the human-unmediated target of a reconciliation controller. The shape this forbids: an
 unattended convergence loop with an LLM authoring its own target and destructive (`down -v`)
-reach. Collapsing the guardrail layer back into automation would re-open exactly that shape.
-Weakening this rule requires an explicit, recorded human decision.
+reach. Collapsing guardrails back into automation re-opens exactly that shape. Weakening this
+rule requires an explicit, recorded human decision.
 
 ## Component Map
 
-Each major subsystem has exactly one doc that owns its detail. Start at the layer in the
-diagram, then jump to the owning doc.
+Each major subsystem has exactly one owning doc. Start at the layer in the diagram, then
+jump to that doc.
 
 | Subsystem | What it is | Layer | Owning doc |
 |---|---|---|---|
@@ -129,23 +128,23 @@ built**, tagged **[TARGET]** there. Do not reason as if a `[TARGET]` guarantee a
 The big ones, roughly in priority order:
 
 - **Runtime-dir / tmpfs-secrets model — top build priority, NOT yet true.** Today
-  `manage-secrets.yml` renders `.env` into a full repo clone on the target. Until the
+  `manage-secrets.yml` renders `.env` into a full repo clone on the target. Until
   artifact-render/copy + sparse-checkout + engine-secret delivery ship, `.gitignore` + the
   pre-commit/CI trufflehog gate are the *only* (fragile) secret boundary. The liveness loop and
   every "secrets never in the clone" claim depend on this landing first.
 - **RBAC role-based provisioning — designed, not built.** The Org>Dept>Team>Role + Access-Level
-  schema and the (identity → per-service role) provisioning automation do not exist yet;
+  schema and the (identity → per-service role) provisioning automation don't exist yet;
   Semaphore user `stray` was hand-set to admin (a stopgap). See [04](plan/architecture/04-credentials-access.md).
-- **AppRole TTL=0 defect.** `manage-approle.yml` currently hardcodes `secret_id_ttl: 0` — the
+- **AppRole TTL=0 defect.** `manage-approle.yml` hardcodes `secret_id_ttl: 0` — the
   highest-severity, lowest-effort fix; the bounded-credential rule is the target.
 - **nocodb credential-boundary violation.** `nocodb` deploy.sh still sources `bao-client.sh`
   (legitimate only for the genesis services OpenBao + Semaphore); retiring it is the concrete
   acceptance test that the deploy.sh boundary is real.
 - **Scheduled config reconciliation** is INVESTIGATE/[TARGET]; today convergence is
   trigger-only and only liveness self-heals.
-- **Alerting before tracing**, the host firewall rollout that backs the "trusted network" claim,
+- **Alerting before tracing**, the host firewall rollout backing the "trusted network" claim,
   and the `assert-orchestrated.yml` wiring are all in flight, not done.
 
-For the full set of caveats and the open tensions (static DB passwords vs. dynamic leases,
-conformance ceremony vs. velocity, one dependency DAG vs. two), read the as-built notes inline
-in **PRINCIPLES.md** and the **Open tensions** section at its end.
+For the full caveats and open tensions (static DB passwords vs. dynamic leases, conformance
+ceremony vs. velocity, one dependency DAG vs. two), read the as-built notes inline in
+**PRINCIPLES.md** and the **Open tensions** section at its end.
