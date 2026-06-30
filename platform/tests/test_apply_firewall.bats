@@ -62,22 +62,27 @@ setup() {
   grep -q 'ansible.builtin.meta: reset_connection' "$PLAYBOOK"
 }
 
-@test "firewall: rootful podman gets a bridge-DNS INPUT allow, podman-gated, before enable" {
+@test "firewall: rootful podman gets a DNS-scoped bridge INPUT allow, podman+rootful-gated, before enable" {
   # Podman runs aardvark-dns on the bridge GATEWAY (a host IP), so a container
   # resolving a sibling by name sends a DNS query INPUT to the host that
-  # default-deny DROPS. Rootful podman hosts must allow INPUT on each podman bridge.
+  # default-deny DROPS. Rootful podman hosts must allow that DNS query in.
   # Docker (in-netns 127.0.0.11) and rootless podman (own netns) never cross host
   # UFW, so the task is gated on _rootful AND _engine == 'podman'.
   grep -qF '_allow_bridge_dns: "{{ firewall_allow_bridge_dns | default(true) | bool }}"' "$PLAYBOOK"
-  grep -qF 'ufw allow in on {{ item }}' "$PLAYBOOK"
+  # Scoped to DNS (53/udp+tcp) — NOT a blanket allow on the whole bridge.
+  grep -qF 'ufw allow in on {{ item.0 }} to any port 53 proto {{ item.1 }}' "$PLAYBOOK"
+  ! grep -qF 'ufw allow in on {{ item }}' "$PLAYBOOK"
   # Detection iterates the podman networks' bridge interfaces.
   grep -qF 'podman network inspect' "$PLAYBOOK"
-  # Gated on the podman engine (so Docker/rootless hosts skip it).
+  # Gated on the podman engine (so Docker hosts skip it)...
   grep -qE "^\s*- _engine == 'podman'\s*$" "$PLAYBOOK"
+  # ...AND on _rootful, right alongside the podman check — removing _rootful must
+  # fail this test (the gate must also exclude rootless podman, not just Docker).
+  grep -B1 -E "^\s*- _engine == 'podman'\s*$" "$PLAYBOOK" | grep -qE "^\s*- _rootful\s*$"
   # The bridge allow must be added BEFORE enabling UFW (anti-lockout ordering).
   local enable_line bridge_line
   enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  bridge_line=$(grep -n 'ufw allow in on {{ item }}' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  bridge_line=$(grep -n 'ufw allow in on {{ item.0 }}' "$PLAYBOOK" | head -1 | cut -d: -f1)
   [ -n "$enable_line" ] && [ -n "$bridge_line" ]
   [ "$bridge_line" -lt "$enable_line" ]
 }
