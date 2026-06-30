@@ -844,6 +844,8 @@ podman info --format '{{.Host.NetworkBackend}}'
 
 On the older CNI backend, install the `dnsname` plugin or upgrade to Podman 4.0+ (defaults to netavark).
 
+**Rootful podman + host firewall:** with **rootful** podman, aardvark-dns listens on the bridge **gateway** (a host IP), so a container resolving a sibling by name issues a DNS query that is **INPUT to the host**. A default-deny host firewall (the UFW lockdown) drops it — netavark adds no INPUT accept — and because warm pooled connections keep working, it only surfaces on a service **restart or a new connection under load** (e.g. every new DB connection hangs ~20s then fails), a classic verify-before-hardening trap. `apply-firewall.yml` allows the DNS port (53/udp+tcp) into each podman bridge (`firewall_allow_bridge_dns`, gated on rootful podman) — scoped to DNS rather than opening the whole bridge; **pin the bridge name** in the service compose so that rule survives network recreates. Docker (in-netns `127.0.0.11`) and rootless podman (own netns) never cross the host firewall and are exempt.
+
 ### Cross-service resolution
 
 Container-to-container DNS uses the compose service name, not `container_name`. Both runtimes resolve `postgres` to the IP of the container running the `postgres` service:

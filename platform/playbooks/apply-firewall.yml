@@ -41,6 +41,13 @@
 #                            detection is off — a plain INPUT `ufw allow` never
 #                            matches a DNAT'd container port. Detected ports get a
 #                            matching route rule automatically when firewall_rootful.
+#   firewall_allow_bridge_dns  on ROOTFUL PODMAN hosts, allow the DNS port (53/udp+tcp)
+#                            into each podman bridge so container name resolution
+#                            works. Podman runs aardvark-dns on the bridge GATEWAY (a
+#                            host IP), so a container resolving a sibling by name sends
+#                            a DNS query INPUT to the host, which default-deny DROPS.
+#                            Default true. Docker (in-netns 127.0.0.11 resolver) and
+#                            rootless podman (own netns) never cross host UFW — exempt.
 #   firewall_verify_ssh      reset-connection check after enable (default true)
 #   ICMP echo is left at UFW's default (allowed) so ping-based monitoring works.
 #
@@ -51,6 +58,16 @@
 # allows suffice there. This playbook emits `ufw route allow` rules on rootful/Docker
 # hosts (firewall_route_rules + a route mirror of each detected port) so the reverse
 # proxy can actually reach the container.
+#
+# Rootful podman & container DNS (the INPUT chain): podman runs aardvark-dns on each
+# bridge's GATEWAY — a host IP — so when a container resolves a sibling by name (e.g.
+# semaphore_db), the query is INPUT to the host, which `default deny (incoming)` DROPS;
+# netavark adds no INPUT accept for it. Under the lockdown, every NEW container-to-
+# container connection that needs name resolution then hangs ~20s and fails. It only
+# surfaces on a restart / new connection (warm pooled connections keep working) — a
+# classic verify-before-hardening trap. The playbook allows 53/udp+tcp on each podman
+# bridge interface (firewall_allow_bridge_dns) to close it. Docker (in-netns 127.0.0.11) and
+# rootless podman (own netns) never cross host UFW, so both are exempt.
 #
 # Usage (via Semaphore): -e target_service=openhands_svc
 
@@ -70,6 +87,7 @@
     # engine must be queried as root. Docker is always rootful; rootful podman hosts
     # set firewall_rootful: true (the engine name alone can't distinguish it).
     _rootful: "{{ firewall_rootful | default(_engine == 'docker') | bool }}"
+    _allow_bridge_dns: "{{ firewall_allow_bridge_dns | default(true) | bool }}"
 
   tasks:
     - name: "Skip non-Linux / local-connection hosts (UFW targets real Linux VMs)"
@@ -182,6 +200,48 @@
         - _rootful
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
+
+    # ── Rootful podman bridge DNS (INPUT): allow container name resolution, which
+    # crosses the host INPUT chain only on rootful podman (full rationale in the
+    # header note above). Detected at run time so it tracks whatever bridge(s) exist;
+    # pin the bridge name in the service compose to keep it stable across recreates.
+    - name: "Detect podman bridge interfaces (rootful podman container DNS)"
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v podman >/dev/null 2>&1 || exit 0   # no podman -> no bridges
+        # Parse the bridge iface from `network inspect` JSON with sed — a Go
+        # `--format` template (the double-curly kind) collides with Ansible Jinja.
+        # Only bridge networks carry network_interface; host/none/macvlan yield none.
+        for n in $(podman network ls -q 2>/dev/null); do
+          podman network inspect "$n" 2>/dev/null \
+            | sed -nE 's/.*network_interface[^A-Za-z0-9]+([A-Za-z0-9_.-]+).*/\1/p'
+        done | sort -u
+      args:
+        executable: /bin/bash
+      become: "{{ _rootful }}"
+      register: _bridges
+      changed_when: false
+      when:
+        - _allow_bridge_dns
+        - _rootful
+        - _engine == 'podman'
+
+    - name: "Allow container->gateway DNS (53/udp+tcp) on each podman bridge (INPUT) — BEFORE enable"  # noqa: command-instead-of-module
+      # Scoped to port 53 only: aardvark-dns is the sole host-gateway service the
+      # containers need, so opening the whole bridge to host INPUT would widen the
+      # trust boundary well past the DNS fix. Container<->container traffic is
+      # FORWARD (handled by netavark), not INPUT, so it is unaffected by this.
+      ansible.builtin.command: "ufw allow in on {{ item.0 }} to any port 53 proto {{ item.1 }}"
+      register: _bridgerule
+      changed_when: "'Rule added' in _bridgerule.stdout or 'Rules updated' in _bridgerule.stdout"
+      loop: "{{ _bridges.stdout_lines | default([]) | product(['udp', 'tcp']) | list }}"
+      loop_control:
+        label: "{{ item.0 }} 53/{{ item.1 }} (podman bridge DNS, INPUT)"
+      when:
+        - _allow_bridge_dns
+        - _rootful
+        - _engine == 'podman'
+        - (_bridges.stdout_lines | default([])) | length > 0
 
     - name: "Default-deny incoming"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default deny incoming"
