@@ -47,6 +47,8 @@
     fi
     # Remove any containers with the service name prefix
     $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+  args:
+    executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   become: true
   register: _clean
   changed_when: true
@@ -69,6 +71,8 @@
       $ENGINE compose -f "$COMPOSE_FILE" down -v 2>&1 || true
     fi
     $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+  args:
+    executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _clean_local
   changed_when: true
   when: local_mode | default(false) | bool
@@ -93,6 +97,8 @@
     set -o pipefail
     {{ container_engine | default('docker') }} volume ls 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} volumes"
     {{ container_engine | default('docker') }} ps -a 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} containers"
+  args:
+    executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _verify
   changed_when: false
 

@@ -13,7 +13,11 @@ version: 1
 metadata:
   name: agent-cloud - Semaphore OIDC
 context:
-  semaphore_redirect: https://semaphore.agent-cloud.test:8443/api/auth/oidc/authentik/redirect
+  # Rendered from inventory at deploy (deploy-authentik.yml templates this file) so
+  # the file content — and thus Authentik's re-apply trigger — is env-specific.
+  # Prod sets semaphore_redirect_uri/semaphore_launch_url; default is local-dev.
+  semaphore_redirect: "{{ semaphore_redirect_uri | default('https://semaphore.agent-cloud.test:8443/api/auth/oidc/authentik/redirect') }}"
+  semaphore_launch: "{{ semaphore_launch_url | default('https://semaphore.agent-cloud.test:8443/') }}"
 entries:
   - model: authentik_providers_oauth2.oauth2provider
     id: provider-semaphore
@@ -42,5 +46,5 @@ entries:
     attrs:
       name: Semaphore
       provider: !KeyOf provider-semaphore
-      meta_launch_url: https://semaphore.agent-cloud.test:8443/
+      meta_launch_url: !Context semaphore_launch
       open_in_new_tab: true

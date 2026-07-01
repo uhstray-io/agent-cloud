@@ -42,8 +42,22 @@
       # Day-to-day admin user (agent-cloud-admin.yaml blueprint), member of
       # platform-admins -> top role in every SSO'd app. Worker reads it via !Env.
       - { name: agent_cloud_admin_password, type: random, length: 32 }
+      # Operator admin 'stray' (stray-admin.yaml) + platform service account API
+      # token (service-account.yaml). Stable across redeploys; worker reads !Env.
+      - { name: stray_admin_password, type: random, length: 32 }
+      - { name: service_account_token, type: random, length: 60 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
+    # Blueprints always applied regardless of environment (groups, flows, admin
+    # users, service account). Per-app blueprints are selected from the catalog
+    # by `authentik_apps`. zz-sso-bindings is RENDERED (not copied) from the set.
+    _shared_blueprints:
+      - agent-cloud.yaml
+      - platform-groups.yaml
+      - agent-cloud-admin.yaml
+      - stray-admin.yaml
+      - service-account.yaml
+    _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
     - name: "Place the monorepo + ensure podman/compose"
@@ -51,6 +65,113 @@
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # ── Composable blueprint selection (manifest-driven) ─────────────────────
+    # Assemble blueprints-active/ from the enabled apps so prod shows only prod
+    # services. Unset authentik_apps => all catalog apps (local-dev unchanged).
+    # See plan/development/PROD-SSO-ROLLOUT-PLAN.md.
+    - name: "Load the Authentik app catalog"
+      ansible.builtin.include_vars:
+        file: "{{ _authentik_tpls }}/app-catalog.yml"
+
+    - name: "Resolve the enabled apps (default: every catalog app)"
+      # default WITHOUT the boolean: only an UNDEFINED authentik_apps falls back to
+      # the full catalog (local-dev). An explicit `authentik_apps: []` is a real
+      # (empty) selection — do NOT treat it as unset, or "expose nothing" silently
+      # becomes "expose everything".
+      ansible.builtin.set_fact:
+        _enabled_apps: "{{ authentik_apps | default(authentik_app_catalog.keys() | list) }}"
+
+    - name: "Validate every enabled app exists in the catalog"
+      ansible.builtin.assert:
+        that:
+          - item in authentik_app_catalog
+        fail_msg: "authentik_apps entry '{{ item }}' is not in app-catalog.yml"
+      loop: "{{ _enabled_apps }}"
+
+    # ── Promotion safety (prod) — see app-catalog.yml "Promotion runbook" ────
+    # Resolve the enabled OIDC apps' prod inputs + the post-apply verify set.
+    # _verify_apps is reused by Phase 3 (host facts persist across plays).
+    - name: "Resolve enabled OIDC apps' prod-required vars + verify set"
+      ansible.builtin.set_fact:
+        _oidc_prod_required: >-
+          {{ _enabled_apps | map('extract', authentik_app_catalog)
+             | selectattr('type', 'equalto', 'oidc')
+             | selectattr('prod_required', 'defined')
+             | map(attribute='prod_required') | flatten | list }}
+        _verify_apps: >-
+          {{ _enabled_apps | map('extract', authentik_app_catalog)
+             | selectattr('type', 'equalto', 'oidc')
+             | selectattr('verify_redirect', 'defined') | list }}
+
+    # GUARD: refuse to promote an OIDC app to prod unless its prod URLs are set and
+    # not still pointing at agent-cloud.test. Skipped for local_mode (local-dev uses
+    # the blueprint defaults on purpose). This is what would have caught the semaphore
+    # redirect_uri at deploy time instead of in the browser.
+    - name: "Promotion guard (prod): OIDC prod URLs are set + not local-dev defaults"
+      ansible.builtin.assert:
+        that:
+          - "(vars[item] | default('')) | length > 0"
+          - "'agent-cloud.test' not in (vars[item] | default(''))"
+        fail_msg: >-
+          Promotion guard: inventory var '{{ item }}' must be set to a prod URL (in
+          site-config) and not an agent-cloud.test default. Refusing to deploy a
+          local-dev URL to prod — set it, or drop the app from prod authentik_apps.
+        quiet: true
+      loop: "{{ _oidc_prod_required }}"
+      when: not (local_mode | default(false) | bool)
+
+    # NOTE: this rebuilds the FILE set the worker applies. Authentik blueprints are
+    # additive — dropping a file does NOT delete the app/provider already created in
+    # the DB, so de-selected apps remain as harmless ORPHANS (no outpost binding /
+    # access policy, so they grant nothing). This is intentional for the prod prune
+    # (see PROD-SSO-ROLLOUT-PLAN.md). Full deprovisioning (state: absent tombstones
+    # per removed slug, like openbao-oidc's tombstone) is a tracked future enhancement.
+    - name: "Reset the active-blueprints dir (drop de-selected/removed apps)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/blueprints-active"
+        state: "{{ item }}"
+        mode: "0755"
+      loop: [absent, directory]
+      loop_control:
+        label: "{{ item }}"
+
+    # RENDERED (not copied) so environment-specific values (OIDC redirect_uris,
+    # meta_launch_url) bake into the file content from inventory. Authentik gates
+    # blueprint re-application on the file's content hash; a verbatim copy is
+    # byte-identical local vs prod, so the worker never re-applies it and the value
+    # resolved at first-apply (the local default) freezes — that is exactly why the
+    # prod semaphore provider stayed on the agent-cloud.test redirect_uri. Baking the
+    # URL in makes the content differ per env, which re-triggers application.
+    # Blueprints with no Jinja render unchanged (verified: none use {{ }} / {% %}).
+    - name: "Assemble active blueprints (shared + enabled apps) — rendered from inventory"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/blueprints/{{ item }}"
+        dest: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
+        mode: "0644"
+      loop: "{{ _shared_blueprints + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}"
+
+    - name: "Render zz-sso-bindings from the enabled set"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/templates/zz-sso-bindings.yaml.j2"
+        dest: "{{ _deploy_dir }}/blueprints-active/zz-sso-bindings.yaml"
+        mode: "0644"
+      vars:
+        authentik_apps: "{{ _enabled_apps }}"
+
+    - name: "Create convenience symlink ~/authentik -> deploy dir"
+      # Satisfies "a folder for authentik at ~/authentik" while keeping the
+      # composable monorepo clone — ~/authentik points at the deployment dir.
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start authentik"
@@ -87,6 +208,11 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # Verify live OIDC providers against intent in prod by default; opt in for
+    # local-dev via authentik_verify_oidc=true. No OIDC apps enabled => nothing to do.
+    _do_oidc_verify: >-
+      {{ (authentik_verify_oidc | default(not (local_mode | default(false) | bool))) | bool
+         and (_verify_apps | default([]) | length > 0) }}
 
   tasks:
     - name: "Server healthcheck (ak healthcheck)"
@@ -134,6 +260,75 @@
       delay: 6
       until: _ak_outpost.rc == 0
 
+    # ── Promotion VERIFY: live OIDC config matches intent ────────────────────
+    # Query the live Authentik API and FAIL the deploy if any enabled OIDC
+    # provider's redirect_uris does not carry its intended (inventory) URL. Catches
+    # an object that did not actually update — e.g. a provider first created with the
+    # local default that a content-unchanged blueprint never re-applied (the exact
+    # semaphore failure). Runs inside authentik-server so the script reads the
+    # bootstrap token from the container env (nothing secret on the command line).
+    - name: "Promotion verify (prod): render the live-OIDC checker"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-oidc.py.j2"
+        dest: /tmp/verify-oidc.py
+        mode: "0644"
+      when: _do_oidc_verify | bool
+
+    - name: "Promotion verify (prod): live OIDC redirect_uris match intent"
+      ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-oidc.py"
+      register: _oidc_verify
+      changed_when: false
+      failed_when: _oidc_verify.rc != 0
+      when: _do_oidc_verify | bool
+
+    - name: "Promotion verify: result"
+      ansible.builtin.debug:
+        var: _oidc_verify.stdout_lines
+      when: _do_oidc_verify | bool
+
     - name: "Report"
       ansible.builtin.debug:
         msg: "authentik healthy — server up, API answering on :9000, embedded outpost serving forward_auth (behind Caddy for TLS)."
+
+# ── Phase 4: Render + distribute Caddy fragment (prod only) ─────────────────
+# auth.uhstray.io -> this VM:9000, tls internal. Skipped unless a central Caddy
+# host (caddy_svc) exists AND not local_mode (local-dev routes the IdP via
+# Caddyfile.local's caddy_routes, not a sites/ fragment).
+- name: "Phase 4: Render + distribute Caddy fragment"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _fragment_src: "/tmp/authentik-caddy-site.caddy"
+    _fragment_name: "authentik.caddy"
+    # Composable sites/ model only. A flat hand-managed Caddyfile sets
+    # caddy_composable=false and gets its routes via manage-caddy-sites.yml.
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) and (caddy_composable | default(true) | bool) }}"
+
+  tasks:
+    - name: "Require public host + upstream vars before distributing to Caddy"
+      ansible.builtin.assert:
+        that:
+          - authentik_public_host is defined
+          - authentik_caddy_upstream is defined
+        fail_msg: >-
+          Set authentik_public_host and authentik_caddy_upstream in inventory
+          before enabling Caddy distribution.
+      when: _has_caddy | bool
+
+    - name: "Render caddy-site.j2 to the Authentik host"
+      # src resolved on the CONTROLLER (checked-out monorepo), not the remote clone.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      when: _has_caddy | bool
+
+    - name: "Push fragment to central Caddy + reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory (or local_mode) — skipping central-Caddy fragment distribution."
+      when: not (_has_caddy | bool)

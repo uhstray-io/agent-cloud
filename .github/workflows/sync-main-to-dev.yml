@@ -1,0 +1,57 @@
+---
+name: Sync main to dev
+
+# Auto-reconcile `dev` after every push to `main` — replaces the manual back-merge.
+#
+# WHY: the `dev` -> `main` promotion is squash-merged (to keep `main`'s required
+# linear history). A squash writes `dev`'s content onto `main` as a NEW commit with
+# no ancestry into `dev`, which freezes the `dev`<->`main` merge-base. The next
+# `dev` -> `main` PR then diffs from that stale base and conflicts on any file
+# changed on both sides (classically `platform/semaphore/templates.yml`). This job
+# merges `main` back into `dev` favoring `dev` (`-X ours`: `dev` is content-ahead,
+# so its content is unchanged and only the merge-base advances; non-conflicting
+# `main`-only changes — e.g. dependabot bumps landed directly on `main` — still
+# propagate into `dev`). See CLAUDE.md "Why the auto-sync".
+
+on:
+  push:
+    branches: [main]
+
+# Need write to push the reconciliation commit to `dev`.
+permissions:
+  contents: write
+
+# Never run two syncs at once (they'd race on the `dev` ref).
+concurrency:
+  group: sync-main-to-dev
+  cancel-in-progress: false
+
+jobs:
+  back-merge:
+    name: Reconcile dev with main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev (full history)
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge main into dev (favor dev) and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "dev already contains main — nothing to sync."
+            exit 0
+          fi
+          # -X ours: dev is content-ahead (the dev->main squash duplicated dev's
+          # content onto main under a new sha). Favoring dev keeps dev's content
+          # identical and only advances the merge-base so the next dev->main diff is
+          # clean. Non-conflicting main-only changes still merge in.
+          git merge -X ours --no-edit origin/main
+          git push origin HEAD:dev
+          echo "dev reconciled with main."

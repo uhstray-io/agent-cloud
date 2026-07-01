@@ -35,6 +35,8 @@
         else
           echo MISSING
         fi
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       register: _compose_check
       changed_when: false
       become: false

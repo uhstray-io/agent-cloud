@@ -42,11 +42,12 @@ for file in "${files[@]}"; do
   [ -n "$name" ] || { echo "ERROR: $file has no .name" >&2; exit 1; }
 
   # Idempotency key: an existing ruleset with the same name is updated in place.
-  # Capture the API response separately so a real gh/auth failure aborts loudly
-  # (set -e) with gh's own error, instead of being swallowed and silently
-  # falling through to a create.
-  existing="$(gh api "repos/$REPO/rulesets")"
-  id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<<"$existing" | head -n1)"
+  # --paginate + --slurp so a repo with more than one page of rulesets can't hide
+  # an existing one (which would cause a duplicate create). Capturing separately
+  # means a real gh/auth failure aborts loudly (set -e) with gh's own error,
+  # instead of being swallowed and silently falling through to a create.
+  existing="$(gh api --paginate --slurp "repos/$REPO/rulesets")"
+  id="$(jq -r --arg name "$name" 'add | .[] | select(.name == $name) | .id' <<<"$existing" | head -n1)"
 
   if [ -n "$id" ]; then
     echo "Updating ruleset '$name' (id $id) on $REPO ..."

@@ -62,6 +62,8 @@
       ansible.builtin.shell: |
         set -o pipefail
         {{ container_engine | default('docker') }} logs netbox-orb-agent 2>&1 | tail -5
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       become: true
       register: _orb_logs
       changed_when: false

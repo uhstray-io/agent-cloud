@@ -36,7 +36,10 @@ setup() {
 @test "authentik: healthcheck uses ak healthcheck" {
   local f="$DEPLOY_DIR/compose.yml"
   grep -q 'healthcheck:' "$f"
-  grep -q '"ak", "healthcheck"' "$f"
+  # CMD-SHELL form (not the ["CMD","ak","healthcheck"] exec list): podman-compose
+  # mis-quotes the exec form into `/bin/sh -c ak' 'healthcheck`, so the container
+  # never reports healthy. See compose.yml for the rationale.
+  grep -q '"CMD-SHELL", "ak healthcheck"' "$f"
 }
 
 @test "authentik: deploy.sh is executable, bash, sources common.sh, uses compose, no secrets" {
@@ -94,28 +97,33 @@ setup() {
   done
 }
 
-@test "authentik: shared bindings own the outpost (both providers) + the access gate" {
-  local f="$DEPLOY_DIR/blueprints/zz-sso-bindings.yaml"
+@test "authentik: zz-sso-bindings is templated and owns the outpost + access gate" {
+  # zz-sso-bindings is now RENDERED from the enabled apps (deploy-authentik
+  # assembles blueprints-active/ from app-catalog.yml) so prod shows only prod
+  # apps — see PROD-SSO-ROLLOUT-PLAN.md. The template, not a static blueprint,
+  # owns the outpost + the access gate.
+  local f="$DEPLOY_DIR/templates/zz-sso-bindings.yaml.j2"
   [ -f "$f" ]
   # zz- so it applies last (resolves !Find against already-created providers).
   grep -q 'authentik_outposts.outpost' "$f"
-  grep -q '\[name, netbox\]' "$f"
-  grep -q '\[name, openbao\]' "$f"
+  # outpost + per-app bindings are rendered from the enabled set, not hardcoded.
+  grep -q 'name, {{ slug }}' "$f"
   # gate's allowed set has admins+developers (quoted), NOT the no-access tier;
-  # superuser break-glass. (platform-user may appear in a comment, so match the
-  # quoted set membership, not bare presence.)
+  # superuser break-glass.
   grep -q '"platform-admins"' "$f" && grep -q '"platform-developers"' "$f"
   ! grep -q '"platform-user"' "$f"
   grep -q 'is_superuser' "$f"
   grep -q 'authentik_policies.policybinding' "$f"
 }
 
-@test "authentik: openbao-oidc is gated admins-only (its role grants root to all)" {
-  # The OpenBao OIDC role maps every OIDC user to the platform-admin policy
-  # (path "*"), so the deny of developers must happen at the gate. openbao-oidc
-  # must bind policy-platform-admin, NOT the shared platform-member.
-  local f="$DEPLOY_DIR/blueprints/zz-sso-bindings.yaml"
-  grep -q 'name: platform-admin' "$f"
-  # the openbao-oidc binding references the admin policy (block-scoped grep)
-  grep -A3 '\[slug, openbao-oidc\]' "$f" | grep -q 'policy-platform-admin'
+@test "authentik: app-catalog types apps + openbao-oidc is admins-only" {
+  # The catalog drives selection + binding tier. openbao-oidc's OpenBao role maps
+  # every OIDC user to the platform-admin policy (path "*"), so it MUST be admin
+  # tier (gate denies developers); the template maps admin tier -> the admin policy.
+  local c="$DEPLOY_DIR/app-catalog.yml"
+  [ -f "$c" ]
+  grep -A3 'semaphore:' "$c" | grep -q 'type: oidc'
+  grep -A3 'netbox:' "$c" | grep -q 'type: forward_auth'
+  grep -A4 'openbao-oidc:' "$c" | grep -q 'tier: admin'
+  grep -q 'policy-platform-admin' "$DEPLOY_DIR/templates/zz-sso-bindings.yaml.j2"
 }

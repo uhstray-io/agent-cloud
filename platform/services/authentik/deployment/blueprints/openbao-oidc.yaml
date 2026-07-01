@@ -15,8 +15,11 @@ context:
   # OpenBao's oidc auth method (mounted at `oidc`) callbacks: the UI flow + the
   # CLI loopback. Both must be registered as redirect URIs here AND in the
   # OpenBao role's allowed_redirect_uris.
-  openbao_redirect_ui: https://openbao.agent-cloud.test:8443/ui/vault/auth/oidc/oidc/callback
+  # Rendered from inventory at deploy (env-specific content => Authentik re-applies);
+  # the CLI loopback is env-independent so it stays literal. Default is local-dev.
+  openbao_redirect_ui: "{{ openbao_oidc_redirect_ui | default('https://openbao.agent-cloud.test:8443/ui/vault/auth/oidc/oidc/callback') }}"
   openbao_redirect_cli: http://localhost:8250/oidc/callback
+  openbao_launch: "{{ openbao_oidc_launch_url | default('https://openbao.agent-cloud.test:8443/ui/vault/auth?with=oidc') }}"
 entries:
   - model: authentik_providers_oauth2.oauth2provider
     id: provider-openbao-oidc
@@ -52,5 +55,5 @@ entries:
       # The OpenBao UI login route is /ui/vault/auth with the method preselected
       # via ?with=<mount> — there is NO /ui/vault/auth/oidc route (it 404s in the
       # Ember router). ?with=oidc lands on the login page with OIDC chosen.
-      meta_launch_url: https://openbao.agent-cloud.test:8443/ui/vault/auth?with=oidc
+      meta_launch_url: !Context openbao_launch
       open_in_new_tab: true

@@ -23,7 +23,7 @@ jobs:
       python_inference: ${{ steps.filter.outputs.python_inference }}
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -44,7 +44,7 @@ jobs:
     name: Static Analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Python lint (ruff)
         uses: astral-sh/ruff-action@v3
@@ -105,7 +105,7 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -181,7 +181,7 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -215,7 +215,7 @@ jobs:
       run:
         working-directory: platform/services/uhhcraft/deployment
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -306,7 +306,7 @@ jobs:
       DATABASE_URL: postgres://uhhcraft:ci-only-not-for-prod@localhost:5432/uhhcraft_test?sslmode=disable
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -335,7 +335,7 @@ jobs:
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build UhhCraft image
         # Docker is used in CI (not Podman) — buildx is the path-of-least-resistance

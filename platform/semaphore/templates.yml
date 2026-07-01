@@ -76,6 +76,26 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy Authentik
+    playbook: platform/playbooks/deploy-authentik.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy OpenHands
+    playbook: platform/playbooks/deploy-openhands.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy WisBot
     playbook: platform/playbooks/deploy-wisbot.yml
     survey_vars:
@@ -171,6 +191,16 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy OpenHands
+    playbook: platform/playbooks/clean-deploy-openhands.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   # ── Updates ────────────────────────────────────────────────────
   - name: Update NocoDB
     playbook: platform/playbooks/update-nocodb.yml
@@ -253,6 +283,44 @@ templates:
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
 
+  - name: Apply Firewall
+    playbook: platform/playbooks/apply-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to firewall (e.g. openhands_svc, authentik_svc)"
+        type: string
+        required: true
+
+  - name: Generate Service SSH Key
+    playbook: platform/playbooks/generate-service-ssh-key.yml
+    survey_vars:
+      - name: service_name
+        title: "Service name"
+        description: "Per-service key to create at secret/services/ssh/<name> (e.g. authentik, openhands, caddy)"
+        type: string
+        required: true
+
+  - name: Manage Caddy Sites
+    playbook: platform/playbooks/manage-caddy-sites.yml
+    survey_vars:
+      - name: target_service
+        title: "Caddy group"
+        description: "Inventory group of the central Caddy (default caddy_svc)"
+        type: string
+        required: false
+        default_value: "caddy_svc"
+
+  - name: Wire Caddy Cloudflare Token
+    playbook: platform/playbooks/wire-caddy-cloudflare-token.yml
+    survey_vars:
+      - name: target_service
+        title: "Caddy group"
+        description: "Inventory group of the central Caddy (default caddy_svc)"
+        type: string
+        required: false
+        default_value: "caddy_svc"
+
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml
@@ -265,3 +333,24 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+
+  # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
+  # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Snapshot VM
+    playbook: platform/playbooks/snapshot-vm.yml
+    survey_vars:
+      - name: pve_vmid
+        title: "VM ID"
+        description: "Proxmox VMID to snapshot (e.g. 203 for semaphore)"
+        type: int
+        required: true
+      - name: pve_node
+        title: "PVE node"
+        description: "Proxmox node the VM runs on (e.g. apollo)"
+        type: string
+        required: true
+      - name: snapshot_name
+        title: "Snapshot name"
+        description: "Optional; defaults to preupgrade-<vmid>-<timestamp>"
+        type: string
+        required: false

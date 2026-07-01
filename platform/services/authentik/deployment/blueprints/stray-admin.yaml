@@ -1,0 +1,25 @@
+# Authentik blueprint — the 'stray' operator admin user (config-as-code).
+#
+# A real, named day-to-day admin (distinct from the break-glass akadmin bootstrap
+# superuser). Member of platform-admins, so every SSO'd app grants top access via
+# the group contract (platform-groups.yaml). Password comes from OpenBao via the
+# worker env (STRAY_ADMIN_PASSWORD, templated by deploy-authentik env.j2);
+# generated once + reused, so re-applying is idempotent.
+version: 1
+metadata:
+  name: agent-cloud - stray admin user
+entries:
+  - model: authentik_core.user
+    identifiers:
+      username: stray
+    attrs:
+      name: stray
+      # Email parameterized so the real address stays out of this PUBLIC repo —
+      # prod sets STRAY_ADMIN_EMAIL via env.j2 from the private site-config.
+      email: !Env [STRAY_ADMIN_EMAIL, "stray@agent-cloud.test"]
+      is_active: true
+      path: users
+      # Value is the OpenBao-managed STRAY_ADMIN_PASSWORD in the worker env.
+      password: !Env STRAY_ADMIN_PASSWORD
+      groups:
+        - !Find [authentik_core.group, [name, platform-admins]]

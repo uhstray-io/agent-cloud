@@ -148,6 +148,8 @@
         set -o pipefail
         {{ container_engine | default('docker') }} exec netbox{{ _sep }}netbox{{ _sep }}1 \
           cat /run/secrets/netbox_to_diode 2>&1 | wc -c
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       vars:
         _sep: "{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}"
       register: _diode_secret_check

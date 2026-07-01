@@ -1,0 +1,121 @@
+---
+# manage-caddy-sites.yml — Insert/update a marked block of site definitions in an
+# EXISTING (flat, hand-managed) Caddyfile, then validate + load it.
+#
+# For a Caddy that is NOT on the composable sites/*.caddy model (e.g. a
+# long-standing Caddyfile with per-host blocks). Composable services use
+# tasks/distribute-caddy-site.yml instead.
+#
+# Idempotent + non-destructive: blockinfile manages ONLY its marked region (and
+# writes a backup); existing hand-maintained routes are untouched. The updated
+# file is validated (a copy is checked in-container) BEFORE loading; if invalid
+# the backup is restored and the play fails — running config + next restart are
+# unaffected.
+#
+# IMPORTANT — bind-mounted FILE: the Caddyfile is bind-mounted as a single file.
+# blockinfile rewrites it atomically (new inode), but a file bind-mount is pinned
+# to the ORIGINAL inode, so the running container keeps the old content and
+# `caddy reload` re-reads stale config. We therefore RESTART the container to
+# re-resolve the mount (~1-2s; ACME certs are cached in the data volume, so no
+# re-issuance). A directory mount could reload instead — see distribute-caddy-site.
+#
+# Inventory (site-config) provides, on the caddy host:
+#   caddy_caddyfile_path   path to the Caddyfile on the host (mounted into caddy)
+#   caddy_managed_sites    multiline string: the site block(s) to manage
+#   caddy_probe_host       a hostname from the block, to detect "already loaded"
+#   caddy_container        container name (default 'caddy')
+#   container_engine       default 'podman'
+#
+# Usage (via Semaphore): -e target_service=caddy_svc
+
+- name: "Manage flat-Caddyfile site blocks on {{ target_service | default('caddy_svc') }}"
+  hosts: "{{ target_service | default('caddy_svc') }}"
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ caddy_container | default('caddy') }}"
+    _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
+
+  tasks:
+    - name: "Require managed-sites content"
+      ansible.builtin.assert:
+        that:
+          - caddy_managed_sites is defined
+          - caddy_managed_sites | trim | length > 0
+        fail_msg: "Set caddy_managed_sites (the site block[s]) in inventory for this host."
+
+    - name: "Insert/update the managed site block in the Caddyfile"
+      ansible.builtin.blockinfile:
+        path: "{{ _caddyfile }}"
+        marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
+        block: "{{ caddy_managed_sites }}"
+        backup: true
+        create: false
+      register: _bi
+
+    - name: "Copy the updated Caddyfile into the container for validation"
+      # Validate the actual updated file, NOT /etc/caddy/Caddyfile (the stale
+      # file-mount inode) — otherwise validation passes against old content.
+      ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
+      changed_when: false
+
+    - name: "Validate the updated Caddyfile"
+      ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
+      register: _val
+      changed_when: false
+      failed_when: false
+
+    - name: "Restore the backup if the updated Caddyfile is invalid"
+      ansible.builtin.copy:
+        src: "{{ _bi.backup_file }}"
+        dest: "{{ _caddyfile }}"
+        remote_src: true
+        mode: "0644"
+      when:
+        - _bi.changed
+        - _val.rc != 0
+        - _bi.backup_file is defined
+
+    - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
+      ansible.builtin.fail:
+        msg: >-
+          Caddy rejected the updated Caddyfile; rolled back. validate output:
+          {{ _val.stderr | default(_val.stdout) | default('(none)') }}
+      when: _val.rc != 0
+
+    - name: "Read the running config (to detect whether the block is already loaded)"
+      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      register: _running
+      changed_when: false
+      failed_when: false
+
+    - name: "Restart Caddy to load the updated Caddyfile (changed, or host not yet served)"
+      ansible.builtin.command: "{{ _engine }} restart {{ _container }}"
+      register: _restart
+      changed_when: true
+      when: >-
+        _bi.changed
+        or (caddy_probe_host | default('') | length > 0
+            and caddy_probe_host not in (_running.stdout | default('')))
+
+    # noqa: no-handler — a sequential post-restart readiness wait, not a handler.
+    - name: "Wait for the Caddy admin API to answer after restart"  # noqa: no-handler
+      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      register: _post
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: _post.rc == 0
+      when: _restart is changed
+
+    - name: "Confirm the managed host is now served"
+      ansible.builtin.assert:
+        that: caddy_probe_host in (_post.stdout | default(_running.stdout) | default(''))
+        fail_msg: "{{ caddy_probe_host }} is not in Caddy's running config after load."
+        success_msg: "{{ caddy_probe_host }} is served by Caddy."
+      when: caddy_probe_host | default('') | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Caddy managed sites {{ 'changed' if _bi.changed else 'unchanged' }}; {{ 'restarted' if (_restart is changed) else 'no restart needed' }} ({{ _caddyfile }})."
