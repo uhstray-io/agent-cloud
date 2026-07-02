@@ -1,0 +1,199 @@
+---
+# create-netbox-device.yml — Build #1 executor (N1 + N2).
+#
+# Idempotent NetBox device create + verify, run on behalf of the `netclaw` role.
+# skynet's orchestrator gates the logical action (netclaw, netbox, create) in its
+# OPA call, then *requests* this run; agent-cloud's Semaphore executes it under the
+# automation token's own NetBox permissions (N3 = model A.2 + X1).
+#
+# Input: the full netbox-device-proposal JSON (passed unchanged from skynet) via
+#   -e device_proposal='{"name":...,"site":...,"idempotency_key":...}'
+# Optional: -e dry_run=true   (resolve + report, no writes)
+#
+# Idempotency: NetBox enforces device-name uniqueness within a site, so (site, name)
+# is the dedupe key — a retry finds the existing device and creates nothing. The
+# idempotency_key + workflow_id + proposed_by + reason are recorded in the device
+# `comments` for audit/retry-trace.
+#
+# Limitations (scoped follow-ups): `primary_ip` is recorded in comments but not
+# assigned (NetBox primary_ip4 needs an interface + IP object first); `tags` must
+# already exist in NetBox (not auto-created here).
+#
+# Auth: OpenBao AppRole -> read the NetBox automation token at
+#   secret/services/netbox:automation_api_token  (provisioned by
+#   provision-netbox-automation-token.yml). Only the auth/token tasks are no_log'd;
+#   the device operations stay visible so Semaphore runs are diagnosable.
+
+- name: "Create NetBox device (idempotent) + verify"
+  hosts: localhost
+  gather_facts: false
+  become: false
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
+    _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
+    _dry_run: "{{ dry_run | default(false) | bool }}"
+    _p: "{{ (device_proposal | from_json) if (device_proposal is string) else (device_proposal | default({})) }}"
+    _required: [name, device_type, role, site, status, reason, proposed_by, workflow_id, idempotency_key]
+    _statuses: [active, offline, planned, staged, decommissioning]
+
+  tasks:
+    - name: "Validate proposal"
+      ansible.builtin.assert:
+        that:
+          - _netbox_url | length > 0
+          - _p is mapping
+          - _required | difference(_p.keys() | list) | length == 0
+          - _p.status in _statuses
+        fail_msg: >-
+          Need -e netbox_url=<url> and a complete device_proposal with
+          {{ _required | join(', ') }} (status one of {{ _statuses | join('/') }}).
+        success_msg: "Proposal valid for device '{{ _p.name }}' @ site '{{ _p.site }}'."
+
+    # ── credentials (no_log boundary) ──────────────────────────────────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Read NetBox automation token from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _nb_secret
+      no_log: true
+
+    - name: "Set NetBox auth header"
+      ansible.builtin.set_fact:
+        _nb_headers:
+          Authorization: "Token {{ _nb_secret.json.data.data[_token_key] }}"
+          Accept: "application/json"
+      no_log: true
+
+    # ── resolve slugs -> ids ───────────────────────────────────────────────
+    - name: "Resolve site / device_type / device_role by slug"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/{{ item.path }}/?slug={{ _p[item.field] | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _lookups
+      loop:
+        - { field: site, path: sites }
+        - { field: device_type, path: device-types }
+        - { field: role, path: device-roles }
+      loop_control:
+        label: "{{ item.path }}={{ _p[item.field] }}"
+
+    - name: "Map resolved ids (fail if any slug is unknown to NetBox)"
+      ansible.builtin.set_fact:
+        _ids: >-
+          {{ _ids | default({}) | combine({
+            item.item.field: (item.json.results[0].id if (item.json.count | int) > 0 else None)
+          }) }}
+      loop: "{{ _lookups.results }}"
+      loop_control:
+        label: "{{ item.item.field }}"
+
+    - name: "Assert all references resolved"
+      ansible.builtin.assert:
+        that:
+          - _ids.site is not none
+          - _ids.device_type is not none
+          - _ids.role is not none
+        fail_msg: >-
+          Unresolved NetBox reference(s): site={{ _ids.site }},
+          device_type={{ _ids.device_type }}, role={{ _ids.role }}.
+          Slugs must already exist in NetBox.
+
+    # ── idempotency check: device by (site, name) ──────────────────────────
+    - name: "Look up existing device by (site, name)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/devices/?name={{ _p.name | urlencode }}&site_id={{ _ids.site }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _existing
+
+    - name: "Record whether the device already exists"
+      ansible.builtin.set_fact:
+        _device_exists: "{{ (_existing.json.count | int) > 0 }}"
+        _existing_id: "{{ _existing.json.results[0].id | default(None) }}"
+
+    - name: "Dry run — report intended action only"
+      ansible.builtin.debug:
+        msg: >-
+          DRY RUN: would {{ 'SKIP (exists, id ' ~ _existing_id ~ ')' if _device_exists
+          else 'CREATE device ' ~ _p.name ~ ' @ ' ~ _p.site }}.
+      when: _dry_run
+
+    # ── create (only when absent and not dry-run) ──────────────────────────
+    - name: "Build tag objects (NetBox wants [{slug: ...}]; tags must pre-exist)"
+      ansible.builtin.set_fact:
+        _tag_objs: "{{ _tag_objs | default([]) + [{'slug': item}] }}"
+      loop: "{{ _p.tags | default([]) }}"
+      when: not _device_exists
+
+    - name: "Create device"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/devices/"
+        method: POST
+        headers: "{{ _nb_headers }}"
+        body_format: json
+        body:
+          name: "{{ _p.name }}"
+          device_type: "{{ _ids.device_type }}"
+          role: "{{ _ids.role }}"
+          site: "{{ _ids.site }}"
+          status: "{{ _p.status }}"
+          tags: "{{ _tag_objs | default([]) }}"
+          comments: >-
+            Created by skynet build #1 (netbox-device-add).
+            proposed_by={{ _p.proposed_by }} workflow_id={{ _p.workflow_id }}
+            idempotency_key={{ _p.idempotency_key }}.
+            {{ ('primary_ip=' ~ _p.primary_ip ~ ' (assignment deferred). ') if (_p.primary_ip is defined) else '' }}Reason: {{ _p.reason }}
+        status_code: [201]
+      register: _created
+      when:
+        - not _device_exists
+        - not _dry_run
+
+    # ── verify (N2): read back by (site, name) ─────────────────────────────
+    - name: "Verify device exists by (site, name)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/devices/?name={{ _p.name | urlencode }}&site_id={{ _ids.site }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _verify
+      when: not _dry_run
+
+    - name: "Result"
+      ansible.builtin.debug:
+        msg:
+          name: "{{ _p.name }}"
+          site: "{{ _p.site }}"
+          action: "{{ 'existed' if _device_exists else 'created' }}"
+          device_id: "{{ (_verify.json.results[0].id | default(_existing_id)) if not _dry_run else _existing_id }}"
+          verified: "{{ ((_verify.json.count | int) > 0) if not _dry_run else 'dry-run' }}"
+      when: not _dry_run
+
+    - name: "Fail if verify did not find the device"
+      ansible.builtin.assert:
+        that:
+          - (_verify.json.count | int) > 0
+        fail_msg: "Verify failed — device '{{ _p.name }}' @ '{{ _p.site }}' not found after create."
+      when: not _dry_run

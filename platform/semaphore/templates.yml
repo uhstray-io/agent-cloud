@@ -66,6 +66,26 @@ templates:
         required: false
         default_value: "main"
 
+  # Build #1 (netbox-device-add): skynet requests "Create NetBox Device"; agent-cloud
+  # executes it under the scoped automation token minted by the provision template.
+  - name: Provision NetBox Automation Token
+    playbook: platform/playbooks/provision-netbox-automation-token.yml
+
+  - name: Create NetBox Device
+    playbook: platform/playbooks/create-netbox-device.yml
+    survey_vars:
+      - name: device_proposal
+        title: "Device proposal (JSON)"
+        description: "netbox-device-proposal JSON emitted by skynet"
+        type: string
+        required: true
+      - name: dry_run
+        title: "Dry run"
+        description: "true = resolve + report, no writes"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Deploy NemoClaw
     playbook: platform/playbooks/deploy-nemoclaw.yml
     survey_vars:
