@@ -139,7 +139,7 @@ step_oidc_admin() {
   # so "full access" is the union of all roles. Only the special Administrator
   # USER bypasses permission checks; a normal SSO user gets exactly its roles.
   : "${ERPNEXT_OIDC_ADMIN_EMAIL:?ERPNEXT_OIDC_ADMIN_EMAIL missing when ERPNEXT_OIDC_CLIENT_SECRET is set}"
-  info "Step 4b: Pre-provisioning OIDC admin ${ERPNEXT_OIDC_ADMIN_EMAIL} (idempotent)..."
+  info "Step 4b: Pre-provisioning the OIDC admin user (idempotent)..."  # email is PII — not logged
   bench_exec bash -lc 'cat > /tmp/oidc_admin.py' <<'PYEOF'
 import os, frappe
 email = os.environ["ADMIN_EMAIL"]
@@ -170,7 +170,7 @@ roles = [r for r in frappe.get_all("Role", filters={"disabled": 0}, pluck="name"
 user.add_roles(*roles)
 frappe.db.commit()
 assert frappe.db.exists("User", email), "OIDC admin not persisted"
-print("OK: OIDC admin '%s' %s with %d roles (full access)" % (email, action, len(roles)))
+print("OK: OIDC admin user %s with %d roles (full access)" % (action, len(roles)))  # email is PII — not logged
 PYEOF
   compose exec -T \
     -e ADMIN_EMAIL="${ERPNEXT_OIDC_ADMIN_EMAIL}" \
@@ -192,7 +192,7 @@ step_oidc_business() {
     info "Step 4c: No business email configured — skipping business rw user."
     return 0
   fi
-  info "Step 4c: Pre-provisioning business rw user ${ERPNEXT_OIDC_BUSINESS_EMAIL} (idempotent)..."
+  info "Step 4c: Pre-provisioning the business rw user (idempotent)..."  # email is PII — not logged
   bench_exec bash -lc 'cat > /tmp/oidc_business.py' <<'PYEOF'
 import os, frappe
 
@@ -217,10 +217,18 @@ roles = [r for r in DESIRED if r in existing]
 email = os.environ["BUSINESS_EMAIL"]
 if frappe.db.exists("User", email):
     user = frappe.get_doc("User", email)
-    user.enabled = 1
-    user.user_type = "System User"
-    user.save(ignore_permissions=True)
-    action = "updated"
+    if not user.enabled:
+        # RESPECT a manual disable. An operator who disabled this account in
+        # ERPNext (offboarding / revoking a compromised login) must NOT have it
+        # silently re-enabled by a redeploy. Leave it disabled, skip the role
+        # grant, and report loudly. Re-enable is a deliberate manual action.
+        action = "skipped-disabled"
+    else:
+        # Do NOT touch `enabled` on an existing enabled user (nothing to change);
+        # only ensure the user_type needed for desk read/write.
+        user.user_type = "System User"
+        user.save(ignore_permissions=True)
+        action = "updated"
 else:
     user = frappe.get_doc({
         "doctype": "User",
@@ -234,10 +242,17 @@ else:
     user.flags.no_welcome_mail = True
     user.insert(ignore_permissions=True)
     action = "created"
-user.add_roles(*roles)
+if action != "skipped-disabled":
+    user.add_roles(*roles)
 frappe.db.commit()
 assert frappe.db.exists("User", email), "business user not persisted"
-print("OK: business user '%s' %s; granted %d rw roles" % (email, action, len(roles)))
+# Do NOT log the email — in prod it is a real employee address (PII) that would
+# land in stored deploy/CI logs. Report the action + role count only.
+if action == "skipped-disabled":
+    print("WARN: business user exists but is DISABLED — left disabled (manual "
+          "revocation respected); roles NOT granted. Re-enable manually to sync.")
+else:
+    print("OK: business user %s; granted %d rw roles" % (action, len(roles)))
 PYEOF
   compose exec -T \
     -e BUSINESS_EMAIL="${ERPNEXT_OIDC_BUSINESS_EMAIL}" \
