@@ -40,7 +40,7 @@ flowchart TD
 | Service | Integration | platform-admins | platform-developers | platform-business | Enforcement point |
 |---|---|---|---|---|---|
 | Grafana | OIDC | Admin | **Editor** | Viewer | `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` (groups claim) |
-| Semaphore | OIDC | Admin | **read-only** | — | Semaphore `oidc_providers` role/claim map |
+| Semaphore | OIDC | Admin (manual) | **read-only (default)** | — | Semaphore v2.18.12 has **no** group→role map (roadmap); OIDC users are non-admin by default, so developers land read-only automatically. Admins→admin must be promoted by hand Semaphore-side |
 | ERPNext | OIDC | System Manager | (login only) | **read/write role profile** | Frappe social-login role assignment |
 | tududi | OIDC | admin (email domain) | user (rw own tasks) | — | `OIDC_ADMIN_EMAIL_DOMAINS` (tududi side) |
 | n8n | forward_auth | full use | full use | — | binary (community n8n has no SSO roles) |
@@ -50,7 +50,7 @@ flowchart TD
 
 - **andrew** = `platform-developers` + `platform-business` → Grafana Editor, Semaphore read-only, ERPNext rw, tududi/n8n/OpenHands full use.
 - **wisward** = `platform-admins` → top role everywhere (identical to `stray`).
-- **Groups claim:** the OIDC providers must actually emit `groups` for the service-side maps to read. Verify Authentik's default `profile` scope includes it; if not, add a `groups` scope mapping to the Grafana/Semaphore/ERPNext providers and request it.
+- **Groups claim:** VERIFIED — Authentik's default `profile` scope mapping emits `groups` (confirmed against the pinned 2024.12.3 blueprint; `[g.name for g in request.user.ak_groups.all()]`). The `openid email profile` scopes the providers already request are sufficient; no extra scope mapping needed.
 
 ## Build
 

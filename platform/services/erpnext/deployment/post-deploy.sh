@@ -117,9 +117,10 @@ PYEOF
     backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_setup.py"
   rm_oidc_tmp
   step_oidc_admin
+  step_oidc_business
 }
 
-rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py /tmp/oidc_admin.py 2>/dev/null || true; }
+rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py /tmp/oidc_admin.py /tmp/oidc_business.py 2>/dev/null || true; }
 
 step_oidc_admin() {
   # Pre-provision the SSO admin so OIDC login binds to an existing account.
@@ -174,6 +175,81 @@ PYEOF
   compose exec -T \
     -e ADMIN_EMAIL="${ERPNEXT_OIDC_ADMIN_EMAIL}" \
     backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_admin.py"
+  rm_oidc_tmp
+}
+
+step_oidc_business() {
+  # platform-business -> a read/write Role Profile. Same email-keyed pattern as
+  # step_oidc_admin, and for the SAME reason: Frappe social login matches the
+  # OIDC user BY EMAIL and does NOT read the groups claim to assign roles, so the
+  # group->role contract is enforced by pre-provisioning the User with the rw
+  # roles. Difference vs the admin: this is a curated read/write role set (the
+  # "Platform Business RW" Role Profile), NOT the union-of-all-roles admin grant —
+  # business users get read/write on the transactional modules, never System
+  # Manager or any "* Manager"/admin role. Skips when no business email is set
+  # (a deploy with no business user still works), mirroring the OIDC-secret gate.
+  if [ -z "${ERPNEXT_OIDC_BUSINESS_EMAIL:-}" ]; then
+    info "Step 4c: No business email configured — skipping business Role Profile."
+    return 0
+  fi
+  info "Step 4c: Pre-provisioning business rw user ${ERPNEXT_OIDC_BUSINESS_EMAIL} (idempotent)..."
+  bench_exec bash -lc 'cat > /tmp/oidc_business.py' <<'PYEOF'
+import os, frappe
+
+# 1) Upsert the read/write "Platform Business RW" Role Profile. Its role set is
+#    the standard ERPNext module "* User" roles (read/write on the transactional
+#    doctypes), intersected with the roles that actually exist on this install so
+#    a module not present is skipped, not errored. Deliberately EXCLUDES System
+#    Manager and every "* Manager"/admin role — business = read/write, not admin.
+PROFILE = "Platform Business RW"
+DESIRED = [
+    "Accounts User", "Sales User", "Purchase User", "Stock User",
+    "Manufacturing User", "Projects User", "Maintenance User",
+]
+existing = set(frappe.get_all("Role", filters={"disabled": 0}, pluck="name"))
+roles = [r for r in DESIRED if r in existing]
+
+rp = (frappe.get_doc("Role Profile", PROFILE)
+      if frappe.db.exists("Role Profile", PROFILE) else frappe.new_doc("Role Profile"))
+if not rp.get("role_profile"):
+    rp.role_profile = PROFILE
+rp.set("roles", [])
+for r in roles:
+    rp.append("roles", {"role": r})
+rp.save(ignore_permissions=True)
+
+# 2) Pre-provision the business User (matched BY EMAIL, like the admin) as a
+#    System User (desk access is required for transactional read/write) and grant
+#    exactly the profile's roles. self-signup stays disabled. add_roles() dedups +
+#    saves once -> idempotent across re-runs; re-apply converges the role set.
+email = os.environ["BUSINESS_EMAIL"]
+if frappe.db.exists("User", email):
+    user = frappe.get_doc("User", email)
+    user.enabled = 1
+    user.user_type = "System User"
+    user.save(ignore_permissions=True)
+    action = "updated"
+else:
+    user = frappe.get_doc({
+        "doctype": "User",
+        "email": email,
+        "first_name": "Platform",
+        "last_name": "Business",
+        "user_type": "System User",
+        "enabled": 1,
+        "send_welcome_email": 0,
+    })
+    user.flags.no_welcome_mail = True
+    user.insert(ignore_permissions=True)
+    action = "created"
+user.add_roles(*roles)
+frappe.db.commit()
+assert frappe.db.exists("User", email), "business user not persisted"
+print("OK: business user '%s' %s; Role Profile '%s' -> %d rw roles" % (email, action, PROFILE, len(roles)))
+PYEOF
+  compose exec -T \
+    -e BUSINESS_EMAIL="${ERPNEXT_OIDC_BUSINESS_EMAIL}" \
+    backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_business.py"
   rm_oidc_tmp
 }
 
