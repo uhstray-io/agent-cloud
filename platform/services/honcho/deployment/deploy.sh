@@ -37,7 +37,21 @@ step_verify_env() {
 step_pull_images() {
   if [ "$SKIP_PULL" = true ]; then info "Step 2: Skipping image pull (--no-pull)."; return 0; fi
   info "Step 2: Pulling images..."
-  compose pull
+  if ! compose pull; then
+    # The api/deriver image is CI-published to GHCR. Before the first publish
+    # (local-dev bring-up on a locally-built image) — or during a registry
+    # outage — the pull fails even though a usable image is already in the
+    # local store. Only that case is tolerated; a pull failure with NO local
+    # image is still fatal.
+    local img
+    img=$(grep -E '^HONCHO_IMAGE=' .env | cut -d= -f2-)
+    img=${img:-ghcr.io/uhstray-io/honcho:v3.0.11}
+    if "${CONTAINER_ENGINE}" image exists "$img"; then
+      info "  pull failed but ${img} is in the local store — continuing."
+    else
+      error "compose pull failed and ${img} is not present locally."
+    fi
+  fi
 }
 
 step_start() {
