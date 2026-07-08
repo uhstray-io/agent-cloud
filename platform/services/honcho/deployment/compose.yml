@@ -1,0 +1,122 @@
+# honcho — Plastic Labs memory API (Podman-compatible compose).
+#
+# Four services: honcho-api (:8000, GHCR image), honcho-deriver (same image,
+# background worker, no port), honcho-db (pgvector Postgres, internal only),
+# honcho-redis (queue/cache, internal only). honcho brings its OWN Postgres —
+# not the platform Postgres. Ansible's deploy-honcho.yml templates .env from
+# OpenBao (JWT secret + DB password; Gemini key shared-read from nemoclaw)
+# BEFORE this stack starts. deploy.sh is container lifecycle only — no secret
+# generation.
+#
+# Behind central Caddy: the api serves plain HTTP on :8000 (Caddy terminates
+# TLS; /docs is Authentik forward_auth-gated at Caddy, /v3 is JWT). Ports are
+# env-parameterized (compose overlays merge ports append-only, so the local
+# loopback shift lives in .env, not compose.local.yml).
+# Plan: plan/development/11-tududi-honcho-deployment.md (Service B — honcho).
+
+name: honcho
+
+x-honcho: &honcho
+  # CI-built from github.com/plastic-labs/honcho at a pinned ref by
+  # .github/workflows/build-honcho.yml and pulled from GHCR — never built on
+  # the VM. api + deriver share the image.
+  image: ${HONCHO_IMAGE:-ghcr.io/uhstray-io/honcho:v3.0.11}
+  restart: always
+  env_file:
+    - .env
+  networks: [honcho]
+
+services:
+  honcho-api:
+    <<: *honcho
+    container_name: honcho-api
+    # The image's default CMD starts fastapi WITHOUT migrations; upstream's
+    # compose runs the api through docker/entrypoint.sh (alembic migrations,
+    # then fastapi). The migrations also `CREATE EXTENSION vector` themselves
+    # (POSTGRES_USER is the container-bootstrap superuser), so the pgvector db
+    # needs no init.sql mount.
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    ports:
+      # Loopback-only by default; central Caddy proxies in. Prod sets a host
+      # bind + port via .env (HONCHO_BIND/HONCHO_PORT) so the Caddy VM
+      # reaches it. Only the api publishes a port — db/redis stay internal.
+      - "${HONCHO_BIND:-127.0.0.1}:${HONCHO_PORT:-8000}:8000"
+    depends_on:
+      honcho-db:
+        condition: service_healthy
+      honcho-redis:
+        condition: service_healthy
+    healthcheck:
+      # CMD-SHELL, not exec form: podman-compose mis-quotes ["CMD",...] lists.
+      # python is guaranteed in the (python:3.13-slim + venv-on-PATH) image, so
+      # no curl/wget assumption. urlopen raises on any non-2xx/connection
+      # error, which exits non-zero.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+
+  honcho-deriver:
+    <<: *honcho
+    container_name: honcho-deriver
+    # Same image as the api, run as the queue worker (no port, no healthcheck
+    # endpoint). The image has no default ENTRYPOINT, so `command` replaces the
+    # fastapi CMD; /app/.venv/bin leads PATH, so bare `python` is the venv one.
+    # Requires a TOOL-CALLING model (Gemini interim — see templates/env.j2).
+    command: ["python", "-m", "src.deriver"]
+    depends_on:
+      # api first (healthy = its entrypoint finished the alembic migrations
+      # the deriver's schema depends on), then the datastores.
+      honcho-api:
+        condition: service_healthy
+      honcho-db:
+        condition: service_healthy
+      honcho-redis:
+        condition: service_healthy
+
+  honcho-db:
+    # honcho's own Postgres + pgvector — internal to the compose network only
+    # (NO host port: rootless publishes nothing for it, so no firewall rule).
+    image: ${HONCHO_POSTGRES_IMAGE:-docker.io/pgvector/pgvector:pg15}
+    container_name: honcho-db
+    restart: always
+    # Raised ceiling per upstream: the api pool + deriver workers share this
+    # single instance.
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-honcho}
+      POSTGRES_USER: ${POSTGRES_USER:-honcho}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - honcho-pg-data:/var/lib/postgresql/data
+    networks: [honcho]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  honcho-redis:
+    # Deriver queue + response cache (CACHE_URL) — internal only, like the db.
+    # Upstream persists /data (default RDB snapshots), so keep a named volume:
+    # the queue survives redeploys instead of dropping in-flight derivations.
+    image: ${HONCHO_REDIS_IMAGE:-docker.io/redis:8.2}
+    container_name: honcho-redis
+    restart: always
+    volumes:
+      - honcho-redis-data:/data
+    networks: [honcho]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+networks:
+  honcho:
+    driver: bridge
+
+volumes:
+  honcho-pg-data:
+  honcho-redis-data:

@@ -1,0 +1,40 @@
+# Authentik blueprint — honcho API docs via forward_auth (proxy provider).
+#
+# honcho's /v3 API is JWT-authenticated in-app; only the interactive docs
+# surface (/docs, /redoc, /openapi.json) on memory.uhstray.io is gated by the
+# central Caddy's path-scoped forward_auth against the embedded outpost. No
+# client secret — the proxy provider self-manages its tokens (same mechanism
+# as openhands-forward-auth.yaml).
+#
+# external_host MUST match the public URL the browser uses or the auth
+# redirect breaks — prod value via !Env (HONCHO_EXTERNAL_HOST from the
+# authentik env); the default keeps a local-dev instance working unchanged.
+#
+# The embedded-outpost binding + the per-app access gate live in
+# zz-sso-bindings.yaml (the single owner of those shared concerns).
+version: 1
+metadata:
+  name: agent-cloud - honcho docs forward_auth
+entries:
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-honcho-docs
+    identifiers:
+      name: honcho-docs
+    attrs:
+      mode: forward_single
+      external_host: !Env [HONCHO_EXTERNAL_HOST, "https://memory.agent-cloud.test:8443"]
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+  - model: authentik_core.application
+    identifiers:
+      slug: honcho-docs
+    attrs:
+      name: honcho API docs
+      provider: !KeyOf provider-honcho-docs
+      # Launch at /docs, NOT the bare host — honcho serves no root route (the
+      # API is /v3), so the bare host 404s. external_host above must stay the
+      # host root (forward_single semantics); only the human launcher gets /docs.
+      meta_launch_url: !Env [HONCHO_DOCS_URL, "https://memory.agent-cloud.test:8443/docs"]
+      open_in_new_tab: true

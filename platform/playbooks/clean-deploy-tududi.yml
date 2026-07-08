@@ -1,0 +1,23 @@
+---
+# clean-deploy-tududi.yml — Destroy and redeploy tududi from scratch.
+#
+# WARNING: Destroys ALL tududi data — the SQLite db + uploads named volumes
+#          (tasks, projects, users, sessions). A fresh deploy re-creates the
+#          schema and re-seeds the break-glass admin from OpenBao. Local-dev
+#          shares one deploy tree, so the clone is NOT removed (clean-service.yml
+#          branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-tududi.yml.
+
+- name: "Clean tududi deployment"
+  hosts: tududi_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-tududi.yml
