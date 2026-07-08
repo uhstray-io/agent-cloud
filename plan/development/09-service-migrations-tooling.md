@@ -8,6 +8,14 @@
 > detail; read in numbered order to execute.
 
 
+## Future service todos
+
+- [ ] **Self-host Cal.com** — currently on hosted cal.com (booking for joewisneski.com,
+  uhstray-rev Plan 04, account created 2026-07-01). Docker deployment guide:
+  https://www.cal.diy/docker. When scheduled, follow the composable deployment pattern
+  (OpenBao secrets, Ansible-templated env, deploy.sh container lifecycle). Not urgent —
+  hosted tier suffices through uhstray-rev Phase 1–2.
+
 <!-- ======================= source: nocodb-n8n-composable-migration.md ======================= -->
 
 ---
