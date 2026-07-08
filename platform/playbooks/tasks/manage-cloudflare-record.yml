@@ -96,6 +96,7 @@
   register: _cf_zone
   delegate_to: localhost
   when: _cf_zone_id is not defined
+  no_log: true  # bearer token rides in headers — mask (asserts below surface failures)
 
 - name: "Resolve + cache the zone id"
   ansible.builtin.set_fact:
@@ -122,6 +123,7 @@
     status_code: [200]
   register: _cf_existing
   delegate_to: localhost
+  no_log: true  # bearer token rides in headers — mask
 
 - name: "Compute the desired record + existing match"
   ansible.builtin.set_fact:
@@ -146,6 +148,7 @@
   delegate_to: localhost
   when: (_cf_match | length) == 0
   changed_when: true
+  no_log: true  # bearer token rides in headers — mask
 
 - name: "Update the DNS record (present but drifted content/proxied/ttl)"
   ansible.builtin.uri:
@@ -164,6 +167,7 @@
       or ((_cf_match[0].proxied | bool) != (_cf_record_proxied | default(false) | bool))
       or ((_cf_match[0].ttl | int) != (_cf_record_ttl | default(1) | int))
   changed_when: true
+  no_log: true  # bearer token rides in headers — mask
 
 - name: "Report the converged record"
   ansible.builtin.debug:

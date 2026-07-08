@@ -113,7 +113,9 @@ setup() {
   grep -q 'build-honcho' "$PLAYBOOK"
   # Rootless podman reboot persistence, gated to non-local.
   grep -q 'tasks/enable-linger.yml' "$PLAYBOOK"
-  grep -qE 'not \(local_mode \| default\(false\) \| bool\)' "$PLAYBOOK"
+  # The prod gate lives inside the task (self-gating) — assert the contract, not
+  # the exact expression: enable-linger references local_mode.
+  grep -q 'local_mode' "$BATS_TEST_DIRNAME/../playbooks/tasks/enable-linger.yml"
 }
 
 @test "honcho: Authentik /docs forward_auth blueprint is valid config-as-code (no client secret)" {

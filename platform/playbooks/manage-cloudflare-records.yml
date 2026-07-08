@@ -26,6 +26,9 @@
   hosts: "{{ target_service | default('caddy_svc') }}"
   gather_facts: false
   become: false
+  # Explicit linear strategy so the zone-level run_once below is well-defined
+  # (ansible-lint run-once[task]: run_once behaves oddly under strategy: free).
+  strategy: linear
   vars:
     _records: "{{ cloudflare_records | default([]) }}"
   tasks:
@@ -42,7 +45,7 @@
         msg: "No cloudflare_records declared for {{ inventory_hostname }} — nothing to do."
       when: (_records | length) == 0
 
-    - name: "Upsert each declared DNS record"
+    - name: "Upsert each declared DNS record"  # noqa: run-once[task]
       ansible.builtin.include_tasks: tasks/manage-cloudflare-record.yml
       vars:
         _cf_record_name: "{{ item.name }}"
@@ -53,3 +56,6 @@
       loop: "{{ _records }}"
       loop_control:
         label: "{{ item.name }} ({{ item.type | default('A') }})"
+      # DNS records are zone-level, not host-level — converge them once even if
+      # the edge group ever grows to >1 host (avoids N x the full API sequence).
+      run_once: true

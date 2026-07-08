@@ -10,9 +10,13 @@
 # call it once per rootless-podman service so a power cycle self-heals.
 #
 # Idempotent: reads the current Linger property first and only enables when off.
-# Requires privilege escalation (become) to set linger for another user; the
-# caller gates this to non-local hosts (local-dev containers are managed by the
-# developer's podman machine, not host linger).
+# Requires privilege escalation (become) to set linger for another user.
+#
+# SELF-GATING: skips entirely under local_mode (local-dev containers run on the
+# developer's podman machine, not host linger) — callers just include it, no
+# per-call `when` needed. Candidate to hoist into the shared prod preamble
+# (tasks/place-monorepo.yml) so EVERY rootless service gets reboot persistence,
+# not only the ones that remember to include it — tracked as a follow-up.
 #
 # Required vars: none — uses `ansible_user` (the rootless service account).
 
@@ -24,9 +28,12 @@
   # that is exactly the "needs enabling" case, so tolerate it and let the
   # condition below (no `Linger=yes`) drive the enable.
   failed_when: false
+  when: not (local_mode | default(false) | bool)
 
 - name: "Enable lingering (rootless containers survive reboot) for {{ ansible_user }}"
   ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
   become: true
-  when: "'Linger=yes' not in (_linger_state.stdout | default(''))"
+  when:
+    - not (local_mode | default(false) | bool)
+    - "'Linger=yes' not in (_linger_state.stdout | default(''))"
   changed_when: true
