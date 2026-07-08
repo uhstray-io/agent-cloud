@@ -46,8 +46,9 @@
           - (_admin_users | length) > 0
         fail_msg: >-
           semaphore_admin_users is empty. Declare the platform-admins roster
-          (usernames and/or emails) in inventory (site-config all.vars) or pass
-          -e '{"semaphore_admin_users":["alice","bob@uhstray.io"]}'.
+          (Semaphore USERNAMES — email matching is deliberately unsupported)
+          in inventory (site-config all.vars) or pass
+          -e '{"semaphore_admin_users":["alice","bob"]}'.
 
     # ── Resolve the Semaphore API URL + token (env first, else OpenBao) ─────
     # Env (SEMAPHORE_URL/SEMAPHORE_TOKEN) wins — the setup-templates + local
@@ -98,19 +99,17 @@
       ansible.builtin.debug:
         msg: "Semaphore returned {{ _sem_users.json | length }} user(s) (HTTP {{ _sem_users.status }})."
 
-    - name: "Compute who to promote (declared roster, not yet admin — username first, email secondary)"
-      # Match the declared roster primarily by USERNAME — the stable, SSO-
-      # provisioned handle that a user cannot edit. Email is kept as a SECONDARY
-      # match for email-based rosters, but note: a user can change their own
-      # email in Authentik, so an email match is SPOOFABLE unless email_verified
-      # is enforced. Systemic control: gate promotion on email_verified (or
-      # enforce Authentik email-uniqueness) so the email path can't be abused —
-      # username is preferred precisely because it is not user-editable.
+    - name: "Compute who to promote (declared roster, not yet admin — username match ONLY)"
+      # Match the declared roster by USERNAME ONLY — the stable, SSO-provisioned
+      # handle a user cannot edit. Email matching is deliberately NOT offered:
+      # Authentik enforces neither email uniqueness nor verification by default,
+      # so a member-tier user could set a roster email on their own account and
+      # be promoted on the next run. If an email-based roster is ever required,
+      # it must be gated on an enforced email_verified claim + Authentik
+      # email-uniqueness policy first.
       ansible.builtin.set_fact:
         _to_promote: >-
-          {{ ((_candidates | selectattr('username', 'in', _admin_users) | list)
-              + (_candidates | selectattr('email', 'in', _admin_users) | list))
-             | unique }}
+          {{ _candidates | selectattr('username', 'in', _admin_users) | list }}
       vars:
         # Semaphore returns admin as a real bool, so rejectattr('admin') drops the
         # current admins in one pass (replaces the doubled

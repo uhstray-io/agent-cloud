@@ -41,7 +41,7 @@ flowchart TD
 |---|---|---|---|---|---|
 | Grafana | OIDC | Admin | **Editor** | Viewer | `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` (groups claim) |
 | Semaphore | OIDC | Admin (`promote-semaphore-admins.yml`) | **read-only (default)** | — | Semaphore v2.18.12 has **no** group→role map (roadmap); OIDC users are non-admin by default, so developers land read-only automatically. Admins→admin is automated post-deploy via `promote-semaphore-admins.yml` (Semaphore-API, `semaphore_admin_users` roster; ships on the deploy-automation branch) |
-| ERPNext | OIDC | System Manager | (login only) | **read/write role profile** | Frappe social-login role assignment |
+| ERPNext | OIDC | System Manager | (login only) | **direct rw role grant** (curated module "* User" set) | Frappe social-login matches by email; roles pre-provisioned by `post-deploy.sh` |
 | tududi | OIDC | admin (email domain) | user (rw own tasks) | — | `OIDC_ADMIN_EMAIL_DOMAINS` (tududi side) |
 | n8n | forward_auth | full use | full use | — | binary (community n8n has no SSO roles) |
 | OpenHands | forward_auth | full use | full use | — | binary |
