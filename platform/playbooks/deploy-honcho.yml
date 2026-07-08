@@ -47,6 +47,13 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # Rootless podman is daemonless — without user lingering the four containers
+    # stop for good on a VM reboot (05-platform-infra §11). Prod only: local-dev
+    # containers are managed by the developer's podman machine, not host linger.
+    - name: "Enable rootless linger so honcho survives a reboot (prod only)"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+      when: not (local_mode | default(false) | bool)
+
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
@@ -71,8 +78,48 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    # Effective image env.j2 will render (honcho_image override, else the pinned
+    # GHCR tag). Kept in one place so the pre-flight gate and the template agree.
+    _honcho_image: "{{ honcho_image | default('ghcr.io/uhstray-io/honcho:' ~ (honcho_image_tag | default('v3.0.11'))) }}"
 
   tasks:
+    # Pre-flight (prod fresh-VM gate): the api/deriver run a CI-built GHCR image
+    # that is never built on the VM. deploy.sh tolerates a failed pull ONLY when
+    # the image is already in the local store (the local-dev case, where it is
+    # built locally). On a fresh prod VM neither holds until build-honcho.yml has
+    # published the pinned tag — so assert it is obtainable up front and point
+    # the operator at the build workflow, instead of failing deep inside
+    # `compose pull`. Local-dev is exempt (image built locally, not pulled); the
+    # pull here warms the same cache deploy.sh reuses (idempotent).
+    - name: "Pre-flight: pull the pinned honcho image (prod fresh-VM gate)"
+      ansible.builtin.command: "{{ _engine }} pull {{ _honcho_image }}"
+      register: _honcho_pull
+      changed_when: false
+      failed_when: false
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Pre-flight: fall back to the local image store when the pull failed"
+      ansible.builtin.command: "{{ _engine }} image exists {{ _honcho_image }}"
+      register: _honcho_local_img
+      changed_when: false
+      failed_when: false
+      when:
+        - not (local_mode | default(false) | bool)
+        - _honcho_pull.rc | default(1) != 0
+
+    - name: "Pre-flight: require the pinned honcho image before deploying"
+      ansible.builtin.assert:
+        that:
+          - (_honcho_pull.rc | default(1)) == 0 or (_honcho_local_img.rc | default(1)) == 0
+        fail_msg: >-
+          honcho image {{ _honcho_image }} is not pullable from GHCR and is not
+          in the local image store. Publish it first — run the build-honcho
+          image workflow (.github/workflows/build-honcho.yml) — and confirm this
+          VM can pull from ghcr.io, then re-run this deploy.
+        success_msg: "honcho image {{ _honcho_image }} is available — proceeding."
+      when: not (local_mode | default(false) | bool)
+
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"

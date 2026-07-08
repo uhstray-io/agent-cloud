@@ -104,6 +104,40 @@
       ansible.builtin.debug:
         msg: "WisBot: {{ 'HEALTHY' if wisbot_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate tududi"
+  hosts: tududi_svc
+  gather_facts: false
+  tasks:
+    - name: Check tududi health
+      ansible.builtin.uri:
+        url: "{{ service_url }}/api/health"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: tududi_health
+      ignore_errors: true
+
+    - name: Report tududi status
+      ansible.builtin.debug:
+        msg: "tududi: {{ 'HEALTHY' if tududi_health is succeeded else 'UNHEALTHY' }}"
+
+- name: "Validate honcho"
+  hosts: honcho_svc
+  gather_facts: false
+  tasks:
+    - name: Check honcho health
+      ansible.builtin.uri:
+        url: "{{ service_url }}/health"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: honcho_health
+      ignore_errors: true
+
+    - name: Report honcho status
+      ansible.builtin.debug:
+        msg: "honcho: {{ 'HEALTHY' if honcho_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Summary"
   hosts: localhost
   connection: local

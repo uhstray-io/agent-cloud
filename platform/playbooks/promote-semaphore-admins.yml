@@ -1,0 +1,145 @@
+---
+# promote-semaphore-admins.yml — promote every declared platform admin to a
+# Semaphore admin via the Semaphore API (closes task #37).
+#
+# Why this exists: Semaphore 2.18.12 has NO group->role mapping, so OIDC users
+# land NON-admin and an SSO'd platform-admin sees no projects until someone
+# flips admin=true by hand (bootstrap-local-dev.yml notes exactly this). This
+# playbook is the sanctioned, idempotent automation that replaces that manual
+# grant — the code-managed equivalent of the manual UI toggle (Critical Rule #1:
+# no ad-hoc changes; config flows through code).
+#
+# Who becomes admin is DATA, not code: the inventory var `semaphore_admin_users`
+# (list of Semaphore usernames and/or emails — the platform-admins roster) is
+# the source of truth. No names are hardcoded here.
+#
+# API creds: env first (SEMAPHORE_URL + SEMAPHORE_TOKEN, as setup-templates.yml
+# and the local bootstrap use), else OpenBao secret/services/semaphore (keys
+# `url` + `api_token`) reached with the AppRole creds Semaphore injects into the
+# environment (BAO_ROLE_ID/BAO_SECRET_ID + openbao_addr). The token must belong
+# to a Semaphore admin (listing/updating users is admin-only).
+#
+# Idempotent: only users in the list who are not already admin get a PUT; a
+# re-run with everyone already promoted changes nothing. Runs against the API
+# only — no host connection needed.
+#
+# Usage: via the "Promote Semaphore Admins" Semaphore template, or:
+#   ansible-playbook promote-semaphore-admins.yml \
+#     -e '{"semaphore_admin_users":["alice","bob@uhstray.io"]}'
+
+- name: "Promote declared platform admins to Semaphore admins (closes task #37)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _sem_url_env: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) | default('', true) }}"
+    _sem_token_env: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _admin_users: "{{ semaphore_admin_users | default([]) }}"
+
+  tasks:
+    - name: "Require a non-empty admin roster"
+      ansible.builtin.assert:
+        that:
+          - (_admin_users | length) > 0
+        fail_msg: >-
+          semaphore_admin_users is empty. Declare the platform-admins roster
+          (usernames and/or emails) in inventory (site-config all.vars) or pass
+          -e '{"semaphore_admin_users":["alice","bob@uhstray.io"]}'.
+
+    # ── Resolve the Semaphore API URL + token (env first, else OpenBao) ─────
+    - name: "Authenticate to OpenBao (AppRole) — only when no token in env"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      when: (_sem_token_env | length) == 0
+      no_log: true
+
+    - name: "Fetch the Semaphore API creds from OpenBao (secret/services/semaphore)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/semaphore"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _bao_sem
+      when: (_sem_token_env | length) == 0
+      no_log: true
+
+    - name: "Resolve the Semaphore URL + token"
+      ansible.builtin.set_fact:
+        _sem_url: >-
+          {{ _sem_url_env if (_sem_url_env | length) > 0
+             else (_bao_sem.json.data.data.url | default('', true)) }}
+        _sem_token: >-
+          {{ _sem_token_env if (_sem_token_env | length) > 0
+             else (_bao_sem.json.data.data.api_token | default('', true)) }}
+      no_log: true
+
+    - name: "Require a resolved URL + token"
+      ansible.builtin.assert:
+        that:
+          - (_sem_url | length) > 0
+          - (_sem_token | length) > 0
+        fail_msg: >-
+          Could not resolve the Semaphore API URL/token — set SEMAPHORE_URL +
+          SEMAPHORE_TOKEN in the environment, or store url + api_token at
+          secret/services/semaphore in OpenBao (with the AppRole creds +
+          openbao_addr in the environment).
+
+    # ── List users + promote the declared admins not yet admin ──────────────
+    - name: "List Semaphore users"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        status_code: [200]
+      register: _sem_users
+
+    - name: "Compute who to promote (declared, matched by username OR email, not yet admin)"
+      ansible.builtin.set_fact:
+        _to_promote: >-
+          {{ (_sem_users.json | selectattr('admin', 'equalto', false)
+                | selectattr('username', 'in', _admin_users) | list)
+             + (_sem_users.json | selectattr('admin', 'equalto', false)
+                | selectattr('email', 'in', _admin_users) | list)
+             | unique }}
+
+    - name: "Promote each declared admin (idempotent — already-admins are skipped)"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users/{{ item.id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+          Content-Type: application/json
+        body_format: json
+        # to_json in Jinja keeps id an int + admin a real bool — Semaphore >=2.18
+        # rejects the stringified values Ansible's non-native templating produces.
+        body: >-
+          {{ {'id': (item.id | int),
+              'name': item.name,
+              'username': item.username,
+              'email': item.email,
+              'admin': true,
+              'external': (item.external | default(false)),
+              'alert': (item.alert | default(false))} | to_json }}
+        status_code: [200, 204]
+      loop: "{{ _to_promote }}"
+      loop_control:
+        label: "{{ item.username }} <{{ item.email }}>"
+      changed_when: true
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          Promoted {{ _to_promote | length }} user(s) to Semaphore admin this run:
+          {{ _to_promote | map(attribute='username') | list }}.
+          Declared admins already admin were left untouched (idempotent).

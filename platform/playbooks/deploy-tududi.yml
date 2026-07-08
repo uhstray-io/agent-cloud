@@ -43,6 +43,13 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # Rootless podman is daemonless — without user lingering the container stops
+    # for good on a VM reboot (05-platform-infra §11). Prod only: local-dev
+    # containers are managed by the developer's podman machine, not host linger.
+    - name: "Enable rootless linger so tududi survives a reboot (prod only)"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+      when: not (local_mode | default(false) | bool)
+
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
