@@ -45,7 +45,9 @@ step_pull_images() {
     # image is still fatal.
     local img
     img=$(grep -E '^HONCHO_IMAGE=' .env | cut -d= -f2-)
-    img=${img:-ghcr.io/uhstray-io/honcho:v3.0.11}
+    # env.j2 always renders HONCHO_IMAGE; an empty value is a templating bug, not
+    # a pull-tolerance case — fail loud rather than probe a bogus tag.
+    [ -n "$img" ] || error "compose pull failed and HONCHO_IMAGE is missing from .env."
     if "${CONTAINER_ENGINE}" image exists "$img"; then
       info "  pull failed but ${img} is in the local store — continuing."
     else
