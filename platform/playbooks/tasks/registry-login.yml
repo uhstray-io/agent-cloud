@@ -44,7 +44,7 @@
       read:packages scope for GHCR pulls), or pass -e registry_login_key=<key>
       if it lives under a different name.
 
-- name: "Log in to {{ registry_login_registry | default('ghcr.io') }} (token via stdin, idempotent)"
+- name: "Registry login (token via stdin, idempotent) — {{ registry_login_registry | default('ghcr.io') }}"
   ansible.builtin.shell: >-
     printf '%s' "$REG_TOKEN" |
     {{ container_engine | default('podman') }} login
