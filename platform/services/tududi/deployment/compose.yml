@@ -15,7 +15,7 @@ name: tududi
 
 services:
   tududi:
-    image: ${TUDUDI_IMAGE:-docker.io/chrisvel/tududi:latest}
+    image: ${TUDUDI_IMAGE:-docker.io/chrisvel/tududi:1.1.1}
     container_name: tududi
     restart: always
     env_file:

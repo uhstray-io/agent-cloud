@@ -1,6 +1,6 @@
 # tududi — deployment
 
-Self-hosted to-do app (`docker.io/chrisvel/tududi:latest`) — a single rootless-podman container backed by SQLite. Reached at `todo.uhstray.io` (local: `todo.agent-cloud.test`) behind central Caddy, with native OIDC login against Authentik. Becomes the migration sink for NocoDB work data (driven by weft).
+Self-hosted to-do app (`docker.io/chrisvel/tududi:1.1.1`) — a single rootless-podman container backed by SQLite. Reached at `todo.uhstray.io` (local: `todo.agent-cloud.test`) behind central Caddy, with native OIDC login against Authentik. Becomes the migration sink for NocoDB work data (driven by weft).
 
 ```text
 Browser ──> Caddy (TLS) ──todo.uhstray.io──> tududi :3002 (podman)

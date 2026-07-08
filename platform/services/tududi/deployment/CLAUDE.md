@@ -1,6 +1,6 @@
 # CLAUDE.md — platform/services/tududi/deployment
 
-tududi — self-hosted to-do app. A single rootless-podman container (`docker.io/chrisvel/tududi:latest`, port 3002) backed by SQLite, SSO'd to Authentik via native OIDC. Reached at `todo.uhstray.io` behind central Caddy.
+tududi — self-hosted to-do app. A single rootless-podman container (`docker.io/chrisvel/tududi:1.1.1`, port 3002) backed by SQLite, SSO'd to Authentik via native OIDC. Reached at `todo.uhstray.io` behind central Caddy.
 
 ## What this service is
 
