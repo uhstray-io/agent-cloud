@@ -1,0 +1,177 @@
+---
+# manage-cloudflare-record.yml — idempotent upsert of ONE Cloudflare DNS record
+# (A or CNAME) via the Cloudflare API. Encodes the manual "Step 1: Allocate DNS
+# Record" step in 05-platform-infra (creating the FQDN -> Caddy-VM A record in
+# the CloudFlare dashboard), the documented DNS-record allocation gap.
+#
+# The token is the SAME scoped Cloudflare token Caddy's DNS-01 challenge uses
+# (Zone:DNS:Edit), read from OpenBao secret/services/caddy under the key
+# `cloudflare_api_token` — the exact key wire-caddy-cloudflare-token.yml stores.
+# It is fetched once and cached in `_cf_token`, so a record loop
+# (manage-cloudflare-records.yml) re-auths to OpenBao only on the first record.
+#
+# All Cloudflare + OpenBao calls run from the controller (delegate_to:
+# localhost); no dependency on the target VM. OpenBao AppRole creds come from
+# the environment (BAO_ROLE_ID/BAO_SECRET_ID) + openbao_addr, exactly like the
+# other composable tasks.
+#
+# Required vars:
+#   _cf_record_name     FQDN of the record (e.g. todo.example.com)
+#   _cf_record_type     A | CNAME
+#   _cf_record_content  A: the target IPv4; CNAME: the target hostname
+#   cloudflare_zone     the CloudFlare zone (apex domain) the record lives in
+# Optional vars:
+#   _cf_record_proxied  orange-cloud proxy (default false — Caddy terminates TLS
+#                       itself via DNS-01, so edge traffic must NOT proxy through
+#                       CloudFlare; see 05 "CloudFlare is DNS only")
+#   _cf_record_ttl      TTL seconds (default 1 = CloudFlare "automatic")
+#   cloudflare_api_base Cloudflare API base
+#                       (default https://api.cloudflare.com/client/v4)
+
+- name: "Assert required variables for the Cloudflare record upsert"
+  ansible.builtin.assert:
+    that:
+      - _cf_record_name is defined and (_cf_record_name | length > 0)
+      - _cf_record_type is defined and (_cf_record_type in ['A', 'CNAME'])
+      - _cf_record_content is defined and (_cf_record_content | length > 0)
+      - cloudflare_zone is defined and (cloudflare_zone | length > 0)
+    fail_msg: >-
+      manage-cloudflare-record.yml needs _cf_record_name, _cf_record_type
+      (A|CNAME), _cf_record_content and cloudflare_zone.
+
+- name: "Set the Cloudflare API base (once)"
+  ansible.builtin.set_fact:
+    _cf_api: "{{ cloudflare_api_base | default('https://api.cloudflare.com/client/v4') }}"
+  when: _cf_api is not defined
+
+# ── Token: fetched once from OpenBao, cached across a record loop ────────────
+- name: "Authenticate to OpenBao (AppRole) for the Cloudflare token"
+  ansible.builtin.uri:
+    url: "{{ (openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true)) }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+      secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    status_code: [200]
+  register: _cf_bao_auth
+  delegate_to: localhost
+  when: _cf_token is not defined
+  no_log: true
+
+- name: "Fetch the Cloudflare token from OpenBao (secret/services/caddy)"
+  ansible.builtin.uri:
+    url: "{{ (openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true)) }}/v1/secret/data/services/caddy"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _cf_bao_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _cf_bao_caddy
+  delegate_to: localhost
+  when: _cf_token is not defined
+  no_log: true
+
+- name: "Cache the Cloudflare token (reused across the record loop)"
+  ansible.builtin.set_fact:
+    _cf_token: "{{ _cf_bao_caddy.json.data.data.cloudflare_api_token | default('', true) }}"
+  when: _cf_token is not defined
+  no_log: true
+
+- name: "Require a Cloudflare token before touching DNS"
+  ansible.builtin.assert:
+    that:
+      - (_cf_token | default('') | length) > 0
+    fail_msg: >-
+      No cloudflare_api_token at secret/services/caddy in OpenBao — store it
+      first (wire-caddy-cloudflare-token.yml).
+
+# ── Zone id: looked up once, cached ─────────────────────────────────────────
+- name: "Look up the Cloudflare zone id for {{ cloudflare_zone }}"
+  ansible.builtin.uri:
+    url: "{{ _cf_api }}/zones?name={{ cloudflare_zone }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _cf_token }}"
+    status_code: [200]
+  register: _cf_zone
+  delegate_to: localhost
+  when: _cf_zone_id is not defined
+  no_log: true  # bearer token rides in headers — mask (asserts below surface failures)
+
+- name: "Resolve + cache the zone id"
+  ansible.builtin.set_fact:
+    _cf_zone_id: >-
+      {{ _cf_zone.json.result | selectattr('name', 'equalto', cloudflare_zone)
+         | map(attribute='id') | list | first | default('') }}
+  when: _cf_zone_id is not defined
+
+- name: "Require the zone to exist for this token"
+  ansible.builtin.assert:
+    that:
+      - (_cf_zone_id | default('') | length) > 0
+    fail_msg: >-
+      CloudFlare zone {{ cloudflare_zone }} not found for this token — the token
+      needs Zone:DNS:Edit on it.
+
+# ── Record: GET, then create-or-update to converge ──────────────────────────
+- name: "Get any existing Cloudflare record for {{ _cf_record_name }}"
+  ansible.builtin.uri:
+    url: "{{ _cf_api }}/zones/{{ _cf_zone_id }}/dns_records?type={{ _cf_record_type }}&name={{ _cf_record_name }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _cf_token }}"
+    status_code: [200]
+  register: _cf_existing
+  delegate_to: localhost
+  no_log: true  # bearer token rides in headers — mask
+
+- name: "Compute the desired record + existing match"
+  ansible.builtin.set_fact:
+    _cf_match: "{{ _cf_existing.json.result | default([]) }}"
+    _cf_body:
+      type: "{{ _cf_record_type }}"
+      name: "{{ _cf_record_name }}"
+      content: "{{ _cf_record_content }}"
+      ttl: "{{ _cf_record_ttl | default(1) | int }}"
+      proxied: "{{ _cf_record_proxied | default(false) | bool }}"
+
+- name: "Create the DNS record (absent)"
+  ansible.builtin.uri:
+    url: "{{ _cf_api }}/zones/{{ _cf_zone_id }}/dns_records"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _cf_token }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ _cf_body | to_json }}"
+    status_code: [200]
+  delegate_to: localhost
+  when: (_cf_match | length) == 0
+  changed_when: true
+  no_log: true  # bearer token rides in headers — mask
+
+- name: "Update the DNS record (present but drifted content/proxied/ttl)"
+  ansible.builtin.uri:
+    url: "{{ _cf_api }}/zones/{{ _cf_zone_id }}/dns_records/{{ _cf_match[0].id }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _cf_token }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ _cf_body | to_json }}"
+    status_code: [200]
+  delegate_to: localhost
+  when:
+    - (_cf_match | length) > 0
+    - (_cf_match[0].content != _cf_record_content)
+      or ((_cf_match[0].proxied | bool) != (_cf_record_proxied | default(false) | bool))
+      or ((_cf_match[0].ttl | int) != (_cf_record_ttl | default(1) | int))
+  changed_when: true
+  no_log: true  # bearer token rides in headers — mask
+
+- name: "Report the converged record"
+  ansible.builtin.debug:
+    msg: >-
+      Cloudflare {{ _cf_record_type }} {{ _cf_record_name }} ->
+      {{ _cf_record_content }} (proxied={{ _cf_record_proxied | default(false) | bool }})
+      {{ 'created' if (_cf_match | length) == 0 else 'converged' }} in zone {{ cloudflare_zone }}.

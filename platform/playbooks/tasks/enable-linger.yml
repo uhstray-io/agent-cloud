@@ -1,0 +1,39 @@
+---
+# enable-linger.yml — enable systemd user lingering for the deploy user so
+# rootless podman containers auto-restart after an unattended VM reboot.
+#
+# Podman is daemonless (05-platform-infra §11): a rootless user's containers run
+# only while that user has a live login session, so `restart: always` does NOT
+# bring them back after a reboot the way Docker's daemon does. `loginctl
+# enable-linger <user>` starts the user's systemd instance at boot, which in
+# turn restarts the (rootless) containers. Companion to the deploy playbooks —
+# call it once per rootless-podman service so a power cycle self-heals.
+#
+# Idempotent: reads the current Linger property first and only enables when off.
+# Requires privilege escalation (become) to set linger for another user.
+#
+# SELF-GATING: skips entirely under local_mode (local-dev containers run on the
+# developer's podman machine, not host linger) — callers just include it, no
+# per-call `when` needed. Candidate to hoist into the shared prod preamble
+# (tasks/place-monorepo.yml) so EVERY rootless service gets reboot persistence,
+# not only the ones that remember to include it — tracked as a follow-up.
+#
+# Required vars: none — uses `ansible_user` (the rootless service account).
+
+- name: "Check whether lingering is already enabled for {{ ansible_user }}"
+  ansible.builtin.command: "loginctl show-user {{ ansible_user }} --property=Linger"
+  register: _linger_state
+  changed_when: false
+  # `show-user` exits non-zero when the user has no session AND no linger yet —
+  # that is exactly the "needs enabling" case, so tolerate it and let the
+  # condition below (no `Linger=yes`) drive the enable.
+  failed_when: false
+  when: not (local_mode | default(false) | bool)
+
+- name: "Enable lingering (rootless containers survive reboot) for {{ ansible_user }}"
+  ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
+  become: true
+  when:
+    - not (local_mode | default(false) | bool)
+    - "'Linger=yes' not in (_linger_state.stdout | default(''))"
+  changed_when: true

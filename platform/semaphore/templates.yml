@@ -106,6 +106,26 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy tududi
+    playbook: platform/playbooks/deploy-tududi.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy honcho
+    playbook: platform/playbooks/deploy-honcho.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
@@ -193,6 +213,36 @@ templates:
 
   - name: Clean Deploy OpenHands
     playbook: platform/playbooks/clean-deploy-openhands.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy Authentik
+    playbook: platform/playbooks/clean-deploy-authentik.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy tududi
+    playbook: platform/playbooks/clean-deploy-tududi.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy honcho
+    playbook: platform/playbooks/clean-deploy-honcho.yml
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -320,6 +370,25 @@ templates:
         type: string
         required: false
         default_value: "caddy_svc"
+
+  # Converge the Cloudflare DNS records public services need (A/CNAME), declared
+  # per group as the `cloudflare_records` inventory var — encodes 05's manual
+  # "Allocate DNS Record" step. Token: OpenBao secret/services/caddy.
+  - name: Manage Cloudflare Records
+    playbook: platform/playbooks/manage-cloudflare-records.yml
+    survey_vars:
+      - name: target_service
+        title: "Records group"
+        description: "Inventory group whose cloudflare_records to converge (default caddy_svc)"
+        type: string
+        required: false
+        default_value: "caddy_svc"
+
+  # Promote every declared platform admin (inventory var semaphore_admin_users)
+  # to a Semaphore admin via the API. Sanctioned replacement for the manual
+  # grant — Semaphore 2.18.12 has no group->role mapping (closes task #37).
+  - name: Promote Semaphore Admins
+    playbook: platform/playbooks/promote-semaphore-admins.yml
 
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
