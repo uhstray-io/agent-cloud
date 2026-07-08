@@ -1,0 +1,119 @@
+---
+# deploy-honcho.yml — honcho memory API deploy (composable).
+#
+# Phase 1: Place repo + manage-secrets (JWT secret + DB password — generated
+#          once into OpenBao, reused thereafter; Gemini API key shared-read
+#          from nemoclaw, which owns it) + template .env.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait healthy; first boot
+#          runs the alembic migrations incl. the pgvector extension).
+# Phase 3: Verify the api container is healthy + /health answers.
+#
+# honcho is a four-container rootless-podman stack (api + deriver on the
+# CI-built GHCR image, its own pgvector Postgres, redis). /v3 is JWT-
+# authenticated in-app; /docs is Authentik forward_auth-gated at Caddy
+# (blueprints/honcho-docs-forward-auth.yaml, applied by Deploy Authentik).
+# No distribute-ca-root here: honcho makes no server-side calls to the
+# internal IdP. Caddy + inventory are wired separately (see the plan).
+# Plan: plan/development/11-tududi-honcho-deployment.md (Service B — honcho).
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage honcho secrets"
+  hosts: honcho_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Both secrets must be STABLE across redeploys — a new JWT secret would
+    # invalidate every minted workspace/peer token, and a new DB password
+    # would lock the app out of the existing pgvector volume — so
+    # manage-secrets generates once into OpenBao and reuses on later runs.
+    _secret_definitions:
+      - { name: honcho_jwt_secret, type: random, length: 64 }
+      - { name: honcho_db_password, type: random, length: 32 }
+    # The Gemini API key is owned by nemoclaw. Read it (read-only) so the
+    # deriver/dialectic can call the interim Gemini LLM (plan D3). Never
+    # stored back under secret/services/honcho.
+    _shared_reads:
+      - { from_service: nemoclaw, read_keys: [gemini_api_key] }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Create convenience symlink ~/honcho -> deploy dir"
+      # Points ~/honcho at the deployment dir in the composable monorepo clone.
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start honcho"
+  hosts: honcho_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the
+        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+        # leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify honcho"
+  hosts: honcho_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Container health (GET /health -> 200, inside the container)"
+      # Exec inside the container so the check never depends on the published
+      # bind/port or the central Caddy. python is guaranteed in the (python)
+      # image; urlopen raises on any non-2xx, so exit 0 only on HTTP 200 from
+      # the unauthenticated /health endpoint.
+      ansible.builtin.command: >-
+        {{ _engine }} exec honcho-api
+        python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"
+      register: _honcho_health
+      changed_when: false
+      retries: 10
+      delay: 6
+      until: _honcho_health.rc == 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "honcho healthy — api up, /health answering on :8000 (behind Caddy for TLS; /v3 JWT, /docs Authentik-gated)."

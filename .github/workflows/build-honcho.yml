@@ -1,0 +1,77 @@
+---
+name: Build honcho image
+
+# Build honcho from upstream source (plastic-labs/honcho) at a PINNED ref and
+# push it to ghcr.io/uhstray-io/honcho — deploy.sh only ever pulls this
+# prebuilt image (plan/development/11-tududi-honcho-deployment.md, D4), it
+# never builds on the VM. Dispatch-only for now: bumping the ref is a
+# deliberate act (the deriver's LLM behavior can change between upstream
+# releases). A weekly rebuild cron stays OFF until the image is past interim.
+
+on:
+  workflow_dispatch:
+    inputs:
+      honcho_ref:
+        description: "Upstream plastic-labs/honcho git ref (tag) to build"
+        required: true
+        default: v3.0.11
+  # Weekly rebuild — intentionally disabled (dispatch-only for now).
+  # schedule:
+  #   - cron: "0 6 * * 1"
+
+# Push the image to GHCR with the workflow's own token — no PAT.
+permissions:
+  contents: read
+  packages: write
+
+# One build at a time — parallel runs would race on the :latest-built tag.
+concurrency:
+  group: build-honcho
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    name: Build and push honcho
+    runs-on: ubuntu-latest
+    steps:
+      # The ref doubles as the pushed image tag and feeds actions/checkout —
+      # accept only plain tag/commit shapes (no slashes, spaces, or metachars).
+      # Quoted via env, never inlined into the script (injection-safe pattern).
+      - name: Validate honcho_ref format
+        env:
+          HONCHO_REF: ${{ inputs.honcho_ref }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$HONCHO_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            echo "honcho_ref '$HONCHO_REF' is not a plain tag/commit sha" >&2
+            exit 1
+          fi
+
+      - name: Checkout upstream honcho at the pinned ref
+        uses: actions/checkout@v7
+        with:
+          repository: plastic-labs/honcho
+          ref: ${{ inputs.honcho_ref }}
+
+      # BuildKit is required: the upstream Dockerfile uses cache/bind mounts.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # :<ref> is the pin deploys reference; :latest-built only marks the
+          # most recent CI build (never deploy from it).
+          tags: |
+            ghcr.io/uhstray-io/honcho:${{ inputs.honcho_ref }}
+            ghcr.io/uhstray-io/honcho:latest-built

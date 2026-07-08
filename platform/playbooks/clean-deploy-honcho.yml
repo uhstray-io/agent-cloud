@@ -1,0 +1,25 @@
+---
+# clean-deploy-honcho.yml — Destroy and redeploy honcho from scratch.
+#
+# WARNING: Destroys ALL honcho data — the pgvector Postgres volume (workspaces,
+#          peers, sessions, messages, derived representations) and the redis
+#          volume (deriver queue, cache). A fresh deploy re-runs the alembic
+#          migrations against an empty database; existing JWTs stay valid only
+#          because the JWT secret is reused from OpenBao. Local-dev shares one
+#          deploy tree, so the clone is NOT removed (clean-service.yml branches
+#          on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-honcho.yml.
+
+- name: "Clean honcho deployment"
+  hosts: honcho_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-honcho.yml
