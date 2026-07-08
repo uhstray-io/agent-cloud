@@ -80,3 +80,14 @@ authentik_app_catalog:
     provider: semaphore
     prod_required: [semaphore_redirect_uri, semaphore_launch_url]
     verify_redirect: semaphore_redirect_uri
+  tududi:
+    file: tududi-oidc.yaml
+    type: oidc
+    tier: member
+    provider: tududi
+    prod_required: [tududi_redirect_uri, tududi_launch_url]
+    verify_redirect: tududi_redirect_uri
+  honcho-docs:
+    file: honcho-docs-forward-auth.yaml
+    type: forward_auth
+    tier: member

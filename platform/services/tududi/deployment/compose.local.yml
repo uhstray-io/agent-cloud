@@ -1,0 +1,34 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/ports are env-parameterized in the BASE (.env); this overlay carries
+# only what overlays CAN add: a memory cap, the SELinux opt (the podman-machine
+# VM enforces SELinux on the named-volume mounts), and the extra `local-dev`
+# network so central Caddy reaches tududi by name (tududi:3002) for the
+# todo.agent-cloud.test route.
+#
+# NOTE: the loopback port shift is NOT here. compose merges `ports` lists by
+# appending, so a base publish could never be removed by an overlay — the local
+# 127.0.0.1 bind is env-driven in the base via TUDUDI_BIND/TUDUDI_PORT (.env).
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  tududi:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev
+    # OIDC: tududi's backend does server-side discovery/token calls to the IdP
+    # at https://auth.<zone>:8443 (Caddy's step-ca-minted leaf), so it must
+    # trust the step-ca chain. The bundle is distributed into ./certs by
+    # tasks/distribute-ca-root.yml; NODE_EXTRA_CA_CERTS points Node's TLS at
+    # it. Local-only (prod's IdP chain is publicly trusted).
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/step-ca-bundle.crt

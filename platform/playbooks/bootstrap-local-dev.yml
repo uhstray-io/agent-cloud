@@ -888,7 +888,7 @@
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}]
+          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}, {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}, {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}]
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -977,6 +977,40 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          [tududi_svc]
+          tududi-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [tududi_svc:vars]
+          ansible_user=semaphore
+          service_name=tududi
+          monorepo_deploy_path=platform/services/tududi/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          tududi_bind=127.0.0.1
+          tududi_port=3402
+          tududi_base_url=https://todo.{{ _dev_zone }}:8443
+          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:8443/application/o/tududi/
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          [honcho_svc]
+          honcho-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [honcho_svc:vars]
+          ansible_user=semaphore
+          service_name=honcho
+          monorepo_deploy_path=platform/services/honcho/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          honcho_bind=127.0.0.1
+          honcho_port=8400
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [uhhcraft_svc]
           uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -1052,30 +1086,44 @@
         _env_id: "{{ _res.results[1].json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first }}"
 
     # ── Stage 4b: seed LOCAL_FAKE secrets (absent paths only) ───────────
+    # Per-service key maps: services whose deploys _shared_read another
+    # service's keys need those paths to EXIST locally (manage-secrets asserts
+    # every read key is present). Values are LOCAL_FAKE-class — a fake
+    # gemini_api_key means honcho deploys fine but derivation no-ops locally;
+    # overwrite the path with a real key to exercise the deriver.
     - name: "Check existing service secrets"
       ansible.builtin.uri:
-        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item }}"
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.key }}"
         headers: *bao_root_hdr
         status_code: [200, 404]
       register: _seed_check
-      loop: [uhhcraft]
+      loop: "{{ _seed_specs | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars: &seed_specs
+        _seed_specs:
+          uhhcraft:
+            postgres_password: LOCAL_FAKE_uhhcraft_postgres
+            redis_password: LOCAL_FAKE_uhhcraft_redis
+            session_secret: LOCAL_FAKE_uhhcraft_session
+          # honcho shared-reads gemini_api_key from nemoclaw (deploy-honcho.yml).
+          nemoclaw:
+            gemini_api_key: LOCAL_FAKE_gemini_api_key
 
     - name: "Seed LOCAL_FAKE secrets for absent services"
       ansible.builtin.uri:
-        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.item }}"
+        url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.item.key }}"
         method: POST
         headers: *bao_root_hdr
         body_format: json
         body:
-          data:
-            postgres_password: "LOCAL_FAKE_{{ item.item }}_postgres"
-            redis_password: "LOCAL_FAKE_{{ item.item }}_redis"
-            session_secret: "LOCAL_FAKE_{{ item.item }}_session"
+          data: "{{ item.item.value }}"
         status_code: [200, 204]
       when: item.status == 404
       loop: "{{ _seed_check.results }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ item.item.key }}"
+      vars: *seed_specs
       no_log: true
 
     # ── Stage 5: persist state for the wrapper ──────────────────────────

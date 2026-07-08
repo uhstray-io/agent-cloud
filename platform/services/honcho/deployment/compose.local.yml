@@ -1,0 +1,44 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image/ports are env-parameterized in the BASE (.env); this overlay carries
+# only what overlays CAN add: memory caps, the SELinux opt (the podman-machine
+# VM enforces SELinux on the named-volume mounts), and the extra `local-dev`
+# network on the api ONLY, so central Caddy reaches it by name
+# (honcho-api:8000) for the memory.agent-cloud.test route. The deriver, db,
+# and redis stay on the internal `honcho` net.
+#
+# NOTE: the loopback port shift is NOT here. compose merges `ports` lists by
+# appending, so a base publish could never be removed by an overlay — the
+# local 127.0.0.1 bind is env-driven in the base via HONCHO_BIND/HONCHO_PORT
+# (.env).
+#
+# No CA-root mount (unlike tududi): honcho makes no server-side calls to the
+# internal IdP — /docs gating is Caddy-side forward_auth, /v3 auth is a local
+# JWT check. Its only outbound TLS is to Gemini (publicly trusted).
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  honcho-api:
+    mem_limit: 1g
+    security_opt:
+      - label=disable
+    networks:
+      - honcho
+      - default
+      - local-dev
+  honcho-deriver:
+    mem_limit: 1g
+    security_opt:
+      - label=disable
+  honcho-db:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+  honcho-redis:
+    mem_limit: 128m
+    security_opt:
+      - label=disable

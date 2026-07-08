@@ -43,6 +43,14 @@ templates:
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml
 
+  # tududi - self-hosted to-do app (single rootless container, SQLite; native OIDC).
+  - name: "Deploy tududi (Local)"
+    playbook: platform/playbooks/deploy-tududi.yml
+
+  # honcho - memory API (api+deriver+pgvector+redis; /v3 JWT, /docs forward_auth).
+  - name: "Deploy honcho (Local)"
+    playbook: platform/playbooks/deploy-honcho.yml
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
@@ -61,6 +69,10 @@ templates:
     playbook: platform/playbooks/clean-deploy-n8n.yml
   - name: "Clean Deploy ERPNext (Local)"
     playbook: platform/playbooks/clean-deploy-erpnext.yml
+  - name: "Clean Deploy tududi (Local)"
+    playbook: platform/playbooks/clean-deploy-tududi.yml
+  - name: "Clean Deploy honcho (Local)"
+    playbook: platform/playbooks/clean-deploy-honcho.yml
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
