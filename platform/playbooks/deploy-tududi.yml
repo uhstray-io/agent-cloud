@@ -46,6 +46,17 @@
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    # tududi's Node backend does server-side OIDC discovery/token calls to the
+    # IdP at https://auth.<zone>:8443 (step-ca-minted leaf) — distribute the
+    # step-ca trust bundle into ./certs; compose.local.yml mounts it and sets
+    # NODE_EXTRA_CA_CERTS. Local-only (prod IdP uses its own trust chain).
+    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
+
     - name: "Create convenience symlink ~/tududi -> deploy dir"
       # Points ~/tududi at the deployment dir in the composable monorepo clone.
       ansible.builtin.file:

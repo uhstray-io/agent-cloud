@@ -23,3 +23,12 @@ services:
     networks:
       - default
       - local-dev
+    # OIDC: tududi's backend does server-side discovery/token calls to the IdP
+    # at https://auth.<zone>:8443 (Caddy's step-ca-minted leaf), so it must
+    # trust the step-ca chain. The bundle is distributed into ./certs by
+    # tasks/distribute-ca-root.yml; NODE_EXTRA_CA_CERTS points Node's TLS at
+    # it. Local-only (prod's IdP chain is publicly trusted).
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/step-ca-bundle.crt
