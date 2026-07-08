@@ -1,0 +1,61 @@
+---
+# manage-cloudflare-records.yml — declaratively converge every Cloudflare DNS
+# record a public service needs, from the `cloudflare_records` inventory var.
+# The thin wrapper over tasks/manage-cloudflare-record.yml; encodes the manual
+# "Allocate DNS Record" step (05-platform-infra) as config-as-code so public
+# services just DECLARE their record in inventory.
+#
+# Inventory (site-config), on the group that owns the public edge (default
+# caddy_svc). No real domains/IPs in this PUBLIC repo — agent-cloud.test
+# placeholders only; the real zone + Caddy public IP live in site-config:
+#
+#   cloudflare_zone: example.com                 # the CloudFlare zone (apex)
+#   cloudflare_records:                          # A/CNAME records to converge
+#     - { name: todo.example.com,   type: A, content: "{{ caddy_public_ip }}" }
+#     - { name: memory.example.com, type: A, content: "{{ caddy_public_ip }}" }
+#     # proxied defaults to false — Caddy terminates TLS via DNS-01, traffic
+#     # must not proxy through CloudFlare (05 "CloudFlare is DNS only").
+#
+# The token is read from OpenBao secret/services/caddy:cloudflare_api_token
+# (the same Zone:DNS:Edit token Caddy's DNS-01 uses). OpenBao AppRole creds come
+# from the environment, as with every Semaphore-orchestrated run.
+#
+# Usage (via Semaphore): -e target_service=caddy_svc  (defaults to caddy_svc)
+
+- name: "Converge Cloudflare DNS records for {{ target_service | default('caddy_svc') }}"
+  hosts: "{{ target_service | default('caddy_svc') }}"
+  gather_facts: false
+  become: false
+  # Explicit linear strategy so the zone-level run_once below is well-defined
+  # (ansible-lint run-once[task]: run_once behaves oddly under strategy: free).
+  strategy: linear
+  vars:
+    _records: "{{ cloudflare_records | default([]) }}"
+  tasks:
+    - name: "Assert a zone is declared"
+      ansible.builtin.assert:
+        that:
+          - cloudflare_zone is defined and (cloudflare_zone | length > 0)
+        fail_msg: >-
+          Set cloudflare_zone (+ cloudflare_records) in inventory for
+          {{ inventory_hostname }} before converging DNS.
+
+    - name: "Nothing to converge — no records declared"
+      ansible.builtin.debug:
+        msg: "No cloudflare_records declared for {{ inventory_hostname }} — nothing to do."
+      when: (_records | length) == 0
+
+    - name: "Upsert each declared DNS record"  # noqa: run-once[task]
+      ansible.builtin.include_tasks: tasks/manage-cloudflare-record.yml
+      vars:
+        _cf_record_name: "{{ item.name }}"
+        _cf_record_type: "{{ item.type | default('A') }}"
+        _cf_record_content: "{{ item.content }}"
+        _cf_record_proxied: "{{ item.proxied | default(false) }}"
+        _cf_record_ttl: "{{ item.ttl | default(1) }}"
+      loop: "{{ _records }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.type | default('A') }})"
+      # DNS records are zone-level, not host-level — converge them once even if
+      # the edge group ever grows to >1 host (avoids N x the full API sequence).
+      run_once: true
