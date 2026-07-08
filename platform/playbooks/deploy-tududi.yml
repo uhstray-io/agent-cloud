@@ -111,9 +111,13 @@
       # Exec inside the container so the check never depends on the published
       # bind/port or the central Caddy. node is guaranteed in the (Node) image;
       # exit 0 only on HTTP 200 from the unauthenticated /api/health endpoint.
+      # setTimeout(5000) bounds the probe: ansible.builtin.command has no
+      # task-level timeout and http.get has no default request timeout, so a
+      # stuck /api/health would hang the whole deploy. On timeout, destroy the
+      # request and exit non-zero so `until`/`retries` re-probes instead.
       ansible.builtin.command: >-
         {{ _engine }} exec tududi
-        node -e "const http=require('http');http.get('http://127.0.0.1:3002/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1));"
+        node -e "const http=require('http');const req=http.get('http://127.0.0.1:3002/api/health',r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(5000,()=>{req.destroy();process.exit(1);});"
       register: _tududi_health
       changed_when: false
       retries: 10
