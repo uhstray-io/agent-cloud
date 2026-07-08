@@ -117,9 +117,10 @@ PYEOF
     backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_setup.py"
   rm_oidc_tmp
   step_oidc_admin
+  step_oidc_business
 }
 
-rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py /tmp/oidc_admin.py 2>/dev/null || true; }
+rm_oidc_tmp() { bench_exec rm -f /tmp/oidc_setup.py /tmp/oidc_admin.py /tmp/oidc_business.py 2>/dev/null || true; }
 
 step_oidc_admin() {
   # Pre-provision the SSO admin so OIDC login binds to an existing account.
@@ -174,6 +175,73 @@ PYEOF
   compose exec -T \
     -e ADMIN_EMAIL="${ERPNEXT_OIDC_ADMIN_EMAIL}" \
     backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_admin.py"
+  rm_oidc_tmp
+}
+
+step_oidc_business() {
+  # platform-business -> a curated read/write role set granted DIRECTLY to the
+  # user. Same email-keyed pattern as step_oidc_admin, and for the SAME reason:
+  # Frappe social login matches the OIDC user BY EMAIL and does NOT read the
+  # groups claim, so the group->role contract is enforced by pre-provisioning the
+  # User with the rw roles. Difference vs the admin: a curated read/write set,
+  # NOT the union-of-all-roles admin grant — business users get read/write on the
+  # transactional modules, never System Manager or any "* Manager"/admin role.
+  # Skips when no business email is set (a deploy with no business user still
+  # works), mirroring the OIDC-secret gate.
+  if [ -z "${ERPNEXT_OIDC_BUSINESS_EMAIL:-}" ]; then
+    info "Step 4c: No business email configured — skipping business rw user."
+    return 0
+  fi
+  info "Step 4c: Pre-provisioning business rw user ${ERPNEXT_OIDC_BUSINESS_EMAIL} (idempotent)..."
+  bench_exec bash -lc 'cat > /tmp/oidc_business.py' <<'PYEOF'
+import os, frappe
+
+# The curated read/write role set: the standard ERPNext module "* User" roles
+# (read/write on the transactional doctypes), intersected with the roles that
+# actually exist on this install so a module not present is skipped, not
+# errored. Deliberately EXCLUDES System Manager and every "* Manager"/admin
+# role — business = read/write, not admin.
+DESIRED = [
+    "Accounts User", "Sales User", "Purchase User", "Stock User",
+    "Manufacturing User", "Projects User", "Maintenance User",
+]
+existing = set(frappe.get_all("Role", filters={"disabled": 0}, pluck="name"))
+roles = [r for r in DESIRED if r in existing]
+
+# Pre-provision the business User (matched BY EMAIL, like the admin) as a System
+# User (desk access is required for transactional read/write) and grant the
+# roles DIRECTLY. self-signup stays disabled. add_roles() dedups + saves once ->
+# idempotent across re-runs. NOTE: add_roles is ADDITIVE — a role later dropped
+# from DESIRED is NOT revoked from an existing user (acceptable for a role set
+# that only grows; revisit with a Role Profile attachment if it must shrink).
+email = os.environ["BUSINESS_EMAIL"]
+if frappe.db.exists("User", email):
+    user = frappe.get_doc("User", email)
+    user.enabled = 1
+    user.user_type = "System User"
+    user.save(ignore_permissions=True)
+    action = "updated"
+else:
+    user = frappe.get_doc({
+        "doctype": "User",
+        "email": email,
+        "first_name": "Platform",
+        "last_name": "Business",
+        "user_type": "System User",
+        "enabled": 1,
+        "send_welcome_email": 0,
+    })
+    user.flags.no_welcome_mail = True
+    user.insert(ignore_permissions=True)
+    action = "created"
+user.add_roles(*roles)
+frappe.db.commit()
+assert frappe.db.exists("User", email), "business user not persisted"
+print("OK: business user '%s' %s; granted %d rw roles" % (email, action, len(roles)))
+PYEOF
+  compose exec -T \
+    -e BUSINESS_EMAIL="${ERPNEXT_OIDC_BUSINESS_EMAIL}" \
+    backend bash -lc "bench --site ${SITE_NAME} console < /tmp/oidc_business.py"
   rm_oidc_tmp
 }
 

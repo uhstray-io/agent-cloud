@@ -28,3 +28,10 @@ entries:
       name: platform-user
     attrs:
       is_superuser: false
+  # Business/ERP capability — read/write in ERPNext (mapped to a role profile by
+  # the ERPNext OIDC login), separate from the developer tier. NOT is_superuser.
+  - model: authentik_core.group
+    identifiers:
+      name: platform-business
+    attrs:
+      is_superuser: false

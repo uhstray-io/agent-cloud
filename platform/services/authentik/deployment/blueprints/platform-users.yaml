@@ -1,0 +1,55 @@
+# Authentik blueprint — named platform users (config-as-code, idempotent).
+#
+# Each entry is an authentik_core.user reconciled by the worker on every deploy
+# (re-applying converges — never duplicates), mirroring stray-admin.yaml. The
+# IDENTITY of each user — username, display name, email — is parameterized via
+# !Env so no real person's name or address lives in this PUBLIC repo (extends
+# the email-privacy pattern stray-admin.yaml already uses). The real values come
+# from the worker env, templated by deploy-authentik env.j2 from the private
+# site-config; the defaults here are non-PII placeholders for local-dev.
+#
+# Group membership is the RBAC contract (platform-groups.yaml): the access gate
+# (zz-sso-bindings) admits the group, and each SSO'd service maps the groups
+# claim to its own role.
+#
+# Initial passwords are OpenBao-generated + reused (stable across redeploys, so a
+# re-apply never resets a login). FUTURE: migrate to Authentik enrollment/
+# recovery links once prod SMTP is configured (D2) — then drop the *_password.
+# Plan: plan/development/12-rbac-user-provisioning.md.
+#
+# To add a user: append an entry here, add <name>_password to deploy-authentik's
+# _secret_definitions, and expose <NAME>_USERNAME/_NAME/_EMAIL/_PASSWORD in
+# env.j2 (real values set in site-config).
+version: 1
+metadata:
+  name: agent-cloud - platform users
+entries:
+  # User 1 — full admin, member of platform-admins (top role in every app,
+  # identical tier to stray). Real identity via site-config (WISWARD_*).
+  - model: authentik_core.user
+    identifiers:
+      username: !Env [WISWARD_USERNAME, "wisward"]
+    attrs:
+      name: !Env [WISWARD_NAME, "Platform Admin"]
+      email: !Env [WISWARD_EMAIL, "wisward@agent-cloud.test"]
+      is_active: true
+      path: users
+      password: !Env WISWARD_PASSWORD
+      groups:
+        - !Find [authentik_core.group, [name, platform-admins]]
+
+  # User 2 — developer (rw n8n/Grafana/OpenHands/tududi, read Semaphore) via
+  # platform-developers, PLUS business (rw ERPNext) via platform-business. Real
+  # identity via site-config (ANDREW_*).
+  - model: authentik_core.user
+    identifiers:
+      username: !Env [ANDREW_USERNAME, "developer"]
+    attrs:
+      name: !Env [ANDREW_NAME, "Platform Developer"]
+      email: !Env [ANDREW_EMAIL, "developer@agent-cloud.test"]
+      is_active: true
+      path: users
+      password: !Env ANDREW_PASSWORD
+      groups:
+        - !Find [authentik_core.group, [name, platform-developers]]
+        - !Find [authentik_core.group, [name, platform-business]]
