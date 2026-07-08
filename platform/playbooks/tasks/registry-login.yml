@@ -1,0 +1,65 @@
+---
+# registry-login.yml — idempotent container-registry login on the target host so
+# private GHCR images (honcho, wisbot) can be pulled by the deploy. Encodes the
+# previously-manual `podman login ghcr.io` step (the wisbot VM was logged in by
+# hand — an unencoded step this task replaces going forward).
+#
+# The credential is the GitHub PAT already managed at OpenBao
+# secret/services/github (it must carry read:packages scope for GHCR pulls).
+# Read via the community.hashi_vault lookup (the repo's short form for a
+# single-key read); the login uses --password-stdin so the token never appears
+# in argv or the process list.
+#
+# Rootless podman stores the auth in the deploy user's
+# ${XDG_RUNTIME_DIR}/containers/auth.json — persistent across deploys, so
+# re-running converges (podman login is idempotent).
+#
+# Required vars: none beyond the standard OpenBao env (BAO_ROLE_ID/
+# BAO_SECRET_ID + openbao_addr) every Semaphore run injects.
+# Optional vars:
+#   registry_login_registry  registry host          (default ghcr.io)
+#   registry_login_user      registry username      (default uhstray-io)
+#   registry_login_key       OpenBao key holding the PAT under
+#                            secret/services/github (default pat)
+#   container_engine         podman | docker        (default podman)
+
+- name: "Read the GitHub PAT for registry login (OpenBao secret/services/github)"
+  ansible.builtin.set_fact:
+    _reg_token: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+                'secret/data/services/github:' ~ (registry_login_key | default('pat')),
+                url=(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)),
+                auth_method='approle',
+                role_id=(bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))),
+                secret_id=(bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')))) }}
+  no_log: true
+
+- name: "Require a usable PAT before attempting the registry login"
+  ansible.builtin.assert:
+    that:
+      - (_reg_token | default('') | length) > 0
+    fail_msg: >-
+      No '{{ registry_login_key | default('pat') }}' key at
+      secret/services/github in OpenBao. Store the GitHub PAT there (it needs
+      read:packages scope for GHCR pulls), or pass -e registry_login_key=<key>
+      if it lives under a different name.
+
+- name: "Log in to {{ registry_login_registry | default('ghcr.io') }} (token via stdin, idempotent)"
+  ansible.builtin.shell: >-
+    printf '%s' "$REG_TOKEN" |
+    {{ container_engine | default('podman') }} login
+    {{ registry_login_registry | default('ghcr.io') }}
+    -u {{ registry_login_user | default('uhstray-io') }} --password-stdin
+  environment:
+    REG_TOKEN: "{{ _reg_token }}"
+  register: _reg_login
+  changed_when: false
+  no_log: true
+
+- name: "Report the registry login (safe fields only)"
+  ansible.builtin.debug:
+    msg: >-
+      Registry login to {{ registry_login_registry | default('ghcr.io') }} as
+      {{ registry_login_user | default('uhstray-io') }}: OK. A 401/403 on the
+      subsequent image pull means the PAT lacks read:packages scope (or no
+      access to the package) — fix the PAT in OpenBao secret/services/github.
