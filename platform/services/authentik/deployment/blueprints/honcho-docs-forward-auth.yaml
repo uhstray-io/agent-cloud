@@ -33,5 +33,8 @@ entries:
     attrs:
       name: honcho API docs
       provider: !KeyOf provider-honcho-docs
-      meta_launch_url: !Env [HONCHO_EXTERNAL_HOST, "https://memory.agent-cloud.test:8443"]
+      # Launch at /docs, NOT the bare host — honcho serves no root route (the
+      # API is /v3), so the bare host 404s. external_host above must stay the
+      # host root (forward_single semantics); only the human launcher gets /docs.
+      meta_launch_url: !Env [HONCHO_DOCS_URL, "https://memory.agent-cloud.test:8443/docs"]
       open_in_new_tab: true
