@@ -46,10 +46,13 @@
 
 - name: "Registry login (token via stdin, idempotent) — {{ registry_login_registry | default('ghcr.io') }}"
   ansible.builtin.shell: >-
+    set -o pipefail;
     printf '%s' "$REG_TOKEN" |
     {{ container_engine | default('podman') }} login
     {{ registry_login_registry | default('ghcr.io') }}
     -u {{ registry_login_user | default('uhstray-io') }} --password-stdin
+  args:
+    executable: /bin/bash
   environment:
     REG_TOKEN: "{{ _reg_token }}"
   register: _reg_login
