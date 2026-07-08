@@ -112,6 +112,9 @@ all:
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
             # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
             - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
+            # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
+            # surface is Authentik-gated (path-scoped forward_auth).
+            - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -184,6 +187,20 @@ all:
           container_engine: podman
           tududi_bind: 127.0.0.1
           tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
+
+    # honcho - memory API (api + deriver on the CI-built GHCR image, own
+    # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
+    # is Authentik forward_auth-gated at Caddy. Deploy: make local-deploy-honcho.
+    honcho_svc:
+      hosts:
+        honcho-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: honcho
+          monorepo_deploy_path: platform/services/honcho/deployment
+          container_engine: podman
+          honcho_bind: 127.0.0.1
+          honcho_port: 8400   # host debug port; Caddy reaches honcho-api:8000 by name
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
