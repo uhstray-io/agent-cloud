@@ -110,6 +110,8 @@ all:
             # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
             - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
+            # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
+            - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -168,6 +170,20 @@ all:
           # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
           # mirror is the same image. Base compose default stays docker.n8n.io.
           n8n_image: docker.io/n8nio/n8n:2.25.7
+
+    # tududi - self-hosted to-do app (single rootless container, SQLite). Native
+    # OIDC to Authentik (blueprints/tududi-oidc.yaml). Behind Caddy at
+    # todo.agent-cloud.test. Deploy: make local-deploy-tududi.
+    tududi_svc:
+      hosts:
+        tududi-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: tududi
+          monorepo_deploy_path: platform/services/tududi/deployment
+          container_engine: podman
+          tududi_bind: 127.0.0.1
+          tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
