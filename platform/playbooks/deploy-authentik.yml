@@ -47,6 +47,10 @@
       # token (service-account.yaml). Stable across redeploys; worker reads !Env.
       - { name: stray_admin_password, type: random, length: 32 }
       - { name: service_account_token, type: random, length: 60 }
+      # Named platform users (platform-users.yaml). Initial passwords generated
+      # once + reused (stable), OpenBao-owned; worker reads via !Env.
+      - { name: wisward_password, type: random, length: 32 }
+      - { name: andrew_password, type: random, length: 32 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
     # Blueprints always applied regardless of environment (groups, flows, admin
@@ -57,6 +61,7 @@
       - platform-groups.yaml
       - agent-cloud-admin.yaml
       - stray-admin.yaml
+      - platform-users.yaml
       - service-account.yaml
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 

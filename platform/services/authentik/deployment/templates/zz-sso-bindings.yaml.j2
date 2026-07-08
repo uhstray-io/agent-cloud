@@ -22,7 +22,7 @@ entries:
       name: platform-member
     attrs:
       expression: |
-        allowed = {"platform-admins", "platform-developers"}
+        allowed = {"platform-admins", "platform-developers", "platform-business"}
         return request.user.is_superuser or bool(
             allowed & {g.name for g in request.user.ak_groups.all()}
         )
