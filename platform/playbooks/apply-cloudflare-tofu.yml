@@ -1,26 +1,26 @@
 ---
 # apply-cloudflare-tofu.yml — run the Cloudflare OpenTofu root via Semaphore.
 #
-# OpenBao-wrapper pattern: fetch the CF API token + R2 state keys from OpenBao
-# (the source of truth), export them as process env, and run `tofu` against the
-# R2 backend. Secrets never land in a file, a *.tfvars, or a Semaphore
-# environment — they exist only in the task's process env (not echoed in output),
-# so the plan/apply output stays visible while credentials stay hidden.
+# OpenBao-wrapper: reads EVERYTHING it needs (secrets AND service config) from
+# OpenBao secret/services/cloudflare — matching the platform's service pattern
+# where config lives alongside secrets (e.g. secret/services/semaphore:url).
+# This makes it a self-contained `hosts: localhost` orchestration task: no
+# inventory group vars (which a localhost play cannot read) and no laptop-run
+# tofu. Secrets exist only in the task process env (not echoed); plan/apply
+# output stays visible.
 #
-# Runs on the Semaphore runner (localhost) which has the tofu binary and the
-# OpenBao AppRole env. tofu state lives in Cloudflare R2 (shared with the local
-# bootstrap). See platform/infra/cloudflare/ + plan/development/13-cloudflare-iac.md.
+# OpenBao secret/services/cloudflare keys:
+#   api_token, r2_access_key_id, r2_secret_access_key   (secrets)
+#   r2_s3_endpoint     R2 S3 endpoint (https://<acct>.r2.cloudflarestorage.com)
+#   caddy_origin_ip    public origin IP the platform A-records point at
+#   zone_name      (optional) apex zone; default uhstray.io
+#   tfstate_bucket (optional) R2 state bucket; default uhstray-tfstate
+# Launch overrides: -e cloudflare_zone=... -e cloudflare_tfstate_bucket=...
 #
-# Non-secret config from inventory (site-config):
-#   cloudflare_zone             apex zone (zone id is looked up from it)
-#   caddy_origin_ip             public origin IP the platform records point at
-#   cloudflare_tfstate_bucket   R2 bucket for state (e.g. uhstray-tfstate)
-#   cloudflare_r2_s3_endpoint   R2 S3 endpoint (https://<acct>.r2.cloudflarestorage.com)
-# Secrets from OpenBao secret/services/cloudflare:
-#   api_token, r2_access_key_id, r2_secret_access_key
-#
-# Usage (Semaphore): survey var tofu_action = plan (default) | apply.
-# `plan` is safe/read-only; `apply` is the gated change (run after reviewing plan).
+# tofu state lives in Cloudflare R2. See platform/infra/cloudflare/ +
+# plan/development/13-cloudflare-iac.md.
+# Usage (Semaphore): survey var tofu_action = plan (default, read-only) |
+# apply (gated change; run after reviewing the plan).
 
 - name: "Cloudflare OpenTofu — {{ tofu_action | default('plan') }}"
   hosts: localhost
@@ -35,19 +35,12 @@
     _cf_api: "https://api.cloudflare.com/client/v4"
 
   tasks:
-    - name: "Validate inputs"
+    - name: "Pre-flight validation"
       ansible.builtin.assert:
         that:
-          - cloudflare_zone is defined and cloudflare_zone | length > 0
-          - caddy_origin_ip is defined and caddy_origin_ip | length > 0
-          - cloudflare_tfstate_bucket is defined and cloudflare_tfstate_bucket | length > 0
-          - cloudflare_r2_s3_endpoint is defined and cloudflare_r2_s3_endpoint | length > 0
           - tofu_action in ['plan', 'apply']
           - _bao_url | length > 0
-        fail_msg: >-
-          Set cloudflare_zone, caddy_origin_ip, cloudflare_tfstate_bucket,
-          cloudflare_r2_s3_endpoint (site-config inventory) + OpenBao env; and
-          pass tofu_action=plan|apply.
+        fail_msg: "Pass tofu_action=plan|apply and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -60,7 +53,7 @@
       register: _bao_auth
       no_log: true
 
-    - name: "Read Cloudflare secrets from OpenBao"
+    - name: "Read Cloudflare secrets + config from OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/services/cloudflare"
         method: GET
@@ -70,12 +63,32 @@
       register: _cf_secret
       no_log: true
 
-    - name: "Look up the zone id for {{ cloudflare_zone }}"
+    - name: "Resolve config (launch override -> OpenBao -> default)"
+      ansible.builtin.set_fact:
+        _cf: "{{ _cf_secret.json.data.data }}"
+        _zone_name: "{{ cloudflare_zone | default(_cf_secret.json.data.data.zone_name | default('uhstray.io', true), true) }}"
+        _bucket: "{{ cloudflare_tfstate_bucket | default(_cf_secret.json.data.data.tfstate_bucket | default('uhstray-tfstate', true), true) }}"
+        _r2_endpoint: "{{ _cf_secret.json.data.data.r2_s3_endpoint | default('', true) }}"
+        _caddy_ip: "{{ _cf_secret.json.data.data.caddy_origin_ip | default('', true) }}"
+      no_log: true
+
+    - name: "Validate resolved config (presence only; no values shown)"
+      ansible.builtin.assert:
+        that:
+          - _zone_name | length > 0
+          - _bucket | length > 0
+          - _r2_endpoint | length > 0
+          - _caddy_ip | length > 0
+        fail_msg: >-
+          Missing Cloudflare config in OpenBao secret/services/cloudflare
+          (need r2_s3_endpoint + caddy_origin_ip; zone_name/tfstate_bucket optional).
+
+    - name: "Look up the zone id for {{ _zone_name }}"
       ansible.builtin.uri:
-        url: "{{ _cf_api }}/zones?name={{ cloudflare_zone }}"
+        url: "{{ _cf_api }}/zones?name={{ _zone_name }}"
         method: GET
         headers:
-          Authorization: "Bearer {{ _cf_secret.json.data.data.api_token }}"
+          Authorization: "Bearer {{ _cf.api_token }}"
         status_code: [200]
       register: _cf_zone
       no_log: true
@@ -85,16 +98,16 @@
         _zone_id: "{{ _cf_zone.json.result[0].id }}"
 
     # Templated backend config (nested `endpoints` object is unreliable via the
-    # -backend-config KEY=VALUE CLI form). Written to the runner's ephemeral
-    # workspace only; gitignored, never committed.
+    # -backend-config KEY=VALUE CLI form). Runner's ephemeral workspace only;
+    # gitignored, never committed.
     - name: "Write the R2 backend config"
       ansible.builtin.copy:
         dest: "{{ _tf_dir }}/backend.hcl"
         mode: "0600"
         content: |
-          bucket = "{{ cloudflare_tfstate_bucket }}"
+          bucket = "{{ _bucket }}"
           key    = "cloudflare/terraform.tfstate"
-          endpoints = { s3 = "{{ cloudflare_r2_s3_endpoint }}" }
+          endpoints = { s3 = "{{ _r2_endpoint }}" }
       no_log: true
 
     - name: "OpenTofu init (R2 backend)"
@@ -107,8 +120,8 @@
           - -reconfigure
           - -backend-config=backend.hcl
       environment:
-        AWS_ACCESS_KEY_ID: "{{ _cf_secret.json.data.data.r2_access_key_id }}"
-        AWS_SECRET_ACCESS_KEY: "{{ _cf_secret.json.data.data.r2_secret_access_key }}"
+        AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
       register: _tf_init
       changed_when: false
 
@@ -117,11 +130,11 @@
         chdir: "{{ _tf_dir }}"
         argv: "{{ ['tofu', tofu_action, '-input=false'] + (['-auto-approve'] if tofu_action == 'apply' else []) }}"
       environment:
-        AWS_ACCESS_KEY_ID: "{{ _cf_secret.json.data.data.r2_access_key_id }}"
-        AWS_SECRET_ACCESS_KEY: "{{ _cf_secret.json.data.data.r2_secret_access_key }}"
-        CLOUDFLARE_API_TOKEN: "{{ _cf_secret.json.data.data.api_token }}"
+        AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
+        CLOUDFLARE_API_TOKEN: "{{ _cf.api_token }}"
         TF_VAR_zone_id: "{{ _zone_id }}"
-        TF_VAR_caddy_origin_ip: "{{ caddy_origin_ip }}"
+        TF_VAR_caddy_origin_ip: "{{ _caddy_ip }}"
       register: _tf_run
       changed_when: "tofu_action == 'apply' and 'Apply complete' in (_tf_run.stdout | default(''))"
 
