@@ -320,6 +320,19 @@ templates:
         type: string
         required: true
 
+  - name: Apply Cloudflare Tofu
+    playbook: platform/playbooks/apply-cloudflare-tofu.yml
+    # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
+    # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
+    # tofu_action=plan (safe, default) or apply (gated change; run after review).
+    survey_vars:
+      - name: tofu_action
+        title: "Action"
+        description: "plan (read-only, default) or apply (gated change)"
+        type: string
+        required: false
+        default_value: "plan"
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 

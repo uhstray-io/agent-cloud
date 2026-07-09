@@ -1,0 +1,130 @@
+---
+# apply-cloudflare-tofu.yml — run the Cloudflare OpenTofu root via Semaphore.
+#
+# OpenBao-wrapper pattern: fetch the CF API token + R2 state keys from OpenBao
+# (the source of truth), export them as process env, and run `tofu` against the
+# R2 backend. Secrets never land in a file, a *.tfvars, or a Semaphore
+# environment — they exist only in the task's process env (not echoed in output),
+# so the plan/apply output stays visible while credentials stay hidden.
+#
+# Runs on the Semaphore runner (localhost) which has the tofu binary and the
+# OpenBao AppRole env. tofu state lives in Cloudflare R2 (shared with the local
+# bootstrap). See platform/infra/cloudflare/ + plan/development/13-cloudflare-iac.md.
+#
+# Non-secret config from inventory (site-config):
+#   cloudflare_zone             apex zone (zone id is looked up from it)
+#   caddy_origin_ip             public origin IP the platform records point at
+#   cloudflare_tfstate_bucket   R2 bucket for state (e.g. uhstray-tfstate)
+#   cloudflare_r2_s3_endpoint   R2 S3 endpoint (https://<acct>.r2.cloudflarestorage.com)
+# Secrets from OpenBao secret/services/cloudflare:
+#   api_token, r2_access_key_id, r2_secret_access_key
+#
+# Usage (Semaphore): survey var tofu_action = plan (default) | apply.
+# `plan` is safe/read-only; `apply` is the gated change (run after reviewing plan).
+
+- name: "Cloudflare OpenTofu — {{ tofu_action | default('plan') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    tofu_action: plan
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _tf_dir: "{{ playbook_dir }}/../infra/cloudflare"
+    _cf_api: "https://api.cloudflare.com/client/v4"
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - cloudflare_zone is defined and cloudflare_zone | length > 0
+          - caddy_origin_ip is defined and caddy_origin_ip | length > 0
+          - cloudflare_tfstate_bucket is defined and cloudflare_tfstate_bucket | length > 0
+          - cloudflare_r2_s3_endpoint is defined and cloudflare_r2_s3_endpoint | length > 0
+          - tofu_action in ['plan', 'apply']
+          - _bao_url | length > 0
+        fail_msg: >-
+          Set cloudflare_zone, caddy_origin_ip, cloudflare_tfstate_bucket,
+          cloudflare_r2_s3_endpoint (site-config inventory) + OpenBao env; and
+          pass tofu_action=plan|apply.
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      no_log: true
+
+    - name: "Read Cloudflare secrets from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/cloudflare"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _cf_secret
+      no_log: true
+
+    - name: "Look up the zone id for {{ cloudflare_zone }}"
+      ansible.builtin.uri:
+        url: "{{ _cf_api }}/zones?name={{ cloudflare_zone }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _cf_secret.json.data.data.api_token }}"
+        status_code: [200]
+      register: _cf_zone
+      no_log: true
+
+    - name: "Set the zone id fact"
+      ansible.builtin.set_fact:
+        _zone_id: "{{ _cf_zone.json.result[0].id }}"
+
+    # Templated backend config (nested `endpoints` object is unreliable via the
+    # -backend-config KEY=VALUE CLI form). Written to the runner's ephemeral
+    # workspace only; gitignored, never committed.
+    - name: "Write the R2 backend config"
+      ansible.builtin.copy:
+        dest: "{{ _tf_dir }}/backend.hcl"
+        mode: "0600"
+        content: |
+          bucket = "{{ cloudflare_tfstate_bucket }}"
+          key    = "cloudflare/terraform.tfstate"
+          endpoints = { s3 = "{{ cloudflare_r2_s3_endpoint }}" }
+      no_log: true
+
+    - name: "OpenTofu init (R2 backend)"
+      ansible.builtin.command:
+        chdir: "{{ _tf_dir }}"
+        argv:
+          - tofu
+          - init
+          - -input=false
+          - -reconfigure
+          - -backend-config=backend.hcl
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ _cf_secret.json.data.data.r2_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ _cf_secret.json.data.data.r2_secret_access_key }}"
+      register: _tf_init
+      changed_when: false
+
+    - name: "OpenTofu {{ tofu_action }}"
+      ansible.builtin.command:
+        chdir: "{{ _tf_dir }}"
+        argv: "{{ ['tofu', tofu_action, '-input=false'] + (['-auto-approve'] if tofu_action == 'apply' else []) }}"
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ _cf_secret.json.data.data.r2_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ _cf_secret.json.data.data.r2_secret_access_key }}"
+        CLOUDFLARE_API_TOKEN: "{{ _cf_secret.json.data.data.api_token }}"
+        TF_VAR_zone_id: "{{ _zone_id }}"
+        TF_VAR_caddy_origin_ip: "{{ caddy_origin_ip }}"
+      register: _tf_run
+      changed_when: "tofu_action == 'apply' and 'Apply complete' in (_tf_run.stdout | default(''))"
+
+    - name: "Show OpenTofu output for action {{ tofu_action }}"
+      ansible.builtin.debug:
+        var: _tf_run.stdout_lines
