@@ -1,0 +1,120 @@
+---
+# set-semaphore-branch.yml — flip the branch Semaphore runs playbooks from.
+#
+# Streamlines the "batch to dev -> test on dev -> promote to main" workflow: one
+# auditable task swaps the agent-cloud repository's git_branch in Semaphore
+# between `dev` and `main`. All subsequent task runs then check out that branch
+# for the orchestration code — so testing merged PRs on dev is a single toggle,
+# not a per-task git_branch override.
+#
+# Scope note: this sets the branch Semaphore runs the PLAYBOOKS from. To also
+# deploy that branch's monorepo to a service VM, pass the deploy template's
+# `service_branch` survey var (it feeds place-monorepo). Keep prod on `main`;
+# flip to `dev` only while testing, and flip back.
+#
+# Semaphore API creds: env (SEMAPHORE_URL/SEMAPHORE_TOKEN) first, else OpenBao
+# secret/services/semaphore (url + api_token) via the AppRole Semaphore injects
+# — mirrors promote-semaphore-admins.yml.
+#
+# Usage (Semaphore): survey var deploy_branch = main (default) | dev.
+
+- name: "Set Semaphore deploy branch to {{ deploy_branch | default('main') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    deploy_branch: "main"
+    _project_id: "{{ semaphore_project_id | default(1) }}"
+    _repo_name: "{{ semaphore_repo_name | default('agent-cloud') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _sem_url_env: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) | default('', true) }}"
+    _sem_token_env: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+
+  tasks:
+    - name: "Validate the requested branch"
+      ansible.builtin.assert:
+        that:
+          - deploy_branch in ['dev', 'main']
+        fail_msg: "deploy_branch must be 'dev' or 'main' (got '{{ deploy_branch }}')."
+
+    - name: "Resolve the Semaphore URL + token (env first, else OpenBao AppRole lookup)"
+      ansible.builtin.set_fact:
+        _sem_url: >-
+          {{ _sem_url_env if (_sem_url_env | length) > 0
+             else lookup('community.hashi_vault.hashi_vault',
+                         'secret/data/services/semaphore:url',
+                         url=_bao_url, auth_method='approle',
+                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+        _sem_token: >-
+          {{ _sem_token_env if (_sem_token_env | length) > 0
+             else lookup('community.hashi_vault.hashi_vault',
+                         'secret/data/services/semaphore:api_token',
+                         url=_bao_url, auth_method='approle',
+                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+      no_log: true
+
+    - name: "Require a resolved URL + token"
+      ansible.builtin.assert:
+        that:
+          - (_sem_url | length) > 0
+          - (_sem_token | length) > 0
+        fail_msg: >-
+          Could not resolve the Semaphore API URL/token — set SEMAPHORE_URL +
+          SEMAPHORE_TOKEN, or store url + api_token at secret/services/semaphore.
+
+    - name: "Fetch the Semaphore repository named {{ _repo_name }}"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        status_code: [200]
+      register: _repos
+      no_log: true # bearer token rides in headers
+
+    - name: "Select the repository"
+      ansible.builtin.set_fact:
+        _repo: "{{ _repos.json | selectattr('name', 'equalto', _repo_name) | first }}"
+
+    - name: "Report current branch (before)"
+      ansible.builtin.debug:
+        msg: "{{ _repo_name }} repo (id={{ _repo.id }}) currently on '{{ _repo.git_branch }}' -> setting '{{ deploy_branch }}'."
+
+    - name: "Update the repository git_branch to {{ deploy_branch }}"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _project_id }}/repositories/{{ _repo.id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+          Content-Type: application/json
+        # to_json keeps id/project_id/ssh_key_id as JSON ints (Semaphore rejects
+        # stringified ids), mirroring setup-templates.yml.
+        body: >-
+          {{ {'id': (_repo.id | int),
+              'name': _repo.name,
+              'project_id': (_project_id | int),
+              'git_url': _repo.git_url,
+              'git_branch': deploy_branch,
+              'ssh_key_id': (_repo.ssh_key_id | int)} | to_json }}
+        status_code: [200, 204]
+      no_log: true # token in headers
+
+    - name: "Verify the branch was set"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        status_code: [200]
+      register: _verify
+      no_log: true
+
+    - name: "Assert + report"
+      ansible.builtin.assert:
+        that:
+          - (_verify.json | selectattr('name', 'equalto', _repo_name) | map(attribute='git_branch') | first) == deploy_branch
+        fail_msg: "Repository git_branch did not update to '{{ deploy_branch }}'."
+        success_msg: >-
+          Semaphore now runs {{ _repo_name }} playbooks from '{{ deploy_branch }}'.
+          {{ 'TESTING on dev — remember to flip back to main for prod.' if deploy_branch == 'dev'
+             else 'Production branch (main).' }}

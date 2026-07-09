@@ -333,6 +333,19 @@ templates:
         required: false
         default_value: "plan"
 
+  - name: Set Semaphore Branch
+    playbook: platform/playbooks/set-semaphore-branch.yml
+    # Swaps the branch Semaphore runs agent-cloud playbooks from (dev<->main),
+    # to streamline the batch-to-dev -> test-on-dev -> promote-to-main workflow.
+    # Keep prod on main; flip to dev only while testing, then flip back.
+    survey_vars:
+      - name: deploy_branch
+        title: "Branch"
+        description: "main (production, default) or dev (testing merged PRs)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 
