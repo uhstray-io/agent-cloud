@@ -302,6 +302,24 @@ templates:
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
 
+  - name: Seed OpenBao Key
+    playbook: platform/playbooks/seed-openbao-key.yml
+    # Merges ONE key into an existing secret path (siblings preserved), for
+    # code-managed placement of a shared secret a reader deploy needs (e.g.
+    # honcho reads secret/services/nemoclaw:gemini_api_key). bao_value is passed
+    # as a launch-time extra-var (-e bao_value=...), not a stored survey field.
+    survey_vars:
+      - name: bao_path
+        title: "Secret path"
+        description: "KV-v2 path under secret/ to merge into (e.g. services/nemoclaw)"
+        type: string
+        required: true
+      - name: bao_key
+        title: "Key name"
+        description: "Field to set/update at that path (e.g. gemini_api_key)"
+        type: string
+        required: true
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 

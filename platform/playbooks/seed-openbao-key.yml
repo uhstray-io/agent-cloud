@@ -1,0 +1,104 @@
+---
+# seed-openbao-key.yml — Seed (merge) a single key/value into an OpenBao KV-v2
+# secret WITHOUT disturbing the other keys already at that path.
+#
+# Why: some shared secrets are owned by one service but read by another via a
+# manage-secrets `_shared_read` (e.g. honcho's deriver reads
+# `secret/services/nemoclaw:gemini_api_key`). When such a key is missing from
+# OpenBao, the reader's deploy fails its shared-read assertion. This playbook is
+# the code-managed, idempotent way to place that one key — the deploy automation
+# then sources it from OpenBao itself (no key ever touches a container or file
+# by hand, and it survives redeploys). It replaces the forbidden "ad-hoc curl
+# into OpenBao" one-off (see agent-cloud CLAUDE.md: changes flow through code).
+#
+# ADDITIVE + idempotent: fetches the existing secret, merges {bao_key: bao_value}
+# in, and writes back only if the value actually changed — so re-runs converge
+# without churning KV versions, and sibling keys at the path are preserved.
+#
+# The value is passed in as an extra var (no_log) and is never committed. Runs
+# from the Semaphore runner (localhost), which holds the OpenBao AppRole.
+#
+# Usage (via Semaphore):
+#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key -e bao_value=<secret>
+#   -e openbao_addr=http://<bao>:8200   (AppRole creds injected by Semaphore env)
+
+- name: "Seed a single key into an OpenBao KV-v2 secret path"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - bao_path is defined and bao_path | length > 0
+          - bao_key is defined and bao_key | length > 0
+          - bao_value is defined and bao_value | length > 0
+          - _bao_url | length > 0
+        fail_msg: >-
+          Pass -e bao_path=services/<svc> -e bao_key=<key> -e bao_value=<secret>
+          and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set.
+      no_log: true
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      no_log: true
+
+    - name: "Fetch existing secret (preserve sibling keys) at secret/{{ bao_path }}"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _existing
+      no_log: true
+
+    - name: "Record whether the key already holds this value (idempotency)"
+      ansible.builtin.set_fact:
+        _existing_data: "{{ _existing.json.data.data | default({}) }}"
+      no_log: true
+
+    - name: "Merge key when changed into secret/{{ bao_path }}"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          data: "{{ _existing_data | combine({bao_key: bao_value}) }}"
+      when: _existing_data[bao_key] | default(none) != bao_value
+      register: _write
+      no_log: true
+
+    - name: "Verify the key is present at secret/{{ bao_path }}"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _verify
+      no_log: true
+
+    - name: "Assert key present (value not logged)"
+      ansible.builtin.assert:
+        that:
+          - bao_key in (_verify.json.data.data | default({}))
+        fail_msg: "Key '{{ bao_key }}' not found at secret/{{ bao_path }} after write."
+        success_msg: >-
+          Key '{{ bao_key }}' present at secret/{{ bao_path }}
+          ({{ 'written' if (_write is defined and _write.changed | default(false)) else 'already up to date' }};
+          {{ (_verify.json.data.data | default({}) | length) }} keys at path).
