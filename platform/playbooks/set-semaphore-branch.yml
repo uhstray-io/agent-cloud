@@ -1,22 +1,22 @@
 ---
 # set-semaphore-branch.yml — flip the branch Semaphore runs playbooks from.
 #
+# OPERATOR-SIDE tool (run from a workstation, NOT as a Semaphore job) — managing
+# Semaphore's own config from inside a Semaphore job is avoided by convention
+# (cf. site-config scripts/semaphore-upgrade.sh). Invoked like setup-templates.yml:
+#
+#   SEMAPHORE_URL=http://localhost:3000 SEMAPHORE_TOKEN=<token> \
+#     ansible-playbook platform/playbooks/set-semaphore-branch.yml -e deploy_branch=dev
+#
+# (SEMAPHORE_URL via an SSH-local tunnel to the Semaphore host; token from
+# site-config/secrets/semaphore/semaphore_api_token.txt.)
+#
 # Streamlines the "batch to dev -> test on dev -> promote to main" workflow: one
-# auditable task swaps the agent-cloud repository's git_branch in Semaphore
-# between `dev` and `main`. All subsequent task runs then check out that branch
-# for the orchestration code — so testing merged PRs on dev is a single toggle,
-# not a per-task git_branch override.
-#
-# Scope note: this sets the branch Semaphore runs the PLAYBOOKS from. To also
-# deploy that branch's monorepo to a service VM, pass the deploy template's
-# `service_branch` survey var (it feeds place-monorepo). Keep prod on `main`;
-# flip to `dev` only while testing, and flip back.
-#
-# Semaphore API creds: env (SEMAPHORE_URL/SEMAPHORE_TOKEN) first, else OpenBao
-# secret/services/semaphore (url + api_token) via the AppRole Semaphore injects
-# — mirrors promote-semaphore-admins.yml.
-#
-# Usage (Semaphore): survey var deploy_branch = main (default) | dev.
+# command swaps the agent-cloud repository's git_branch in Semaphore between
+# `dev` and `main`, so all subsequent task runs check out that branch for the
+# orchestration code. Keep prod on `main`; flip to `dev` only while testing, and
+# flip back. (To also deploy a branch's monorepo to a VM, pass a deploy
+# template's `service_branch` survey var — that feeds place-monorepo.)
 
 - name: "Set Semaphore deploy branch to {{ deploy_branch | default('main') }}"
   hosts: localhost
@@ -26,43 +26,18 @@
     deploy_branch: "main"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _repo_name: "{{ semaphore_repo_name | default('agent-cloud') }}"
-    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _sem_url_env: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) | default('', true) }}"
-    _sem_token_env: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _sem_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) | default('http://localhost:3000', true) }}"
+    _sem_token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
 
   tasks:
-    - name: "Validate the requested branch"
+    - name: "Validate inputs"
       ansible.builtin.assert:
         that:
           - deploy_branch in ['dev', 'main']
-        fail_msg: "deploy_branch must be 'dev' or 'main' (got '{{ deploy_branch }}')."
-
-    # URL: this runs ON the Semaphore host, so call the API LOCALLY — the
-    # OpenBao `url` is the PUBLIC semaphore.uhstray.io, which Cloudflare
-    # bot-challenges (403) for non-browser API calls. Env/var override wins
-    # (e.g. a workstation tunnel); otherwise default to the runner-local API.
-    # Only the TOKEN comes from OpenBao.
-    - name: "Resolve the Semaphore URL + token (local API URL; token env-first, else OpenBao)"
-      ansible.builtin.set_fact:
-        _sem_url: "{{ _sem_url_env if (_sem_url_env | length) > 0 else 'http://localhost:3000' }}"
-        _sem_token: >-
-          {{ _sem_token_env if (_sem_token_env | length) > 0
-             else lookup('community.hashi_vault.hashi_vault',
-                         'secret/data/services/semaphore:api_token',
-                         url=_bao_url, auth_method='approle',
-                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
-      no_log: true
-
-    - name: "Require a resolved URL + token"
-      ansible.builtin.assert:
-        that:
-          - (_sem_url | length) > 0
           - (_sem_token | length) > 0
         fail_msg: >-
-          Could not resolve the Semaphore API URL/token — set SEMAPHORE_URL +
-          SEMAPHORE_TOKEN, or store url + api_token at secret/services/semaphore.
+          Pass -e deploy_branch=dev|main and set SEMAPHORE_TOKEN (+ optional
+          SEMAPHORE_URL, default http://localhost:3000) in the environment.
 
     - name: "Fetch the Semaphore repository named {{ _repo_name }}"
       ansible.builtin.uri:
