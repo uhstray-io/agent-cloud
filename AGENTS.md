@@ -304,6 +304,13 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 ### Branch Workflow
 
+> **NEVER open a pull request unless the user explicitly requests it — every PR, every time.**
+> Agents may create a branch, commit, and push it, but **opening the PR is a user-gated action**:
+> stop at the branch and ask ("branch ready — want me to open the PR?"). Do not run
+> `gh pr create` (or equivalent) on your own initiative. This applies to feature→`dev` PRs and
+> `dev`→`main` promotion PRs alike. (Likewise, do not push to a PR already under review without
+> asking.)
+
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
 - `main` is the production branch — Semaphore deploys from it.
