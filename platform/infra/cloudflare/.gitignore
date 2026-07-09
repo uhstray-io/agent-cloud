@@ -1,0 +1,12 @@
+# OpenTofu working files — never commit state (holds secrets), provider cache,
+# local backend/import scratch, or generated-then-reviewed config.
+.terraform/
+# .terraform.lock.hcl IS committed (pins provider versions/hashes for reproducible runs)
+*.tfstate
+*.tfstate.*
+crash.log
+# local-only bootstrap scratch (account-id/endpoint/ids live in site-config, not here)
+backend.hcl
+*.auto.tfvars
+bootstrap-*.tf
+generated.tf
