@@ -227,6 +227,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Deploy honcho | `deploy-honcho.yml` | Memory API (rootless podman, 4 containers): secrets (+Gemini shared-read) → deploy.sh → verify |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
+| Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
 | Manage Caddy Sites | `manage-caddy-sites.yml` | Insert/update marked site blocks in a flat (non-composable) Caddyfile; validate + restart |
 | Deploy Orb Agent | `deploy-orb-agent.yml` | Standalone: Diode creds + agent.yaml template + start agent |
 | Provision Orb Agent AppRole | `provision-orb-agent-approle.yml` | Code-managed: scoped policy + AppRole from `orb-agent.hcl`, creds → `secret/services/approles/orb-agent` |
