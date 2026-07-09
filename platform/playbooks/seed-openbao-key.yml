@@ -11,16 +11,22 @@
 # by hand, and it survives redeploys). It replaces the forbidden "ad-hoc curl
 # into OpenBao" one-off (see agent-cloud CLAUDE.md: changes flow through code).
 #
-# ADDITIVE + idempotent: fetches the existing secret, merges {bao_key: bao_value}
-# in, and writes back only if the value actually changed — so re-runs converge
-# without churning KV versions, and sibling keys at the path are preserved.
+# ADDITIVE + idempotent + concurrency-safe: an existing path is updated with the
+# server-side KV-v2 PATCH (JSON merge-patch), so OpenBao merges {bao_key} into
+# the CURRENT secret version — sibling keys are preserved even if they changed
+# after our read (a GET->combine->POST read-modify-write could clobber them).
+# A brand-new path is created with POST. Either way the write happens only when
+# the value actually changed, so re-runs converge without churning KV versions.
 #
 # The value is passed in as an extra var (no_log) and is never committed. Runs
-# from the Semaphore runner (localhost), which holds the OpenBao AppRole.
+# from the Semaphore runner (localhost), which holds the OpenBao AppRole (its
+# wildcard policy grants `patch` on secret/data/services/*).
 #
 # Usage (via Semaphore):
 #   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key -e bao_value=<secret>
-#   -e openbao_addr=http://<bao>:8200   (AppRole creds injected by Semaphore env)
+#   -e openbao_addr=https://<bao>:8200   (AppRole creds injected by Semaphore env)
+# openbao_addr must be https, OR http only to a loopback/RFC1918 host (the
+# internal OpenBao VLAN) — the transport guard below refuses public cleartext.
 
 - name: "Seed a single key into an OpenBao KV-v2 secret path"
   hosts: localhost
@@ -32,17 +38,37 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Validate inputs"
+    # Non-secret validation stays VISIBLE (no no_log) so a missing path/key/url
+    # fails with a readable message — no_log is scoped to the secret check only
+    # (agent-cloud CLAUDE.md: no_log is for credential-bearing steps).
+    - name: "Validate non-secret inputs"
       ansible.builtin.assert:
         that:
           - bao_path is defined and bao_path | length > 0
           - bao_key is defined and bao_key | length > 0
-          - bao_value is defined and bao_value | length > 0
           - _bao_url | length > 0
         fail_msg: >-
-          Pass -e bao_path=services/<svc> -e bao_key=<key> -e bao_value=<secret>
-          and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set.
+          Pass -e bao_path=services/<svc> -e bao_key=<key> and ensure
+          openbao_addr (or OPENBAO_ADDR) + AppRole creds are set.
+
+    - name: "Validate the secret value is present"
+      ansible.builtin.assert:
+        that:
+          - bao_value is defined and bao_value | length > 0
+        fail_msg: "Pass -e bao_value=<secret> (the value to store)."
       no_log: true
+
+    # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
+    # secret material over public cleartext. https is always allowed; http is
+    # allowed ONLY to loopback/RFC1918 (the internal OpenBao VLAN).
+    - name: "Require a non-cleartext transport to OpenBao"
+      ansible.builtin.assert:
+        that:
+          - "_bao_url is match('^(https://|http://(localhost|127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.))')"
+        fail_msg: >-
+          Refusing to send secret material over public cleartext. Set openbao_addr
+          to an https:// URL, or an http:// endpoint on loopback/RFC1918 (the
+          internal OpenBao VLAN).
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -55,7 +81,10 @@
       register: _bao_auth
       no_log: true
 
-    - name: "Fetch existing secret (preserve sibling keys) at secret/{{ bao_path }}"
+    # GET serves two purposes: (a) idempotency — skip the write when the key
+    # already holds this value; (b) existence — 404 => create with POST, 200 =>
+    # update with a merge-patch PATCH (never a full-secret rewrite).
+    - name: "Fetch existing secret to check the key + path existence at secret/{{ bao_path }}"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
         method: GET
@@ -65,12 +94,33 @@
       register: _existing
       no_log: true
 
-    - name: "Record whether the key already holds this value (idempotency)"
+    - name: "Compute idempotency + path-existence facts"
       ansible.builtin.set_fact:
-        _existing_data: "{{ _existing.json.data.data | default({}) }}"
+        _path_exists: "{{ _existing.status == 200 }}"
+        _existing_data: "{{ (_existing.json.data.data | default({})) if _existing.status == 200 else {} }}"
       no_log: true
 
-    - name: "Merge key when changed into secret/{{ bao_path }}"
+    # Existing path: server-side JSON merge-patch — OpenBao merges {bao_key} into
+    # the current version, preserving siblings with no read-modify-write race.
+    - name: "Merge key via KV-v2 PATCH (merge-patch) into secret/{{ bao_path }}"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
+        method: PATCH
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+          Content-Type: application/merge-patch+json
+        body_format: json
+        body:
+          data: "{{ {bao_key: bao_value} }}"
+        status_code: [200]
+      when:
+        - _path_exists | bool
+        - _existing_data[bao_key] | default(none) != bao_value
+      register: _patch
+      no_log: true
+
+    # New path: nothing to preserve, so a plain create is correct.
+    - name: "Create the key at new secret/{{ bao_path }}"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
         method: POST
@@ -78,9 +128,11 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         body_format: json
         body:
-          data: "{{ _existing_data | combine({bao_key: bao_value}) }}"
-      when: _existing_data[bao_key] | default(none) != bao_value
-      register: _write
+          data: "{{ {bao_key: bao_value} }}"
+        status_code: [200]
+      when:
+        - not (_path_exists | bool)
+      register: _create
       no_log: true
 
     - name: "Verify the key is present at secret/{{ bao_path }}"
@@ -100,5 +152,6 @@
         fail_msg: "Key '{{ bao_key }}' not found at secret/{{ bao_path }} after write."
         success_msg: >-
           Key '{{ bao_key }}' present at secret/{{ bao_path }}
-          ({{ 'written' if (_write is defined and _write.changed | default(false)) else 'already up to date' }};
+          ({{ 'created' if (_create.changed | default(false))
+              else ('patched' if (_patch.changed | default(false)) else 'already up to date') }};
           {{ (_verify.json.data.data | default({}) | length) }} keys at path).
