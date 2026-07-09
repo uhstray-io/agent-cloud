@@ -71,7 +71,11 @@
           Authorization: "Bearer {{ _sem_token }}"
         status_code: [200]
       register: _repos
-      no_log: true # bearer token rides in headers
+      failed_when: false # DIAGNOSTIC: don't fail; inspect status below
+
+    - name: "DIAGNOSTIC — fetch result (no token in output)"
+      ansible.builtin.debug:
+        msg: "GET repositories -> status={{ _repos.status | default('n/a') }} url={{ _sem_url }} msg={{ _repos.msg | default('') }} content={{ (_repos.content | default('')) [:120] }}"
 
     - name: "Select the repository"
       ansible.builtin.set_fact:
