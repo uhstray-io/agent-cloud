@@ -3,8 +3,12 @@
 > **Depends on:** 00 (foundation), 01 (secrets), 02 (SSO — the WAF rule that
 > started this protects the honcho API behind Cloudflare).
 >
-> **Status:** Phase 0 scaffolded (`platform/infra/cloudflare/`). Bootstrap +
-> Phases 1-2 pending. **Owner:** uhstray-io.
+> **Status:** **Phases 1-2 DONE** — the WAF ruleset (`waf.tf`) and the 14
+> platform DNS records (`dns.tf`) are adopted into OpenTofu at zero-diff, state
+> in Cloudflare R2. CF secrets seeded to OpenBao + `uhstray-tfstate` R2 bucket
+> created. REMAINING: the Semaphore `tofu` template for steady-state plan/apply
+> (bootstrap was run locally in a tofu container against the R2 backend), and
+> Phase 3. **Owner:** uhstray-io.
 
 **Goal:** manage Cloudflare **as code** — OpenTofu roots run through Semaphore —
 as the platform standard for every future Cloudflare change (WAF rulesets, DNS,

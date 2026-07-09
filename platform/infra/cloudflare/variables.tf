@@ -19,3 +19,13 @@ variable "zone_name" {
   description = "Apex zone name."
   default     = "uhstray.io"
 }
+
+variable "caddy_origin_ip" {
+  type        = string
+  description = "Public origin IP the platform service subdomains point at (the central Caddy). Real IP is environment-specific; supply via TF_VAR_caddy_origin_ip (site-config), never committed."
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$", var.caddy_origin_ip))
+    error_message = "caddy_origin_ip must be an IPv4 address."
+  }
+}
