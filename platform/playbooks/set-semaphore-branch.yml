@@ -39,14 +39,14 @@
           - deploy_branch in ['dev', 'main']
         fail_msg: "deploy_branch must be 'dev' or 'main' (got '{{ deploy_branch }}')."
 
-    - name: "Resolve the Semaphore URL + token (env first, else OpenBao AppRole lookup)"
+    # URL: this runs ON the Semaphore host, so call the API LOCALLY — the
+    # OpenBao `url` is the PUBLIC semaphore.uhstray.io, which Cloudflare
+    # bot-challenges (403) for non-browser API calls. Env/var override wins
+    # (e.g. a workstation tunnel); otherwise default to the runner-local API.
+    # Only the TOKEN comes from OpenBao.
+    - name: "Resolve the Semaphore URL + token (local API URL; token env-first, else OpenBao)"
       ansible.builtin.set_fact:
-        _sem_url: >-
-          {{ _sem_url_env if (_sem_url_env | length) > 0
-             else lookup('community.hashi_vault.hashi_vault',
-                         'secret/data/services/semaphore:url',
-                         url=_bao_url, auth_method='approle',
-                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+        _sem_url: "{{ _sem_url_env if (_sem_url_env | length) > 0 else 'http://localhost:3000' }}"
         _sem_token: >-
           {{ _sem_token_env if (_sem_token_env | length) > 0
              else lookup('community.hashi_vault.hashi_vault',
