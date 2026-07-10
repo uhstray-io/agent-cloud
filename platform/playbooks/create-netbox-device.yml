@@ -30,7 +30,10 @@
   become: false
 
   vars:
-    _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) }}"
+    # localhost play: inherits no group vars, so the bao address must come from an
+    # extra-var or the env Semaphore injects. Prefer OPENBAO_ADDR (platform standard),
+    # fall back to BAO_ADDR (local-dev sets both); empty -> caught by the guard below.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
@@ -44,13 +47,15 @@
     - name: "Validate proposal"
       ansible.builtin.assert:
         that:
+          - _bao_url | length > 0
           - _netbox_url | length > 0
           - _p is mapping
           - _required | difference(_p.keys() | list) | length == 0
           - _p.status in _statuses
         fail_msg: >-
-          Need -e netbox_url=<url> and a complete device_proposal with
-          {{ _required | join(', ') }} (status one of {{ _statuses | join('/') }}).
+          Need the OpenBao address (openbao_addr / OPENBAO_ADDR), -e netbox_url=<url>,
+          and a complete device_proposal with {{ _required | join(', ') }}
+          (status one of {{ _statuses | join('/') }}).
         success_msg: "Proposal valid for device '{{ _p.name }}' @ site '{{ _p.site }}'."
 
     # ── credentials (no_log boundary) ──────────────────────────────────────
