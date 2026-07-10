@@ -333,6 +333,11 @@ templates:
         required: false
         default_value: "plan"
 
+  # NOTE: set-semaphore-branch.yml is an OPERATOR-SIDE tool (run from a
+  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml) —
+  # deliberately NOT a Semaphore template, since managing Semaphore's own config
+  # from inside a Semaphore job is avoided by convention.
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 
