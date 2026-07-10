@@ -221,6 +221,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/step-ca` | Internal CA key-decryption password (`init_password`); the root/intermediate keys live encrypted in the `step-ca-data` volume, NOT here |
 | `secret/services/tududi` | tududi session secret + break-glass admin password (the OIDC client secret lives under `authentik`; weft's API token is added post-deploy) |
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
+| `secret/services/cloudflare` | Cloudflare edge-as-code: scoped API token, `zone_id`, `caddy_origin_ip`, R2 state-backend S3 endpoint + access keys — read by `apply-cloudflare-tofu.yml` (see "Cloudflare edge as code" below) |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -250,6 +251,10 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Clean Deploy OpenHands | `clean-deploy-openhands.yml` | Destructive: wipe openhands-state volume + fresh deploy |
 | Deploy tududi | `deploy-tududi.yml` | To-do app (rootless podman): secrets (+OIDC shared-read) → deploy.sh → verify; local adds step-ca trust for OIDC |
 | Deploy honcho | `deploy-honcho.yml` | Memory API (rootless podman, 4 containers): secrets (+Gemini shared-read) → deploy.sh → verify |
+| Mint honcho Team JWT | `mint-honcho-team-jwt.yml` | Mint the team-workspace `/v3` JWT via `generate_jwt.py` in honcho-api, store at `secret/services/honcho/tokens/team`, verify (all `no_log`; token never printed) |
+| Apply Cloudflare Tofu | `apply-cloudflare-tofu.yml` | OpenBao-wrapped `tofu plan/apply` for the Cloudflare edge (WAF + DNS as code, R2 state backend) — see "Cloudflare edge as code" below |
+| Create NetBox Device | `create-netbox-device.yml` | Build #1 executor: idempotent NetBox device create + verify on behalf of `netclaw`, from a skynet device-proposal (OPA-gated upstream); `-e dry_run=true` to preview |
+| Provision NetBox Automation Token | `provision-netbox-automation-token.yml` | One-time: mint a scoped NetBox API token via the Django shell → `secret/services/netbox:automation_api_token` (idempotent) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
@@ -265,6 +270,28 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Validate Secrets | `validate-secrets.yml` | Test credentials against live services |
 
 Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
+
+### Cloudflare edge as code (OpenTofu)
+
+The Cloudflare zone (WAF rulesets + platform DNS records) is **config-as-code via
+OpenTofu**, not dashboard clicks — the standard for all future edge changes. HCL lives in
+`platform/infra/cloudflare/` (`versions.tf`, `variables.tf`, `waf.tf`, `dns.tf`,
+`imports.tf`); state lives in an **R2 S3-compatible backend** (`uhstray-tfstate` bucket).
+`apply-cloudflare-tofu.yml` (Semaphore) reads all config + the scoped API token from
+`secret/services/cloudflare`, then runs `tofu plan`/`apply`. Existing objects are **adopted,
+not recreated** (import → zero-diff), so the orange-cloud proxy and live rules are never
+dropped. The `tofu` binary ships in the Semaphore image.
+
+### Operator-side tools (run from a workstation, NOT a Semaphore job)
+
+A few tools must run outside Semaphore because they act *on* it or need creds Semaphore
+shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_URL` /
+`SEMAPHORE_TOKEN` from the operator's environment:
+
+- `set-semaphore-branch.yml` — flip the Semaphore agent-cloud repo's `git_branch` `dev`↔`main`
+  via the API (defaults to `http://localhost:3000`, never the Cloudflare-walled public URL),
+  for the `dev`-test → `main`-promote cycle. Never have Semaphore restart or reconfigure its
+  own container from a Semaphore job (circular) — use the operator-side path.
 
 ## Container Runtime
 
@@ -285,10 +312,13 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **Caddy (flat-Caddyfile site)** — `auth`/`canvas` routes managed via `manage-caddy-sites.yml` (tls internal); composable Phase-4 fragment distribution gated behind `caddy_composable`
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
+- **tududi + honcho deployed (prod)** — to-do app at `todo.uhstray.io` (native Authentik OIDC) and memory API at `memory.uhstray.io` (JWT `/v3` + Authentik-gated `/docs`), both composable rootless-podman deploys
+- **Cloudflare edge as code** — WAF rulesets + platform DNS adopted into OpenTofu (R2 state backend), applied via `apply-cloudflare-tofu.yml`; API-first is now the standard for edge changes
 
 ### In Progress
 - NocoDB and n8n deployment via composable pattern — both are deployed today via the **legacy** `deploy.sh` path (bash-generated secrets in an on-VM `secrets/` dir). Migration to the composable pattern is planned in `plan/development/09-service-migrations-tooling.md` but **execution is HELD**: it's an in-place migration of live services with stateful secrets (n8n `N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) that must be pre-seeded into OpenBao before cutover or they'd be regenerated — needs live OpenBao access first (see that plan's "Migration Safety").
 - Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
+- **Build #1 (netbox-device-add)** — skynet-requested, OPA-gated NetBox device create landed on `dev` (`create-netbox-device.yml` executor + verify, `provision-netbox-automation-token.yml`, `skynet` OPA catalog entry); deferred fast-follows: `primary_ip` assignment, automation-token view/add least-privilege split
 
 ### Planned
 - **Phase 1**: NemoClaw task automation
