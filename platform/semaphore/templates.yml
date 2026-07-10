@@ -320,6 +320,13 @@ templates:
         type: string
         required: true
 
+  - name: Mint Honcho Team JWT
+    playbook: platform/playbooks/mint-honcho-team-jwt.yml
+    # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
+    # generate_jwt.py, stores it at secret/services/honcho/tokens/team, verifies
+    # against /v3. Token is never logged. Re-running rotates the team key.
+    # Runs against the honcho_svc group; no survey vars.
+
   - name: Apply Cloudflare Tofu
     playbook: platform/playbooks/apply-cloudflare-tofu.yml
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
