@@ -1,7 +1,7 @@
 {
   "name": "protect-main",
   "target": "branch",
-  "enforcement": "evaluate",
+  "enforcement": "active",
   "conditions": {
     "ref_name": {
       "include": ["~DEFAULT_BRANCH"],
@@ -30,7 +30,8 @@
         "required_status_checks": [
           { "context": "Static Analysis", "integration_id": 15368 },
           { "context": "Security Scan", "integration_id": 15368 },
-          { "context": "Unit Tests", "integration_id": 15368 }
+          { "context": "Unit Tests", "integration_id": 15368 },
+          { "context": "Promotion source (dev -> main)", "integration_id": 15368 }
         ]
       }
     }
