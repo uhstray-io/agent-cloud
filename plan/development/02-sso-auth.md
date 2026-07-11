@@ -459,10 +459,15 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    These three have prod environments but no prod SSO yet, and each currently
    shows a stale local-dev orphan in the prod IdP. Ship together with the
    **idempotent orphan-GC (tombstone)** so prod converges to exactly the enabled set:
-   - **Idempotent GC first**: add tombstone rendering for every catalog app not in `authentik_apps`;
-     branch-deploy Authentik; verify the prod app list is exactly the enabled set
-     and `erpnext` (local-only) is removed. This is the "make the design idempotent"
-     deliverable and it also cleans up whatever we don't promote.
+   - **Establish the final enabled set first, THEN GC** (order matters): add `netbox`, `n8n`,
+     and `openbao` to prod `authentik_apps` *before* enabling tombstone rendering, so the
+     promotion targets are already in the enabled set. GC then tombstones only catalog apps
+     **not in that final set** — the three promotion targets are updated **in place**
+     (preserving their provider IDs / client credentials), and only true orphans like
+     `erpnext` (local-only) are removed. Tombstoning before the set is complete would delete
+     the very apps we're promoting and recreate them with new IDs — the opposite of in-place,
+     and it would break any relying-party wired to the old client secret. Then branch-deploy
+     Authentik and verify the prod app list is exactly the final enabled set.
    - **netbox** → native OIDC (forward_auth → OIDC per §"Per-service auth"),
      `netbox.uhstray.io`, prod Caddy forward_auth/OIDC route, preserve REST/token
      auth (Diode/orb-agent). Set `netbox_*` prod URL vars; the in-place re-apply

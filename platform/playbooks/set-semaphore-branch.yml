@@ -82,6 +82,8 @@
           Authorization: "Bearer {{ _sem_token }}"
         status_code: [200]
       register: _verify
+      # no_log: the request Authorization header carries the Semaphore token. Outcome stays
+      # visible via the Assert+report task below — scoped-no_log pattern, not a hidden verify.
       no_log: true
 
     - name: "Assert + report"

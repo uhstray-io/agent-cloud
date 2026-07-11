@@ -67,7 +67,7 @@ graph TD
 
 ### Repository Structure
 
-```
+```text
 platform/
   services/<name>/
     deployment/              How to run it (compose, deploy.sh, templates/*.j2)
@@ -375,11 +375,17 @@ Run as a **separate step** before every commit. Review the output. Then commit s
 # 1. Stage files
 git add <files>
 
-# 2. Scan for secrets (run separately, review output)
-git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
-git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+# 2. Quick first-pass grep (private IPs across ALL RFC1918 ranges + common secret shapes).
+#    Review every hit; the greps below are a fast smoke test, NOT the authoritative gate.
+git diff --staged | grep -iE '^\+.*(10\.[0-9]|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)' | grep -viE 'target|host:|subnet|scope|example|placeholder'
+git diff --staged | grep -iE '^\+.*(password|secret|token|api[_-]?key|bearer)\s*[:=]\s*\S{8}'
+git diff --staged | grep -iE '^\+.*/(Users|home)/[a-z0-9._-]+/'   # machine paths leak usernames
 
-# 3. Only after confirming clean: commit and push
+# 3. Run the authoritative scanner (same tool the CI Security Scan uses) — this, not the
+#    greps above, is what decides "clean". It catches IP ranges, tokens, JWTs, keys, usernames.
+trufflehog git file://. --since-commit HEAD --only-verified --fail
+
+# 4. Only after BOTH are clean: commit and push
 ```
 
 ## Adding a New Service
@@ -398,7 +404,7 @@ Follow `plan/architecture/01-automation-model.md`:
 
 ## Operational Access
 
-When a task requires credentials (Semaphore API, NetBox API, OpenBao tokens, etc.), check `site-config/secrets/` first and ask the user if you can use those credentials rather than telling the user to do it manually. Production credentials for all services are backed up in the **site-config** repository at `/Users/stray/Documents/GitHub/site-config/secrets/`.
+When a task requires credentials (Semaphore API, NetBox API, OpenBao tokens, etc.), check `site-config/secrets/` first and ask the user if you can use those credentials rather than telling the user to do it manually. Production credentials for all services are backed up in the private **site-config** repository (clone it next to this repo); use its documented `secrets/` paths.
 
 Key paths:
 - `site-config/secrets/semaphore/semaphore_api_token.txt` — Semaphore API token

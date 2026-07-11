@@ -120,6 +120,8 @@
           id: "{{ honcho_workspace }}"
         status_code: [200, 201, 409] # created / ok / already-exists — all = authorized (401 would fail here)
       register: _verify
+      # no_log: the request Authorization header carries the minted JWT. Outcome stays visible
+      # via the Report task below (HTTP status only) — scoped-no_log pattern, not a hidden verify.
       no_log: true
 
     - name: "Report (path + status only; token never shown)"
