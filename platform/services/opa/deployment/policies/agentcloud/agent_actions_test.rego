@@ -36,6 +36,17 @@ test_skynet_run_task_allowed if {
 	}
 }
 
+# skynet's other granted (read-only) Semaphore actions are allowed too — deny only
+# fires on run_task, so for list_templates/check_task the catalog grant is the whole
+# story. Covers all three actions data.json grants skynet, so dropping one regresses red.
+test_skynet_list_templates_allowed if {
+	agentcloud.allow with input as {"agent": "skynet", "action": "list_templates", "service": "semaphore"}
+}
+
+test_skynet_check_task_allowed if {
+	agentcloud.allow with input as {"agent": "skynet", "action": "check_task", "service": "semaphore"}
+}
+
 # Boundary: skynet's orchestration identity has NO netbox actions — the device
 # create is authorized as netclaw, not skynet (least-privilege, no super-identity).
 test_skynet_netbox_create_denied if {
