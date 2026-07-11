@@ -143,6 +143,9 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         status_code: [200]
       register: _verify
+      # no_log: the GET response returns EVERY sibling secret value at this path, not just
+      # ours — so the request is hidden, but the outcome stays visible via the assert below
+      # (name/count only, no values). This is the scoped-no_log pattern, not a hidden verify.
       no_log: true
 
     - name: "Assert key present (value not logged)"

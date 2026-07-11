@@ -93,6 +93,15 @@
       register: _cf_zone
       no_log: true
 
+    - name: "Assert the zone was found (guard the index below)"
+      ansible.builtin.assert:
+        that:
+          - (_cf_zone.json.result | default([]) | length) > 0
+        fail_msg: >-
+          Cloudflare returned no zone named '{{ _zone_name }}'. Check
+          secret/services/cloudflare:zone_name (or -e cloudflare_zone=) and that the
+          API token can read that zone.
+
     - name: "Set the zone id fact"
       ansible.builtin.set_fact:
         _zone_id: "{{ _cf_zone.json.result[0].id }}"
