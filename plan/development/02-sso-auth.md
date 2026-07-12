@@ -339,6 +339,21 @@ Design:
   URL vars in site-config** (the GUARD below enforces this); next deploy includes it.
   The rendered bindings never reference a non-existent provider/app (fixes the
   `!Find` failure that listing-all would cause in prod).
+- **De-select / remove** = drop the slug from `authentik_apps`. TODAY this only
+  stops *re-applying* the blueprint — it leaves the app's Authentik objects
+  (Application + Provider + any binding) as **stale orphans**, because Authentik
+  never garbage-collects objects when a blueprint file disappears. That is exactly
+  why prod still shows `netbox / n8n / grafana / openbao / openbao-oidc / erpnext`
+  frozen at their last-applied `*.agent-cloud.test:8443` URLs even though none are
+  in the prod `authentik_apps` set. **Idempotent GC fix (planned):** on each deploy,
+  render a `state: absent` tombstone for every *catalog* app NOT in `authentik_apps`,
+  so prod converges to EXACTLY the enabled set — enabled apps applied with prod URLs,
+  de-selected apps removed. This generalizes the existing `tombstone_member` flag
+  (a single stale binding) to the whole Application+Provider, and is re-runnable
+  (absent-of-absent is a no-op). Until it ships, promoting an orphaned app updates
+  its objects to prod URLs *in place* (the content-hash re-apply self-corrects the
+  frozen URL); a genuinely retired app (e.g. `erpnext`, local-only today) is the
+  case the tombstone handles.
 
 Per-OIDC-app **redirect URIs + launch URLs are rendered from inventory at deploy**
 (in the blueprint `context:` block, e.g. `{{ <svc>_redirect_uri | default('<local>') }}`),
@@ -430,17 +445,49 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    lint). PR `feat → dev`.
 2. **Prod Authentik prune + Semaphore SSO**: set prod `authentik_apps` to the prod
    set; parameterize semaphore redirect; branch-deploy Authentik to the Authentik
-   VM (verify it shows ONLY prod apps + `ak healthcheck` + outpost — DONE).
-   Then wire Semaphore prod OIDC with `semaphore-upgrade.sh apply` (operator-side;
+   VM. Semaphore SSO + the *file-level* prune are DONE — but **object-level GC is
+   NOT**: de-selected apps' Authentik objects persist as orphans at
+   `*.agent-cloud.test` (see the tombstone fix in "The composable mechanism"). Wire
+   Semaphore prod OIDC with `semaphore-upgrade.sh apply` (operator-side;
    snapshot+validate → env-override → restart → verify → auto-rollback);
-   verify SSO login (local admin fallback intact). Gate.
-3. **NetBox OIDC** (forward_auth → OIDC), verify API/token auth + SSO. Gate.
-4. **Proxmox OIDC realm** (additive), verify: existing PAM/PVE login + **TOTP**
+   verify SSO login (local admin fallback intact). Gate. **DONE.**
+3. **tududi (native OIDC) + honcho (`/docs` forward_auth)** promoted to prod
+   (`todo.uhstray.io` / `memory.uhstray.io`), guarded by the assert+verify.
+   Named platform users (`wisward` admin, `andrew.godlewsky` developer+business).
+   **DONE.**
+4. **Prod SSO promotion — netbox, n8n, openbao (NEXT, right after tududi/honcho).**
+   These three have prod environments but no prod SSO yet, and each currently
+   shows a stale local-dev orphan in the prod IdP. Ship together with the
+   **idempotent orphan-GC (tombstone)** so prod converges to exactly the enabled set:
+   - **Establish the final enabled set first, THEN GC** (order matters): add `netbox`, `n8n`,
+     and `openbao` to prod `authentik_apps` *before* enabling tombstone rendering, so the
+     promotion targets are already in the enabled set. GC then tombstones only catalog apps
+     **not in that final set** — the three promotion targets are updated **in place**
+     (preserving their provider IDs / client credentials), and only true orphans like
+     `erpnext` (local-only) are removed. Tombstoning before the set is complete would delete
+     the very apps we're promoting and recreate them with new IDs — the opposite of in-place,
+     and it would break any relying-party wired to the old client secret. Then branch-deploy
+     Authentik and verify the prod app list is exactly the final enabled set.
+   - **netbox** → native OIDC (forward_auth → OIDC per §"Per-service auth"),
+     `netbox.uhstray.io`, prod Caddy forward_auth/OIDC route, preserve REST/token
+     auth (Diode/orb-agent). Set `netbox_*` prod URL vars; the in-place re-apply
+     retires the orphan URL.
+   - **n8n** → decide native vs forward_auth (n8n community = forward_auth today),
+     `n8n.uhstray.io`, prod Caddy route, set `n8n_*` prod URL vars.
+   - **openbao** → OIDC auth method (`openbao-oidc`, admin tier), `openbao.uhstray.io`,
+     set `openbao_oidc_*` prod URL vars; drop the redundant forward_auth `openbao`
+     entry if OIDC is the chosen mode.
+   Each service: add slug to prod `authentik_apps` + set `prod_required` vars +
+   add prod Caddy route → branch-deploy → GUARD/VERIFY pass → verify API/CLI/token
+   auth still works + SSO login. Gate per service.
+5. **Proxmox OIDC realm** (additive), verify: existing PAM/PVE login + **TOTP**
    still work, API tokens work, noVNC console works, OIDC login works. Gate.
-5. **Grafana/o11y** monitoring expansion + OIDC. Later.
+6. **Grafana/o11y** monitoring expansion + OIDC. Later (grafana also has a prod
+   env — promote via the same mechanism once o11y phase lands).
 
 Each prod step: branch-deploy → verify → `feat → dev → main` PR → revert Semaphore
-repo to `main`. No credential changes. Nothing destructive.
+repo to `main`. No credential changes. Nothing destructive (tombstones remove only
+de-selected app objects, never users/groups/credentials; Proxmox TOTP untouched).
 
 ## GitHub Actions path (future, for bootstrapping/upgrading Semaphore)
 

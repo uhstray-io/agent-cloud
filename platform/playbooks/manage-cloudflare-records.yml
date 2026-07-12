@@ -1,4 +1,10 @@
 ---
+# DEPRECATED (2026-07-09): Cloudflare is now managed as code with OpenTofu —
+# platform DNS records live in platform/infra/cloudflare/dns.tf (adopted at
+# zero-diff, state in R2, run via Semaphore). See plan/development/13-cloudflare-iac.md.
+# This playbook is retained only for reference / emergency use; add and change
+# DNS records in the OpenTofu root, not here.
+#
 # manage-cloudflare-records.yml — declaratively converge every Cloudflare DNS
 # record a public service needs, from the `cloudflare_records` inventory var.
 # The thin wrapper over tasks/manage-cloudflare-record.yml; encodes the manual

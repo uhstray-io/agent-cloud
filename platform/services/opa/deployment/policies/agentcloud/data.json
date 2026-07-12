@@ -19,6 +19,11 @@
         "nmap": ["scan_subnet"]
       }
     },
+    "skynet": {
+      "allowed_actions": {
+        "semaphore": ["list_templates", "run_task", "check_task"]
+      }
+    },
     "semaphore": {
       "destructive_templates": [
         "Clean Deploy NetBox",

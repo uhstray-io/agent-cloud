@@ -66,6 +66,26 @@ templates:
         required: false
         default_value: "main"
 
+  # Build #1 (netbox-device-add): skynet requests "Create NetBox Device"; agent-cloud
+  # executes it under the scoped automation token minted by the provision template.
+  - name: Provision NetBox Automation Token
+    playbook: platform/playbooks/provision-netbox-automation-token.yml
+
+  - name: Create NetBox Device
+    playbook: platform/playbooks/create-netbox-device.yml
+    survey_vars:
+      - name: device_proposal
+        title: "Device proposal (JSON)"
+        description: "netbox-device-proposal JSON emitted by skynet"
+        type: string
+        required: true
+      - name: dry_run
+        title: "Dry run"
+        description: "true = resolve + report, no writes"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Deploy NemoClaw
     playbook: platform/playbooks/deploy-nemoclaw.yml
     survey_vars:
@@ -301,6 +321,49 @@ templates:
 
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
+
+  - name: Seed OpenBao Key
+    playbook: platform/playbooks/seed-openbao-key.yml
+    # Merges ONE key into an existing secret path (siblings preserved), for
+    # code-managed placement of a shared secret a reader deploy needs (e.g.
+    # honcho reads secret/services/nemoclaw:gemini_api_key). bao_value is passed
+    # as a launch-time extra-var (-e bao_value=...), not a stored survey field.
+    survey_vars:
+      - name: bao_path
+        title: "Secret path"
+        description: "KV-v2 path under secret/ to merge into (e.g. services/nemoclaw)"
+        type: string
+        required: true
+      - name: bao_key
+        title: "Key name"
+        description: "Field to set/update at that path (e.g. gemini_api_key)"
+        type: string
+        required: true
+
+  - name: Mint Honcho Team JWT
+    playbook: platform/playbooks/mint-honcho-team-jwt.yml
+    # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
+    # generate_jwt.py, stores it at secret/services/honcho/tokens/team, verifies
+    # against /v3. Token is never logged. Re-running rotates the team key.
+    # Runs against the honcho_svc group; no survey vars.
+
+  - name: Apply Cloudflare Tofu
+    playbook: platform/playbooks/apply-cloudflare-tofu.yml
+    # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
+    # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
+    # tofu_action=plan (safe, default) or apply (gated change; run after review).
+    survey_vars:
+      - name: tofu_action
+        title: "Action"
+        description: "plan (read-only, default) or apply (gated change)"
+        type: string
+        required: false
+        default_value: "plan"
+
+  # NOTE: set-semaphore-branch.yml is an OPERATOR-SIDE tool (run from a
+  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml) —
+  # deliberately NOT a Semaphore template, since managing Semaphore's own config
+  # from inside a Semaphore job is avoided by convention.
 
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml

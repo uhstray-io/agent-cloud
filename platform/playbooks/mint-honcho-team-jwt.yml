@@ -1,0 +1,133 @@
+---
+# mint-honcho-team-jwt.yml — mint a TEAM-WIDE, workspace-scoped Honcho JWT and
+# store it in OpenBao, repeatably + auditably (Semaphore), never a one-off SSH.
+#
+# Scope: the `uhstray` WORKSPACE (not peer/session) — usable by the whole team;
+# each member's evolve client supplies its own peer id at runtime, the JWT only
+# authorizes workspace access.
+#
+# Mechanism: Honcho's own /app/scripts/generate_jwt.py, run INSIDE the deployed
+# honcho-api container (rootless podman on the honcho_svc host). The container
+# self-signs with its AUTH_JWT_SECRET — which IS the OpenBao honcho_jwt_secret
+# (secret/services/honcho) injected at deploy — so the mint is OpenBao-sourced
+# WITHOUT re-handling the secret or putting it on any command line (more secure
+# than passing it in). `--workspace uhstray` + no `--expires` => non-expiring
+# workspace key (see `generate_jwt.py --help`).
+#
+# The JWT is NEVER printed to logs/output — no_log on every token-bearing step;
+# it is written only to OpenBao at secret/services/honcho/tokens/team (a single
+# shared team key; deliberately deviates from the per-<member> path in the spec).
+#
+# SECURITY: a shared workspace JWT lets ANY holder read/write as ANY peer in
+# `uhstray` — no per-member isolation. Keep it OpenBao-only, rotate on a cadence
+# and on team changes (re-running this task rotates it). The stricter option is
+# per-member JWTs at secret/services/honcho/tokens/<member>.
+#
+# Usage (Semaphore): no survey vars; run against the honcho_svc group.
+
+- name: "Mint team workspace JWT for Honcho ({{ honcho_workspace | default('uhstray') }})"
+  hosts: honcho_svc
+  gather_facts: false
+  become: false
+  vars:
+    honcho_workspace: "uhstray"
+    honcho_container: "honcho-api"
+    honcho_token_bao_path: "services/honcho/tokens/team"
+    honcho_public_url: "https://memory.uhstray.io"
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Validate OpenBao env is present"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+        fail_msg: "openbao_addr (or OPENBAO_ADDR) + AppRole creds must be set (Semaphore environment)."
+
+    # Container self-signs with its own AUTH_JWT_SECRET (the OpenBao-sourced
+    # honcho_jwt_secret); the secret never appears on the command line.
+    - name: "Mint workspace-scoped JWT via honcho's generate_jwt.py"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - "{{ honcho_container }}"
+          - /app/.venv/bin/python
+          - scripts/generate_jwt.py
+          - --workspace
+          - "{{ honcho_workspace }}"
+          - --print-only
+      register: _mint
+      changed_when: true
+      no_log: true
+
+    - name: "Capture token + length (value never logged)"
+      ansible.builtin.set_fact:
+        _token: "{{ _mint.stdout | trim }}"
+        _token_len: "{{ (_mint.stdout | default('') | trim) | length }}"
+      no_log: true
+
+    - name: "Assert a JWT was produced (no value shown)"
+      ansible.builtin.assert:
+        that:
+          - _mint.rc == 0
+          - _token_len | int > 20
+        fail_msg: "generate_jwt.py did not return a token (rc={{ _mint.rc }}, length={{ _token_len }})."
+        success_msg: "Minted a workspace-scoped JWT for '{{ honcho_workspace }}' (no expiry; length {{ _token_len }})."
+
+    # ---- store in OpenBao (runner holds the AppRole; delegate off the .190 target) ----
+    - name: "Authenticate to OpenBao (AppRole)"
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      no_log: true
+
+    - name: "Write team JWT to secret/{{ honcho_token_bao_path }}"
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ honcho_token_bao_path }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          data:
+            token: "{{ _token }}"
+            scope: "workspace:{{ honcho_workspace }}"
+            expiry: "none"
+        status_code: [200]
+      no_log: true
+
+    # ---- verify against the public edge (proves the key authorizes the workspace) ----
+    - name: "Verify: POST /v3/workspaces with the minted token"
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "{{ honcho_public_url }}/v3/workspaces"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          id: "{{ honcho_workspace }}"
+        status_code: [200, 201, 409] # created / ok / already-exists — all = authorized (401 would fail here)
+      register: _verify
+      # no_log: the request Authorization header carries the minted JWT. Outcome stays visible
+      # via the Report task below (HTTP status only) — scoped-no_log pattern, not a hidden verify.
+      no_log: true
+
+    - name: "Report (path + status only; token never shown)"
+      ansible.builtin.debug:
+        msg: >-
+          Team JWT minted for workspace '{{ honcho_workspace }}' (no expiry), stored at
+          OpenBao secret/{{ honcho_token_bao_path }} (key 'token').
+          Verify POST /v3/workspaces -> HTTP {{ _verify.status }}
+          (200/201 = created, 409 = already exists; all confirm the JWT authorizes the workspace).

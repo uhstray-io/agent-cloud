@@ -1,0 +1,119 @@
+---
+# provision-netbox-automation-token.yml — one-time bootstrap for build #1.
+#
+# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml reads
+# at secret/services/netbox:automation_api_token, and stores it in OpenBao.
+# Idempotent: a no-op if the token already exists there. REST token creation needs
+# an existing token, so the first one is minted server-side via the NetBox Django
+# shell — same exec pattern as cleanup-netbox.yml.
+#
+# ponytail: the Django snippet targets NetBox v4 (users.models.{Token,ObjectPermission},
+# core.models.ObjectType). It runs via Semaphore against the live NetBox — not
+# testable in this repo — so verify those model paths on first run if the version
+# differs. The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
+# objects the executor touches (not superuser); a stricter view-vs-add split is the
+# upgrade path if that over-grant ever matters.
+
+- name: "Provision scoped NetBox automation token"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) | default('http://127.0.0.1:8200', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
+    _user: "{{ netbox_automation_user | default('skynet-automation') }}"
+
+  tasks:
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the NetBox secret (does the token already exist?)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _nb_secret
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Already provisioned — skip (idempotent)"
+      when: (_nb_secret.json.data.data.automation_api_token | default('')) | length > 0
+      block:
+        - name: "Report skip"
+          ansible.builtin.debug:
+            msg: "automation_api_token already present at secret/services/netbox — nothing to do."
+        - name: "End play"
+          ansible.builtin.meta: end_play
+
+    # noqa risky-shell-pipe: the `|` is a Python queryset union inside the heredoc,
+    # not a shell pipe; the assert below catches a failed mint (pipefail N/A here).
+    - name: "Mint the dedicated scoped token via the NetBox Django shell"  # noqa: risky-shell-pipe
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token, ObjectPermission
+        from core.models import ObjectType
+
+        User = get_user_model()
+        user, _ = User.objects.get_or_create(
+            username="{{ _user }}",
+            defaults={"is_active": True, "is_staff": True},
+        )
+        perm, _ = ObjectPermission.objects.get_or_create(
+            name="skynet-device-write",
+            defaults={"enabled": True, "actions": ["view", "add"]},
+        )
+        types = ObjectType.objects.filter(
+            app_label="dcim", model__in=["device", "site", "devicetype", "devicerole", "interface"]
+        ) | ObjectType.objects.filter(app_label="ipam", model="ipaddress") \
+          | ObjectType.objects.filter(app_label="extras", model="tag")
+        perm.object_types.set(types)
+        perm.users.add(user)
+
+        token = Token.objects.filter(user=user).first() or Token.objects.create(
+            user=user, description="skynet build #1 automation (create-netbox-device)",
+        )
+        print(token.key)
+        PYSCRIPT
+      register: _mint
+      changed_when: true
+      no_log: true
+
+    - name: "Sanity-check the minted token (NetBox keys are 40 chars)"
+      ansible.builtin.assert:
+        that:
+          - (_mint.stdout_lines | default([]) | length) > 0
+          - (_mint.stdout_lines | last | trim | length) == 40
+        fail_msg: "NetBox Django shell did not return a 40-char token — mint failed; check the run."
+
+    - name: "Store the token in OpenBao (patch, preserving other fields)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          data: "{{ (_nb_secret.json.data.data | default({})) | combine({'automation_api_token': (_mint.stdout_lines | last | trim)}) }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Provisioned"
+      ansible.builtin.debug:
+        msg: "Minted + stored automation_api_token for NetBox user '{{ _user }}'."
