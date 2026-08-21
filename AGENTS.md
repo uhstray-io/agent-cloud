@@ -413,3 +413,65 @@ Ansible collections (auto-installed from `collections/requirements.yml`):
 Shared bash libraries:
 - `platform/lib/common.sh` — logging, secret helpers, compose wrapper, health checks
 - `platform/lib/bao-client.sh` — HTTP-based OpenBao API client (curl + jq)
+
+## Memory & specs — which store owns a fact
+
+This block is self-contained on purpose: it has to work in this repo without
+reaching for a file in another one. A user-scope routing policy, where the
+operator has one, takes precedence — this is the repo-level default.
+
+| Store | Holds | Never holds |
+|-------|-------|-------------|
+| **codebase-memory graph** (`.codebase-memory/graph.db.zst`, committed) | What the code **is** — call graphs, blast radius, where something is defined, routes, dead code | Why anything was done |
+| **Hindsight bank** `agent-cloud-750a33b9` | **Why** — decisions, why the rejected alternatives lost, failures with root cause, outcomes | Code structure; credential values |
+| **OpenSpec** store `agent-cloud`, rooted at `plan/development` | `specs/` = what the system **should** do · `changes/` = what we are changing now, with its public rationale | Whether a change worked afterwards |
+| **`plan/architecture/`** (numbered docs) | Ratified architecture decisions — the repo's own record convention | Deliberation; anything a spec already states |
+| ~~`.claude/memory/`~~ | Retired from routing; kept as history | New knowledge — nothing routes here |
+
+**Read routing.** Try the graph **first** for anything derivable from source —
+it is free, deterministic, and sub-millisecond. Go to the bank for rationale,
+preferences, past attempts and outcomes. Grep and file-reading are the last
+resort, for verifying something a graph query already pointed at.
+
+**Translate; do not substitute.** The graph names things with identifiers; the
+bank names them with domain concepts, because the write rules strip identifiers
+out of memories. So the sequence has three steps, not two: query the graph for
+the real identifiers → say what that **is**, in domain terms → recall with the
+domain terms. Querying the bank with identifiers retrieves almost nothing.
+Either order is legal; concepts survive refactors that rename functions, which
+is what makes them the better join key.
+
+**Write routing.** A decision reached, a task finished, an approach abandoned →
+retain into the bank: the decision and why the rejected options lost, a failure
+and its actual root cause, an outcome labelled plainly **worked / dead end /
+corrected**, a constraint discovered the hard way. One clean self-contained
+paragraph per retain — the bank is in `verbatim` mode, so what you send is what
+is stored, and keeping code structure out is the writer's job, not the store's.
+Use `sync_retain`; a plain `retain` returns an acceptance receipt, not a
+confirmed write. **Always pass an explicit `bank_id`** — omitting it silently
+targets a `default` bank that no scoped read ever queries.
+
+**Never retain into the bank:** file paths, function or class names, signatures,
+call relationships, dependency lists, or anything else regenerable from source;
+whole file contents or long diffs; credential values or real IP addresses (those
+belong in OpenBao and in the private site-config repo). Retaining code structure
+here is the one failure mode that breaks this architecture — it looks useful,
+goes stale on the next commit, and then the two stores disagree with no signal
+saying which to trust.
+
+**On archive, retain the outcome.** `openspec archive <change>` records that a
+change completed; it does **not** record whether it *worked*, and that gap is
+this repo's highest-value memory. When you archive, retain one memory into the
+bank: the outcome labelled worked / dead end / corrected, the root cause of
+anything that failed, and any constraint discovered along the way.
+
+**Drift check.** `openspec list --specs --store agent-cloud` is intent; the
+graph's architecture summary is reality. Compare them deliberately and
+periodically. Divergence is **information, not a conflict to reconcile** — it
+means the specs or the code moved and nobody wrote it down.
+
+**Do not use the graph tool's own ADR store.** It writes into the disposable
+index, never reaches the shareable artifact, and any codebase change hard-deletes
+it on the next index. Every `index_repository` response carries an `adr_hint`
+recommending it; that is the tool's suggestion, not a reason to follow it.
+Ratified decisions go in `plan/architecture/`.

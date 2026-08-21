@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+# repo-memory per-commit capture (vendor-agnostic — fires for every
+# committer once `git config core.hooksPath .githooks` is set).
+#
+# Appends 1-2 outcome-framed lines per commit to the branch's staging
+# journal .claude/memory/wip/<branch-slug>.md. Purely mechanical: composed
+# from git facts (the conventional-commit subject is already outcome
+# language), so it cannot violate the observational lint. The journal is
+# consolidated into one PR outcome record at PR creation (plugin hook) or
+# by pr-shepherd's close-out (fallback).
+
+branch=$(git branch --show-current 2>/dev/null)
+[ -n "$branch" ] || exit 0                              # detached HEAD
+git rev-parse -q --verify HEAD^2 >/dev/null 2>&1 && exit 0   # merge commit
+
+files=$(git show --name-only --format= HEAD)
+[ -n "$files" ] || exit 0
+# No self-capture: skip commits that only touch the memory store.
+printf '%s\n' "$files" | grep -qv '^\.claude/memory/' || exit 0
+
+# Slug rule (branch / -> -) is duplicated cross-language in
+# hooks/repo-memory-pr-consolidate.js — change both together or the
+# consolidation hook reconstructs a journal path this hook never wrote.
+slug=$(printf '%s' "$branch" | tr '/' '-')
+# One git call for subject + body; first two lines read without extra forks.
+meta=$(git log -1 --format='%s%n%b')
+{ IFS= read -r subject; IFS= read -r body_first; } <<EOF
+$meta
+EOF
+count=$(printf '%s\n' "$files" | grep -c .)
+
+mkdir -p .claude/memory/wip
+{
+  printf -- '- %s · %s · %s (%s files)\n' "$(date +%F)" "$branch" "$subject" "$count"
+  [ -n "$body_first" ] && printf -- '  %s\n' "$body_first"
+} >> ".claude/memory/wip/${slug}.md"
+
+# ADR nudge — print-only, never blocks. See skills/repo-memory/SKILL.md.
+if [ -x hooks/repo-memory-adr-check.sh ]; then
+  sh hooks/repo-memory-adr-check.sh || true
+fi
+
+exit 0

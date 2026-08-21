@@ -171,28 +171,28 @@ Each agent's `context/` is the AI-facing half: the skills it can run, the prompt
 
 ```
 plan/
-├── architecture/          Cross-cutting design docs (mostly stable)
-│   ├── architecture-reference.md      <- index, document standards
-│   ├── AUTOMATION-COMPOSABILITY.md    <- read this before adding a service
-│   ├── SERVICE-INTEGRATION-PLAN.md    <- onboarding checklist
-│   ├── CREDENTIAL-LIFECYCLE-PLAN.md
-│   ├── ACCESS-BOUNDARIES.md           Semaphore vs SSH access rules
-│   ├── CADDY-REVERSE-PROXY.md
-│   ├── PODMAN-VS-DOCKER-COMPOSE.md
-│   ├── SECURITY-TESTING-STANDARDS.md
-│   ├── CI-TESTING-SPECIFICATION.md
-│   ├── TESTING-AND-LINTING-PLAN.md
-│   ├── BRANCH-TESTING-WORKFLOW.md
-│   ├── LINTING-AND-TESTING.md
-│   └── skills-recommendation.md
+├── architecture/          Cross-cutting design docs (mostly stable), read in order
+│   ├── 00-foundation-standards.md          <- index + document standards
+│   ├── 01-automation-model.md              <- read this before adding a service
+│   ├── 02-service-onboarding.md            <- onboarding checklist
+│   ├── 03-testing-ci-quality.md            testing strategy, CI gates
+│   ├── 04-credentials-access.md            secret lifecycle; Semaphore vs SSH
+│   ├── 05-platform-infra.md                Caddy, TLS/DNS, container runtime
+│   ├── 06-observability-instrumentation.md
+│   ├── 07-website-building-agent.md
+│   ├── skills-recommendation.md
+│   └── README.md                           <- what belongs here (ADR convention)
 │
-├── development/           Active implementation plans (per feature)
-│   ├── IMPLEMENTATION_PLAN.md
-│   ├── NETBOX-DISCOVERY-EXPANSION.md
-│   ├── WISAI-TO-SKYNET-MIGRATION-PLAN.md
-│   ├── NETCLAW-INTEGRATION-PLAN.md
-│   ├── OPA-INTEGRATION-PLAN.md
-│   └── ... (one per initiative)
+├── development/           Active implementation plans, dependency-ordered
+│   ├── 00-foundation-local-dev.md          local-dev instance + promotion
+│   ├── 01-secrets-credentials.md
+│   ├── 02-sso-auth.md
+│   ├── 03-guardrails-governance.md         branch protection, source-of-truth
+│   ├── ... (one per initiative, 00-14)
+│   ├── openspec/                           <- OpenSpec store root (id: agent-cloud)
+│   └── README.md
+│
+├── product/               Product-inception artifacts (opt-in; usually empty)
 │
 └── archive/               Completed or superseded plans
 ```
@@ -258,7 +258,7 @@ OpenBao secret layout (high level):
 | `secret/services/proxmox` | Proxmox API token |
 | `secret/services/{nocodb,n8n,semaphore,github,discord}` | API tokens / URLs |
 
-The full layout lives in `CLAUDE.md` and `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md`.
+The full layout lives in `CLAUDE.md` and `plan/architecture/04-credentials-access.md`.
 
 ---
 
@@ -277,8 +277,8 @@ bash platform/scripts/setup-project.sh
 # 3. Skim the high-leverage docs
 $EDITOR README.md
 $EDITOR CLAUDE.md
-$EDITOR plan/architecture/architecture-reference.md
-$EDITOR plan/architecture/AUTOMATION-COMPOSABILITY.md
+$EDITOR plan/architecture/00-foundation-standards.md
+$EDITOR plan/architecture/01-automation-model.md
 
 # 4. Look at one reference service end-to-end
 ls   platform/services/netbox/deployment/
@@ -383,7 +383,7 @@ gh pr create
 
 ## 9. Adding a new service (cheat sheet)
 
-The authoritative checklist is `plan/architecture/SERVICE-INTEGRATION-PLAN.md`. The short version for the composable pattern:
+The authoritative checklist is `plan/architecture/02-service-onboarding.md`. The short version for the composable pattern:
 
 1. Create `platform/services/<name>/deployment/`:
    - `deploy.sh` (container lifecycle only, sources `../../../lib/common.sh`)
@@ -429,18 +429,18 @@ Agents *propose*; the guardrail layer *validates*; the automation layer *execute
 |------------------|------|
 | Understand the repo's purpose and surface area | [`README.md`](README.md) |
 | Learn the conventions that gate every PR | [`CLAUDE.md`](CLAUDE.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Add a new service | `plan/architecture/SERVICE-INTEGRATION-PLAN.md`, `plan/architecture/AUTOMATION-COMPOSABILITY.md` |
+| Add a new service | `plan/architecture/02-service-onboarding.md`, `plan/architecture/01-automation-model.md` |
 | Understand the playbook library | `platform/playbooks/README.md` |
 | See the reference deployment | `platform/services/netbox/deployment/CLAUDE.md` + `platform/playbooks/deploy-netbox.yml` |
-| Understand secret flow + rotation | `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` |
-| Understand Semaphore vs direct SSH | `plan/architecture/ACCESS-BOUNDARIES.md` |
-| Pick Docker vs Podman | `plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md` |
-| Set up reverse-proxy / TLS | `plan/architecture/CADDY-REVERSE-PROXY.md` |
-| Test a feature branch end-to-end | `plan/architecture/BRANCH-TESTING-WORKFLOW.md` |
+| Understand secret flow + rotation | `plan/architecture/04-credentials-access.md` |
+| Understand Semaphore vs direct SSH | `plan/architecture/04-credentials-access.md` |
+| Pick Docker vs Podman | `plan/architecture/05-platform-infra.md` |
+| Set up reverse-proxy / TLS | `plan/architecture/05-platform-infra.md` |
+| Test a feature branch end-to-end | `plan/architecture/03-testing-ci-quality.md` |
 | Find Claude Code skills worth installing | `plan/architecture/skills-recommendation.md` |
 | Build a new website inside agent-cloud | `agents/websmith/README.md` (human start) + `agents/websmith/context/AGENTS.md` (agent start) |
-| Integrate a WebSmith spec into a service | `plan/development/WEBSMITH-INTEGRATION-PLAN.md` |
-| Browse what's planned next | `plan/development/IMPLEMENTATION_PLAN.md` and siblings |
+| Integrate a WebSmith spec into a service | `plan/development/07-websmith-uhhcraft.md` |
+| Browse what's planned next | `plan/archive/development/IMPLEMENTATION_PLAN.md` and siblings |
 
 ---
 

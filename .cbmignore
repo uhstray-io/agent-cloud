@@ -1,0 +1,68 @@
+# .cbmignore — paths codebase-memory-mcp should not index.
+#
+# The graph already honours the .gitignore hierarchy, so this file is only for
+# things that are COMMITTED but not worth indexing, plus a defensive secrets
+# pass. The secrets pass matters more than it looks: the index stores no file
+# contents, but snippet retrieval reads from disk at query time using stored
+# line numbers — so an indexed credential file becomes a credential reader for
+# anything driving the MCP server, subagents included.
+#
+# The line drawn here, deliberately: credential MATERIAL is excluded;
+# environment DATA is kept. agent-cloud is a public repo whose whole design is
+# that real IPs and credentials live in the private site-config repo, so the 29
+# .j2 templates and 4 platform/inventory/*.yml files here carry {{ placeholders }}
+# by construction. They are also the most structurally valuable content in the
+# repo — they define how every service gets configured — so they are INDEXED on
+# purpose, not excluded by reflex.
+
+# --- memory/tooling stores (they index themselves otherwise) ---
+.codebase-memory/
+.remember/
+graphify-out/
+.worktrees/
+
+# --- test scaffolding: high volume, low structural signal ---
+**/testdata/
+**/fixtures/
+**/__snapshots__/
+**/*.generated.*
+*.min.js
+
+# --- Python (pyproject.toml, ruff + pytest) ---
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Go ---
+vendor/
+bin/
+
+# --- Terraform / HCL policies ---
+.terraform/
+*.tfstate*
+
+# --- secrets pass: credential material only ---
+# netbox-docker/ (a vendored upstream clone carrying env/*.env) is already
+# gitignored, so it never reaches the index; these patterns are the guard for
+# the NEXT untracked credential file that is not yet ignored.
+secrets/
+**/secrets/
+*.env
+**/credentials.json
+*.key
+*.pem
+*_rsa
+*_ed25519
+
+# --- vendored upstream clone ---
+# netbox-docker/ is a nested git clone of the upstream netbox-docker project.
+# It IS gitignored (platform/services/netbox/deployment/.gitignore), but the
+# graph does NOT honour that nested ignore — verified: a clean delete_project +
+# re-index still returned all 41 of its files in the File list. Indexing them
+# would make upstream third-party CI scripts and Django config answer "what
+# calls what" as if they were ours. Excluded explicitly.
+platform/services/netbox/deployment/netbox-docker/
+netbox-docker/

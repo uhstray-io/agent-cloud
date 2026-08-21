@@ -4,6 +4,17 @@ Privacy-focused, open-source AI platform for startups and small business. Custom
 
 **agent-cloud** is the unified platform monorepo for [uhstray-io](https://github.com/uhstray-io) -- the single source of truth for service deployments, AI agent configurations, Ansible playbooks, and shared libraries.
 
+## Conventions
+
+- **[AGENTS.md](AGENTS.md)** — canonical operating instructions for AI agents and
+  human contributors (`CLAUDE.md` is a symlink to it; there is exactly one source
+  of truth). Includes the memory/spec store routing.
+- **[KICKSTART.md](KICKSTART.md)** — set up, run, and develop here.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — current-state architecture summary.
+- **[plan/](plan/)** — architecture documents (`plan/architecture/`),
+  implementation plans and the OpenSpec store (`plan/development/`), and
+  product-inception artifacts (`plan/product/`).
+
 ## What is agent-cloud?
 
 agent-cloud is an AI infrastructure platform that runs on the uhstray.io datacenter Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
@@ -52,7 +63,7 @@ make local-validate                  # health-check everything deployed
 > access, clean port-free `:443` URLs, why a few steps need `sudo`, what runs
 > locally today, and the **local-dev → production promotion pipeline**. Operate/
 > triage in [`docs/LOCAL-DEV.md`](docs/LOCAL-DEV.md); full design in
-> [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](plan/development/LOCAL-DEV-DEPLOYMENT.md).
+> [`plan/development/00-foundation-local-dev.md`](plan/development/00-foundation-local-dev.md).
 
 ### Deploy to production
 
@@ -73,7 +84,7 @@ Production deploys always go through Semaphore so OpenBao credentials are inject
 
 ### Composable Deploy Pattern
 
-Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
+Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/architecture/01-automation-model.md`:
 
 1. **Manage secrets** -- Ansible fetches/generates credentials from OpenBao, templates `.env` files
 2. **Start containers** -- deploy.sh handles Docker Compose lifecycle (pull, build, start)
@@ -189,7 +200,7 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
-See `platform/playbooks/README.md` and `plan/architecture/AUTOMATION-COMPOSABILITY.md` for architecture details.
+See `platform/playbooks/README.md` and `plan/architecture/01-automation-model.md` for architecture details.
 
 ## Architecture Documentation
 
@@ -197,17 +208,17 @@ Detailed architecture and planning documents live in `plan/`:
 
 | Document | Purpose |
 |----------|---------|
-| `plan/architecture/AUTOMATION-COMPOSABILITY.md` | Composable deployment architecture and task library |
-| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | Service onboarding checklist and integration touchpoints |
-| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation, and retirement |
-| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | CI/CD testing strategy and implementation status |
-| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
-| `plan/architecture/CADDY-REVERSE-PROXY.md` | Caddy reverse proxy -- TLS/DNS-01, traffic flow, routing patterns, automation gaps |
+| `plan/architecture/01-automation-model.md` | Composable deployment architecture and task library |
+| `plan/architecture/02-service-onboarding.md` | Service onboarding checklist and integration touchpoints |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation, and retirement |
+| `plan/architecture/03-testing-ci-quality.md` | CI/CD testing strategy and implementation status |
+| `plan/architecture/03-testing-ci-quality.md` | Branch deploy and validation workflow |
+| `plan/architecture/05-platform-infra.md` | Caddy reverse proxy -- TLS/DNS-01, traffic flow, routing patterns, automation gaps |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/IMPLEMENTATION_PLAN.md` | Full implementation plan (phases, architecture, decisions) |
-| `plan/development/NETBOX-DISCOVERY-EXPANSION.md` | Discovery pipeline architecture (Proxmox, pfSense, SNMP, LLDP) |
+| `plan/archive/development/IMPLEMENTATION_PLAN.md` | Full implementation plan (phases, architecture, decisions) |
+| `plan/development/04-netbox-discovery.md` | Discovery pipeline architecture (Proxmox, pfSense, SNMP, LLDP) |
 
-For new services, start with `plan/architecture/SERVICE-INTEGRATION-PLAN.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
+For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
 
 ## CI/CD and Testing
 
@@ -219,9 +230,9 @@ Every pull request to main runs three automated checks:
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
 | **Unit Tests** | pytest (79 tests), BATS (133 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
 
-Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/BRANCH-TESTING-WORKFLOW.md`.
+Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/MAIN-BRANCH-PROTECTION-PLAN.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
 
 For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
 

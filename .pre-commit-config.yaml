@@ -169,5 +169,11 @@ repos:
         exclude: (netbox-docker/|platform/services/.*/deployment/templates/)
       - id: check-added-large-files
         args: [--maxkb=500]
+        # The codebase-memory graph artifact is a deliberately-committed
+        # compressed binary (~1.5MB) that teammates bootstrap the structure
+        # index from instead of paying a full re-index. It is exactly the shape
+        # this check exists to catch by ACCIDENT, so it is excluded by name
+        # rather than by raising the limit for every file.
+        exclude: ^\.codebase-memory/
       - id: check-merge-conflict
       - id: detect-private-key
