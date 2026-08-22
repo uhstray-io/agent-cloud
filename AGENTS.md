@@ -96,6 +96,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/uhhcraft/CLAUDE.md` — UhhCraft storefront (first WebSmith-built site)
 - `platform/services/tududi/deployment/CLAUDE.md` — tududi to-do app (rootless podman, SQLite, native Authentik OIDC; weft's NocoDB-migration sink)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
+- `platform/services/postiz/deployment/CLAUDE.md` — postiz social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres; native Authentik OIDC, API-key automation endpoint ungated at the edge for n8n; upstream "Option B" config mount)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
@@ -221,6 +222,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/step-ca` | Internal CA key-decryption password (`init_password`); the root/intermediate keys live encrypted in the `step-ca-data` volume, NOT here |
 | `secret/services/tududi` | tududi session secret + break-glass admin password (the OIDC client secret lives under `authentik`; weft's API token is added post-deploy) |
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
+| `secret/services/postiz` | postiz signing secret + its Postgres password + the Temporal Postgres password (all generated once and reused — a new signing secret invalidates every session AND every API key), plus the operator's social-platform application credentials seeded by `seed-postiz-secrets.yml`; the OIDC client secret is shared-read from `authentik` |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -250,6 +252,9 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Clean Deploy OpenHands | `clean-deploy-openhands.yml` | Destructive: wipe openhands-state volume + fresh deploy |
 | Deploy tududi | `deploy-tududi.yml` | To-do app (rootless podman): secrets (+OIDC shared-read) → deploy.sh → verify; local adds step-ca trust for OIDC |
 | Deploy honcho | `deploy-honcho.yml` | Memory API (rootless podman, 4 containers): secrets (+Gemini shared-read) → deploy.sh → verify |
+| Deploy Postiz | `deploy-postiz.yml` | Social publishing (rootless podman, 5 containers): secrets (+OIDC shared-read) → render BOTH env files → deploy.sh → verify app AND workflow engine |
+| Clean Deploy Postiz | `clean-deploy-postiz.yml` | Destructive: wipe containers + all four volumes + fresh deploy (social accounts need re-authorizing by hand afterwards) |
+| Seed Postiz Secrets | `seed-postiz-secrets.yml` | Additively place the operator's social-platform credentials at `secret/services/postiz` (KV-v2 merge-patch; no survey vars — Semaphore persists those, so values are launch-time extra vars) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |

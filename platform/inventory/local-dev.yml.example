@@ -232,10 +232,11 @@ all:
           # The IdP base postiz calls server-side for token + userinfo. Same
           # host:port the browser uses, via the caddy route's internal_https_port.
           postiz_authentik_base: "https://auth.agent-cloud.test:8443"
-          # Authentik blueprint context (postiz-oidc.yaml). The redirect path is
-          # NOT ours to choose — upstream hardcodes <public-url>/settings.
-          postiz_redirect_uri: "https://postiz.agent-cloud.test:8443/settings"
-          postiz_launch_url: "https://postiz.agent-cloud.test:8443/"
+          # NOTE: postiz_redirect_uri / postiz_launch_url are deliberately NOT set
+          # here. They are consumed when deploy-authentik renders the blueprint,
+          # so they belong on the AUTHENTIK host — and locally the blueprint's own
+          # defaults already match these URLs. Prod sets them in site-config on
+          # authentik_svc (same convention tududi follows).
           # Open for the FIRST sign-in, then flip to true and redeploy. Upstream
           # allows a single signup then closes; encoding the flip here keeps it
           # reproducible instead of a manual step on the host.

@@ -112,17 +112,17 @@ protects 1.7, which is the only irreversible step in the change.
       mappings — email is load-bearing
 - [x] 4.2 Wire the client secret into the identity provider's deploy so the provider owns
       it and this service reads the same value; never commit it
-- [ ] 4.3 Register the service in all three inventory files — local, the public
+- [x] 4.3 Register the service in all three inventory files — local, the public
       placeholder, and the private production repo — including the per-environment public
       URL and redirect, bind and port, image tag, firewall upstream, and the registration
       state variable defaulting to open
 - [x] 4.4 Add the local reverse-proxy route to the service by container name, with no
       edge authentication gate
-- [ ] 4.5 Prepare the production reverse-proxy site block for the private repo: public
+- [x] 4.5 Prepare the production reverse-proxy site block for the private repo: public
       hostname, existing DNS-01 TLS flow, single upstream, no edge authentication gate
 - [x] 4.6 Add local and production orchestrator templates: deploy, clean-deploy, and
       secret seeding; publish them through the template-management playbook
-- [ ] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
+- [x] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
       so the estate inventory reflects a host that was provisioned before this change
 - [ ] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
       guarded — the public URL, the registered redirect, and the environment's actual
@@ -160,7 +160,7 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 6. Promotion to production
 
-- [ ] 6.1 Update the repository documentation the change touches: root README service
+- [x] 6.1 Update the repository documentation the change touches: root README service
       list, the agent instructions' service and workflow tables, and the local-dev tier
       table
 - [ ] 6.2 Run the simplification and security review passes over the branch changes
@@ -199,15 +199,15 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 8. Automation contract for n8n
 
-- [ ] 8.1 Write the integration contract document: base endpoint, the API-key auth model,
+- [x] 8.1 Write the integration contract document: base endpoint, the API-key auth model,
       the media-upload then create-post then schedule flow, and the rate ceiling as the
       budget callers must respect
-- [ ] 8.2 Record why automation reaches the service over the public host rather than
+- [x] 8.2 Record why automation reaches the service over the public host rather than
       directly on the internal network, so the reasoning survives a later "optimization"
-- [ ] 8.3 Note where the API key belongs in the secret store for when the automation
+- [x] 8.3 Note where the API key belongs in the secret store for when the automation
       workflows are actually built — no automation deployment or configuration in this
       change
-- [ ] 8.4 Validation gate: scenario "Rate ceiling is enforced" is documented with its
+- [x] 8.4 Validation gate: scenario "Rate ceiling is enforced" is documented with its
       configured value and window, so the contract states a budget a caller can actually
       respect
 
