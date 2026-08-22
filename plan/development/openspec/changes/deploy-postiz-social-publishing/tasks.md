@@ -84,21 +84,21 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 3. Automation and secret management
 
-- [ ] 3.1 Write the deploy playbook on the composable pattern: place the repo, ensure the
+- [x] 3.1 Write the deploy playbook on the composable pattern: place the repo, ensure the
       runtime and rootless persistence, manage secrets, distribute the internal trust root
       when local, render both config files, run the lifecycle script, verify health
-- [ ] 3.2 Declare the three generate-once-and-reuse secrets (signing secret, datastore
+- [x] 3.2 Declare the three generate-once-and-reuse secrets (signing secret, datastore
       password, engine datastore password) and the cross-service read of the OIDC client
       secret owned by the identity provider
-- [ ] 3.3 Scope credential-handling steps into their own tasks and confine log suppression
+- [x] 3.3 Scope credential-handling steps into their own tasks and confine log suppression
       to those; leave deploys, waits, health checks, and verification visible
-- [ ] 3.4 Write the destructive clean-deploy playbook on the shared teardown task
-- [ ] 3.5 Write the secret-seeding playbook that reads the operator's existing values and
+- [x] 3.4 Write the destructive clean-deploy playbook on the shared teardown task
+- [x] 3.5 Write the secret-seeding playbook that reads the operator's existing values and
       writes the nine social-platform credentials into the secret store under the exact
       keys the config template expects, preserving unrelated keys at that path
-- [ ] 3.6 Add the service to the estate-wide health-check playbook as its own play block
+- [x] 3.6 Add the service to the estate-wide health-check playbook as its own play block
       (per the onboarding checklist), so it is covered by the Validate All template
-- [ ] 3.7 Add the service's credentials to the live credential-verification playbook, so
+- [x] 3.7 Add the service's credentials to the live credential-verification playbook, so
       its datastore and API auth are exercised by the Validate Secrets template
 - [ ] 3.8 Validation gate: scenario "A social platform credential is added later" holds —
       seeding a previously-unset provider credential and redeploying makes that provider
