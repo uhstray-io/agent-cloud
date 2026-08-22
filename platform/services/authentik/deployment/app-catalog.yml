@@ -73,6 +73,13 @@ authentik_app_catalog:
     file: openhands-forward-auth.yaml
     type: forward_auth
     tier: member
+  postiz:
+    file: postiz-oidc.yaml
+    type: oidc
+    tier: member
+    provider: postiz
+    prod_required: [postiz_redirect_uri, postiz_launch_url]
+    verify_redirect: postiz_redirect_uri
   semaphore:
     file: semaphore-oidc.yaml
     type: oidc

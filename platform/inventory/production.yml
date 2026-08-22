@@ -61,6 +61,21 @@ all:
           monorepo_deploy_path: platform/services/caddy/deployment
           container_engine: podman
 
+    # postiz — social-media scheduling and publishing. Five containers, only the
+    # app publishing a port. Native OIDC to Authentik; the automation API is
+    # reached over the public host, so no direct LAN rule is needed.
+    # Real address + the *.uhstray.io URLs live in site-config.
+    postiz_svc:
+      hosts:
+        "{{ postiz_host }}":
+          service_name: postiz
+          service_url: "http://{{ postiz_host }}:5000"
+          # postiz has no unauthenticated health endpoint; / answers 200 or a
+          # redirect depending on session state.
+          health_path: "/"
+          monorepo_deploy_path: platform/services/postiz/deployment
+          container_engine: podman
+
     uhhcraft_svc:
       hosts:
         "{{ uhhcraft_host }}":

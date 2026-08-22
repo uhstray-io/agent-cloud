@@ -146,6 +146,21 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy Postiz
+    playbook: platform/playbooks/deploy-postiz.yml
+    # Five-container rootless stack: the app, its Postgres + Redis, and the
+    # Temporal workflow engine + that engine's Postgres. The engine is what
+    # executes scheduled publishing. Native Authentik OIDC in-app (not a Caddy
+    # forward_auth gate) so the /api/public/v1 automation path stays usable by
+    # n8n with an API key.
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
@@ -272,6 +287,23 @@ templates:
         default_value: "main"
 
   # ── Updates ────────────────────────────────────────────────────
+  - name: Clean Deploy Postiz
+    playbook: platform/playbooks/clean-deploy-postiz.yml
+    # DESTRUCTIVE: wipes postiz's Postgres, Redis, uploads, AND the workflow
+    # engine's Postgres. Every connected social account must be re-authorized by
+    # hand afterwards, so this is not a routine recovery step. API keys survive
+    # (the signing secret is reused), so an n8n workflow keeps authenticating
+    # against an account that no longer exists — re-issue the key after
+    # re-registering. Set postiz_disable_registration back to false first, or
+    # nobody can sign in to the rebuilt stack.
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Update NocoDB
     playbook: platform/playbooks/update-nocodb.yml
 
@@ -339,6 +371,27 @@ templates:
         description: "Field to set/update at that path (e.g. gemini_api_key)"
         type: string
         required: true
+
+  - name: Seed Postiz Secrets
+    playbook: platform/playbooks/seed-postiz-secrets.yml
+    # Places the operator's social-platform application credentials at
+    # secret/services/postiz, additively (KV-v2 merge-patch), so the three
+    # generated secrets already there survive. deploy-postiz.yml declares these
+    # as `type: existing` — it surfaces them to the rendered config but never
+    # generates them, because they are the operator's own credentials from each
+    # platform's developer console.
+    #
+    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
+    # database, so a credential typed into a survey field would be stored there
+    # indefinitely. Pass them as launch-time extra vars instead, only the ones
+    # you have:
+    #   -e seed_x_api_key=... -e seed_x_api_secret=...
+    #   -e seed_linkedin_client_id=... -e seed_linkedin_client_secret=...
+    #   -e seed_youtube_client_id=... -e seed_youtube_client_secret=...
+    #   -e seed_discord_client_id=... -e seed_discord_client_secret=...
+    #   -e seed_discord_bot_token_id=...
+    # Re-running with unchanged values writes nothing. Verify with Check
+    # Secrets, then run Deploy Postiz.
 
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml

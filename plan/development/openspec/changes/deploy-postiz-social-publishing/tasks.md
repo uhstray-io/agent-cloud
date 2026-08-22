@@ -106,21 +106,21 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 4. Identity, edge, and inventory wiring
 
-- [ ] 4.1 Write the identity-provider client blueprint: confidential client, secret
+- [x] 4.1 Write the identity-provider client blueprint: confidential client, secret
       injected from the provider's environment, strict redirect at the public URL with the
       upstream-dictated `/settings` suffix, and the openid/profile/**email** scope
       mappings — email is load-bearing
-- [ ] 4.2 Wire the client secret into the identity provider's deploy so the provider owns
+- [x] 4.2 Wire the client secret into the identity provider's deploy so the provider owns
       it and this service reads the same value; never commit it
 - [ ] 4.3 Register the service in all three inventory files — local, the public
       placeholder, and the private production repo — including the per-environment public
       URL and redirect, bind and port, image tag, firewall upstream, and the registration
       state variable defaulting to open
-- [ ] 4.4 Add the local reverse-proxy route to the service by container name, with no
+- [x] 4.4 Add the local reverse-proxy route to the service by container name, with no
       edge authentication gate
 - [ ] 4.5 Prepare the production reverse-proxy site block for the private repo: public
       hostname, existing DNS-01 TLS flow, single upstream, no edge authentication gate
-- [ ] 4.6 Add local and production orchestrator templates: deploy, clean-deploy, and
+- [x] 4.6 Add local and production orchestrator templates: deploy, clean-deploy, and
       secret seeding; publish them through the template-management playbook
 - [ ] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
       so the estate inventory reflects a host that was provisioned before this change
