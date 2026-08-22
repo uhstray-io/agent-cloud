@@ -1,3 +1,24 @@
+## 0. Unblock orchestrated automation
+
+Discovered at apply time, not planning time: the orchestrator's REST API answers every
+non-browser client with a Cloudflare managed challenge, and its internal port is
+restricted to the central reverse proxy by the very firewall rule this change also
+relies on. Without this phase, no later phase can be driven programmatically.
+
+- [x] 0.1 Add a Cloudflare WAF skip rule for the orchestrator's API prefix on its public
+      host, in the existing OpenTofu root — narrower than the precedent rule beside it by
+      additionally requiring an Authorization header, so credential-less scanners are
+      still challenged
+- [ ] 0.2 **Operator, one browser-triggered run:** run the Cloudflare OpenTofu template
+      with `tofu_action=plan`, review the diff (expect exactly one added rule), then
+      re-run with `tofu_action=apply`. This is the bootstrap step that cannot itself be
+      automated — the fix for "cannot reach the orchestrator" has to be applied through
+      the orchestrator
+- [ ] 0.3 Confirm a token-bearing request to the orchestrator's API now returns JSON
+      rather than a challenge page
+- [ ] 0.4 Validation gate: the orchestrator API is reachable with a token from a
+      non-browser client, so every remaining phase can run through it rather than by hand
+
 ## 1. Host access hardening — production host
 
 Every task here is a separate orchestrated run. Do not batch them: 1.5 is the gate that
@@ -36,28 +57,28 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 2. Service definition
 
-- [ ] 2.1 Rewrite the committed compose definition: five services (application,
+- [x] 2.1 Rewrite the committed compose definition: five services (application,
       datastore, cache, workflow engine, engine datastore), fully env-parameterized, with
       **no credential values**; remove the existing hardcoded credentials
-- [ ] 2.2 Configure the workflow engine for relational-datastore visibility with the
+- [x] 2.2 Configure the workflow engine for relational-datastore visibility with the
       search node absent and no dynamic-configuration path set; add a comment naming the
       add-back path in case phase 5 shows it is needed
-- [ ] 2.3 Publish only the application's port, bound per inventory; confirm the datastores,
+- [x] 2.3 Publish only the application's port, bound per inventory; confirm the datastores,
       cache, and workflow engine publish no host port
-- [ ] 2.4 Write the application config template covering URLs, signing secret, datastore
+- [x] 2.4 Write the application config template covering URLs, signing secret, datastore
       and cache addresses, workflow engine address, storage settings, registration state,
       rate ceiling, the identity-provider block, and every social provider slot rendering
       empty when unseeded
-- [ ] 2.5 Write the compose-substitution template: image tags, published bind and port,
+- [x] 2.5 Write the compose-substitution template: image tags, published bind and port,
       and the two datastore passwords
-- [ ] 2.6 Write the lifecycle script — container operations only, no secret handling:
+- [x] 2.6 Write the lifecycle script — container operations only, no secret handling:
       verify both rendered files present, pull, recreate so re-rendered config actually
       applies, wait for health with enough headroom for first-boot schema setup
-- [ ] 2.7 Write the local-environment overlay: memory caps, the label option the local
+- [x] 2.7 Write the local-environment overlay: memory caps, the label option the local
       runtime needs for volume mounts, the shared local network on the application only,
       and the internal trust root plus the variable that makes the runtime honour it
-- [ ] 2.8 Write the service's operator and agent documentation
-- [ ] 2.9 Validation gate: scenario "Repository contains no credential values" holds —
+- [x] 2.8 Write the service's operator and agent documentation
+- [x] 2.9 Validation gate: scenario "Repository contains no credential values" holds —
       the committed definition and templates contain only deployment-time references, and
       scenario "Internal components are not exposed" holds by construction
 
@@ -75,7 +96,11 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 3.5 Write the secret-seeding playbook that reads the operator's existing values and
       writes the nine social-platform credentials into the secret store under the exact
       keys the config template expects, preserving unrelated keys at that path
-- [ ] 3.6 Validation gate: scenario "A social platform credential is added later" holds —
+- [ ] 3.6 Add the service to the estate-wide health-check playbook as its own play block
+      (per the onboarding checklist), so it is covered by the Validate All template
+- [ ] 3.7 Add the service's credentials to the live credential-verification playbook, so
+      its datastore and API auth are exercised by the Validate Secrets template
+- [ ] 3.8 Validation gate: scenario "A social platform credential is added later" holds —
       seeding a previously-unset provider credential and redeploying makes that provider
       connectable with no code change
 
@@ -97,7 +122,9 @@ protects 1.7, which is the only irreversible step in the change.
       hostname, existing DNS-01 TLS flow, single upstream, no edge authentication gate
 - [ ] 4.6 Add local and production orchestrator templates: deploy, clean-deploy, and
       secret seeding; publish them through the template-management playbook
-- [ ] 4.7 Validation gate: scenario "Advertised URL does not match the browser URL" is
+- [ ] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
+      so the estate inventory reflects a host that was provisioned before this change
+- [ ] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
       guarded — the public URL, the registered redirect, and the environment's actual
       browse URL are the same string in each environment, sourced from one inventory
       variable

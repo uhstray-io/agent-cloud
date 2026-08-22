@@ -47,5 +47,40 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Semaphore API — bypass the managed challenge for non-browser clients.
+    #
+    # Why: the orchestrator's REST API is the platform's automation entrypoint,
+    # but every non-browser client hitting it was answered with a Cloudflare
+    # managed challenge (`cf-mitigated: challenge`) before the request ever
+    # reached Semaphore, so a valid API token could not be evaluated. The
+    # internal path is not an alternative by design — apply-firewall.yml permits
+    # :3000 from the central Caddy host ONLY, so agents and CI have no route in
+    # except this hostname.
+    #
+    # Narrower than the honcho rule above, deliberately. This API can launch
+    # playbooks against the whole estate, so the skip additionally requires an
+    # Authorization header to be present: a credential-less scanner or crawler
+    # still gets challenged, and only a request that at least *claims* to carry a
+    # token reaches Semaphore's own authentication. That is defence in depth, not
+    # authentication — Semaphore remains the thing that validates the token.
+    #
+    # Scope: only this host, only the /api/ prefix, and only the SBFM/BIC/
+    # security-level products. The regional and AI-crawler BLOCK rules above are
+    # in an earlier position and still apply to these paths. Logging is on so
+    # matches are auditable in Security Events.
+    {
+      ref         = "semaphore-api-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Semaphore API - bypass challenge for token-bearing non-browser clients"
+      expression  = "(http.host eq \"semaphore.uhstray.io\" and starts_with(http.request.uri.path, \"/api/\") and len(http.request.headers[\"authorization\"]) > 0)"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

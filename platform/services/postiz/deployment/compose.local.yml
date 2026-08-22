@@ -1,0 +1,66 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+#
+# Images and the published bind/port are env-parameterized in the BASE (.env);
+# this overlay carries only what an overlay CAN add: memory caps, the SELinux
+# opt (the podman-machine VM enforces SELinux on named-volume mounts), the extra
+# `local-dev` network so central Caddy reaches the app by name (postiz:5000) for
+# the postiz.agent-cloud.test route, and the internal CA trust the OIDC flow
+# needs locally.
+#
+# NOTE: the loopback port shift is NOT here. compose merges `ports` lists by
+# appending, so a base publish could never be removed by an overlay — the local
+# 127.0.0.1 bind is env-driven in the base via POSTIZ_BIND/POSTIZ_PORT (.env).
+#
+# Only the app joins local-dev. The datastores, cache, and workflow engine stay
+# on the internal `postiz` net — Caddy has no reason to reach them.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  postiz:
+    # Next.js frontend + NestJS backend + the Temporal worker in one container —
+    # it needs materially more headroom than a single-process service.
+    mem_limit: 2g
+    security_opt:
+      - label=disable
+    networks:
+      - postiz
+      - default
+      - local-dev
+    # OIDC: the backend makes server-side token and userinfo calls to the IdP at
+    # https://auth.<zone>:8443 (Caddy's step-ca-minted leaf), so it must trust
+    # the step-ca chain. The bundle is distributed into ./certs by
+    # tasks/distribute-ca-root.yml; NODE_EXTRA_CA_CERTS points Node's TLS at it.
+    # Local-only — prod's IdP presents a publicly trusted chain.
+    #
+    # Setting this through compose `environment:` does not undo the Option B
+    # decision: that decision is about keeping the ~60 credential values out of
+    # compose's $-interpolation path. This value is a non-secret container path.
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/step-ca-bundle.crt
+
+  postiz-postgres:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+
+  postiz-redis:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+
+  temporal:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+
+  temporal-postgresql:
+    mem_limit: 256m
+    security_opt:
+      - label=disable

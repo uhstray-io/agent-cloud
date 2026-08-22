@@ -1,84 +1,192 @@
+# postiz — social-media scheduling and publishing (Podman-compatible compose).
+#
+# Five services: postiz (the app, the ONLY one publishing a port),
+# postiz-postgres + postiz-redis (its own datastore and cache, internal),
+# temporal + temporal-postgresql (the workflow engine that executes scheduled
+# publishing, internal). Ansible's deploy-postiz.yml renders BOTH env files from
+# OpenBao BEFORE this stack starts; deploy.sh is container lifecycle only — no
+# secret generation.
+#
+# CONFIGURATION — upstream "Option B". App config lives in config/postiz.env,
+# bind-mounted read-only at /config/postiz.env, NOT passed through compose
+# `environment:` or `env_file:`. This is deliberate and load-bearing: compose
+# performs $-interpolation on values it reads, and this service takes ~60 social
+# provider credential slots. A `$` inside any client secret would be silently
+# mangled under upstream's Option A or C. A mounted file is never interpolated,
+# so the failure mode does not exist. The .env beside this file therefore holds
+# ONLY compose-substitution values (image tags, bind/port, the two Postgres
+# passwords) — never app config.
+#
+# TRIMMED TOPOLOGY — upstream's reference compose runs eight containers, adding
+# an Elasticsearch node, a Temporal UI, and admin tooling. We run five.
+# temporalio/auto-setup runs standard visibility against its own Postgres with
+# ENABLE_ES=false, which is sufficient to EXECUTE workflows; Elasticsearch powers
+# advanced workflow SEARCH, which nothing here needs. To add it back (see
+# plan/development/14-postiz-social-publishing.md, D1): set ENABLE_ES=true plus
+# ES_SEEDS/ES_VERSION on `temporal` and add the elasticsearch service.
+#
+# Behind central Caddy: postiz serves plain HTTP on :5000 (Caddy terminates
+# TLS). Its internal nginx fronts everything on that one port — /api/ to the
+# backend, /uploads/ to static files, / to the frontend — so Caddy needs exactly
+# one upstream and no path routing. Auth is in-app OIDC against Authentik, NOT a
+# Caddy forward_auth gate, so the /api/public/v1 automation path stays usable by
+# n8n with an API key.
+# Plan: plan/development/14-postiz-social-publishing.md
+
+name: postiz
+
 services:
   postiz:
-    image: ghcr.io/gitroomhq/postiz-app:latest
+    image: ${POSTIZ_IMAGE:-ghcr.io/gitroomhq/postiz-app:v2.23.0}
     container_name: postiz
     restart: always
-    environment:
-      # You must change these. Replace `postiz.your-server.com` with your DNS name - this needs to be exactly the URL you're accessing Postiz on.
-      MAIN_URL: "https://postiz.example.com"
-      FRONTEND_URL: "https://postiz.example.com"
-      NEXT_PUBLIC_BACKEND_URL: "https://postiz.example.com/api"
-      JWT_SECRET: "XXXXXXXXXXXXXXXXXXXXXXXXX"
-
-      # These defaults are probably fine, but if you change your user/password, update it in the
-      # postiz-postgres or postiz-redis services below.
-      DATABASE_URL: "postgresql://postiz-user:postiz-password@postiz-postgres:5432/postiz-db-local"
-      REDIS_URL: "redis://postiz-redis:6379"
-      BACKEND_INTERNAL_URL: "http://localhost:3000"
-      IS_GENERAL: "true" # Required for self-hosting.
-      # The container images are pre-configured to use /uploads for file storage.
-      # You probably should not change this unless you have a really good reason!
-      STORAGE_PROVIDER: "local"
-      UPLOAD_DIRECTORY: "/uploads"
-      NEXT_PUBLIC_UPLOAD_DIRECTORY: "/uploads"
     volumes:
+      # Option B: the rendered app config. Bind the single FILE, not the
+      # directory — postiz-config below still mounts the rest of /config, and a
+      # directory bind here would shadow it. Read-only: the app reads this, and
+      # the only writer is Ansible re-rendering it on the host.
+      - ./config/postiz.env:/config/postiz.env:ro
       - postiz-config:/config/
+      # Media lives on a named volume (STORAGE_PROVIDER=local). Served back
+      # through the app's own nginx at /uploads/, so no separate static host.
       - postiz-uploads:/uploads/
     ports:
-      - 5000:5000
-    networks:
-      - postiz-network
+      # Loopback-only by default; central Caddy proxies in. Prod sets a host
+      # bind + port via .env (POSTIZ_BIND/POSTIZ_PORT) so the Caddy VM reaches
+      # it. The ONLY published port in this stack — the datastores, cache, and
+      # workflow engine publish nothing, so the host firewall needs no rule for
+      # them (apply-firewall.yml detects published ports).
+      - "${POSTIZ_BIND:-127.0.0.1}:${POSTIZ_PORT:-5000}:5000"
+    networks: [postiz]
     depends_on:
       postiz-postgres:
         condition: service_healthy
       postiz-redis:
         condition: service_healthy
+      temporal:
+        condition: service_healthy
+    healthcheck:
+      # CMD-SHELL, not exec form: podman-compose mis-quotes ["CMD",...] lists.
+      # node is guaranteed in this image. Treat <500 as healthy — the app
+      # answers 3xx/4xx on / depending on session state, and only a 5xx or a
+      # connection failure means the process is actually broken.
+      # Split across lines to stay inside the repo's 200-char yamllint limit;
+      # the folded scalar rejoins with single spaces, which the JS tolerates.
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "const r=require('http').get('http://127.0.0.1:5000/',
+          s=>process.exit(s.statusCode<500?0:1));
+          r.on('error',()=>process.exit(1));
+          r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      # First boot runs Prisma migrations before the app answers — generous.
+      start_period: 120s
 
   postiz-postgres:
-    image: postgres:17-alpine
+    # postiz's own Postgres — internal to the compose network only (NO host
+    # port, so rootless publishes nothing and no firewall rule is needed).
+    image: ${POSTIZ_POSTGRES_IMAGE:-docker.io/postgres:17-alpine}
     container_name: postiz-postgres
     restart: always
     environment:
-      POSTGRES_PASSWORD: my-postiz-password
-      POSTGRES_USER: postiz-user
-      POSTGRES_DB: postiz-db-local
+      POSTGRES_DB: ${POSTIZ_POSTGRES_DB:-postiz}
+      POSTGRES_USER: ${POSTIZ_POSTGRES_USER:-postiz}
+      POSTGRES_PASSWORD: ${POSTIZ_DB_PASSWORD}
     volumes:
-      - postgres-volume:/var/lib/postgresql/data
-    networks:
-      - postiz-network
+      - postiz-pg-data:/var/lib/postgresql/data
+    networks: [postiz]
     healthcheck:
-      test: pg_isready -U postiz-user -d postiz-db-local
-      interval: 10s
-      timeout: 3s
-      retries: 3
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   postiz-redis:
-    image: redis:7.2
+    # Queue + cache. Persisted (default RDB snapshots) so in-flight work
+    # survives a redeploy rather than being dropped.
+    image: ${POSTIZ_REDIS_IMAGE:-docker.io/redis:7.2}
     container_name: postiz-redis
     restart: always
-    healthcheck:
-      test: redis-cli ping
-      interval: 10s
-      timeout: 3s
-      retries: 3
     volumes:
       - postiz-redis-data:/data
-    networks:
-      - postiz-network
+    networks: [postiz]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
+  temporal:
+    # The workflow engine that actually executes scheduled publishing (postiz's
+    # orchestrator is a Temporal worker as of upstream v2.12.0). auto-setup
+    # provisions the schema and the default namespace on first boot.
+    #
+    # ENABLE_ES=false — standard (SQL) visibility on temporal-postgresql. See
+    # the header for why Elasticsearch is omitted and how to add it back.
+    #
+    # DYNAMIC_CONFIG_FILE_PATH is deliberately NOT set: unset means the engine's
+    # built-in defaults apply, so there is no config file to ship or maintain.
+    # Upstream mounts one whose contents are explicitly labelled development-only.
+    image: ${TEMPORAL_IMAGE:-docker.io/temporalio/auto-setup:1.28.1}
+    container_name: temporal
+    restart: always
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgresql
+      ENABLE_ES: "false"
+      # auto-setup's own variable is DEFAULT_NAMESPACE; upstream's reference
+      # compose sets TEMPORAL_NAMESPACE, which auto-setup ignores. Set
+      # explicitly rather than relying on the default so the intent is readable.
+      DEFAULT_NAMESPACE: default
+      SKIP_DEFAULT_NAMESPACE_CREATION: "false"
+    networks: [postiz]
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
 
-volumes:
-  postgres-volume:
-    external: false
-
-  postiz-redis-data:
-    external: false
-
-  postiz-config:
-    external: false
-
-  postiz-uploads:
-    external: false
+  temporal-postgresql:
+    # The workflow engine's own Postgres — separate from postiz's, internal
+    # only. Pinned to 16: Temporal 1.28 supports up to PG16, so this does NOT
+    # track postiz-postgres' 17.
+    image: ${TEMPORAL_POSTGRES_IMAGE:-docker.io/postgres:16-alpine}
+    container_name: temporal-postgresql
+    restart: always
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${TEMPORAL_DB_PASSWORD}
+    volumes:
+      - temporal-pg-data:/var/lib/postgresql/data
+    networks: [postiz]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
 networks:
-  postiz-network:
-    external: false
+  # One network for all five, unlike upstream's split postiz/temporal nets.
+  # Nothing here is in a different trust domain — the workflow engine exists
+  # solely to serve this app — and a single net means one fewer thing for
+  # podman-compose to get wrong. No container is reachable from outside it
+  # except through the one published port above.
+  postiz:
+    driver: bridge
+
+volumes:
+  postiz-config:
+  postiz-uploads:
+  postiz-pg-data:
+  postiz-redis-data:
+  temporal-pg-data:
