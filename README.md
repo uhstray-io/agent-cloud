@@ -207,17 +207,20 @@ See `platform/playbooks/README.md` and `plan/architecture/01-automation-model.md
 
 Detailed architecture and planning documents live in `plan/`:
 
+Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIPLES.md`](PRINCIPLES.md) (the durable constitution). The per-area depth lives under `plan/architecture/` (the numbered `00–07` HOW) and `plan/development/` (the service-by-service roadmap):
+
 | Document | Purpose |
 |----------|---------|
+| `plan/architecture/00-foundation-standards.md` | Doc standards, status values, and the master architecture index |
 | `plan/architecture/01-automation-model.md` | Composable deployment architecture and task library |
 | `plan/architecture/02-service-onboarding.md` | Service onboarding checklist and integration touchpoints |
-| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation, and retirement |
-| `plan/architecture/03-testing-ci-quality.md` | CI/CD testing strategy and implementation status |
-| `plan/architecture/03-testing-ci-quality.md` | Branch deploy and validation workflow |
-| `plan/architecture/05-platform-infra.md` | Caddy reverse proxy -- TLS/DNS-01, traffic flow, routing patterns, automation gaps |
+| `plan/architecture/03-testing-ci-quality.md` | CI/CD testing strategy, security gates, and branch-deploy validation workflow |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation, retirement; Semaphore vs SSH access |
+| `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
+| `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/archive/development/IMPLEMENTATION_PLAN.md` | Full implementation plan (phases, architecture, decisions) |
-| `plan/development/04-netbox-discovery.md` | Discovery pipeline architecture (Proxmox, pfSense, SNMP, LLDP) |
+| `plan/development/` | Numbered `00–13` roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC |
+| `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
 
@@ -233,7 +236,7 @@ Every pull request to main runs three automated checks:
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PRs only (squash, linear history), review conversations resolved, and the three checks above must pass before the merge button unlocks. (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
 
 For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
 
@@ -242,7 +245,7 @@ For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`
 ```
 INFRASTRUCTURE        Docker, Podman, Kubernetes (k0s), Proxmox
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
-DEPLOYMENT & GITOPS   Semaphore, Ansible, ArgoCD (planned)
+DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
 DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
 INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)

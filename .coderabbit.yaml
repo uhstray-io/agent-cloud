@@ -17,3 +17,10 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Auto-review PRs targeting dev too, not just the default branch (main). Without
+    # this, base_branches defaults to [] = default-branch-only, and PRs into dev are
+    # skipped — a repo .coderabbit.yaml overrides UI/dashboard branch settings, so this
+    # must live here. Entries are regex; ^dev$ is anchored to match dev exactly (main is
+    # always reviewed regardless). Verify on any PR with: @coderabbitai configuration
+    base_branches:
+      - "^dev$"

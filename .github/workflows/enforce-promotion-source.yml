@@ -1,0 +1,32 @@
+name: Promotion Source Guard
+
+# Enforces the platform promotion rule: `main` may only be updated by a PR from `dev`
+# (feature -> dev -> main). GitHub rulesets can protect the BASE branch but cannot
+# restrict a PR's HEAD branch, so this job is the enforcing half — it is wired in as a
+# required status check on the `protect-main` ruleset (.github/rulesets/protect-main.json).
+#
+# Runs only for PRs whose base is `main`. Fails unless the head branch is exactly `dev`.
+# Emergency hotfixes bypass via the ruleset's Admin break-glass actor (they can merge
+# despite this check), so this is a guardrail, not an absolute lock.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-source:
+    name: Promotion source (dev -> main)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the PR to originate from dev
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ]; then
+            echo "::error title=Invalid promotion source::PRs into 'main' must come from 'dev' (got '${HEAD_REF}'). Promote via the dev -> main cycle; see AGENTS.md 'Branch Workflow'. Emergency-only: an Admin can break-glass via the protect-main ruleset."
+            exit 1
+          fi
+          echo "OK: promotion source is 'dev' -> 'main'."
