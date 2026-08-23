@@ -187,12 +187,53 @@
                 | rejectattr('value', 'search', 'media=cdrom')
                 | map(attribute='key') | sort | first | default('')), true) }}
 
+    # regex_search WITH a capture group raises AttributeError on a non-match
+    # (it calls .group() on None) rather than returning None, so a `| first |
+    # default(0)` after it never runs — this failed on the first real run.
+    # regex_replace returns its input unchanged instead, and the `size=` guard
+    # means it is only reached when there is something to parse.
+    #
+    # _disk_parsed matters more than it looks: if the size could not be read and
+    # _have_disk_gb silently defaulted to 0, the grow delta (want - have) would
+    # compute the FULL declared size, so a 32G disk would be grown by another
+    # 32G — and the shrink guard (want >= have) would pass happily. An
+    # unparseable size must refuse to touch the disk, not assume zero.
     - name: "Resolve the current disk size in GB"
       ansible.builtin.set_fact:
-        _have_disk_gb: >-
-          {{ (_cfg.json.data[_disk_device] | default('')
-              | regex_search('size=([0-9]+)G', '\\1') | first | default(0)) | int }}
-      when: _disk_device | length > 0
+        _have_disk_gb: "{{ (_raw | regex_replace('^.*size=([0-9]+)G.*$', '\\1') | int) if _parsed else 0 }}"
+        _disk_parsed: "{{ _parsed }}"
+      vars:
+        _raw: "{{ _cfg.json.data[_disk_device | trim] | default('') }}"
+        # Only a size expressed in whole GB is understood. Proxmox can report K/M/T
+        # (the attached install ISO reports size=3226020K, for instance), and
+        # guessing a conversion is how a resize turns into a wrong-sized disk.
+        _parsed: "{{ (_raw | regex_search('size=[0-9]+G')) is not none }}"
+      when: (_disk_device | trim | length) > 0
+
+    # One assert covering BOTH ways a requested disk change can be unsafe, and
+    # gated ONLY on a size having been requested. Gating it on a device having
+    # been detected was the bug: with no device, this refusal skipped, the shrink
+    # guard skipped, the grow skipped — and the run reported "Config unchanged"
+    # while silently ignoring the disk size it was asked to apply. A requested
+    # change that cannot be made must fail, never pass quietly.
+    - name: "Refuse a requested disk change that cannot be made safely"
+      ansible.builtin.assert:
+        that:
+          - (_disk_device | trim | length) > 0
+          - _disk_parsed | default(false) | bool
+        fail_msg: >-
+          A disk size of {{ _want_disk_gb }}G was requested, but
+          {{ 'no disk device could be detected on this VM — auto-detection looks for
+              the first scsi/virtio/sata/ide entry that is not a cdrom'
+             if (_disk_device | trim | length) == 0
+             else ("the current size of " ~ (_disk_device | trim) ~ " could not be parsed from '"
+                   ~ (_cfg.json.data[_disk_device | trim] | default('')) ~
+                   "' (only whole-GB sizes are understood)") }}.
+          Refusing rather than proceeding — skipping it silently would report the
+          run as converged while the disk was untouched, and guessing a baseline
+          would compute a wrong grow delta. Pass -e resize_disk_device=<dev> to
+          name the device explicitly.
+      when: (_want_disk_gb | string | length) > 0
 
     # ── Report the diff BEFORE writing anything ─────────────────────────────
     - name: "Current vs desired"
@@ -250,7 +291,7 @@
         method: PUT
         body_format: form-urlencoded
         body:
-          disk: "{{ _disk_device }}"
+          disk: "{{ _disk_device | trim }}"
           size: "+{{ (_want_disk_gb | int) - (_have_disk_gb | int) }}G"
         status_code: [200]
       register: _disk_put
