@@ -65,19 +65,35 @@
     _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
     _pve_secret: "{{ _pve_data.api_token }}"
 
-    # Declared spec. Absent when driving purely by vmid, so every lookup below
-    # is default-guarded rather than assuming the entry exists.
-    _specs: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml') | from_yaml }}"
+    # WHERE THE DESIRED SPEC COMES FROM, in precedence order:
+    #
+    #   1. launch override      resize_cores / resize_memory / resize_disk
+    #   2. INVENTORY host vars  vm_cores / vm_memory / vm_disk  <-- the Semaphore path
+    #   3. proxmox/vm-specs.yml in site-config, only when readable
+    #
+    # (2) is the primary path and (3) is the fallback, not the other way round,
+    # because vm-specs.yml lives in the PRIVATE site-config repo which the
+    # Semaphore runner never checks out — it receives a static inventory instead.
+    # Reading the file first is what made the initial version of this playbook
+    # crash on its first real run: `lookup('file', ...)` resolved to
+    # platform/proxmox/vm-specs.yml inside the agent-cloud checkout, which does
+    # not exist. (provision-vm.yml has the same latent defect and is therefore
+    # not Semaphore-runnable either — tracked separately, it needs vm-specs for
+    # IP/gateway/tags so it cannot simply move to inventory.)
+    #
+    # errors='ignore' so a missing file yields empty rather than an exception:
+    # absent is the NORMAL case on the runner, not a failure.
+    _specs_raw: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml', errors='ignore') | default('', true) }}"
+    _specs: "{{ (_specs_raw | from_yaml) if (_specs_raw | length > 0) else {} }}"
     _svc: "{{ (_specs.vms | default({}))[target_service] | default({}) }}"
 
-    _vmid: "{{ target_vmid | default(_svc.vmid | default('')) }}"
-    _node: "{{ target_node | default(_svc.node | default('')) }}"
+    _vmid: "{{ target_vmid | default(vm_vmid | default(_svc.vmid | default(''))) }}"
+    _node: "{{ target_node | default(vm_node | default(_svc.node | default(''))) }}"
 
-    # Desired = launch override, else declared spec, else "leave alone".
-    _want_cores: "{{ resize_cores | default(_svc.cores | default('')) }}"
-    _want_memory: "{{ resize_memory | default(_svc.memory | default('')) }}"
+    _want_cores: "{{ resize_cores | default(vm_cores | default(_svc.cores | default(''))) }}"
+    _want_memory: "{{ resize_memory | default(vm_memory | default(_svc.memory | default(''))) }}"
     # Declared disk is like "32G"; strip the unit for arithmetic.
-    _want_disk_gb: "{{ (resize_disk | default(_svc.disk | default('')))
+    _want_disk_gb: "{{ (resize_disk | default(vm_disk | default(_svc.disk | default(''))))
                        | regex_replace('(?i)\\s*g(b)?$', '') }}"
 
     _allow_reboot: "{{ allow_reboot | default(false) | bool }}"
@@ -86,6 +102,23 @@
     _shutdown_timeout: "{{ resize_shutdown_timeout | default(120) | int }}"
 
   tasks:
+    # This play runs on localhost (it talks to the PVE API, not to the guest), so
+    # the target service's own inventory vars are NOT in scope automatically.
+    # Hoist them out of hostvars for the matching host in the <service>_svc group.
+    - name: "Resolve the target host's inventory vars"
+      ansible.builtin.set_fact:
+        vm_cores: "{{ _hv.vm_cores | default(omit) }}"
+        vm_memory: "{{ _hv.vm_memory | default(omit) }}"
+        vm_disk: "{{ _hv.vm_disk | default(omit) }}"
+        vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
+        vm_node: "{{ _hv.vm_node | default(omit) }}"
+      vars:
+        _grp: "{{ target_service | default('') }}_svc"
+        _hv: "{{ hostvars[(groups[_grp] | default([]) | first) | default('')] | default({}) }}"
+      when:
+        - target_service is defined
+        - (groups[target_service ~ '_svc'] | default([]) | length) > 0
+
     # The PVE API token is sent on EVERY request below, so the transport matters.
     # HTTPS is required outright. validate_certs stays false — PVE presents a
     # self-signed certificate and its CA is not installed on the Semaphore
@@ -120,9 +153,11 @@
             or (_want_memory | string | length > 0)
             or (_want_disk_gb | string | length > 0)
         fail_msg: >-
-          Nothing to converge: no cores/memory/disk declared for
-          '{{ target_service | default("(by vmid)") }}' and no resize_* override
-          passed. Add the spec to proxmox/vm-specs.yml, or pass an override.
+          Nothing to converge for '{{ target_service | default("(by vmid)") }}':
+          no vm_cores/vm_memory/vm_disk on its inventory host, no readable
+          proxmox/vm-specs.yml, and no resize_* override passed. Declare the
+          sizes on the service's inventory host (the Semaphore-runnable path) or
+          pass an override.
 
     # ── Read current state ──────────────────────────────────────────────────
     - name: "Read the VM's current config"
