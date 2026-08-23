@@ -63,3 +63,14 @@ platform/services/*/deployment/.env.local
 # Local-dev working files (plan/development/LOCAL-DEV-DEPLOYMENT.md) —
 # only the committed *.example template belongs in git
 platform/inventory/local-dev.yml
+
+# repo-memory per-commit capture journal (.githooks/post-commit).
+# A staging buffer, not a store: it accumulates one or two outcome-framed lines
+# per commit as draft material for the branch's outcome memory, then is
+# consolidated into a single retain and deleted. Never committed.
+.claude/memory/wip/
+
+# Ansible collections installed by ansible-galaxy / ansible-lint at run time.
+# A generated dependency tree — never committed, and excluded from yamllint
+# (see .yamllint.yml) so a third-party collection bump cannot fail our CI.
+.ansible/

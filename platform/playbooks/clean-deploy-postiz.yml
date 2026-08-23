@@ -1,0 +1,40 @@
+---
+# clean-deploy-postiz.yml — Destroy and redeploy postiz from scratch.
+#
+# WARNING: Destroys ALL postiz data — its Postgres volume (accounts, connected
+#          social accounts, drafts, scheduled and published posts), the redis
+#          volume, the uploads volume (ALL media), and the workflow engine's own
+#          Postgres volume (workflow history). A fresh deploy re-runs the app's
+#          Prisma migrations and re-provisions the engine schema against empty
+#          databases.
+#
+#          Two consequences worth knowing before running this:
+#          - Every connected social account must be re-authorized by hand, so
+#            this is not a routine recovery step.
+#          - Sessions and API keys SURVIVE, because the signing secret is reused
+#            from OpenBao rather than regenerated — so an n8n workflow holding a
+#            key keeps authenticating, against an account that no longer exists.
+#            Expect to re-issue the key after re-registering.
+#
+#          Because registration closes after the first account, a clean deploy
+#          against inventory with postiz_disable_registration=true leaves a
+#          stack nobody can sign in to. Set it back to false for the rebuild,
+#          sign in, then flip it again (same two-run sequence as first install).
+#
+# Local-dev shares one deploy tree, so the clone is NOT removed
+# (clean-service.yml branches on local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-postiz.yml.
+
+- name: "Clean postiz deployment"
+  hosts: postiz_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-postiz.yml

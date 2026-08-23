@@ -4,13 +4,25 @@
 LOCAL_DEV := scripts/local-dev.sh
 
 .PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
-.PHONY: local-deploy-% local-clean-deploy-%
+.PHONY: local-deploy-% local-clean-deploy-% git-setup
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z%-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-22s %s\n", $$1, $$2}'
 
 local-preflight: ## Verify toolchain (Brewfile) + podman machine
 	@$(LOCAL_DEV) preflight
+
+git-setup: ## Configure repo-local git settings this repo's .gitattributes rely on (idempotent)
+	@# `ours` is NOT a built-in git merge driver. .codebase-memory/.gitattributes
+	@# marks graph.db.zst with merge=ours so a concurrent index does not produce a
+	@# binary conflict — but that attribute is inert unless a driver named `ours`
+	@# exists. `true` is the conventional implementation: it exits 0 without
+	@# touching the file, which keeps our side. Lives in .git/config, so it cannot
+	@# be committed and has to be a setup step.
+	@git config merge.ours.driver true
+	@git config core.hooksPath .githooks
+	@printf 'git-setup: merge.ours.driver=%s  core.hooksPath=%s\n' \
+		"$$(git config --get merge.ours.driver)" "$$(git config --get core.hooksPath)"
 
 local-init: ## Create the gitignored working inventory from the committed example
 	@$(LOCAL_DEV) init

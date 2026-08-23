@@ -1,0 +1,9 @@
+# Rendered per-deploy by deploy-postiz.yml. Never committed.
+# (platform/.gitignore already covers *.env, which catches both .env and
+# config/postiz.env; listed here too so the intent is local and obvious.)
+.env
+config/postiz.env
+
+# step-ca trust bundle, distributed per-deploy by tasks/distribute-ca-root.yml
+# in local_mode only — the app makes server-side OIDC calls to the internal IdP.
+certs/

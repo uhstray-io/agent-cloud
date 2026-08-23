@@ -1,0 +1,226 @@
+---
+# deploy-postiz.yml — social-media scheduling and publishing deploy (composable).
+#
+# Phase 1: Place repo + manage-secrets (signing secret + the two datastore
+#          passwords — generated once into OpenBao and reused thereafter; the
+#          nine social-platform credentials reused from OpenBao where a
+#          seed-postiz-secrets.yml run has put them; the OIDC client secret
+#          shared-read from authentik, which owns it) + render BOTH env files.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait healthy; first boot
+#          runs the app's Prisma migrations AND the workflow engine's schema
+#          provisioning, so it is slow).
+# Phase 3: Verify the app container is healthy and answering.
+#
+# postiz is a five-container rootless-podman stack: the app (the only one
+# publishing a port), its own Postgres and Redis, and the Temporal workflow
+# engine plus that engine's own Postgres. The engine is what actually executes
+# scheduled publishing — without it the app starts but posts never fire.
+#
+# Auth is native OIDC to Authentik (blueprints/postiz-oidc.yaml, applied by
+# Deploy Authentik) rather than a Caddy forward_auth gate, so the
+# /api/public/v1 automation path stays usable by n8n with an API key.
+#
+# Caddy + inventory are wired separately (see the plan). Local-dev additionally
+# distributes the step-ca trust bundle: the app's backend makes server-side OIDC
+# token/userinfo calls to the internal IdP over TLS.
+# Plan: plan/development/14-postiz-social-publishing.md
+# Change: plan/development/openspec/changes/deploy-postiz-social-publishing/
+
+# ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+- name: "Phase 1: Place repo + manage postiz secrets"
+  hosts: postiz_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # All three generated values are STATEFUL — manage-secrets generates them
+    # once into OpenBao and reuses them on every later run:
+    #   jwt_secret          signs sessions AND API keys; regenerating would log
+    #                       everyone out and invalidate every key n8n holds
+    #   db_password         regenerating locks the app out of its existing volume
+    #   temporal_db_password  same, for the workflow engine's own datastore
+    _secret_definitions:
+      - { name: postiz_jwt_secret, type: random, length: 64 }
+      - { name: postiz_db_password, type: random, length: 32 }
+      - { name: postiz_temporal_db_password, type: random, length: 32 }
+      # type: existing — never generated here. These are the operator's own
+      # social-platform application credentials, placed in OpenBao by
+      # seed-postiz-secrets.yml. Declared so manage-secrets surfaces them to the
+      # template (`secrets` is built from this list, so an undeclared key present
+      # in OpenBao would be silently dropped); they render EMPTY until seeded, so
+      # enabling a platform later is a seed + redeploy with no code change.
+      - { name: postiz_x_api_key, type: existing }
+      - { name: postiz_x_api_secret, type: existing }
+      - { name: postiz_linkedin_client_id, type: existing }
+      - { name: postiz_linkedin_client_secret, type: existing }
+      - { name: postiz_youtube_client_id, type: existing }
+      - { name: postiz_youtube_client_secret, type: existing }
+      - { name: postiz_discord_client_id, type: existing }
+      - { name: postiz_discord_client_secret, type: existing }
+      - { name: postiz_discord_bot_token_id, type: existing }
+      # Not seeded today; declared so adding one is a seed + redeploy.
+      - { name: postiz_reddit_client_id, type: existing }
+      - { name: postiz_reddit_client_secret, type: existing }
+      - { name: postiz_github_client_id, type: existing }
+      - { name: postiz_github_client_secret, type: existing }
+      - { name: postiz_threads_app_id, type: existing }
+      - { name: postiz_threads_app_secret, type: existing }
+      - { name: postiz_facebook_app_id, type: existing }
+      - { name: postiz_facebook_app_secret, type: existing }
+      - { name: postiz_tiktok_client_id, type: existing }
+      - { name: postiz_tiktok_client_secret, type: existing }
+      - { name: postiz_pinterest_client_id, type: existing }
+      - { name: postiz_pinterest_client_secret, type: existing }
+      - { name: postiz_dribbble_client_id, type: existing }
+      - { name: postiz_dribbble_client_secret, type: existing }
+      - { name: postiz_slack_id, type: existing }
+      - { name: postiz_slack_secret, type: existing }
+      - { name: postiz_slack_signing_secret, type: existing }
+      - { name: postiz_mastodon_client_id, type: existing }
+      - { name: postiz_mastodon_client_secret, type: existing }
+      - { name: postiz_beehiive_api_key, type: existing }
+      - { name: postiz_beehiive_publication_id, type: existing }
+      - { name: postiz_tumblr_client_id, type: existing }
+      - { name: postiz_tumblr_client_secret, type: existing }
+      - { name: postiz_listmonk_user, type: existing }
+      - { name: postiz_listmonk_api_key, type: existing }
+    # The OIDC client secret is owned by authentik (the IdP). Read it read-only
+    # so POSTIZ_OAUTH_CLIENT_SECRET matches the value postiz-oidc.yaml injected
+    # into the provider via !Env. Never stored back under secret/services/postiz.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [postiz_oidc_client_secret] }
+    # TWO rendered files, by design (see the service's CLAUDE.md):
+    #   .env               compose-substitution ONLY (images, bind/port, the two
+    #                      Postgres passwords)
+    #   config/postiz.env  the app's own config, bind-mounted read-only — kept
+    #                      out of compose so its ~60 credential values are never
+    #                      $-interpolated
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+      - { src: postiz.env.j2, dest: config/postiz.env, mode: "0600" }
+    _service_url: "{{ postiz_public_url | default('') }}"
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # Rootless podman is daemonless — without user lingering the five containers
+    # stop for good on a VM reboot (05-platform-infra §11). enable-linger
+    # self-gates on local_mode (local-dev uses the developer's podman machine).
+    - name: "Enable rootless linger so postiz survives a reboot"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+
+    # ansible.builtin.template does NOT create parent directories, and
+    # config/postiz.env lives in a subdirectory. Create it first, otherwise the
+    # render fails on a fresh host. Also: this path is a BIND SOURCE — if it
+    # were missing at container start the runtime would create a DIRECTORY there
+    # and the app would boot with no configuration at all.
+    - name: "Ensure the app config directory exists (bind-mount source)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config"
+        state: directory
+        mode: "0700"
+
+    - name: "Manage secrets and render both env files"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # The app's backend performs server-side OIDC token + userinfo calls to the
+    # IdP at https://auth.<zone>:8443 (a step-ca-minted leaf), so it must trust
+    # the step-ca chain. compose.local.yml mounts ./certs and sets
+    # NODE_EXTRA_CA_CERTS. Local-only — the prod IdP chain is publicly trusted.
+    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
+
+    - name: "Create convenience symlink ~/postiz -> deploy dir"
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start postiz"
+  hosts: postiz_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    # No registry-login step: all five images are PUBLIC upstream images, unlike
+    # the CI-built private GHCR images some other services pull.
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the
+        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+        # leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify postiz"
+  hosts: postiz_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "App health (HTTP < 500 on / from inside the container)"
+      # Exec inside the container so the check never depends on the published
+      # bind or the central Caddy. node is guaranteed in this image. <500 is the
+      # success condition: the app answers 3xx/4xx on / depending on session
+      # state, and only a 5xx or a connection failure means it is broken.
+      ansible.builtin.command: >-
+        {{ _engine }} exec postiz
+        node -e "require('http').get('http://127.0.0.1:5000/',s=>process.exit(s.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      register: _postiz_health
+      changed_when: false
+      retries: 20
+      delay: 15
+      until: _postiz_health.rc == 0
+
+    - name: "Workflow engine reachable from the app's network"
+      # Scheduled publishing is executed by the engine, so an app that is
+      # healthy while the engine is unreachable would look fine and silently
+      # never publish. Assert the engine reports healthy in its own right.
+      ansible.builtin.command: >-
+        {{ _engine }} exec temporal
+        temporal operator cluster health --address 127.0.0.1:7233
+      register: _temporal_health
+      changed_when: false
+      retries: 10
+      delay: 10
+      until: _temporal_health.rc == 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          postiz healthy — app answering on :5000 (behind Caddy for TLS; in-app
+          Authentik OIDC, API-key automation on /api/public/v1) and the workflow
+          engine reports healthy, so scheduled publishing can execute.

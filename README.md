@@ -4,6 +4,17 @@ Privacy-focused, open-source AI platform for startups and small business. Custom
 
 **agent-cloud** is the unified platform monorepo for [uhstray-io](https://github.com/uhstray-io) -- the single source of truth for service deployments, AI agent configurations, Ansible playbooks, and shared libraries.
 
+## Conventions
+
+- **[AGENTS.md](AGENTS.md)** — canonical operating instructions for AI agents and
+  human contributors (`CLAUDE.md` is a symlink to it; there is exactly one source
+  of truth). Includes the memory/spec store routing.
+- **[kickstart.md](kickstart.md)** — set up, run, and develop here.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — current-state architecture summary.
+- **[plan/](plan/)** — architecture documents (`plan/architecture/`),
+  implementation plans and the OpenSpec store (`plan/development/`), and
+  product-inception artifacts (`plan/product/`).
+
 ## What is agent-cloud?
 
 agent-cloud is an AI infrastructure platform that runs on the uhstray.io datacenter Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
@@ -112,6 +123,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
 | **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
 | **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
+| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (code-complete, first bring-up pending) |
 
 ## Repository Structure
 

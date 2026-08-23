@@ -5,7 +5,7 @@
 # ruleset: when CodeRabbit requests changes it opens review threads that must be
 # resolved, and the ruleset's "require conversation resolution" rule then blocks
 # the merge button until they are.
-# See plan/development/MAIN-BRANCH-PROTECTION-PLAN.md and .github/rulesets/.
+# See plan/development/03-guardrails-governance.md and .github/rulesets/.
 language: en-US
 reviews:
   # chill keeps reviews on substantive issues — important because, with

@@ -1,0 +1,48 @@
+schema: spec-driven
+
+context: |
+  agent-cloud — the unified platform monorepo for the uhstray-io privacy-focused
+  AI platform. Public repo; private configuration (real IPs, credentials,
+  production inventory) lives in the separate site-config repository, never here.
+
+  Stack: Ansible playbooks + a composable task library, Bash deploy scripts and
+  shared libs, Jinja2 templates, Docker/Podman Compose, Python (ruff/pytest),
+  Go, Terraform/HCL policies, Kubernetes Kustomize overlays. Orchestration is
+  Semaphore; secrets are OpenBao; policy is OPA + Kyverno.
+
+  Architecture: a four-layer guardrails model — AI proposes, guardrails
+  validate, automation executes, the platform runs it. Deploys go through
+  Semaphore playbooks, never manual SSH. Secrets flow OpenBao -> Ansible memory
+  -> Jinja2 -> gitignored .env; deploy.sh handles container lifecycle only.
+
+  Conventions: Conventional Commits, no AI attribution in commits/PRs. Changes
+  land feature -> dev -> main, all through PRs, merged with merge commits (never
+  squash, except to scrub sensitive history). Never open a PR unless the human
+  explicitly asks. AGENTS.md is canonical (CLAUDE.md is a symlink to it).
+  Planning documents live under plan/ — architecture in plan/architecture/
+  (numbered docs, the repo's own decision-record convention), implementation
+  plans in plan/development/, which is also this OpenSpec store root.
+
+  Engineering value: foundational over one-shot. Fix the mechanism, not the
+  symptom; everything idempotent and re-runnable; encode manual steps rather
+  than leaving them in shell history; one codebase, no forks (environment
+  differences go through inventory vars and compose overlays).
+
+  Memory routing for this repo: structural questions — what calls what, blast
+  radius, where something is defined — go to the codebase-memory graph;
+  rationale, rejected alternatives and outcomes go to the Hindsight bank
+  agent-cloud-750a33b9. On `openspec archive`, retain one memory into that bank
+  recording whether the change worked, labelled worked / dead end / corrected,
+  with the root cause of anything that failed. Write memories in domain
+  language, not identifiers — identifier queries retrieve almost nothing because
+  the write rules strip identifiers out.
+
+rules:
+  proposal:
+    - Include a "## Rollback Plan" section — how to revert (flag, migration, redeploy).
+  specs:
+    - Every requirement uses SHALL/MUST and at least one "#### Scenario:" (WHEN/THEN).
+  tasks:
+    - Each "## <n>." phase ends with an explicit validation gate whose final task
+      names the spec scenario that proves the phase (that scenario is the
+      openspec-validate-enforced gate).

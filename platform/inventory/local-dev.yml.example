@@ -115,6 +115,10 @@ all:
             # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
             # surface is Authentik-gated (path-scoped forward_auth).
             - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
+            # postiz uses NATIVE OIDC (not forward_auth) — plain reverse_proxy.
+            # An edge gate would also gate /api/public/v1, breaking n8n's
+            # API-key calls; postiz authenticates interactively in-app instead.
+            - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -201,6 +205,42 @@ all:
           container_engine: podman
           honcho_bind: 127.0.0.1
           honcho_port: 8400   # host debug port; Caddy reaches honcho-api:8000 by name
+
+    # postiz — social-media scheduling and publishing. Five containers: the app
+    # (the only one publishing), its own Postgres + Redis, and the Temporal
+    # workflow engine + that engine's Postgres. The engine is what executes
+    # scheduled publishing. Native OIDC to Authentik
+    # (blueprints/postiz-oidc.yaml). Behind Caddy at postiz.agent-cloud.test.
+    # Deploy: make local-deploy-postiz.
+    postiz_svc:
+      hosts:
+        postiz-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: postiz
+          monorepo_deploy_path: platform/services/postiz/deployment
+          container_engine: podman
+          postiz_bind: 127.0.0.1
+          # Host debug port; Caddy reaches the container :5000 by name. Shifted
+          # off 5000 because macOS AirPlay Receiver squats that port by default.
+          postiz_port: 5001
+          # MUST match the URL the browser actually uses — postiz derives its
+          # OIDC redirect from this, so a mismatch is rejected by Authentik as an
+          # unregistered destination. Includes :8443 unless `make local-https`
+          # is running (which serves the same names port-free on :443).
+          postiz_public_url: "https://postiz.agent-cloud.test:8443"
+          # The IdP base postiz calls server-side for token + userinfo. Same
+          # host:port the browser uses, via the caddy route's internal_https_port.
+          postiz_authentik_base: "https://auth.agent-cloud.test:8443"
+          # NOTE: postiz_redirect_uri / postiz_launch_url are deliberately NOT set
+          # here. They are consumed when deploy-authentik renders the blueprint,
+          # so they belong on the AUTHENTIK host — and locally the blueprint's own
+          # defaults already match these URLs. Prod sets them in site-config on
+          # authentik_svc (same convention tududi follows).
+          # Open for the FIRST sign-in, then flip to true and redeploy. Upstream
+          # allows a single signup then closes; encoding the flip here keeps it
+          # reproducible instead of a manual step on the host.
+          postiz_disable_registration: false
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy

@@ -96,6 +96,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/uhhcraft/CLAUDE.md` — UhhCraft storefront (first WebSmith-built site)
 - `platform/services/tududi/deployment/CLAUDE.md` — tududi to-do app (rootless podman, SQLite, native Authentik OIDC; weft's NocoDB-migration sink)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
+- `platform/services/postiz/deployment/CLAUDE.md` — postiz social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres; native Authentik OIDC, API-key automation endpoint ungated at the edge for n8n; upstream "Option B" config mount)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
@@ -222,6 +223,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/tududi` | tududi session secret + break-glass admin password (the OIDC client secret lives under `authentik`; weft's API token is added post-deploy) |
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
 | `secret/services/cloudflare` | Cloudflare edge-as-code: scoped API token, `zone_id`, `caddy_origin_ip`, R2 state-backend S3 endpoint + access keys — read by `apply-cloudflare-tofu.yml` (see "Cloudflare edge as code" below) |
+| `secret/services/postiz` | postiz signing secret + its Postgres password + the Temporal Postgres password (all generated once and reused — a new signing secret invalidates every session AND every API key), plus the operator's social-platform application credentials seeded by `seed-postiz-secrets.yml`; the OIDC client secret is shared-read from `authentik` |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -255,6 +257,10 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Apply Cloudflare Tofu | `apply-cloudflare-tofu.yml` | OpenBao-wrapped `tofu plan/apply` for the Cloudflare edge (WAF + DNS as code, R2 state backend) — see "Cloudflare edge as code" below |
 | Create NetBox Device | `create-netbox-device.yml` | Build #1 executor: idempotent NetBox device create + verify on behalf of `netclaw`, from a skynet device-proposal (OPA-gated upstream); `-e dry_run=true` to preview |
 | Provision NetBox Automation Token | `provision-netbox-automation-token.yml` | One-time: mint a scoped NetBox API token via the Django shell → `secret/services/netbox:automation_api_token` (idempotent) |
+| Deploy Postiz | `deploy-postiz.yml` | Social publishing (rootless podman, 5 containers): secrets (+OIDC shared-read) → render BOTH env files → deploy.sh → verify app AND workflow engine |
+| Clean Deploy Postiz | `clean-deploy-postiz.yml` | Destructive: wipe containers + all four volumes + fresh deploy (social accounts need re-authorizing by hand afterwards) |
+| Seed Postiz Secrets | `seed-postiz-secrets.yml` | Additively place the operator's social-platform credentials at `secret/services/postiz` (KV-v2 merge-patch; no survey vars — Semaphore persists those, so values are launch-time extra vars) |
+| Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
@@ -288,10 +294,18 @@ A few tools must run outside Semaphore because they act *on* it or need creds Se
 shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_URL` /
 `SEMAPHORE_TOKEN` from the operator's environment:
 
-- `set-semaphore-branch.yml` — flip the Semaphore agent-cloud repo's `git_branch` `dev`↔`main`
-  via the API (defaults to `http://localhost:3000`, never the Cloudflare-walled public URL),
-  for the `dev`-test → `main`-promote cycle. Never have Semaphore restart or reconfigure its
-  own container from a Semaphore job (circular) — use the operator-side path.
+- `platform/semaphore/bootstrap-semaphore-repositories.yml` — apply `repositories.yml`, which
+  declares one Semaphore repository record per branch (`agent-cloud` = `main`, `agent-cloud dev`
+  = `dev`). A template then names the record it runs from via `repository:` in `templates.yml`;
+  omitting it uses `main`. Idempotent, never deletes, and refuses an SSH clone URL paired with
+  no key (which cannot authenticate even to a public repo). Run it BEFORE `setup-templates.yml`
+  on a fresh instance.
+- `set-semaphore-branch.yml` — **deprecated** in favour of the above. It flipped one shared
+  record's `git_branch`, which is global mutable state: concurrent testers overwrite each other
+  and later runs silently use whatever branch was left set. Kept only as a manual one-record fix.
+- Both default to `http://localhost:3000` (an SSH-local tunnel), never the Cloudflare-walled
+  public URL. Never have Semaphore restart or reconfigure its own container from a Semaphore
+  job (circular) — use the operator-side path.
 
 ## Container Runtime
 
@@ -443,3 +457,72 @@ Ansible collections (auto-installed from `collections/requirements.yml`):
 Shared bash libraries:
 - `platform/lib/common.sh` — logging, secret helpers, compose wrapper, health checks
 - `platform/lib/bao-client.sh` — HTTP-based OpenBao API client (curl + jq)
+
+## Memory & specs — which store owns a fact
+
+This block is self-contained on purpose: it has to work in this repo without
+reaching for a file in another one. A user-scope routing policy, where the
+operator has one, takes precedence — this is the repo-level default.
+
+| Store | Holds | Never holds |
+|-------|-------|-------------|
+| **codebase-memory graph** (`.codebase-memory/graph.db.zst`, committed; project `agent-cloud`) | What the code **is** — call graphs, blast radius, where something is defined, routes, dead code | Why anything was done |
+| **Hindsight bank** `agent-cloud-750a33b9` | **Why** — decisions, why the rejected alternatives lost, failures with root cause, outcomes | Code structure; credential values |
+| **OpenSpec** store `agent-cloud`, rooted at `plan/development` | `specs/` = what the system **should** do · `changes/` = what we are changing now, with its public rationale | Whether a change worked afterwards |
+| **`plan/architecture/`** (numbered docs) | Ratified architecture decisions — the repo's own record convention | Deliberation; anything a spec already states |
+| ~~`.claude/memory/`~~ | Retired from routing; kept as history | New knowledge — nothing routes here |
+
+**One-time per clone: `make git-setup`.** It sets `merge.ours.driver=true` and
+`core.hooksPath=.githooks`. Both are repo-local git config, so neither can be committed.
+The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`
+attribute on the graph artifact is inert without it, so a concurrent re-index would
+produce a binary conflict that looks like the attribute simply failed. The second
+activates the capture hooks and the secret-scanning gate.
+
+**Read routing.** Try the graph **first** for anything derivable from source —
+it is free, deterministic, and sub-millisecond. Go to the bank for rationale,
+preferences, past attempts and outcomes. Grep and file-reading are the last
+resort, for verifying something a graph query already pointed at.
+
+**Translate; do not substitute.** The graph names things with identifiers; the
+bank names them with domain concepts, because the write rules strip identifiers
+out of memories. So the sequence has three steps, not two: query the graph for
+the real identifiers → say what that **is**, in domain terms → recall with the
+domain terms. Querying the bank with identifiers retrieves almost nothing.
+Either order is legal; concepts survive refactors that rename functions, which
+is what makes them the better join key.
+
+**Write routing.** A decision reached, a task finished, an approach abandoned →
+retain into the bank: the decision and why the rejected options lost, a failure
+and its actual root cause, an outcome labelled plainly **worked / dead end /
+corrected**, a constraint discovered the hard way. One clean self-contained
+paragraph per retain — the bank is in `verbatim` mode, so what you send is what
+is stored, and keeping code structure out is the writer's job, not the store's.
+Use `sync_retain`; a plain `retain` returns an acceptance receipt, not a
+confirmed write. **Always pass an explicit `bank_id`** — omitting it silently
+targets a `default` bank that no scoped read ever queries.
+
+**Never retain into the bank:** file paths, function or class names, signatures,
+call relationships, dependency lists, or anything else regenerable from source;
+whole file contents or long diffs; credential values or real IP addresses (those
+belong in OpenBao and in the private site-config repo). Retaining code structure
+here is the one failure mode that breaks this architecture — it looks useful,
+goes stale on the next commit, and then the two stores disagree with no signal
+saying which to trust.
+
+**On archive, retain the outcome.** `openspec archive <change>` records that a
+change completed; it does **not** record whether it *worked*, and that gap is
+this repo's highest-value memory. When you archive, retain one memory into the
+bank: the outcome labelled worked / dead end / corrected, the root cause of
+anything that failed, and any constraint discovered along the way.
+
+**Drift check.** `openspec list --specs --store agent-cloud` is intent; the
+graph's architecture summary is reality. Compare them deliberately and
+periodically. Divergence is **information, not a conflict to reconcile** — it
+means the specs or the code moved and nobody wrote it down.
+
+**Do not use the graph tool's own ADR store.** It writes into the disposable
+index, never reaches the shareable artifact, and any codebase change hard-deletes
+it on the next index. Every `index_repository` response carries an `adr_hint`
+recommending it; that is the tool's suggestion, not a reason to follow it.
+Ratified decisions go in `plan/architecture/`.
