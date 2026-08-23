@@ -183,17 +183,43 @@ setup() {
   # delta, skips the restart, and reports converged — while the guest still runs
   # the old allocation. Measured: config memory=8192, guest maxmem=4096, reported
   # as "already matched the declared spec".
-  grep -qE '_running_memory' "$PB"
-  grep -qE '_running_cores' "$PB"
+  #
+  # Scoped to the RESTART TASK, not the whole file: an unscoped grep passes even
+  # if _needs_restart is removed from the restart gate and only survives in a
+  # report line.
   grep -qE 'Decide whether the guest needs a restart to pick up its config' "$PB"
-  # The restart block gates on the running comparison, never on _cfg_changes.
-  run bash -c "grep -B 6 'block:' '$PB' | grep -c '_cfg_changes | length > 0'"
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_needs_restart | bool'"
+  [ "$output" = "1" ]
+  # ...and that gate must NOT be the this-run-diff condition.
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_cfg_changes'"
   [ "$output" = "0" ]
-  grep -qE '_needs_restart \| bool' "$PB"
 }
 
-@test "resize-vm: maxmem is converted from bytes" {
-  # status/current reports maxmem in BYTES; comparing it to a MB value without
-  # conversion would make every run think a restart was needed.
-  grep -qE '1048576' "$PB"
+@test "resize-vm: maxmem is converted from bytes in the assignment itself" {
+  # status/current reports maxmem in BYTES; comparing it to an MB value without
+  # conversion makes every run think a restart is due. Match the conversion in
+  # the ASSIGNMENT — 1048576 surviving only in a comment would pass otherwise.
+  run bash -c "grep -E '_running_memory:' '$PB' | grep -c 'maxmem'"
+  [ "$output" = "1" ]
+  run bash -c "grep -E '_running_memory:' '$PB' | grep -c '1048576'"
+  [ "$output" = "1" ]
+}
+
+@test "resize-vm: core comparison multiplies by sockets" {
+  # status/current.cpus is TOTAL vCPUs; config `cores` is per-socket. On a
+  # 2-socket VM cores=2 runs as cpus=4, so a direct comparison would restart the
+  # guest on every run forever. vmid 215 is single-socket, which is why the naive
+  # version looked correct — right by coincidence.
+  grep -qE '_sockets:.*sockets \| default\(1\)' "$PB"
+  run bash -c "grep -c '(_want_cores | int) \* (_sockets | int)' '$PB'"
+  [ "$output" = "1" ]
+}
+
+@test "resize-vm: unrequested dimensions report their configured value" {
+  # _want_* hold EMPTY STRINGS when a dimension is not requested, and Jinja's
+  # default() substitutes only for UNDEFINED — so `_want_cores | default(...)`
+  # rendered nothing. A memory-only change reported `cores=`.
+  ! grep -qE '_want_cores \| default\(_have_cores\)' "$PB"
+  ! grep -qE '_want_memory \| default\(_have_memory\)' "$PB"
+  grep -qE "_want_cores if \(_want_cores \| string \| length > 0\) else _have_cores" "$PB"
 }

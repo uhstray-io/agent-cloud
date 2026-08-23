@@ -182,7 +182,14 @@
         # without hotplug keeps its old allocation until it next boots.
         # status/current reports maxmem in BYTES.
         _running_memory: "{{ ((_state.json.data.maxmem | default(0) | int) / 1048576) | round | int }}"
+        # status/current.cpus is the TOTAL live vCPU count, while the config's
+        # `cores` is per-SOCKET. On a 2-socket VM, cores=2 runs as cpus=4, so
+        # comparing them directly would see a permanent mismatch and restart the
+        # guest on every run forever. Sockets are captured so the comparison
+        # multiplies out. (vmid 215 is single-socket, which is why the naive
+        # comparison looked correct — right by coincidence.)
         _running_cores: "{{ _state.json.data.cpus | default(0) | int }}"
+        _sockets: "{{ _cfg.json.data.sockets | default(1) | int }}"
         # Auto-detect the primary disk unless told otherwise: the first
         # scsi/virtio/sata/ide entry that is NOT a cdrom. Named explicitly with
         # -e resize_disk_device=scsi1 for a VM with several.
@@ -284,7 +291,8 @@
         _needs_restart: >-
           {{ _is_running and (
                ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
-               or ((_want_cores | string | length > 0) and ((_want_cores | int) != (_running_cores | int)))
+               or ((_want_cores | string | length > 0)
+                   and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
              ) }}
 
     - name: "Compute the config changes actually needed"
@@ -330,9 +338,11 @@
     - name: "Report a pending change that needs a reboot"
       ansible.builtin.debug:
         msg: >-
-          The VM's config declares cores={{ _want_cores | default(_have_cores) }}
-          memory={{ _want_memory | default(_have_memory) }}MB, but the guest is
-          RUNNING cores={{ _running_cores }} memory={{ _running_memory }}MB — it
+          The VM's config declares
+          cores={{ _want_cores if (_want_cores | string | length > 0) else _have_cores }}
+          memory={{ _want_memory if (_want_memory | string | length > 0) else _have_memory }}MB,
+          but the guest is RUNNING cores={{ _running_cores }} (total vCPUs across
+          {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
           has no hotplug, so it keeps its old allocation until it next boots. It
           was NOT restarted. Re-run with -e allow_reboot=true during a
           maintenance window, or reboot the guest yourself.
