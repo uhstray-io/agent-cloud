@@ -219,7 +219,14 @@ setup() {
   # _want_* hold EMPTY STRINGS when a dimension is not requested, and Jinja's
   # default() substitutes only for UNDEFINED — so `_want_cores | default(...)`
   # rendered nothing. A memory-only change reported `cores=`.
+  #
+  # Scoped to the pending-report task, and asserting BOTH fallbacks positively:
+  # an earlier version checked cores positively but memory only by the ABSENCE of
+  # the broken form, so memory could still render empty and this test would pass.
   ! grep -qE '_want_cores \| default\(_have_cores\)' "$PB"
   ! grep -qE '_want_memory \| default\(_have_memory\)' "$PB"
-  grep -qE "_want_cores if \(_want_cores \| string \| length > 0\) else _have_cores" "$PB"
+  run bash -c "awk '/Report a pending change that needs a reboot/{f=1} f&&/^    - name: \"Restart/{exit} f' '$PB' | grep -c '_want_cores if (_want_cores | string | length > 0) else _have_cores'"
+  [ "$output" = "1" ]
+  run bash -c "awk '/Report a pending change that needs a reboot/{f=1} f&&/^    - name: \"Restart/{exit} f' '$PB' | grep -c '_want_memory if (_want_memory | string | length > 0) else _have_memory'"
+  [ "$output" = "1" ]
 }
