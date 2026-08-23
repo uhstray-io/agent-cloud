@@ -161,5 +161,18 @@ setup() {
   # (want >= have) would pass. Only whole-GB sizes are understood; anything else
   # must refuse.
   grep -qE '_disk_parsed' "$PB"
-  grep -qE 'Refuse a disk change when the current size could not be read' "$PB"
+  grep -qE 'Refuse a requested disk change that cannot be made safely' "$PB"
+}
+
+@test "resize-vm: a requested disk change never silently no-ops" {
+  # Gating the refusal on a device having been DETECTED meant that with no
+  # device, the refusal skipped, the shrink guard skipped, the grow skipped, and
+  # the run reported "Config unchanged" while ignoring the requested size.
+  grep -qE 'Refuse a requested disk change that cannot be made safely' "$PB"
+  # Gated only on a size being requested — not on detection succeeding.
+  run bash -c "grep -A 20 'Refuse a requested disk change' '$PB' | grep -c 'when: (_want_disk_gb | string | length) > 0'"
+  [ "$output" = "1" ]
+  # And it asserts BOTH failure modes.
+  run bash -c "grep -A 6 'Refuse a requested disk change' '$PB' | grep -cE '_disk_device \| trim \| length\) > 0|_disk_parsed'"
+  [ "$output" -ge 2 ]
 }
