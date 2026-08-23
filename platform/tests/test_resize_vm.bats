@@ -147,3 +147,19 @@ setup() {
   # CA reaches the runner, not a code edit.
   grep -qE 'validate_certs: "\{\{ proxmox_validate_certs \| default\(false\) \| bool \}\}"' "$PB"
 }
+
+@test "resize-vm: disk size parsing cannot raise on a non-match" {
+  # regex_search WITH a capture group calls .group() on None and raises, so a
+  # trailing `| default(0)` never runs. This failed on the first real run.
+  ! grep -qE "regex_search\('size=\(\[0-9\]\+\)G'" "$PB"
+  grep -qE "regex_replace\('\^\.\*size=" "$PB"
+}
+
+@test "resize-vm: an unparseable disk size refuses instead of assuming zero" {
+  # If _have_disk_gb silently became 0, the grow delta (want - have) would be the
+  # FULL declared size — a 32G disk grown by another 32G — and the shrink guard
+  # (want >= have) would pass. Only whole-GB sizes are understood; anything else
+  # must refuse.
+  grep -qE '_disk_parsed' "$PB"
+  grep -qE 'Refuse a disk change when the current size could not be read' "$PB"
+}
