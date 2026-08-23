@@ -40,11 +40,17 @@
     #
     # Variants inherit everything from their base except the name and the repo,
     # so they cannot drift from it.
+    # `_generated` is an INTERNAL marker, not a templates.yml field. The suffix
+    # keys off it rather than off `repository`, because `repository:` is also the
+    # documented way to bind a base template directly to another record — keying
+    # off its value renamed such a base to "<name> (Dev)", so `_existing_ids`
+    # stopped finding the real record and left it stale. And a template setting
+    # both `repository: agent-cloud dev` and `dev_variant: true` would have given
+    # its base and its generated variant the same identity.
     _dev_variants: >-
       {{ _base_templates | selectattr('dev_variant', 'defined')
          | selectattr('dev_variant')
-         | map('combine', {'repository': _dev_repo_name})
-         | map('combine', {'dev_variant': false})
+         | map('combine', {'repository': _dev_repo_name, 'dev_variant': false, '_generated': true})
          | list }}
     _dev_repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') }}"
     _all_templates: "{{ _base_templates + (_dev_variants | map('combine', {}) | list) }}"
@@ -81,6 +87,21 @@
           No Semaphore repository record named 'agent-cloud'. Run
           bootstrap-semaphore-repositories.yml first — templates bind to a
           repository record by name, so the records must exist before this.
+
+    - name: "Reject a template that both binds to dev and requests a dev variant"
+      # Both would resolve to the same repository record; the base would be
+      # indistinguishable from its own generated variant. Pick one.
+      ansible.builtin.assert:
+        that:
+          - not ((item.repository | default('')) == _dev_repo_name and (item.dev_variant | default(false)))
+        fail_msg: >-
+          Template '{{ item.name }}' sets both `repository: {{ _dev_repo_name }}`
+          and `dev_variant: true`. Use one: bind it directly to run ONLY from dev,
+          or set dev_variant to keep a main-bound base plus a generated
+          '<name> (Dev)' copy.
+      loop: "{{ _base_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: "Require every repository a template names to exist"
       ansible.builtin.assert:
@@ -129,7 +150,7 @@
         _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
         # A variant is the base plus " (Dev)" — derived, never hand-written, so a
         # renamed base cannot leave an orphaned variant behind.
-        _tpl_name: "{{ item.name ~ (' (Dev)' if (item.repository | default('') ) == _dev_repo_name else '') }}"
+        _tpl_name: "{{ item.name ~ (' (Dev)' if (item._generated | default(false)) else '') }}"
         _tpl_body: >-
           {{ {'name': _tpl_name,
               'project_id': (_project_id | int),
@@ -144,7 +165,7 @@
              | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
       loop: "{{ _all_templates }}"
       loop_control:
-        label: "{{ item.name }}{{ ' (Dev)' if (item.repository | default('')) == _dev_repo_name else '' }}"
+        label: "{{ item.name }}{{ ' (Dev)' if (item._generated | default(false)) else '' }}"
 
     - name: "Report"
       ansible.builtin.debug:

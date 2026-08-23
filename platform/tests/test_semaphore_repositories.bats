@@ -146,3 +146,28 @@ print('\n'.join(bad) if bad else 'OK')
   grep -qE 'Never monkey-patch a live object' "$f"
   grep -qE 'Mutating a config-as-code object through its API or console' "$f"
 }
+
+@test "templates: the (Dev) suffix keys off the generated marker, not repository" {
+  # `repository:` is ALSO the documented direct-binding field. Keying the suffix
+  # off its value renamed a directly-bound base to "<name> (Dev)", so the real
+  # record went stale — and a template setting both would give its base and its
+  # generated variant the same identity.
+  grep -qE "_tpl_name:.*item\._generated" "$SETUP"
+  ! grep -qE "_tpl_name:.*item\.repository" "$SETUP"
+  grep -qE 'Reject a template that both binds to dev and requests a dev variant' "$SETUP"
+}
+
+@test "sync-inventory: refuses cleartext and hostless pushes" {
+  local f="$REPO_ROOT/platform/semaphore/sync-inventory.yml"
+  [ -f "$f" ]
+  # The Bearer token crosses the wire on every request.
+  grep -qE 'Require a non-cleartext transport to Semaphore' "$f"
+  # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
+  # while still being hostless — a push would blank the orchestrator.
+  grep -qE 'Refuse a hostless inventory' "$f"
+  # Uses the real parser rather than a hand-rolled YAML walker.
+  grep -qE 'ansible-inventory' "$f"
+  ! grep -qE "lookup\('pipe'" "$f"
+  # And proves the write landed instead of trusting the status code.
+  grep -qE 'Verify the push actually landed' "$f"
+}

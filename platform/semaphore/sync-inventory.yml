@@ -54,6 +54,20 @@
           -e inventory_source=<path to the inventory file>
           (optionally -e inventory_name=<record name>, default 'production').
 
+    # SEMAPHORE_TOKEN is sent as a Bearer credential on every request below, so
+    # the transport matters. https always; http ONLY to loopback, which is the
+    # normal operator path (an SSH-local tunnel to the Semaphore host). Same
+    # shape as the OpenBao guards in the seed-* playbooks.
+    - name: "Require a non-cleartext transport to Semaphore"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
+        fail_msg: >-
+          Refusing to send SEMAPHORE_TOKEN over cleartext. Use an https:// URL,
+          or http://localhost:<port> via an SSH-local tunnel to the Semaphore
+          host. Got a non-loopback http:// endpoint.
+
     - name: "Read the source inventory"
       ansible.builtin.slurp:
         src: "{{ inventory_source }}"
@@ -71,11 +85,44 @@
           - _content | trim | length > 0
         fail_msg: "{{ inventory_source }} is empty — refusing to blank Semaphore's inventory."
 
-    - name: "Sanity-check it parses as YAML and has hosts"
+    - name: "Sanity-check it parses as YAML"
       ansible.builtin.assert:
         that:
           - (_content | from_yaml) is mapping
         fail_msg: "{{ inventory_source }} does not parse as a YAML mapping — refusing to push it."
+
+    # Count actual hosts using Ansible's OWN inventory parser rather than a
+    # hand-rolled YAML walker. `{}` and a groups-only skeleton are both non-empty
+    # strings that parse as mappings, so they cleared the checks above while
+    # still being hostless — and the PUT would then have replaced Semaphore's
+    # inventory with a record containing nothing to run against.
+    #
+    # Why the real parser: these inventories have SEVERAL top-level groups rather
+    # than a single `all:` root, and `hosts:` appears at more than one depth. A
+    # first attempt assumed the all/children shape and counted 0 on a perfectly
+    # good file — which the refusal below then correctly blocked, but it would
+    # have blocked every legitimate sync too. ansible-inventory knows the real
+    # grammar; reimplementing it here would just be a second thing to get wrong.
+    - name: "Enumerate hosts with ansible-inventory"
+      ansible.builtin.command:
+        argv: [ansible-inventory, -i, "{{ inventory_source }}", --list]
+      register: _inv_list
+      changed_when: false
+
+    - name: "Count them"
+      ansible.builtin.set_fact:
+        _host_count: "{{ ((_inv_list.stdout | from_json)['_meta']['hostvars'] | default({})) | length }}"
+
+    - name: "Refuse a hostless inventory"
+      ansible.builtin.assert:
+        that:
+          - (_host_count | int) > 0
+        fail_msg: >-
+          {{ inventory_source }} parses but declares NO hosts. Pushing it would
+          leave Semaphore with an inventory it cannot run anything against, and
+          every later task would fail looking like a connectivity problem.
+          Refusing.
+        success_msg: "{{ inventory_source }} declares {{ _host_count }} host(s)."
 
     - name: "Read existing inventory records"
       ansible.builtin.uri:
