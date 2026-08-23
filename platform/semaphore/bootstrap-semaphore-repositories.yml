@@ -73,16 +73,49 @@
           Authorization: "Bearer {{ _token }}"
       register: _repos
 
-    - name: "Resolve every declared ssh_key name to an id"
-      ansible.builtin.assert:
-        that:
-          - (_keys.json | selectattr('name', 'equalto', item.ssh_key) | list | length) == 1
-        fail_msg: >-
-          ssh_key '{{ item.ssh_key }}' for repository '{{ item.name }}' does not
-          resolve to exactly one entry in Semaphore's key store.
+    # The "no key attached" entry is named differently per instance: this
+    # production project has `local-none`, the local-dev bootstrap creates
+    # `none`. Rather than fork repositories.yml per environment, the logical
+    # value `none` resolves against these aliases — first match wins, declared
+    # name first so an explicit real key name always takes precedence.
+    #
+    # ORDER MATTERS, so this is list concatenation and NOT the `union` filter.
+    # `union` is a set operation with no ordering guarantee: with both
+    # `local-none` and `None` present (both type `none`, both valid), it picked
+    # arbitrarily between them, so the drift comparison below could flip on every
+    # run and the playbook would never converge. Measured: a re-run reported
+    # `changed` indefinitely.
+    - name: "Build the key name -> id map"
+      ansible.builtin.set_fact:
+        _key_ids: "{{ dict(_keys.json | map(attribute='name') | zip(_keys.json | map(attribute='id'))) }}"
+        _no_key_aliases: "{{ semaphore_no_key_aliases | default(['none', 'local-none', 'None']) }}"
+
+    - name: "Resolve every declared ssh_key to an id"
+      ansible.builtin.set_fact:
+        _resolved_keys: >-
+          {{ _resolved_keys | default({}) | combine({
+               item.name: (
+                 ([item.ssh_key] + (_no_key_aliases if item.ssh_key == 'none' else []))
+                 | select('in', _key_ids) | map('extract', _key_ids) | list | first | default(-1)
+               )
+             }) }}
       loop: "{{ _declared }}"
       loop_control:
         label: "{{ item.name }} -> {{ item.ssh_key }}"
+
+    - name: "Require every declared ssh_key to resolve"
+      ansible.builtin.assert:
+        that:
+          - (_resolved_keys[item.name] | int) >= 0
+        fail_msg: >-
+          ssh_key '{{ item.ssh_key }}' for repository '{{ item.name }}' does not
+          resolve to any entry in Semaphore's key store. Available:
+          {{ _key_ids.keys() | list | sort | join(', ') }}.
+          For the logical value 'none' these aliases are tried:
+          {{ _no_key_aliases | join(', ') }}.
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name }} -> id {{ _resolved_keys[item.name] }}"
 
     - name: "Create missing repository records"
       ansible.builtin.uri:
@@ -96,7 +129,7 @@
           project_id: "{{ _project_id | int }}"
           git_url: "{{ item.git_url }}"
           git_branch: "{{ item.git_branch }}"
-          ssh_key_id: "{{ _keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int }}"
+          ssh_key_id: "{{ _resolved_keys[item.name] | int }}"
         status_code: [201, 204]
       loop: "{{ _declared }}"
       loop_control:
@@ -116,7 +149,7 @@
           project_id: "{{ _project_id | int }}"
           git_url: "{{ item.git_url }}"
           git_branch: "{{ item.git_branch }}"
-          ssh_key_id: "{{ _keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int }}"
+          ssh_key_id: "{{ _resolved_keys[item.name] | int }}"
         # 200 included: Semaphore answers 200 on this endpoint in some versions
         # (set-semaphore-branch.yml accepts 200 for the same PUT), and treating a
         # successful update as a failure is worse than accepting both.
@@ -135,7 +168,7 @@
         - (_existing.git_url != item.git_url)
           or (_existing.git_branch != item.git_branch)
           or ((_existing.ssh_key_id | default(-1) | int)
-              != (_keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int))
+              != (_resolved_keys[item.name] | int))
       changed_when: true
 
     - name: "Re-read to confirm"

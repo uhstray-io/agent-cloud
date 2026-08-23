@@ -21,7 +21,12 @@
 #               an ssh:// or git@ URL with ssh_key `none` cannot authenticate and
 #               every checkout fails.
 #   git_branch  branch this record checks out
-#   ssh_key     Semaphore key-store entry name; `none` = no key (https clone)
+#   ssh_key     Semaphore key-store entry name. The "no key attached" entry is
+#               named inconsistently across instances — this production project
+#               calls it `local-none` while the local-dev bootstrap creates one
+#               named `none` — so the apply playbook accepts either for the
+#               logical value `none` rather than forking this file per
+#               environment.
 
 repositories:
   # Production. Templates default to this record when they name no repository.

@@ -25,7 +25,35 @@
     _templates_local: >-
       {{ (lookup('file', playbook_dir + '/templates-local.yml') | from_yaml).templates
          if (semaphore_include_local_templates | default(false) | bool) else [] }}
-    _all_templates: "{{ _template_config.templates + _templates_local }}"
+    _base_templates: "{{ _template_config.templates + _templates_local }}"
+    # Dev variants: a template marked `dev_variant: true` in templates.yml also
+    # gets a "<name> (Dev)" copy bound to the `agent-cloud dev` repository
+    # record, so orchestration code can be exercised from `dev` before it is
+    # promoted to `main`.
+    #
+    # This exists because the alternatives are both bad. Flipping a shared
+    # record's branch is global mutable state (the reason
+    # set-semaphore-branch.yml was deprecated). Re-pointing one template's
+    # repository_id by hand is an ad-hoc API change to config that is supposed to
+    # be code — it works, leaves no trace, and the next person cannot tell it
+    # happened. A generated variant is declarative, reviewable, and additive.
+    #
+    # Variants inherit everything from their base except the name and the repo,
+    # so they cannot drift from it.
+    # `_generated` is an INTERNAL marker, not a templates.yml field. The suffix
+    # keys off it rather than off `repository`, because `repository:` is also the
+    # documented way to bind a base template directly to another record — keying
+    # off its value renamed such a base to "<name> (Dev)", so `_existing_ids`
+    # stopped finding the real record and left it stale. And a template setting
+    # both `repository: agent-cloud dev` and `dev_variant: true` would have given
+    # its base and its generated variant the same identity.
+    _dev_variants: >-
+      {{ _base_templates | selectattr('dev_variant', 'defined')
+         | selectattr('dev_variant')
+         | map('combine', {'repository': _dev_repo_name, 'dev_variant': false, '_generated': true})
+         | list }}
+    _dev_repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') }}"
+    _all_templates: "{{ _base_templates + (_dev_variants | map('combine', {}) | list) }}"
 
   tasks:
     - name: "Validate environment"
@@ -60,6 +88,21 @@
           bootstrap-semaphore-repositories.yml first — templates bind to a
           repository record by name, so the records must exist before this.
 
+    - name: "Reject a template that both binds to dev and requests a dev variant"
+      # Both would resolve to the same repository record; the base would be
+      # indistinguishable from its own generated variant. Pick one.
+      ansible.builtin.assert:
+        that:
+          - not ((item.repository | default('')) == _dev_repo_name and (item.dev_variant | default(false)))
+        fail_msg: >-
+          Template '{{ item.name }}' sets both `repository: {{ _dev_repo_name }}`
+          and `dev_variant: true`. Use one: bind it directly to run ONLY from dev,
+          or set dev_variant to keep a main-bound base plus a generated
+          '<name> (Dev)' copy.
+      loop: "{{ _base_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
     - name: "Require every repository a template names to exist"
       ansible.builtin.assert:
         that:
@@ -84,12 +127,16 @@
       ansible.builtin.uri:
         url: >-
           {{ _semaphore_url }}/api/project/{{ _project_id }}/templates{{
-            '/' ~ (_existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | first)
-            if (_existing.json | selectattr('name', 'equalto', item.name) | list | length > 0)
-            else ''
+            '/' ~ (_existing_ids | first) if (_existing_ids | length > 0) else ''
           }}
+        # Both the URL and the body must key off _tpl_name, not item.name. Using
+        # item.name here while the body used _tpl_name meant a dev variant of an
+        # ALREADY-EXISTING template resolved the URL to its BASE's id while the
+        # body carried no id — which Semaphore rejects with "template id in URL
+        # and in body must be the same". Worse, had the ids lined up it would
+        # have overwritten the base template with the variant's name and repo.
         method: >-
-          {{ 'PUT' if (_existing.json | selectattr('name', 'equalto', item.name) | list | length > 0) else 'POST' }}
+          {{ 'PUT' if (_existing_ids | length > 0) else 'POST' }}
         headers:
           Authorization: "Bearer {{ _token }}"
           Content-Type: application/json
@@ -100,9 +147,12 @@
         body: "{{ _tpl_body | to_json }}"
         status_code: [200, 201, 204]
       vars:
-        _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
+        _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
+        # A variant is the base plus " (Dev)" — derived, never hand-written, so a
+        # renamed base cannot leave an orphaned variant behind.
+        _tpl_name: "{{ item.name ~ (' (Dev)' if (item._generated | default(false)) else '') }}"
         _tpl_body: >-
-          {{ {'name': item.name,
+          {{ {'name': _tpl_name,
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2) | int),
               'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
@@ -115,7 +165,7 @@
              | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
       loop: "{{ _all_templates }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.name }}{{ ' (Dev)' if (item._generated | default(false)) else '' }}"
 
     - name: "Report"
       ansible.builtin.debug:

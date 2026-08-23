@@ -69,6 +69,35 @@ scale - e.g. hand-setting Semaphore user `stray` to admin is a stopgap; the foun
 role-based provisioning ("Human access is provisioned by role", Section 3). Introduce a new
 abstraction only when the same fact has provably been hand-copied into 4+ places, not in anticipation.*
 
+**Never monkey-patch a live object to get past a blocker - build the mechanism, even when the
+blocker is small.** This is the no-monkey-patch rule at its sharpest, because the temptation is
+strongest exactly when the patch is one API call away and "just for this one run". Specifically
+forbidden:
+
+- **Mutating a config-as-code object through its API or console** - a Semaphore template's
+  repository binding or survey vars, an OpenBao policy or AppRole, a Cloudflare ruleset, an
+  Authentik provider, a NetBox object that a playbook owns. If a file in this repo is the source of
+  truth for it, that file is the *only* way to change it.
+- **Flipping shared mutable state so your run picks up what you need** - re-pointing one shared
+  Semaphore repository record's branch so a template checks out your branch, editing an inventory
+  value in place, temporarily widening a firewall rule. It works for you and silently changes
+  behavior for everyone else's next run.
+- **"I'll set it back afterwards."** The revert is not the problem; the invisibility is. A patched
+  object carries no record that it was patched, so the next person cannot tell whether the current
+  state is intended, and a failed or forgotten revert leaves drift nobody is looking for.
+
+The positive form: if you need a *variant* of something, generate the variant declaratively.
+*Why (worked example, 2026-08-23): a Cloudflare WAF rule lived on a branch, and the Semaphore
+template that applies it was bound to `main`. The one-API-call "fix" was to re-point that template's
+`repository_id` at the dev record, run it, and put it back - which is what happened, and it did work.
+The mechanism that should have existed instead is a declared `dev_variant: true` in
+`platform/semaphore/templates.yml`, which makes `setup-templates.yml` emit a second
+`<name> (Dev)` template bound to the `agent-cloud dev` repository record. Building it took minutes,
+is reviewable in a diff, needs no revert, and turned out to expose a real defect in the template
+applier that the hand-patch had hidden - the URL keyed off the base name while the body keyed off the
+variant name, so applying a variant of an existing template would have overwritten its base. A patch
+that "works" also skips the test that would have caught that.*
+
 **Compose files are runtime-agnostic by construction, not by luck.** Set explicit `container_name`,
 use fully-qualified images (`docker.io/library/...`), never the `name:` property on volumes (control
 the prefix via `--project-name`), and use simple `KEY=VALUE` env files. `depends_on: service_healthy`

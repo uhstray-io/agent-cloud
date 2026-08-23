@@ -113,3 +113,61 @@ print('\n'.join(bad) if bad else 'OK')
   # stale reference, every checkout fails, and the task reports "no change".
   grep -qE '_existing\.ssh_key_id' "$BOOT"
 }
+
+@test "templates: dev variants are generated, not hand-bound" {
+  # The supported way to run a template from a branch. Without this, the only
+  # options are flipping a shared record's branch or re-pointing a template's
+  # repository_id by hand — both monkey patches (PRINCIPLES.md §2).
+  grep -qE '_dev_variants:' "$SETUP"
+  grep -qE "_dev_repo_name: \"\{\{ semaphore_dev_repo_name \| default\('agent-cloud dev'\) \}\}\"" "$SETUP"
+  grep -qE 'dev_variant: true' "$TPL"
+}
+
+@test "templates: variant URL and body key off the SAME name" {
+  # They diverged once: url/method used item.name while the body used _tpl_name,
+  # so a variant of an EXISTING template resolved the URL to its base's id. That
+  # 400'd here, but with matching ids it would have overwritten the base
+  # template with the variant's name and repository.
+  grep -qE "url:" "$SETUP"
+  ! grep -qE "selectattr\('name', 'equalto', item\.name\)" "$SETUP"
+  grep -qE "selectattr\('name', 'equalto', _tpl_name\)" "$SETUP"
+}
+
+@test "templates: key resolution is deterministic (no set-ordering)" {
+  # `union` is a set operation with no order guarantee; with two valid 'no key'
+  # entries it picked arbitrarily, so the drift check flapped and the playbook
+  # never converged.
+  ! grep -qE "\| union\(_no_key_aliases" "$BOOT"
+  grep -qE "\(\[item\.ssh_key\] \+ \(_no_key_aliases" "$BOOT"
+}
+
+@test "principles: the no-monkey-patch rule names live-object mutation" {
+  local f="$REPO_ROOT/PRINCIPLES.md"
+  grep -qE 'Never monkey-patch a live object' "$f"
+  grep -qE 'Mutating a config-as-code object through its API or console' "$f"
+}
+
+@test "templates: the (Dev) suffix keys off the generated marker, not repository" {
+  # `repository:` is ALSO the documented direct-binding field. Keying the suffix
+  # off its value renamed a directly-bound base to "<name> (Dev)", so the real
+  # record went stale — and a template setting both would give its base and its
+  # generated variant the same identity.
+  grep -qE "_tpl_name:.*item\._generated" "$SETUP"
+  ! grep -qE "_tpl_name:.*item\.repository" "$SETUP"
+  grep -qE 'Reject a template that both binds to dev and requests a dev variant' "$SETUP"
+}
+
+@test "sync-inventory: refuses cleartext and hostless pushes" {
+  local f="$REPO_ROOT/platform/semaphore/sync-inventory.yml"
+  [ -f "$f" ]
+  # The Bearer token crosses the wire on every request.
+  grep -qE 'Require a non-cleartext transport to Semaphore' "$f"
+  # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
+  # while still being hostless — a push would blank the orchestrator.
+  grep -qE 'Refuse a hostless inventory' "$f"
+  # Uses the real parser rather than a hand-rolled YAML walker.
+  grep -qE 'ansible-inventory' "$f"
+  ! grep -qE "lookup\('pipe'" "$f"
+  # And proves the write landed instead of trusting the status code.
+  grep -qE 'Verify the push actually landed' "$f"
+}
