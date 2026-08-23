@@ -4,6 +4,27 @@
 # Each template maps to a playbook in this monorepo.
 # No secrets or sensitive data — safe for public repo.
 
+# Per-template fields:
+#   name          template name shown in Semaphore
+#   playbook      path within the repo
+#   survey_vars   optional launch-time inputs (NEVER for secret values —
+#                 Semaphore persists survey values in its database)
+#   repository    optional Semaphore repository RECORD name to bind to; omitted
+#                 means 'agent-cloud' (main). Records are declared in
+#                 repositories.yml and applied by
+#                 bootstrap-semaphore-repositories.yml.
+#   dev_variant   optional; when true, setup-templates.yml ALSO emits a
+#                 "<name> (Dev)" copy bound to the `agent-cloud dev` record, so
+#                 the orchestration code can be exercised from `dev` before it is
+#                 promoted to `main`.
+#
+#                 This is the supported way to test a template from a branch.
+#                 Do NOT flip a shared repository record's branch (global mutable
+#                 state — why set-semaphore-branch.yml is deprecated), and do NOT
+#                 re-point a template's repository_id through the API by hand:
+#                 that is an ad-hoc change to config that is meant to be code,
+#                 it leaves no trace, and the next person cannot tell it happened.
+
 templates:
   # ── Deployment ─────────────────────────────────────────────────
   - name: Deploy All Services
@@ -148,6 +169,7 @@ templates:
 
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
+    dev_variant: true
     # Five-container rootless stack: the app, its Postgres + Redis, and the
     # Temporal workflow engine + that engine's Postgres. The engine is what
     # executes scheduled publishing. Native Authentik OIDC in-app (not a Caddy
@@ -374,6 +396,7 @@ templates:
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
+    dev_variant: true
     # Places the operator's social-platform application credentials at
     # secret/services/postiz, additively (KV-v2 merge-patch), so the three
     # generated secrets already there survive. deploy-postiz.yml declares these
@@ -402,6 +425,9 @@ templates:
 
   - name: Apply Cloudflare Tofu
     playbook: platform/playbooks/apply-cloudflare-tofu.yml
+    # Edge changes are written on a branch and have to be planned from that
+    # branch before promotion, so this needs a dev-bound variant.
+    dev_variant: true
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
     # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
     # tofu_action=plan (safe, default) or apply (gated change; run after review).
@@ -527,6 +553,7 @@ templates:
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
+    dev_variant: true
     # Converges a live VM's cores/memory/disk to the spec declared in
     # site-config/proxmox/vm-specs.yml. Edit the spec, then run this — the
     # declared file stays the source of truth rather than a number typed at

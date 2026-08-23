@@ -113,3 +113,36 @@ print('\n'.join(bad) if bad else 'OK')
   # stale reference, every checkout fails, and the task reports "no change".
   grep -qE '_existing\.ssh_key_id' "$BOOT"
 }
+
+@test "templates: dev variants are generated, not hand-bound" {
+  # The supported way to run a template from a branch. Without this, the only
+  # options are flipping a shared record's branch or re-pointing a template's
+  # repository_id by hand — both monkey patches (PRINCIPLES.md §2).
+  grep -qE '_dev_variants:' "$SETUP"
+  grep -qE "_dev_repo_name: \"\{\{ semaphore_dev_repo_name \| default\('agent-cloud dev'\) \}\}\"" "$SETUP"
+  grep -qE 'dev_variant: true' "$TPL"
+}
+
+@test "templates: variant URL and body key off the SAME name" {
+  # They diverged once: url/method used item.name while the body used _tpl_name,
+  # so a variant of an EXISTING template resolved the URL to its base's id. That
+  # 400'd here, but with matching ids it would have overwritten the base
+  # template with the variant's name and repository.
+  grep -qE "url:" "$SETUP"
+  ! grep -qE "selectattr\('name', 'equalto', item\.name\)" "$SETUP"
+  grep -qE "selectattr\('name', 'equalto', _tpl_name\)" "$SETUP"
+}
+
+@test "templates: key resolution is deterministic (no set-ordering)" {
+  # `union` is a set operation with no order guarantee; with two valid 'no key'
+  # entries it picked arbitrarily, so the drift check flapped and the playbook
+  # never converged.
+  ! grep -qE "\| union\(_no_key_aliases" "$BOOT"
+  grep -qE "\(\[item\.ssh_key\] \+ \(_no_key_aliases" "$BOOT"
+}
+
+@test "principles: the no-monkey-patch rule names live-object mutation" {
+  local f="$REPO_ROOT/PRINCIPLES.md"
+  grep -qE 'Never monkey-patch a live object' "$f"
+  grep -qE 'Mutating a config-as-code object through its API or console' "$f"
+}
