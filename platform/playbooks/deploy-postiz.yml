@@ -85,6 +85,10 @@
       - { name: postiz_mastodon_client_secret, type: existing }
       - { name: postiz_beehiive_api_key, type: existing }
       - { name: postiz_beehiive_publication_id, type: existing }
+      - { name: postiz_tumblr_client_id, type: existing }
+      - { name: postiz_tumblr_client_secret, type: existing }
+      - { name: postiz_listmonk_user, type: existing }
+      - { name: postiz_listmonk_api_key, type: existing }
     # The OIDC client secret is owned by authentik (the IdP). Read it read-only
     # so POSTIZ_OAUTH_CLIENT_SECRET matches the value postiz-oidc.yaml injected
     # into the provider via !Env. Never stored back under secret/services/postiz.

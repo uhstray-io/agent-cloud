@@ -28,7 +28,13 @@ repos:
     hooks:
       - id: no-private-ips
         name: check for private IP addresses
-        language: script
+        # language: system, NOT script. With `language: script` pre-commit
+        # resolves `entry` as a path RELATIVE TO THE REPO, so `entry: bash`
+        # became ./bash and every one of these hooks died with
+        # "Executable .../agent-cloud/bash not found" — meaning this suite never
+        # actually ran. It went unnoticed because the hook was only wired up via
+        # core.hooksPath recently, and before that nothing invoked it.
+        language: system
         entry: bash
         args:
           - -c
@@ -58,7 +64,13 @@ repos:
     hooks:
       - id: no-hardcoded-credentials
         name: check for hardcoded credentials
-        language: script
+        # language: system, NOT script. With `language: script` pre-commit
+        # resolves `entry` as a path RELATIVE TO THE REPO, so `entry: bash`
+        # became ./bash and every one of these hooks died with
+        # "Executable .../agent-cloud/bash not found" — meaning this suite never
+        # actually ran. It went unnoticed because the hook was only wired up via
+        # core.hooksPath recently, and before that nothing invoked it.
+        language: system
         entry: bash
         args:
           - -c
@@ -136,7 +148,13 @@ repos:
     hooks:
       - id: no-env-files
         name: prevent .env files from being committed
-        language: script
+        # language: system, NOT script. With `language: script` pre-commit
+        # resolves `entry` as a path RELATIVE TO THE REPO, so `entry: bash`
+        # became ./bash and every one of these hooks died with
+        # "Executable .../agent-cloud/bash not found" — meaning this suite never
+        # actually ran. It went unnoticed because the hook was only wired up via
+        # core.hooksPath recently, and before that nothing invoked it.
+        language: system
         entry: bash
         args:
           - -c

@@ -26,10 +26,23 @@ setup() {
 }
 
 @test "repositories: no SSH clone URL is paired with the 'none' key" {
-  # SSH always authenticates — there is no anonymous SSH, even for a public
-  # repo — so this combination fails every checkout.
-  ! grep -qE 'git_url:.*(git@|ssh://)' "$DECL"
-  grep -qE 'git_url: "https://' "$DECL"
+  # SSH always authenticates — there is no anonymous SSH, even for a public repo
+  # — so that PAIRING fails every checkout. An SSH URL with a real declared key
+  # is legitimate, so assert the pairing per entry rather than banning ssh://
+  # outright (which would fail a future valid deploy-key setup).
+  run python3 -c "
+import re,sys
+txt=open('$DECL').read()
+bad=[]
+for blk in re.split(r'\n\s*- name: ', txt)[1:]:
+    name=blk.split('\n')[0].strip()
+    url=(re.search(r'git_url:\s*\"?([^\"\n]+)', blk) or [None,''])[1]
+    key=(re.search(r'ssh_key:\s*(\S+)', blk) or [None,''])[1]
+    if re.match(r'^(ssh://|git@)', url) and key == 'none':
+        bad.append(f'{name}: {url} + ssh_key={key}')
+print('\n'.join(bad) if bad else 'OK')
+"
+  [ "$output" = "OK" ]
 }
 
 @test "repositories: the bootstrap playbook REFUSES the SSH-without-key combo" {
@@ -86,4 +99,17 @@ setup() {
   local f="$REPO_ROOT/AGENTS.md"
   grep -qE 'bootstrap-semaphore-repositories\.yml' "$f"
   grep -qE 'deprecated' "$f"
+}
+
+@test "repositories: PUT accepts 200 as success" {
+  # Semaphore answers 200 on this endpoint in some versions; treating a
+  # successful update as a failure is worse than accepting both.
+  run bash -c "grep -A 30 'Correct records that drifted' '$BOOT' | grep -c 'status_code: \\[200, 201, 204\\]'"
+  [ "$output" = "1" ]
+}
+
+@test "repositories: ssh_key_id drift triggers an update" {
+  # A replaced key-store entry gets a new id; without this the record keeps a
+  # stale reference, every checkout fails, and the task reports "no change".
+  grep -qE '_existing\.ssh_key_id' "$BOOT"
 }

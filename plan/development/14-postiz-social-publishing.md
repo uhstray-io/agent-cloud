@@ -165,7 +165,10 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
 
 1. Feature branch → PR into `dev`; `/simplify` + `/security-review`; all CI checks green (this repo's CI gates on ruff/shellcheck/ansible-lint/yamllint/hadolint, trufflehog/bandit, pytest + BATS). Merge with a **merge commit**.
 2. Add the prod `postiz_svc` vars to **site-config** (real IPs; the public `platform/inventory/production.yml` carries only placeholders, added in 2.4): `postiz_public_url: https://postiz.uhstray.io`, `postiz_redirect_uri: https://postiz.uhstray.io/settings`, `postiz_bind`, `postiz_port: 5000`, `firewall_upstream_source` (inherited from group vars), image tag pin.
-3. Operator: create the `postiz.uhstray.io` DNS record in Cloudflare.
+3. **DNS needs no manual step.** `postiz` is already declared in the Cloudflare
+   OpenTofu root's platform-subdomain set and the record exists live (confirmed by a
+   plan run). The zone is config-as-code — never dashboard clicks — so any DNS change
+   here is an edit to `platform/infra/cloudflare/` plus an `Apply Cloudflare Tofu` run.
 4. **Operator: update the OAuth redirect/callback URIs at Discord, LinkedIn, X, and YouTube** to the new host. Automation cannot reach those consoles; connecting an account fails until this is done.
 5. `dev` → `main` promotion PR (merge commit), so prod Semaphore deploys from `main`.
 6. Prod Semaphore, in order: `Seed Postiz Secrets` → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 5 containers healthy → `Manage Caddy Sites` → verify `https://postiz.uhstray.io` serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.

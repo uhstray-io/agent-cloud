@@ -78,6 +78,22 @@
     _shutdown_timeout: "{{ resize_shutdown_timeout | default(120) | int }}"
 
   tasks:
+    # The PVE API token is sent on EVERY request below, so the transport matters.
+    # HTTPS is required outright. validate_certs stays false — PVE presents a
+    # self-signed certificate and its CA is not installed on the Semaphore
+    # runner, the same posture provision-vm.yml and proxmox-validate.yml already
+    # take. That is a known, scoped exception, not an oversight: the follow-up is
+    # distributing the PVE CA to the runner and flipping validate_certs across
+    # all three playbooks together, which is infrastructure work beyond this one.
+    - name: "Require HTTPS for the Proxmox API"
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+        fail_msg: >-
+          Refusing to send the PVE API token over cleartext. secret/services/proxmox
+          `url` must be an https:// endpoint (Proxmox serves TLS on :8006 by
+          default); got a non-HTTPS value.
+
     - name: "Validate inputs"
       ansible.builtin.assert:
         that:
@@ -214,55 +230,81 @@
         - _is_running | bool
         - not (_allow_reboot | bool)
 
-    - name: "Shut the guest down cleanly"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/shutdown"
-        method: POST
-        status_code: [200]
+    # The stop -> start sequence is wrapped so a shutdown that never completes
+    # cannot leave the guest POWERED OFF. Without the rescue, a wait timeout
+    # fails the play between "shutdown issued" and "start issued" — turning a
+    # resize into an outage, which is the worst possible failure mode here.
+    - name: "Restart the guest so cores/memory take effect"
       when:
         - _cfg_changes | length > 0
         - _is_running | bool
         - _allow_reboot | bool
-      changed_when: true
+      block:
+        - name: "Shut the guest down cleanly"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/shutdown"
+            method: POST
+            status_code: [200]
+          changed_when: true
 
-    - name: "Wait for the guest to stop"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: _stop_wait
-      until: (_stop_wait.json.data.status | default('')) == 'stopped'
-      retries: "{{ ((_shutdown_timeout | int) / 5) | round(0, 'ceil') | int }}"
-      delay: 5
-      changed_when: false
-      when:
-        - _cfg_changes | length > 0
-        - _is_running | bool
-        - _allow_reboot | bool
+        - name: "Wait for the guest to stop"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _stop_wait
+          until: (_stop_wait.json.data.status | default('')) == 'stopped'
+          retries: "{{ ((_shutdown_timeout | int) / 5) | round(0, 'ceil') | int }}"
+          delay: 5
+          changed_when: false
 
-    - name: "Start the guest again"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
-        method: POST
-        status_code: [200]
-      when:
-        - _cfg_changes | length > 0
-        - _is_running | bool
-        - _allow_reboot | bool
-      changed_when: true
+        - name: "Start the guest again"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          changed_when: true
 
-    - name: "Wait for the guest to be running again"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: _start_wait
-      until: (_start_wait.json.data.status | default('')) == 'running'
-      retries: 24
-      delay: 5
-      changed_when: false
-      when:
-        - _cfg_changes | length > 0
-        - _is_running | bool
-        - _allow_reboot | bool
+        - name: "Wait for the guest to be running again"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _start_wait
+          until: (_start_wait.json.data.status | default('')) == 'running'
+          retries: 24
+          delay: 5
+          changed_when: false
+
+      rescue:
+        # Read the real state rather than assuming which step failed.
+        - name: "Recovery: read the guest's actual state"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _rescue_state
+          changed_when: false
+
+        - name: "Recovery: bring a stopped guest back up"
+          # Only when it is actually stopped. A guest still mid-shutdown must not
+          # be sent start — that is how a VM ends up wedged.
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          when: (_rescue_state.json.data.status | default('')) == 'stopped'
+          changed_when: true
+
+        - name: "Fail with the reason, after recovering"
+          ansible.builtin.fail:
+            msg: >-
+              Restart sequence failed for vmid {{ _vmid }} on {{ _node }}. Guest
+              state when recovery ran: {{ _rescue_state.json.data.status | default('unknown') }}.
+              {{ 'It was stopped, so a start was issued — verify it came up.'
+                 if (_rescue_state.json.data.status | default('')) == 'stopped'
+                 else 'It was NOT stopped, so no start was issued (sending start to a
+                       guest mid-shutdown can wedge it) — check it by hand.' }}
+              The cores/memory config WAS written and will apply on the next boot.
+              A guest that ignores ACPI shutdown, or has no qemu-guest-agent, will
+              hit this every time; raise resize_shutdown_timeout or stop it manually.
 
     # ── Verify by re-reading, not by assuming the writes took ───────────────
     - name: "Re-read the config to confirm"

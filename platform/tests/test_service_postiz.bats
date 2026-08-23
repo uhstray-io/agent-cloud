@@ -291,7 +291,10 @@ setup() {
   # launch-time extra vars, never survey fields.
   # Anchored to the real YAML key: the template's comment says "NO survey_vars,
   # deliberately", so an unanchored match hits the prose explaining the rule.
-  run bash -c "awk '/^  - name: Seed Postiz Secrets\$/,/^  - name: [^S]/' '$t' | grep -cE '^    survey_vars:'"
+  # State-based range: stop at the NEXT template of any name, not the next
+  # non-'S' one — a later 'S'-prefixed template would otherwise extend the range
+  # and count its survey_vars as ours.
+  run bash -c "awk '/^  - name: Seed Postiz Secrets\$/{f=1;next} f&&/^  - name: /{exit} f' '$t' | grep -cE '^    survey_vars:'"
   [ "$output" = "0" ]
 }
 
@@ -301,4 +304,47 @@ setup() {
   grep -qE '\{\{ postiz_host \}\}' "$f"
   # Real addresses belong in site-config, never here.
   ! grep -qE 'postiz.*(192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.)' "$f"
+}
+
+@test "postiz: psql credential check preserves its exit status" {
+  local f="$REPO_ROOT/platform/playbooks/validate-secrets.yml"
+  # A `| head` pipeline returns HEAD's status, so a FAILED psql would report
+  # VALID — defeating the only thing this check exists to detect.
+  run bash -c "grep -A 20 'Validate postiz Postgres password' '$f' | grep -c 'head -3'"
+  [ "$output" = "0" ]
+  grep -qE 'ansible\.builtin\.command:' "$f"
+}
+
+@test "postiz: first-path secret creation is atomic (CAS 0)" {
+  local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
+  # Two runs racing a first-time seed both see 404; without CAS the later POST
+  # replaces the earlier writer's keys.
+  grep -qE 'cas: 0' "$f"
+  grep -qE 'Merge instead, when another run won the create race' "$f"
+}
+
+@test "postiz: cleartext OpenBao guard rejects lookalike hostnames" {
+  local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
+  # A prefix match on 'http://10\.' also accepts http://10.evil.example/ — a
+  # public host — which would send the AppRole creds over cleartext.
+  grep -qE '127\(\\\\\.\[0-9\]\{1,3\}\)\{3\}' "$f"
+  grep -qE '\(\[:/\]\|\$\)' "$f"
+}
+
+@test "postiz: every provider slot has a seedable key and a declaration" {
+  run python3 -c "
+import re
+tpl=open('$REPO_ROOT/platform/services/postiz/deployment/templates/postiz.env.j2').read()
+seed=set(re.findall(r'^      - ([a-z0-9_]+)\$', open('$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml').read(), re.M))
+dep=set(re.findall(r'name: postiz_([a-z0-9_]+), type: existing', open('$REPO_ROOT/platform/playbooks/deploy-postiz.yml').read()))
+print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-only={sorted(dep-seed)}')
+"
+  [ "$output" = "OK" ]
+}
+
+@test "postiz: docs do not tell an operator to create DNS by hand" {
+  # The zone is config-as-code via OpenTofu and the record already exists;
+  # a manual instruction contradicts the edge-as-code standard.
+  ! grep -qE '^- Create the public DNS record\.$' "$REPO_ROOT/platform/services/postiz/deployment/README.md"
+  ! grep -qE 'Operator: create the `postiz\.uhstray\.io` DNS record' "$REPO_ROOT/plan/development/14-postiz-social-publishing.md"
 }

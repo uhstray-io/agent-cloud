@@ -466,11 +466,18 @@ operator has one, takes precedence — this is the repo-level default.
 
 | Store | Holds | Never holds |
 |-------|-------|-------------|
-| **codebase-memory graph** (`.codebase-memory/graph.db.zst`, committed) | What the code **is** — call graphs, blast radius, where something is defined, routes, dead code | Why anything was done |
+| **codebase-memory graph** (`.codebase-memory/graph.db.zst`, committed; project `agent-cloud`) | What the code **is** — call graphs, blast radius, where something is defined, routes, dead code | Why anything was done |
 | **Hindsight bank** `agent-cloud-750a33b9` | **Why** — decisions, why the rejected alternatives lost, failures with root cause, outcomes | Code structure; credential values |
 | **OpenSpec** store `agent-cloud`, rooted at `plan/development` | `specs/` = what the system **should** do · `changes/` = what we are changing now, with its public rationale | Whether a change worked afterwards |
 | **`plan/architecture/`** (numbered docs) | Ratified architecture decisions — the repo's own record convention | Deliberation; anything a spec already states |
 | ~~`.claude/memory/`~~ | Retired from routing; kept as history | New knowledge — nothing routes here |
+
+**One-time per clone: `make git-setup`.** It sets `merge.ours.driver=true` and
+`core.hooksPath=.githooks`. Both are repo-local git config, so neither can be committed.
+The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`
+attribute on the graph artifact is inert without it, so a concurrent re-index would
+produce a binary conflict that looks like the attribute simply failed. The second
+activates the capture hooks and the secret-scanning gate.
 
 **Read routing.** Try the graph **first** for anything derivable from source —
 it is free, deterministic, and sub-millisecond. Go to the bank for rationale,

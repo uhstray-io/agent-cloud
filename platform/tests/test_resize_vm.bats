@@ -62,10 +62,15 @@ setup() {
 
 @test "resize-vm: reboots are opt-in and default to off" {
   grep -qE '_allow_reboot: "\{\{ allow_reboot \| default\(false\)' "$PB"
-  # Every stop/start task must be gated on it.
-  local gated
-  gated=$(grep -c '_allow_reboot | bool' "$PB")
-  [ "$gated" -ge 4 ]
+  # The whole stop/start sequence lives in ONE block gated on the flag, so
+  # asserting the block's `when:` carries it is stronger than counting
+  # occurrences (the earlier version counted four per-task gates and broke when
+  # the tasks were consolidated into the block — a stale test, not a regression).
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/block:/{exit} f' '$PB' | grep -c '_allow_reboot | bool'"
+  [ "$output" -ge 1 ]
+  # And no stop/start task may sit OUTSIDE that block.
+  run bash -c "awk '/^    - name: /{inblock=0} /Restart the guest so cores\/memory take effect/{inblock=1} !inblock&&/status\/(shutdown|start)/' '$PB' | grep -c 'status/'"
+  [ "$output" = "0" ]
 }
 
 @test "resize-vm: a pending change is REPORTED when not rebooting" {
@@ -119,4 +124,20 @@ setup() {
 @test "resize-vm: reboot survey var defaults to false" {
   run bash -c "awk '/^  - name: Resize VM\$/,/^  - name: [^R]/' '$TPL' | grep -A 5 'name: allow_reboot' | grep -c 'default_value: \"false\"'"
   [ "$output" = "1" ]
+}
+
+@test "resize-vm: requires HTTPS for the Proxmox API" {
+  # The PVE token is sent on every request; cleartext would leak it.
+  grep -qE 'Require HTTPS for the Proxmox API' "$PB"
+  grep -qE "_pve_host is match\('\^https://'\)" "$PB"
+}
+
+@test "resize-vm: a failed restart cannot leave the guest powered off" {
+  # Without the rescue, a shutdown-wait timeout fails the play between
+  # "shutdown issued" and "start issued" — turning a resize into an outage.
+  grep -qE '^\s+block:' "$PB"
+  grep -qE '^\s+rescue:' "$PB"
+  grep -qE 'Recovery: bring a stopped guest back up' "$PB"
+  # And it must only start a guest that is genuinely stopped.
+  grep -qE "when: \(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
 }

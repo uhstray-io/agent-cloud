@@ -80,7 +80,9 @@ Three upstream behaviours worth knowing before you debug a sign-in failure:
 
 ## Operator steps automation cannot do
 
-- Create the public DNS record.
+- ~~Create the public DNS record.~~ Not needed — the zone is config-as-code via
+  OpenTofu and `postiz.uhstray.io` is already declared and live. A DNS change means
+  editing `platform/infra/cloudflare/` and running `Apply Cloudflare Tofu`.
 - Update each social platform's OAuth redirect URI to the public host. **Connecting an
   account fails until this is done** — the developer consoles are not reachable from here.
 

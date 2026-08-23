@@ -76,8 +76,9 @@ None — this store has no existing specs.
 - **Secret store**: a new service path holding three generated values that must stay
   stable across redeploys, plus nine seeded platform credentials; one cross-service
   read of the OIDC client secret owned by the identity provider.
-- **External, operator-performed**: a DNS record, and OAuth redirect-URI updates at
-  four social platforms. Neither is automatable from here.
+- **External, operator-performed**: OAuth redirect-URI updates at four social
+  platforms — not automatable from here. DNS is *not* in this list: the zone is
+  config-as-code via OpenTofu and the record is already declared and live.
 - **Dependencies**: adds a Temporal workflow engine and a second Postgres to the
   service host — the largest single cost of this change, and the reason the upstream
   reference topology is trimmed rather than adopted wholesale.
@@ -87,14 +88,28 @@ None — this store has no existing specs.
 
 ## Rollback Plan
 
-Rollback is staged to match the deployment, and every step is reversible without data
-loss because the service is greenfield.
+Rollback is staged to match the deployment. **It is only lossless while the service is
+still greenfield.** Step 2 destroys volumes, so the moment real accounts, connected
+channels, scheduled posts, or uploaded media exist, this ceases to be a lossless
+rollback — it is a teardown. That distinction was previously glossed as "reversible
+without data loss because the service is greenfield", which is true at cutover and
+false a day later.
+
+Past the point where data exists, rollback means: take a hypervisor snapshot of the VM
+first, or export the datastore and the uploads volume, and treat the steps below as a
+destructive rebuild rather than a revert. Do not run step 2 against a populated
+instance expecting to undo it.
 
 1. **Public route** — remove the site block from the reverse proxy's managed section
    and re-run the route playbook. It validates and rolls back automatically on a bad
    config, so the blast radius is this one hostname; every other route is untouched.
-2. **The service** — run the clean-deploy playbook, which destroys containers and
-   volumes. Nothing else depends on this service, and no other service reads its data.
+2. **The service** — run the clean-deploy playbook. **Destructive**: it wipes the
+   datastore, the cache, the uploads volume, and the workflow engine's datastore.
+   Nothing else depends on this service and no other service reads its data, so the
+   blast radius is contained — but the data is gone. Every connected social account
+   must be re-authorized by hand afterwards, and because the signing secret is reused
+   from the secret store, existing API keys keep authenticating against an account that
+   no longer exists. Snapshot or export first if anything of value is in there.
 3. **Identity provider client** — the client blueprint is config-as-code; deleting the
    file and re-running the provider's deploy removes the application. Other clients
    are unaffected because each is its own blueprint.

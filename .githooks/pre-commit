@@ -24,9 +24,40 @@
 # without the toolchain is never blocked by a missing dependency — the CI
 # Security Scan remains the authoritative backstop either way.
 
-# ── Gate 1: repo secret-scanning suite ──────────────────────────────────────
-if [ -f .pre-commit-config.yaml ] && command -v pre-commit >/dev/null 2>&1; then
-  pre-commit run --hook-stage pre-commit || exit 1
+# ── Gate 1: repo secret-scanning suite (FAIL CLOSED) ────────────────────────
+# This gate blocks the commit when it cannot run. Skipping silently was the
+# original behaviour and it is worse than it looks: a contributor would believe
+# the audit ran, commit a secret, and only learn at PR time — by which point the
+# secret is in pushed history and has to be treated as compromised. CI is the
+# backstop, not the enforcement.
+#
+# Escape hatch, deliberately explicit and deliberately loud:
+#   SKIP_SECRET_SCAN=1 git commit ...
+# Use it only when you have separately confirmed the diff carries no secrets.
+if [ -f .pre-commit-config.yaml ]; then
+  if [ "${SKIP_SECRET_SCAN:-}" = "1" ]; then
+    printf '\n!! SECRET SCAN SKIPPED via SKIP_SECRET_SCAN=1 — the pre-push audit did NOT run.\n\n' >&2
+  elif command -v pre-commit >/dev/null 2>&1; then
+    pre-commit run --hook-stage pre-commit || exit 1
+  else
+    printf '\n' >&2
+    printf 'COMMIT BLOCKED: the mandatory secret-scanning suite cannot run.\n' >&2
+    printf '\n' >&2
+    printf '  .pre-commit-config.yaml is present but the pre-commit CLI is not installed.\n' >&2
+    printf '  AGENTS.md makes this audit mandatory before every commit (trufflehog,\n' >&2
+    printf '  private-IP detection, credential patterns, .env blocking).\n' >&2
+    printf '\n' >&2
+    printf '  Install it:   pip install pre-commit    (or: brew install pre-commit)\n' >&2
+    printf '  And:          brew install trufflehog\n' >&2
+    printf '\n' >&2
+    printf '  Do NOT run `pre-commit install` — this repo sets core.hooksPath, so this\n' >&2
+    printf '  hook already invokes the suite. The CLI alone is enough.\n' >&2
+    printf '\n' >&2
+    printf '  Override only if you have verified the diff yourself:\n' >&2
+    printf '      SKIP_SECRET_SCAN=1 git commit ...\n' >&2
+    printf '\n' >&2
+    exit 1
+  fi
 fi
 
 # ── Gate 2: repo-memory record lint ─────────────────────────────────────────

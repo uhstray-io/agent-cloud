@@ -117,7 +117,10 @@
           git_url: "{{ item.git_url }}"
           git_branch: "{{ item.git_branch }}"
           ssh_key_id: "{{ _keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int }}"
-        status_code: [201, 204]
+        # 200 included: Semaphore answers 200 on this endpoint in some versions
+        # (set-semaphore-branch.yml accepts 200 for the same PUT), and treating a
+        # successful update as a failure is worse than accepting both.
+        status_code: [200, 201, 204]
       loop: "{{ _declared }}"
       loop_control:
         label: "{{ item.name }}"
@@ -125,7 +128,14 @@
         _existing: "{{ (_repos.json | selectattr('name', 'equalto', item.name) | list | first) | default({}) }}"
       when:
         - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) > 0
-        - (_existing.git_url != item.git_url) or (_existing.git_branch != item.git_branch)
+        # ssh_key_id counts as drift too: if the declared key changes, or the
+        # key-store entry is replaced and gets a new id, the record would keep a
+        # stale key reference and every checkout would fail — while this task
+        # reported "no change needed".
+        - (_existing.git_url != item.git_url)
+          or (_existing.git_branch != item.git_branch)
+          or ((_existing.ssh_key_id | default(-1) | int)
+              != (_keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int))
       changed_when: true
 
     - name: "Re-read to confirm"

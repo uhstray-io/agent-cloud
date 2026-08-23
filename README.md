@@ -9,7 +9,7 @@ Privacy-focused, open-source AI platform for startups and small business. Custom
 - **[AGENTS.md](AGENTS.md)** — canonical operating instructions for AI agents and
   human contributors (`CLAUDE.md` is a symlink to it; there is exactly one source
   of truth). Includes the memory/spec store routing.
-- **[KICKSTART.md](KICKSTART.md)** — set up, run, and develop here.
+- **[kickstart.md](kickstart.md)** — set up, run, and develop here.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — current-state architecture summary.
 - **[plan/](plan/)** — architecture documents (`plan/architecture/`),
   implementation plans and the OpenSpec store (`plan/development/`), and
