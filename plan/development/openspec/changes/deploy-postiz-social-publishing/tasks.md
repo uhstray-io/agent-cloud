@@ -167,7 +167,9 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit
-- [ ] 6.4 Operator prerequisite: create the public DNS record for the service hostname
+- [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
+      — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
+      subdomain set and the record exists live (confirmed in a plan run). No action needed.
 - [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at all four social
       platforms to the new public host — account connection fails until this is done
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly

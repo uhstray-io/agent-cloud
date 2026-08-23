@@ -521,6 +521,31 @@ templates:
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Resize VM
+    playbook: platform/playbooks/resize-vm.yml
+    # Converges a live VM's cores/memory/disk to the spec declared in
+    # site-config/proxmox/vm-specs.yml. Edit the spec, then run this — the
+    # declared file stays the source of truth rather than a number typed at
+    # launch time that nobody can look up later.
+    #
+    # Safe by default: disk GROWTH only (Proxmox cannot shrink without data
+    # loss, so a smaller declared disk is refused), and reboots are opt-in —
+    # without allow_reboot the cores/memory config is written and the pending
+    # change is reported instead of restarting a live service. A run with
+    # allow_reboot unset is a safe way to preview the diff.
+    survey_vars:
+      - name: target_service
+        title: "Service"
+        description: "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"
+        type: string
+        required: true
+      - name: allow_reboot
+        title: "Allow reboot"
+        description: "true to stop/start the guest so cores+memory take effect now; false (default) writes config only"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Snapshot VM
     playbook: platform/playbooks/snapshot-vm.yml
     survey_vars:
