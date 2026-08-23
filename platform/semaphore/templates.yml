@@ -413,10 +413,14 @@ templates:
         required: false
         default_value: "plan"
 
-  # NOTE: set-semaphore-branch.yml is an OPERATOR-SIDE tool (run from a
-  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml) —
-  # deliberately NOT a Semaphore template, since managing Semaphore's own config
-  # from inside a Semaphore job is avoided by convention.
+  # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
+  # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
+  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
+  # Deliberately NOT Semaphore templates: managing Semaphore's own config from
+  # inside a Semaphore job is avoided by convention.
+  #
+  # To run a template against `dev` instead of `main`, give it
+  # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.
 
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml

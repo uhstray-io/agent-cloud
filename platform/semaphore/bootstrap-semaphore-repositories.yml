@@ -1,0 +1,147 @@
+---
+# bootstrap-semaphore-repositories.yml — apply repositories.yml to Semaphore.
+#
+# Replaces set-semaphore-branch.yml. That playbook flipped ONE shared repository
+# record's branch between `main` and `dev`; this one declares a record per branch
+# so nothing is flipped. The difference matters because the shared record was
+# global mutable state: two people testing different branches overwrote each
+# other, and any template run used whatever branch was left set, with nothing in
+# the output saying which.
+#
+# OPERATOR-SIDE tool (run from a workstation, NOT as a Semaphore job) — managing
+# Semaphore's own configuration from inside a Semaphore job is avoided by
+# convention, same as setup-templates.yml. Run it the same way:
+#
+#   SEMAPHORE_URL=http://localhost:3000 SEMAPHORE_TOKEN=<token> \
+#     ansible-playbook platform/semaphore/bootstrap-semaphore-repositories.yml
+#
+# (SEMAPHORE_URL via an SSH-local tunnel to the Semaphore host; token from
+# site-config/secrets/semaphore/semaphore_api_token.txt.)
+#
+# Idempotent: a declared record is created when missing, corrected when it
+# drifted from the declaration, and left untouched when it already matches.
+# Records NOT in repositories.yml are left alone — this never deletes, so a
+# hand-made record you still need will not vanish.
+#
+# Run this BEFORE setup-templates.yml on a fresh instance: templates bind to a
+# repository record by name, so the records have to exist first.
+
+- name: "Apply Semaphore repository records"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
+    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _project_id: "{{ semaphore_project_id | default(1) }}"
+    _declared: "{{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories }}"
+
+  tasks:
+    - name: "Validate environment"
+      ansible.builtin.assert:
+        that:
+          - _semaphore_url | length > 0
+          - _token | length > 0
+        fail_msg: "Set SEMAPHORE_URL and SEMAPHORE_TOKEN environment variables"
+
+    - name: "Refuse an SSH clone URL with no key attached"
+      # An ssh:// or git@ URL paired with the `none` key cannot authenticate, so
+      # every checkout fails — with an error that looks like a network problem
+      # rather than a configuration one. Catch it here instead.
+      ansible.builtin.assert:
+        that:
+          - not (item.git_url is match('^(ssh://|git@)') and item.ssh_key == 'none')
+        fail_msg: >-
+          Repository '{{ item.name }}' declares an SSH clone URL with ssh_key
+          'none'. Either use an https:// URL, or attach a real deploy key in
+          Semaphore's key store and name it here.
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Read the key store"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/keys"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _keys
+
+    - name: "Read existing repository records"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _repos
+
+    - name: "Resolve every declared ssh_key name to an id"
+      ansible.builtin.assert:
+        that:
+          - (_keys.json | selectattr('name', 'equalto', item.ssh_key) | list | length) == 1
+        fail_msg: >-
+          ssh_key '{{ item.ssh_key }}' for repository '{{ item.name }}' does not
+          resolve to exactly one entry in Semaphore's key store.
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.ssh_key }}"
+
+    - name: "Create missing repository records"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          project_id: "{{ _project_id | int }}"
+          git_url: "{{ item.git_url }}"
+          git_branch: "{{ item.git_branch }}"
+          ssh_key_id: "{{ _keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int }}"
+        status_code: [201, 204]
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.git_branch }})"
+      when: (_repos.json | selectattr('name', 'equalto', item.name) | list | length) == 0
+
+    - name: "Correct records that drifted from the declaration"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories/{{ _existing.id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          id: "{{ _existing.id | int }}"
+          name: "{{ item.name }}"
+          project_id: "{{ _project_id | int }}"
+          git_url: "{{ item.git_url }}"
+          git_branch: "{{ item.git_branch }}"
+          ssh_key_id: "{{ _keys.json | selectattr('name', 'equalto', item.ssh_key) | map(attribute='id') | first | int }}"
+        status_code: [201, 204]
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        _existing: "{{ (_repos.json | selectattr('name', 'equalto', item.name) | list | first) | default({}) }}"
+      when:
+        - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) > 0
+        - (_existing.git_url != item.git_url) or (_existing.git_branch != item.git_branch)
+      changed_when: true
+
+    - name: "Re-read to confirm"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _repos_after
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _repos_after.json | map(attribute='name') | list | length }} repository
+          record(s) present:
+          {{ _repos_after.json | map(attribute='name') | list | sort | join(', ') }}.
+          Templates select one by name via `repository:` in templates.yml;
+          omitting it uses 'agent-cloud' (main). Nothing is flipped globally —
+          run setup-templates.yml next if template bindings changed.

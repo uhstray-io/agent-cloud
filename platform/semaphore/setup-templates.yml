@@ -42,9 +42,36 @@
           Authorization: "Bearer {{ _token }}"
       register: _repos
 
-    - name: "Set repo ID"
+    # Map every repository record name -> id, so a template can NAME the record
+    # (and therefore the branch) it runs from. Declared in repositories.yml and
+    # applied by bootstrap-semaphore-repositories.yml. Previously this resolved a
+    # single hardcoded 'agent-cloud' id, which is why testing another branch meant
+    # flipping that one record's branch — global mutable state.
+    - name: "Map repository names to ids"
       ansible.builtin.set_fact:
-        _repo_id: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud') | map(attribute='id') | first }}"
+        _repo_ids: "{{ dict(_repos.json | map(attribute='name') | zip(_repos.json | map(attribute='id'))) }}"
+
+    - name: "Require the default repository record to exist"
+      ansible.builtin.assert:
+        that:
+          - "'agent-cloud' in _repo_ids"
+        fail_msg: >-
+          No Semaphore repository record named 'agent-cloud'. Run
+          bootstrap-semaphore-repositories.yml first — templates bind to a
+          repository record by name, so the records must exist before this.
+
+    - name: "Require every repository a template names to exist"
+      ansible.builtin.assert:
+        that:
+          - "(item.repository | default('agent-cloud')) in _repo_ids"
+        fail_msg: >-
+          Template '{{ item.name }}' names repository
+          '{{ item.repository | default('agent-cloud') }}', which has no record in
+          Semaphore. Add it to repositories.yml and run
+          bootstrap-semaphore-repositories.yml.
+      loop: "{{ _all_templates }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.repository | default('agent-cloud') }}"
 
     - name: "Get existing templates"
       ansible.builtin.uri:
@@ -78,7 +105,7 @@
           {{ {'name': item.name,
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2) | int),
-              'repository_id': (_repo_id | int),
+              'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
               'environment_id': (semaphore_environment_id | default(2) | int),
               'playbook': item.playbook,
               'app': 'ansible',

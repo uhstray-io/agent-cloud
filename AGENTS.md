@@ -294,10 +294,18 @@ A few tools must run outside Semaphore because they act *on* it or need creds Se
 shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_URL` /
 `SEMAPHORE_TOKEN` from the operator's environment:
 
-- `set-semaphore-branch.yml` — flip the Semaphore agent-cloud repo's `git_branch` `dev`↔`main`
-  via the API (defaults to `http://localhost:3000`, never the Cloudflare-walled public URL),
-  for the `dev`-test → `main`-promote cycle. Never have Semaphore restart or reconfigure its
-  own container from a Semaphore job (circular) — use the operator-side path.
+- `platform/semaphore/bootstrap-semaphore-repositories.yml` — apply `repositories.yml`, which
+  declares one Semaphore repository record per branch (`agent-cloud` = `main`, `agent-cloud dev`
+  = `dev`). A template then names the record it runs from via `repository:` in `templates.yml`;
+  omitting it uses `main`. Idempotent, never deletes, and refuses an SSH clone URL paired with
+  no key (which cannot authenticate even to a public repo). Run it BEFORE `setup-templates.yml`
+  on a fresh instance.
+- `set-semaphore-branch.yml` — **deprecated** in favour of the above. It flipped one shared
+  record's `git_branch`, which is global mutable state: concurrent testers overwrite each other
+  and later runs silently use whatever branch was left set. Kept only as a manual one-record fix.
+- Both default to `http://localhost:3000` (an SSH-local tunnel), never the Cloudflare-walled
+  public URL. Never have Semaphore restart or reconfigure its own container from a Semaphore
+  job (circular) — use the operator-side path.
 
 ## Container Runtime
 
