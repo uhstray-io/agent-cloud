@@ -141,3 +141,9 @@ setup() {
   # And it must only start a guest that is genuinely stopped.
   grep -qE "when: \(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
 }
+
+@test "resize-vm: certificate verification is an inventory knob, not hardcoded" {
+  # Turning verification on should be a one-line inventory change once the PVE
+  # CA reaches the runner, not a code edit.
+  grep -qE 'validate_certs: "\{\{ proxmox_validate_certs \| default\(false\) \| bool \}\}"' "$PB"
+}

@@ -40,7 +40,15 @@
   gather_facts: false
   module_defaults:
     ansible.builtin.uri:
-      validate_certs: false
+      # Inventory-driven, defaulting to the platform's current posture rather
+      # than hardcoded, so turning verification on is a one-line inventory change
+      # (`proxmox_validate_certs: true`) once the PVE CA is distributed to the
+      # Semaphore runner — not a code edit here. Today it is false because PVE
+      # serves a self-signed certificate and that CA is not on the runner, which
+      # is the same posture provision-vm.yml and proxmox-validate.yml already
+      # take; flipping one playbook alone would just break this one. HTTPS itself
+      # is NOT optional — asserted below.
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
       headers:
         Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
