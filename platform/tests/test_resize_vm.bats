@@ -176,3 +176,24 @@ setup() {
   run bash -c "grep -A 6 'Refuse a requested disk change' '$PB' | grep -cE '_disk_device \| trim \| length\) > 0|_disk_parsed'"
   [ "$output" -ge 2 ]
 }
+
+@test "resize-vm: the restart decision compares RUNNING state, not this run's diff" {
+  # "did this run change the config" hides itself: a run without allow_reboot
+  # writes config and leaves the guest; a LATER run with allow_reboot then sees no
+  # delta, skips the restart, and reports converged — while the guest still runs
+  # the old allocation. Measured: config memory=8192, guest maxmem=4096, reported
+  # as "already matched the declared spec".
+  grep -qE '_running_memory' "$PB"
+  grep -qE '_running_cores' "$PB"
+  grep -qE 'Decide whether the guest needs a restart to pick up its config' "$PB"
+  # The restart block gates on the running comparison, never on _cfg_changes.
+  run bash -c "grep -B 6 'block:' '$PB' | grep -c '_cfg_changes | length > 0'"
+  [ "$output" = "0" ]
+  grep -qE '_needs_restart \| bool' "$PB"
+}
+
+@test "resize-vm: maxmem is converted from bytes" {
+  # status/current reports maxmem in BYTES; comparing it to a MB value without
+  # conversion would make every run think a restart was needed.
+  grep -qE '1048576' "$PB"
+}

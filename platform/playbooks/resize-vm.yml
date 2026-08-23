@@ -177,6 +177,12 @@
         _have_cores: "{{ _cfg.json.data.cores | default(0) | int }}"
         _have_memory: "{{ _cfg.json.data.memory | default(0) | int }}"
         _is_running: "{{ (_state.json.data.status | default('unknown')) == 'running' }}"
+        # What the guest is ACTUALLY running right now, which is not the same as
+        # what its config says: a config write lands immediately but a guest
+        # without hotplug keeps its old allocation until it next boots.
+        # status/current reports maxmem in BYTES.
+        _running_memory: "{{ ((_state.json.data.maxmem | default(0) | int) / 1048576) | round | int }}"
+        _running_cores: "{{ _state.json.data.cpus | default(0) | int }}"
         # Auto-detect the primary disk unless told otherwise: the first
         # scsi/virtio/sata/ide entry that is NOT a cdrom. Named explicitly with
         # -e resize_disk_device=scsi1 for a VM with several.
@@ -262,6 +268,25 @@
         - _disk_device | length > 0
 
     # ── Apply: cores + memory ───────────────────────────────────────────────
+    # THE RESTART DECISION. Deliberately NOT "did this run change the config":
+    # that was the original condition and it is wrong in a way that hides itself.
+    # A run without allow_reboot writes the config and leaves the guest as-is; a
+    # LATER run with allow_reboot then sees no config delta, skips the restart,
+    # and reports the VM as converged — while the guest is still running the old
+    # allocation. Measured on vmid 215: config memory=8192 with the guest running
+    # maxmem=4096, reported as "already matched the declared spec".
+    #
+    # Comparing what the guest is RUNNING against what is WANTED makes the
+    # playbook genuinely converging: run it any number of times, in any order,
+    # and it restarts exactly when the guest is out of step with its declaration.
+    - name: "Decide whether the guest needs a restart to pick up its config"
+      ansible.builtin.set_fact:
+        _needs_restart: >-
+          {{ _is_running and (
+               ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
+               or ((_want_cores | string | length > 0) and ((_want_cores | int) != (_running_cores | int)))
+             ) }}
+
     - name: "Compute the config changes actually needed"
       ansible.builtin.set_fact:
         _cfg_changes: >-
@@ -305,13 +330,14 @@
     - name: "Report a pending change that needs a reboot"
       ansible.builtin.debug:
         msg: >-
-          cores/memory were written to the VM config but the guest will not see
-          them until it next boots (no hotplug). The VM is still running and was
-          NOT restarted. Re-run with -e allow_reboot=true during a maintenance
-          window, or reboot the guest yourself.
+          The VM's config declares cores={{ _want_cores | default(_have_cores) }}
+          memory={{ _want_memory | default(_have_memory) }}MB, but the guest is
+          RUNNING cores={{ _running_cores }} memory={{ _running_memory }}MB — it
+          has no hotplug, so it keeps its old allocation until it next boots. It
+          was NOT restarted. Re-run with -e allow_reboot=true during a
+          maintenance window, or reboot the guest yourself.
       when:
-        - _cfg_changes | length > 0
-        - _is_running | bool
+        - _needs_restart | bool
         - not (_allow_reboot | bool)
 
     # The stop -> start sequence is wrapped so a shutdown that never completes
@@ -320,8 +346,7 @@
     # resize into an outage, which is the worst possible failure mode here.
     - name: "Restart the guest so cores/memory take effect"
       when:
-        - _cfg_changes | length > 0
-        - _is_running | bool
+        - _needs_restart | bool
         - _allow_reboot | bool
       block:
         - name: "Shut the guest down cleanly"
@@ -412,10 +437,12 @@
                else 'Converged.' }}
           - >-
             {{ 'Guest was restarted, so cores/memory are live.'
-               if (_cfg_changes | length > 0) and (_is_running | bool) and (_allow_reboot | bool)
-               else ('Guest NOT restarted — cores/memory apply on next boot.'
-                     if (_cfg_changes | length > 0) and (_is_running | bool)
-                     else 'No reboot was needed.') }}
+               if (_needs_restart | bool) and (_allow_reboot | bool)
+               else ('Guest NOT restarted — its config is correct but it is still
+                      RUNNING the old allocation until it next boots. Re-run with
+                      -e allow_reboot=true during a maintenance window.'
+                     if (_needs_restart | bool)
+                     else 'Guest is already running what its config declares — no reboot needed.') }}
           - >-
             {{ 'A grown disk still needs the FILESYSTEM extended inside the guest
                 (e.g. growpart + resize2fs / lvextend) — Proxmox only grew the
