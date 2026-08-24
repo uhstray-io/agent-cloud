@@ -229,8 +229,17 @@ Each runner host's allocation — its identifier, its placement on the hyperviso
 cores, memory, disk, and address — SHALL be declared as configuration and SHALL be the
 single source that both provisioning and later resizing read.
 
-Its address SHALL be obtained from the platform's address authority as an unallocated
-address and recorded there as allocated, rather than chosen by inspection.
+Its address SHALL be recorded in that same declaration, which is the allocation record
+for these hosts. The declaration — not an operator's inspection of the network — is what
+makes an address taken.
+
+**The IPAM system is deliberately NOT the record of record here.** Its discovery pipeline
+has written nothing since 2026-04-23 (diagnosed in `plan/development/04-netbox-discovery.md`),
+so it currently reflects neither what is allocated nor what exists. Recording these two
+addresses there by hand would create an entry that looks authoritative while the system
+around it is stale — worse than a gap, because a stale record is trusted. Once discovery
+is repaired it will register these hosts on its own, and at that point IPAM becomes a
+cross-check against the declaration rather than a second thing to maintain.
 
 Adding a further runner SHALL require only a new declaration plus a run of the existing
 automation against it. If adding one requires editing the automation, the automation
@@ -243,11 +252,20 @@ does not satisfy this requirement.
 - **THEN** the second runner is provisioned, hardened, registered, and serving work,
   and no automation file needed to change to make that happen
 
-#### Scenario: Address allocation comes from the authority
+#### Scenario: The declaration is the allocation record
 
 - **WHEN** a runner's address is assigned
-- **THEN** it is an address the platform's address authority reported as unallocated,
-  and the authority records it as allocated to that host afterwards
+- **THEN** it is written into that host's declaration, and any later reader of the
+  declaration can see which address belongs to which host without consulting anything
+  else
+
+#### Scenario: A stale authority is not treated as a record
+
+- **GIVEN** an address-discovery pipeline that has not written for an extended period
+- **WHEN** a new host's address is allocated
+- **THEN** it is NOT hand-written into that pipeline's store, because an entry that looks
+  current inside a stale store is trusted more than it deserves; the declaration carries
+  it instead, and the pipeline is repaired separately
 
 #### Scenario: Declared size is convergeable
 

@@ -97,6 +97,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/tududi/deployment/CLAUDE.md` — tududi to-do app (rootless podman, SQLite, native Authentik OIDC; weft's NocoDB-migration sink)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
 - `platform/services/postiz/deployment/CLAUDE.md` — postiz social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres; native Authentik OIDC, API-key automation endpoint ungated at the edge for n8n; upstream "Option B" config mount)
+- `platform/services/github-runner/CLAUDE.md` — self-hosted GitHub Actions runners (two hosts, one pool; org-scoped `uhstray-selfhosted` group restricted to the five PRIVATE repos — `agent-cloud` deliberately excluded as public; App-signed credential chain minted on the controller because the hosts are firewalled away from OpenBao; per-job containerisation is explicitly NOT an enforced control — read the isolation table before placing anything on a runner host)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
@@ -224,6 +225,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
 | `secret/services/cloudflare` | Cloudflare edge-as-code: scoped API token, `zone_id`, `caddy_origin_ip`, R2 state-backend S3 endpoint + access keys — read by `apply-cloudflare-tofu.yml` (see "Cloudflare edge as code" below) |
 | `secret/services/postiz` | postiz signing secret + its Postgres password + the Temporal Postgres password (all generated once and reused — a new signing secret invalidates every session AND every API key), plus the operator's social-platform application credentials seeded by `seed-postiz-secrets.yml`; the OIDC client secret is shared-read from `authentik` |
+| `secret/services/github-runner` | GitHub App private key (`app_private_key`) for the org runner-automation App. The App's OAuth client secret is NOT used and is not stored; the client id is the JWT issuer and is not secret. Read only by the orchestrator — a runner host is denied OpenBao by its own firewall declaration and never holds this |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -260,6 +262,9 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Deploy Postiz | `deploy-postiz.yml` | Social publishing (rootless podman, 5 containers): secrets (+OIDC shared-read) → render BOTH env files → deploy.sh → verify app AND workflow engine |
 | Clean Deploy Postiz | `clean-deploy-postiz.yml` | Destructive: wipe containers + all four volumes + fresh deploy (social accounts need re-authorizing by hand afterwards) |
 | Seed Postiz Secrets | `seed-postiz-secrets.yml` | Additively place the operator's social-platform credentials at `secret/services/postiz` (KV-v2 merge-patch; no survey vars — Semaphore persists those, so values are launch-time extra vars) |
+| Deploy GitHub Runner | `deploy-github-runner.yml` | Install + register one self-hosted runner: prereqs (incl. `acl`) → unprivileged account asserted sudo-less → pinned artefacts verified against their published digests → registration token minted ON THE CONTROLLER (the host cannot reach OpenBao) → per-job cleanup hook → systemd user service. Idempotent; a re-run leaves an existing registration intact |
+| Manage GitHub Runner Group | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false`; convergence REPLACES the list, so a grant made outside the declaration is removed |
+| Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |

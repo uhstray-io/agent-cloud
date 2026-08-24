@@ -73,14 +73,16 @@
 
 ## 3. Allocate the addresses and declare the hosts
 
-- [ ] 3.1 Query NetBox — the platform's address authority — for the next unallocated
-      addresses in the management prefix, through automation run from Semaphore (which
-      holds OpenBao access), not an ad-hoc API call from a workstation. If no read-only
-      path exists, add one as a playbook; do not mint a token by hand.
-- [ ] 3.2 Confirm or replace the two candidate addresses identified during planning
-      (their concrete values live in the private site-config inventory, never in this
-      public repo) with what the authority reports free, and record both in NetBox as
-      allocated to `gh-runner-01` / `gh-runner-02`.
+- [x] 3.1 **Decided: the inventory declaration is the allocation record for these hosts,
+      not NetBox.** Checked whether the discovery pipeline would register them on its own
+      — it would not: it has written nothing since 2026-04-23 because six vault
+      references resolve to nothing. Full diagnosis and fix plan in
+      `plan/development/04-netbox-discovery.md`.
+- [x] 3.2 **Will not hand-write the two addresses into NetBox.** An entry that looks
+      current inside a store that is four months stale is trusted more than it deserves.
+      The declaration carries them; the pipeline gets repaired as its own work, after
+      which it registers these hosts itself and IPAM becomes a cross-check rather than a
+      second record to maintain.
 - [ ] 3.3 Declare both hosts in the private site-config inventory as a
       `github_runner_svc` group, carrying the allocation fields the existing
       inventory-first provisioning reads (`vm_vmid` 216/217, `vm_node` crabnebula /

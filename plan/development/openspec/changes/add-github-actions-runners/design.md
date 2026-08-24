@@ -297,6 +297,28 @@ something the next person has to learn, and there is nothing about this service 
 justifies one. The dedicated unprivileged account is the concrete thing that makes the
 isolation requirement's "cannot escalate to host administration" scenario true.
 
+### D9 — The declaration is the allocation record; IPAM is a cross-check, once repaired
+
+**Decision.** Each runner's address lives in its inventory declaration, and that is the
+allocation record. The addresses are not hand-written into NetBox.
+
+**Why, and why this is not a shortcut.** The original design named the address authority
+as the source, on the reasonable assumption that it was current. It is not: checking
+whether the two new hosts had been auto-registered turned up an IPAM store whose newest
+discovery-written record is dated 2026-04-23, because the agent fails to resolve six
+vault references every cycle and is left with no usable policy.
+
+Writing two entries by hand into that store would produce records that look authoritative
+inside a system that is four months stale — and a stale record is worse than an absent
+one, because it gets trusted. The declaration is already read by both provisioning and
+size convergence, so it is a real record rather than a placeholder, and it is versioned.
+
+**What this defers, not abandons.** Repairing discovery (see
+`plan/development/04-netbox-discovery.md`) makes IPAM register these hosts without anyone
+recording anything. At that point it becomes a *cross-check* on the declaration —
+divergence between the two is information — instead of a second record to keep in step by
+hand.
+
 ## Risks / Trade-offs
 
 - **A persistent runner serves several repositories in turn, so isolation carries the
