@@ -303,7 +303,26 @@
       become_user: "{{ _account }}"
       register: _configured
       changed_when: "'registered' in (_configured.stdout | default(''))"
+      failed_when: false
       no_log: true
+
+    # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
+    # no_log step that merely fails is undiagnosable. The script never echoes the token
+    # and the runner's own configuration masks secrets it is given, so its output is safe
+    # to surface — and surfacing it is what turns "failed" into something actionable.
+    - name: "Report the registration outcome"
+      ansible.builtin.debug:
+        msg: >-
+          register rc={{ _configured.rc | default('?') }}
+          {{ ('stdout: ' ~ ((_configured.stdout | default('')) | trim)) if (_configured.stdout | default('')) | length > 0 else '' }}
+          {{ ('stderr: ' ~ ((_configured.stderr | default('')) | trim)) if (_configured.stderr | default('')) | length > 0 else '' }}
+
+    - name: "Fail if the runner did not register"
+      ansible.builtin.assert:
+        that:
+          - (_configured.rc | default(1)) == 0
+        fail_msg: "The runner did not register — see the reported rc and output above."
+        success_msg: "Runner registered."
 
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
