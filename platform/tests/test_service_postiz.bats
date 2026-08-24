@@ -71,6 +71,34 @@ setup() {
   [ "$(grep -cE '^\s+ports:' "$f")" -eq 1 ]
 }
 
+@test "postiz: the mounted app config is actually loaded into the container" {
+  # Mounting the Option B file is not sufficient on its own: the image entrypoint
+  # is a generic node wrapper that never reads it, so the app starts with no
+  # DATABASE_URL and crash-loops (observed: 216 restarts, hidden by
+  # `restart: always` looking like a slow boot).
+  local f="$REPO_ROOT/platform/services/postiz/deployment/compose.yml"
+
+  # Sourced inside the container, with `set -a` so the values are EXPORTED —
+  # without it they are shell-local and the app's child processes never see them.
+  grep -qF 'set -a; . /config/postiz.env; set +a' "$f"
+
+  # NOT via env_file, which compose interpolates. Measured under podman-compose:
+  # `${HOME}` inside an env_file value is expanded before the container sees it,
+  # so a client secret containing `${` would be corrupted.
+  ! grep -qE '^\s+env_file:' "$f"
+
+  # Done as `command:`, NOT an `entrypoint:` wrapper inheriting the image CMD via
+  # "$@": podman-compose sets Cmd to null when entrypoint is overridden, so the
+  # wrapper execs nothing and the container exits 0 instantly — a silent no-op.
+  grep -qE '^\s+command:$' "$f"
+  ! grep -qE '^\s+entrypoint:$' "$f"
+
+  # Because the CMD is copied, pin it. Upstream postiz-app v2.23.0 ships
+  # CMD ["sh","-c","nginx && pnpm run pm2"]; if that changes, this fails loudly
+  # instead of the copy silently drifting.
+  grep -qF 'nginx && pnpm run pm2' "$f"
+}
+
 @test "postiz: the workflow engine healthcheck does not probe loopback" {
   # The engine binds its frontend to the CONTAINER IP, so nothing ever listens on
   # 127.0.0.1 inside it. A loopback probe is refused forever, the container never

@@ -10,10 +10,17 @@
 # CONFIGURATION — upstream "Option B". App config lives in config/postiz.env,
 # bind-mounted read-only at /config/postiz.env, NOT passed through compose
 # `environment:` or `env_file:`. This is deliberate and load-bearing: compose
-# performs $-interpolation on values it reads, and this service takes ~60 social
-# provider credential slots. A `$` inside any client secret would be silently
-# mangled under upstream's Option A or C. A mounted file is never interpolated,
-# so the failure mode does not exist. The .env beside this file therefore holds
+# interpolates values it reads, and this service takes ~60 social provider
+# credential slots, so a `${` inside one client secret would be silently
+# corrupted. Measured under podman-compose: `ab$c${HOME}de$$f` in an env_file
+# arrives as `ab$c/Users/…de$$f`. Compose never reads this file, so that cannot
+# happen.
+#
+# Mounting the file is NOT sufficient by itself, which is easy to miss: the
+# image's entrypoint is a generic node wrapper and never reads it, so the app
+# starts with no DATABASE_URL and crash-loops. The service therefore wraps the
+# entrypoint to source the file and then exec the image's own CMD — see the
+# comment on `entrypoint:` below. The .env beside this file therefore holds
 # ONLY compose-substitution values (image tags, bind/port, the two Postgres
 # passwords) — never app config.
 #
@@ -40,6 +47,33 @@ services:
     image: ${POSTIZ_IMAGE:-ghcr.io/gitroomhq/postiz-app:v2.23.0}
     container_name: postiz
     restart: always
+    # Load the Option B config INSIDE the container. Mounting the file is not
+    # enough on its own — the image's entrypoint is a generic node wrapper that
+    # never reads it, so without this the app starts with no DATABASE_URL and
+    # crash-loops on `Environment variable not found: DATABASE_URL` (observed: 216
+    # restarts, with `restart: always` making it look like a slow boot).
+    #
+    # NOT `env_file:`, which is the obvious alternative and is unsafe here.
+    # Measured under podman-compose: a value of `ab$c${HOME}de$$f` in an env_file
+    # reaches the container as `ab$c/Users/…de$$f` — `${...}` is expanded. With ~60
+    # social provider credential slots, one client secret containing `${` would be
+    # silently corrupted. Compose never reads this file, so that cannot happen.
+    #
+    # `command:`, not an `entrypoint:` wrapper. Wrapping the entrypoint and
+    # inheriting the image CMD as "$$@" looks tidier and does not work here:
+    # podman-compose sets Cmd to null when entrypoint is overridden, so "$$@"
+    # expands to nothing, `exec` runs nothing, and the container exits 0
+    # immediately — a silent no-op that looks like a crash loop.
+    #
+    # This does mean upstream's CMD is copied below, so it can drift. The image's
+    # CMD is `sh -c "nginx && pnpm run pm2"` for postiz-app v2.23.0; a test pins
+    # this copy so a change is visible rather than silent. `set -a` is what makes
+    # sourcing EXPORT the values — without it they are shell-local and the app's
+    # child processes never see them.
+    command:
+      - sh
+      - -c
+      - set -a; . /config/postiz.env; set +a; nginx && pnpm run pm2
     volumes:
       # Option B: the rendered app config. Bind the single FILE, not the
       # directory — postiz-config below still mounts the rest of /config, and a
