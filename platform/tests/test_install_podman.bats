@@ -51,12 +51,31 @@ setup() {
 
 @test "install-podman: the Docker CLI shim is opt-in and defaults OFF" {
   assert_grep -qF '_docker_cli: "{{ podman_docker_cli | default(false) | bool }}"' "$PB"
-  # Every compat task gated on it, so an existing host installs nothing new.
-  local total gated
-  total=$(grep -c 'podman-docker\|/etc/containers/nodocker\|/usr/bin/docker' "$PB")
-  gated=$(grep -c 'when: _docker_cli' "$PB")
-  [ "$total" -gt 0 ]
-  [ "$gated" -ge 3 ]
+
+  # PER TASK, not whole-file counts. Two independent totals can agree while an ungated
+  # task installs the shim — three other tasks carrying the guard would satisfy a count.
+  # The script is written to a file rather than passed with -c: it contains quotes, and
+  # escaping them through the shell is how the first attempt broke.
+  cat > "$BATS_TEST_TMPDIR/gate.py" <<'PYSCRIPT'
+import re, sys
+src = open(sys.argv[1]).read()
+# Only real TASKS. The first chunk is the play preamble, whose header comments name the
+# shim while gating nothing — counting it reported a false ungated task.
+tasks = [x for x in re.split(r'\n(?=    - name: )', src) if x.lstrip().startswith('- name:')]
+touch = [x for x in tasks
+         if re.search(r'podman-docker|/etc/containers/nodocker|/usr/bin/docker', x)]
+if not touch:
+    print('no task touches the docker shim at all'); sys.exit(0)
+bad = []
+for x in touch:
+    m = re.search(r'- name: "([^"]+)"', x)
+    if 'when: _docker_cli' not in x:
+        bad.append(m.group(1) if m else '<unnamed>')
+print('OK' if not bad else 'ungated compat tasks: ' + '; '.join(bad))
+PYSCRIPT
+  run python3 "$BATS_TEST_TMPDIR/gate.py" "$PB"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
 }
 
 @test "install-podman: the shim package and its banner marker are both handled" {

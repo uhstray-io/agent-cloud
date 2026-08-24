@@ -19,7 +19,11 @@
 # copies of a security check drift, and the drift is silent.
 #
 # Caller passes:
-#   _assert_bao_url   the resolved OpenBao base URL to check
+#   _assert_bao_url   the resolved base URL to check
+#   _assert_url_label optional name of the endpoint, for the message (default "OpenBao").
+#                     The RULE is not OpenBao-specific — any endpoint that receives secret
+#                     material in a header or body wants it — so the label exists to keep
+#                     the failure message accurate when another caller reuses this.
 #
 # Usage:
 #   - name: "Refuse a cleartext OpenBao endpoint"
@@ -27,12 +31,13 @@
 #     vars:
 #       _assert_bao_url: "{{ _bao_url }}"
 
-- name: "Require a non-cleartext transport to OpenBao"
+- name: "Require a non-cleartext transport to {{ _assert_url_label | default('OpenBao') }}"
   ansible.builtin.assert:
     that:
       - >-
         _assert_bao_url is match('^(https://|http://(localhost|127(\\.[0-9]{1,3}){3}|10(\\.[0-9]{1,3}){3}|192\\.168(\\.[0-9]{1,3}){2}|172\\.(1[6-9]|2[0-9]|3[01])(\\.[0-9]{1,3}){2})(?::[0-9]{1,5})?(?:/|$))')
     fail_msg: >-
-      Refusing to send secret material over public cleartext ({{ _assert_bao_url
+      Refusing to send secret material to {{ _assert_url_label | default('OpenBao') }}
+      over public cleartext ({{ _assert_bao_url
       | default('<unset>') }}). Set openbao_addr to an https:// URL, or an
       http:// endpoint on loopback/RFC1918 (the internal OpenBao VLAN).

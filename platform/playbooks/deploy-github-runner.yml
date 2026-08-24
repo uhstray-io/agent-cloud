@@ -207,9 +207,14 @@
       #
       # Python, not shell: the first version used openssl and jq, and this image has
       # neither, which surfaced from inside the no_log boundary as an unexplained
-      # credential failure. ansible_playbook_python is used deliberately — it is the
-      # interpreter that already has `cryptography` available via the collections
-      # Ansible itself depends on, whereas a bare `python3` may be a different build.
+      # credential failure. ansible_playbook_python is used deliberately — a bare
+      # `python3` may be a different build without the packages Ansible's interpreter has.
+      #
+      # `cryptography` is required and is DECLARED in
+      # platform/requirements-controller.txt. It is present on the current controller
+      # (verified: a registration succeeded through this path), but nothing declared it
+      # before, and an undeclared dependency that disappears on an image rebuild fails
+      # inside a no_log boundary — see the classification below, which names it.
       ansible.builtin.command:
         cmd: >-
           {{ ansible_playbook_python }}
@@ -285,6 +290,15 @@
         owner: "{{ _account }}"
         group: "{{ _account }}"
         mode: "{{ item.mode }}"
+      # The templates read the RAW inventory names, while this play resolves defaulted
+      # `_`-prefixed copies. Mapping them here means a declaration that relies on a play
+      # default still renders — otherwise the first host to omit, say,
+      # github_runner_hooks_version fails with an undefined-variable error at render time.
+      vars:
+        github_runner_home: "{{ _home }}"
+        github_org: "{{ _org }}"
+        github_runner_version: "{{ _rver }}"
+        github_runner_hooks_version: "{{ _hver }}"
       loop:
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
@@ -310,6 +324,9 @@
         owner: "{{ _account }}"
         group: "{{ _account }}"
         mode: "0644"
+      vars:
+        github_runner_home: "{{ _home }}"
+        github_runner_name: "{{ github_runner_name }}"
 
     # ── install + register ─────────────────────────────────────────────────
     - name: "Install and register the runner"
@@ -385,7 +402,11 @@
         XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
       register: _active
       changed_when: false
-      failed_when: "'active' not in (_active.stdout | default(''))"
+      # EXACT match, not a substring. `systemctl --user is-active` prints "inactive" for a
+      # stopped unit, and "inactive" CONTAINS "active" — so `'active' not in stdout` was
+      # False for a dead runner and this gate passed it. The final verification reported
+      # success for a runner serving nothing.
+      failed_when: "(_active.stdout | default('') | trim) != 'active'"
 
     - name: "Report"
       ansible.builtin.debug:

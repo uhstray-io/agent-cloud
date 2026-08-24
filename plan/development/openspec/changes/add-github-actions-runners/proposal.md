@@ -31,10 +31,20 @@ faster on it once the execution surface exists.
   be a hand-pasted step if it is to be repeatable. An organisation-installed
   application identity is held in the platform secret store, and the automation
   exchanges it for a registration credential at the moment it is needed.
-- **Job bodies execute inside a per-job container, not directly on the host.** The
-  runner service itself is long-lived; each job's steps run in a fresh container, and
-  the job workspace is destroyed between jobs. This is the isolation boundary that
-  makes a persistent runner acceptable for more than one repository.
+- **Each job is isolated from the host and from the job before it, by host
+  configuration.** The workspace is destroyed after every job, jobs execute as an
+  unprivileged account with no administrative rights, and the host is denied the
+  platform's interior at the network boundary. All three are configured on the host, so a
+  workflow cannot opt out of them.
+
+  **Per-job containerisation is NOT among the controls.** It was in the first draft of
+  this proposal, on the belief that the runner's container-hook mechanism confines every
+  job. It does not: it manages containers for a job that *declares* one, and a job
+  declaring none executes against the host filesystem as the runner account. Enforcing it
+  universally needs an ephemeral runner whose own process and filesystem are containerised
+  per job — a different lifecycle, recorded as follow-up rather than claimed here. The
+  consequence is stated in the spec: nothing may sit on a runner host that all permitted
+  repositories are not entitled to read.
 - **Runner hosts are denied the platform's privileged interior.** A runner executes
   code authored in a repository. It is therefore treated as semi-trusted: it may
   reach what a workflow legitimately needs, and is denied the secret store, the
@@ -106,7 +116,8 @@ unwinding the stage below it.
    application's installation. This is the security stop: after it, the hosts cannot
    receive work even if they are still running, and the credential they held is dead.
 4. **Remove the hosts** — destroy the two virtual machines and release their
-   allocation back to the address authority and the inventory.
+   allocation back to the inventory declaration, which is the allocation record for
+   these hosts.
 
 The change introduces no schema migration, no shared datastore, and no modification to
 an existing service, so there is no state to reconcile on the way back — the only

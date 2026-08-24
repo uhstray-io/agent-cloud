@@ -103,8 +103,9 @@
 - [ ] 3.6 Sync the updated inventory to Semaphore so the runner can see the new group.
 - [ ] 3.7 Validation gate — `ansible-inventory --graph` resolves the new group with all
       declared vars, and spec scenario **"Address allocation comes from the authority"**
-      holds: both addresses are recorded allocated in NetBox and neither was chosen by
-      inspection.
+      holds: both addresses are recorded in the inventory declaration, which is the
+      allocation record for these hosts — deliberately not NetBox while its discovery
+      pipeline is stale (see 3.1/3.2).
 
 ## 4. Provision and harden runner host 01
 
@@ -182,7 +183,8 @@
       declaration, `--replace`, and `--disableupdate`.
 - [ ] 6.4 Install the runner as a lingering user-session service under the unprivileged
       runner account, and template its environment file with
-      `ACTIONS_RUNNER_CONTAINER_HOOKS` (per-job containerisation) and
+      `ACTIONS_RUNNER_CONTAINER_HOOKS` (container runtime for jobs that DECLARE a
+      container — it does not confine a job that declares none) and
       `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` (workspace and container/volume wipe).
 - [ ] 6.5 Write the job-completed hook script so it always runs to completion —
       including on job failure and cancellation — and removes the job workspace plus the
@@ -214,8 +216,9 @@
       orchestrator are unreachable; writes a marker file into the workspace; reaches one
       legitimately-permitted destination.
 - [ ] 7.3 Run it. Confirm it is dispatched to `gh-runner-01`, that every assertion
-      passes, and that its steps ran inside a container despite the workflow declaring
-      no container of its own.
+      passes. Record whether its steps ran containerised: with no `container:` in the
+      workflow they will NOT, and that measurement is the point — it is what disproved the
+      original universal-containerisation claim.
 - [ ] 7.4 Run it a second time and assert the marker file from the previous run is
       absent.
 - [ ] 7.5 From `agent-cloud` (public), add a temporary `workflow_dispatch` job naming the
@@ -262,8 +265,9 @@
       `context/` for agent use, matching the depth of the postiz and honcho service docs.
 - [ ] 9.5 Document the label contract for workflow authors — the exact `runs-on` value,
       which repositories may use it, what the runner does and does not provide, and that
-      job steps run containerised. Put it where a workflow author in another repository
-      will actually find it.
+      job steps are NOT containerised unless the workflow declares a container, and what
+      that means for what may sit on the host. Put it where a workflow author in another
+      repository will actually find it.
 - [ ] 9.6 Update the root `AGENTS.md`/`CLAUDE.md`: new service doc pointer, the new
       playbooks in the Independent Workflows table, the new
       `secret/services/github-runner` row in the secrets layout, and the new firewall

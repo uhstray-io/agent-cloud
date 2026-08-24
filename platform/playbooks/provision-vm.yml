@@ -232,7 +232,10 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
         method: GET
       register: _vm_lock
-      until: (_vm_lock.json.data.lock | default('')) == ''
+      # `is succeeded` first: without it a FAILED request has no json.data.lock, the
+      # default makes the expression '' == '' true, and the wait exits declaring the VM
+      # unlocked on the strength of a request that never answered.
+      until: (_vm_lock is succeeded) and ((_vm_lock.json.data.lock | default('')) == '')
       retries: 60
       delay: 10
       changed_when: false

@@ -44,6 +44,7 @@ Verified from inside a running job, on both hosts:
 | No host administration from a job | **enforced** — `SUDO=no`; runs as `ghrunner`, no sudoers entry |
 | Platform interior unreachable | **enforced** — secret store, orchestrator and every hypervisor denied at the network boundary |
 | Per-job containerisation | **NOT enforced** — see below |
+| Per-job process reaping | **NOT enforced** — the wipe removes files and containers, not a process an undeclared host job left running |
 
 **Per-job containerisation is not a control here.** The container-hook mechanism manages
 containers for a job that *declares* one; it does not place an undeclared job into a
@@ -130,7 +131,11 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
 
 ## Known limitations
 
-1. Per-job containerisation is not enforced (above).
+1. Per-job containerisation is not enforced (above), and neither is process reaping: a
+   job may leave a process running after it ends. Both have the same fix — an ephemeral
+   runner whose process and filesystem are containerised per job. A best-effort reaper is
+   deliberately not shipped: one that cannot tell a leftover process from the runner's own
+   is more dangerous than the gap it closes.
 2. Both hosts are on one hypervisor node. The cluster has no shared image storage and the
    only Ubuntu template is node-local, so Proxmox refuses a cross-node clone. Node
    separation needs a second template.

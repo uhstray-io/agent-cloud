@@ -44,13 +44,32 @@ setup() {
 @test "runner-group: dry run is the DEFAULT" {
   # A playbook that mutates org-level access by default is one nobody can safely use to
   # look at the current state.
-  grep -qF '_dry_run: "{{ dry_run | default(true) | bool }}"' "$PLAYBOOK"
-  # Every mutating task is gated on it.
-  local muts gated
-  muts=$(grep -cE 'method: (POST|PATCH|PUT)' "$PLAYBOOK")
-  gated=$(grep -cF 'not _dry_run' "$PLAYBOOK")
-  [ "$muts" -gt 0 ]
-  [ "$gated" -ge "$muts" ]
+  assert_grep -qF '_dry_run: "{{ dry_run | default(true) | bool }}"' "$PLAYBOOK"
+
+  # PER TASK. Comparing two whole-file counts lets an ungated mutation pass whenever
+  # enough other tasks carry the guard — and an ungated mutation here changes org-level
+  # repository access on a run the operator believes is read-only.
+  cat > "$BATS_TEST_TMPDIR/dry.py" <<'PYSCRIPT'
+import re, sys
+src = open(sys.argv[1]).read()
+# Only real TASKS, and only mutations of the FORGE. An OpenBao AppRole login is a POST
+# that reads a credential — gating it on dry_run would make a read-only run unable to
+# authenticate at all, so scoping by HTTP verb alone reported it as an ungated mutation.
+tasks = [x for x in re.split(r'\n(?=    - name: )', src) if x.lstrip().startswith('- name:')]
+muts = [x for x in tasks
+        if re.search(r'method: (POST|PATCH|PUT)', x) and 'actions/runner-groups' in x]
+if not muts:
+    print('no mutating task found'); sys.exit(0)
+bad = []
+for x in muts:
+    m = re.search(r'- name: "([^"]+)"', x)
+    if 'not _dry_run' not in x:
+        bad.append(m.group(1) if m else '<unnamed>')
+print('OK' if not bad else 'ungated mutations: ' + '; '.join(bad))
+PYSCRIPT
+  run python3 "$BATS_TEST_TMPDIR/dry.py" "$PLAYBOOK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
 }
 
 @test "runner-group: no other group is ever modified or deleted" {
@@ -95,9 +114,22 @@ setup() {
   # One authoritative channel for a private key. It previously arrived as a Semaphore
   # environment secret while the deploy playbook read the same key from OpenBao — two
   # places to rotate and two places to leak.
-  assert_grep -qF '/v1/secret/data/services/github-runner' "$PLAYBOOK"
-  assert_grep -qF 'app_private_key' "$PLAYBOOK"
   refute_grep -qF 'GITHUB_APP_PEM' "$PLAYBOOK"
-  # And the OpenBao hop carries the shared cleartext-transport guard.
+  assert_grep -qF 'app_private_key' "$PLAYBOOK"
   assert_grep -qF 'tasks/assert-bao-transport.yml' "$PLAYBOOK"
+
+  # Scoped to the task that actually reads the key, so a mention elsewhere in the file
+  # cannot satisfy this.
+  cat > "$BATS_TEST_TMPDIR/key.py" <<'PYSCRIPT'
+import re, sys
+src = open(sys.argv[1]).read()
+tasks = re.split(r'\n(?=    - name: )', src)
+read = [x for x in tasks if '/v1/secret/data/services/github-runner' in x]
+if not read:
+    print('no task reads the App key from the secret store'); sys.exit(0)
+print('OK' if any('X-Vault-Token' in x for x in read) else 'the read carries no vault token')
+PYSCRIPT
+  run python3 "$BATS_TEST_TMPDIR/key.py" "$PLAYBOOK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
 }

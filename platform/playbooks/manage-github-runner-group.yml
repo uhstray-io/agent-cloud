@@ -65,36 +65,6 @@
           an intent.
         success_msg: "Converging '{{ _group }}' in {{ _org }} to {{ _repos | length }} repositories."
 
-    - name: "Refuse to declare a PUBLIC repository into the group"
-      # The load-bearing check. Every name below is resolved and its visibility read; a
-      # public repository in the list aborts the run rather than being quietly admitted.
-      # This is what makes the exclusion a property of the automation instead of a
-      # property of whoever last edited the list.
-      ansible.builtin.uri:
-        url: "{{ _api }}/repos/{{ _org }}/{{ item }}"
-        method: GET
-        headers:
-          Accept: "application/vnd.github+json"
-          Authorization: "Bearer {{ lookup('env', 'GITHUB_TOKEN') | default(omit, true) }}"
-        status_code: [200]
-      register: _repo_lookup
-      loop: "{{ _repos }}"
-      loop_control:
-        label: "{{ item }}"
-
-    - name: "Abort if any declared repository is public"
-      ansible.builtin.assert:
-        that:
-          - _repo_lookup.results | selectattr('json.private', 'equalto', false) | list | length == 0
-        fail_msg: >-
-          These declared repositories are PUBLIC and must not be granted self-hosted
-          runners:
-          {{ _repo_lookup.results | selectattr('json.private', 'equalto', false)
-             | map(attribute='json.name') | list | join(', ') }}.
-          A fork can propose workflow code, and these hosts sit inside the network
-          perimeter. Remove them from the declaration.
-        success_msg: "All {{ _repos | length }} declared repositories are private."
-
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
@@ -163,6 +133,40 @@
           Accept: "application/vnd.github+json"
           X-GitHub-Api-Version: "2022-11-28"
       no_log: true
+
+    - name: "Refuse to declare a PUBLIC repository into the group"
+      # The load-bearing check. Every name below is resolved and its visibility read; a
+      # public repository in the list aborts the run rather than being quietly admitted.
+      #
+      # This runs AFTER the installation token exists, and authenticates with it. It used
+      # to run first, with an optional GITHUB_TOKEN from the environment — so with that
+      # variable unset every PRIVATE repository returned 404 and the playbook aborted
+      # before convergence began. The App installation is the credential that can actually
+      # see these repositories, and it is the same one that will do the converging.
+      # This is what makes the exclusion a property of the automation instead of a
+      # property of whoever last edited the list.
+      ansible.builtin.uri:
+        url: "{{ _api }}/repos/{{ _org }}/{{ item }}"
+        method: GET
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+      register: _repo_lookup
+      loop: "{{ _repos }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: "Abort if any declared repository is public"
+      ansible.builtin.assert:
+        that:
+          - _repo_lookup.results | selectattr('json.private', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          These declared repositories are PUBLIC and must not be granted self-hosted
+          runners:
+          {{ _repo_lookup.results | selectattr('json.private', 'equalto', false)
+             | map(attribute='json.name') | list | join(', ') }}.
+          A fork can propose workflow code, and these hosts sit inside the network
+          perimeter. Remove them from the declaration.
+        success_msg: "All {{ _repos | length }} declared repositories are private."
 
     - name: "List the organisation's existing runner groups"
       ansible.builtin.uri:

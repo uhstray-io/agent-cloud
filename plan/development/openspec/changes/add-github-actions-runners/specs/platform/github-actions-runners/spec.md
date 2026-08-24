@@ -142,10 +142,18 @@ containerisation for every job requires a different lifecycle — an ephemeral r
 whose process and filesystem are themselves containerised and recreated per job — and
 that is recorded as follow-up work rather than asserted here.
 
+The same limit applies to PROCESSES. Destroying a workspace and pruning containers does
+not reap a process an undeclared host job left running, so a job MAY leave a process
+behind that outlives it. Confining that requires the same ephemeral, containerised
+lifecycle as above; a best-effort reaper is deliberately not specified, because one that
+cannot distinguish a leftover process from the runner's own would be more dangerous than
+the gap.
+
 Consequently the isolation this capability guarantees is: workspace destruction between
 jobs, no host administration from a job, and the egress containment required below. A
-job CAN read anything the runner account can read on that host, so nothing may be placed
-on a runner host that every permitted repository is not entitled to.
+job CAN read anything the runner account can read on that host, and MAY leave a process
+running, so nothing may be placed on a runner host that every permitted repository is
+not entitled to.
 
 #### Scenario: A job cannot see the previous job's leftovers
 

@@ -1,13 +1,18 @@
 # .env — read by the runner itself and applied to every job it accepts.
 #
-# This file is where per-job isolation is TURNED ON, and that placement is the point:
-# a workflow that declares no container of its own still gets one, because the decision
-# lives on the host rather than in each workflow author's diff. A workflow-level
-# `container:` is opt-in, and an opt-in isolation boundary fails open.
-
-# Every job's steps run inside a container created by these hooks, whether or not the
-# workflow asked. The hooks shell out to a `docker` binary, which on this host is the
-# podman shim installed by install-podman.yml.
+# What this file turns on, stated accurately — an earlier version of this comment claimed
+# universal containerisation, and a smoke job declaring no container proved otherwise by
+# reporting ISOLATION=host.
+#
+# The container hooks manage containers for a job that DECLARES one (`container:` /
+# `services:`), giving it a consistent runtime and cleanup. They do NOT place an
+# undeclared job into a container: such a job executes against this host's filesystem as
+# the unprivileged runner account. Per-job containerisation is therefore NOT an enforced
+# isolation control here; what is enforced is the workspace wipe below, the unprivileged
+# account, and the host's egress denial.
+#
+# The hooks shell out to a `docker` binary, which on this host is the podman shim
+# installed by install-podman.yml.
 ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
 
 # Runs after EVERY job — success, failure, or cancellation — and destroys the job's

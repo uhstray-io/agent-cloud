@@ -478,6 +478,13 @@ Ansible collections (auto-installed from `collections/requirements.yml`):
 - `community.hashi_vault` — OpenBao/Vault lookups
 - `ansible.posix` — `authorized_key` module
 
+Controller Python packages (`platform/requirements-controller.txt`) — used only by
+playbooks running on localhost, never installed on a service VM:
+- `cryptography` — RS256 signing for the GitHub App credential chain
+  (`platform/lib/github_app_token.py`). Declared because it was previously assumed to
+  arrive with the collections; an undeclared dependency that vanishes on an image rebuild
+  fails inside a `no_log` boundary, where the symptom is an unexplained credential error.
+
 Shared bash libraries:
 - `platform/lib/common.sh` — logging, secret helpers, compose wrapper, health checks
 - `platform/lib/bao-client.sh` — HTTP-based OpenBao API client (curl + jq)

@@ -20,6 +20,11 @@
   # good target and should not be blocked by the absence of a tool it never needed.
   ansible.builtin.command: cloud-init status --wait
   changed_when: false
+  # Bounded. `--wait` blocks until cloud-init finishes, which is indefinite if it stalls,
+  # and failed_when: false does not limit a wait — it only forgives the outcome. Ten
+  # minutes is well past a normal first boot; past that, fall through and let the bounded
+  # apt-get check below handle whatever lock state remains.
+  timeout: 600
   failed_when: false
   become: true
 

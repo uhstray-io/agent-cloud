@@ -282,11 +282,23 @@
             ('/' not in item.to)
             or ((item.to.split('/') | last) == '32')
             or (item.broad | default(false) | bool)
+          # `broad: true` is an escape hatch, not a bypass of the thing the guard exists
+          # for. A target that EQUALS a declared SSH CIDR is refused even when flagged
+          # broad — that is the exact self-lock, and no opt-in should be able to express
+          # it. (Strict containment would need ipaddr, which the orchestrator does not
+          # install; equality catches the case that actually happens, which is someone
+          # copying a management CIDR into the denial list.)
+          - item.to not in _ssh_cidrs
+          # And a broad denial must say why, so it cannot be set in passing.
+          - >-
+            (not (item.broad | default(false) | bool))
+            or ((item.reason | default('')) | length > 0)
         fail_msg: >-
           firewall_deny_egress entry {{ item | to_json }} is invalid: `to` is required and
           must be a single host (no prefix, or /32) unless the entry sets `broad: true`.
           A denial broader than firewall_ssh_cidrs would cut this host off from the
-          management network — see §2.5 in docs/MISTAKES.md.
+          management network — see §2.5 in docs/MISTAKES.md. `broad: true` permits a
+          wider mask but never one EQUAL to a declared SSH CIDR, and requires a `reason`.
       loop: "{{ _deny_egress }}"
       loop_control:
         label: "{{ item.to | default('(missing to)') }}"

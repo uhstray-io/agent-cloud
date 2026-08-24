@@ -113,7 +113,11 @@ setup() {
   # unlocked, so that is what must be polled.
   local PB="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
   grep -qF 'Wait for the clone lock to clear before configuring' "$PB"
-  grep -qF "until: (_vm_lock.json.data.lock | default('')) == ''" "$PB"
+  # And the wait must require the request to have SUCCEEDED. Without that, a failed
+  # request has no json.data.lock, the default makes '' == '' true, and the wait exits
+  # declaring the VM unlocked on the strength of a request that never answered.
+  grep -qF "(_vm_lock is succeeded)" "$PB"
+  grep -qF "(_vm_lock.json.data.lock | default('')) == ''" "$PB"
   # And the wait must precede the first config write, or it protects nothing.
   local wait_line cfg_line
   wait_line=$(grep -n 'Wait for the clone lock to clear' "$PB" | head -1 | cut -d: -f1)

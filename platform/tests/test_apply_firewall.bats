@@ -119,6 +119,8 @@ setup() {
   grep -qF "('/' not in item.to)" "$PLAYBOOK"
   grep -qF "or ((item.to.split('/') | last) == '32')" "$PLAYBOOK"
   grep -qF "or (item.broad | default(false) | bool)" "$PLAYBOOK"
+  grep -qF 'item.to not in _ssh_cidrs' "$PLAYBOOK"
+  grep -qF "(item.reason | default('')) | length > 0" "$PLAYBOOK"
   # And it must reference the recorded rationale, so the next reader finds the why.
   grep -qF '§2.5' "$PLAYBOOK"
 }
@@ -142,15 +144,20 @@ setup() {
   ! grep -qF 'ufw default deny outgoing' "$PLAYBOOK"
 }
 
-@test "firewall: the egress guard actually accepts hosts and rejects supernets" {
-  # Behavioural, not structural. Executes the same predicate the playbook enforces
-  # against the declarations it will really judge.
+@test "firewall: the egress guard accepts real shapes and cannot express the self-lock" {
+  # Behavioural, not structural: it executes the predicate the playbook enforces against
+  # the declaration shapes it will really judge (docs/MISTAKES.md §2.5 — that predicate's
+  # first draft would have rejected every legitimate entry).
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
 
   cat > "$BATS_TEST_TMPDIR/guard.yml" <<'YAML'
 - hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    # RFC 5737 / RFC 3849 documentation ranges standing in for the declared management
+    # prefixes. Real addresses live only in the private site-config repo (§4.3).
+    _ssh_cidrs: ["192.0.2.0/24", "198.51.100.0/24"]
   tasks:
     - ansible.builtin.assert:
         that:
@@ -159,6 +166,10 @@ setup() {
             ('/' not in item.to)
             or ((item.to.split('/') | last) == '32')
             or (item.broad | default(false) | bool)
+          - item.to not in _ssh_cidrs
+          - >-
+            (not (item.broad | default(false) | bool))
+            or ((item.reason | default('')) | length > 0)
       loop: "{{ cases }}"
 YAML
 
@@ -166,25 +177,31 @@ YAML
     ansible-playbook "$BATS_TEST_TMPDIR/guard.yml" -e "{\"cases\":[$1]}" >/dev/null 2>&1
   }
 
-  # Accepted: the shape of declaration the runner hosts need. Addresses here are RFC 5737
-  # documentation addresses, never the site's own — real addresses live only in the
-  # private site-config repo. What matters is the RELATIONSHIP being modelled: each
-  # target sits INSIDE the management prefix that firewall_ssh_cidrs declares, which is
-  # exactly why the guard must not be phrased as "reject anything within an SSH CIDR"
-  # (§2.5).
+  # ACCEPTED — the shape the runner hosts actually declare. Every target sits INSIDE the
+  # management prefix, which is exactly why the guard must not be phrased as "reject
+  # anything within an SSH CIDR".
   guard '{"to":"192.0.2.164","port":8200,"comment":"secret store"}'
   guard '{"to":"192.0.2.117","port":3000,"comment":"orchestrator"}'
   guard '{"to":"192.0.2.110/32","port":8006,"comment":"hypervisor"}'
-  # Accepted: a supernet, but only with the explicit reviewable opt-out.
-  guard '{"to":"192.0.2.0/24","broad":true}'
+  # ACCEPTED — a wider mask OUTSIDE the management prefixes, flagged and justified.
+  guard '{"to":"203.0.113.0/24","broad":true,"reason":"third-party range"}'
 
-  # Rejected: a supernet of the management network, which would cut the host off the LAN.
+  # REJECTED — a supernet of the management network, which would cut the host off the LAN.
   # `run` + `[ ]` rather than `! guard`: a bang-inverted command is exempt from set -e
-  # anywhere but the final line, so `! guard ...` in the middle of a body can never fail.
+  # anywhere but the final line, so `! guard ...` mid-body can never fail (§2.9).
   run guard '{"to":"192.0.2.0/24"}'
   [ "$status" -ne 0 ]
   run guard '{"to":"192.0.0.0/16"}'
   [ "$status" -ne 0 ]
-  # Rejected: a malformed entry with no destination at all.
-  ! guard '{"port":8200}'
+  # REJECTED even WITH the flag and a reason: `broad` is an escape hatch for a wider mask,
+  # never a bypass of the one thing this guard exists to prevent. A target equal to a
+  # declared SSH CIDR IS the self-lock, so no opt-in may express it.
+  run guard '{"to":"192.0.2.0/24","broad":true,"reason":"stated"}'
+  [ "$status" -ne 0 ]
+  # REJECTED — broad with no stated reason, so it cannot be set in passing.
+  run guard '{"to":"203.0.113.0/24","broad":true}'
+  [ "$status" -ne 0 ]
+  # REJECTED — a malformed entry with no destination at all.
+  run guard '{"port":8200}'
+  [ "$status" -ne 0 ]
 }

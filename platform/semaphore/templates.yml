@@ -98,6 +98,9 @@ templates:
   # AND takes explicit addresses, so two runs cannot quietly allocate different ones.
   - name: Allocate NetBox IP
     playbook: platform/playbooks/netbox-allocate-ip.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
     survey_vars:
       - name: prefix
         title: "Prefix (CIDR)"
@@ -726,6 +729,9 @@ templates:
   # Read-only unless dry_run=false.
   - name: Manage GitHub Runner Group
     playbook: platform/playbooks/manage-github-runner-group.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
     survey_vars:
       - name: dry_run
         title: "Dry run"
@@ -736,6 +742,9 @@ templates:
 
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Target group"

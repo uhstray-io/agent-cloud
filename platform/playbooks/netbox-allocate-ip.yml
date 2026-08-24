@@ -75,6 +75,16 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    - name: "Refuse a cleartext NetBox endpoint"
+      # The NetBox automation token is sent in an Authorization header on every call
+      # below, so the same rule that protects the OpenBao hop protects this one. Guarding
+      # only the secret store while shipping its contents in cleartext to another host
+      # would defeat the point of guarding either.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+
     # ── credentials (no_log boundary) ──────────────────────────────────────
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
