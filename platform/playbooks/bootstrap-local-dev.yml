@@ -34,6 +34,17 @@
     # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
     # this -i so they pick up the foundation host groups + genesis path vars.
     _inv_file: "{{ playbook_dir }}/../inventory/local-dev.yml"
+    # The genesis inline inventory below declares the SAME host (caddy-local) that
+    # the working inventory declares, so any value restated as a literal here is a
+    # second source of truth that silently wins during genesis. Source the edge
+    # binds/ports from the declaration instead, keeping the current literals as
+    # defaults so behaviour is unchanged when the inventory omits them.
+    #
+    # This is what makes the ports actually overridable: they were already declared
+    # in the working inventory, but genesis hardcoded 8088/8443 and ignored it — so
+    # a host with something else on 8088 (any other local dev tool) could not
+    # bootstrap at all, and editing the documented variable had no effect.
+    _caddy_decl: "{{ hostvars['caddy-local'] | default({}) }}"
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -881,10 +892,10 @@
           local_mode=true
           caddy_image=docker.io/library/caddy:2-alpine
           caddy_file=./Caddyfile.local
-          caddy_http_bind=127.0.0.1
-          caddy_http_port=8088
-          caddy_https_bind=127.0.0.1
-          caddy_https_port=8443
+          caddy_http_bind={{ _caddy_decl.caddy_http_bind | default('127.0.0.1', true) }}
+          caddy_http_port={{ _caddy_decl.caddy_http_port | default(8088, true) }}
+          caddy_https_bind={{ _caddy_decl.caddy_https_bind | default('127.0.0.1', true) }}
+          caddy_https_port={{ _caddy_decl.caddy_https_port | default(8443, true) }}
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
