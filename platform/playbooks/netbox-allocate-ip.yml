@@ -98,6 +98,35 @@
       register: _nb_secret
       no_log: true
 
+    # A no_log step that merely fails is undiagnosable, which is the failure mode
+    # AGENTS.md calls out. The credential tasks above keep no_log; these two report only
+    # SHAPES and VERDICTS — whether the auth succeeded, whether the path exists, and which
+    # keys are present by NAME — so a missing key is distinguishable from a bad AppRole
+    # without any value being emitted.
+    - name: "Classify the credential outcome (names and verdicts only)"
+      ansible.builtin.set_fact:
+        _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
+        _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
+        _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
+      no_log: true
+
+    - name: "Report the credential outcome"
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao auth ok={{ _auth_ok }}; secret/services/netbox holds keys
+          {{ _nb_keys }}; requested key '{{ _token_key }}' present={{ _token_present }}
+
+    - name: "Require the NetBox automation token"
+      ansible.builtin.assert:
+        that:
+          - _auth_ok | bool
+          - _token_present | bool
+        fail_msg: >-
+          No usable NetBox token. auth_ok={{ _auth_ok }}, key '{{ _token_key }}'
+          present={{ _token_present }}, keys at that path: {{ _nb_keys }}.
+          If the key is absent, mint it with provision-netbox-automation-token.yml
+          rather than by hand.
+
     - name: "Set the NetBox auth header"
       ansible.builtin.set_fact:
         _nb_headers:
