@@ -71,6 +71,27 @@ setup() {
   [ "$(grep -cE '^\s+ports:' "$f")" -eq 1 ]
 }
 
+@test "postiz: the workflow engine healthcheck does not probe loopback" {
+  # The engine binds its frontend to the CONTAINER IP, so nothing ever listens on
+  # 127.0.0.1 inside it. A loopback probe is refused forever, the container never
+  # turns healthy, and the app — which waits on service_healthy — never starts.
+  # Observed exactly that: 13 consecutive failing checks against a fully-working
+  # engine that answered SERVING at its own address.
+  #
+  # Scoped to the temporal service block, since other services in this file
+  # legitimately probe loopback (they bind there).
+  local f="$REPO_ROOT/platform/services/postiz/deployment/compose.yml"
+  local block
+  block=$(awk '/^  temporal:$/{f=1} f&&/^  temporal-postgresql:$/{exit} f{print}' "$f")
+  [ -n "$block" ]
+  echo "$block" | grep -q 'cluster health'
+  ! echo "$block" | grep -q '127\.0\.0\.1:7233'
+  # It must resolve the container's own address instead. `$$` is compose's escape
+  # for a literal `$`, so a single `$` here would be interpolated at compose time
+  # and the probe would run against an empty address.
+  echo "$block" | grep -qF '$$(hostname -i'
+}
+
 @test "postiz: healthchecks on all five containers, app dependencies gated" {
   local f="$DEPLOY_DIR/compose.yml"
   [ "$(grep -c 'healthcheck:' "$f")" -eq 5 ]

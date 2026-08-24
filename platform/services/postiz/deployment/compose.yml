@@ -150,7 +150,17 @@ services:
       temporal-postgresql:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233"]
+      # Checked at the container's OWN routable address, not 127.0.0.1. The engine
+      # binds its frontend to the container IP, so nothing ever listens on
+      # loopback: a 127.0.0.1 probe is refused forever, the container never turns
+      # healthy, and the app — which waits on service_healthy — never starts. It
+      # also happens to be the more faithful check, since the pod IP (reached as
+      # `temporal:7233` via DNS) is the address clients actually use.
+      test:
+        - CMD-SHELL
+        - >-
+          temporal operator cluster health
+          --address "$$(hostname -i | awk '{print $$1}'):7233"
       interval: 10s
       timeout: 10s
       retries: 12
