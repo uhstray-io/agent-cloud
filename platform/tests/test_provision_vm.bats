@@ -25,25 +25,52 @@ setup() {
   ! grep -qE "lookup\('file', _project_root \+ '/proxmox/vm-specs\.yml'\) \| from_yaml" "$PB"
 }
 
-@test "provision-vm: every spec field resolves from inventory before the ledger" {
-  # The declaring host's vars are hoisted from hostvars, since the play runs on
-  # localhost and the target's own vars are not in scope.
-  grep -qE "_decl: .*hostvars\[" "$PB"
-  for v in vm_vmid vm_node vm_cores vm_memory vm_disk vm_ip vm_gateway vm_nameserver vm_netmask vm_net_bridge vm_disk_storage vm_tags vm_name; do
-    grep -qE "_decl\.$v" "$PB" || { echo "missing inventory source for $v"; return 1; }
+@test "provision-vm: each field's OWN assignment prefers inventory over the ledger" {
+  # Proving `_decl.vm_x` appears somewhere in the file proves nothing about
+  # precedence. Check each resolved assignment on its own line: the inventory
+  # source must appear, and must come BEFORE any ledger source on that line.
+  grep -qE "_decl: .*hostvars\\[" "$PB"
+  local pairs="_vmid:vm_vmid _node:vm_node _name:vm_name _cores:vm_cores _mem:vm_memory \
+               _disk:vm_disk _ip:vm_ip _gw:vm_gateway _dns:vm_nameserver \
+               _storage:vm_disk_storage _bridge:vm_net_bridge _netmask:vm_netmask _tags:vm_tags"
+  local pair var inv line before
+  for pair in $pairs; do
+    var="${pair%%:*}"; inv="${pair##*:}"
+    line=$(grep -E "^    ${var}: " "$PB" | head -1)
+    [ -n "$line" ] || { echo "no assignment found for $var"; return 1; }
+    case "$line" in
+      *"_decl.$inv"*) ;;
+      *) echo "$var does not read _decl.$inv"; return 1 ;;
+    esac
+    # Everything left of the inventory source must contain no ledger source.
+    before="${line%%_decl.$inv*}"
+    case "$before" in
+      *"_svc."*|*"_defaults."*) echo "$var reads the ledger before inventory"; return 1 ;;
+    esac
   done
 }
 
-@test "provision-vm: an incomplete declaration is refused before any API write" {
-  # Defaulting every field to '' stops the lookup raising, but it also turns a
-  # hard failure into a soft one — a host with no declaration would otherwise
-  # send a clone request with an empty vmid/node/ip.
-  grep -qE 'Require a complete VM declaration before touching Proxmox' "$PB"
-  # The gate must precede the plan display and therefore every write.
-  local gate plan
-  gate=$(grep -n 'Require a complete VM declaration' "$PB" | cut -d: -f1)
-  plan=$(grep -n 'Show provisioning plan' "$PB" | cut -d: -f1)
-  [ "$gate" -lt "$plan" ]
+@test "provision-vm: the completeness gate asserts every required field" {
+  # Comparing the gate's position to one debug task proves neither that it checks
+  # every field nor that it precedes the writes. Extract the gate and inspect it.
+  awk '/Require a complete VM declaration before touching Proxmox/{f=1;next} f&&/^    - name: /{exit} f' "$PB" > "$BATS_TEST_TMPDIR/gate.txt"
+  [ -s "$BATS_TEST_TMPDIR/gate.txt" ]
+  local v
+  for v in _vmid _node _cores _mem _disk _ip _gw _dns _storage; do
+    grep -qF "($v | string | length) > 0" "$BATS_TEST_TMPDIR/gate.txt" \
+      || { echo "gate does not assert $v"; return 1; }
+  done
+}
+
+@test "provision-vm: the gate precedes EVERY Proxmox write" {
+  # Not merely the plan display: no POST/PUT/DELETE to the Proxmox API may appear
+  # before the gate.
+  local gate first_write
+  gate=$(grep -n 'Require a complete VM declaration' "$PB" | head -1 | cut -d: -f1)
+  first_write=$(grep -nE 'method: (POST|PUT|DELETE)' "$PB" | head -1 | cut -d: -f1)
+  [ -n "$gate" ]
+  [ -n "$first_write" ]
+  [ "$gate" -lt "$first_write" ]
 }
 
 @test "provision-vm and resize-vm read the SAME declaration" {
