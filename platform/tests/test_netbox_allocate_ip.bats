@@ -64,9 +64,13 @@ setup() {
 @test "netbox-allocate: no_log is scoped to the credential boundary only" {
   # no_log on a deploy or a verification hides the failure and makes a Semaphore run
   # undiagnosable. It belongs on auth, secret reads, and header construction — nowhere else.
+  # Four: OpenBao auth, the secret read, the header construction, and the
+  # classification step. The classification exists so that a no_log failure is still
+  # diagnosable — it emits key NAMES and verdicts, never a value — and it must itself be
+  # no_log because it touches the token to test whether the key is populated.
   local nolog
   nolog=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$nolog" -eq 3 ]
+  [ "$nolog" -eq 4 ]
   # The address operations must remain visible.
   ! grep -A12 'available-ips' "$PLAYBOOK" | grep -q 'no_log: true'
 }
