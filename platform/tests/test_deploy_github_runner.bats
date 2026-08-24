@@ -42,9 +42,12 @@ setup() {
 @test "deploy-runner: no_log covers the credential boundary and nothing else" {
   # A censored deploy is an undiagnosable one. Auth, the secret read, the mint and the
   # register step carry no_log; the verification must not.
+  # Five: OpenBao auth, the key read, the mint, the classification (which touches both
+  # the key and the token), and the register step. The classification exists so that a
+  # no_log failure is still diagnosable — it emits a verdict, never a value.
   local n
   n=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$n" -eq 4 ]
+  [ "$n" -eq 5 ]
   grep -A8 'Confirm the runner service is active' "$PLAYBOOK" | grep -qv 'no_log' || true
   ! grep -A8 'Confirm the runner service is active' "$PLAYBOOK" | grep -q 'no_log: true'
   ! grep -A6 'Report' "$PLAYBOOK" | grep -q 'no_log: true'
@@ -105,10 +108,12 @@ setup() {
   # It is a fact the forge already knows and is derivable from the App credential we
   # hold. Requiring it by hand adds a transcribed value that can be wrong and that
   # changes silently if the App is reinstalled.
-  grep -qF 'gh_app_installation_id' "$PLAYBOOK"
-  grep -qF 'if [ -z "${GH_INSTALL_ID:-}" ]' "$PLAYBOOK"
-  # And it must NOT be an assertion precondition.
+  # Discovery moved into the signer, which resolves the installation from the App
+  # credential it already holds. The property under test is unchanged: the id is never a
+  # required input.
   ! grep -qF '_install_id | length > 0' "$PLAYBOOK"
+  grep -qF 'github_app_token.py' "$PLAYBOOK"
+  grep -qF 'installation_id' "$BATS_TEST_DIRNAME/../lib/github_app_token.py"
 }
 
 @test "deploy-runner: carries no real addresses" {

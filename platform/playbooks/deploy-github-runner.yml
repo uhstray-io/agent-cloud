@@ -267,6 +267,17 @@
       loop_control:
         label: "{{ item.dest }}"
 
+    - name: "Create the account's systemd user-unit directory"
+      # systemd --user only reads units from this path, and it does not exist on a fresh
+      # account. Templating the unit straight in fails on the missing parent, which is a
+      # confusing way to learn that the directory is the prerequisite.
+      ansible.builtin.file:
+        path: "{{ _home }}/.config/systemd/user"
+        state: directory
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0755"
+
     - name: "Install the runner's systemd user unit"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/actions-runner.service.j2"
@@ -274,10 +285,6 @@
         owner: "{{ _account }}"
         group: "{{ _account }}"
         mode: "0644"
-      # The user unit directory must exist and be owned by the account before systemd
-      # --user will read from it.
-      vars:
-        _unit_dir: "{{ _home }}/.config/systemd/user"
 
     # ── install + register ─────────────────────────────────────────────────
     - name: "Install and register the runner"

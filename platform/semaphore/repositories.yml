@@ -46,3 +46,14 @@ repositories:
     git_url: "https://github.com/uhstray-io/agent-cloud.git"
     git_branch: dev
     ssh_key: none
+
+  # Feature-branch validation for the self-hosted CI runner work. Its own record for the
+  # same reason `dev` has one: provisioning and hardening must run from this branch
+  # WITHOUT flipping any shared record, so a concurrent run on main or dev is unaffected.
+  # Remove this entry once the branch has been promoted — a record pointing at a deleted
+  # branch fails every checkout that names it, loudly, which is the right failure but
+  # still a failure.
+  - name: agent-cloud feat/github-actions-runners
+    git_url: "https://github.com/uhstray-io/agent-cloud.git"
+    git_branch: feat/github-actions-runners
+    ssh_key: none
