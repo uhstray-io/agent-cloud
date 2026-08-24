@@ -323,12 +323,20 @@ setup() {
   grep -qE 'Merge instead, when another run won the create race' "$f"
 }
 
-@test "postiz: cleartext OpenBao guard rejects lookalike hostnames" {
+@test "postiz: the seed playbook uses the shared cleartext OpenBao guard" {
+  # This test used to assert the pattern INLINE in this playbook, including its
+  # `([:/]|$)` tail. That tail was the bug: it accepted
+  # http://127.0.0.1:80@<public-host>/, where everything before the @ is URL
+  # userinfo and the request actually goes to the public host — so the test was
+  # pinning the vulnerable form in place.
+  #
+  # The rule now lives in exactly one file and its behaviour (18 URL cases,
+  # including four userinfo bypasses) is asserted in test_credential_leaks.bats.
+  # Duplicating the pattern here is what let the fix miss this playbook, so this
+  # test only checks that the playbook delegates to the shared guard.
   local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
-  # A prefix match on 'http://10\.' also accepts http://10.evil.example/ — a
-  # public host — which would send the AppRole creds over cleartext.
-  grep -qE '127\(\\\\\.\[0-9\]\{1,3\}\)\{3\}' "$f"
-  grep -qE '\(\[:/\]\|\$\)' "$f"
+  grep -qE 'include_tasks: tasks/assert-bao-transport\.yml' "$f"
+  ! grep -q 'Refusing to send secret material' "$f"
 }
 
 @test "postiz: every provider slot has a seedable key and a declaration" {
