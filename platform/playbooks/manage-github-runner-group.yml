@@ -1,0 +1,255 @@
+---
+# manage-github-runner-group.yml — converge the org's runner group to its declaration.
+#
+# This playbook IS the control that keeps the self-hosted plane away from public
+# repositories. If the group's repository access list lives in a web console instead of
+# here, the exclusion holds only as long as nobody widens it in a hurry, and there is no
+# review trail when someone does. Declared and converged, widening it is a diff.
+#
+# Convergence REMOVES as well as adds. An access list that only ever grows cannot
+# enforce an exclusion, which is the entire purpose here.
+#
+# The organisation's pre-existing default group has visibility "all" — every repository,
+# including public ones. That is precisely the group a self-hosted runner must never
+# join, and it is why this creates a dedicated group with visibility "selected" rather
+# than reusing what is there. This playbook never modifies another group.
+#
+# Credentials: the App private key is read from OpenBao at
+# secret/services/github-runner:app_private_key — the same place deploy-github-runner.yml
+# reads it. It deliberately does NOT come from a Semaphore environment secret any more.
+# Two channels for one private key means two places to rotate and two places to leak, and
+# the secret store is the one that is supposed to be authoritative. The issuer (the App's
+# client id, or its app id) is not secret and stays an ordinary var.
+#
+# Usage:
+#   -e dry_run=true    resolve + report, change nothing (do this first)
+#   -e dry_run=false   converge
+
+- name: "Converge the GitHub runner group to its declaration"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    _org: "{{ github_org | default('uhstray-io') }}"
+    _issuer: >-
+      {{ github_app_client_id
+         | default(lookup('env', 'GITHUB_APP_CLIENT_ID'), true)
+         | default(github_app_id, true)
+         | default(lookup('env', 'GITHUB_APP_ID'), true)
+         | default('', true) }}
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _group: "{{ github_runner_group | default('uhstray-selfhosted') }}"
+    _dry_run: "{{ dry_run | default(true) | bool }}"
+    # The declared access list. PRIVATE repositories only — see the proposal's rationale:
+    # a fork of a public repository can propose workflow code, and these runners sit
+    # inside the network perimeter.
+    _repos: "{{ github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business']) }}"
+    _api: "https://api.github.com"
+
+  tasks:
+    - name: "Validate the declaration"
+      ansible.builtin.assert:
+        that:
+          - _issuer | length > 0
+          - _bao_url | length > 0
+          - _group | length > 0
+          - _repos | length > 0
+        fail_msg: >-
+          Need the App issuer (client id or app id), the OpenBao address, a group name,
+          and a non-empty repository list. An empty list would converge the group to
+          admitting nothing, which is safe but is almost certainly a mistake rather than
+          an intent.
+        success_msg: "Converging '{{ _group }}' in {{ _org }} to {{ _repos | length }} repositories."
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # ── credentials (no_log boundary) ──────────────────────────────────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Read the App private key from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _app_secret
+      no_log: true
+
+    - name: "Classify the credential outcome (names and verdicts only)"
+      # A no_log step that merely fails is undiagnosable. Key NAMES and a presence
+      # verdict distinguish a bad AppRole from a missing key without emitting a value.
+      ansible.builtin.set_fact:
+        _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
+        _gr_keys: "{{ (_app_secret.json.data.data | default({})).keys() | list | sort }}"
+        _pem_present: "{{ ((_app_secret.json.data.data | default({})).app_private_key | default('')) | length > 0 }}"
+      no_log: true
+
+    - name: "Require the App private key"
+      ansible.builtin.assert:
+        that:
+          - _auth_ok | bool
+          - _pem_present | bool
+        fail_msg: >-
+          No usable App private key. OpenBao auth ok={{ _auth_ok }};
+          secret/services/github-runner holds keys {{ _gr_keys }}; 'app_private_key'
+          present={{ _pem_present }}. Seed it with seed-openbao-key.yml rather than by hand.
+        success_msg: "App private key read from the secret store."
+
+    - name: "Mint an installation token"
+      # Key on stdin, token on stdout — never argv. See the module docstring for why
+      # this is Python rather than openssl+jq.
+      ansible.builtin.command:
+        cmd: >-
+          {{ ansible_playbook_python }}
+          {{ playbook_dir }}/../lib/github_app_token.py installation-token
+          --issuer {{ _issuer | quote }} --org {{ _org | quote }} --key -
+        stdin: "{{ _app_secret.json.data.data.app_private_key }}"
+      register: _itok
+      changed_when: false
+      no_log: true
+
+    - name: "Set the API auth header"
+      ansible.builtin.set_fact:
+        _gh_headers:
+          Authorization: "Bearer {{ _itok.stdout }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+      no_log: true
+
+    - name: "Refuse to declare a PUBLIC repository into the group"
+      # The load-bearing check. Every name below is resolved and its visibility read; a
+      # public repository in the list aborts the run rather than being quietly admitted.
+      #
+      # This runs AFTER the installation token exists, and authenticates with it. It used
+      # to run first, with an optional GITHUB_TOKEN from the environment — so with that
+      # variable unset every PRIVATE repository returned 404 and the playbook aborted
+      # before convergence began. The App installation is the credential that can actually
+      # see these repositories, and it is the same one that will do the converging.
+      # This is what makes the exclusion a property of the automation instead of a
+      # property of whoever last edited the list.
+      ansible.builtin.uri:
+        url: "{{ _api }}/repos/{{ _org }}/{{ item }}"
+        method: GET
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+      register: _repo_lookup
+      loop: "{{ _repos }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: "Abort if any declared repository is public"
+      ansible.builtin.assert:
+        that:
+          - _repo_lookup.results | selectattr('json.private', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          These declared repositories are PUBLIC and must not be granted self-hosted
+          runners:
+          {{ _repo_lookup.results | selectattr('json.private', 'equalto', false)
+             | map(attribute='json.name') | list | join(', ') }}.
+          A fork can propose workflow code, and these hosts sit inside the network
+          perimeter. Remove them from the declaration.
+        success_msg: "All {{ _repos | length }} declared repositories are private."
+
+    - name: "List the organisation's existing runner groups"
+      ansible.builtin.uri:
+        url: "{{ _api }}/orgs/{{ _org }}/actions/runner-groups"
+        method: GET
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+      register: _groups
+
+    - name: "Locate our group, if it already exists"
+      ansible.builtin.set_fact:
+        _existing: "{{ (_groups.json.runner_groups | selectattr('name', 'equalto', _group) | list | first) | default({}) }}"
+
+    - name: "Report the intended change"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'DRY RUN — nothing will be changed. ' if _dry_run else '' }}
+          Group '{{ _group }}': {{ 'exists (id ' ~ _existing.id ~ ', visibility ' ~ _existing.visibility ~ ')' if _existing else 'does not exist and will be created' }}.
+          Declared repositories: {{ _repos | join(', ') }}.
+          Other groups present ({{ _groups.json.runner_groups | length }}) are left untouched:
+          {{ _groups.json.runner_groups | map(attribute='name') | list | join(', ') }}.
+
+    - name: "Create the group with selected visibility"
+      # visibility 'selected' from the moment it exists: creating it open and narrowing it
+      # afterwards would leave a window in which a runner joining it is reachable by every
+      # repository in the organisation.
+      ansible.builtin.uri:
+        url: "{{ _api }}/orgs/{{ _org }}/actions/runner-groups"
+        method: POST
+        headers: "{{ _gh_headers }}"
+        body_format: json
+        body:
+          name: "{{ _group }}"
+          visibility: "selected"
+          selected_repository_ids: "{{ _repo_lookup.results | map(attribute='json.id') | list }}"
+          allows_public_repositories: false
+        status_code: [201]
+      register: _created
+      when:
+        - not _dry_run
+        - not _existing
+
+    - name: "Converge an existing group's visibility and public-repo setting"
+      ansible.builtin.uri:
+        url: "{{ _api }}/orgs/{{ _org }}/actions/runner-groups/{{ _existing.id }}"
+        method: PATCH
+        headers: "{{ _gh_headers }}"
+        body_format: json
+        body:
+          name: "{{ _group }}"
+          visibility: "selected"
+          allows_public_repositories: false
+        status_code: [200]
+      when:
+        - not _dry_run
+        - _existing | length > 0
+
+    - name: "Replace the group's repository access list with the declaration"
+      # PUT replaces wholesale, which is what convergence means here: a repository that
+      # was granted access outside this declaration loses it. That removal is the point.
+      ansible.builtin.uri:
+        url: "{{ _api }}/orgs/{{ _org }}/actions/runner-groups/{{ (_created.json.id | default(_existing.id)) }}/repositories"
+        method: PUT
+        headers: "{{ _gh_headers }}"
+        body_format: json
+        body:
+          selected_repository_ids: "{{ _repo_lookup.results | map(attribute='json.id') | list }}"
+        status_code: [204]
+      when: not _dry_run
+
+    - name: "Verify the converged state"
+      ansible.builtin.uri:
+        url: "{{ _api }}/orgs/{{ _org }}/actions/runner-groups/{{ (_created.json.id | default(_existing.id)) }}/repositories"
+        method: GET
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+      register: _final
+      when: not _dry_run
+
+    - name: "Report the converged access list"
+      ansible.builtin.debug:
+        msg: >-
+          '{{ _group }}' now admits exactly
+          {{ _final.json.repositories | map(attribute='name') | list | join(', ') }}
+          ({{ _final.json.total_count }} repositories, all private).
+      when: not _dry_run

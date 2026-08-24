@@ -1,0 +1,23 @@
+[Unit]
+Description=GitHub Actions self-hosted runner ({{ github_runner_name }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ github_runner_home }}
+ExecStart={{ github_runner_home }}/run.sh
+# The runner exits after certain updates and on some transient listener errors; always
+# bring it back, or the host silently stops accepting work with nothing to show for it.
+Restart=always
+RestartSec=5
+# No privilege escalation from a job: this is a user-session unit under an account with
+# no sudo entry, and these harden what the process itself can reacquire.
+NoNewPrivileges=true
+KillMode=process
+KillSignal=SIGTERM
+# Long enough for an in-flight job to finish rather than being severed mid-build.
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=default.target

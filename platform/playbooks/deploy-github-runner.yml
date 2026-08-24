@@ -1,0 +1,418 @@
+---
+# deploy-github-runner.yml — stand up one self-hosted GitHub Actions runner.
+#
+# Composed from the existing pattern: credentials -> place -> deploy -> verify. The
+# runner-specific parts are the credential chain and the isolation config; everything
+# else reuses what the platform already has.
+#
+# WHY THE CREDENTIAL WORK IS DELEGATED TO THE CONTROLLER, not run on the host:
+# a runner host is semi-trusted (it executes repository-authored code) and is DENIED
+# network access to OpenBao by its firewall declaration. So it cannot fetch its own
+# secret even if it held a credential — which is the point. The controller mints a
+# registration token and hands it over in memory; nothing durable lands on the host.
+#
+# A registration token is SINGLE USE, so it is minted per host. Nothing here is
+# run_once: two runners need two tokens, and reusing one would fail the second host
+# with a message about an expired credential that is really a reuse.
+#
+# Usage (via Semaphore):
+#   -e target_service=github_runner_svc
+#   -e github_app_client_id=...        (installation id is discovered, not declared)
+#   App private key: read from OpenBao at
+#   secret/services/github-runner:app_private_key. NOT from an environment secret and
+#   never a survey var — Semaphore persists survey values, and one authoritative channel
+#   for a private key is the point of having a secret store.
+
+- name: "Deploy GitHub Actions self-hosted runner"
+  hosts: "{{ target_service | default('github_runner_svc') }}"
+  gather_facts: true
+  become: true
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _org: "{{ github_org | default('uhstray-io') }}"
+    # The JWT issuer. Upstream recommends the App's CLIENT ID and accepts the app id;
+    # both are opaque strings here, so either is taken and the client id wins when both
+    # are declared. The App's OAuth client SECRET is not used by App authentication at
+    # all and is deliberately absent from this playbook.
+    _app_id: >-
+      {{ github_app_client_id
+         | default(lookup('env', 'GITHUB_APP_CLIENT_ID'), true)
+         | default(github_app_id, true)
+         | default(lookup('env', 'GITHUB_APP_ID'), true)
+         | default('', true) }}
+    _install_id: "{{ github_app_installation_id | default(lookup('env', 'GITHUB_APP_INSTALLATION_ID'), true) | default('', true) }}"
+    _home: "{{ github_runner_home | default('/opt/actions-runner') }}"
+    _account: "{{ github_runner_account | default('ghrunner') }}"
+    _rver: "{{ github_runner_version | default('2.336.0') }}"
+    # Where the monorepo lands ON THE TARGET. The install script runs on the host, so it
+    # must be reached by a path that exists there — playbook_dir is the CONTROLLER's
+    # checkout and resolving a remote command against it yields rc=127. Templates are
+    # different: `template:` reads its src on the controller, so playbook_dir is correct
+    # for those and wrong here, which is why the two are not interchangeable.
+    _monorepo_dir: "{{ monorepo_deploy_path | default('/opt/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
+
+  tasks:
+    - name: "Validate the declaration"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _app_id | length > 0
+          - github_runner_name | default('') | length > 0
+          - (github_runner_labels | default([])) | length > 0
+          - github_runner_group | default('') | length > 0
+        fail_msg: >-
+          Need the OpenBao address, the App's client id (or app id), and this host's
+          github_runner_name / github_runner_labels / github_runner_group in inventory.
+          The declaration is the allocation — a runner without declared labels cannot be
+          targeted by a workflow, and a runner without a group would land in the default
+          group, which may admit repositories this plane must not serve.
+        success_msg: "Declaration complete for {{ github_runner_name }}."
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # ── host prerequisites ─────────────────────────────────────────────────
+    - name: "Place the monorepo on the target"
+      # Shared Phase-1 preamble every composable deploy uses — the install script has to
+      # exist on the host that runs it.
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Wait for a freshly-booted host to accept package installs"
+      ansible.builtin.include_tasks: tasks/wait-for-apt.yml
+
+    - name: "Install the runner's OS prerequisites"
+      # unzip for the container-hooks archive; the runner bundles its own Node, so no
+      # Node package is needed and pinning one would be a second version to drift.
+      #
+      # `acl` is not optional here, and its absence is nasty. Everything below runs as the
+      # dedicated unprivileged account, and Ansible needs setfacl to hand its temporary
+      # files to a become target that is neither root nor the connecting user. Without it
+      # the register step dies in the become plumbing — a failure raised outside the
+      # normal result path, so `failed_when: false` does NOT catch it and, under the
+      # no_log the token requires, it surfaces as a censored fatal with no cause. Three
+      # runs went into finding a missing package.
+      ansible.builtin.apt:
+        name: [curl, unzip, tar, ca-certificates, acl]
+        state: present
+        update_cache: true
+
+    - name: "Create the unprivileged runner account"
+      # No sudo entry, ever. This account is what makes the spec's "a job cannot
+      # escalate to host administration" true, and it is deliberately NOT ansible_user,
+      # which holds NOPASSWD sudo after hardening.
+      ansible.builtin.user:
+        name: "{{ _account }}"
+        home: "{{ _home }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: "Confirm the runner account holds no sudo rights"
+      # Asserted rather than assumed: a host that was once used for something else may
+      # carry a stale sudoers entry, and the isolation claim rests on this being false.
+      ansible.builtin.command: "sudo -l -U {{ _account }}"
+      register: _sudocheck
+      changed_when: false
+      failed_when: false
+
+    - name: "Refuse to proceed if the runner account can escalate"
+      ansible.builtin.assert:
+        that:
+          - "'(ALL' not in (_sudocheck.stdout | default(''))"
+          - "'NOPASSWD' not in (_sudocheck.stdout | default(''))"
+        fail_msg: >-
+          {{ _account }} appears to have sudo rights. A runner executes
+          repository-authored code; granting it host administration defeats every other
+          control here. Remove the sudoers entry before deploying.
+
+    - name: "Enable lingering so the runner survives logout and reboot"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+      vars:
+        linger_user: "{{ _account }}"
+
+    # ── pinned artefact digests (from the release metadata, not hardcoded) ──
+    - name: "Fetch the release metadata for the pinned versions"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ item.repo }}/releases/tags/v{{ item.ver }}"
+        method: GET
+        headers:
+          Accept: "application/vnd.github+json"
+        status_code: [200]
+      register: _releases
+      loop:
+        - { repo: "actions/runner", ver: "{{ _rver }}", asset: "actions-runner-linux-x64-{{ _rver }}.tar.gz" }
+        - { repo: "actions/runner-container-hooks", ver: "{{ _hver }}", asset: "actions-runner-hooks-docker-{{ _hver }}.zip" }
+      loop_control:
+        label: "{{ item.repo }} v{{ item.ver }}"
+      delegate_to: localhost
+      become: false
+
+    - name: "Extract each artefact's published digest"
+      # Both releases expose a per-asset `digest` field ("sha256:..."), so no release-body
+      # parsing is involved and the same code covers both artefacts.
+      ansible.builtin.set_fact:
+        _runner_sha256: "{{ ((_releases.results[0].json.assets | selectattr('name', 'equalto', 'actions-runner-linux-x64-' ~ _rver ~ '.tar.gz') | first).digest | default('')) | regex_replace('^sha256:', '') }}"
+        _hooks_sha256: "{{ ((_releases.results[1].json.assets | selectattr('name', 'equalto', 'actions-runner-hooks-docker-' ~ _hver ~ '.zip') | first).digest | default('')) | regex_replace('^sha256:', '') }}"
+
+    - name: "Require a digest for both artefacts"
+      ansible.builtin.assert:
+        that:
+          - _runner_sha256 | length == 64
+          - _hooks_sha256 | length == 64
+        fail_msg: >-
+          Could not read a published sha256 for runner v{{ _rver }} and/or hooks
+          v{{ _hver }}. Refusing to install an unverified artefact — "no digest" and
+          "unverified" are the same state from here.
+        success_msg: "Digests resolved for runner v{{ _rver }} and hooks v{{ _hver }}."
+
+    # ── credentials (no_log boundary, delegated to the controller) ──────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Read the App private key from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _app_secret
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Mint a single-use runner registration token"
+      # Runs on the CONTROLLER: the runner host is firewalled away from the secret store
+      # by design, so it could not do this itself. The key goes in on STDIN and the
+      # token comes back on stdout — neither ever appears in argv, which is
+      # world-readable through /proc.
+      #
+      # Python, not shell: the first version used openssl and jq, and this image has
+      # neither, which surfaced from inside the no_log boundary as an unexplained
+      # credential failure. ansible_playbook_python is used deliberately — a bare
+      # `python3` may be a different build without the packages Ansible's interpreter has.
+      #
+      # `cryptography` is required and is DECLARED in
+      # platform/requirements-controller.txt. It is present on the current controller
+      # (verified: a registration succeeded through this path), but nothing declared it
+      # before, and an undeclared dependency that disappears on an image rebuild fails
+      # inside a no_log boundary — see the classification below, which names it.
+      ansible.builtin.command:
+        cmd: >-
+          {{ ansible_playbook_python }}
+          {{ playbook_dir }}/../lib/github_app_token.py registration-token
+          --issuer {{ _app_id | quote }} --org {{ _org | quote }} --key -
+        stdin: "{{ _app_secret.json.data.data.app_private_key }}"
+      register: _regtoken
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ── diagnosing a credential failure without printing the credential ────
+    # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
+    # diagnostic strings, tokens are written to STDOUT, and curl runs with -sf so no
+    # response body reaches stderr either. Diagnosability was bought without widening
+    # what is exposed.
+    #
+    # no_log is correct on the mint (the token crosses it), but a no_log task that
+    # simply fails leaves a Semaphore run undiagnosable — the failure mode AGENTS.md
+    # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
+    # the helper's stderr is matched against its own known messages and only the verdict
+    # is printed. Shapes, counts and verdicts are safe; values are not.
+    - name: "Classify the outcome without exposing any credential"
+      ansible.builtin.set_fact:
+        # Matches the PEM armour prefix WITHOUT spelling out the full header: the
+        # secret-scanning hooks (rightly) reject that literal in source, and a shape
+        # check does not need it.
+        _pem_has_header: "{{ (_app_secret.json.data.data.app_private_key | default('')) is match('^-----BEGIN') }}"
+        _pem_lines: "{{ ((_app_secret.json.data.data.app_private_key | default('')).split('\n')) | length }}"
+        _mint_verdict: >-
+          {{ 'OK' if (_regtoken.rc | default(1)) == 0
+             else 'a required tool or library is missing on the controller' if ((_regtoken.rc | default(0)) == 127 or 'cryptography' in (_regtoken.stderr | default('')) or 'not found' in (_regtoken.stderr | default('')))
+             else 'the stored key could not be parsed as a PEM private key' if ('could not be parsed' in (_regtoken.stderr | default('')))
+             else 'the App authenticates but is installed nowhere' if ('no installations' in (_regtoken.stderr | default('')))
+             else 'the App is installed, but not on this organisation' if ('not on' in (_regtoken.stderr | default('')))
+             else 'the assertion was rejected — issuer or key mismatch' if ('could not list installations' in (_regtoken.stderr | default('')))
+             else 'the App lacks organisation self-hosted-runners write' if ('could not obtain a runner' in (_regtoken.stderr | default('')))
+             else 'unclassified failure' }}
+      no_log: true
+
+    - name: "Report the credential outcome (verdict and shapes only)"
+      ansible.builtin.debug:
+        msg: >-
+          mint rc={{ _regtoken.rc | default('?') }} -> {{ _mint_verdict }};
+          stored key: PEM armour present={{ _pem_has_header }},
+          lines={{ _pem_lines }} (a 2048-bit RSA PEM is ~27 lines; 1 means the
+          newlines were lost in transit).
+          Helper stderr: {{ (_regtoken.stderr | default('')) | trim }}
+
+    - name: "Fail if no registration token was minted"
+      ansible.builtin.assert:
+        that:
+          - (_regtoken.rc | default(1)) == 0
+          - (_regtoken.stdout | default('')) | length > 0
+        fail_msg: "No registration token: {{ _mint_verdict }}."
+        success_msg: "Registration token minted."
+
+    # ── configuration (visible: these must stay diagnosable) ───────────────
+    - name: "Render the runner's configuration"
+      ansible.builtin.file:
+        path: "{{ _home }}/config"
+        state: directory
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0750"
+
+    - name: "Template the runner's declaration, job env, cleanup hook and unit"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "{{ item.mode }}"
+      # The templates read the RAW inventory names, while this play resolves defaulted
+      # `_`-prefixed copies. Mapping them here means a declaration that relies on a play
+      # default still renders — otherwise the first host to omit, say,
+      # github_runner_hooks_version fails with an undefined-variable error at render time.
+      vars:
+        github_runner_home: "{{ _home }}"
+        github_org: "{{ _org }}"
+        github_runner_version: "{{ _rver }}"
+        github_runner_hooks_version: "{{ _hver }}"
+      loop:
+        - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
+        - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
+        - { src: "job-cleanup.sh.j2", dest: "{{ _home }}/job-cleanup.sh", mode: "0750" }
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: "Create the account's systemd user-unit directory"
+      # systemd --user only reads units from this path, and it does not exist on a fresh
+      # account. Templating the unit straight in fails on the missing parent, which is a
+      # confusing way to learn that the directory is the prerequisite.
+      ansible.builtin.file:
+        path: "{{ _home }}/.config/systemd/user"
+        state: directory
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0755"
+
+    - name: "Install the runner's systemd user unit"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/actions-runner.service.j2"
+        dest: "{{ _home }}/.config/systemd/user/actions-runner.service"
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0644"
+      vars:
+        github_runner_home: "{{ _home }}"
+        github_runner_name: "{{ github_runner_name }}"
+
+    # ── install + register ─────────────────────────────────────────────────
+    - name: "Install and register the runner"
+      # The token arrives on stdin. `no_log` covers only this task: the install and the
+      # verification below stay visible, because a censored deploy is an undiagnosable one
+      # (AGENTS.md — no_log is for the credential boundary, not the whole run).
+      ansible.builtin.shell: |
+        set -euo pipefail
+        printf '%s' "$REG_TOKEN" | {{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh configure
+      args:
+        executable: /bin/bash
+      environment:
+        REG_TOKEN: "{{ _regtoken.stdout }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      become: true
+      become_user: "{{ _account }}"
+      register: _configured
+      changed_when: "'registered' in (_configured.stdout | default(''))"
+      failed_when: false
+      no_log: true
+
+    # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
+    # no_log step that merely fails is undiagnosable. The script never echoes the token
+    # and the runner's own configuration masks secrets it is given, so its output is safe
+    # to surface — and surfacing it is what turns "failed" into something actionable.
+    - name: "Report the registration outcome"
+      ansible.builtin.debug:
+        msg: >-
+          register rc={{ _configured.rc | default('?') }}
+          {{ ('stdout: ' ~ ((_configured.stdout | default('')) | trim)) if (_configured.stdout | default('')) | length > 0 else '' }}
+          {{ ('stderr: ' ~ ((_configured.stderr | default('')) | trim)) if (_configured.stderr | default('')) | length > 0 else '' }}
+
+    - name: "Fail if the runner did not register"
+      ansible.builtin.assert:
+        that:
+          - (_configured.rc | default(1)) == 0
+        fail_msg: "The runner did not register — see the reported rc and output above."
+        success_msg: "Runner registered."
+
+    - name: "Resolve the runner account's uid"
+      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
+      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
+      # host where accounts were created in a different order.
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ _account }}"
+
+    - name: "Record the uid and the user bus it implies"
+      ansible.builtin.set_fact:
+        _runner_uid: "{{ getent_passwd[_account][1] }}"
+
+    - name: "Reload the account's systemd and start the runner"
+      ansible.builtin.systemd_service:
+        name: actions-runner.service
+        scope: user
+        daemon_reload: true
+        enabled: true
+        state: started
+      become: true
+      become_user: "{{ _account }}"
+      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
+      # No medium found" — sudo does not set it, and lingering creates the runtime
+      # directory but cannot tell a non-login shell where it is.
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+
+    # ── verify (deliberately NOT no_log) ───────────────────────────────────
+    - name: "Confirm the runner service is active"
+      ansible.builtin.command: "systemctl --user is-active actions-runner.service"
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+      register: _active
+      changed_when: false
+      # EXACT match, not a substring. `systemctl --user is-active` prints "inactive" for a
+      # stopped unit, and "inactive" CONTAINS "active" — so `'active' not in stdout` was
+      # False for a dead runner and this gate passed it. The final verification reported
+      # success for a runner serving nothing.
+      failed_when: "(_active.stdout | default('') | trim) != 'active'"
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
+          service {{ _active.stdout | trim }}, labels
+          {{ (github_runner_labels | default([])) | join(',') }}, group
+          {{ github_runner_group }}. Confirm it is ONLINE at the organisation with
+          verify-github-runners.yml before routing work to it.

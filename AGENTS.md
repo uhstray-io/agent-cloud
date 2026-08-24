@@ -97,6 +97,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/tududi/deployment/CLAUDE.md` — tududi to-do app (rootless podman, SQLite, native Authentik OIDC; weft's NocoDB-migration sink)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
 - `platform/services/postiz/deployment/CLAUDE.md` — postiz social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres; native Authentik OIDC, API-key automation endpoint ungated at the edge for n8n; upstream "Option B" config mount)
+- `platform/services/github-runner/CLAUDE.md` — self-hosted GitHub Actions runners (two hosts, one pool; org-scoped `uhstray-selfhosted` group restricted to the five PRIVATE repos — `agent-cloud` deliberately excluded as public; App-signed credential chain minted on the controller because the hosts are firewalled away from OpenBao; per-job containerisation is explicitly NOT an enforced control — read the isolation table before placing anything on a runner host)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
@@ -225,6 +226,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
 | `secret/services/cloudflare` | Cloudflare edge-as-code: scoped API token, `zone_id`, `caddy_origin_ip`, R2 state-backend S3 endpoint + access keys — read by `apply-cloudflare-tofu.yml` (see "Cloudflare edge as code" below) |
 | `secret/services/postiz` | postiz signing secret + its Postgres password + the Temporal Postgres password (all generated once and reused — a new signing secret invalidates every session AND every API key), plus the operator's social-platform application credentials seeded by `seed-postiz-secrets.yml`; the OIDC client secret is shared-read from `authentik` |
+| `secret/services/github-runner` | GitHub App private key (`app_private_key`) for the org runner-automation App. The App's OAuth client secret is NOT used and is not stored; the client id is the JWT issuer and is not secret. Read only by the orchestrator — a runner host is denied OpenBao by its own firewall declaration and never holds this |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -261,6 +263,9 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Deploy Postiz | `deploy-postiz.yml` | Social publishing (rootless podman, 5 containers): secrets (+OIDC shared-read) → render BOTH env files → deploy.sh → verify app AND workflow engine |
 | Clean Deploy Postiz | `clean-deploy-postiz.yml` | Destructive: wipe containers + all four volumes + fresh deploy (social accounts need re-authorizing by hand afterwards) |
 | Seed Postiz Secrets | `seed-postiz-secrets.yml` | Additively place the operator's social-platform credentials at `secret/services/postiz` (KV-v2 merge-patch; no survey vars — Semaphore persists those, so values are launch-time extra vars) |
+| Deploy GitHub Runner | `deploy-github-runner.yml` | Install + register one self-hosted runner: prereqs (incl. `acl`) → unprivileged account asserted sudo-less → pinned artefacts verified against their published digests → registration token minted ON THE CONTROLLER (the host cannot reach OpenBao) → per-job cleanup hook → systemd user service. Idempotent; a re-run leaves an existing registration intact |
+| Manage GitHub Runner Group | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false`; convergence REPLACES the list, so a grant made outside the declaration is removed |
+| Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
@@ -382,6 +387,24 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 **Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
+### Test gate on push (`.githooks/pre-push`)
+
+`core.hooksPath=.githooks` also activates a **pre-push** hook that runs the BATS suite —
+and pytest when its dependencies are present — with the same invocation, working
+directory and `PYTHONPATH` as CI, refusing the push on failure. No install step; it is
+live as soon as `make git-setup` has been run.
+
+Why push and not commit: the suite is ~37s for 421 tests, which on every commit is
+friction people route around with `--no-verify` — turning a gate into a habit of
+bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
+failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
+times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
+keys — nothing about tests, so there was no gate to pass.
+
+It **fails open** when a runner is absent, unlike the secret gate which fails closed. A
+leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
+Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+
 ### Mandatory Pre-Push Audit
 
 Run as a **separate step** before every commit. Review the output. Then commit separately.
@@ -455,6 +478,13 @@ Ansible collections (auto-installed from `collections/requirements.yml`):
 - `community.hashi_vault` — OpenBao/Vault lookups
 - `ansible.posix` — `authorized_key` module
 
+Controller Python packages (`platform/requirements-controller.txt`) — used only by
+playbooks running on localhost, never installed on a service VM:
+- `cryptography` — RS256 signing for the GitHub App credential chain
+  (`platform/lib/github_app_token.py`). Declared because it was previously assumed to
+  arrive with the collections; an undeclared dependency that vanishes on an image rebuild
+  fails inside a `no_log` boundary, where the symptom is an unexplained credential error.
+
 Shared bash libraries:
 - `platform/lib/common.sh` — logging, secret helpers, compose wrapper, health checks
 - `platform/lib/bao-client.sh` — HTTP-based OpenBao API client (curl + jq)
@@ -478,7 +508,7 @@ operator has one, takes precedence — this is the repo-level default.
 The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`
 attribute on the graph artifact is inert without it, so a concurrent re-index would
 produce a binary conflict that looks like the attribute simply failed. The second
-activates the capture hooks and the secret-scanning gate.
+activates the capture hooks, the secret-scanning gate, and the pre-push test gate.
 
 **Read routing.** Try the graph **first** for anything derivable from source —
 it is free, deterministic, and sub-millisecond. Go to the bank for rationale,

@@ -4,6 +4,23 @@
 # Reads templates.yml and creates/updates task templates via Semaphore API.
 # Idempotent: existing templates updated, new ones created.
 #
+# IT DOES NOT DELETE. Matching is by name — PUT when the name exists, POST when it does
+# not — so REMOVING a template from templates.yml does not remove it from Semaphore. The
+# declaration stops describing it and it keeps running, which is worse than an orphan: it
+# is an undeclared template that a later reader has no record of, still bound to whatever
+# repository record it had.
+#
+# Consequence to know about: a template created for temporary validation (say, bound to a
+# feature-branch repository record) must be deleted from Semaphore explicitly when its
+# declaration is removed, and before the repository record it points at is deleted —
+# otherwise its every run fails on a checkout against a record that no longer exists.
+#
+# Prune support was deliberately NOT added here. Semaphore currently holds
+# hand-made templates that no declaration covers (e.g. the "SSH Distribute: ... (temp)"
+# entries), so a prune pass would delete work this file has no knowledge of. Making that
+# safe means first bringing every existing template under declaration — worth doing, and
+# larger than this playbook.
+#
 # Usage:
 #   SEMAPHORE_URL=http://... SEMAPHORE_TOKEN=... ansible-playbook setup-templates.yml
 #

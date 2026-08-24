@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# job-cleanup.sh — runs after every job. Rendered by Ansible; do not edit on the host.
+#
+# Destroys what the finished job left behind, so the next job — which may belong to a
+# different repository — cannot read it.
+#
+# This hook NEVER fails the job. A non-zero exit from a job-completed hook marks the
+# job failed, which would turn a cleanup hiccup into a red build and, worse, train
+# people to disable the hook. Every step is therefore best-effort and the script always
+# exits 0; problems are logged where the job log will show them.
+set -uo pipefail
+
+log() { printf '[job-cleanup] %s\n' "$*"; }
+
+WORKDIR="{{ github_runner_home }}/_work"
+
+# The workspace. Removed rather than emptied so a stale directory cannot linger with
+# root-owned files a later job cannot overwrite.
+if [ -d "$WORKDIR" ]; then
+  # Only the per-job subdirectories: _work itself holds the runner's own _tool and
+  # _temp caches, and deleting those on every job would make each build slower for no
+  # isolation gain — they hold no repository content.
+  find "$WORKDIR" -mindepth 1 -maxdepth 1 \
+       ! -name '_tool' ! -name '_temp' ! -name '_actions' \
+       -exec rm -rf {} + 2>/dev/null \
+    || log "WARNING: could not fully clear $WORKDIR"
+  log "workspace cleared"
+fi
+
+# Containers and volumes this job created. `docker` here is the podman shim; both the
+# container and volume prunes are scoped to what is already stopped/unused, so a
+# concurrently running job on this host is unaffected.
+if command -v docker >/dev/null 2>&1; then
+  docker container prune -f >/dev/null 2>&1 || log "WARNING: container prune failed"
+  docker volume prune -f    >/dev/null 2>&1 || log "WARNING: volume prune failed"
+  log "containers and volumes pruned"
+else
+  log "WARNING: no docker shim on PATH — per-job containers were NOT pruned"
+fi
+
+exit 0

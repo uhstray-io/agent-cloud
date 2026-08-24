@@ -132,8 +132,8 @@
     - name: "Confirm password auth disabled"
       ansible.builtin.assert:
         that: _pw_test.rc != 0
-        fail_msg: "WARNING: Password auth still works on {{ service_name }}!"
-        success_msg: "{{ service_name }}: password auth REJECTED"
+        fail_msg: "WARNING: Password auth still works on {{ service_name | default(inventory_hostname) }}!"
+        success_msg: "{{ service_name | default(inventory_hostname) }}: password auth REJECTED"
 
     - name: "Verify key auth still works"
       ansible.builtin.command:
@@ -159,7 +159,7 @@
 
     - name: "Lockdown complete"
       ansible.builtin.debug:
-        msg: "{{ service_name }}: password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled"
+        msg: "{{ service_name | default(inventory_hostname) }}: password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled"
 
   handlers:
     - name: Restart sshd

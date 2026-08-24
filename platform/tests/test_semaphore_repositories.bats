@@ -8,6 +8,8 @@
 # Structural only (grep/parse asserts) — no live Semaphore calls.
 # Run: bats platform/tests/test_semaphore_repositories.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DECL="$REPO_ROOT/platform/semaphore/repositories.yml"
@@ -83,7 +85,23 @@ print('\n'.join(bad) if bad else 'OK')
   # Every existing template omits the field, so the default must be the main
   # record or this change would silently repoint the whole project.
   grep -qE "default\('agent-cloud'\)" "$SETUP"
-  ! grep -qE '^\s+repository: ' "$TPL"
+  # Templates that OMIT `repository:` bind to main — that is the default and it must
+  # stay. Templates that NAME one are legitimate (that is the whole point of declaring
+  # several records), so the invariant worth pinning is not "nobody names a record" but
+  # "every named record is actually declared". A template naming a record that does not
+  # exist fails every checkout, and does so only when someone runs it.
+  local declared named missing
+  # [[:space:]] rather than \s: BSD sed (macOS) does not understand \s, so a \s pattern
+  # silently matches nothing there and the comparison then "passes" on empty input —
+  # a false green that only shows up on one of the two platforms this suite runs on.
+  declared=$(grep -E '^[[:space:]]+- name: ' "$DECL" | sed -E 's/^[[:space:]]+- name: //' | tr -d '"')
+  named=$(grep -E '^[[:space:]]+repository: ' "$TPL" | sed -E 's/^[[:space:]]+repository: //' | tr -d '"' | sort -u)
+  missing=""
+  while IFS= read -r r; do
+    [ -z "$r" ] && continue
+    printf '%s\n' "$declared" | grep -qxF "$r" || missing="$missing $r"
+  done <<< "$named"
+  [ -z "$missing" ] || { echo "templates name undeclared repository records:$missing"; false; }
 }
 
 @test "set-semaphore-branch: marked deprecated but still functional" {
@@ -170,4 +188,21 @@ print('\n'.join(bad) if bad else 'OK')
   ! grep -qE "lookup\('pipe'" "$f"
   # And proves the write landed instead of trusting the status code.
   grep -qE 'Verify the push actually landed' "$f"
+}
+
+@test "templates: no declaration is bound to a feature-branch repository record" {
+  # A feature-branch record is legitimate DURING validation and a defect once merged: the
+  # record is deleted with the branch, and every template still naming it then fails its
+  # checkout. templates.yml lands on main, so a main-branch declaration referencing a
+  # feature branch is shipped breakage.
+  refute_grep -qE '^[[:space:]]+repository: .*(feat|fix|chore|docs)/' "$TPL"
+  # And the declared records themselves must be the long-lived ones only.
+  refute_grep -qE '^[[:space:]]+git_branch: (feat|fix|chore|docs)/' "$DECL"
+}
+
+@test "setup-templates: its no-delete semantics are documented" {
+  # Removing a declaration does NOT remove the template — matching is by name with
+  # PUT-or-POST and no DELETE. A reader who assumes otherwise leaves undeclared templates
+  # running against records that may no longer exist.
+  grep -qF 'IT DOES NOT DELETE' "$SETUP"
 }

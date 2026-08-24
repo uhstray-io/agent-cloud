@@ -1,0 +1,22 @@
+# .env — read by the runner itself and applied to every job it accepts.
+#
+# What this file turns on, stated accurately — an earlier version of this comment claimed
+# universal containerisation, and a smoke job declaring no container proved otherwise by
+# reporting ISOLATION=host.
+#
+# The container hooks manage containers for a job that DECLARES one (`container:` /
+# `services:`), giving it a consistent runtime and cleanup. They do NOT place an
+# undeclared job into a container: such a job executes against this host's filesystem as
+# the unprivileged runner account. Per-job containerisation is therefore NOT an enforced
+# isolation control here; what is enforced is the workspace wipe below, the unprivileged
+# account, and the host's egress denial.
+#
+# The hooks shell out to a `docker` binary, which on this host is the podman shim
+# installed by install-podman.yml.
+ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
+
+# Runs after EVERY job — success, failure, or cancellation — and destroys the job's
+# workspace and containers. Second layer on purpose: the container boundary above is a
+# single mechanism protecting several repositories from each other, and a workspace wipe
+# is cheap enough to be worth having behind it.
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED={{ github_runner_home }}/job-cleanup.sh
