@@ -92,6 +92,36 @@ templates:
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
 
+  # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
+  # prefix so a VM's address comes from the authority rather than from the inventory
+  # (which records what is declared) or from eyeballing the network. Reserving is opt-in
+  # AND takes explicit addresses, so two runs cannot quietly allocate different ones.
+  - name: Allocate NetBox IP
+    playbook: platform/playbooks/netbox-allocate-ip.yml
+    survey_vars:
+      - name: prefix
+        title: "Prefix (CIDR)"
+        description: "Prefix to ask for free addresses in; must already exist in NetBox"
+        type: string
+        required: true
+      - name: count
+        title: "How many"
+        description: "Free addresses to report (1-32)"
+        type: string
+        required: false
+        default_value: "2"
+      - name: reserve
+        title: "Reserve"
+        description: "true = also CREATE the address records named in assignments"
+        type: string
+        required: false
+        default_value: "false"
+      - name: assignments
+        title: "Assignments (JSON)"
+        description: "[{address, dns_name, description}] — required when reserve=true"
+        type: string
+        required: false
+
   - name: Create NetBox Device
     playbook: platform/playbooks/create-netbox-device.yml
     survey_vars:
