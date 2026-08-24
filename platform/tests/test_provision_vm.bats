@@ -81,3 +81,14 @@ setup() {
     grep -qE "$v" "$RESIZE" || { echo "resize-vm missing $v"; return 1; }
   done
 }
+
+@test "provision-vm: a multi-host service must name which declaration to provision" {
+  # `first` is an accident of file order. With two declared hosts — a pool of CI runners,
+  # say — it would provision one of them and silently apply the other's overrides to it,
+  # which against a live VM is a rebuild. Refusing beats guessing.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  grep -qF '_decl_host: "{{ target_host | default(_group_hosts | first' "$PB"
+  grep -qF "(_group_hosts | length) <= 1 or (target_host | default('') | length > 0)" "$PB"
+  # And a named host that is not in the group is refused, not silently defaulted.
+  grep -qF '_decl_host | length == 0 or _decl_host in _group_hosts' "$PB"
+}
