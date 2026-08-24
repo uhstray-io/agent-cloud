@@ -704,6 +704,33 @@ templates:
         type: string
         required: false
 
+  - name: Allocate NetBox IP (Runner Branch)
+    playbook: platform/playbooks/netbox-allocate-ip.yml
+    repository: agent-cloud feat/github-actions-runners
+    survey_vars:
+      - name: prefix
+        title: "Prefix (CIDR)"
+        description: "Prefix to query; must already exist in NetBox"
+        type: string
+        required: true
+      - name: count
+        title: "How many"
+        description: "Free addresses to report (1-32)"
+        type: string
+        required: false
+        default_value: "4"
+      - name: reserve
+        title: "Reserve"
+        description: "true = CREATE the records named in assignments"
+        type: string
+        required: false
+        default_value: "false"
+      - name: assignments
+        title: "Assignments (JSON)"
+        description: "[{address, dns_name, description}] — reported in both modes"
+        type: string
+        required: false
+
   # Seeding from the feature branch, which takes the value from the BAO_SEED_VALUE
   # environment secret rather than an extra var. Semaphore persists a task's extra vars,
   # so seeding a credential with -e stores it in cleartext-at-rest in the orchestrator.
