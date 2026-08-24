@@ -92,3 +92,16 @@ setup() {
   # And a named host that is not in the group is refused, not silently defaulted.
   grep -qF '_decl_host | length == 0 or _decl_host in _group_hosts' "$PB"
 }
+
+@test "proxmox-validate: a guest on an OFFLINE node cannot abort the pre-flight check" {
+  # The cluster API omits `name` for a guest whose node is down. A bare item.name aborted
+  # the whole validation play — and since provision-vm.yml imports it as a precondition,
+  # one powered-off hypervisor blocked provisioning anywhere on the cluster. A pre-flight
+  # check that fails on a degraded fleet member is inverted: that is what it is for.
+  local PV="$BATS_TEST_DIRNAME/../playbooks/proxmox-validate.yml"
+  grep -qF "item.name | default(" "$PV"
+  grep -qF "item.node | default(" "$PV"
+  grep -qF "item.status | default(" "$PV"
+  # No undefaulted field may remain in that message.
+  ! grep -qE 'msg: "\{\{ item\.vmid \}\}: \{\{ item\.name \}\}' "$PV"
+}
