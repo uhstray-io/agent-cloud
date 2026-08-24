@@ -201,9 +201,49 @@
         GH_ORG: "{{ _org }}"
       register: _regtoken
       changed_when: false
+      failed_when: false
       delegate_to: localhost
       become: false
       no_log: true
+
+    # ── diagnosing a credential failure without printing the credential ────
+    # no_log is correct on the mint (the token crosses it), but a no_log task that
+    # simply fails leaves a Semaphore run undiagnosable — the failure mode AGENTS.md
+    # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
+    # the helper's stderr is matched against its own known messages and only the verdict
+    # is printed. Shapes, counts and verdicts are safe; values are not.
+    - name: "Classify the outcome without exposing any credential"
+      ansible.builtin.set_fact:
+        # Matches the PEM armour prefix WITHOUT spelling out the full header: the
+        # secret-scanning hooks (rightly) reject that literal in source, and a shape
+        # check does not need it.
+        _pem_has_header: "{{ (_app_secret.json.data.data.app_private_key | default('')) is match('^-----BEGIN') }}"
+        _pem_lines: "{{ ((_app_secret.json.data.data.app_private_key | default('')).split('\n')) | length }}"
+        _mint_verdict: >-
+          {{ 'OK' if (_regtoken.rc | default(1)) == 0
+             else 'the stored key is not usable as an RSA private key — check it kept its line breaks in transit' if ('signing failed' in (_regtoken.stderr | default('')))
+             else 'the App authenticates but is installed nowhere' if ('no installations' in (_regtoken.stderr | default('')))
+             else 'the App is installed, but not on this organisation' if ('not on' in (_regtoken.stderr | default('')))
+             else 'the assertion was rejected — issuer or key mismatch' if ('could not list installations' in (_regtoken.stderr | default('')))
+             else 'the App lacks organisation self-hosted-runners write' if ('could not obtain a runner' in (_regtoken.stderr | default('')))
+             else 'unclassified failure' }}
+      no_log: true
+
+    - name: "Report the credential outcome (verdict and shapes only)"
+      ansible.builtin.debug:
+        msg: >-
+          mint rc={{ _regtoken.rc | default('?') }} -> {{ _mint_verdict }};
+          stored key: PEM armour present={{ _pem_has_header }},
+          lines={{ _pem_lines }} (a 2048-bit RSA PEM is ~27 lines; 1 means the
+          newlines were lost in transit)
+
+    - name: "Fail if no registration token was minted"
+      ansible.builtin.assert:
+        that:
+          - (_regtoken.rc | default(1)) == 0
+          - (_regtoken.stdout | default('')) | length > 0
+        fail_msg: "No registration token: {{ _mint_verdict }}."
+        success_msg: "Registration token minted."
 
     # ── configuration (visible: these must stay diagnosable) ───────────────
     - name: "Render the runner's configuration"
