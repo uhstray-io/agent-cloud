@@ -184,11 +184,17 @@ a new Python dependency to the controller image is the last resort, not the firs
 
 ### D4 — Isolation: enforced by the host, not requested by the workflow
 
-**Decision.** Two independent layers, both configured on the host:
+**Decision, CORRECTED after measurement.** The first layer below does not work as
+originally designed, and the correction is recorded here rather than quietly dropped.
 
-1. **Per-job containerisation via the runner's container-hook mechanism.** With the
-   container-hook variable set, every job's steps run inside a container whether or not
-   the workflow asked for one.
+1. ~~**Per-job containerisation via the runner's container-hook mechanism.**~~ The
+   original claim was that setting the container-hook variable makes every job's steps
+   run in a container whether or not the workflow asked. **This is false, and was proven
+   false by a job that asked for nothing and reported `ISOLATION=host`.** The hook
+   mechanism manages containers for a job that *declares* one; it does not invent a
+   container for a job that does not. Enforcing containerisation for every job needs an
+   ephemeral runner whose own process and filesystem are containerised and recreated per
+   job — a lifecycle change, not a setting. Recorded as follow-up.
 2. **Workspace destruction via the job-completed hook.** A hook script removes the job
    workspace and prunes the job's containers and volumes after every job, always,
    including on failure and cancellation.
@@ -200,6 +206,12 @@ host, where it is a property of the runner rather than of each workflow author's
 attention. The second layer exists because the first is a single mechanism protecting
 multiple repositories from each other; a workspace wipe is cheap and catches whatever
 leaks around it.
+
+**What actually holds, verified on the live host:** the workspace wipe (a marker written
+by one job was absent in the next), an unprivileged account with no sudo
+(`SUDO=no` from inside a job), and network-level egress denial (the secret store,
+orchestrator and hypervisors all unreachable from inside a job). What does not hold is
+containerisation of an undeclared job.
 
 **The runner service itself stays long-lived**, per the chosen lifecycle. This is the
 trade-off being accepted knowingly: a persistent registration means the runner process

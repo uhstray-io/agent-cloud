@@ -126,16 +126,26 @@ After revocation, a host that is still running SHALL NOT be able to obtain new w
 
 ### Requirement: Each job is isolated from the host and from the preceding job
 
-Job steps SHALL execute inside a container created for that job, not directly against
-the runner host's filesystem and user session.
-
 The job workspace SHALL be destroyed when the job ends, so that no file, credential, or
 process left by one job is visible to the next — including when the next job belongs to
-a different repository.
+a different repository. This SHALL be enforced by the runner host's configuration, not
+requested by the workflow.
 
-Isolation SHALL be enforced by the runner host's configuration rather than requested by
-the workflow, because a workflow that omits the request would otherwise execute
-unconfined.
+Job steps SHALL execute as an account holding no administrative privilege on the host,
+so that a job cannot modify the host it runs on.
+
+**Per-job containerisation is NOT claimed as an enforced control.** The container-hook
+mechanism manages containers for a job that *declares* one; it does not place an
+undeclared job into a container, so a workflow that requests no container executes
+against the host filesystem as the unprivileged runner account. Enforcing
+containerisation for every job requires a different lifecycle — an ephemeral runner
+whose process and filesystem are themselves containerised and recreated per job — and
+that is recorded as follow-up work rather than asserted here.
+
+Consequently the isolation this capability guarantees is: workspace destruction between
+jobs, no host administration from a job, and the egress containment required below. A
+job CAN read anything the runner account can read on that host, so nothing may be placed
+on a runner host that every permitted repository is not entitled to.
 
 #### Scenario: A job cannot see the previous job's leftovers
 
@@ -143,11 +153,12 @@ unconfined.
 - **WHEN** a subsequent job runs on the same runner
 - **THEN** that file is not present in the subsequent job's workspace
 
-#### Scenario: Isolation does not depend on the workflow asking for it
+#### Scenario: Workspace destruction does not depend on the workflow asking for it
 
-- **GIVEN** a workflow whose job makes no isolation request of its own
-- **WHEN** the job runs on the plane
-- **THEN** its steps still execute inside a per-job container
+- **GIVEN** a workflow whose job makes no cleanup request of its own
+- **WHEN** the job runs on the plane and a later job follows it
+- **THEN** the workspace the earlier job wrote is gone, because the wipe is configured on
+  the host rather than requested by the workflow
 
 #### Scenario: A job cannot escalate to host administration
 
