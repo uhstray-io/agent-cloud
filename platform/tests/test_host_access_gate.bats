@@ -174,3 +174,32 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   run bash -c "awk '/^  - name: Check Secrets\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'name: target_service'"
   [ "$output" = "1" ]
 }
+
+@test "verify-host-access: connection params are resolved OUTSIDE the delegated block" {
+  # Inside delegate_to: localhost, bare ansible_host/ansible_user resolve in the
+  # DELEGATED context — so the probe could pin and connect to localhost instead
+  # of the target, and localhost may have no ansible_user at all (an
+  # argument-templating failure that failed_when: false does not catch).
+  grep -qE "Resolve the target's connection parameters" "$PB"
+  # Must read explicitly from the target's hostvars.
+  grep -qF -- "hostvars[inventory_hostname].ansible_host" "$PB"
+  grep -qF -- "hostvars[inventory_hostname].ansible_user" "$PB"
+  # And that resolution must come BEFORE the delegated probe.
+  local resolve probe
+  resolve=$(grep -n "Resolve the target's connection parameters" "$PB" | head -1 | cut -d: -f1)
+  probe=$(grep -n 'Key-only reachability probe' "$PB" | head -1 | cut -d: -f1)
+  [ "$resolve" -lt "$probe" ]
+  # The play must NOT carry a lazily-evaluated _target_addr play var.
+  ! grep -qE '^    _target_addr: ' "$PB"
+}
+
+@test "verify-host-access: the probe refuses to run without a resolved user" {
+  # An empty user templates to "@host" and fails as an argument error rather than
+  # a probe failure — indistinguishable from an abort.
+  awk '/Connect using the key ONLY/{f=1} f&&/^      always:/{exit} f' "$PB" \
+    > "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- "_target_user | default('') | trim | length) > 0" "$BATS_TEST_TMPDIR/probetask.txt"
+  # And the ssh target uses the resolved fact, not the bare connection var.
+  grep -qF -- '{{ _target_user }}@{{ _target_addr }}' "$BATS_TEST_TMPDIR/probetask.txt"
+  ! grep -qF -- '{{ ansible_user }}@' "$BATS_TEST_TMPDIR/probetask.txt"
+}

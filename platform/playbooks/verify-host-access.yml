@@ -79,7 +79,6 @@
   gather_facts: false
   become: false
   vars:
-    _target_addr: "{{ ansible_host | default(inventory_hostname) }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -100,6 +99,23 @@
       failed_when: false
       when: _reach.rc | default(1) == 0
 
+    # Resolve the target's connection parameters HERE, in a task that is NOT
+    # delegated, and bake them as facts. Referencing `ansible_host` or
+    # `ansible_user` inside the delegate_to: localhost block below resolves them
+    # in the DELEGATED context — so the probe could pin and connect to localhost
+    # instead of the target, and `ansible_user` may not exist for localhost at
+    # all, which is an argument-templating failure that `failed_when: false` does
+    # not catch (same abort class as the undefined key path).
+    #
+    # The user falls back to whoever the working connection reported, since that
+    # is by definition an account that can log in.
+    - name: "Resolve the target's connection parameters"
+      ansible.builtin.set_fact:
+        _target_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+        _target_user: "{{ hostvars[inventory_hostname].ansible_user
+                          | default((_whoami.stdout | default('') | trim), true) }}"
+      when: _reach.rc | default(1) == 0
+
     # ── THE KEY-ONLY PROBE — the one that decides the verdict ────────────────
     # Runs from the controller with password and keyboard-interactive auth
     # explicitly refused, so success can ONLY have come from the key. Without
@@ -110,6 +126,7 @@
         - _reach.rc | default(1) == 0
         - _bao_url | length > 0
         - service_name is defined
+        - (_target_addr | default('') | length) > 0
       delegate_to: localhost
       become: false
       block:
@@ -178,6 +195,8 @@
             - _svc_key | length > 0
             - _keyfile.path is defined
             - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+            # An empty user would template to "@host" and fail as an argument
+            # error rather than a probe failure.
 
         - name: "Connect using the key ONLY — password auth refused, host key pinned"
           ansible.builtin.command:
@@ -203,7 +222,7 @@
               - "UserKnownHostsFile={{ _keyfile.path }}.known_hosts"
               - -o
               - ConnectTimeout=10
-              - "{{ ansible_user }}@{{ _target_addr }}"
+              - "{{ _target_user }}@{{ _target_addr }}"
               - "echo key-auth-ok"
           register: _keyprobe
           changed_when: false
@@ -216,6 +235,9 @@
             - _svc_key | length > 0
             - _keyfile.path is defined
             - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+            # An empty user would template to "@host" and fail as an ARGUMENT
+            # error rather than a probe failure — indistinguishable from an abort.
+            - (_target_user | default('') | trim | length) > 0
 
       always:
         - name: "Remove the probe key and its pinned known_hosts"
@@ -309,6 +331,9 @@
                      even be attempted — run Generate Service SSH Key then
                      Distribute SSH Keys. '
                     if ((_svc_key_len | default(0) | int) == 0) else
+                    ('the connecting user could not be resolved, so no key probe was
+                      attempted. '
+                     if ((_target_user | default('') | trim | length) == 0) else
                     ('the target host key could not be read, so the probe was not
                       attempted against a pinned identity — an unpinned probe is
                       refused because an on-path server could fake success. '
@@ -317,7 +342,7 @@
                        connection is probably relying on the password that
                        harden-ssh is about to disable — this alone forbids
                        hardening. Check the key is in authorized_keys. '
-                      if (_keyprobe.rc | default(1) != 0) else ''))) ~
+                      if (_keyprobe.rc | default(1) != 0) else '')))) ~
                    ('privilege escalation does not work, so harden-ssh cannot write
                      the sudoers drop-in. ' if (_become_check.rc | default(1) != 0) else '') ~
                    ('the sudo password is not in the secret store, so harden-ssh
