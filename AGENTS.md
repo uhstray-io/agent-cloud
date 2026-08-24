@@ -403,10 +403,10 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 ### Test check on push (`.githooks/pre-push`)
 
 `core.hooksPath=.githooks` also activates a **pre-push** hook that ATTEMPTS the BATS suite
-and pytest, with the same test selection, working directory and `PYTHONPATH` as CI — the BATS command is
-identical; pytest differs only in verbosity (`-q` here, `-v` in CI) and runs as
-`python3 -m pytest` so it uses this interpreter's pytest rather than whatever is first
-on `PATH`, and refuses the push if one runs and fails. No install step; live as soon as `make git-setup`
+and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. `bats platform/tests/` is
+byte-identical to CI's; the pytest run is not — CI pins Python 3.11 and installs the test
+dependencies, while the hook uses whatever `python3` is on your `PATH`. So a green push
+means the suites passed *on your machine*, or were skipped; only CI is authoritative, and refuses the push if one runs and fails. No install step; live as soon as `make git-setup`
 has been run.
 
 It is a check, not a gate — called that deliberately. It skips, with a message, when

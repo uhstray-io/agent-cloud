@@ -27,16 +27,21 @@
 # Escape hatch, explicit and loud:
 #   SKIP_TESTS=1 git push ...
 #
-# Test selection mirrors .github/workflows/lint-and-test.yml: same paths, same working
-# directory, same PYTHONPATH — because a hook that tests something subtly different from CI
-# teaches people to distrust it.
+# WHAT MATCHES CI: the test paths, the working directory, and PYTHONPATH. That much is
+# deliberate — a hook that tests something subtly different from CI teaches people to
+# distrust it.
 #
-# The commands are NOT byte-identical, and the two differences are deliberate. `bats
-# platform/tests/` matches CI exactly. pytest runs `-q` rather than CI's `-v`, because a
-# hook that prints 79 passing test names on every push is noise people learn to scroll
-# past; and it runs as `python3 -m pytest` rather than bare `pytest`, so it uses this
-# interpreter's pytest instead of whatever happens to be first on PATH. Neither changes
-# which tests run or whether they pass.
+# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.11 via
+# actions/setup-python and installs the test dependencies; this hook uses whatever
+# `python3` is on the developer's PATH, with whatever is installed there. The pytest
+# command also differs — `-q` here versus CI's `-v`, because a hook printing 79 passing
+# test names on every push is noise people learn to scroll past, and `python3 -m pytest`
+# rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
+# first on PATH. And pytest may be skipped here entirely when collection fails.
+#
+# So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
+# evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
+# one command that is byte-identical to CI's.
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0

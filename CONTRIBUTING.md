@@ -147,10 +147,10 @@ All three must pass before merging. See `plan/architecture/03-testing-ci-quality
 full details.
 
 **A push ATTEMPTS them too.** `.githooks/pre-push` invokes the BATS suite, and pytest when
-it is collectable, with the same test selection, working directory and `PYTHONPATH` as CI — the BATS command is
-identical; pytest differs only in verbosity (`-q` here, `-v` in CI) and runs as
-`python3 -m pytest` so it uses this interpreter's pytest rather than whatever is first
-on `PATH`, and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
+it is collectable, with the same test paths, working directory and `PYTHONPATH` as CI. `bats platform/tests/` is
+byte-identical to CI's; the pytest run is not — CI pins Python 3.11 and installs the test
+dependencies, while the hook uses whatever `python3` is on your `PATH`. So a green push
+means the suites passed *on your machine*, or were skipped; only CI is authoritative, and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
 install step — the commands below are what it runs, so you do not need to remember them.
 
 It is a convenience, not a gate. It skips, with a message, when `SKIP_TESTS=1` is set,
