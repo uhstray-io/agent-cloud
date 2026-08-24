@@ -47,7 +47,9 @@ The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linte
 
 ### New Testing Requirements
 
-Every new service onboarded to agent-cloud must include tests before its PR can merge. See `plan/architecture/03-testing-ci-quality.md` for the full specification including:
+Every new service onboarded to agent-cloud must include tests before its PR can merge. The
+full specification is below in this document (it pointed at this file by name, from inside
+this file, after an earlier consolidation), and covers:
 
 - Test templates for compose files, deploy scripts, env templates, and credential leaks
 - Service onboarding testing checklist
@@ -324,10 +326,14 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 
 ## Related Documents
 
-- `plan/architecture/03-testing-ci-quality.md` — Detailed specification for writing tests for new services
-- `plan/architecture/03-testing-ci-quality.md` — OpenSSF Scorecard implementation plan
-- `plan/architecture/03-testing-ci-quality.md` — Local setup and pre-PR checklist
-- `plan/architecture/03-testing-ci-quality.md` — Branch deploy and validation workflow
+All four of these were separate documents that have since been consolidated into **this
+one** — the `<!-- source: ... -->` markers below show where each began. They are sections
+here, not files to open:
+
+- *Security testing standards* — specification for writing tests for a new service
+- *CI testing specification* — the OpenSSF Scorecard implementation plan
+- *Linting and testing* — local setup and the pre-PR checklist
+- *Branch deploy workflow* — deploying a feature branch for validation before merge
 
 <!-- ======================= source: CI-TESTING-SPECIFICATION.md ======================= -->
 
@@ -1059,10 +1065,15 @@ Tests use multi-assertion patterns — each BATS function verifies multiple rela
 
 The table above covers the two shared-library suites only. The suite as a whole is
 **452 BATS tests** across `platform/tests/` plus **79 pytest tests** under
-`platform/services/netbox/deployment/tests/`, both run by CI on every PR and by
-`.githooks/pre-push` before a push leaves the machine.
+`platform/services/netbox/deployment/tests/`.
 
-See `plan/architecture/03-testing-ci-quality.md` for the full testing roadmap.
+CI runs both on every pull request, and that is the authoritative gate.
+`.githooks/pre-push` **attempts** both before a push and refuses the push if one runs and
+fails, but it can skip either: `SKIP_TESTS=1`, `bats` absent, the Python suite not
+collectable because pytest or a test dependency is missing, or a branch-deletion push. A
+green push therefore does not prove the suites ran — only CI does.
+
+The full testing roadmap is the remainder of this document.
 
 <!-- ======================= source: SECURITY-TESTING-STANDARDS.md ======================= -->
 

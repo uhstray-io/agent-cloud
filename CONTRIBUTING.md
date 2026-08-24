@@ -146,13 +146,17 @@ promotion-source check:
 All three must pass before merging. See `plan/architecture/03-testing-ci-quality.md` for
 full details.
 
-**They also run before every push.** `.githooks/pre-push` runs the BATS suite — and pytest
-when its dependencies are present — with the same invocation, working directory and
-`PYTHONPATH` as CI, and refuses the push if either fails. It is live via the repo's
-`core.hooksPath` with no install step, so you do not need to remember the commands below;
-they are what the hook runs. It fails **open** when a runner is missing (CI is the
-backstop), unlike the pre-commit secret gate which fails closed. Override, for a reason
-you can defend in review: `SKIP_TESTS=1 git push`.
+**A push ATTEMPTS them too.** `.githooks/pre-push` invokes the BATS suite, and pytest when
+it is collectable, with the same invocation, working directory and `PYTHONPATH` as CI, and
+refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
+install step — the commands below are what it runs, so you do not need to remember them.
+
+It is a convenience, not a gate. It skips, with a message, when `SKIP_TESTS=1` is set,
+when `bats` is not installed, when the Python suite is not collectable because pytest or a
+test dependency is missing, and on a branch-deletion push. **A push that succeeded does
+not prove the suites ran** — CI is the authority. That fail-open behaviour is deliberate
+and the opposite of the pre-commit secret gate, which fails closed because a leaked secret
+is irreversible.
 
 ---
 

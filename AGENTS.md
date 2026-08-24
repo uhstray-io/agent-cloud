@@ -400,12 +400,18 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 **Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
-### Test gate on push (`.githooks/pre-push`)
+### Test check on push (`.githooks/pre-push`)
 
-`core.hooksPath=.githooks` also activates a **pre-push** hook that runs the BATS suite —
-and pytest when its dependencies are present — with the same invocation, working
-directory and `PYTHONPATH` as CI, refusing the push on failure. No install step; it is
-live as soon as `make git-setup` has been run.
+`core.hooksPath=.githooks` also activates a **pre-push** hook that ATTEMPTS the BATS suite
+and pytest, with the same invocation, working directory and `PYTHONPATH` as CI, and
+refuses the push if one runs and fails. No install step; live as soon as `make git-setup`
+has been run.
+
+It is a check, not a gate — called that deliberately. It skips, with a message, when
+`SKIP_TESTS=1` is set, when `bats` is not installed, when the Python suite is not
+collectable because pytest or a test dependency is missing, and on a branch-deletion push.
+**A push that succeeded is not evidence the suites ran.** CI is the authority; this only
+moves the feedback earlier.
 
 Why push and not commit: the suite is ~37s for 452 tests, which on every commit is
 friction people route around with `--no-verify` — turning a gate into a habit of
@@ -414,8 +420,8 @@ failing test, enforced only by convention, and §5.5/§5.6 record it recurring t
 times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
 keys — nothing about tests, so there was no gate to pass.
 
-It **fails open** when a runner is absent, unlike the secret gate which fails closed. A
-leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
+Failing open is the deliberate opposite of the pre-commit secret gate, which fails closed.
+A leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
 Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
 ### Mandatory Pre-Push Audit
@@ -523,7 +529,7 @@ operator has one, takes precedence — this is the repo-level default.
 The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`
 attribute on the graph artifact is inert without it, so a concurrent re-index would
 produce a binary conflict that looks like the attribute simply failed. The second
-activates the capture hooks, the secret-scanning gate, and the pre-push test gate.
+activates the capture hooks, the secret-scanning gate, and the pre-push test check.
 
 **Read routing.** Try the graph **first** for anything derivable from source —
 it is free, deterministic, and sub-millisecond. Go to the bank for rationale,
