@@ -168,16 +168,31 @@ setup() {
   # bootstrap. caddy_http_port was documented as editable and had no effect, so a
   # machine with anything else on 8088 could not bootstrap at all.
   local f="$PB/bootstrap-local-dev.yml"
-  grep -qE "caddy_http_port=\{\{ _caddy_decl\.caddy_http_port \| default\(8088, true\) \}\}" "$f"
+  # Scoped to the specific INI [<group>:vars] blocks. A whole-file grep is
+  # satisfied by a matching assignment anywhere, including in another service's
+  # block, so it cannot tell "the caddy block is parameterised" from "some block
+  # somewhere is".
+  local caddy_blk postiz_blk
+  caddy_blk=$(awk '/^ *\[caddy_svc:vars\]/{f=1;next} f&&/^ *\[/{exit} f{print}' "$f")
+  postiz_blk=$(awk '/^ *\[postiz_svc:vars\]/{f=1;next} f&&/^ *\[/{exit} f{print}' "$f")
+  [ -n "$caddy_blk" ]
+  [ -n "$postiz_blk" ]
+
+  assert_contains "$caddy_blk" 'caddy_http_port={{ _caddy_decl.caddy_http_port | default(8088, true) }}'
   # The HTTPS port is defined ONCE and consumed by name, because more than the
-  # Caddy block depends on it: a service advertising a public URL through that
-  # edge (postiz_public_url) must name the same port, or an override moves the
-  # listener and leaves the advertised URL pointing at the old one.
-  grep -qE "^ *_edge_https_port: \"\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}\"$" "$f"
-  grep -qE "^ *caddy_https_port=\{\{ _edge_https_port \}\}$" "$f"
-  grep -qE "postiz_public_url=https://postiz\.\{\{ _dev_zone \}\}:\{\{ _edge_https_port \}\}" "$f"
-  # A bare literal for any of them means the override is dead again.
-  refute_grep -qE "^ *caddy_http_port=8088$" "$f"
-  refute_grep -qE "^ *caddy_https_port=8443$" "$f"
-  refute_grep -qE "^ *postiz_public_url=.*:8443$" "$f"
+  # Caddy block depends on it: every service advertising a public URL through that
+  # edge must name the same port, or an override moves the listener and leaves the
+  # advertised URL on the old one.
+  assert_grep -qE "^ *_edge_https_port: \"\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}\"$" "$f"
+  assert_contains "$caddy_blk" 'caddy_https_port={{ _edge_https_port }}'
+
+  # BOTH postiz URLs, not just the public one — the OIDC base can regress to a
+  # literal on its own and the service would then send users to the wrong origin.
+  assert_contains "$postiz_blk" 'postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}'
+  assert_contains "$postiz_blk" 'postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}'
+
+  # A bare literal in either block means the override is dead again.
+  refute_contains "$caddy_blk" 'caddy_http_port=8088'
+  refute_contains "$caddy_blk" 'caddy_https_port=8443'
+  refute_contains "$postiz_blk" ":8443"
 }

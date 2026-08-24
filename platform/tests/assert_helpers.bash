@@ -30,21 +30,34 @@
 #   refute_contains "$haystack" 'needle'    # fails if present
 
 # Fails when grep FINDS something. Takes the same arguments as grep.
+#
+# Only exit status 1 — "matched nothing" — counts as the pattern being absent.
+# Treating every nonzero status as absence is a false green: grep exits 2 for an
+# unreadable or missing file, so a mistyped path made a "must NOT contain"
+# assertion pass unconditionally. Verified: grep on a missing file returns 2.
 refute_grep() {
-  if grep "$@" >/dev/null 2>&1; then
-    echo "refute_grep: forbidden pattern matched: grep $*" >&2
-    return 1
-  fi
-  return 0
+  local rc=0
+  grep "$@" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) echo "refute_grep: forbidden pattern matched: grep $*" >&2; return 1 ;;
+    1) return 0 ;;
+    *) echo "refute_grep: grep failed (status $rc) — treating as a failure, not as absence: grep $*" >&2
+       return 1 ;;
+  esac
 }
 
 # Fails when grep finds NOTHING. Same arguments as grep.
+#
+# Distinguishes "not found" (1) from "grep could not run" (2+), so a bad path is
+# reported as an error rather than as a missing pattern.
 assert_grep() {
-  if grep "$@" >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "assert_grep: expected pattern not found: grep $*" >&2
-  return 1
+  local rc=0
+  grep "$@" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) echo "assert_grep: expected pattern not found: grep $*" >&2; return 1 ;;
+    *) echo "assert_grep: grep failed (status $rc): grep $*" >&2; return 1 ;;
+  esac
 }
 
 # Substring assertions over a string, replacing `[[ "$x" == *y* ]]`.

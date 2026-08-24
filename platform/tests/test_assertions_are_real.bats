@@ -25,7 +25,7 @@
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   # Lower this whenever assertions are converted. Never raise it.
-  BASELINE=56
+  BASELINE=53
 }
 
 @test "no new assertions that cannot fail" {

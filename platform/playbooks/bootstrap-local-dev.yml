@@ -52,6 +52,21 @@
     # the same defect class as caddy_http_port being hardcoded here while being
     # documented as inventory-editable.
     _edge_https_port: "{{ _caddy_decl.caddy_https_port | default(8443, true) }}"
+    # The Caddy route table, as a LIST rather than one 970-character INI line.
+    # It is emitted below with `| to_json`; ansible's ini inventory parses a JSON
+    # list value into a real list (verified against ansible-inventory), so the
+    # wire format is unchanged and only the source becomes reviewable.
+    _caddy_routes:
+      - {'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}
+      - {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}
+      - {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}
+      - {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}
+      - {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}
+      - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
+      - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -413,10 +428,10 @@
         _oidc_map:
           authentik:
             display_name: Authentik
-            provider_url: "https://auth.{{ _zone }}:8443/application/o/semaphore/"
+            provider_url: "https://auth.{{ _zone }}:{{ _edge_https_port }}/application/o/semaphore/"
             client_id: semaphore
             client_secret: "{{ _client_secret }}"
-            redirect_url: "https://semaphore.{{ _zone }}:8443/api/auth/oidc/authentik/redirect"
+            redirect_url: "https://semaphore.{{ _zone }}:{{ _edge_https_port }}/api/auth/oidc/authentik/redirect"
             username_claim: preferred_username
             scopes: [openid, profile, email]
       ansible.builtin.set_fact:
@@ -490,7 +505,7 @@
         headers: *bao_root_hdr
         body_format: json
         body:
-          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:8443/application/o/openbao-oidc/"
+          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:{{ _edge_https_port }}/application/o/openbao-oidc/"
           oidc_discovery_ca_pem: "{{ _stepca_root.stdout }}"
           oidc_client_id: openbao
           oidc_client_secret: "{{ _ak_secret.json.data.data.openbao_oidc_client_secret }}"
@@ -515,7 +530,7 @@
           oidc_scopes: ["openid", "email", "profile"]
           bound_audiences: ["openbao"]
           allowed_redirect_uris:
-            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:8443/ui/vault/auth/oidc/oidc/callback"
+            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:{{ _edge_https_port }}/ui/vault/auth/oidc/oidc/callback"
             - "http://localhost:8250/oidc/callback"
           token_policies: ["platform-admin"]
           token_ttl: 1h
@@ -562,7 +577,7 @@
           {{ ('--env-file ' ~ _state_dir ~ '/semaphore-oidc.env '
               ~ '-v ' ~ _state_dir ~ '/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro '
               ~ '-e SSL_CERT_FILE=/etc/ssl/certs/step-ca-bundle.crt '
-              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':8443 ')
+              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':' ~ _edge_https_port ~ ' ')
              if (_oidc_ready | bool) else '' }}
 
     - name: "Ensure the shared deploy dir exists on the VM"
@@ -906,7 +921,7 @@
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}, {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}, {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}, {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}]
+          caddy_routes={{ _caddy_routes | to_json }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -990,7 +1005,7 @@
           erpnext_port=8080
           erpnext_version=v16
           erpnext_site_name=erp.{{ _dev_zone }}
-          erpnext_public_url=https://erp.{{ _dev_zone }}:8443
+          erpnext_public_url=https://erp.{{ _dev_zone }}:{{ _edge_https_port }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1007,8 +1022,8 @@
           local_mode=true
           tududi_bind=127.0.0.1
           tududi_port=3402
-          tududi_base_url=https://todo.{{ _dev_zone }}:8443
-          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:8443/application/o/tududi/
+          tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
+          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

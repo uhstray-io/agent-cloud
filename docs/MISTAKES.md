@@ -55,12 +55,12 @@ supersede it with a new entry and link both.
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
-| 10.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
-| 10.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | Test |
-| 10.3 | Committed without running the suite — third occurrence | Process | Convention |
-| 9.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
-| 9.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
-| 9.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
+| 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | Test |
+| 11.3 | Committed without running the suite — third occurrence | Process | Convention |
+| 10.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
+| 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
+| 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -557,10 +557,15 @@ consumer actually invokes it — the source, or its documented invocation — an
 you found. A guess about a dependency's call style yields a mechanism that reviews
 cleanly, installs cleanly, is never used, and drags in dependencies of its own.
 
-**Enforced by.** Test — `platform/tests/test_install_podman.bats` asserts that no API
-socket is configured and that nothing depends on `systemctl --machine`, so the removed
-speculation cannot return without a deliberate, reviewable change. (Same branch and same
-caveat as 2.5.)
+**Enforced by.** `install-podman: configures no podman API socket` and
+`install-podman: does not depend on systemctl --machine`
+(`platform/tests/test_install_podman.bats`), so the removed speculation cannot return
+without a deliberate, reviewable change. Both are mutation-tested: re-adding either
+mechanism fails its test.
+
+This entry previously cited that file before it existed — a dangling enforcement claim,
+which is entry 8.2's mistake applied to a citation rather than an identifier. The test
+was written to make the claim true rather than the claim weakened to match.
 
 ---
 
@@ -800,13 +805,13 @@ keeping such payloads short enough to proofread.
 
 ---
 
-## 9. Mechanisms asserted but never exercised
+## 10. Mechanisms asserted but never exercised
 
 Section 8 was about mistakes in reasoning. These three are about mechanisms that
 were written down as working, in comments that explained *why* they worked, and
 had never once been run.
 
-### 9.1 A config file mounted where nothing reads it
+### 10.1 A config file mounted where nothing reads it
 
 **What happened.** The service's app config was rendered to a file and
 bind-mounted into the container. The compose header stated this was deliberate
@@ -834,9 +839,9 @@ loaded" are different claims.
 **Enforced by.** `postiz: the mounted app config is actually loaded into the
 container` (`platform/tests/test_service_postiz.bats`).
 
-### 9.2 Assuming the runtime inherits the image CMD
+### 10.2 Assuming the runtime inherits the image CMD
 
-**What happened.** Fixing 9.1, the first attempt wrapped the container's
+**What happened.** Fixing 10.1, the first attempt wrapped the container's
 entrypoint to source the config and then `exec "$@"`, on the assumption that the
 image's own CMD arrives as those arguments. It reads as the elegant fix: no copy
 of upstream's command to drift.
@@ -858,10 +863,10 @@ so an assumption about argv assembly gets checked against the runtime in use —
 tidier construction depends on inherited behaviour and a duller one does not,
 prefer the duller one and pin what it copies with a test.
 
-**Enforced by.** Same test as 9.1, which now also rejects the entrypoint form and
+**Enforced by.** Same test as 10.1, which now also rejects the entrypoint form and
 pins the copied CMD.
 
-### 9.3 A probe whose own command was interpolated away
+### 10.3 A probe whose own command was interpolated away
 
 **What happened.** To decide between two config-loading mechanisms, a throwaway
 compose file was written to print an environment variable containing `${HOME}`.
@@ -883,16 +888,16 @@ test written specifically to avoid being fooled.
 
 ---
 
-## 10. The largest one
+## 11. The largest one
 
-### 10.1 Seventy-six assertions that could not fail
+### 11.1 Seventy-six assertions that could not fail
 
 **What happened.** An audit of this test suite found **76 assertions that can never
 fail.** Bats runs a test body under `set -e`, but bash's `set -e` is documented to
 ignore the status of two constructs, and both are the natural way to write an
 assertion:
 
-```
+```bash
 ! some_command        # a bang-inverted pipeline
 [[ "$a" == "$b" ]]    # the [[ ]] keyword
 ```
@@ -931,7 +936,7 @@ a function call is a simple command. 20 assertions were converted in the file
 where the class was found; the ratchet holds the rest at a visible number rather
 than pretending the debt is gone.
 
-### 10.2 Sourcing a config file instead of reading it
+### 11.2 Sourcing a config file instead of reading it
 
 **What happened.** Loading the app's config was implemented as `. /config/app.env`
 inside the container. The template renders every credential slot unquoted, so
@@ -956,7 +961,7 @@ that are code and are yours.
 and it had to be scoped to the command value, because a first version was
 satisfied by the explanatory comment beside it.
 
-### 10.3 Committed without running the suite, a third time
+### 11.3 Committed without running the suite, a third time
 
 **What happened.** A documentation commit added a line quoting a forbidden address
 in order to prohibit it. A test scanned the whole directory for that address and

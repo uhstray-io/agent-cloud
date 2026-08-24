@@ -24,8 +24,19 @@
 #     vars:
 #       preflight_group: postiz_svc
 #
-# For a playbook whose group is chosen at launch, pass the same expression its
-# plays use, e.g. `preflight_group: "{{ target_service }}"`.
+# The group MUST be a literal, and MUST be passed twice — once as
+# preflight_group and once as preflight_group_expected. Both are required because
+# an extra var outranks an import_playbook `vars:` entry, so a single var could be
+# redirected at a different, populated group (`-e preflight_group=all` reported
+# "'all' has 1 host(s)" and passed while the real target matched nothing).
+# Requiring two means one `-e` cannot do it, and the guard refuses a mismatch.
+#
+# Do NOT pass a survey-driven expression such as `{{ target_service }}`: that
+# makes the guard's own subject operator-supplied, which is the reachable form of
+# the redirect above. An earlier version of this comment suggested exactly that.
+# No template in this repository passes either variable — verified — so the only
+# way to set them is a hand-written `-e` on a CLI run, where overriding BOTH is a
+# deliberate act of disabling the guard rather than a bypass of it.
 
 - name: "Pre-flight: the target group must exist and contain hosts"
   # KNOWN LIMITATION, stated rather than papered over: this play is subject to
