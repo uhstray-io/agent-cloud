@@ -22,6 +22,8 @@
 #
 # Run: bats platform/tests/test_assertions_are_real.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   # Lower this whenever assertions are converted. Never raise it.
@@ -67,12 +69,54 @@ for o in offenders[:8]:
   [ "$total" -le "$BASELINE" ]
 }
 
-@test "the assertion helpers exist and fail mid-body" {
-  local h="$REPO_ROOT/platform/tests/assert_helpers.bash"
-  [ -f "$h" ]
-  # Each helper must RETURN non-zero rather than using `!` or `[[ ]]` internally,
-  # since a helper that cannot fail is worse than the construct it replaces.
-  run grep -c 'return 1' "$h"
+@test "the assertion helpers exist" {
+  [ -f "$REPO_ROOT/platform/tests/assert_helpers.bash" ]
+}
+
+# The helpers are the mechanism this whole file relies on, so their BEHAVIOUR is
+# asserted, not their source text. Counting `return 1` occurrences passed while a
+# helper returned the wrong status — which is the same "assert a token, not the
+# construct" mistake the suite keeps making.
+#
+# `run` captures the status instead of letting it fail this test, which is what
+# makes it possible to assert that a helper FAILS.
+
+@test "refute_grep: fails when the pattern is present" {
+  printf 'needle\n' > "$BATS_TEST_TMPDIR/f"
+  run refute_grep -qF 'needle' "$BATS_TEST_TMPDIR/f"
+  [ "$status" -ne 0 ]
+}
+
+@test "refute_grep: passes when the pattern is absent" {
+  printf 'needle\n' > "$BATS_TEST_TMPDIR/f"
+  run refute_grep -qF 'haystack' "$BATS_TEST_TMPDIR/f"
   [ "$status" -eq 0 ]
-  [ "$output" -ge 4 ]
+}
+
+@test "refute_grep: fails on an unreadable path rather than reading it as absence" {
+  # grep exits 2 for a missing file. Treating every nonzero status as absence made
+  # a mistyped path pass any "must NOT contain" assertion unconditionally.
+  run refute_grep -qF 'needle' "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -ne 0 ]
+}
+
+@test "assert_grep: passes when present, fails when absent, fails on a bad path" {
+  printf 'needle\n' > "$BATS_TEST_TMPDIR/f"
+  run assert_grep -qF 'needle' "$BATS_TEST_TMPDIR/f"
+  [ "$status" -eq 0 ]
+  run assert_grep -qF 'haystack' "$BATS_TEST_TMPDIR/f"
+  [ "$status" -ne 0 ]
+  run assert_grep -qF 'needle' "$BATS_TEST_TMPDIR/nope"
+  [ "$status" -ne 0 ]
+}
+
+@test "assert_contains / refute_contains: both directions" {
+  run assert_contains "haystack" "stack"
+  [ "$status" -eq 0 ]
+  run assert_contains "haystack" "needle"
+  [ "$status" -ne 0 ]
+  run refute_contains "haystack" "needle"
+  [ "$status" -eq 0 ]
+  run refute_contains "haystack" "stack"
+  [ "$status" -ne 0 ]
 }
