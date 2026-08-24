@@ -11,6 +11,35 @@ service: compose `$`-interpolates what it reads, and a `$` inside any of the ~60
 client secrets would be silently corrupted. Upstream calls the mounted-file style
 "Option B" and marks the single-file style not-recommended.
 
+**Mounting `config/postiz.env` is not enough on its own — `command:` sources it.** The
+image's entrypoint is a generic node wrapper and never reads that path, so the mount
+alone leaves the app with no `DATABASE_URL`: it crash-loops on Prisma's "Environment
+variable not found", and `restart: always` presents that as a container perpetually
+"starting" rather than failing. Observed 216 restarts before this was spotted.
+
+Two follow-on traps, both tried and both wrong:
+
+- **Do not switch to `env_file:`.** It is the obvious fix and it reintroduces the exact
+  corruption Option B exists to avoid. Measured under podman-compose: a value of
+  `ab$c${HOME}de$$f` in an env_file reaches the container as `ab$c/Users/…de$$f` —
+  `${...}` is expanded before the container sees it.
+- **Do not wrap `entrypoint:` and inherit the image CMD via `"$$@"`.** It reads as the
+  tidier option because it avoids copying upstream's CMD. podman-compose sets `Cmd` to
+  null when `entrypoint` is overridden, so `"$$@"` expands to nothing, `exec` runs
+  nothing, and the container exits 0 instantly — a silent no-op that looks identical to
+  the crash loop you were fixing.
+
+`set -a` around the source is load-bearing: without it the values are shell-local and
+the app's child processes never see them. Because the CMD is copied, a test pins it.
+
+**Nothing may probe the workflow engine on `127.0.0.1:7233`.** The engine binds its
+frontend to the *container* IP; nothing listens on loopback inside it, so a loopback
+probe is refused forever. This bit twice — once in the compose healthcheck (the app gates
+on `service_healthy`, so it never started) and again in the deploy's verify step, which
+retried ten times against an engine that was answering `SERVING` throughout. Both now use
+`a=$(hostname -i); … "${a%% *}:7233"`, and a test asserts that address is absent across
+`platform/`. Fixing one copy and leaving the other is what allowed the second failure.
+
 **`ports:` is env-driven in the base, not overridden in the overlay.** Compose merges
 `ports` lists by *appending*, so an overlay can never remove a base publish. The local
 loopback bind comes from `POSTIZ_BIND`/`POSTIZ_PORT` in `.env`. Adding a `ports:` entry
