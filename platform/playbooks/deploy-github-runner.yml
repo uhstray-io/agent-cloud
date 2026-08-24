@@ -175,30 +175,22 @@
       no_log: true
 
     - name: "Mint a single-use runner registration token"
-      # Runs on the CONTROLLER: the runner host is firewalled away from OpenBao by
-      # design, so it could not do this itself. The key reaches the helper on stdin and
-      # the tokens travel in headers — neither ever appears in argv, which is
+      # Runs on the CONTROLLER: the runner host is firewalled away from the secret store
+      # by design, so it could not do this itself. The key goes in on STDIN and the
+      # token comes back on stdout — neither ever appears in argv, which is
       # world-readable through /proc.
-      ansible.builtin.shell: |
-        set -euo pipefail
-        . "{{ playbook_dir }}/../lib/github-app-token.sh"
-        # The installation id is DISCOVERED when not declared. It is not a secret and
-        # not a decision — it is a fact the forge already knows, derivable from the App
-        # credential we necessarily hold. Requiring an operator to read it off a URL adds
-        # a hand-transcribed value that can be wrong and that changes silently if the App
-        # is ever reinstalled.
-        if [ -z "${GH_INSTALL_ID:-}" ]; then
-          GH_INSTALL_ID=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_id "$GH_ISSUER" - "$GH_ORG")
-        fi
-        itok=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_token "$GH_ISSUER" "$GH_INSTALL_ID" -)
-        gh_runner_registration_token "$GH_ORG" "$itok"
-      args:
-        executable: /bin/bash
-      environment:
-        GH_APP_PEM: "{{ _app_secret.json.data.data.app_private_key }}"
-        GH_ISSUER: "{{ _app_id }}"
-        GH_INSTALL_ID: "{{ _install_id }}"
-        GH_ORG: "{{ _org }}"
+      #
+      # Python, not shell: the first version used openssl and jq, and this image has
+      # neither, which surfaced from inside the no_log boundary as an unexplained
+      # credential failure. ansible_playbook_python is used deliberately — it is the
+      # interpreter that already has `cryptography` available via the collections
+      # Ansible itself depends on, whereas a bare `python3` may be a different build.
+      ansible.builtin.command:
+        cmd: >-
+          {{ ansible_playbook_python }}
+          {{ playbook_dir }}/../lib/github_app_token.py registration-token
+          --issuer {{ _app_id | quote }} --org {{ _org | quote }} --key -
+        stdin: "{{ _app_secret.json.data.data.app_private_key }}"
       register: _regtoken
       changed_when: false
       failed_when: false
@@ -226,7 +218,8 @@
         _pem_lines: "{{ ((_app_secret.json.data.data.app_private_key | default('')).split('\n')) | length }}"
         _mint_verdict: >-
           {{ 'OK' if (_regtoken.rc | default(1)) == 0
-             else 'the stored key is not usable as an RSA private key — check it kept its line breaks in transit' if ('signing failed' in (_regtoken.stderr | default('')))
+             else 'a required tool or library is missing on the controller' if ((_regtoken.rc | default(0)) == 127 or 'cryptography' in (_regtoken.stderr | default('')) or 'not found' in (_regtoken.stderr | default('')))
+             else 'the stored key could not be parsed as a PEM private key' if ('could not be parsed' in (_regtoken.stderr | default('')))
              else 'the App authenticates but is installed nowhere' if ('no installations' in (_regtoken.stderr | default('')))
              else 'the App is installed, but not on this organisation' if ('not on' in (_regtoken.stderr | default('')))
              else 'the assertion was rejected — issuer or key mismatch' if ('could not list installations' in (_regtoken.stderr | default('')))

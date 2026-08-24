@@ -91,17 +91,14 @@
         success_msg: "All {{ _repos | length }} declared repositories are private."
 
     - name: "Mint an installation token"
-      ansible.builtin.shell: |
-        set -euo pipefail
-        . "{{ playbook_dir }}/../lib/github-app-token.sh"
-        iid=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_id "$GH_ISSUER" - "$GH_ORG")
-        printf '%s' "$GH_APP_PEM" | gh_app_installation_token "$GH_ISSUER" "$iid" -
-      args:
-        executable: /bin/bash
-      environment:
-        GH_APP_PEM: "{{ _pem }}"
-        GH_ISSUER: "{{ _issuer }}"
-        GH_ORG: "{{ _org }}"
+      # Key on stdin, token on stdout — never argv. See the module docstring for why
+      # this is Python rather than openssl+jq.
+      ansible.builtin.command:
+        cmd: >-
+          {{ ansible_playbook_python }}
+          {{ playbook_dir }}/../lib/github_app_token.py installation-token
+          --issuer {{ _issuer | quote }} --org {{ _org | quote }} --key -
+        stdin: "{{ _pem }}"
       register: _itok
       changed_when: false
       no_log: true

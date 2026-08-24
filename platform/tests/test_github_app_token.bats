@@ -1,165 +1,146 @@
 #!/usr/bin/env bats
-# Tests for platform/lib/github-app-token.sh — the GitHub App credential chain.
+# Tests for platform/lib/github_app_token.py — the GitHub App credential chain.
 #
-# The signing tests are BEHAVIOURAL, not structural: a JWT that is well-formed but
-# incorrectly signed is indistinguishable from a correct one by inspection, and would
-# fail only at the forge, at registration time, on a live host. So these generate a
-# throwaway RSA key, sign a real assertion, and verify the signature with openssl.
-# No network is touched — the token exchanges are not exercised here.
+# The signing tests are BEHAVIOURAL. A JWT that is well-formed but wrongly signed is
+# indistinguishable from a correct one by inspection and fails only at the forge, during
+# registration, on a host that is already built and hardened. So these generate a
+# throwaway RSA key, sign a real assertion, and verify the signature independently.
+# No network is touched; the token exchanges are not exercised here.
 #
 # Run: bats platform/tests/test_github_app_token.bats
 
 setup() {
-  LIB="$BATS_TEST_DIRNAME/../lib/github-app-token.sh"
+  LIB="$BATS_TEST_DIRNAME/../lib/github_app_token.py"
   [ -f "$LIB" ]
+  PY=python3
   # A throwaway key per test. Never a real one: a real App key belongs in the secret
-  # store and nowhere else (docs/MISTAKES.md §4.3 — fixtures are committed files).
+  # store and nowhere else (docs/MISTAKES.md §4.3 — a fixture is a committed file).
   KEY="$BATS_TEST_TMPDIR/throwaway.pem"
-  PUB="$BATS_TEST_TMPDIR/throwaway.pub"
-  openssl genrsa -out "$KEY" 2048 2>/dev/null
-  openssl rsa -in "$KEY" -pubout -out "$PUB" 2>/dev/null
-  # shellcheck disable=SC1090
-  source "$LIB"
+  $PY - <<PYGEN
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+open("$KEY","wb").write(k.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.TraditionalOpenSSL,
+    serialization.NoEncryption()))
+PYGEN
+  [ -s "$KEY" ]
 }
 
-# base64url -> raw, restoring the padding the encoder strips.
-b64url_decode() {
-  local s="${1//-/+}"; s="${s//_//}"
-  case $(( ${#s} % 4 )) in 2) s="${s}==";; 3) s="${s}=";; esac
-  printf '%s' "$s" | openssl base64 -d -A
+sign() {  # sign <issuer> -> prints the assertion
+  python3 -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../lib')
+import importlib.util as u
+s = u.spec_from_file_location('g', '$LIB'); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.sign_assertion('$1', open('$KEY','rb').read()))"
 }
 
-@test "gh-app: the source guard makes repeated sourcing a no-op" {
-  # shellcheck disable=SC1090
-  source "$LIB"
-  source "$LIB"
-  [ "$_GITHUB_APP_TOKEN_SH_LOADED" = "1" ]
+@test "gh-app: cryptography is importable, or these tests mean nothing" {
+  run python3 -c "import cryptography; print('ok')"
+  [ "$status" -eq 0 ]
 }
 
-@test "gh-app: the assertion is three unpadded base64url segments" {
-  local jwt
-  jwt=$(_gh_app_jwt 123456 "$KEY")
-  # Exactly two separators.
+@test "gh-app: the assertion is three unpadded base64url segments on one line" {
+  local jwt; jwt=$(sign 123456)
   [ "$(printf '%s' "$jwt" | tr -cd '.' | wc -c | tr -d ' ')" = "2" ]
-  # base64url alphabet only: '+' and '/' must have been translated, '=' stripped.
   ! printf '%s' "$jwt" | grep -q '[+/=]'
-  # And it must not have been wrapped — a multi-line token is a corrupt token.
   [ "$(printf '%s' "$jwt" | wc -l | tr -d ' ')" = "0" ]
 }
 
-@test "gh-app: the signature verifies against the key that signed it" {
-  local jwt header payload sig_b64
-  jwt=$(_gh_app_jwt 123456 "$KEY")
-  header="${jwt%%.*}"
-  payload=$(printf '%s' "$jwt" | cut -d. -f2)
-  sig_b64=$(printf '%s' "$jwt" | cut -d. -f3)
-
-  printf '%s.%s' "$header" "$payload" > "$BATS_TEST_TMPDIR/signing_input"
-  b64url_decode "$sig_b64" > "$BATS_TEST_TMPDIR/sig.bin"
-
-  run openssl dgst -sha256 -verify "$PUB" \
-        -signature "$BATS_TEST_TMPDIR/sig.bin" "$BATS_TEST_TMPDIR/signing_input"
+@test "gh-app: the signature verifies against the signing key, and not against another" {
+  local jwt; jwt=$(sign 123456)
+  run python3 -c "
+import base64, sys
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+def d(s): return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
+h, p, sig = '$jwt'.split('.')
+key = serialization.load_pem_private_key(open('$KEY','rb').read(), password=None)
+key.public_key().verify(d(sig), f'{h}.{p}'.encode(), padding.PKCS1v15(), hashes.SHA256())
+other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+try:
+    other.public_key().verify(d(sig), f'{h}.{p}'.encode(), padding.PKCS1v15(), hashes.SHA256())
+    print('BAD: verified against an unrelated key')
+except Exception:
+    print('ok')"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Verified OK"* ]]
+  [ "$output" = "ok" ]
 }
 
-@test "gh-app: a signature does NOT verify against a different key" {
-  # Guards the test above from passing vacuously — openssl must actually be checking.
-  local jwt other
-  jwt=$(_gh_app_jwt 123456 "$KEY")
-  other="$BATS_TEST_TMPDIR/other.pub"
-  openssl genrsa -out "$BATS_TEST_TMPDIR/other.pem" 2048 2>/dev/null
-  openssl rsa -in "$BATS_TEST_TMPDIR/other.pem" -pubout -out "$other" 2>/dev/null
+@test "gh-app: the header is RS256 and the claims sit inside the forge's limits" {
+  local jwt; jwt=$(sign 987654)
+  run python3 -c "
+import base64, json
+def d(s): return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
+h, p, _ = '$jwt'.split('.')
+hdr, cl = json.loads(d(h)), json.loads(d(p))
+assert hdr['alg'] == 'RS256' and hdr['typ'] == 'JWT', hdr
+assert cl['iss'] == '987654', cl
+# 9 minutes, deliberately inside the documented 10-minute ceiling: sitting on the
+# boundary turns clock skew into an intermittent auth failure.
+assert cl['exp'] - cl['iat'] == 600, cl
+import time; assert cl['iat'] < time.time(), 'iat must be backdated'
+print('ok')"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+}
 
-  printf '%s.%s' "${jwt%%.*}" "$(printf '%s' "$jwt" | cut -d. -f2)" > "$BATS_TEST_TMPDIR/si"
-  b64url_decode "$(printf '%s' "$jwt" | cut -d. -f3)" > "$BATS_TEST_TMPDIR/sig.bin"
-
-  run openssl dgst -sha256 -verify "$other" \
-        -signature "$BATS_TEST_TMPDIR/sig.bin" "$BATS_TEST_TMPDIR/si"
+@test "gh-app: a key that is not a PEM private key fails with a specific message" {
+  printf 'not a key\n' > "$BATS_TEST_TMPDIR/bad.pem"
+  run bash -c "printf 'not a key\n' | python3 '$LIB' installation-id --issuer 1 --org o --key -"
   [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be parsed"* ]]
 }
 
-@test "gh-app: the header declares RS256 and the claims are within the forge's limits" {
-  local jwt iat exp iss
-  jwt=$(_gh_app_jwt 987654 "$KEY")
-  [ "$(b64url_decode "${jwt%%.*}" | jq -r .alg)" = "RS256" ]
-  [ "$(b64url_decode "${jwt%%.*}" | jq -r .typ)" = "JWT" ]
-
-  local claims
-  claims=$(b64url_decode "$(printf '%s' "$jwt" | cut -d. -f2)")
-  iat=$(printf '%s' "$claims" | jq -r .iat)
-  exp=$(printf '%s' "$claims" | jq -r .exp)
-  iss=$(printf '%s' "$claims" | jq -r .iss)
-
-  [ "$iss" = "987654" ]
-  # 9 minutes, deliberately inside the documented 10-minute ceiling: sitting on the
-  # boundary turns clock skew into an intermittent auth failure.
-  [ "$((exp - iat))" -eq 600 ]
-  [ "$((exp - iat))" -lt 660 ]
-  # iat is backdated, so the forge never sees an assertion issued in its own future.
-  [ "$iat" -lt "$(date +%s)" ]
-}
-
-@test "gh-app: the key can arrive on stdin and leaves nothing behind" {
-  local jwt before after
-  before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp*' 2>/dev/null | wc -l | tr -d ' ')
-  jwt=$(_gh_app_jwt 123456 - < "$KEY")
-  [ -n "$jwt" ]
-  [ "$(printf '%s' "$jwt" | tr -cd '.' | wc -c | tr -d ' ')" = "2" ]
-  after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp*' 2>/dev/null | wc -l | tr -d ' ')
-  # The staged key must be removed on the way out, not left at 0600 for later.
-  [ "$after" -le "$before" ]
-}
-
-@test "gh-app: missing inputs fail loudly instead of producing a token" {
-  run _gh_app_jwt "" "$KEY"
+@test "gh-app: an empty stdin key is refused, not treated as absent" {
+  run bash -c "printf '' | python3 '$LIB' installation-id --issuer 1 --org o --key -"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"app id is required"* ]]
+  [[ "$output" == *"no private key on stdin"* ]]
+}
 
-  run _gh_app_jwt 123456 ""
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"private key path is required"* ]]
-
-  run _gh_app_jwt 123456 "$BATS_TEST_TMPDIR/absent.pem"
+@test "gh-app: an unreadable key path names the path" {
+  run python3 "$LIB" installation-id --issuer 1 --org o --key "$BATS_TEST_TMPDIR/absent.pem"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not readable"* ]]
-
-  run gh_app_installation_token 123456 "" "$KEY"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"installation id is required"* ]]
-
-  run gh_runner_registration_token "" "some-token"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"organisation is required"* ]]
-
-  run gh_runner_registration_token "uhstray-io" ""
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"installation token is required"* ]]
 }
 
-@test "gh-app: a signing failure is surfaced, not masked into a valid-looking token" {
-  # The failure this guards: piping openssl's output into the encoder would report the
-  # ENCODER's exit status, yielding a well-formed token with a garbage signature that
-  # fails only at the forge (docs/MISTAKES.md §1.3).
-  printf 'not a private key\n' > "$BATS_TEST_TMPDIR/bad.pem"
-  run _gh_app_jwt 123456 "$BATS_TEST_TMPDIR/bad.pem"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"signing failed"* ]]
+@test "gh-app: the key is never accepted through argv" {
+  # argv is world-readable through /proc for the life of the process, so a key or token
+  # passed as a flag leaks to any local user. Only a PATH or '-' is accepted.
+  grep -qF '"--key", default="-"' "$LIB"
+  ! grep -qE '"--(pem|private-key|token|secret)"' "$LIB"
+  # And the key is read from stdin or a file, never from an argument value.
+  grep -qF 'sys.stdin.buffer.read()' "$LIB"
 }
 
-@test "gh-app: no credential is ever placed in argv" {
-  # argv is world-readable through /proc on a multi-user host, so a token passed as a
-  # flag leaks to any local user for the life of the process. Tokens must travel in
-  # headers and the key must be read from a file or stdin.
-  grep -q 'Authorization: Bearer' "$LIB"
-  ! grep -qE '(--token|-u [^ ]*:|access_token=)' "$LIB"
-  # The key reaches openssl as a PATH (-sign "$keyfile"), never as key material.
-  grep -qF 'openssl dgst -sha256 -sign "$keyfile" -binary' "$LIB"
+@test "gh-app: it depends on neither openssl nor jq" {
+  # The first version used both. The orchestrator image has neither, and because signing
+  # sits inside a no_log boundary it surfaced as an unexplained credential failure
+  # rather than a missing binary.
+  ! grep -qE '\bopenssl\b' "$LIB"
+  ! grep -qE '\bjq\b' "$LIB"
+  ! grep -qE 'subprocess|os\.system|popen' "$LIB"
 }
 
-@test "gh-app: a remove-token path exists so a runner can be withdrawn" {
-  # Withdrawal must not require destroying the host — that is the difference between
-  # a reversible stop and a rebuild.
-  grep -qF 'gh_runner_remove_token()' "$LIB"
+@test "gh-app: a missing cryptography library is reported as such, not as a bad key" {
+  # rc=127-style confusion is what made the original failure take three runs to
+  # diagnose: the message blamed the key when the tool was absent.
+  grep -qF "the 'cryptography' package is unavailable" "$LIB"
+}
+
+@test "gh-app: withdrawal is a first-class action" {
+  # A runner must be removable without destroying its host — the difference between a
+  # reversible stop and a rebuild.
   grep -qF 'remove-token' "$LIB"
+  run python3 "$LIB" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"remove-token"* ]]
+}
+
+@test "gh-app: only the credential goes to stdout" {
+  # A caller captures stdout into a variable; anything diagnostic mixed in would be
+  # captured as part of the credential.
+  grep -qF 'sys.stdout.write(out)' "$LIB"
+  grep -qF 'file=sys.stderr' "$LIB"
 }
