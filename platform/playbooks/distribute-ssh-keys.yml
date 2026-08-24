@@ -39,6 +39,11 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     # This password is strictly an ENHANCEMENT — a host that is already keyed does
     # not need it — so failing to read it must never be worse than not looking.
     # block/rescue rather than errors='ignore' alone, because that option only
@@ -105,6 +110,11 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Validate service_name is defined"
       ansible.builtin.assert:
         that:
@@ -173,6 +183,11 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Fetch management private key from OpenBao"
       ansible.builtin.set_fact:
         _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',

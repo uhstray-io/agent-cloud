@@ -1,0 +1,38 @@
+---
+# assert-bao-transport.yml — refuse to send secret material over public cleartext.
+#
+# Include this at the top of any play that reaches OpenBao. The AppRole secret_id,
+# the client token OpenBao returns, and whatever secret is being read or written
+# all cross that connection, so a public http:// endpoint exposes them to anyone
+# on the path.
+#
+# http:// IS allowed to loopback and RFC1918, because the platform's OpenBao sits
+# on an internal VLAN and is reached at an http:// address. Requiring https
+# outright would break every real run.
+#
+# Anchored on COMPLETE addresses with a trailing delimiter. A prefix match like
+# `http://10\.` also accepts http://10.evil.example/ — a public host whose name
+# merely starts with a private-looking octet.
+#
+# Extracted to one file rather than copied per play: the rule was already stated
+# in three playbooks, and three more plays needed it. Six independently-worded
+# copies of a security check drift, and the drift is silent.
+#
+# Caller passes:
+#   _assert_bao_url   the resolved OpenBao base URL to check
+#
+# Usage:
+#   - name: "Refuse a cleartext OpenBao endpoint"
+#     ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+#     vars:
+#       _assert_bao_url: "{{ _bao_url }}"
+
+- name: "Require a non-cleartext transport to OpenBao"
+  ansible.builtin.assert:
+    that:
+      - >-
+        _assert_bao_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3}|10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})([:/]|$))')
+    fail_msg: >-
+      Refusing to send secret material over public cleartext ({{ _assert_bao_url
+      | default('<unset>') }}). Set openbao_addr to an https:// URL, or an
+      http:// endpoint on loopback/RFC1918 (the internal OpenBao VLAN).

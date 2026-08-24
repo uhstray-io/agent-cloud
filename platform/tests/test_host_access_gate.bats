@@ -301,9 +301,10 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qE "'login_password': _ssh_password" "$pb"
   ! grep -qE "^ *- ssh_password is defined" "$pb"
 
-  # Credentials cross this connection, so public cleartext is refused. Anchored on
-  # complete addresses: a prefix match would also accept http://10.evil.example/.
-  grep -q "Require a non-cleartext transport to OpenBao" "$pb"
+  # Credentials cross this connection, so public cleartext is refused. The rule now
+  # lives in ONE shared task (tasks/assert-bao-transport.yml) rather than a copy
+  # per playbook; the pattern itself is tested in test_credential_leaks.bats.
+  grep -qE "include_tasks: tasks/assert-bao-transport\.yml" "$pb"
 
   # And the operator-facing template must not still teach the leaking form.
   local tpl="$REPO_ROOT/platform/semaphore/templates.yml"
