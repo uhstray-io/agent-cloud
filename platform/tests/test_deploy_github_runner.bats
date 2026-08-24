@@ -116,6 +116,15 @@ setup() {
   grep -qF 'installation_id' "$BATS_TEST_DIRNAME/../lib/github_app_token.py"
 }
 
+@test "deploy-runner: acl is installed, because become-to-unprivileged needs setfacl" {
+  # Every step after the account is created runs as that unprivileged account, and
+  # Ansible needs setfacl to hand its temp files to a become target that is neither root
+  # nor the connecting user. Without acl the register step dies in the become plumbing —
+  # raised outside the normal result path, so failed_when: false does not catch it, and
+  # under the no_log the token requires it appears as a censored fatal with no cause.
+  grep -qF 'ca-certificates, acl]' "$PLAYBOOK"
+}
+
 @test "deploy-runner: carries no real addresses" {
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
 }

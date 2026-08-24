@@ -73,8 +73,16 @@
     - name: "Install the runner's OS prerequisites"
       # unzip for the container-hooks archive; the runner bundles its own Node, so no
       # Node package is needed and pinning one would be a second version to drift.
+      #
+      # `acl` is not optional here, and its absence is nasty. Everything below runs as the
+      # dedicated unprivileged account, and Ansible needs setfacl to hand its temporary
+      # files to a become target that is neither root nor the connecting user. Without it
+      # the register step dies in the become plumbing — a failure raised outside the
+      # normal result path, so `failed_when: false` does NOT catch it and, under the
+      # no_log the token requires, it surfaces as a censored fatal with no cause. Three
+      # runs went into finding a missing package.
       ansible.builtin.apt:
-        name: [curl, unzip, tar, ca-certificates]
+        name: [curl, unzip, tar, ca-certificates, acl]
         state: present
         update_cache: true
 
