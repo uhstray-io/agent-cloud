@@ -34,6 +34,39 @@
     # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
     # this -i so they pick up the foundation host groups + genesis path vars.
     _inv_file: "{{ playbook_dir }}/../inventory/local-dev.yml"
+    # The genesis inline inventory below declares the SAME host (caddy-local) that
+    # the working inventory declares, so any value restated as a literal here is a
+    # second source of truth that silently wins during genesis. Source the edge
+    # binds/ports from the declaration instead, keeping the current literals as
+    # defaults so behaviour is unchanged when the inventory omits them.
+    #
+    # This is what makes the ports actually overridable: they were already declared
+    # in the working inventory, but genesis hardcoded 8088/8443 and ignored it — so
+    # a host with something else on 8088 (any other local dev tool) could not
+    # bootstrap at all, and editing the documented variable had no effect.
+    _caddy_decl: "{{ hostvars['caddy-local'] | default({}) }}"
+    # ONE definition of the edge HTTPS port. It is consumed by the Caddy block
+    # below AND by every service that advertises a public URL through that edge —
+    # postiz_public_url among them. Two copies means an override moves the
+    # listener and leaves the advertised URL pointing at the old port, which is
+    # the same defect class as caddy_http_port being hardcoded here while being
+    # documented as inventory-editable.
+    _edge_https_port: "{{ _caddy_decl.caddy_https_port | default(8443, true) }}"
+    # The Caddy route table, as a LIST rather than one 970-character INI line.
+    # It is emitted below with `| to_json`; ansible's ini inventory parses a JSON
+    # list value into a real list (verified against ansible-inventory), so the
+    # wire format is unchanged and only the source becomes reviewable.
+    _caddy_routes:
+      - {'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}
+      - {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}
+      - {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}
+      - {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}
+      - {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}
+      - {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}
+      - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
+      - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -395,10 +428,10 @@
         _oidc_map:
           authentik:
             display_name: Authentik
-            provider_url: "https://auth.{{ _zone }}:8443/application/o/semaphore/"
+            provider_url: "https://auth.{{ _zone }}:{{ _edge_https_port }}/application/o/semaphore/"
             client_id: semaphore
             client_secret: "{{ _client_secret }}"
-            redirect_url: "https://semaphore.{{ _zone }}:8443/api/auth/oidc/authentik/redirect"
+            redirect_url: "https://semaphore.{{ _zone }}:{{ _edge_https_port }}/api/auth/oidc/authentik/redirect"
             username_claim: preferred_username
             scopes: [openid, profile, email]
       ansible.builtin.set_fact:
@@ -472,7 +505,7 @@
         headers: *bao_root_hdr
         body_format: json
         body:
-          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:8443/application/o/openbao-oidc/"
+          oidc_discovery_url: "https://auth.{{ dev_zone | default('agent-cloud.test') }}:{{ _edge_https_port }}/application/o/openbao-oidc/"
           oidc_discovery_ca_pem: "{{ _stepca_root.stdout }}"
           oidc_client_id: openbao
           oidc_client_secret: "{{ _ak_secret.json.data.data.openbao_oidc_client_secret }}"
@@ -497,7 +530,7 @@
           oidc_scopes: ["openid", "email", "profile"]
           bound_audiences: ["openbao"]
           allowed_redirect_uris:
-            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:8443/ui/vault/auth/oidc/oidc/callback"
+            - "https://openbao.{{ dev_zone | default('agent-cloud.test') }}:{{ _edge_https_port }}/ui/vault/auth/oidc/oidc/callback"
             - "http://localhost:8250/oidc/callback"
           token_policies: ["platform-admin"]
           token_ttl: 1h
@@ -544,7 +577,7 @@
           {{ ('--env-file ' ~ _state_dir ~ '/semaphore-oidc.env '
               ~ '-v ' ~ _state_dir ~ '/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro '
               ~ '-e SSL_CERT_FILE=/etc/ssl/certs/step-ca-bundle.crt '
-              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':8443 ')
+              ~ '-e SEMAPHORE_WEB_ROOT=https://semaphore.' ~ (dev_zone | default('agent-cloud.test')) ~ ':' ~ _edge_https_port ~ ' ')
              if (_oidc_ready | bool) else '' }}
 
     - name: "Ensure the shared deploy dir exists on the VM"
@@ -881,14 +914,14 @@
           local_mode=true
           caddy_image=docker.io/library/caddy:2-alpine
           caddy_file=./Caddyfile.local
-          caddy_http_bind=127.0.0.1
-          caddy_http_port=8088
-          caddy_https_bind=127.0.0.1
-          caddy_https_port=8443
+          caddy_http_bind={{ _caddy_decl.caddy_http_bind | default('127.0.0.1', true) }}
+          caddy_http_port={{ _caddy_decl.caddy_http_port | default(8088, true) }}
+          caddy_https_bind={{ _caddy_decl.caddy_https_bind | default('127.0.0.1', true) }}
+          caddy_https_port={{ _edge_https_port }}
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}, {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}, {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}]
+          caddy_routes={{ _caddy_routes | to_json }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -972,7 +1005,7 @@
           erpnext_port=8080
           erpnext_version=v16
           erpnext_site_name=erp.{{ _dev_zone }}
-          erpnext_public_url=https://erp.{{ _dev_zone }}:8443
+          erpnext_public_url=https://erp.{{ _dev_zone }}:{{ _edge_https_port }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -989,8 +1022,41 @@
           local_mode=true
           tududi_bind=127.0.0.1
           tududi_port=3402
-          tududi_base_url=https://todo.{{ _dev_zone }}:8443
-          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:8443/application/o/tududi/
+          tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
+          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          # postiz — Tier-3, five containers (app + its Postgres and Redis + the
+          # Temporal workflow engine + Temporal's own Postgres). Declared HERE and
+          # not only in platform/inventory/local-dev.yml because the two are read
+          # in DIFFERENT execution contexts and the paths genuinely differ: this
+          # inventory is what the local Semaphore runs with, inside its container,
+          # so the deploy paths are the container's (/var/lib/agent-cloud-deploy,
+          # /workspace/agent-cloud). local-dev.yml is for `make local-*` on the
+          # macOS host and carries host paths. Substituting one for the other fails
+          # on `mkdir: can't create directory '/Users/'` — the host path does not
+          # exist in the container.
+          #
+          # Omitting this group did NOT fail loudly: the deploy matched no hosts,
+          # every play printed "skipping: no hosts matched", and the run was
+          # reported as a success with nothing deployed.
+          [postiz_svc]
+          postiz-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [postiz_svc:vars]
+          ansible_user=semaphore
+          service_name=postiz
+          monorepo_deploy_path=platform/services/postiz/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          postiz_bind=127.0.0.1
+          postiz_port=5001
+          postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}
+          postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
+          postiz_disable_registration=false
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1145,6 +1211,28 @@
           BAO_SECRET_ID={{ _secret_id.json.data.secret_id }}
 
     # ── Stage 6: templates-as-code against the local instance ───────────
+    # Repository records FIRST. A template may name the record it runs from (e.g.
+    # `repository: agent-cloud dev`), and setup-templates.yml asserts that every
+    # named record exists — deliberately, so a template cannot silently bind to
+    # the wrong branch. A freshly created local instance has no records at all, so
+    # applying templates before declaring them fails that assert on every
+    # dev-bound template. That is the guard working, not a false alarm; the gap
+    # was genesis never applying the declarations it already had.
+    #
+    # repositories.yml is written to survive both instances: it accepts either
+    # `local-none` or `none` for the "no key attached" key-store entry, which the
+    # two environments name differently.
+    - name: "Register repository records (declared in repositories.yml)"
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook
+          {{ playbook_dir }}/../semaphore/bootstrap-semaphore-repositories.yml
+          -e semaphore_project_id={{ _pid }}
+      environment:
+        SEMAPHORE_URL: "{{ _sem_url }}"
+        SEMAPHORE_TOKEN: "{{ _sem_token }}"
+      changed_when: true
+
     - name: "Register templates (shared + local-only)"
       ansible.builtin.command:
         cmd: >-

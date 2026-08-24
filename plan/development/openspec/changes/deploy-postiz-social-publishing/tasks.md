@@ -9,14 +9,14 @@ relies on. Without this phase, no later phase can be driven programmatically.
       host, in the existing OpenTofu root — narrower than the precedent rule beside it by
       additionally requiring an Authorization header, so credential-less scanners are
       still challenged
-- [ ] 0.2 **Operator, one browser-triggered run:** run the Cloudflare OpenTofu template
+- [x] 0.2 **Operator, one browser-triggered run:** run the Cloudflare OpenTofu template
       with `tofu_action=plan`, review the diff (expect exactly one added rule), then
       re-run with `tofu_action=apply`. This is the bootstrap step that cannot itself be
       automated — the fix for "cannot reach the orchestrator" has to be applied through
       the orchestrator
-- [ ] 0.3 Confirm a token-bearing request to the orchestrator's API now returns JSON
+- [x] 0.3 Confirm a token-bearing request to the orchestrator's API now returns JSON
       rather than a challenge page
-- [ ] 0.4 Validation gate: the orchestrator API is reachable with a token from a
+- [x] 0.4 Validation gate: the orchestrator API is reachable with a token from a
       non-browser client, so every remaining phase can run through it rather than by hand
 
 ## 1. Host access hardening — production host
@@ -131,14 +131,14 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 5. Local validation
 
-- [ ] 5.1 Seed the social-platform credentials into the local secret store; verify all
+- [x] 5.1 Seed the social-platform credentials into the local secret store; verify all
       nine are present with the read-only inventory playbook
-- [ ] 5.2 Deploy the identity provider so the new client blueprint is applied; confirm the
+- [x] 5.2 Deploy the identity provider so the new client blueprint is applied; confirm the
       application and provider exist
-- [ ] 5.3 Deploy the service locally; confirm all five containers reach health and the
+- [x] 5.3 Deploy the service locally; confirm all five containers reach health and the
       rendered config contains no unsubstituted template markers and is not
       world-readable
-- [ ] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
+- [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
@@ -151,7 +151,7 @@ protects 1.7, which is the only irreversible step in the change.
       publishes at its scheduled time
 - [ ] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
       without it, and is reachable with no browser session
-- [ ] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
+- [x] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
       suites plus the local smoke check
 - [ ] 5.11 Validation gate: scenario "Post publishes at its scheduled time" and scenario
       "Automation endpoint is reachable without an interactive session" both hold — the

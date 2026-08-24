@@ -106,6 +106,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/erpnext/deployment/context/architecture.md` — ERPNext ERP (composable slim local tier: db+redis+backend+frontend+worker+scheduler+websocket; MinIO/backup prod-only; local-dev code-complete, deploy pending image pull)
 - `platform/services/n8n/deployment/` — n8n workflow automation (composable; stateful `N8N_ENCRYPTION_KEY`; prod migration HELD — see `plan/development/09-service-migrations-tooling.md` + `seed-n8n-secrets.yml`)
 - `platform/playbooks/README.md` — Playbook conventions and reference
+- `docs/MISTAKES.md` — Recorded mistakes and the rules they earned; each entry names where it is enforced (test, hook, CI, OPA). Read §3 before acting on live state and §1 before calling something verified
 - `plan/architecture/01-automation-model.md` — Composable deployment architecture
 - `plan/architecture/01-automation-model.md` — Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
 - `plan/archive/development/IMPLEMENTATION_PLAN.md` — Full implementation plan (phases, architecture, decisions)

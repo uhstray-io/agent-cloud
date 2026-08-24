@@ -148,7 +148,46 @@ if running opa; then
     || no "OPA decision (got allowed=${allowed:-none})"
 else sk "opa not deployed (make local-deploy-opa)"; fi
 
-hdr "9. /etc/resolver (native macOS resolution)"
+hdr "9. postiz (social publishing + workflow engine)"
+if running postiz; then
+  ok "container postiz running"
+  # All FIVE must be up: the app gates on the workflow engine's health, and a
+  # deploy has silently produced four-of-five before (the engine's healthcheck
+  # probed an address nothing listens on, so the app never started at all).
+  miss=""
+  for c in postiz postiz-postgres postiz-redis temporal temporal-postgresql; do
+    running "$c" || miss="$miss $c"
+  done
+  [ -z "$miss" ] && ok "all five postiz containers running" \
+    || no "postiz containers missing:$miss"
+  # The workflow engine must answer at its OWN address — never 127.0.0.1, which
+  # nothing inside that container listens on.
+  if running temporal; then
+    a=$(podman exec temporal sh -c 'a=$(hostname -i); echo "${a%% *}"' 2>/dev/null)
+    podman exec temporal temporal operator cluster health --address "${a}:7233" >/dev/null 2>&1 \
+      && ok "workflow engine reports SERVING" || no "workflow engine health"
+  fi
+  # Reached over TLS through Caddy, and it must be postiz answering — a 307 alone
+  # could come from a catch-all, so follow it and look for the app's own title.
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \
+         --resolve "postiz.${ZONE}:8443:127.0.0.1" "https://postiz.${ZONE}:8443/" 2>/dev/null)
+  case "$code" in
+    200|302|307) ok "postiz behind Caddy (postiz.${ZONE} -> ${code})" ;;
+    *) no "postiz behind Caddy (got ${code:-none})" ;;
+  esac
+  body=$(curl -skL --max-time 12 --resolve "postiz.${ZONE}:8443:127.0.0.1" \
+         "https://postiz.${ZONE}:8443/" 2>/dev/null)
+  case "$body" in
+    *Postiz*) ok "postiz UI renders (not a catch-all)" ;;
+    *) no "postiz UI did not render" ;;
+  esac
+  case "$body" in
+    *Authentik*) ok "postiz offers the Authentik SSO path" ;;
+    *) no "postiz SSO path absent from the sign-in page" ;;
+  esac
+else sk "postiz not deployed (Deploy Postiz (Local) via the local control plane)"; fi
+
+hdr "10. /etc/resolver (native macOS resolution)"
 if [ -f "/etc/resolver/${ZONE}" ]; then
   ok "/etc/resolver/${ZONE} present"
 else sk "/etc/resolver/${ZONE} not set (make local-dns-resolver) — native name resolution off"; fi
