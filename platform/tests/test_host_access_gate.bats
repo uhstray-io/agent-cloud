@@ -339,3 +339,14 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qE '^      rescue:$' "$pb"
   grep -qE '_bootstrap_pw: ""' "$pb"
 }
+
+@test "harden-ssh: a display variable cannot abort the verification it describes" {
+  # service_name appears only in report strings, but an undefined one aborted the whole
+  # "Confirm password auth disabled" task — so a host that had been correctly hardened
+  # reported as a failure. A label must never be able to fail the check it labels.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/harden-ssh.yml"
+  local bare
+  bare=$(grep -c '{{ service_name }}' "$PB" || true)
+  [ "$bare" -eq 0 ]
+  grep -qF 'service_name | default(inventory_hostname)' "$PB"
+}
