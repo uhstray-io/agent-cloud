@@ -243,6 +243,60 @@ _committed_files() {
   fi
 }
 
+# ── Secrets must not reach Semaphore-run playbooks as extra vars ──────────────
+# Semaphore persists a task's extra-var JSON in its own database and serves it
+# back over its API indefinitely (verified against a completed task, whose
+# `environment` field came back verbatim). So `-e <secret>=...` leaves a live
+# credential in plaintext outside OpenBao. Survey fields were already known to
+# persist; extra vars were wrongly believed to be safe, and three templates said
+# so. An encrypted environment secret is the channel these playbooks' own OpenBao
+# AppRole credentials already arrive on.
+
+@test "secret-writing playbooks prefer an environment secret over an extra var" {
+  # ORDER is the assertion. With the extra var as the first operand, a run passing
+  # BOTH uses the persisted one even though the secret is configured — the leak,
+  # still open. Each playbook must put the env lookup first.
+  local pb="$REPO_ROOT/platform/playbooks"
+
+  # store-ssh-password.yml's own ordering is asserted in test_host_access_gate.bats,
+  # which lands with that change; this file covers the two seed playbooks.
+  grep -qE "_bao_value:.*lookup\('env', *'BAO_VALUE'\) *\| *default\(bao_value" \
+    "$pb/seed-openbao-key.yml"
+  grep -qE "lookup\('env', *_env_name\) *$" "$pb/seed-postiz-secrets.yml"
+  grep -qE '_env_name: "SEED_\{\{ item \| upper \}\}"' "$pb/seed-postiz-secrets.yml"
+
+  # The reverse order must not appear.
+  ! grep -qE "_bao_value:.*bao_value *\| *default\(lookup" "$pb/seed-openbao-key.yml"
+  ! grep -qE "lookup\('vars', 'seed_' ~ item[^)]*\) *\| *default\(lookup\('env'" \
+    "$pb/seed-postiz-secrets.yml"
+}
+
+@test "seed-openbao-key uses the resolved value everywhere, not the raw extra var" {
+  # The change-detection comparison matters as much as the writes: comparing the
+  # stored value against the RAW extra var while writing the resolved one would
+  # misjudge whether a write is needed on every environment-supplied run.
+  local f="$REPO_ROOT/platform/playbooks/seed-openbao-key.yml"
+  [ "$(grep -cE 'data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f")" -eq 2 ]
+  grep -qE '_existing_data\[bao_key\] \| default\(none\) != _bao_value' "$f"
+  # The validation gate must test the resolved value too, or a run supplying only
+  # the environment would fail the check it just satisfied.
+  grep -qE '^\s+- _bao_value \| length > 0' "$f"
+  ! grep -qE '^\s+- bao_value is defined' "$f"
+}
+
+@test "no Semaphore template still instructs operators to pass a secret as -e" {
+  # The operator-facing docs are the actual leak surface: the playbook change is
+  # cosmetic while the template tells people to use the persisted form.
+  local t="$REPO_ROOT/platform/semaphore/templates.yml"
+  ! grep -qE '^\s*#\s*-e bao_value=<secret>' "$t"
+  ! grep -qE '^\s*#\s*-e seed_[a-z_]+=\.\.\.' "$t"
+  # And the replacement channel is named for each.
+  grep -q "BAO_VALUE" "$t"
+  grep -q "SEED_X_API_KEY" "$t"
+  # NOTE: the Store SSH Password template's own correction (SSH_PASSWORD) is
+  # asserted in test_host_access_gate.bats, which lands with that change.
+}
+
 # ── The OpenBao transport guard ───────────────────────────────────────────────
 # The AppRole secret_id, the client token OpenBao returns, and whatever secret is
 # being read or written all cross that connection. http:// is permitted to
