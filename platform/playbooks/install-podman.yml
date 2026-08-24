@@ -5,6 +5,14 @@
 # whichever of podman / podman-compose is missing (so a host that already has
 # podman but not podman-compose is still remediated). Requires become (sudo).
 #
+# Optional Docker compatibility (both default OFF — an existing host is untouched):
+#   podman_docker_cli    install `podman-docker`, which provides /usr/bin/docker as a
+#                        Podman shim. Needed by any tool that shells out to a `docker`
+#                        BINARY rather than talking to the API — the GitHub Actions
+#                        runner container hooks do exactly that
+#                        (`exec.getExecOutput('docker', args)`), which is why a plain
+#                        rootless Podman install is not enough for a CI runner host.
+#
 # Usage: ansible-playbook install-podman.yml -e "target_service=uhhcraft_svc"
 
 - name: "Install Podman on {{ target_service | default('(unset)') }}"
@@ -13,6 +21,7 @@
   become: true
   vars:
     target_service: "ungrouped"
+    _docker_cli: "{{ podman_docker_cli | default(false) | bool }}"
 
   tasks:
     - name: "Install podman + podman-compose"
@@ -48,7 +57,43 @@
           Investigate apt source / podman version on this host.
       when: _compose_check.stdout | trim == 'MISSING'
 
+    # ── Docker compatibility (opt-in). Kept in THIS shared playbook rather than a
+    # runner-specific script: "a tool that shells out to `docker` needs a docker on
+    # PATH" is a general need, and the next service with it should not reimplement.
+    - name: "Install the Docker-compatible CLI shim (podman-docker)"
+      ansible.builtin.apt:
+        name: podman-docker
+        state: present
+        update_cache: true
+      when: _docker_cli
+
+    - name: "Silence the podman-docker emulation banner"
+      # /usr/bin/docker from podman-docker writes "Emulate Docker CLI using podman"
+      # to stderr on EVERY call unless this marker file exists. A caller that shells
+      # out to `docker` and reads its output should not have to filter a banner.
+      # preserve/preserve keeps `touch` idempotent (no spurious changed= each run).
+      ansible.builtin.file:
+        path: /etc/containers/nodocker
+        state: touch
+        mode: "0644"
+        modification_time: preserve
+        access_time: preserve
+      when: _docker_cli
+
+    - name: "Verify the docker shim is on PATH"
+      # Presence, not invocation. Running `docker ps` here would initialise ROOTFUL
+      # podman state on a host whose containers are all rootless, and it would prove
+      # nothing about the account that will actually call it — that check belongs with
+      # whichever service owns the account. (Also avoids `docker version --format`,
+      # whose Go double-curly template collides with Jinja.)
+      ansible.builtin.stat:
+        path: /usr/bin/docker
+      register: _docker_shim
+      failed_when: not _docker_shim.stat.exists
+      when: _docker_cli
+
     - name: "Podman ready"
       ansible.builtin.debug:
         msg: >-
           Podman installed; compose entrypoint: {{ _compose_check.stdout | trim }}.
+          Docker CLI shim: {{ 'installed' if _docker_cli else 'not requested' }}.
