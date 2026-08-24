@@ -281,6 +281,6 @@ If you find yourself doing 17 — adding something that's not in this list — p
 - Reference service: [`platform/services/uhhcraft/`](../../../../platform/services/uhhcraft/)
 - Reference deploy playbook: [`platform/playbooks/deploy-uhhcraft.yml`](../../../../platform/playbooks/deploy-uhhcraft.yml)
 - Caddy convention: [`plan/architecture/CADDY-REVERSE-PROXY.md`](../../../../plan/architecture/CADDY-REVERSE-PROXY.md)
-- Composability foundation: [`plan/architecture/AUTOMATION-COMPOSABILITY.md`](../../../../plan/architecture/AUTOMATION-COMPOSABILITY.md)
+- Composability foundation: [`plan/architecture/01-automation-model.md`](../../../../plan/architecture/01-automation-model.md)
 - Service onboarding (general): [`plan/architecture/SERVICE-INTEGRATION-PLAN.md`](../../../../plan/architecture/SERVICE-INTEGRATION-PLAN.md)
 - Container runtime conventions: [`plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../../../../plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md)

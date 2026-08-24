@@ -111,6 +111,11 @@ brew install shellcheck bats-core hadolint
 brew install python@3.11
 pip3.11 install pytest netboxlabs-diode-sdk proxmoxer requests
 
+# Controller packages — cryptography is needed by the BATS suite, which signs a real
+# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
+# with a reason rather than failing, but they are then not verifying anything.
+pip3.11 install -r platform/requirements-controller.txt
+
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
 
@@ -127,15 +132,39 @@ brew install gosec
 
 ## CI Pipeline
 
-Every PR triggers three GitHub Actions jobs automatically:
+Every PR triggers these GitHub Actions jobs automatically. The three below are the gates
+that must pass; a PR also runs change detection, CodeQL analysis per language, the
+conditional Go jobs for uhhcraft, a CodeRabbit review, and — on a `dev` → `main` PR — a
+promotion-source check:
 
 | Job | Tools | Fails on |
 | --- | ----- | -------- |
 | **Static Analysis** | ruff, shellcheck, ansible-lint, yamllint, hadolint, terraform fmt | Any lint error or warning |
 | **Security Scan** | trufflehog, bandit, IP/credential grep | Leaked secrets, security issues, hardcoded IPs |
-| **Unit Tests** | pytest (79 tests), BATS (36 tests) | Any test failure |
+| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Any test failure |
 
-All three must pass before merging. See `docs/LINTING-AND-TESTING.md` for full details.
+All three must pass before merging. See `plan/architecture/03-testing-ci-quality.md` for
+full details.
+
+**A push ATTEMPTS them too.** `.githooks/pre-push` invokes the BATS suite, and pytest when
+it is collectable, with the same test paths, working directory and `PYTHONPATH` as CI. Live
+via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
+so you do not need to remember them.
+
+`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
+3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+`PATH`.
+
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
+means the suites passed on your machine or were skipped, which is not evidence CI will
+pass — and CI never sees a push the hook stopped.
+
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+the Python suite is not collectable because pytest or a test dependency is missing, and on
+a branch-deletion push. Failing open like that is deliberate and the opposite of the
+pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
+is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
 ---
 
@@ -195,7 +224,7 @@ Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN
 | Document | Purpose |
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
-| `plan/architecture/AUTOMATION-COMPOSABILITY.md` | Composable Ansible task architecture |
+| `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
 | `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
 | `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
 | `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |
