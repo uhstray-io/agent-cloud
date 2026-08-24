@@ -34,19 +34,28 @@ supersede it with a new entry and link both.
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
 | 2.4 | Test asserted state that lived on a different branch | False-green test | CI |
+| 2.5 | Safety guard specified without ever being evaluated against the declarations it judges | False-green test | Test |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
+| 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Convention |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
+| 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
+| 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
+| 9.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
+| 9.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
+| 9.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
+| 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
 ---
 
@@ -186,6 +195,35 @@ to what this branch owns and note where the rest is covered.
 
 **Enforced by.** CI (a cross-branch assertion fails the Unit Tests job).
 
+
+### 2.5 A guard specified but never evaluated against what it would judge
+
+**What happened.** A new egress-denial option for the shared firewall playbook was
+specified with a safety guard: reject any denial that "covers a `firewall_ssh_cidrs`
+member", so nobody could cut a host off from management. Read against the real
+inventory, that guard rejects *every* legitimate declaration — the destinations worth
+denying (secret store, hypervisor, orchestrator) all sit inside the very prefix the
+SSH allow-list declares. The intent was right and the predicate was inverted in scope:
+the hazard is a denial *broader* than the management prefix, not one contained within
+it.
+
+**Why it matters more than an ordinary bug.** It would have shipped as a working
+feature with a guard that blocked its only use. The first person to declare a real
+denial would have hit an abort telling them their correct input was dangerous — and the
+natural response to a guard that rejects valid work is to delete the guard, which is
+entry 2.2 arriving by a different road.
+
+**The rule.** A safety assertion is not designed until it has been evaluated against
+the real declarations it will judge. Write it, then run the actual values through it and
+confirm both directions: the intended cases pass, the dangerous case aborts. A guard
+that rejects every legitimate input is worse than no guard.
+
+**Enforced by.** Test — `platform/tests/test_apply_firewall.bats` executes the predicate
+against accepted and rejected declaration shapes, rather than only grepping for its
+presence, and pins the predicate text so the two cannot drift apart. (That case arrives
+with the self-hosted-runner change on `feat/github-actions-runners`; until it merges the
+reference is forward-looking, which per 8.2 is worth saying rather than implying.)
+
 ---
 
 ## 3. Acting on live state
@@ -284,12 +322,42 @@ range, use a documentation-safe example inside that range, never the live value.
 
 **Enforced by.** Pre-commit hook `no-private-ips` (already in place and working).
 
+**Residual gap, found later.** The pre-commit hook is not the only gate, and the other
+one is permeable. The CI "RFC1918 IP address audit" filters its hits through an
+exclusion list that drops any line containing `\.0/`, a backtick, `example`, `host:`,
+`subnet`, `scope`, or `target`. A real *network* address — anything written `.0/24` — is
+therefore excluded by construction, as is any address inside backticks. Treat the CI
+audit as a backstop, never as the reason it is safe to write an address down.
+Tightening that exclusion is open work.
+
 **Related.** Four test vectors in the same table legitimately look like
 credentials — the `scheme://userinfo@host` shape is the attack being refused, so
 a URI-credential detector fires on the vector itself. Those
 carry `trufflehog:ignore` with a stated reason. The annotation was verified to
 work (1 finding → 0) before being relied upon. An ignore marker without a reason
 in the same comment is not acceptable.
+
+
+### 4.4 Arithmetic on a fleet API response without defaulting the fields
+
+**What happened.** Two consecutive read-only capacity queries against the hypervisor
+cluster crashed inside `jq`: first `null (null) and number (1073741824) cannot be
+divided`, then `number (1569) and string ("G") cannot be added`. Offline nodes return
+`null` for their memory and CPU counts, and one expression concatenated a number to a
+unit suffix without coercing it.
+
+**Why it happened.** The expressions were written against the shape of a *healthy*
+member and then run across a fleet containing three offline ones. The API was behaving
+correctly; the query assumed a uniform population.
+
+**The rule.** When querying an inventory-style API that returns members in mixed
+states, default every numeric field before arithmetic (`(.field // 0)`) and coerce
+explicitly before concatenation. Assume at least one member of any real fleet is
+offline, degraded, or partially populated — in a real fleet one always is.
+
+**Enforced by.** Convention. A shared read-only capacity helper with the defaulting
+done once, and a case covering an offline member, would move this out of prose; no such
+helper exists yet.
 
 ---
 
@@ -347,6 +415,29 @@ names and sets no precedent.
 required-review branch ruleset; the repository's `protect-main` ruleset already
 requires a PR and passing checks on `main`.
 
+
+### 5.4 A command's own boundary allowed to override an explicit instruction
+
+**What happened.** A request said, in one message, to write the spec *and then* begin
+implementing. The planning command that was invoked carries its own boundary — "planning
+artifacts only; stop; do not start implementation in the same response". That boundary
+was honoured over the user's direct instruction, and the turn ended with four planning
+documents and no implementation. A goal-tracking stop hook caught it; reviewing my own
+reasoning did not.
+
+**Why it happened.** Precedence confusion dressed as obedience. A skill or command
+configures *how* to carry out a task; it does not outrank an explicit instruction from
+the user in the same request. That boundary exists to stop an agent from building when
+only a plan was asked for — it is not licence to ignore someone who asked for both.
+
+**The rule.** When a skill or command boundary contradicts an explicit instruction in
+the user's own words, the instruction wins. Name the boundary being set aside, say why,
+and continue. Never end a turn short of the requested work on a skill's authority alone.
+
+**Enforced by.** Convention, plus the goal-tracking stop hook — which is the only thing
+that actually caught it, and should be treated as a required control on multi-phase work
+rather than a safety net.
+
 ---
 
 ## 6. Working from assumptions about files
@@ -368,6 +459,30 @@ eventually fail silently.
 
 **Enforced by.** Convention. The practice that saved it — `assert
 s.count(anchor)==1` before every write — is the thing to keep.
+
+
+### 6.2 Built an interface the consumer never calls, without reading the consumer
+
+**What happened.** The shared container-runtime playbook was extended with a rootless
+container-API socket, on the assumption that the CI runner's container hooks speak the
+container API. Reading the hooks' source showed they invoke a `docker` **binary** on
+`PATH` (`exec.getExecOutput('docker', args)`) and never open a socket. The branch was
+removed before commit — along with the undeclared `systemd-container` dependency that
+its `systemctl --machine=` call would have quietly required.
+
+**Why it happened.** The integration was designed from the plausible shape of the
+dependency instead of from the dependency. "It is a container tool, so it speaks the
+container API" was a guess wearing the clothes of a fact.
+
+**The rule.** Before building an interface for an external consumer, read how that
+consumer actually invokes it — the source, or its documented invocation — and cite what
+you found. A guess about a dependency's call style yields a mechanism that reviews
+cleanly, installs cleanly, is never used, and drags in dependencies of its own.
+
+**Enforced by.** Test — `platform/tests/test_install_podman.bats` asserts that no API
+socket is configured and that nothing depends on `systemctl --machine`, so the removed
+speculation cannot return without a deliberate, reviewable change. (Same branch and same
+caveat as 2.5.)
 
 ---
 
@@ -541,6 +656,14 @@ before the subject. Establish a baseline with the subject removed; if the
 baseline shows the same result, the invocation is the variable. This is cheap and
 it is the difference between "18/18 pass" and a fabricated regression.
 
+**Further instance, same shape.** Exercising the §2.5 guard, its cases were passed as
+`ansible-playbook -e "cases=[{...}]"`. The `key=value` form of `-e` yields a **string**,
+so the loop received a string and every case failed identically. The first reading was
+"the predicate rejects everything, including what should pass" — a conclusion about the
+wrong component. Structured data goes to a CLI in its structured form (`-e '{"k":
+[...]}'`), and a *uniform* failure across all inputs is evidence about the fixture, not
+the logic.
+
 **Enforced by.** Convention.
 
 ### 8.4 A proposed guard that failed open
@@ -561,3 +684,121 @@ malformed input, so malformed input is the only thing that can substantiate it.
 **Enforced by.** Verified by evaluation (§7). The existing policy already encodes
 this lesson for `template_name`, which is why the corrected form matches it —
 the pattern was available and simply not consulted.
+
+---
+
+## 9. Minor slips
+
+Small enough that none earned a mechanism, kept because a record that filters by
+severity stops being a record. Each still carries a rule.
+
+### 9.1 A loop that always broke on its first pass
+
+**What happened.** A cluster query was written `for ip in <four addresses>; do <query>;
+break; done`. The unconditional `break` made three of the four unreachable, so it was a
+loop only in appearance. It began as an iterate-all draft, was narrowed to "ask one node,
+since the cluster API answers for all of them", and the now-pointless loop was left
+behind.
+
+**The rule.** When narrowing an iteration to a single case, delete the iteration. A loop
+that always breaks on its first pass misrepresents what the code does and hides the fact
+that the remaining members are never used.
+
+**Enforced by.** Convention. Shellcheck does not flag it.
+
+### 9.2 A typo'd duplicate key in a hand-assembled payload
+
+**What happened.** A tool payload was written carrying both `multiSelect` and
+`" multiSelect"` — the same key with a leading space — on one object. The malformed key
+was ignored, the call succeeded, and nothing visibly broke.
+
+**The rule.** A duplicate or near-duplicate key in hand-written structured input is a
+defect even when the call succeeds, because the next such typo may land on a key whose
+default silently changes behaviour. Re-read a hand-assembled payload's keys against its
+schema before sending, or generate it from the schema.
+
+**Enforced by.** Convention. Inherent to hand-assembled input; the real mitigation is
+keeping such payloads short enough to proofread.
+
+---
+
+## 9. Mechanisms asserted but never exercised
+
+Section 8 was about mistakes in reasoning. These three are about mechanisms that
+were written down as working, in comments that explained *why* they worked, and
+had never once been run.
+
+### 9.1 A config file mounted where nothing reads it
+
+**What happened.** The service's app config was rendered to a file and
+bind-mounted into the container. The compose header stated this was deliberate
+and load-bearing, and explained the reasoning at length — avoiding compose's
+`$`-interpolation across roughly sixty credential slots.
+
+The reasoning was correct. The mechanism was absent: the image's entrypoint is a
+generic language-runtime wrapper that never reads that path. The application
+started with none of its configuration, failed on a missing database URL, and
+restarted **216 times** — which `restart: always` renders as a container that is
+perpetually "starting" rather than one that is failing.
+
+**Why it happened.** The rationale for the *approach* was mistaken for evidence
+that the *implementation* worked. Nothing in writing a compose file forces the
+file to be executed, and the comment's confidence made the gap harder to see, not
+easier — a reader (including its author, later) takes an explained decision as a
+verified one.
+
+**The rule.** A comment explaining why a mechanism is correct is not evidence the
+mechanism exists. For anything that must be *consumed* — a mounted file, an
+injected variable, a sourced script — verify consumption at the consuming end:
+exec into the running thing and read the value back. "It is mounted" and "it is
+loaded" are different claims.
+
+**Enforced by.** `postiz: the mounted app config is actually loaded into the
+container` (`platform/tests/test_service_postiz.bats`).
+
+### 9.2 Assuming the runtime inherits the image CMD
+
+**What happened.** Fixing 9.1, the first attempt wrapped the container's
+entrypoint to source the config and then `exec "$@"`, on the assumption that the
+image's own CMD arrives as those arguments. It reads as the elegant fix: no copy
+of upstream's command to drift.
+
+Under podman-compose it silently does nothing. Overriding `entrypoint` sets `Cmd`
+to null, so `"$@"` expands to nothing, `exec` runs nothing, and the container exits
+0 immediately — which the restart policy turns into a crash loop that looks
+identical to the bug just fixed. Confirmed by inspecting the created container:
+the entrypoint was exactly as intended and `Cmd` was `null`.
+
+**Why it happened.** The entrypoint/CMD interaction was recalled rather than
+checked, and the recalled behaviour is the documented Docker behaviour — which
+this runtime does not reproduce. The fix was even commented as avoiding drift,
+which made it read as the more careful option.
+
+**The rule.** Container-runtime behaviour is not portable between implementations,
+so an assumption about argv assembly gets checked against the runtime in use —
+`inspect` the created container and read `Entrypoint` and `Cmd` back. When a
+tidier construction depends on inherited behaviour and a duller one does not,
+prefer the duller one and pin what it copies with a test.
+
+**Enforced by.** Same test as 9.1, which now also rejects the entrypoint form and
+pins the copied CMD.
+
+### 9.3 A probe whose own command was interpolated away
+
+**What happened.** To decide between two config-loading mechanisms, a throwaway
+compose file was written to print an environment variable containing `${HOME}`.
+Both values came back empty. The empty result was briefly read as "the variable
+is not set".
+
+It was the probe that was broken: the command referenced `$SECRET_WITH_DOLLAR`,
+and compose interpolated that inside the compose file before the container ever
+ran. Rewritten to invoke `env` — containing no `$` at all — the probe worked and
+gave the decisive answer, which reversed the conclusion.
+
+**The rule.** A probe testing interpolation must not itself be interpolated. More
+generally: when a measurement returns nothing, first ask whether the instrument
+was in the path of the effect being measured. This is the same discipline as 8.3 —
+suspect the invocation before the subject — and it recurred within the hour, on a
+test written specifically to avoid being fooled.
+
+**Enforced by.** Convention.
