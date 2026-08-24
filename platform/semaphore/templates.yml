@@ -704,6 +704,24 @@ templates:
         type: string
         required: false
 
+  # Seeding from the feature branch, which takes the value from the BAO_SEED_VALUE
+  # environment secret rather than an extra var. Semaphore persists a task's extra vars,
+  # so seeding a credential with -e stores it in cleartext-at-rest in the orchestrator.
+  - name: Seed OpenBao Key (Runner Branch)
+    playbook: platform/playbooks/seed-openbao-key.yml
+    repository: agent-cloud feat/github-actions-runners
+    survey_vars:
+      - name: bao_path
+        title: "Secret path"
+        description: "e.g. services/github-runner (no secret/ prefix)"
+        type: string
+        required: true
+      - name: bao_key
+        title: "Key name"
+        description: "The single key to merge in — siblings are preserved"
+        type: string
+        required: true
+
   # The docker-CLI-shim option lives on the feature branch; main's copy installs podman
   # alone, which is not enough for a consumer that shells out to a `docker` binary.
   - name: Install Podman (Runner Branch)

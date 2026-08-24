@@ -23,7 +23,14 @@
 # wildcard policy grants `patch` on secret/data/services/*).
 #
 # Usage (via Semaphore):
-#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key -e bao_value=<secret>
+#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key
+#
+# The VALUE comes from the BAO_SEED_VALUE environment secret by preference, and only
+# falls back to -e bao_value=<secret>. That ordering matters: Semaphore PERSISTS a
+# task's extra vars in its own database, so a credential passed with -e is stored in
+# cleartext-at-rest inside the orchestrator, which is the opposite of what seeding a
+# secret store is for. An encrypted environment secret is not persisted per task. The
+# extra-var path is kept for a workstation run, where there is no task record.
 #   -e openbao_addr=https://<bao>:8200   (AppRole creds injected by Semaphore env)
 # openbao_addr must be https, OR http only to a loopback/RFC1918 host (the
 # internal OpenBao VLAN) — the transport guard below refuses public cleartext.
@@ -36,6 +43,11 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Environment secret FIRST — see the header note on Semaphore persisting extra vars.
+    _bao_value: >-
+      {{ lookup('env', 'BAO_SEED_VALUE')
+         | default(bao_value | default(''), true)
+         | default('', true) }}
 
   tasks:
     # Non-secret validation stays VISIBLE (no no_log) so a missing path/key/url
@@ -54,11 +66,14 @@
     - name: "Validate the secret value is present"
       ansible.builtin.assert:
         that:
-          - bao_value is defined and bao_value | length > 0
-        fail_msg: "Pass -e bao_value=<secret> (the value to store)."
+          - _bao_value | length > 0
+        fail_msg: >-
+          No value to store. Set the BAO_SEED_VALUE environment secret (preferred — a
+          task's extra vars are persisted by the orchestrator), or pass
+          -e bao_value=<secret> for a workstation run.
       no_log: true
 
-    # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
+    # role_id/secret_id/value cross the wire to _bao_url — refuse to send
     # secret material over public cleartext. https is always allowed; http is
     # allowed ONLY to loopback/RFC1918 (the internal OpenBao VLAN).
     - name: "Require a non-cleartext transport to OpenBao"
@@ -115,11 +130,11 @@
           Content-Type: application/merge-patch+json
         body_format: json
         body:
-          data: "{{ {bao_key: bao_value} }}"
+          data: "{{ {bao_key: _bao_value} }}"
         status_code: [200]
       when:
         - _path_exists | bool
-        - _existing_data[bao_key] | default(none) != bao_value
+        - _existing_data[bao_key] | default(none) != _bao_value
       register: _patch
       no_log: true
 
@@ -132,7 +147,7 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         body_format: json
         body:
-          data: "{{ {bao_key: bao_value} }}"
+          data: "{{ {bao_key: _bao_value} }}"
         status_code: [200]
       when:
         - not (_path_exists | bool)
