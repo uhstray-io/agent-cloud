@@ -37,25 +37,57 @@
     _tmpl_vmid: "{{ template_vmid | default(9000) }}"
     _tmpl_node: "{{ template_node | default('alphacentauri') }}"
 
-    # VM specs from file
-    _specs: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml') | from_yaml }}"
-    _svc: "{{ _specs.vms[target_service] }}"
-    _defaults: "{{ _specs.defaults }}"
+    # ── WHERE THE VM SPEC COMES FROM ────────────────────────────────────────
+    # Precedence, per field: launch override -> INVENTORY host vars -> the
+    # vm-specs.yml allocation ledger, when that file is readable.
+    #
+    # Inventory is FIRST, and that ordering is the whole fix. vm-specs.yml lives
+    # in the PRIVATE site-config repo, which the Semaphore runner never checks
+    # out — it is a private repo with no deploy key attached, deliberately, and
+    # the runner receives its inventory as a stored static-yaml record instead.
+    # So the previous `lookup('file', _project_root + '/proxmox/vm-specs.yml')`
+    # resolved to platform/proxmox/vm-specs.yml inside the agent-cloud checkout,
+    # a path that does not exist in this repo at all. This playbook has therefore
+    # NEVER been runnable from Semaphore: it worked only from a workstation
+    # passing -e project_root=<site-config>, and the "Provision VM" template has
+    # no survey vars or arguments through which that could be supplied.
+    #
+    # It is worth naming why inventory is a legitimate home for this and not a
+    # workaround. The apparent objection is circularity — a VM that does not
+    # exist yet has no inventory entry to read from. That is false: a host can be
+    # DECLARED in inventory before it is created, and that is exactly what the
+    # allocation step is. The inventory entry is the declaration; provisioning
+    # makes reality match it. resize-vm.yml already reads vm_cores/vm_memory/
+    # vm_disk this way, so putting the remaining provisioning fields alongside
+    # them means one source of truth for both playbooks rather than two that can
+    # drift.
+    #
+    # vm-specs.yml is kept as the fallback so a workstation run and any host not
+    # yet migrated keep working. errors='ignore' because absent is the NORMAL
+    # case on the runner, not a failure.
+    _specs_raw: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml', errors='ignore') | default('', true) }}"
+    _specs: "{{ (_specs_raw | from_yaml) if (_specs_raw | length > 0) else {} }}"
+    _svc: "{{ (_specs.vms | default({}))[target_service] | default({}) }}"
+    _defaults: "{{ _specs.defaults | default({}) }}"
 
-    # Resolved VM config
-    _vmid: "{{ target_vmid | default(_svc.vmid) }}"
-    _name: "{{ _svc.name }}"
-    _node: "{{ target_node | default(_svc.node) }}"
-    _cores: "{{ _svc.cores }}"
-    _mem: "{{ _svc.memory }}"
-    _disk: "{{ _svc.disk }}"
-    _ip: "{{ _svc.ip }}"
-    _gw: "{{ _svc.gateway | default(_defaults.gateway) }}"
-    _dns: "{{ _svc.nameserver | default(_defaults.nameserver) }}"
-    _storage: "{{ _defaults.disk_storage }}"
-    _bridge: "{{ _defaults.net_bridge }}"
-    _netmask: "{{ _defaults.netmask }}"
-    _tags: "{{ _svc.tags | default(_defaults.base_tags | default('ubuntu;24.04')) }}"
+    # The declaring host: the entry in <service>_svc carrying the vm_* vars. This
+    # play runs on localhost, so its vars are not in scope automatically.
+    _decl: "{{ hostvars[(groups[target_service ~ '_svc'] | default([]) | first) | default('')] | default({}) }}"
+
+    # Resolved VM config — launch override, then declaration, then ledger.
+    _vmid: "{{ target_vmid | default(_decl.vm_vmid | default(_svc.vmid | default(''))) }}"
+    _name: "{{ _decl.vm_name | default(_svc.name | default(target_service)) }}"
+    _node: "{{ target_node | default(_decl.vm_node | default(_svc.node | default(''))) }}"
+    _cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
+    _mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
+    _disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
+    _ip: "{{ _decl.vm_ip | default(_svc.ip | default('')) }}"
+    _gw: "{{ _decl.vm_gateway | default(_svc.gateway | default(_defaults.gateway | default(''))) }}"
+    _dns: "{{ _decl.vm_nameserver | default(_svc.nameserver | default(_defaults.nameserver | default(''))) }}"
+    _storage: "{{ _decl.vm_disk_storage | default(_defaults.disk_storage | default('')) }}"
+    _bridge: "{{ _decl.vm_net_bridge | default(_defaults.net_bridge | default('vmbr0')) }}"
+    _netmask: "{{ _decl.vm_netmask | default(_defaults.netmask | default(24)) }}"
+    _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('ubuntu;24.04'))) }}"
 
     # Semaphore runner config (injected on each VM for task execution)
     _semaphore_url: "{{ semaphore_url | default('') }}"
@@ -66,6 +98,38 @@
       ansible.builtin.fail:
         msg: "target_service must be specified (e.g., -e target_service=openbao)"
       when: target_service is not defined
+
+    # Every field above now defaults to '' so a missing vm-specs file does not
+    # raise. That is deliberate — absent is normal on the runner — but it also
+    # turns a hard failure into a soft one, so the previously-implicit contract
+    # has to become an explicit gate. Without this, a host with no declaration
+    # would send a clone request with an empty vmid/node/ip and fail somewhere
+    # deep in the Proxmox API, or worse, half-create something.
+    - name: "Require a complete VM declaration before touching Proxmox"
+      ansible.builtin.assert:
+        that:
+          - (_vmid | string | length) > 0
+          - (_node | string | length) > 0
+          - (_cores | string | length) > 0
+          - (_mem | string | length) > 0
+          - (_disk | string | length) > 0
+          - (_ip | string | length) > 0
+          - (_gw | string | length) > 0
+          - (_dns | string | length) > 0
+          - (_storage | string | length) > 0
+        fail_msg: >-
+          Incomplete VM declaration for '{{ target_service }}'. Resolved:
+          vmid={{ _vmid | default('') }} node={{ _node | default('') }}
+          cores={{ _cores | default('') }} memory={{ _mem | default('') }}
+          disk={{ _disk | default('') }} ip={{ _ip | default('') }}
+          gw={{ _gw | default('') }} dns={{ _dns | default('') }}
+          storage={{ _storage | default('') }}.
+          Declare the missing values as vm_* vars on the host in the
+          '{{ target_service }}_svc' inventory group — that is the
+          Semaphore-runnable path, since the vm-specs.yml ledger lives in the
+          private site-config repo the runner never checks out. From a
+          workstation you may instead pass -e project_root=<site-config path>.
+        success_msg: "VM declaration for '{{ target_service }}' is complete."
 
     - name: "Show provisioning plan"
       ansible.builtin.debug:
