@@ -249,19 +249,26 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   esac
 }
 
-@test "templates: the Phase 1 gate and credential steps have dev variants" {
-  # verify-host-access.yml lands on main only at the next promotion, so the
-  # main-bound base cannot run until then. Store SSH Password gets one too, so
-  # the whole phase executes ONE branch's code — running the irreversible steps
-  # from main while the gate clearing them runs from dev would mean the thing
-  # being verified is not the thing being run.
+@test "templates: every Phase 1 step has a dev variant" {
+  # Phase 1 must execute ONE branch's code end to end. The gate that clears the
+  # irreversible step and the step itself running from different branches would
+  # mean the thing verified is not the thing run — on the one action that can lock
+  # the host out.
   #
-  # Written as two plain extractions rather than a loop with `awk -v`: the
-  # variable-injection version broke on quoting and failed against correct code.
-  run bash -c "awk '/^  - name: Verify Host Access\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
-  [ "$output" = "1" ]
-  run bash -c "awk '/^  - name: Store SSH Password\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
-  [ "$output" = "1" ]
+  # This is not merely tidiness for Distribute SSH Keys: main has no password path
+  # at all, so it cannot reach a host that has no key yet, and Semaphore does NOT
+  # honour a launch-time repository override (tested: the field returns null and
+  # the run still fetches main). The variant is the only way to run the fix.
+  local n
+  for n in "Store SSH Password" "Verify Host Access" "Generate Service SSH Key" \
+           "Distribute SSH Keys" "Install Podman" "Harden SSH" "Apply Firewall"; do
+    run awk -v want="  - name: $n" '
+      $0==want {f=1; next}
+      f && /^  - name:/ {exit}
+      f && /^    dev_variant: true$/ {print "yes"; exit}
+    ' "$TPL"
+    [ "$output" = "yes" ]
+  done
 }
 
 @test "the probe play tolerates an unreachable host so the report still renders" {

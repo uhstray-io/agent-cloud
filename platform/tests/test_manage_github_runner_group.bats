@@ -7,6 +7,8 @@
 #
 # Run: bats platform/tests/test_manage_github_runner_group.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/manage-github-runner-group.yml"
   [ -f "$PLAYBOOK" ]
@@ -54,7 +56,7 @@ setup() {
 @test "runner-group: no other group is ever modified or deleted" {
   # Three groups already exist, one of them the org default with visibility "all".
   # Touching them is out of scope and would be destructive.
-  ! grep -qF 'method: DELETE' "$PLAYBOOK"
+  refute_grep -qF 'method: DELETE' "$PLAYBOOK"
   # Every mutating URL targets either the collection (create) or an id this run
   # resolved for ITS OWN group — never a literal id, which would be a guess at another
   # group's identity.

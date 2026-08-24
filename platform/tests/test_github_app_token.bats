@@ -9,6 +9,8 @@
 #
 # Run: bats platform/tests/test_github_app_token.bats
 
+load assert_helpers
+
 setup() {
   LIB="$BATS_TEST_DIRNAME/../lib/github_app_token.py"
   [ -f "$LIB" ]
@@ -44,7 +46,8 @@ print(m.sign_assertion('$1', open('$KEY','rb').read()))"
 @test "gh-app: the assertion is three unpadded base64url segments on one line" {
   local jwt; jwt=$(sign 123456)
   [ "$(printf '%s' "$jwt" | tr -cd '.' | wc -c | tr -d ' ')" = "2" ]
-  ! printf '%s' "$jwt" | grep -q '[+/=]'
+  printf '%s' "$jwt" > "$BATS_TEST_TMPDIR/jwt.txt"
+  refute_grep -q '[+/=]' "$BATS_TEST_TMPDIR/jwt.txt"
   [ "$(printf '%s' "$jwt" | wc -l | tr -d ' ')" = "0" ]
 }
 
@@ -109,7 +112,7 @@ print('ok')"
   # argv is world-readable through /proc for the life of the process, so a key or token
   # passed as a flag leaks to any local user. Only a PATH or '-' is accepted.
   grep -qF '"--key", default="-"' "$LIB"
-  ! grep -qE '"--(pem|private-key|token|secret)"' "$LIB"
+  refute_grep -qE '"--(pem|private-key|token|secret)"' "$LIB"
   # And the key is read from stdin or a file, never from an argument value.
   grep -qF 'sys.stdin.buffer.read()' "$LIB"
 }
@@ -118,9 +121,24 @@ print('ok')"
   # The first version used both. The orchestrator image has neither, and because signing
   # sits inside a no_log boundary it surfaced as an unexplained credential failure
   # rather than a missing binary.
-  ! grep -qE '\bopenssl\b' "$LIB"
-  ! grep -qE '\bjq\b' "$LIB"
-  ! grep -qE 'subprocess|os\.system|popen' "$LIB"
+  # CODE only. The module docstring names openssl and jq precisely to explain why they
+  # were removed, and an assertion that forbids naming the hazard suppresses the
+  # documentation of it (docs/MISTAKES.md §2.8). Strip the docstring and comments first.
+  python3 - "$LIB" > "$BATS_TEST_TMPDIR/code.py" <<'STRIP'
+import ast, sys
+src = open(sys.argv[1]).read()
+tree = ast.parse(src)
+doc = ast.get_docstring(tree, clean=False)
+lines = src.split("\n")
+if doc is not None:
+    body0 = tree.body[0]
+    for i in range(body0.lineno - 1, body0.end_lineno):
+        lines[i] = ""
+print("\n".join(l for l in lines if not l.lstrip().startswith("#")))
+STRIP
+  refute_grep -qE 'openssl' "$BATS_TEST_TMPDIR/code.py"
+  refute_grep -qE '\bjq\b' "$BATS_TEST_TMPDIR/code.py"
+  refute_grep -qE 'subprocess|os\.system|popen' "$BATS_TEST_TMPDIR/code.py"
 }
 
 @test "gh-app: a missing cryptography library is reported as such, not as a bad key" {

@@ -24,13 +24,10 @@
 #
 # Usage (via Semaphore):
 #   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key
-#
-# The VALUE comes from the BAO_SEED_VALUE environment secret by preference, and only
-# falls back to -e bao_value=<secret>. That ordering matters: Semaphore PERSISTS a
-# task's extra vars in its own database, so a credential passed with -e is stored in
-# cleartext-at-rest inside the orchestrator, which is the opposite of what seeding a
-# secret store is for. An encrypted environment secret is not persisted per task. The
-# extra-var path is kept for a workstation run, where there is no task record.
+#   BAO_VALUE supplied as a Semaphore environment SECRET (encrypted at rest, not
+#   returned by the API). Do NOT pass -e bao_value=... under Semaphore: it
+#   persists the extra-var JSON and serves it back over its API. The extra-var
+#   form is for a LOCAL run only.
 #   -e openbao_addr=https://<bao>:8200   (AppRole creds injected by Semaphore env)
 # openbao_addr must be https, OR http only to a loopback/RFC1918 host (the
 # internal OpenBao VLAN) — the transport guard below refuses public cleartext.
@@ -43,11 +40,15 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # Environment secret FIRST — see the header note on Semaphore persisting extra vars.
-    _bao_value: >-
-      {{ lookup('env', 'BAO_SEED_VALUE')
-         | default(bao_value | default(''), true)
-         | default('', true) }}
+    # The ENVIRONMENT WINS over the extra var. Semaphore persists a task's
+    # extra-var JSON in its own database and serves it back over its API
+    # indefinitely, so `-e bao_value=...` leaves the secret in plaintext outside
+    # OpenBao — the opposite of what this playbook is for. A Semaphore environment
+    # secret is encrypted at rest and its value is not returned by the API, and it
+    # is the same channel this playbook's AppRole credentials already arrive on.
+    # Environment first, so a stray extra var cannot override a configured secret.
+    # The extra var still serves a local run, where nothing persists it.
+    _bao_value: "{{ lookup('env', 'BAO_VALUE') | default(bao_value | default(''), true) }}"
 
   tasks:
     # Non-secret validation stays VISIBLE (no no_log) so a missing path/key/url
@@ -68,27 +69,17 @@
         that:
           - _bao_value | length > 0
         fail_msg: >-
-          No value to store. Set the BAO_SEED_VALUE environment secret (preferred — a
-          task's extra vars are persisted by the orchestrator), or pass
-          -e bao_value=<secret> for a workstation run.
+          Supply the value as the BAO_VALUE environment secret (Semaphore) or
+          -e bao_value=<secret> (local run).
       no_log: true
 
-    # role_id/secret_id/value cross the wire to _bao_url — refuse to send
+    # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
     # secret material over public cleartext. https is always allowed; http is
     # allowed ONLY to loopback/RFC1918 (the internal OpenBao VLAN).
-    - name: "Require a non-cleartext transport to OpenBao"
-      ansible.builtin.assert:
-        that:
-          # Anchored, COMPLETE addresses with a delimiter — a prefix match like
-          # `http://10\\.` also accepts http://10.evil.example/, a public host,
-          # which sends the AppRole creds and secrets over cleartext.
-          - >-
-            _bao_url is match('^(https://|http://(localhost|127(\\.[0-9]{1,3}){3}|10(\\.[0-9]{1,3}){3}|192\\.168(\\.[0-9]{1,3}){2}|172\\.(1[6-9]|2[0-9]|3[01])(\\.[0-9]{1,3}){2})([:/]|$))')
-        fail_msg: >-
-          Refusing to send secret material over public cleartext. Set openbao_addr
-          to an https:// URL, or an http:// endpoint on loopback/RFC1918 (the
-          internal OpenBao VLAN).
-
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"

@@ -8,6 +8,8 @@
 #
 # Run: bats platform/tests/test_deploy_github_runner.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
   [ -f "$PLAYBOOK" ]
@@ -48,9 +50,10 @@ setup() {
   local n
   n=$(grep -c 'no_log: true' "$PLAYBOOK")
   [ "$n" -eq 5 ]
-  grep -A8 'Confirm the runner service is active' "$PLAYBOOK" | grep -qv 'no_log' || true
-  ! grep -A8 'Confirm the runner service is active' "$PLAYBOOK" | grep -q 'no_log: true'
-  ! grep -A6 'Report' "$PLAYBOOK" | grep -q 'no_log: true'
+  # A pipeline cannot be handed to refute_grep, so the region is captured first and
+  # then asserted on — the assertion has to be a simple command to fail the test at all.
+  sed -n '/Confirm the runner service is active/,/^    - name:/p' "$PLAYBOOK" > "$BATS_TEST_TMPDIR/verify.txt"
+  refute_grep -q 'no_log: true' "$BATS_TEST_TMPDIR/verify.txt"
 }
 
 @test "deploy-runner: the runner account is asserted to hold no sudo rights" {
@@ -111,7 +114,7 @@ setup() {
   # Discovery moved into the signer, which resolves the installation from the App
   # credential it already holds. The property under test is unchanged: the id is never a
   # required input.
-  ! grep -qF '_install_id | length > 0' "$PLAYBOOK"
+  refute_grep -qF '_install_id | length > 0' "$PLAYBOOK"
   grep -qF 'github_app_token.py' "$PLAYBOOK"
   grep -qF 'installation_id' "$BATS_TEST_DIRNAME/../lib/github_app_token.py"
 }
@@ -135,7 +138,7 @@ setup() {
   # rc=127. `template:` is the opposite — it reads its src on the controller — which is
   # why the two paths are not interchangeable and both appear in this playbook.
   grep -qF '{{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
-  ! grep -qF '{{ playbook_dir }}/../services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
+  refute_grep -qF '{{ playbook_dir }}/../services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
   # The repo must actually be placed before anything on the host tries to run from it.
   local place_line run_line
   place_line=$(grep -n 'place-monorepo.yml' "$PLAYBOOK" | head -1 | cut -d: -f1)

@@ -488,8 +488,15 @@ templates:
     playbook: platform/playbooks/seed-openbao-key.yml
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
-    # honcho reads secret/services/nemoclaw:gemini_api_key). bao_value is passed
-    # as a launch-time extra-var (-e bao_value=...), not a stored survey field.
+    # honcho reads secret/services/nemoclaw:gemini_api_key).
+    #
+    # The VALUE is not a survey field, because Semaphore persists survey values in
+    # its database. Nor is it a launch-time extra var, which this comment used to
+    # recommend: Semaphore persists a task's extra-var JSON exactly the same way
+    # and serves it back over its API indefinitely. Supply it as the BAO_VALUE
+    # **environment secret** — encrypted at rest, value not returned by the API,
+    # the same channel the AppRole credentials already use. The playbook prefers
+    # the environment, so a stray -e bao_value= cannot override it.
     survey_vars:
       - name: bao_path
         title: "Secret path"
@@ -514,13 +521,30 @@ templates:
     #
     # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
     # database, so a credential typed into a survey field would be stored there
-    # indefinitely. Pass them as launch-time extra vars instead, only the ones
-    # you have:
-    #   -e seed_x_api_key=... -e seed_x_api_secret=...
-    #   -e seed_linkedin_client_id=... -e seed_linkedin_client_secret=...
-    #   -e seed_youtube_client_id=... -e seed_youtube_client_secret=...
-    #   -e seed_discord_client_id=... -e seed_discord_client_secret=...
-    #   -e seed_discord_bot_token_id=...
+    # indefinitely.
+    #
+    # LAUNCH-TIME EXTRA VARS ARE NOT THE ANSWER EITHER, and this comment used to
+    # say they were. Semaphore persists a task's extra-var JSON the same way and
+    # serves it back over its API indefinitely — so `-e seed_x_api_secret=...`
+    # would leave a live social-platform credential in plaintext outside OpenBao,
+    # which is the exact thing this template exists to prevent.
+    #
+    # Supply each credential as an **environment secret** named after its key,
+    # upper-cased. Semaphore encrypts environment secrets at rest and does not
+    # return their values over the API. Only the ones you have:
+    #   SEED_X_API_KEY            SEED_X_API_SECRET
+    #   SEED_LINKEDIN_CLIENT_ID   SEED_LINKEDIN_CLIENT_SECRET
+    #   SEED_YOUTUBE_CLIENT_ID    SEED_YOUTUBE_CLIENT_SECRET
+    #   SEED_DISCORD_CLIENT_ID    SEED_DISCORD_CLIENT_SECRET
+    #   SEED_DISCORD_BOT_TOKEN_ID
+    #
+    #   Project -> Environment -> (the environment this template uses)
+    #     -> Secrets -> add each as type "environment variable"
+    #
+    # The playbook prefers the environment over the matching seed_* extra var, so
+    # a stray -e cannot override a configured secret. The extra-var form remains
+    # for a LOCAL run, where the value comes from site-config and nothing
+    # persists it.
     # Re-running with unchanged values writes nothing. Verify with Check
     # Secrets, then run Deploy Postiz.
 
@@ -583,12 +607,27 @@ templates:
   # ── SSH ────────────────────────────────────────────────────────
   - name: Distribute SSH Keys
     playbook: platform/playbooks/distribute-ssh-keys.yml
+    # Phase 1's way IN to a host that has no key yet. The dev branch reads
+    # login_password from the secret store as an ansible_password fallback; main
+    # has no password path at all and simply cannot reach a keyless host
+    # (verified: the access gate reports "unreachable by any method"). Semaphore
+    # does NOT honour a launch-time repository override — tested, the field comes
+    # back null and the run still fetches main — so the variant is the only way to
+    # run the fixed code.
+    dev_variant: true
 
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
+    # THE IRREVERSIBLE STEP. It must run the same branch as the gate that clears
+    # it — verifying dev's code and then hardening with main's would mean the thing
+    # checked is not the thing run, on the one action that can lock the host out.
+    dev_variant: true
 
   - name: Apply Firewall
     playbook: platform/playbooks/apply-firewall.yml
+    # Variant so the phase's last enforcement step matches the branch its
+    # verification ran from.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Target group"
@@ -598,6 +637,10 @@ templates:
 
   - name: Generate Service SSH Key
     playbook: platform/playbooks/generate-service-ssh-key.yml
+    # Variant so the whole of Phase 1 executes ONE branch's code. This playbook is
+    # byte-identical on main and dev today, but relying on that means the guarantee
+    # quietly lapses the first time either branch moves.
+    dev_variant: true
     survey_vars:
       - name: service_name
         title: "Service name"
@@ -650,6 +693,9 @@ templates:
 
   - name: Install Podman
     playbook: platform/playbooks/install-podman.yml
+    # Variant for the same reason as Generate Service SSH Key: one branch for the
+    # whole phase, rather than a guarantee that depends on files staying identical.
+    dev_variant: true
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml

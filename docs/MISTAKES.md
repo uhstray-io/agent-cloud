@@ -40,6 +40,7 @@ supersede it with a new entry and link both.
 | 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | Convention |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | Convention |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -51,7 +52,7 @@ supersede it with a new entry and link both.
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
-| 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks do not gate it | Process | Pre-push hook |
+| 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Test |
@@ -153,33 +154,27 @@ which is an argument for verifying through the automation rather than around it.
 
 **What happened.** The self-hosted runner design claimed that setting the runner's
 container-hook variable makes every job's steps execute inside a container "whether or
-not the workflow asked", and argued at length that this was superior to a workflow-level
+not the workflow asked", and argued at length that this beat a workflow-level
 `container:` because the latter fails open. A smoke job declaring no container reported
 `ISOLATION=host`: it ran directly against the host filesystem as the runner account. The
-hook mechanism manages containers for a job that *declares* one; it does not invent a
-container for a job that does not.
+hook mechanism manages containers for a job that *declares* one; it does not invent one.
 
-**Root cause.** The mechanism's existence was verified — the environment variable is real,
-the hooks project is real, the version was checked — and its *behaviour* was then
+**Root cause.** The mechanism's existence was verified — the environment variable is
+real, the hooks project is real, the version was checked — and its *behaviour* was then
 inferred from what would be useful. Verifying that a feature exists is not verifying what
 it does.
 
-**Why this one matters most in this change.** It was a security claim, written into a
-spec, with a rationale explaining why the alternative was unsafe. Someone deciding what
-may sit on a runner host would have relied on it. Three other controls in the same design
-were real and verified; this one was confident prose.
-
 **The rule.** A control is not a control until it has been observed failing to permit the
-thing it forbids. Test it from the position of the attacker — a job that asks for
-nothing, a request with the field absent — not from the position of the happy path.
-Wherever a design argues that one mechanism is safer than another *because* it cannot be
-opted out of, that specific property is the one to measure first.
+thing it forbids. Test it from the attacker's position — a job that asks for nothing, a
+request with the field absent — not the happy path. Where a design argues that one
+mechanism is safer *because* it cannot be opted out of, that property is the one to
+measure first.
 
 **Enforced by.** Test — a smoke workflow that declares no container and reports whether
-it is containerised, so the claim cannot be re-made without the measurement contradicting
-it. The corrected spec states what is actually enforced: workspace destruction between
-jobs, no host administration from a job, and network-level egress denial, all three
-verified on the live host.
+it is containerised, so the claim cannot be re-made without the measurement
+contradicting it. The corrected spec states what is actually enforced: workspace
+destruction between jobs, no host administration from a job, and network-level egress
+denial, all three verified on the live host.
 
 ---
 
@@ -322,20 +317,55 @@ quote-free substring instead of escaping your way through it.
 ### 2.8 §2.6 repeated — a test assertion forbidding the comment that documents the hazard
 
 **What happened.** Three times in one change, an assertion written as "this file must not
-mention X" failed against correct code, because the file's *rationale* named X in order
-to explain why it was avoided. Once for `openbao` in a script whose header explains the
-credential division; once for `run_once` in a playbook whose header explains why it is
-absent; once for `fuser`/`lsof` in a task whose comment explains why they are not used.
+mention X" failed against correct code, because the file's *rationale* named X to explain
+why it was avoided. Once for `openbao` in a script whose header explains the credential
+division; once for `run_once` in a playbook whose header explains why it is absent; once
+for `fuser`/`lsof` in a task whose comment explains why they are not used.
 
 **Root cause.** A prohibition expressed as a whole-file text search cannot distinguish
-code from the commentary about it — and the commentary that names a hazard is exactly the
-commentary worth keeping.
+code from commentary about it — and commentary naming a hazard is exactly what is worth
+keeping.
 
-**The rule.** Scope a prohibition to executable lines (`grep -vE '^[[:space:]]*#'` first).
-A check that punishes documenting the hazard trains people to delete the documentation.
+**The rule.** Scope a prohibition to executable lines. A check that punishes documenting
+the hazard trains people to delete the documentation.
 
 **Enforced by.** Convention, and this is the third instance — the honest status is that
 nothing mechanical catches it.
+
+
+### 2.9 Fifteen negative assertions that could never fail, reported as verified
+
+**What happened.** A branch added roughly fifteen assertions of the form
+`! grep -q <forbidden> "$file"` in the MIDDLE of test bodies — including
+"the key is never accepted through argv", "no real addresses", "no client secret
+appears", "no speculative API socket is configured". Every one was reported as passing,
+and the suite was cited as evidence in a pull request.
+
+Merging `dev` brought in `assert_helpers.bash` and its measurement: on Bats 1.13.0 a
+`!`-inverted command anywhere but the final statement of a body leaves the test
+**passing**, because `set -e` is documented to ignore it. Converting those assertions to
+`refute_grep` — a function call, whose status does fail the test — turned **two of them
+red immediately**. They had never run.
+
+**Root cause.** Two compounding errors. The assertions were written in the natural-looking
+form without checking whether Bats would honour it, and "the suite is green" was then
+treated as evidence that each assertion had been evaluated. A green suite only proves no
+assertion *failed*; it does not prove any assertion *ran*.
+
+**What the two red ones actually caught.** Both were §2.8 again — the assertion forbade
+the comment that documents the hazard, not the hazard. Once scoped to executable lines,
+both were mutation-tested in each direction: introducing the forbidden construct into
+code fails the test, removing it passes.
+
+**The rule.** A negative assertion must be a simple command — `refute_grep`, or `run` plus
+`[ ]`. Never `! cmd`, and never `[[ ]]`, anywhere but the final line. And a new assertion
+is not verified because the suite is green: mutate the thing it guards and watch it fail
+once. An assertion never observed failing is indistinguishable from a comment.
+
+**Enforced by.** Test — `platform/tests/test_assertions_are_real.bats` ratchets the count
+of assertions that cannot fail; it may go down and may not go up. That ratchet is what
+surfaced this, on a branch whose author believed the suite had verified these very
+properties.
 
 ---
 
@@ -569,21 +599,30 @@ this is the clearest case in this document for converting a rule into a gate.
 
 **What happened.** Two further commits landed while a test was failing. In both cases
 every pre-commit hook passed: they cover secret scanning, private addresses, credentials,
-`.env` files, YAML and whitespace — not the test suite. Both were caught immediately
-after and amended.
+`.env`, YAML and whitespace — not the test suite. Both were caught immediately after and
+amended.
 
 **Why it is recorded again rather than appended to §5.2 or §5.5.** This is the third and
-fourth occurrence of one mistake whose recorded enforcement is "Convention". The repeats
-*are* the argument: a rule that has now failed four times is not enforced, it is merely
-written down.
+fourth occurrence of one mistake whose recorded enforcement was "Convention". The repeats
+*are* the argument: a rule that has failed four times is not enforced, it is written down.
 
 **The rule (unchanged).** Run the suite before committing, not after.
 
-**Enforced by.** `.githooks/pre-push` — added 2026-08-24. It runs the BATS suite (and pytest when its dependencies are present) with the same invocation, working directory and PYTHONPATH as CI, and refuses the push on failure. Escape hatch is `SKIP_TESTS=1 git push`, deliberately loud.
+**Enforced by.** `.githooks/pre-push` — added 2026-08-24. It runs the BATS suite (and
+pytest when its dependencies are present) with the same invocation, working directory and
+PYTHONPATH as CI, and refuses the push on failure. Escape hatch `SKIP_TESTS=1 git push`,
+deliberately loud.
 
-It fails OPEN when a runner is missing, which is the opposite of the pre-commit secret gate and deliberately so: a leaked secret is irreversible, a red test is not — CI runs both suites on every PR and blocks the merge. Blocking a contributor who lacks `bats` from pushing at all would be a large cost for a check whose only benefit is earlier feedback.
+It fails OPEN when a runner is missing, which is the opposite of the pre-commit secret
+gate and deliberately so: a leaked secret is irreversible, a red test is not — CI runs
+both suites on every PR and blocks the merge. Blocking a contributor who lacks `bats`
+from pushing at all would be a large cost for a check whose only benefit is earlier
+feedback.
 
-It earned itself on its first execution, catching a genuinely red suite: a `no_log` count assertion left stale by a playbook change made minutes earlier, which the author had not re-run the suite after. That is this entry's exact failure mode, caught by the mechanism instead of by chance.
+It earned itself on its first execution, catching a genuinely red suite: a `no_log` count
+assertion left stale by a playbook change made minutes earlier, whose author had not
+re-run the suite. That is this entry's exact failure mode, caught by the mechanism
+instead of by chance.
 
 ---
 
@@ -640,26 +679,25 @@ was written to make the claim true rather than the claim weakened to match.
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
 
 **What happened.** The App credential helper was written in shell using `openssl` and
-`jq`, explicitly reasoned about as "no new dependency, matching the existing HTTP client
+`jq`, reasoned about explicitly as "no new dependency, matching the existing HTTP client
 library". The orchestrator's container image has neither. Every registration failed with
 `openssl: command not found` (rc=127), and because signing sits inside a `no_log`
-boundary the failure surfaced as an unexplained credential error. Worse, the first
-classification written for it blamed the key rather than the missing binary, sending the
-next run in the wrong direction.
+boundary it surfaced as an unexplained credential error. Worse, the first classification
+written for it blamed the key rather than the missing binary, sending the next run in the
+wrong direction.
 
 **Root cause.** The same shape as §6.2: an integration designed from what the environment
-plausibly has, rather than from what it demonstrably has. "openssl is everywhere" is true
-of hosts and false of minimal images.
+plausibly has rather than what it demonstrably has. "openssl is everywhere" is true of
+hosts and false of minimal images.
 
 **The rule.** A dependency of an automated step is verified on the machine that will run
 that step, before the step is built on it — and where a step runs inside a `no_log`
-boundary, it needs its own diagnosis path, because "it failed" is all anyone will ever
-see. The rewrite uses the standard library plus a library the orchestrator already needs,
-and reports a missing library as such instead of as a bad credential.
+boundary it needs its own diagnosis path, because "it failed" is all anyone will see. The
+rewrite uses the standard library plus a library the orchestrator already needs, and
+reports a missing library as such instead of as a bad credential.
 
 **Enforced by.** Test — `platform/tests/test_github_app_token.bats` asserts the signer
-depends on neither `openssl` nor `jq` and shells out to nothing, so the assumption cannot
-be reintroduced silently.
+depends on neither `openssl` nor `jq` and shells out to nothing.
 
 ---
 

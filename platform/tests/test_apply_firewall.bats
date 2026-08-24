@@ -10,6 +10,8 @@
 #
 # Run: bats platform/tests/test_apply_firewall.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/apply-firewall.yml"
   [ -f "$PLAYBOOK" ]
@@ -177,8 +179,12 @@ YAML
   guard '{"to":"192.0.2.0/24","broad":true}'
 
   # Rejected: a supernet of the management network, which would cut the host off the LAN.
-  ! guard '{"to":"192.0.2.0/24"}'
-  ! guard '{"to":"192.0.0.0/16"}'
+  # `run` + `[ ]` rather than `! guard`: a bang-inverted command is exempt from set -e
+  # anywhere but the final line, so `! guard ...` in the middle of a body can never fail.
+  run guard '{"to":"192.0.2.0/24"}'
+  [ "$status" -ne 0 ]
+  run guard '{"to":"192.0.0.0/16"}'
+  [ "$status" -ne 0 ]
   # Rejected: a malformed entry with no destination at all.
   ! guard '{"port":8200}'
 }

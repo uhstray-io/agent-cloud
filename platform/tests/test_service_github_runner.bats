@@ -8,6 +8,8 @@
 #
 # Run: bats platform/tests/test_service_github_runner.bats
 
+load assert_helpers
+
 setup() {
   D="$BATS_TEST_DIRNAME/../services/github-runner/deployment"
   SH="$D/deploy.sh"
@@ -39,7 +41,10 @@ setup() {
   # reading it (Runner.Listener/CommandSettings.cs) — that is the argv-free route, and
   # there is no --token-file option.
   grep -qF 'ACTIONS_RUNNER_INPUT_TOKEN="$token" ./config.sh' "$SH"
-  ! grep -qE '\-\-token[= ]' "$SH"
+  # CODE only: the script's comments name --token to explain why it is NOT used, and
+  # forbidding the explanation suppresses it (docs/MISTAKES.md §2.8).
+  grep -vE '^[[:space:]]*#' "$SH" > "$BATS_TEST_TMPDIR/code.sh"
+  refute_grep -qE '\-\-token[= ]' "$BATS_TEST_TMPDIR/code.sh"
   # And it arrives on stdin, not as a script argument.
   grep -qF 'token=$(cat)' "$SH"
 }
@@ -57,7 +62,7 @@ setup() {
 @test "gh-runner: the digest is fetched per pinned version, never hardcoded" {
   # A constant in the repo goes stale the first time the pin moves, and a
   # stale-but-present digest reads as verified when it is not.
-  ! grep -qE '^[A-Z_]*SHA256=[0-9a-f]{64}' "$SH"
+  refute_grep -qE '^[A-Z_]*SHA256=[0-9a-f]{64}' "$SH"
   grep -qF 'RUNNER_SHA256' "$D/templates/runner.env.j2"
   grep -qF '{{ _runner_sha256 }}' "$D/templates/runner.env.j2"
 }
@@ -93,7 +98,7 @@ setup() {
   # cleanup hiccup into a red build and teaches people to disable the hook.
   local H="$D/templates/job-cleanup.sh.j2"
   grep -qF 'exit 0' "$H"
-  ! grep -qE '^set -e' "$H"
+  refute_grep -qE '^set -e' "$H"
   # Every destructive step tolerates failure and says so.
   grep -qF '|| log "WARNING' "$H"
 }
@@ -116,6 +121,6 @@ setup() {
 }
 
 @test "gh-runner: no templates carry real addresses or a literal token" {
-  ! grep -rqE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$D"
+  refute_grep -rqE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$D"
   ! grep -rqiE '(gh[pousr]_[A-Za-z0-9]{16}|A[A-Z0-9]{20,})' "$D/templates"
 }

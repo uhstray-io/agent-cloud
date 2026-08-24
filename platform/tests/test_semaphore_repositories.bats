@@ -8,6 +8,8 @@
 # Structural only (grep/parse asserts) — no live Semaphore calls.
 # Run: bats platform/tests/test_semaphore_repositories.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DECL="$REPO_ROOT/platform/semaphore/repositories.yml"
@@ -193,9 +195,9 @@ print('\n'.join(bad) if bad else 'OK')
   # record is deleted with the branch, and every template still naming it then fails its
   # checkout. templates.yml lands on main, so a main-branch declaration referencing a
   # feature branch is shipped breakage.
-  ! grep -qE '^\s+repository: .*(feat|fix|chore|docs)/' "$TPL"
+  refute_grep -qE '^[[:space:]]+repository: .*(feat|fix|chore|docs)/' "$TPL"
   # And the declared records themselves must be the long-lived ones only.
-  ! grep -qE '^\s+git_branch: (feat|fix|chore|docs)/' "$DECL"
+  refute_grep -qE '^[[:space:]]+git_branch: (feat|fix|chore|docs)/' "$DECL"
 }
 
 @test "setup-templates: its no-delete semantics are documented" {
