@@ -45,6 +45,13 @@
     _home: "{{ github_runner_home | default('/opt/actions-runner') }}"
     _account: "{{ github_runner_account | default('ghrunner') }}"
     _rver: "{{ github_runner_version | default('2.336.0') }}"
+    # Where the monorepo lands ON THE TARGET. The install script runs on the host, so it
+    # must be reached by a path that exists there — playbook_dir is the CONTROLLER's
+    # checkout and resolving a remote command against it yields rc=127. Templates are
+    # different: `template:` reads its src on the controller, so playbook_dir is correct
+    # for those and wrong here, which is why the two are not interchangeable.
+    _monorepo_dir: "{{ monorepo_deploy_path | default('/opt/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
 
   tasks:
@@ -70,6 +77,11 @@
         _assert_bao_url: "{{ _bao_url }}"
 
     # ── host prerequisites ─────────────────────────────────────────────────
+    - name: "Place the monorepo on the target"
+      # Shared Phase-1 preamble every composable deploy uses — the install script has to
+      # exist on the host that runs it.
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
     - name: "Install the runner's OS prerequisites"
       # unzip for the container-hooks archive; the runner bundles its own Node, so no
       # Node package is needed and pinning one would be a second version to drift.
@@ -301,7 +313,7 @@
       # (AGENTS.md — no_log is for the credential boundary, not the whole run).
       ansible.builtin.shell: |
         set -euo pipefail
-        printf '%s' "$REG_TOKEN" | {{ playbook_dir }}/../services/github-runner/deployment/deploy.sh configure
+        printf '%s' "$REG_TOKEN" | {{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh configure
       args:
         executable: /bin/bash
       environment:

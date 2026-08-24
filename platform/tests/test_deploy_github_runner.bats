@@ -128,3 +128,17 @@ setup() {
 @test "deploy-runner: carries no real addresses" {
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
 }
+
+@test "deploy-runner: the install script is reached by a REMOTE path, not playbook_dir" {
+  # playbook_dir is the controller's checkout. A shell/command task runs on the host,
+  # where that path does not exist, so resolving a remote command against it yields
+  # rc=127. `template:` is the opposite — it reads its src on the controller — which is
+  # why the two paths are not interchangeable and both appear in this playbook.
+  grep -qF '{{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
+  ! grep -qF '{{ playbook_dir }}/../services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
+  # The repo must actually be placed before anything on the host tries to run from it.
+  local place_line run_line
+  place_line=$(grep -n 'place-monorepo.yml' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  run_line=$(grep -n 'deploy.sh configure' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  [ -n "$place_line" ] && [ "$place_line" -lt "$run_line" ]
+}
