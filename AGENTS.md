@@ -403,17 +403,23 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 ### Test check on push (`.githooks/pre-push`)
 
 `core.hooksPath=.githooks` also activates a **pre-push** hook that ATTEMPTS the BATS suite
-and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. `bats platform/tests/` is
-byte-identical to CI's; the pytest run is not — CI pins Python 3.11 and installs the test
-dependencies, while the hook uses whatever `python3` is on your `PATH`. So a green push
-means the suites passed *on your machine*, or were skipped; only CI is authoritative, and refuses the push if one runs and fails. No install step; live as soon as `make git-setup`
-has been run.
+and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. No install
+step; live as soon as `make git-setup` has been run.
 
-It is a check, not a gate — called that deliberately. It skips, with a message, when
-`SKIP_TESTS=1` is set, when `bats` is not installed, when the Python suite is not
-collectable because pytest or a test dependency is missing, and on a branch-deletion push.
-**A push that succeeded is not evidence the suites ran.** CI is the authority; this only
-moves the feedback earlier.
+`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
+3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+`PATH`.
+
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
+means the suites passed on your machine or were skipped, which is not evidence CI will
+pass — and CI never sees a push the hook stopped.
+
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+the Python suite is not collectable because pytest or a test dependency is missing, and on
+a branch-deletion push. Failing open like that is deliberate and the opposite of the
+pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
+is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
 Why push and not commit: the suite is ~37s for 452 tests, which on every commit is
 friction people route around with `--no-verify` — turning a gate into a habit of

@@ -147,18 +147,24 @@ All three must pass before merging. See `plan/architecture/03-testing-ci-quality
 full details.
 
 **A push ATTEMPTS them too.** `.githooks/pre-push` invokes the BATS suite, and pytest when
-it is collectable, with the same test paths, working directory and `PYTHONPATH` as CI. `bats platform/tests/` is
-byte-identical to CI's; the pytest run is not — CI pins Python 3.11 and installs the test
-dependencies, while the hook uses whatever `python3` is on your `PATH`. So a green push
-means the suites passed *on your machine*, or were skipped; only CI is authoritative, and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
-install step — the commands below are what it runs, so you do not need to remember them.
+it is collectable, with the same test paths, working directory and `PYTHONPATH` as CI. Live
+via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
+so you do not need to remember them.
 
-It is a convenience, not a gate. It skips, with a message, when `SKIP_TESTS=1` is set,
-when `bats` is not installed, when the Python suite is not collectable because pytest or a
-test dependency is missing, and on a branch-deletion push. **A push that succeeded does
-not prove the suites ran** — CI is the authority. That fail-open behaviour is deliberate
-and the opposite of the pre-commit secret gate, which fails closed because a leaked secret
-is irreversible.
+`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
+3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+`PATH`.
+
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
+means the suites passed on your machine or were skipped, which is not evidence CI will
+pass — and CI never sees a push the hook stopped.
+
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+the Python suite is not collectable because pytest or a test dependency is missing, and on
+a branch-deletion push. Failing open like that is deliberate and the opposite of the
+pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
+is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
 ---
 

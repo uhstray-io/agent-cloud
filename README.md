@@ -237,18 +237,18 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
 | **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
 
-`.githooks/pre-push` **attempts** the same suites before a push, with the same test paths, working directory and `PYTHONPATH` as CI. `bats platform/tests/` is
-byte-identical to CI's; the pytest run is not — CI pins Python 3.11 and installs the test
-dependencies, while the hook uses whatever `python3` is on your `PATH`. So a green push
-means the suites passed *on your machine*, or were skipped; only CI is authoritative,
-and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` after
-`make git-setup`, no install step.
+`.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
+working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
+`make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's; the
+pytest run is not — CI pins Python 3.11 and installs the test dependencies, while the hook
+uses whatever `python3` is on your `PATH`.
 
-It is a convenience, not a guarantee — CI remains the authority. It skips, with a message,
-when `SKIP_TESTS=1` is set, when `bats` is not installed, when the Python suite is not
-collectable (pytest or a test dependency missing), and on a branch-deletion push. That
-fail-open behaviour is deliberate and the opposite of the pre-commit secret gate, which
-fails closed: a leaked secret is irreversible, a skipped test is not.
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails; CI blocks *the merge*. A green push means the suites passed on your machine
+or were skipped, which is not evidence CI will pass. It skips, with a message, on
+`SKIP_TESTS=1`, when `bats` is absent, when the Python suite is not collectable, and on a
+branch-deletion push — failing open deliberately, unlike the pre-commit secret gate, which
+fails closed because a leaked secret is irreversible and a skipped test is not.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
