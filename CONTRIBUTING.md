@@ -147,8 +147,10 @@ All three must pass before merging. See `plan/architecture/03-testing-ci-quality
 full details.
 
 **A push ATTEMPTS them too.** `.githooks/pre-push` invokes the BATS suite, and pytest when
-it is collectable, with the same invocation, working directory and `PYTHONPATH` as CI, and
-refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
+it is collectable, with the same test selection, working directory and `PYTHONPATH` as CI — the BATS command is
+identical; pytest differs only in verbosity (`-q` here, `-v` in CI) and runs as
+`python3 -m pytest` so it uses this interpreter's pytest rather than whatever is first
+on `PATH`, and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` with no
 install step — the commands below are what it runs, so you do not need to remember them.
 
 It is a convenience, not a gate. It skips, with a message, when `SKIP_TESTS=1` is set,

@@ -237,9 +237,12 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
 | **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
 
-`.githooks/pre-push` **attempts** the same suites before a push, invoking them exactly as
-CI does, and refuses the push if one runs and fails. Live via the repo's `core.hooksPath`
-after `make git-setup`, no install step.
+`.githooks/pre-push` **attempts** the same suites before a push, with the same test selection, working directory and `PYTHONPATH` as CI — the BATS command is
+identical; pytest differs only in verbosity (`-q` here, `-v` in CI) and runs as
+`python3 -m pytest` so it uses this interpreter's pytest rather than whatever is first
+on `PATH`,
+and refuses the push if one runs and fails. Live via the repo's `core.hooksPath` after
+`make git-setup`, no install step.
 
 It is a convenience, not a guarantee — CI remains the authority. It skips, with a message,
 when `SKIP_TESTS=1` is set, when `bats` is not installed, when the Python suite is not

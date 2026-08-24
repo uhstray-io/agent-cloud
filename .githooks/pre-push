@@ -27,9 +27,16 @@
 # Escape hatch, explicit and loud:
 #   SKIP_TESTS=1 git push ...
 #
-# Invocations mirror .github/workflows/lint-and-test.yml exactly — same command, same
-# working directory, same PYTHONPATH. A hook that tests something subtly different from
-# CI teaches people to distrust it.
+# Test selection mirrors .github/workflows/lint-and-test.yml: same paths, same working
+# directory, same PYTHONPATH — because a hook that tests something subtly different from CI
+# teaches people to distrust it.
+#
+# The commands are NOT byte-identical, and the two differences are deliberate. `bats
+# platform/tests/` matches CI exactly. pytest runs `-q` rather than CI's `-v`, because a
+# hook that prints 79 passing test names on every push is noise people learn to scroll
+# past; and it runs as `python3 -m pytest` rather than bare `pytest`, so it uses this
+# interpreter's pytest instead of whatever happens to be first on PATH. Neither changes
+# which tests run or whether they pass.
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
