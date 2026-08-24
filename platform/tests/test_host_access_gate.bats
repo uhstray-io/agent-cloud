@@ -248,3 +248,18 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
     *) echo "_kh_host does not build the [host]:port form: $kh_def"; return 1 ;;
   esac
 }
+
+@test "templates: the Phase 1 gate and credential steps have dev variants" {
+  # verify-host-access.yml lands on main only at the next promotion, so the
+  # main-bound base cannot run until then. Store SSH Password gets one too, so
+  # the whole phase executes ONE branch's code — running the irreversible steps
+  # from main while the gate clearing them runs from dev would mean the thing
+  # being verified is not the thing being run.
+  #
+  # Written as two plain extractions rather than a loop with `awk -v`: the
+  # variable-injection version broke on quoting and failed against correct code.
+  run bash -c "awk '/^  - name: Verify Host Access\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
+  [ "$output" = "1" ]
+  run bash -c "awk '/^  - name: Store SSH Password\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
+  [ "$output" = "1" ]
+}
