@@ -704,6 +704,18 @@ templates:
         type: string
         required: false
 
+  # The docker-CLI-shim option lives on the feature branch; main's copy installs podman
+  # alone, which is not enough for a consumer that shells out to a `docker` binary.
+  - name: Install Podman (Runner Branch)
+    playbook: platform/playbooks/install-podman.yml
+    repository: agent-cloud feat/github-actions-runners
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to install podman on"
+        type: string
+        required: true
+
   # Provisioning from the feature branch, which carries two fixes the dev copy lacks:
   # explicit target_host selection (a two-host group is otherwise unaddressable) and the
   # pre-flight defaulting that stops one offline hypervisor from blocking every run.
