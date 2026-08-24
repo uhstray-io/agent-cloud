@@ -29,7 +29,12 @@
   gather_facts: false
   become: false
   vars:
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
@@ -90,7 +95,12 @@
   vars:
     target_service: "ungrouped"
     _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
@@ -153,7 +163,12 @@
   vars:
     target_service: "ungrouped"
     _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 

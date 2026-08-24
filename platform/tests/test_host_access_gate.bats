@@ -281,27 +281,37 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   echo "$head" | grep -qE '^  ignore_unreachable: true$'
 }
 
-@test "store-ssh-password takes the password from the environment, not an extra var" {
-  # Semaphore persists a task's extra-var JSON in its own database and serves it
-  # back over the API indefinitely, so `-e ssh_password=...` would leave the
-  # credential in plaintext outside OpenBao. An environment secret is encrypted
-  # at rest and not API-readable, and is how this playbook's three OpenBao
-  # credentials already arrive.
+@test "store-ssh-password lets the environment secret win over an extra var" {
+  # Semaphore persists a task's extra-var JSON and serves it back over its API, so
+  # `-e ssh_password=...` leaves the credential in plaintext outside OpenBao. An
+  # environment secret is encrypted at rest and not API-readable.
+  #
+  # ORDER is the assertion. With the extra var first, a run that passed BOTH would
+  # use the persisted one even though the secret was configured — the leak, still
+  # open. The environment must be the first operand.
   local pb="$REPO_ROOT/platform/playbooks/store-ssh-password.yml"
   [ -f "$pb" ]
-
-  # The env fallback must exist, with `default(..., true)` so an EMPTY extra var
-  # falls through instead of satisfying the check with an empty string.
-  grep -qE "_ssh_password:.*lookup\('env', *'SSH_PASSWORD'\), *true\)" "$pb"
+  grep -qE "_ssh_password:.*lookup\('env', *'SSH_PASSWORD'\) *\| *default\(ssh_password" "$pb"
+  # The reverse order must NOT be present.
+  ! grep -qE "_ssh_password:.*ssh_password *\| *default\(lookup" "$pb"
 
   # The write must consume the resolved fact. A bare `ssh_password` here would
-  # store an empty password whenever the value came from the environment —
-  # passing validation and silently writing the wrong secret.
+  # store an EMPTY password whenever the value came from the environment.
   grep -qE "'become_password': _ssh_password" "$pb"
   grep -qE "'login_password': _ssh_password" "$pb"
-
-  # And the assert must gate on the resolved fact, not the raw extra var.
   ! grep -qE "^ *- ssh_password is defined" "$pb"
+
+  # Credentials cross this connection, so public cleartext is refused. Anchored on
+  # complete addresses: a prefix match would also accept http://10.evil.example/.
+  grep -q "Require a non-cleartext transport to OpenBao" "$pb"
+
+  # And the operator-facing template must not still teach the leaking form.
+  local tpl="$REPO_ROOT/platform/semaphore/templates.yml"
+  local slice
+  slice=$(awk '/^  - name: Store SSH Password$/{f=1} f&&/^  - name: Verify Host Access$/{exit} f{print}' "$tpl")
+  [ -n "$slice" ]
+  echo "$slice" | grep -q "SSH_PASSWORD"
+  ! echo "$slice" | grep -qE '^ *# *-e ssh_password=<the bootstrap password>$'
 }
 
 @test "distribute-ssh-keys offers the bootstrap password only when one exists" {
