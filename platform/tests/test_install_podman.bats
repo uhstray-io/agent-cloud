@@ -64,3 +64,21 @@ setup() {
   # No occurrence of the bare ansible_user form may remain in the loginctl calls.
   ! grep -qE 'loginctl (show-user|enable-linger) \{\{ ansible_user \}\}' "$LINGER"
 }
+
+@test "install-podman: waits for a freshly-booted host before installing" {
+  # A just-provisioned VM is still running cloud-init, which holds the dpkg lock. Any
+  # install issued immediately after provisioning fails on that lock — a transient race
+  # that reads as a broken playbook.
+  grep -qF 'tasks/wait-for-apt.yml' "$PLAYBOOK"
+  local wait_line inst_line
+  wait_line=$(grep -n 'wait-for-apt.yml' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  inst_line=$(grep -n 'name: podman-docker\|- podman$' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  [ "$wait_line" -lt "$inst_line" ]
+  # And the wait must not depend on a package that may be absent.
+  local W="$BATS_TEST_DIRNAME/../playbooks/tasks/wait-for-apt.yml"
+  grep -qF 'apt-get check' "$W"
+  # Executable lines only. The rationale NAMES fuser and lsof to explain why they are
+  # avoided, and a check that forbids naming the hazard suppresses the comment that
+  # documents it — the third time this exact over-strictness has bitten in this change.
+  ! grep -vE '^[[:space:]]*#' "$W" | grep -qE '(fuser|lsof)'
+}

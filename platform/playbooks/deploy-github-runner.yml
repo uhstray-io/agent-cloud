@@ -82,6 +82,9 @@
       # exist on the host that runs it.
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    - name: "Wait for a freshly-booted host to accept package installs"
+      ansible.builtin.include_tasks: tasks/wait-for-apt.yml
+
     - name: "Install the runner's OS prerequisites"
       # unzip for the container-hooks archive; the runner bundles its own Node, so no
       # Node package is needed and pinning one would be a second version to drift.

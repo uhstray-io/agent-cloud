@@ -24,6 +24,9 @@
     _docker_cli: "{{ podman_docker_cli | default(false) | bool }}"
 
   tasks:
+    - name: "Wait for a freshly-booted host to accept package installs"
+      ansible.builtin.include_tasks: tasks/wait-for-apt.yml
+
     - name: "Install podman + podman-compose"
       # state: present is idempotent — installs only what's missing, so this
       # also fixes a host that has podman but is missing podman-compose.
