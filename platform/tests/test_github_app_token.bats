@@ -15,6 +15,14 @@ setup() {
   LIB="$BATS_TEST_DIRNAME/../lib/github_app_token.py"
   [ -f "$LIB" ]
   PY=python3
+  # SKIP, not die, when the library is absent. setup() runs before every test, so a bare
+  # failure here reported all eleven tests as FAILED in CI — where `cryptography` is not
+  # installed — and the "cryptography is importable" guard below could never fire,
+  # because setup() had already failed. A missing library is a skip; a wrong signature is
+  # a failure. They must not look the same.
+  $PY -c 'import cryptography' >/dev/null 2>&1 \
+    || skip "cryptography not installed — signing tests cannot run (CI installs it)"
+
   # A throwaway key per test. Never a real one: a real App key belongs in the secret
   # store and nowhere else (docs/MISTAKES.md §4.3 — a fixture is a committed file).
   KEY="$BATS_TEST_TMPDIR/throwaway.pem"
