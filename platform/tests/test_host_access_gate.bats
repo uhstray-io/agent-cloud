@@ -77,34 +77,62 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   [ "$verdict" = "ALL_TOLERANT" ]
 }
 
-@test "verify-host-access: a GO verdict REQUIRES key-only auth" {
-  # The trap this closes: while password auth is still on, the orchestrator may
-  # be connecting WITH the password. Reachability + working sudo would then yield
-  # GO on a host with no key path at all, and harden-ssh would remove the only
-  # way in. Success must be attributable to the key.
-  grep -qE 'Key-only reachability probe' "$PB"
-  grep -qE 'PasswordAuthentication=no' "$PB"
-  grep -qE 'KbdInteractiveAuthentication=no' "$PB"
-  grep -qE 'PreferredAuthentications=publickey' "$PB"
-  # The verdict expression must gate on the probe result.
-  run bash -c "awk '/Verdict: is it safe to run harden-ssh/{f=1} f' '$PB' | grep -c '_keyprobe.rc'"
-  [ "$output" -ge 2 ]
+@test "verify-host-access: the key-only probe refuses password and interactive auth" {
+  # Scoped to the ssh task itself. A file-wide grep passes if the token survives
+  # in a comment or an unrelated task after the probe changes.
+  awk '/Connect using the key ONLY/{f=1;next} f&&/^          register:/{exit} f' "$PB" \
+    > "$BATS_TEST_TMPDIR/probe.txt"
+  [ -s "$BATS_TEST_TMPDIR/probe.txt" ]
+  local o
+  for o in PreferredAuthentications=publickey PubkeyAuthentication=yes \
+           PasswordAuthentication=no KbdInteractiveAuthentication=no BatchMode=yes; do
+    grep -qF -- "$o" "$BATS_TEST_TMPDIR/probe.txt" || { echo "probe missing $o"; return 1; }
+  done
 }
 
-@test "verify-host-access: the probe key is always removed" {
-  # It needs the private key on disk to use it. That file must not survive a
-  # failed probe.
-  run bash -c "awk '/Key-only reachability probe/{f=1} f&&/^    - name: \"Read sshd/{exit} f' '$PB' | grep -c 'always:'"
-  [ "$output" = "1" ]
-  grep -qE 'Remove the probe key' "$PB"
-  grep -qE 'state: absent' "$PB"
+@test "verify-host-access: the probe pins the host key instead of accepting any" {
+  # accept-new lets an on-path server impersonate the host, accept our public
+  # key, and make the probe report success — proving key auth against an attacker
+  # while the real host has none.
+  awk '/Connect using the key ONLY/{f=1;next} f&&/^          register:/{exit} f' "$PB" \
+    > "$BATS_TEST_TMPDIR/probe.txt"
+  grep -qF -- "StrictHostKeyChecking=yes" "$BATS_TEST_TMPDIR/probe.txt"
+  ! grep -qF -- "accept-new" "$BATS_TEST_TMPDIR/probe.txt"
+  grep -qF -- "UserKnownHostsFile=" "$BATS_TEST_TMPDIR/probe.txt"
+  # And the pin must be derived from the host over the existing connection.
+  grep -qE 'Read the target.s own SSH host key over the existing connection' "$PB"
 }
 
-@test "verify-host-access: best possible verdict is PENDING-OPERATOR, never GO" {
-  # An unqualified GO would imply both directions are proven, and only the
-  # orchestrator's own path is provable from the orchestrator.
-  grep -qE 'PENDING-OPERATOR' "$PB"
-  ! grep -qE "'GO —" "$PB"
+@test "verify-host-access: the ssh task cannot run with an undefined key path" {
+  # failed_when: false does NOT catch task-ARGUMENT templating failures, so an
+  # undefined _keyfile.path aborts the play instead of reporting NO-GO —
+  # defeating the whole always-report design.
+  awk '/Connect using the key ONLY/{f=1} f&&/^      always:/{exit} f' "$PB" \
+    > "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- "_keyfile.path is defined" "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- "_svc_key | length > 0" "$BATS_TEST_TMPDIR/probetask.txt"
+}
+
+@test "verify-host-access: cleanup removes BOTH temp files, always" {
+  awk '/^      always:/{f=1} f' "$PB" > "$BATS_TEST_TMPDIR/cleanup.txt"
+  [ -s "$BATS_TEST_TMPDIR/cleanup.txt" ]
+  grep -qF -- "state: absent" "$BATS_TEST_TMPDIR/cleanup.txt"
+  grep -qF -- "{{ _keyfile.path }}" "$BATS_TEST_TMPDIR/cleanup.txt"
+  grep -qF -- ".known_hosts" "$BATS_TEST_TMPDIR/cleanup.txt"
+}
+
+@test "verify-host-access: the verdict itself gates on the key probe" {
+  # Scoped to the verdict expression, not the file.
+  awk '/Verdict: is it safe to run harden-ssh/{f=1} f' "$PB" > "$BATS_TEST_TMPDIR/verdict.txt"
+  [ -s "$BATS_TEST_TMPDIR/verdict.txt" ]
+  grep -qF -- "_keyprobe.rc" "$BATS_TEST_TMPDIR/verdict.txt"
+  grep -qF -- "PENDING-OPERATOR" "$BATS_TEST_TMPDIR/verdict.txt"
+  grep -qF -- "NO-GO" "$BATS_TEST_TMPDIR/verdict.txt"
+  # An unqualified GO would claim both directions are proven.
+  ! grep -qF -- "'GO —" "$BATS_TEST_TMPDIR/verdict.txt"
+  # And it must tell the three failure modes apart — they have different fixes.
+  grep -qF -- "_svc_key_len" "$BATS_TEST_TMPDIR/verdict.txt"
+  grep -qF -- "_hostkey_ok" "$BATS_TEST_TMPDIR/verdict.txt"
 }
 
 @test "verify-host-access: reads sshd's EFFECTIVE config, not the main file" {
@@ -120,14 +148,6 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qE 'Store SSH Password first' "$PB"
 }
 
-@test "verify-host-access: ends in an explicit verdict" {
-  # So the decision is not left to interpreting scrolled-past output. The
-  # positive verdict is PENDING-OPERATOR rather than GO — see the test above for
-  # why an unqualified GO would be a lie.
-  grep -qE 'Verdict: is it safe to run harden-ssh' "$PB"
-  grep -qE 'PENDING-OPERATOR' "$PB"
-  grep -qE 'NO-GO' "$PB"
-}
 
 @test "verify-host-access: says it cannot prove the operator's own path" {
   # Only the orchestrator's path is provable from here. The second direction

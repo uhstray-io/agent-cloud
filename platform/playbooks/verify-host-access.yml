@@ -79,6 +79,7 @@
   gather_facts: false
   become: false
   vars:
+    _target_addr: "{{ ansible_host | default(inventory_hostname) }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -122,6 +123,13 @@
                    errors='ignore') | default('', true) }}
           no_log: true
 
+        # Length only — never the key. The verdict needs to distinguish "no key
+        # to try" from "key tried and refused"; those are different problems with
+        # different fixes.
+        - name: "Record whether a key was available (length only)"
+          ansible.builtin.set_fact:
+            _svc_key_len: "{{ _svc_key | length }}"
+
         - name: "Materialise it for the probe (runner-side, 0600)"
           # The host is untouched; this file exists only on the runner and only
           # for the duration of the probe. Removed in `always` below, including
@@ -140,7 +148,38 @@
           no_log: true
           when: _svc_key | length > 0
 
-        - name: "Connect using the key ONLY — password auth refused"
+        # Pin the host's identity BEFORE connecting. With
+        # StrictHostKeyChecking=accept-new, an on-path server could impersonate
+        # the inventory host, accept our public key, and make the probe report
+        # success — so the gate would prove key auth against an attacker while
+        # the real host has none. Reading the host's own public key over the
+        # ALREADY-ESTABLISHED Ansible connection roots the probe's trust in the
+        # same channel Ansible is already using, rather than in whatever answers
+        # on the network. (That channel is only as trustworthy as the connection
+        # itself — but it is strictly better than trusting an unknown key, and it
+        # is the strongest root available before the host is hardened.)
+        - name: "Read the target's own SSH host key over the existing connection"
+          ansible.builtin.raw: "cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || cat /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || true"
+          register: _hostkey
+          delegate_to: "{{ inventory_hostname }}"
+          changed_when: false
+          failed_when: false
+
+        - name: "Record whether the host key was readable"
+          ansible.builtin.set_fact:
+            _hostkey_ok: "{{ ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2 }}"
+
+        - name: "Write a known_hosts pinned to that key"
+          ansible.builtin.copy:
+            content: "{{ _target_addr }} {{ (_hostkey.stdout | default('') | trim).split(' ')[0] }} {{ (_hostkey.stdout | default('') | trim).split(' ')[1] }}\n"
+            dest: "{{ _keyfile.path }}.known_hosts"
+            mode: "0600"
+          when:
+            - _svc_key | length > 0
+            - _keyfile.path is defined
+            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+
+        - name: "Connect using the key ONLY — password auth refused, host key pinned"
           ansible.builtin.command:
             argv:
               - ssh
@@ -156,21 +195,36 @@
               - PasswordAuthentication=no
               - -o
               - KbdInteractiveAuthentication=no
+              # yes, not accept-new: the pinned known_hosts below is the whole
+              # point. An unknown or changed host key must FAIL the probe.
               - -o
-              - StrictHostKeyChecking=accept-new
+              - StrictHostKeyChecking=yes
+              - -o
+              - "UserKnownHostsFile={{ _keyfile.path }}.known_hosts"
               - -o
               - ConnectTimeout=10
-              - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
+              - "{{ ansible_user }}@{{ _target_addr }}"
               - "echo key-auth-ok"
           register: _keyprobe
           changed_when: false
           failed_when: false
+          # MUST be gated on the key AND the pin existing. `failed_when: false`
+          # does NOT catch task-ARGUMENT templating failures, so an undefined
+          # _keyfile.path here aborts the play instead of reporting NO-GO —
+          # defeating the entire "always report something" design.
+          when:
+            - _svc_key | length > 0
+            - _keyfile.path is defined
+            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
 
       always:
-        - name: "Remove the probe key"
+        - name: "Remove the probe key and its pinned known_hosts"
           ansible.builtin.file:
-            path: "{{ _keyfile.path }}"
+            path: "{{ item }}"
             state: absent
+          loop:
+            - "{{ _keyfile.path }}"
+            - "{{ _keyfile.path }}.known_hosts"
           when: _keyfile.path is defined
 
     # ── What does sshd actually allow right now? ─────────────────────────────
@@ -223,6 +277,8 @@
         msg:
           - "reachable (any auth) ....... {{ 'YES' if (_reach.rc | default(1) == 0) else 'NO — nothing below is meaningful' }}"
           - "connected as ............... {{ (_whoami.stdout | default('?')) | trim }}"
+          - "per-service key in store ... {{ 'present' if ((_svc_key_len | default(0) | int) > 0) else 'ABSENT — key auth cannot be attempted' }}"
+          - "target host key pinned ..... {{ 'yes' if (_hostkey_ok | default(false) | bool) else 'NO — probe refused rather than trust an unknown key' }}"
           - "KEY-ONLY auth .............. {{ 'PROVEN' if (_keyprobe.rc | default(1) == 0) else 'NOT PROVEN — this is what decides the verdict' }}"
           - "privilege escalation ....... {{ 'works' if (_become_check.rc | default(1) == 0) else 'NOT available' }}"
           - "authorized_keys entries .... {{ (_authkeys.stdout | default('0')) | trim }}"
@@ -249,11 +305,19 @@
                  and (_become_pw_present | default(false) | bool))
              else ('NO-GO — ' ~
                    ('host unreachable by any method. ' if (_reach.rc | default(1) != 0) else '') ~
-                   ('KEY-ONLY auth did NOT succeed, so the current connection may be
-                     relying on the password that harden-ssh is about to disable —
-                     this alone forbids hardening. Run Generate Service SSH Key and
-                     Distribute SSH Keys first. '
-                    if (_keyprobe.rc | default(1) != 0) else '') ~
+                   ('no per-service key is in the secret store, so key auth could not
+                     even be attempted — run Generate Service SSH Key then
+                     Distribute SSH Keys. '
+                    if ((_svc_key_len | default(0) | int) == 0) else
+                    ('the target host key could not be read, so the probe was not
+                      attempted against a pinned identity — an unpinned probe is
+                      refused because an on-path server could fake success. '
+                     if ((_hostkey_ok | default(false) | bool) == false) else
+                     ('KEY-ONLY auth was attempted and FAILED, so the current
+                       connection is probably relying on the password that
+                       harden-ssh is about to disable — this alone forbids
+                       hardening. Check the key is in authorized_keys. '
+                      if (_keyprobe.rc | default(1) != 0) else ''))) ~
                    ('privilege escalation does not work, so harden-ssh cannot write
                      the sudoers drop-in. ' if (_become_check.rc | default(1) != 0) else '') ~
                    ('the sudo password is not in the secret store, so harden-ssh
