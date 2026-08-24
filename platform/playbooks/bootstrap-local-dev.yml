@@ -1156,6 +1156,28 @@
           BAO_SECRET_ID={{ _secret_id.json.data.secret_id }}
 
     # ── Stage 6: templates-as-code against the local instance ───────────
+    # Repository records FIRST. A template may name the record it runs from (e.g.
+    # `repository: agent-cloud dev`), and setup-templates.yml asserts that every
+    # named record exists — deliberately, so a template cannot silently bind to
+    # the wrong branch. A freshly created local instance has no records at all, so
+    # applying templates before declaring them fails that assert on every
+    # dev-bound template. That is the guard working, not a false alarm; the gap
+    # was genesis never applying the declarations it already had.
+    #
+    # repositories.yml is written to survive both instances: it accepts either
+    # `local-none` or `none` for the "no key attached" key-store entry, which the
+    # two environments name differently.
+    - name: "Register repository records (declared in repositories.yml)"
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook
+          {{ playbook_dir }}/../semaphore/bootstrap-semaphore-repositories.yml
+          -e semaphore_project_id={{ _pid }}
+      environment:
+        SEMAPHORE_URL: "{{ _sem_url }}"
+        SEMAPHORE_TOKEN: "{{ _sem_token }}"
+      changed_when: true
+
     - name: "Register templates (shared + local-only)"
       ansible.builtin.command:
         cmd: >-

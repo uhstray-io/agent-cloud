@@ -142,3 +142,33 @@ setup() {
   run grep -q "LOCAL_DEV) creds" "$REPO_ROOT/Makefile"
   [ "$status" -eq 0 ]
 }
+
+@test "genesis registers repository records before applying templates" {
+  # setup-templates.yml asserts that every record a template names exists, so a
+  # dev-bound template cannot silently bind to the wrong branch. A freshly created
+  # local instance has no records, so applying templates first fails that assert on
+  # every dev-bound template — genesis had the declarations and never applied them.
+  #
+  # Order is the whole point: asserted by comparing line numbers, not by grepping
+  # for both strings, which would pass with the steps in the wrong order.
+  local f="$PB/bootstrap-local-dev.yml"
+  local repos tmpl
+  repos=$(grep -n "bootstrap-semaphore-repositories.yml" "$f" | head -1 | cut -d: -f1)
+  tmpl=$(grep -n "semaphore/setup-templates.yml" "$f" | head -1 | cut -d: -f1)
+  [ -n "$repos" ]
+  [ -n "$tmpl" ]
+  [ "$repos" -lt "$tmpl" ]
+}
+
+@test "genesis sources the Caddy edge ports from the declaration, not literals" {
+  # The genesis inline inventory declares the same host the working inventory
+  # declares, so a restated literal is a second source of truth that wins during
+  # bootstrap. caddy_http_port was documented as editable and had no effect, so a
+  # machine with anything else on 8088 could not bootstrap at all.
+  local f="$PB/bootstrap-local-dev.yml"
+  grep -qE "caddy_http_port=\{\{ _caddy_decl\.caddy_http_port \| default\(8088, true\) \}\}" "$f"
+  grep -qE "caddy_https_port=\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}" "$f"
+  # A bare literal for either port means the override is dead again.
+  ! grep -qE "^ *caddy_http_port=8088$" "$f"
+  ! grep -qE "^ *caddy_https_port=8443$" "$f"
+}
