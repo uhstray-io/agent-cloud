@@ -263,3 +263,20 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   run bash -c "awk '/^  - name: Store SSH Password\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
   [ "$output" = "1" ]
 }
+
+@test "the probe play tolerates an unreachable host so the report still renders" {
+  # An unreachable host is a verdict, not an error. Without this play keyword
+  # Ansible drops the host before the report task, so the report's
+  # "host unreachable by any method" branch is dead code and the operator gets
+  # exit 4 instead of a NO-GO. `failed_when: false` does not cover it —
+  # unreachable is a host state, not a task result.
+  #
+  # Scoped to the PROBE play's play-level keys: the slice runs from that play's
+  # header to its `tasks:` line. A file-wide grep would pass with the keyword on
+  # the pre-flight play (where it does nothing) or buried on a single task
+  # (where it protects only that task).
+  local head
+  head=$(awk '/^- name: "Verify host access/{f=1} f{print} f&&/^  tasks:/{exit}' "$PB")
+  [ -n "$head" ]
+  echo "$head" | grep -qE '^  ignore_unreachable: true$'
+}

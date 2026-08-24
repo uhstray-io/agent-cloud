@@ -78,6 +78,15 @@
   hosts: "{{ target_service | default('__verify_host_access_no_target__') }}"
   gather_facts: false
   become: false
+  # An unreachable host is a VERDICT this gate must report, not an error it dies
+  # on. Without this, Ansible drops the host from the play the moment the first
+  # connection fails, so the report and its "host unreachable by any method"
+  # branch never render — the operator gets a stack trace and exit 4 instead of
+  # a NO-GO. Every task below already guards on `_reach.rc | default(1) == 0`,
+  # so they skip cleanly and the report renders from the defaults.
+  # `failed_when: false` does NOT cover this: unreachable is a host state, not a
+  # task result (same abort class as the undefined-key-path failure).
+  ignore_unreachable: true
   vars:
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
