@@ -114,6 +114,12 @@
         _target_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
         _target_user: "{{ hostvars[inventory_hostname].ansible_user
                           | default((_whoami.stdout | default('') | trim), true) }}"
+        # The port matters even though nothing here uses a non-default one yet.
+        # Without it the probe would connect to 22 regardless, fail, and report a
+        # false NO-GO on any host using ansible_port. That fails SAFE — it blocks
+        # hardening rather than authorising it — but a gate that cries wolf gets
+        # overridden, and then it protects nothing.
+        _target_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
       when: _reach.rc | default(1) == 0
 
     # ── THE KEY-ONLY PROBE — the one that decides the verdict ────────────────
@@ -188,9 +194,15 @@
 
         - name: "Write a known_hosts pinned to that key"
           ansible.builtin.copy:
-            content: "{{ _target_addr }} {{ (_hostkey.stdout | default('') | trim).split(' ')[0] }} {{ (_hostkey.stdout | default('') | trim).split(' ')[1] }}\n"
+            # OpenSSH keys a non-default port as [host]:port. Writing the bare
+            # host for such a target means the pin never matches and
+            # StrictHostKeyChecking=yes refuses the connection — another false
+            # NO-GO, from the opposite direction.
+            content: "{{ _kh_host }} {{ (_hostkey.stdout | default('') | trim).split(' ')[0] }} {{ (_hostkey.stdout | default('') | trim).split(' ')[1] }}\n"
             dest: "{{ _keyfile.path }}.known_hosts"
             mode: "0600"
+          vars:
+            _kh_host: "{{ _target_addr if ((_target_port | int) == 22) else ('[' ~ _target_addr ~ ']:' ~ _target_port) }}"
           when:
             - _svc_key | length > 0
             - _keyfile.path is defined
@@ -222,6 +234,8 @@
               - "UserKnownHostsFile={{ _keyfile.path }}.known_hosts"
               - -o
               - ConnectTimeout=10
+              - -p
+              - "{{ _target_port }}"
               - "{{ _target_user }}@{{ _target_addr }}"
               - "echo key-auth-ok"
           register: _keyprobe

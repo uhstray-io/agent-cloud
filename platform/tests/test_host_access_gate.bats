@@ -203,3 +203,48 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qF -- '{{ _target_user }}@{{ _target_addr }}' "$BATS_TEST_TMPDIR/probetask.txt"
   ! grep -qF -- '{{ ansible_user }}@' "$BATS_TEST_TMPDIR/probetask.txt"
 }
+
+@test "verify-host-access: the probe honours a non-default SSH port" {
+  # Without this the probe hits 22 regardless and reports a false NO-GO on any
+  # host using ansible_port. That fails safe — it blocks hardening rather than
+  # authorising it — but a gate that cries wolf gets overridden, and then it
+  # protects nothing.
+  grep -qF -- "hostvars[inventory_hostname].ansible_port" "$PB"
+  awk '/Connect using the key ONLY/{f=1} f&&/^      always:/{exit} f' "$PB" \
+    > "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- '- -p' "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- '"{{ _target_port }}"' "$BATS_TEST_TMPDIR/probetask.txt"
+}
+
+@test "verify-host-access: known_hosts uses the [host]:port form off port 22" {
+  # OpenSSH keys a non-default port as [host]:port. A bare host entry would never
+  # match, so StrictHostKeyChecking=yes would refuse — a false NO-GO from the
+  # opposite direction.
+  #
+  # Asserted on the CONTENT line itself, not on the block: the _kh_host variable
+  # definition survives even if content: stops using it, so a looser check passed
+  # a mutation that swapped content: back to the bare address. Found by mutation-
+  # testing this very assertion.
+  # Select the known_hosts content line specifically. A plain `head -1` grabs the
+  # KEY-MATERIAL task's content line instead — which is how an earlier version of
+  # this test passed against the correct file for the wrong reason.
+  local content_line
+  content_line=$(grep -E '^            content: .*_hostkey\.stdout' "$PB" | head -1)
+  [ -n "$content_line" ]
+  case "$content_line" in
+    *'{{ _kh_host }}'*) ;;
+    *) echo "known_hosts content does not use _kh_host: $content_line"; return 1 ;;
+  esac
+  # And _kh_host must actually switch on the port.
+  local kh_def
+  kh_def=$(grep -E '^            _kh_host: ' "$PB" | head -1)
+  [ -n "$kh_def" ]
+  case "$kh_def" in
+    *"(_target_port | int) == 22"*) ;;
+    *) echo "_kh_host does not switch on the port: $kh_def"; return 1 ;;
+  esac
+  case "$kh_def" in
+    *"']:'"*) ;;
+    *) echo "_kh_host does not build the [host]:port form: $kh_def"; return 1 ;;
+  esac
+}
