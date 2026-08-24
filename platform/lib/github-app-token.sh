@@ -15,6 +15,10 @@
 #
 #   App private key (OpenBao, never on a runner host)
 #     -> RS256 JWT            (<=10 min, this file signs it)
+#        issuer = the App's CLIENT ID (upstream's recommended value) or its App ID;
+#        both are accepted verbatim in `iss`. The App's OAuth client SECRET plays no
+#        part in App authentication and is not used anywhere here — only the private
+#        key can sign.
 #       -> installation token (~1 hour, from the App installation)
 #         -> registration token (1 hour, single-use for one runner config)
 #
@@ -36,13 +40,14 @@ GITHUB_API="${GITHUB_API:-https://api.github.com}"
 # output on one line; the default wraps at 64 columns and would corrupt the token.
 _gh_b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
-# _gh_app_jwt <app_id> <pem_path>
-# Signs the App assertion. Reads the key from a PATH (or `-` for stdin) — never argv.
+# _gh_app_jwt <issuer> <pem_path>
+# Signs the App assertion. `issuer` is the App's client id (recommended) or its app id.
+# Reads the key from a PATH (or `-` for stdin) — never argv.
 _gh_app_jwt() {
   local app_id="$1" pem="$2"
   local now header payload signing_input keyfile staged="" sigfile="" sig_b64 rc
 
-  [ -n "$app_id" ] || { echo "ERROR: app id is required" >&2; return 2; }
+  [ -n "$app_id" ] || { echo "ERROR: issuer is required (the App's client id, or its app id)" >&2; return 2; }
   [ -n "$pem" ] || { echo "ERROR: private key path is required ('-' for stdin)" >&2; return 2; }
 
   # Stdin support lets a caller pipe the key straight from the secret store without it
