@@ -58,9 +58,13 @@
       `platform/playbooks/tasks/enable-linger.yml` for the session lingering rather than
       re-implementing it.
 - [ ] 2.5 Add BATS coverage for the socket extension, including the default-off case.
-- [ ] 2.6 Run `apply-firewall.yml` against one existing, already-firewalled service host
-      that declares no egress list, and diff the resulting rule set against the
-      pre-change state — it must be identical.
+- [ ] 2.6 Prove the no-op WITHOUT touching a live service host. Running the shared
+      firewall playbook against an existing host is the single highest-lockout-risk
+      action in this change, and the user's standing instruction is that no machine
+      loses access — so the regression is held by the default-empty structural test
+      plus a first run against the *runner* host (itself new, and reachable
+      out-of-band via the hypervisor console if anything goes wrong). Diff that host's
+      rule set before and after declaring its egress list.
 - [ ] 2.7 Validation gate — the new BATS tests pass alongside the existing suite
       (`platform/tests/`), the no-op run in 2.6 produced a zero diff, and the mechanism
       needed to satisfy spec scenarios **"The secret store is unreachable from a job"**
