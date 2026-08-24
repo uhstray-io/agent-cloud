@@ -187,3 +187,20 @@ print('\n'.join(bad) if bad else 'OK')
   # And proves the write landed instead of trusting the status code.
   grep -qE 'Verify the push actually landed' "$f"
 }
+
+@test "templates: no declaration is bound to a feature-branch repository record" {
+  # A feature-branch record is legitimate DURING validation and a defect once merged: the
+  # record is deleted with the branch, and every template still naming it then fails its
+  # checkout. templates.yml lands on main, so a main-branch declaration referencing a
+  # feature branch is shipped breakage.
+  ! grep -qE '^\s+repository: .*(feat|fix|chore|docs)/' "$TPL"
+  # And the declared records themselves must be the long-lived ones only.
+  ! grep -qE '^\s+git_branch: (feat|fix|chore|docs)/' "$DECL"
+}
+
+@test "setup-templates: its no-delete semantics are documented" {
+  # Removing a declaration does NOT remove the template — matching is by name with
+  # PUT-or-POST and no DELETE. A reader who assumes otherwise leaves undeclared templates
+  # running against records that may no longer exist.
+  grep -qF 'IT DOES NOT DELETE' "$SETUP"
+}

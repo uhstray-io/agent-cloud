@@ -680,7 +680,6 @@ templates:
   # Read-only unless dry_run=false.
   - name: Manage GitHub Runner Group
     playbook: platform/playbooks/manage-github-runner-group.yml
-    repository: agent-cloud feat/github-actions-runners
     survey_vars:
       - name: dry_run
         title: "Dry run"
@@ -691,7 +690,6 @@ templates:
 
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml
-    repository: agent-cloud feat/github-actions-runners
     survey_vars:
       - name: target_service
         title: "Target group"
@@ -703,93 +701,6 @@ templates:
         description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
         type: string
         required: false
-
-  - name: Allocate NetBox IP (Runner Branch)
-    playbook: platform/playbooks/netbox-allocate-ip.yml
-    repository: agent-cloud feat/github-actions-runners
-    survey_vars:
-      - name: prefix
-        title: "Prefix (CIDR)"
-        description: "Prefix to query; must already exist in NetBox"
-        type: string
-        required: true
-      - name: count
-        title: "How many"
-        description: "Free addresses to report (1-32)"
-        type: string
-        required: false
-        default_value: "4"
-      - name: reserve
-        title: "Reserve"
-        description: "true = CREATE the records named in assignments"
-        type: string
-        required: false
-        default_value: "false"
-      - name: assignments
-        title: "Assignments (JSON)"
-        description: "[{address, dns_name, description}] — reported in both modes"
-        type: string
-        required: false
-
-  # Seeding from the feature branch, which takes the value from the BAO_SEED_VALUE
-  # environment secret rather than an extra var. Semaphore persists a task's extra vars,
-  # so seeding a credential with -e stores it in cleartext-at-rest in the orchestrator.
-  - name: Seed OpenBao Key (Runner Branch)
-    playbook: platform/playbooks/seed-openbao-key.yml
-    repository: agent-cloud feat/github-actions-runners
-    survey_vars:
-      - name: bao_path
-        title: "Secret path"
-        description: "e.g. services/github-runner (no secret/ prefix)"
-        type: string
-        required: true
-      - name: bao_key
-        title: "Key name"
-        description: "The single key to merge in — siblings are preserved"
-        type: string
-        required: true
-
-  # The docker-CLI-shim option lives on the feature branch; main's copy installs podman
-  # alone, which is not enough for a consumer that shells out to a `docker` binary.
-  - name: Install Podman (Runner Branch)
-    playbook: platform/playbooks/install-podman.yml
-    repository: agent-cloud feat/github-actions-runners
-    survey_vars:
-      - name: target_service
-        title: "Target group"
-        description: "Inventory group to install podman on"
-        type: string
-        required: true
-
-  # Provisioning from the feature branch, which carries two fixes the dev copy lacks:
-  # explicit target_host selection (a two-host group is otherwise unaddressable) and the
-  # pre-flight defaulting that stops one offline hypervisor from blocking every run.
-  - name: Provision VM (Runner Branch)
-    playbook: platform/playbooks/provision-vm.yml
-    repository: agent-cloud feat/github-actions-runners
-    survey_vars:
-      - name: target_service
-        title: "Target service"
-        description: "Service whose <name>_svc group holds the declaration"
-        type: string
-        required: true
-      - name: target_host
-        title: "Target host"
-        description: "Which declared host to provision — REQUIRED when the group declares more than one"
-        type: string
-        required: false
-
-  # The egress-containment support this needs lives on the feature branch; main's copy is
-  # inbound-only, so a runner firewalled by it would still reach the secret store.
-  - name: Apply Firewall (Runner Branch)
-    playbook: platform/playbooks/apply-firewall.yml
-    repository: agent-cloud feat/github-actions-runners
-    survey_vars:
-      - name: target_service
-        title: "Target group"
-        description: "Inventory group to firewall"
-        type: string
-        required: true
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
