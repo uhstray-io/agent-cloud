@@ -131,14 +131,14 @@ protects 1.7, which is the only irreversible step in the change.
 
 ## 5. Local validation
 
-- [ ] 5.1 Seed the social-platform credentials into the local secret store; verify all
+- [x] 5.1 Seed the social-platform credentials into the local secret store; verify all
       nine are present with the read-only inventory playbook
-- [ ] 5.2 Deploy the identity provider so the new client blueprint is applied; confirm the
+- [x] 5.2 Deploy the identity provider so the new client blueprint is applied; confirm the
       application and provider exist
-- [ ] 5.3 Deploy the service locally; confirm all five containers reach health and the
+- [x] 5.3 Deploy the service locally; confirm all five containers reach health and the
       rendered config contains no unsubstituted template markers and is not
       world-readable
-- [ ] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
+- [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
@@ -151,7 +151,7 @@ protects 1.7, which is the only irreversible step in the change.
       publishes at its scheduled time
 - [ ] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
       without it, and is reachable with no browser session
-- [ ] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
+- [x] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
       suites plus the local smoke check
 - [ ] 5.11 Validation gate: scenario "Post publishes at its scheduled time" and scenario
       "Automation endpoint is reachable without an interactive session" both hold — the

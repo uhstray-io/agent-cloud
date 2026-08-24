@@ -407,3 +407,43 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   ! grep -qE '^- Create the public DNS record\.$' "$REPO_ROOT/platform/services/postiz/deployment/README.md"
   ! grep -qE 'Operator: create the `postiz\.uhstray\.io` DNS record' "$REPO_ROOT/plan/development/14-postiz-social-publishing.md"
 }
+
+# ── deploy.sh lifecycle (phase 5.10) ─────────────────────────────────────────
+
+@test "postiz: deploy.sh rejects an unknown argument instead of ignoring it" {
+  # A typo'd flag that is silently ignored produces a deploy that did something
+  # other than what the operator asked for, with no signal.
+  local f="$DEPLOY_DIR/deploy.sh"
+  grep -qE '\*\) echo "Unknown option' "$f"
+  grep -qE 'exit 1' "$f"
+}
+
+@test "postiz: deploy.sh waits on the APP container, not merely on compose up" {
+  # `compose up -d` returns as soon as the containers are CREATED. The app runs
+  # Prisma migrations and the engine provisions its schema before either answers,
+  # so a deploy that stops at `up` reports success while nothing is usable yet.
+  local f="$DEPLOY_DIR/deploy.sh"
+  grep -qE 'wait_for_healthy postiz [0-9]+' "$f"
+  # The timeout must be generous enough for first boot. 300s was measured as
+  # sufficient; anything under 120 would fail a cold start on this stack.
+  local secs
+  secs=$(grep -oE 'wait_for_healthy postiz [0-9]+' "$f" | grep -oE '[0-9]+$')
+  [ "$secs" -ge 120 ]
+}
+
+@test "postiz: deploy.sh force-recreates because config is a bind-mounted FILE" {
+  # A change to the CONTENT of a bind-mounted file is not a compose-spec change,
+  # so a plain `up -d` leaves the running container with the previous config
+  # loaded — the re-rendered secrets would silently not take effect.
+  local f="$DEPLOY_DIR/deploy.sh"
+  grep -qE 'compose up -d --force-recreate' "$f"
+}
+
+@test "postiz: deploy.sh fails loudly when the bind-mount source is missing" {
+  # A missing bind source does not error: the runtime CREATES A DIRECTORY at that
+  # path, and the app then starts with no configuration — the same silent failure
+  # class as the config never being loaded at all.
+  local f="$DEPLOY_DIR/deploy.sh"
+  grep -qE '\[ -f "\$\{SCRIPT_DIR\}/config/postiz.env" \]' "$f"
+  grep -q 'silently become a directory' "$f"
+}
