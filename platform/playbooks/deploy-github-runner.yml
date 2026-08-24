@@ -207,6 +207,11 @@
       no_log: true
 
     # ── diagnosing a credential failure without printing the credential ────
+    # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
+    # diagnostic strings, tokens are written to STDOUT, and curl runs with -sf so no
+    # response body reaches stderr either. Diagnosability was bought without widening
+    # what is exposed.
+    #
     # no_log is correct on the mint (the token crosses it), but a no_log task that
     # simply fails leaves a Semaphore run undiagnosable — the failure mode AGENTS.md
     # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
@@ -235,7 +240,8 @@
           mint rc={{ _regtoken.rc | default('?') }} -> {{ _mint_verdict }};
           stored key: PEM armour present={{ _pem_has_header }},
           lines={{ _pem_lines }} (a 2048-bit RSA PEM is ~27 lines; 1 means the
-          newlines were lost in transit)
+          newlines were lost in transit).
+          Helper stderr: {{ (_regtoken.stderr | default('')) | trim }}
 
     - name: "Fail if no registration token was minted"
       ansible.builtin.assert:
