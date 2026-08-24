@@ -99,25 +99,27 @@ setup() {
   grep -qF 'nginx && pnpm run pm2' "$f"
 }
 
-@test "postiz: the workflow engine healthcheck does not probe loopback" {
-  # The engine binds its frontend to the CONTAINER IP, so nothing ever listens on
-  # 127.0.0.1 inside it. A loopback probe is refused forever, the container never
-  # turns healthy, and the app — which waits on service_healthy — never starts.
-  # Observed exactly that: 13 consecutive failing checks against a fully-working
-  # engine that answered SERVING at its own address.
+@test "postiz: nothing probes the workflow engine on loopback" {
+  # The engine binds its frontend to the CONTAINER IP, so nothing listens on
+  # 127.0.0.1 inside it. A loopback probe is refused forever. This happened TWICE:
+  # once in the compose healthcheck (the app gates on service_healthy, so it never
+  # started) and again in the deploy's verify step, which retried ten times against
+  # an engine that was answering SERVING throughout. Fixing one copy and leaving
+  # the other is what made the second failure possible.
   #
-  # Scoped to the temporal service block, since other services in this file
-  # legitimately probe loopback (they bind there).
-  local f="$REPO_ROOT/platform/services/postiz/deployment/compose.yml"
-  local block
-  block=$(awk '/^  temporal:$/{f=1} f&&/^  temporal-postgresql:$/{exit} f{print}' "$f")
-  [ -n "$block" ]
-  echo "$block" | grep -q 'cluster health'
-  ! echo "$block" | grep -q '127\.0\.0\.1:7233'
-  # It must resolve the container's own address instead. `$$` is compose's escape
-  # for a literal `$`, so a single `$` here would be interpolated at compose time
-  # and the probe would run against an empty address.
-  echo "$block" | grep -qF '$$(hostname -i'
+  # Asserted repo-wide for this port rather than per file, because the bug was a
+  # missed copy.
+  run bash -c "grep -rn '127\.0\.0\.1:7233' '$REPO_ROOT/platform' 2>/dev/null | grep -v '^.*#' || true"
+  [ -z "$output" ]
+
+  # Both places must resolve the container's own address, with no pipe (a piped
+  # awk would need pipefail, which ansible-lint rejects).
+  local c="$REPO_ROOT/platform/services/postiz/deployment/compose.yml"
+  local d="$REPO_ROOT/platform/playbooks/deploy-postiz.yml"
+  grep -qF 'a=$$(hostname -i)' "$c"
+  grep -qF 'a=$(hostname -i)' "$d"
+  ! grep -qF 'hostname -i | awk' "$c"
+  ! grep -qF 'hostname -i | awk' "$d"
 }
 
 @test "postiz: healthchecks on all five containers, app dependencies gated" {

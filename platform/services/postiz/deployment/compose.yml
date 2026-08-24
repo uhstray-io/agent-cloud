@@ -193,8 +193,8 @@ services:
       test:
         - CMD-SHELL
         - >-
-          temporal operator cluster health
-          --address "$$(hostname -i | awk '{print $$1}'):7233"
+          a=$$(hostname -i);
+          temporal operator cluster health --address "$${a%% *}:7233"
       interval: 10s
       timeout: 10s
       retries: 12

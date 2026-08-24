@@ -221,9 +221,22 @@
       # Scheduled publishing is executed by the engine, so an app that is
       # healthy while the engine is unreachable would look fine and silently
       # never publish. Assert the engine reports healthy in its own right.
-      ansible.builtin.command: >-
-        {{ _engine }} exec temporal
-        temporal operator cluster health --address 127.0.0.1:7233
+      # Probed at the engine's OWN routable address, not 127.0.0.1. The engine
+      # binds its frontend to the container IP, so nothing listens on loopback
+      # inside it and a 127.0.0.1 probe is refused forever — this retried ten
+      # times against an engine that was answering SERVING the whole time. Same
+      # defect as the compose healthcheck; fixing that one and leaving this copy
+      # is why a second identical failure was possible.
+      # `${a%% *}` takes the first address without a pipe — hostname -i can return
+      # several, and a piped `awk` would need pipefail to be safe.
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - temporal
+          - sh
+          - -c
+          - a=$(hostname -i); temporal operator cluster health --address "${a%% *}:7233"
       register: _temporal_health
       changed_when: false
       retries: 10
