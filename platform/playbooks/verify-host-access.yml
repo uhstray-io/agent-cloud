@@ -1,0 +1,168 @@
+---
+# verify-host-access.yml — prove you can still get into a host, and say whether
+# it is safe to harden it. READ-ONLY: changes nothing, ever.
+#
+# WHY THIS EXISTS. The SSH-hardening sequence has exactly one irreversible step —
+# disabling password authentication. The rule protecting it ("verify before
+# hardening", AGENTS.md Critical Deployment Rule #5) was a MANUAL check: a human
+# was supposed to prove key auth worked from two directions before running
+# harden-ssh. A rule enforced by someone remembering is not enforced. This
+# playbook makes the gate a runnable artifact, so it can be re-run at any point,
+# by anyone, before and after each step.
+#
+# Safe by construction:
+#   * No task writes anything. No file is created, no service restarted, no
+#     config edited. It cannot itself cause a lockout.
+#   * Every probe tolerates failure and REPORTS it, rather than aborting on the
+#     first missing piece — a partial answer is what you need when access is the
+#     thing in question.
+#   * It ends with an explicit GO / NO-GO for hardening, so the decision is not
+#     left to interpretation of scrolled-past output.
+#
+# Usage (via Semaphore): -e target_service=postiz_svc
+#   Run it BEFORE harden-ssh (is it safe?), AFTER harden-ssh (did anything
+#   break?), and after apply-firewall (can we still get in?).
+#
+# What it cannot tell you: whether YOUR workstation can reach the host. Only the
+# orchestrator's own path is provable from here, which is why the plan also asks
+# for an independent operator-side check — two directions, because a single
+# working path can be the one you are about to remove.
+
+- name: "Verify host access — {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    # Refuse to run against nothing. Without this the play reports "skipping: no
+    # hosts matched" and then SUCCESS — a false green that reads exactly like a
+    # passing check. Several templates in this repo have that shape; this one
+    # must not, because its whole job is telling you the truth about access.
+    - name: "Refuse to report success against an empty group"  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - (ansible_play_hosts_all | default([]) | length) > 0
+        fail_msg: >-
+          No hosts matched '{{ target_service }}'. That is a FAILED verification,
+          not a pass — pass -e target_service=<group>_svc.
+      run_once: true
+      delegate_to: localhost
+
+    # ── Can we get in at all? ───────────────────────────────────────────────
+    # If this fails, everything below is moot and the answer is already NO-GO.
+    - name: "Reach the host with the orchestrator's current credential"
+      ansible.builtin.raw: "echo reachable"
+      register: _reach
+      changed_when: false
+      failed_when: false
+
+    - name: "Identify who we connected as, and whether a key was used"
+      ansible.builtin.raw: "id -un; echo '---'; who am i 2>/dev/null || true"
+      register: _whoami
+      changed_when: false
+      failed_when: false
+      when: _reach.rc | default(1) == 0
+
+    # ── What does sshd actually allow right now? ────────────────────────────
+    # `sshd -T` prints the EFFECTIVE config, which is what matters — it accounts
+    # for sshd_config.d drop-ins that a grep of the main file would miss. Needs
+    # root, so it is best-effort: on a host where become is not yet available the
+    # probe simply reports unknown instead of failing the run.
+    - name: "Read sshd's effective configuration"
+      ansible.builtin.raw: "sshd -T 2>/dev/null | grep -iE '^(passwordauthentication|pubkeyauthentication|permitrootlogin|kbdinteractiveauthentication)' || true"
+      register: _sshd
+      become: true
+      changed_when: false
+      failed_when: false
+      when: _reach.rc | default(1) == 0
+
+    - name: "Check whether privilege escalation works"
+      ansible.builtin.raw: "id -un"
+      register: _become_check
+      become: true
+      changed_when: false
+      failed_when: false
+      when: _reach.rc | default(1) == 0
+
+    # ── Are the keys actually in place? ─────────────────────────────────────
+    - name: "Count authorized keys for the connecting user"
+      ansible.builtin.raw: "wc -l < ~/.ssh/authorized_keys 2>/dev/null || echo 0"
+      register: _authkeys
+      changed_when: false
+      failed_when: false
+      when: _reach.rc | default(1) == 0
+
+    # ── Is what harden-ssh needs actually in the secret store? ──────────────
+    # harden-ssh sources the sudo password from OpenBao to write the NOPASSWD
+    # drop-in on a host that still requires one. If it is absent, that run fails
+    # partway — better to know now. Presence only; the value is never shown.
+    - name: "Check the sudo password is available in the secret store"  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        _become_pw_present: >-
+          {{ (lookup('community.hashi_vault.hashi_vault',
+                'secret/data/services/ssh:become_password',
+                url=_bao_url, auth_method='approle',
+                role_id=_bao_role_id, secret_id=_bao_secret_id,
+                errors='ignore') | default('', true) | length) > 0 }}
+      become: false
+      no_log: true
+      failed_when: false
+      run_once: true
+      delegate_to: localhost
+      when: _bao_url | length > 0
+
+    - name: "Check the per-service key exists in the secret store"
+      ansible.builtin.set_fact:
+        _svc_key_present: >-
+          {{ (lookup('community.hashi_vault.hashi_vault',
+                'secret/data/services/ssh/' ~ service_name ~ ':public_key',
+                url=_bao_url, auth_method='approle',
+                role_id=_bao_role_id, secret_id=_bao_secret_id,
+                errors='ignore') | default('', true) | length) > 0 }}
+      become: false
+      no_log: true
+      failed_when: false
+      when:
+        - _bao_url | length > 0
+        - service_name is defined
+
+    # ── Report ──────────────────────────────────────────────────────────────
+    - name: "Access report"
+      ansible.builtin.debug:
+        msg:
+          - "host reachable ............. {{ 'YES' if (_reach.rc | default(1) == 0) else 'NO — nothing below is meaningful' }}"
+          - "connected as ............... {{ (_whoami.stdout | default('?')).split('\n')[0] | trim }}"
+          - "privilege escalation ....... {{ 'works' if (_become_check.rc | default(1) == 0) else 'NOT available' }}"
+          - "authorized_keys entries .... {{ (_authkeys.stdout | default('0')) | trim }}"
+          - "sudo password in store ..... {{ 'present' if (_become_pw_present | default(false) | bool) else 'ABSENT — harden-ssh will fail' }}"
+          - "per-service key in store ... {{ 'present' if (_svc_key_present | default(false) | bool) else 'absent' }}"
+          - "sshd effective config:"
+          - "{{ _sshd.stdout | default('  (could not read — needs escalation)') }}"
+
+    # The GO/NO-GO exists so the decision is not left to reading scrolled-past
+    # output. Hardening is safe only when we can currently get in AND escalate
+    # AND the sudo password harden-ssh needs is actually available.
+    - name: "Verdict: is it safe to run harden-ssh?"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'GO — reachable, escalation works, and the sudo password is in the
+              store. Password auth is still the fallback until harden-ssh runs,
+              so prove key auth from an OPERATOR workstation too before
+              proceeding: two directions, because the single path that works
+              might be the one you are about to remove.'
+             if ((_reach.rc | default(1) == 0)
+                 and (_become_check.rc | default(1) == 0)
+                 and (_become_pw_present | default(false) | bool))
+             else ('NO-GO — ' ~
+                   ('host unreachable. ' if (_reach.rc | default(1) != 0) else '') ~
+                   ('privilege escalation does not work, so harden-ssh cannot write
+                     the sudoers drop-in. ' if (_become_check.rc | default(1) != 0) else '') ~
+                   ('the sudo password is not in the secret store, so harden-ssh
+                     will fail partway — run Store SSH Password first. '
+                    if not (_become_pw_present | default(false) | bool) else '') ~
+                   'Do NOT run harden-ssh until this reads GO.') }}
