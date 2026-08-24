@@ -77,13 +77,27 @@ setup() {
 }
 
 @test "runner-group: no_log is scoped to the credential boundary only" {
+  # Five: OpenBao auth, the key read, the classification, the token mint, and the API
+  # auth header. The classification is itself no_log because it touches the key to test
+  # whether it is populated — it emits only key NAMES and a presence verdict.
   local n
   n=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$n" -eq 2 ]
+  [ "$n" -eq 5 ]
   # The convergence report must stay visible — it is the audit record of what changed.
   ! grep -A6 'Report the converged access list' "$PLAYBOOK" | grep -q 'no_log: true'
 }
 
 @test "runner-group: the client secret is never referenced" {
-  ! grep -qiE 'client_secret|GITHUB_APP_SECRET' "$PLAYBOOK"
+  refute_grep -qiE 'client_secret|GITHUB_APP_SECRET' "$PLAYBOOK"
+}
+
+@test "runner-group: the private key comes from the secret store, not an env secret" {
+  # One authoritative channel for a private key. It previously arrived as a Semaphore
+  # environment secret while the deploy playbook read the same key from OpenBao — two
+  # places to rotate and two places to leak.
+  assert_grep -qF '/v1/secret/data/services/github-runner' "$PLAYBOOK"
+  assert_grep -qF 'app_private_key' "$PLAYBOOK"
+  refute_grep -qF 'GITHUB_APP_PEM' "$PLAYBOOK"
+  # And the OpenBao hop carries the shared cleartext-transport guard.
+  assert_grep -qF 'tasks/assert-bao-transport.yml' "$PLAYBOOK"
 }

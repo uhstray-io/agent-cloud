@@ -14,9 +14,12 @@
 # join, and it is why this creates a dedicated group with visibility "selected" rather
 # than reusing what is there. This playbook never modifies another group.
 #
-# Credentials: the App private key arrives as an ENCRYPTED ENVIRONMENT SECRET
-# (GITHUB_APP_PEM), never a survey var — Semaphore persists survey values. The issuer is
-# the App's client id (upstream's recommendation) or its app id.
+# Credentials: the App private key is read from OpenBao at
+# secret/services/github-runner:app_private_key — the same place deploy-github-runner.yml
+# reads it. It deliberately does NOT come from a Semaphore environment secret any more.
+# Two channels for one private key means two places to rotate and two places to leak, and
+# the secret store is the one that is supposed to be authoritative. The issuer (the App's
+# client id, or its app id) is not secret and stays an ordinary var.
 #
 # Usage:
 #   -e dry_run=true    resolve + report, change nothing (do this first)
@@ -36,7 +39,9 @@
          | default(github_app_id, true)
          | default(lookup('env', 'GITHUB_APP_ID'), true)
          | default('', true) }}
-    _pem: "{{ lookup('env', 'GITHUB_APP_PEM') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _group: "{{ github_runner_group | default('uhstray-selfhosted') }}"
     _dry_run: "{{ dry_run | default(true) | bool }}"
     # The declared access list. PRIVATE repositories only — see the proposal's rationale:
@@ -50,14 +55,14 @@
       ansible.builtin.assert:
         that:
           - _issuer | length > 0
-          - _pem | length > 0
+          - _bao_url | length > 0
           - _group | length > 0
           - _repos | length > 0
         fail_msg: >-
-          Need the App issuer (client id or app id), the private key in the
-          GITHUB_APP_PEM environment secret, a group name, and a non-empty repository
-          list. An empty list would converge the group to admitting nothing, which is
-          safe but is almost certainly a mistake rather than an intent.
+          Need the App issuer (client id or app id), the OpenBao address, a group name,
+          and a non-empty repository list. An empty list would converge the group to
+          admitting nothing, which is safe but is almost certainly a mistake rather than
+          an intent.
         success_msg: "Converging '{{ _group }}' in {{ _org }} to {{ _repos | length }} repositories."
 
     - name: "Refuse to declare a PUBLIC repository into the group"
@@ -90,6 +95,54 @@
           perimeter. Remove them from the declaration.
         success_msg: "All {{ _repos | length }} declared repositories are private."
 
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # ── credentials (no_log boundary) ──────────────────────────────────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Read the App private key from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _app_secret
+      no_log: true
+
+    - name: "Classify the credential outcome (names and verdicts only)"
+      # A no_log step that merely fails is undiagnosable. Key NAMES and a presence
+      # verdict distinguish a bad AppRole from a missing key without emitting a value.
+      ansible.builtin.set_fact:
+        _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
+        _gr_keys: "{{ (_app_secret.json.data.data | default({})).keys() | list | sort }}"
+        _pem_present: "{{ ((_app_secret.json.data.data | default({})).app_private_key | default('')) | length > 0 }}"
+      no_log: true
+
+    - name: "Require the App private key"
+      ansible.builtin.assert:
+        that:
+          - _auth_ok | bool
+          - _pem_present | bool
+        fail_msg: >-
+          No usable App private key. OpenBao auth ok={{ _auth_ok }};
+          secret/services/github-runner holds keys {{ _gr_keys }}; 'app_private_key'
+          present={{ _pem_present }}. Seed it with seed-openbao-key.yml rather than by hand.
+        success_msg: "App private key read from the secret store."
+
     - name: "Mint an installation token"
       # Key on stdin, token on stdout — never argv. See the module docstring for why
       # this is Python rather than openssl+jq.
@@ -98,7 +151,7 @@
           {{ ansible_playbook_python }}
           {{ playbook_dir }}/../lib/github_app_token.py installation-token
           --issuer {{ _issuer | quote }} --org {{ _org | quote }} --key -
-        stdin: "{{ _pem }}"
+        stdin: "{{ _app_secret.json.data.data.app_private_key }}"
       register: _itok
       changed_when: false
       no_log: true

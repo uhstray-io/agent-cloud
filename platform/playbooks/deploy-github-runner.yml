@@ -18,8 +18,10 @@
 # Usage (via Semaphore):
 #   -e target_service=github_runner_svc
 #   -e github_app_client_id=...        (installation id is discovered, not declared)
-#   App private key: supplied as an ENCRYPTED ENVIRONMENT SECRET (GITHUB_APP_PEM),
-#   never a survey var — Semaphore persists survey values.
+#   App private key: read from OpenBao at
+#   secret/services/github-runner:app_private_key. NOT from an environment secret and
+#   never a survey var — Semaphore persists survey values, and one authoritative channel
+#   for a private key is the point of having a secret store.
 
 - name: "Deploy GitHub Actions self-hosted runner"
   hosts: "{{ target_service | default('github_runner_svc') }}"

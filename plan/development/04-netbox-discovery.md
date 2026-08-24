@@ -618,10 +618,10 @@ holds.
 2. **pfSense refs — no source exists.** Nothing in OpenBao holds a pfSense API key or
    host, and `seed-discovery-credentials.yml` does not cover them (it handles Proxmox
    only). An operator must place `api_key` and `host` at
-   `secret/services/discovery/pfsense`. Use `seed-openbao-key.yml`, which now takes its
-   value from the `BAO_SEED_VALUE` **environment secret** rather than an extra var —
-   Semaphore persists a task's extra vars, so seeding a credential with `-e` writes it
-   into the orchestrator's database in the clear.
+   `secret/services/discovery/pfsense`. Use `seed-openbao-key.yml`, which takes its value
+   from the `BAO_VALUE` **environment secret** rather than an extra var — Semaphore
+   persists a task's extra-var JSON and serves it back over its API, so seeding a
+   credential with `-e` leaves it in the clear outside OpenBao.
 3. **`snmp_community` — decide first.** Either place it at `secret/services/netbox`, or
    disable the `snmp_discovery` worker in `agent.yaml.j2` so the agent stops depending on
    a secret nobody intends to provide. A permanently-unresolvable reference is

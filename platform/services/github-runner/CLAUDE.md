@@ -68,6 +68,10 @@ App private key (OpenBao: secret/services/github-runner:app_private_key)
 The App's **client id** is the JWT issuer (upstream's recommended value; the app id also
 works). Its OAuth **client secret plays no part** and is used nowhere.
 
+Both playbooks read that key from OpenBao and nowhere else — not from a Semaphore
+environment secret, because two channels for one private key means two places to rotate
+and two places to leak.
+
 Minting runs on the orchestrator, not the host, because the host is firewalled away from
 OpenBao by its own declaration — it could not fetch its own secret even holding a
 credential. That is the design. Signing is `platform/lib/github_app_token.py`: standard
