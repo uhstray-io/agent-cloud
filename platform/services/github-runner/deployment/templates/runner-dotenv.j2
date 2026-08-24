@@ -1,0 +1,17 @@
+# .env — read by the runner itself and applied to every job it accepts.
+#
+# This file is where per-job isolation is TURNED ON, and that placement is the point:
+# a workflow that declares no container of its own still gets one, because the decision
+# lives on the host rather than in each workflow author's diff. A workflow-level
+# `container:` is opt-in, and an opt-in isolation boundary fails open.
+
+# Every job's steps run inside a container created by these hooks, whether or not the
+# workflow asked. The hooks shell out to a `docker` binary, which on this host is the
+# podman shim installed by install-podman.yml.
+ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
+
+# Runs after EVERY job — success, failure, or cancellation — and destroys the job's
+# workspace and containers. Second layer on purpose: the container boundary above is a
+# single mechanism protecting several repositories from each other, and a workspace wipe
+# is cheap enough to be worth having behind it.
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED={{ github_runner_home }}/job-cleanup.sh
