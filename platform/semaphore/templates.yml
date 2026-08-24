@@ -363,6 +363,16 @@ templates:
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets
     playbook: platform/playbooks/check-secrets.yml
+    # target_service is REQUIRED. Without it the play matches no hosts, prints
+    # "skipping: no hosts matched", and still reports SUCCESS — a false green that
+    # reads exactly like a passing check. Making it a required survey var is what
+    # stops that.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group whose secrets to inventory (e.g. postiz_svc)"
+        type: string
+        required: true
 
   - name: Validate Secrets
     playbook: platform/playbooks/validate-secrets.yml
@@ -375,6 +385,45 @@ templates:
 
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
+
+  - name: Store SSH Password
+    playbook: platform/playbooks/store-ssh-password.yml
+    # The FIRST step of onboarding a host: put the bootstrap login/sudo password
+    # into OpenBao BEFORE anything modifies the host, so the secret store — not
+    # an operator's local file — is what the automation reads from. harden-ssh
+    # sources the sudo password from there to write the NOPASSWD drop-in on a host
+    # that still requires one, which is why this has to come first.
+    #
+    # Additive: merges the password fields into secret/services/ssh without
+    # touching the management keypair already at that path.
+    #
+    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
+    # database, so a password typed into a survey field would be stored there
+    # indefinitely. Pass it as a launch-time extra var instead:
+    #   -e ssh_password=<the bootstrap password>
+    # (Same convention as Seed OpenBao Key's bao_value below.)
+
+  - name: Verify Host Access
+    playbook: platform/playbooks/verify-host-access.yml
+    # READ-ONLY gate for the hardening sequence. Reports whether the host is
+    # reachable, whether privilege escalation works, what sshd EFFECTIVELY allows
+    # (sshd -T, so drop-ins are accounted for), how many authorized keys are in
+    # place, and whether the sudo password harden-ssh needs is actually in the
+    # secret store — then prints an explicit GO / NO-GO.
+    #
+    # Run it BEFORE harden-ssh (is it safe?), AFTER harden-ssh (did anything
+    # break?), and after Apply Firewall (can we still get in?). It changes
+    # nothing, so it is always safe to run.
+    #
+    # It cannot prove YOUR workstation still has access — only the orchestrator's
+    # own path. Prove the second direction yourself before the irreversible step;
+    # the single path that works might be the one about to be removed.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to verify (e.g. postiz_svc)"
+        type: string
+        required: true
 
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
