@@ -303,3 +303,28 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   # And the assert must gate on the resolved fact, not the raw extra var.
   ! grep -qE "^ *- ssh_password is defined" "$pb"
 }
+
+@test "distribute-ssh-keys offers the bootstrap password only when one exists" {
+  # A freshly built VM with no cloud-init key has no way in: this playbook writes
+  # authorized_keys over a connection it does not create. login_password has always
+  # been written to OpenBao for this and was read by nothing.
+  #
+  # The guard is what matters. An EMPTY ansible_password is NOT harmless — it makes
+  # Ansible shell out to sshpass, so every already-keyed host would fail on a runner
+  # without sshpass. Asserted on the add_host task's own slice, because a file-wide
+  # grep for `when:` would pass on any of the playbook's other conditionals.
+  local pb="$REPO_ROOT/platform/playbooks/distribute-ssh-keys.yml"
+  [ -f "$pb" ]
+
+  local slice
+  slice=$(awk '/^    - name: "Offer it as a password fallback/{f=1} f{print} f&&/^$/{exit}' "$pb")
+  [ -n "$slice" ]
+  echo "$slice" | grep -qE 'ansible_password: "\{\{ _bootstrap_pw \}\}"'
+  echo "$slice" | grep -qE '^      when: _bootstrap_pw \| length > 0$'
+
+  # The read is an enhancement, so failing to read it must not abort the run.
+  # errors='"'"'ignore'"'"' alone does not cover a lookup that raises while the task
+  # arguments are templated (missing hvac, bad creds, unreachable OpenBao).
+  grep -qE '^      rescue:$' "$pb"
+  grep -qE '_bootstrap_pw: ""' "$pb"
+}
