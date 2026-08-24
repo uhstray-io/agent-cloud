@@ -344,6 +344,18 @@
         fail_msg: "The runner did not register — see the reported rc and output above."
         success_msg: "Runner registered."
 
+    - name: "Resolve the runner account's uid"
+      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
+      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
+      # host where accounts were created in a different order.
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ _account }}"
+
+    - name: "Record the uid and the user bus it implies"
+      ansible.builtin.set_fact:
+        _runner_uid: "{{ getent_passwd[_account][1] }}"
+
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
@@ -353,12 +365,19 @@
         state: started
       become: true
       become_user: "{{ _account }}"
+      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
+      # No medium found" — sudo does not set it, and lingering creates the runtime
+      # directory but cannot tell a non-login shell where it is.
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
 
     # ── verify (deliberately NOT no_log) ───────────────────────────────────
     - name: "Confirm the runner service is active"
       ansible.builtin.command: "systemctl --user is-active actions-runner.service"
       become: true
       become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
       register: _active
       changed_when: false
       failed_when: "'active' not in (_active.stdout | default(''))"

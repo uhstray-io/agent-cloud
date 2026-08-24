@@ -142,3 +142,14 @@ setup() {
   run_line=$(grep -n 'deploy.sh configure' "$PLAYBOOK" | head -1 | cut -d: -f1)
   [ -n "$place_line" ] && [ "$place_line" -lt "$run_line" ]
 }
+
+@test "deploy-runner: systemctl --user is given the account's own bus" {
+  # sudo does not set XDG_RUNTIME_DIR, so `systemctl --user` reports "Failed to connect
+  # to bus: No medium found" and the service cannot be managed at all. Lingering creates
+  # the runtime directory but cannot tell a non-login shell where it is.
+  grep -qF 'XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"' "$PLAYBOOK"
+  # The uid is LOOKED UP. A hardcoded 1000/1001 silently targets another user's bus on a
+  # host whose accounts were created in a different order.
+  grep -qF 'ansible.builtin.getent' "$PLAYBOOK"
+  ! grep -qE '/run/user/10[0-9][0-9]' "$PLAYBOOK"
+}
