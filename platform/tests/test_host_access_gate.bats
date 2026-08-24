@@ -280,3 +280,26 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   [ -n "$head" ]
   echo "$head" | grep -qE '^  ignore_unreachable: true$'
 }
+
+@test "store-ssh-password takes the password from the environment, not an extra var" {
+  # Semaphore persists a task's extra-var JSON in its own database and serves it
+  # back over the API indefinitely, so `-e ssh_password=...` would leave the
+  # credential in plaintext outside OpenBao. An environment secret is encrypted
+  # at rest and not API-readable, and is how this playbook's three OpenBao
+  # credentials already arrive.
+  local pb="$REPO_ROOT/platform/playbooks/store-ssh-password.yml"
+  [ -f "$pb" ]
+
+  # The env fallback must exist, with `default(..., true)` so an EMPTY extra var
+  # falls through instead of satisfying the check with an empty string.
+  grep -qE "_ssh_password:.*lookup\('env', *'SSH_PASSWORD'\), *true\)" "$pb"
+
+  # The write must consume the resolved fact. A bare `ssh_password` here would
+  # store an empty password whenever the value came from the environment —
+  # passing validation and silently writing the wrong secret.
+  grep -qE "'become_password': _ssh_password" "$pb"
+  grep -qE "'login_password': _ssh_password" "$pb"
+
+  # And the assert must gate on the resolved fact, not the raw extra var.
+  ! grep -qE "^ *- ssh_password is defined" "$pb"
+}
