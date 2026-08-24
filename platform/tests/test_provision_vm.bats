@@ -105,3 +105,18 @@ setup() {
   # No undefaulted field may remain in that message.
   ! grep -qE 'msg: "\{\{ item\.vmid \}\}: \{\{ item\.name \}\}' "$PV"
 }
+
+@test "provision-vm: waits for the VM to be UNLOCKED, not merely for the clone task" {
+  # Proxmox reports the clone task complete while still holding the config lock, so the
+  # next config write fails with "can't lock file lock-<vmid>.conf". Waiting on the task
+  # is necessary but not sufficient — the condition that must hold is that the VM is
+  # unlocked, so that is what must be polled.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  grep -qF 'Wait for the clone lock to clear before configuring' "$PB"
+  grep -qF "until: (_vm_lock.json.data.lock | default('')) == ''" "$PB"
+  # And the wait must precede the first config write, or it protects nothing.
+  local wait_line cfg_line
+  wait_line=$(grep -n 'Wait for the clone lock to clear' "$PB" | head -1 | cut -d: -f1)
+  cfg_line=$(grep -n 'Configure VM resources and cloud-init' "$PB" | head -1 | cut -d: -f1)
+  [ "$wait_line" -lt "$cfg_line" ]
+}

@@ -219,6 +219,27 @@
       when: clone_result is changed and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
 
     # ── Configure VM (single PUT with all settings) ───────────────────────
+    - name: "Wait for the clone lock to clear before configuring"
+      # Proxmox reports the clone TASK complete while it still holds the VM's config
+      # lock, so the very next config write fails with
+      #   can't lock file '/var/lock/qemu-server/lock-<vmid>.conf'
+      # Waiting on the task is therefore necessary but NOT sufficient: the thing that
+      # must be true is that the VM is unlocked, so that is what is waited on. Polling
+      # the VM's own state also means a slow disk copy simply takes longer rather than
+      # failing, and a VM that never unlocks fails with a diagnosis instead of a lock
+      # error five tasks later.
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+        method: GET
+      register: _vm_lock
+      until: (_vm_lock.json.data.lock | default('')) == ''
+      retries: 60
+      delay: 10
+      changed_when: false
+      failed_when:
+        - (_vm_lock.json.data.lock | default('')) != ''
+        - _vm_lock.attempts | default(0) >= 60
+
     - name: "Configure VM resources and cloud-init"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
