@@ -1006,6 +1006,39 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # postiz — Tier-3, five containers (app + its Postgres and Redis + the
+          # Temporal workflow engine + Temporal's own Postgres). Declared HERE and
+          # not only in platform/inventory/local-dev.yml because the two are read
+          # in DIFFERENT execution contexts and the paths genuinely differ: this
+          # inventory is what the local Semaphore runs with, inside its container,
+          # so the deploy paths are the container's (/var/lib/agent-cloud-deploy,
+          # /workspace/agent-cloud). local-dev.yml is for `make local-*` on the
+          # macOS host and carries host paths. Substituting one for the other fails
+          # on `mkdir: can't create directory '/Users/'` — the host path does not
+          # exist in the container.
+          #
+          # Omitting this group did NOT fail loudly: the deploy matched no hosts,
+          # every play printed "skipping: no hosts matched", and the run was
+          # reported as a success with nothing deployed.
+          [postiz_svc]
+          postiz-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [postiz_svc:vars]
+          ansible_user=semaphore
+          service_name=postiz
+          monorepo_deploy_path=platform/services/postiz/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          postiz_bind=127.0.0.1
+          postiz_port=5001
+          postiz_public_url=https://postiz.{{ _dev_zone }}:8443
+          postiz_authentik_base=https://auth.{{ _dev_zone }}:8443
+          postiz_disable_registration=false
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [honcho_svc]
           honcho-local ansible_host=127.0.0.1 ansible_connection=local
 

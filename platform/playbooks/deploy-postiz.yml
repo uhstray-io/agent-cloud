@@ -27,6 +27,18 @@
 # Change: plan/development/openspec/changes/deploy-postiz-social-publishing/
 
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
+# Pre-flight: refuse to report success against an empty target group. Ansible
+# treats a play matching no hosts as a no-op and exits 0, so an orchestrator
+# records it as a SUCCESS. That is not hypothetical here — postiz_svc was missing
+# from the local control plane's inventory and this deploy "succeeded" three times
+# with every play printing "skipping: no hosts matched" and zero containers
+# created. A play cannot guard its own hosts: expression, so the check has to be a
+# separate play, which is why it is imported.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: postiz_svc
+
 - name: "Phase 1: Place repo + manage postiz secrets"
   hosts: postiz_svc
   gather_facts: false

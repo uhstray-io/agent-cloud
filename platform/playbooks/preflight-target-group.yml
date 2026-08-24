@@ -1,0 +1,61 @@
+---
+# preflight-target-group.yml — refuse to "succeed" against an empty target group.
+#
+# WHY THIS EXISTS. Ansible treats a play whose `hosts:` matches nothing as a
+# no-op: it prints "skipping: no hosts matched" and exits 0. An orchestrator
+# reports that as SUCCESS. So a deploy against a group that is absent from the
+# inventory — misspelled, or simply never declared — looks exactly like a deploy
+# that worked, and nothing anywhere says otherwise.
+#
+# Measured on this platform (2026-08-24): `postiz_svc` was missing from the local
+# control plane's inventory. The deploy ran, all three of its plays printed
+# "skipping: no hosts matched", the task was recorded as a success, and zero
+# containers existed afterwards. The only reason it was caught was someone
+# happening to check `podman ps`.
+#
+# A play cannot guard its own `hosts:` — that expression is resolved before any
+# task in it runs. The guard therefore has to be a SEPARATE play that targets
+# localhost, which is why this is an importable playbook rather than a task file.
+#
+# Usage — two lines at the top of a deploy playbook, before its first play:
+#
+#   - name: "Pre-flight"
+#     ansible.builtin.import_playbook: preflight-target-group.yml
+#     vars:
+#       preflight_group: postiz_svc
+#
+# For a playbook whose group is chosen at launch, pass the same expression its
+# plays use, e.g. `preflight_group: "{{ target_service }}"`.
+
+- name: "Pre-flight: the target group must exist and contain hosts"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  connection: local
+
+  tasks:
+    - name: "Require a group name to check"
+      ansible.builtin.assert:
+        that:
+          - preflight_group is defined
+          - preflight_group | string | trim | length > 0
+        fail_msg: >-
+          preflight_group is not set. Pass it in the import: `vars:
+          preflight_group: <group>`. Without it this guard would pass
+          unconditionally, which is worse than not having it.
+        quiet: true
+
+    - name: "Require the group to exist and contain at least one host"
+      ansible.builtin.assert:
+        that:
+          - (groups[preflight_group] | default([])) | length > 0
+        fail_msg: >-
+          Inventory group '{{ preflight_group }}' is absent or empty, so every
+          play below would match no hosts. Ansible exits 0 in that case and the
+          run would be recorded as a SUCCESS having deployed nothing. Declare the
+          group in the inventory this run is using — note that the local control
+          plane and the host use SEPARATE inventories, because their filesystem
+          paths differ.
+        success_msg: >-
+          '{{ preflight_group }}' has {{ groups[preflight_group] | length }}
+          host(s): {{ groups[preflight_group] | join(', ') }}.
