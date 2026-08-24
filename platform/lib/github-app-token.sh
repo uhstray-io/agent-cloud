@@ -102,6 +102,54 @@ _gh_app_jwt() {
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+# gh_app_installation_id <issuer> <pem_path|-> <org>
+# Prints the numeric installation id for <org> on stdout.
+#
+# Discovered rather than configured. An installation id is not a secret and not a
+# decision — it is a fact the forge already knows, derivable from the App credential we
+# necessarily hold. Making an operator read it off a URL and copy it into inventory adds
+# a hand-transcribed value that can be wrong, and gives a confusing failure when the App
+# is reinstalled and the id changes.
+gh_app_installation_id() {
+  local issuer="$1" pem="$2" org="$3"
+  local jwt response id count
+
+  [ -n "$org" ] || { echo "ERROR: organisation is required" >&2; return 2; }
+
+  # The key may arrive on stdin, which can only be read once — so read it here and pass
+  # it on as a staged file rather than letting two callees both try to consume stdin.
+  local staged=""
+  if [ "$pem" = "-" ]; then
+    staged="$(mktemp)" || { echo "ERROR: could not stage the key" >&2; return 1; }
+    chmod 600 "$staged"; cat > "$staged"; pem="$staged"
+  fi
+
+  jwt=$(_gh_app_jwt "$issuer" "$pem") || { rm -f "$staged"; return 1; }
+  rm -f "$staged"
+
+  response=$(curl -sf \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${GITHUB_API}/app/installations") || {
+      echo "ERROR: could not list installations — the assertion was rejected. Check the issuer (client id or app id) and that the private key belongs to this App." >&2
+      return 1
+    }
+
+  count=$(printf '%s' "$response" | jq -r 'length')
+  if [ "$count" = "0" ]; then
+    echo "ERROR: this App has no installations. It exists, and its key authenticates, but it has not been INSTALLED on any account yet — install it on '${org}' before a runner can be registered." >&2
+    return 1
+  fi
+
+  id=$(printf '%s' "$response" | jq -r --arg org "$org" '.[] | select(.account.login == $org) | .id' | head -1)
+  [ -n "$id" ] || {
+    echo "ERROR: this App is installed, but not on '${org}'. Installed on: $(printf '%s' "$response" | jq -r '[.[].account.login] | join(", ")')" >&2
+    return 1
+  }
+  printf '%s' "$id"
+}
+
 # gh_app_installation_token <app_id> <installation_id> <pem_path|->
 # Prints an installation token (~1h) on stdout.
 gh_app_installation_token() {

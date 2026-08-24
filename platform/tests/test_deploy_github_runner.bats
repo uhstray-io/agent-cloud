@@ -19,7 +19,12 @@ setup() {
   # happens on the controller and the token is handed over in memory.
   grep -A14 'Authenticate to OpenBao' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
   grep -A14 'Read the App private key' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
-  grep -A20 'Mint a single-use runner registration token' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
+  # Window sized to the task, not to a guessed line count: read from the task name to
+  # the next task boundary, so adding a line inside the task cannot fail this for the
+  # wrong reason (docs/MISTAKES.md §2 — a test that fails for its own reasons teaches
+  # people to edit the test).
+  sed -n '/Mint a single-use runner registration token/,/^    - name:/p' "$PLAYBOOK" \
+    | grep -q 'delegate_to: localhost'
 }
 
 @test "deploy-runner: the registration token is minted PER HOST, never once for all" {
@@ -94,6 +99,16 @@ setup() {
   # group, which may admit repositories this plane must not serve.
   grep -qF "(github_runner_labels | default([])) | length > 0" "$PLAYBOOK"
   grep -qF "github_runner_group | default('') | length > 0" "$PLAYBOOK"
+}
+
+@test "deploy-runner: the installation id is discovered, not a required input" {
+  # It is a fact the forge already knows and is derivable from the App credential we
+  # hold. Requiring it by hand adds a transcribed value that can be wrong and that
+  # changes silently if the App is reinstalled.
+  grep -qF 'gh_app_installation_id' "$PLAYBOOK"
+  grep -qF 'if [ -z "${GH_INSTALL_ID:-}" ]' "$PLAYBOOK"
+  # And it must NOT be an assertion precondition.
+  ! grep -qF '_install_id | length > 0' "$PLAYBOOK"
 }
 
 @test "deploy-runner: carries no real addresses" {

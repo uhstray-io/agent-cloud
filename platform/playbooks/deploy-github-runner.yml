@@ -17,7 +17,7 @@
 #
 # Usage (via Semaphore):
 #   -e target_service=github_runner_svc
-#   -e github_app_client_id=... -e github_app_installation_id=...
+#   -e github_app_client_id=...        (installation id is discovered, not declared)
 #   App private key: supplied as an ENCRYPTED ENVIRONMENT SECRET (GITHUB_APP_PEM),
 #   never a survey var — Semaphore persists survey values.
 
@@ -53,13 +53,11 @@
         that:
           - _bao_url | length > 0
           - _app_id | length > 0
-          - _install_id | length > 0
           - github_runner_name | default('') | length > 0
           - (github_runner_labels | default([])) | length > 0
           - github_runner_group | default('') | length > 0
         fail_msg: >-
-          Need the OpenBao address, the App's client id (or app id) and its installation
-          id, and this host's
+          Need the OpenBao address, the App's client id (or app id), and this host's
           github_runner_name / github_runner_labels / github_runner_group in inventory.
           The declaration is the allocation — a runner without declared labels cannot be
           targeted by a workflow, and a runner without a group would land in the default
@@ -184,13 +182,21 @@
       ansible.builtin.shell: |
         set -euo pipefail
         . "{{ playbook_dir }}/../lib/github-app-token.sh"
-        itok=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_token "$GH_APP_ID" "$GH_INSTALL_ID" -)
+        # The installation id is DISCOVERED when not declared. It is not a secret and
+        # not a decision — it is a fact the forge already knows, derivable from the App
+        # credential we necessarily hold. Requiring an operator to read it off a URL adds
+        # a hand-transcribed value that can be wrong and that changes silently if the App
+        # is ever reinstalled.
+        if [ -z "${GH_INSTALL_ID:-}" ]; then
+          GH_INSTALL_ID=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_id "$GH_ISSUER" - "$GH_ORG")
+        fi
+        itok=$(printf '%s' "$GH_APP_PEM" | gh_app_installation_token "$GH_ISSUER" "$GH_INSTALL_ID" -)
         gh_runner_registration_token "$GH_ORG" "$itok"
       args:
         executable: /bin/bash
       environment:
         GH_APP_PEM: "{{ _app_secret.json.data.data.app_private_key }}"
-        GH_APP_ID: "{{ _app_id }}"
+        GH_ISSUER: "{{ _app_id }}"
         GH_INSTALL_ID: "{{ _install_id }}"
         GH_ORG: "{{ _org }}"
       register: _regtoken
