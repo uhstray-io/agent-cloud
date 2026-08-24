@@ -215,6 +215,23 @@
         - _reserve
         - (item.json.results | default([])) | length == 0
 
+    # RE-QUERY before reporting. The report used to iterate the pre-create GET results, so
+    # an address this run had just created (HTTP 201) still printed "NOT recorded in the
+    # authority" — the run contradicted itself, and an operator reading that would retry a
+    # reservation that had already succeeded. The authority is asked again, after the
+    # writes, so the report describes the state that now exists rather than the state
+    # before the run.
+    - name: "Re-read each named address after any writes"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _final_state
+      loop: "{{ _assignments }}"
+      loop_control:
+        label: "{{ item.address }}"
+
     - name: "Report the recorded state of each named address"
       ansible.builtin.debug:
         msg: >-
@@ -226,6 +243,21 @@
               ~ ' tags=' ~ ((item.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
              if ((item.json.results | default([])) | length > 0)
              else 'NOT recorded in the authority' }}
-      loop: "{{ _existing.results | default([]) }}"
+      loop: "{{ _final_state.results | default([]) }}"
       loop_control:
         label: "{{ item.item.address }}"
+
+    - name: "Refuse to report success for an address a reserve run failed to create"
+      # A reserve run whose POST silently did nothing would otherwise end on a green
+      # report. If we were asked to reserve, every named address must now exist.
+      ansible.builtin.assert:
+        that:
+          - (item.json.results | default([])) | length > 0
+        fail_msg: >-
+          {{ item.item.address }} is still not recorded after a reserve run. The create
+          either did not run or did not take effect — check the task above rather than
+          re-running, since a partial run may have created the others.
+      loop: "{{ _final_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.address }}"
+      when: _reserve

@@ -132,12 +132,25 @@ setup() {
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
 }
 
+@test "deploy-runner: monorepo_deploy_path is used as a path WITHIN the repo" {
+  # It is repo-RELATIVE (platform/playbooks/README.md, and all twelve other services use
+  # it that way). Reading it as the repo ROOT worked only because the inventory had been
+  # set to an absolute path to match; anyone following the convention would have got
+  # <deploy-path>/<deploy-path>/deploy.sh and an rc=127.
+  refute_grep -qF '_monorepo_dir: "{{ monorepo_deploy_path' "$PLAYBOOK"
+  assert_grep -qF '_deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"' "$PLAYBOOK"
+  # The root comes from its own variable with a literal default, never from a path var.
+  assert_grep -qF "_monorepo_dir: \"{{ local_monorepo_dir | default('/opt/agent-cloud') }}\"" "$PLAYBOOK"
+  # And a declaration missing it is refused rather than rendering a wrong path.
+  assert_grep -qF "monorepo_deploy_path | default('') | length > 0" "$PLAYBOOK"
+}
+
 @test "deploy-runner: the install script is reached by a REMOTE path, not playbook_dir" {
   # playbook_dir is the controller's checkout. A shell/command task runs on the host,
   # where that path does not exist, so resolving a remote command against it yields
   # rc=127. `template:` is the opposite — it reads its src on the controller — which is
   # why the two paths are not interchangeable and both appear in this playbook.
-  grep -qF '{{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
+  assert_grep -qF '{{ _deploy_dir }}/deploy.sh configure' "$PLAYBOOK"
   refute_grep -qF '{{ playbook_dir }}/../services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
   # The repo must actually be placed before anything on the host tries to run from it.
   local place_line run_line

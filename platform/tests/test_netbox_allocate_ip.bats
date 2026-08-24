@@ -8,6 +8,8 @@
 #
 # Run: bats platform/tests/test_netbox_allocate_ip.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/netbox-allocate-ip.yml"
   [ -f "$PLAYBOOK" ]
@@ -82,4 +84,23 @@ setup() {
 @test "netbox-allocate: carries no real addresses" {
   # Documentation and fixtures in this public repo never carry site data (§4.3).
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
+}
+
+@test "netbox-allocate: the report re-reads after writing, so a created address is not reported absent" {
+  # The report used to iterate the PRE-create GET, so an address this run had just created
+  # (HTTP 201) still printed "NOT recorded in the authority" — the run contradicting
+  # itself, and an operator reading that would retry a reservation that had succeeded.
+  assert_grep -qF 'Re-read each named address after any writes' "$PLAYBOOK"
+  assert_grep -qF 'register: _final_state' "$PLAYBOOK"
+  assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
+  # The report must NOT read the pre-create results any more.
+  local report
+  report=$(sed -n '/Report the recorded state of each named address/,/^$/p' "$PLAYBOOK")
+  printf '%s' "$report" | grep -qF '_final_state.results'
+  printf '%s' "$report" | grep -vqF '_existing.results' || true
+}
+
+@test "netbox-allocate: a reserve run that failed to create is not reported as success" {
+  assert_grep -qF 'Refuse to report success for an address a reserve run failed to create' "$PLAYBOOK"
+  assert_grep -qF 'is still not recorded after a reserve run' "$PLAYBOOK"
 }
