@@ -28,7 +28,7 @@ There are two deployment patterns in use:
 # Phase 4: Health verification
 ```
 
-See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full composable pattern specification.
+See `plan/architecture/01-automation-model.md` for the full composable pattern specification.
 
 ### Variable Sources
 
@@ -126,6 +126,8 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 |----------|---------|
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao, verify key auth (no sudo) |
 | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown + post-lockdown verification (requires sudo) |
+| `verify-host-access.yml` | Prove KEY-ONLY SSH works BEFORE `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
+| `apply-firewall.yml` | Default-deny inbound (SSH from admin CIDRs, service ports from their intended source) plus optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: allows precede enable, then a fresh handshake is forced |
 
 ### Secrets & Policies
 | Playbook | Purpose |
@@ -153,13 +155,17 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
-| `proxmox-validate.yml` | Validate Proxmox cluster readiness |
+| `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
+| `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
+| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses |
 
 ### Infrastructure
 | Playbook | Purpose |
 |----------|---------|
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
-| `install-podman.yml` | Install Podman + podman-compose (idempotent) |
+| `install-podman.yml` | Install Podman + podman-compose (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
+| `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
+| `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |
 
 ### Local-Dev Conventions (Phase 0A, `LOCAL-DEV-DEPLOYMENT.md`)
 
@@ -178,7 +184,8 @@ State: `~/.agent-cloud-local/credentials.env`. See `docs/LOCAL-DEV.md`.
 
 ### Composable Task Library
 
-These reusable tasks are the building blocks for all playbooks. See `plan/architecture/AUTOMATION-COMPOSABILITY.md` for the full architecture.
+These reusable tasks are the building blocks for all playbooks. See `plan/architecture/01-automation-model.md` for the full architecture. (That content
+used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/`.)
 
 | Task | Status | Purpose |
 |------|--------|---------|
@@ -194,6 +201,15 @@ These reusable tasks are the building blocks for all playbooks. See `plan/archit
 | `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
 | `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
 | `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
+| `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble |
+| `tasks/enable-linger.yml` | Implemented | `loginctl enable-linger` so rootless containers survive a reboot; optional `linger_user` for a dedicated service account |
+| `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
+| `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
+| `tasks/distribute-ca-root.yml` | Implemented | Distribute the internal CA root to a host's trust store |
+| `tasks/distribute-caddy-site.yml` | Implemented | Place a per-service Caddy site fragment (composable Caddy model) |
+| `tasks/mint-internal-cert.yml` | Implemented | Mint a certificate from the internal step-ca |
+| `tasks/manage-cloudflare-record.yml` | Implemented | Create/update one Cloudflare DNS record |
+| `tasks/registry-login.yml` | Implemented | Authenticate the container engine to a registry |
 | `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`LOCAL-DEV-DEPLOYMENT.md` §11) |
 
 Planned tasks (not yet implemented):

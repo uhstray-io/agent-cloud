@@ -111,6 +111,11 @@ brew install shellcheck bats-core hadolint
 brew install python@3.11
 pip3.11 install pytest netboxlabs-diode-sdk proxmoxer requests
 
+# Controller packages — cryptography is needed by the BATS suite, which signs a real
+# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
+# with a reason rather than failing, but they are then not verifying anything.
+pip3.11 install -r platform/requirements-controller.txt
+
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
 
@@ -127,15 +132,27 @@ brew install gosec
 
 ## CI Pipeline
 
-Every PR triggers three GitHub Actions jobs automatically:
+Every PR triggers these GitHub Actions jobs automatically. The three below are the gates
+that must pass; a PR also runs change detection, CodeQL analysis per language, the
+conditional Go jobs for uhhcraft, a CodeRabbit review, and — on a `dev` → `main` PR — a
+promotion-source check:
 
 | Job | Tools | Fails on |
 | --- | ----- | -------- |
 | **Static Analysis** | ruff, shellcheck, ansible-lint, yamllint, hadolint, terraform fmt | Any lint error or warning |
 | **Security Scan** | trufflehog, bandit, IP/credential grep | Leaked secrets, security issues, hardcoded IPs |
-| **Unit Tests** | pytest (79 tests), BATS (36 tests) | Any test failure |
+| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Any test failure |
 
-All three must pass before merging. See `docs/LINTING-AND-TESTING.md` for full details.
+All three must pass before merging. See `plan/architecture/03-testing-ci-quality.md` for
+full details.
+
+**They also run before every push.** `.githooks/pre-push` runs the BATS suite — and pytest
+when its dependencies are present — with the same invocation, working directory and
+`PYTHONPATH` as CI, and refuses the push if either fails. It is live via the repo's
+`core.hooksPath` with no install step, so you do not need to remember the commands below;
+they are what the hook runs. It fails **open** when a runner is missing (CI is the
+backstop), unlike the pre-commit secret gate which fails closed. Override, for a reason
+you can defend in review: `SKIP_TESTS=1 git push`.
 
 ---
 
@@ -195,7 +212,7 @@ Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN
 | Document | Purpose |
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
-| `plan/architecture/AUTOMATION-COMPOSABILITY.md` | Composable Ansible task architecture |
+| `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
 | `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
 | `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
 | `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |

@@ -326,7 +326,7 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 
 - `plan/architecture/03-testing-ci-quality.md` — Detailed specification for writing tests for new services
 - `plan/architecture/03-testing-ci-quality.md` — OpenSSF Scorecard implementation plan
-- `docs/LINTING-AND-TESTING.md` — Local setup and pre-PR checklist
+- `plan/architecture/03-testing-ci-quality.md` — Local setup and pre-PR checklist
 - `plan/architecture/03-testing-ci-quality.md` — Branch deploy and validation workflow
 
 <!-- ======================= source: CI-TESTING-SPECIFICATION.md ======================= -->
@@ -1055,7 +1055,12 @@ Tests use multi-assertion patterns — each BATS function verifies multiple rela
 
 **Requires:** `brew install bats-core` (macOS) or `apt install bats` (Ubuntu).
 
-### Total: 115 test cases across 27 composable test functions
+### Totals
+
+The table above covers the two shared-library suites only. The suite as a whole is
+**452 BATS tests** across `platform/tests/` plus **79 pytest tests** under
+`platform/services/netbox/deployment/tests/`, both run by CI on every PR and by
+`.githooks/pre-push` before a push leaves the machine.
 
 See `plan/architecture/03-testing-ci-quality.md` for the full testing roadmap.
 
@@ -1231,7 +1236,7 @@ sequenceDiagram
     participant Task as Ansible Task
     participant CB as Callback Plugin
     participant Out as Terminal/Semaphore
-    
+
     Task->>CB: v2_runner_on_ok(result)
     CB->>CB: Scan result for sensitive patterns
     CB->>CB: Replace matching values with ***REDACTED***

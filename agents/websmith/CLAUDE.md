@@ -25,7 +25,7 @@ These override any default LLM behavior and apply for the duration of a WebSmith
 The framework's own KICKSTART.md tells users to build their site in a **separate working directory** outside the framework repo. Inside agent-cloud, that's overridden:
 
 - **Spec artifacts** (`intake.md`, `purpose.md`, `template.md`, `tooling.md`, `style.md`, `considerations.md`, `SPEC.md`) are written to `platform/services/<sitename>/context/spec/` — colocated with the service they describe.
-- **Implementation** lands in `platform/services/<sitename>/deployment/`, following the composable pattern documented in `plan/architecture/AUTOMATION-COMPOSABILITY.md`.
+- **Implementation** lands in `platform/services/<sitename>/deployment/`, following the composable pattern documented in `plan/architecture/01-automation-model.md`.
 - **Do not** write spec files into `agents/websmith/`. WebSmith holds the workflow; concrete sites live under `platform/services/`.
 
 [`agents/websmith/context/architecture/integration-with-agent-cloud.md`](./context/architecture/integration-with-agent-cloud.md) is the authoritative reference for this override — the full second-site recipe (standard service/playbook/Caddy/OpenBao/Semaphore/inventory/CI shapes + the 16-step implementation checklist).
@@ -57,5 +57,5 @@ Any deviation a user requests from this preset must be captured in the site's `S
 
 - Root [`CLAUDE.md`](../../CLAUDE.md) — repo-wide conventions and the four-layer model.
 - [`plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../plan/development/WEBSMITH-INTEGRATION-PLAN.md) — full integration plan.
-- [`plan/architecture/AUTOMATION-COMPOSABILITY.md`](../../plan/architecture/AUTOMATION-COMPOSABILITY.md) — how the implementation half works once the spec is signed.
+- [`plan/architecture/01-automation-model.md`](../../plan/architecture/01-automation-model.md) — how the implementation half works once the spec is signed.
 - [`platform/services/uhhcraft/`](../../platform/services/uhhcraft/) — first concrete site built with WebSmith (added in Phase 2).

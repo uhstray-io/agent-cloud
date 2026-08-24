@@ -227,19 +227,27 @@ For new services, start with `plan/architecture/02-service-onboarding.md`. For n
 
 ## CI/CD and Testing
 
-Every pull request to main runs three automated checks:
+Every pull request runs these automated checks. The three below are the gates; a PR also
+runs change detection, CodeQL analysis per language, conditional Go jobs for uhhcraft, a
+CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (79 tests), BATS (133 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+
+The same suites run **before every push**: `.githooks/pre-push` invokes them exactly as CI
+does and refuses the push on failure. Live via the repo's `core.hooksPath` after
+`make git-setup`, no install step. It fails open when a test runner is absent — CI is the
+backstop — unlike the pre-commit secret gate, which fails closed because a leaked secret
+is irreversible. Override with `SKIP_TESTS=1 git push`.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
 `main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
 
-For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
+For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack
 
