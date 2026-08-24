@@ -388,6 +388,12 @@ templates:
 
   - name: Store SSH Password
     playbook: platform/playbooks/store-ssh-password.yml
+    # This playbook already exists on main — only its template declaration was
+    # missing. The variant is added anyway so the whole of Phase 1 executes one
+    # branch's code: running the irreversible steps from main while the gate that
+    # clears them runs from dev would mean the thing being verified is not the
+    # thing being run.
+    dev_variant: true
     # The FIRST step of onboarding a host: put the bootstrap login/sudo password
     # into OpenBao BEFORE anything modifies the host, so the secret store — not
     # an operator's local file — is what the automation reads from. harden-ssh
@@ -405,6 +411,12 @@ templates:
 
   - name: Verify Host Access
     playbook: platform/playbooks/verify-host-access.yml
+    # The playbook itself lands on main only at the next promotion, so the
+    # main-bound base fails with "playbook could not be found" until then. The
+    # dev variant is what makes the Phase 1 gate runnable beforehand — which
+    # matters more for this template than most, since it is the check that
+    # decides whether the irreversible hardening step is safe.
+    dev_variant: true
     # READ-ONLY gate for the hardening sequence. Reports whether the host is
     # reachable, whether privilege escalation works, what sshd EFFECTIVELY allows
     # (sshd -T, so drop-ins are accounted for), how many authorized keys are in
