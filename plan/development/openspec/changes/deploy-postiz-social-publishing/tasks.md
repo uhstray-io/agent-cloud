@@ -9,14 +9,14 @@ relies on. Without this phase, no later phase can be driven programmatically.
       host, in the existing OpenTofu root — narrower than the precedent rule beside it by
       additionally requiring an Authorization header, so credential-less scanners are
       still challenged
-- [ ] 0.2 **Operator, one browser-triggered run:** run the Cloudflare OpenTofu template
+- [x] 0.2 **Operator, one browser-triggered run:** run the Cloudflare OpenTofu template
       with `tofu_action=plan`, review the diff (expect exactly one added rule), then
       re-run with `tofu_action=apply`. This is the bootstrap step that cannot itself be
       automated — the fix for "cannot reach the orchestrator" has to be applied through
       the orchestrator
-- [ ] 0.3 Confirm a token-bearing request to the orchestrator's API now returns JSON
+- [x] 0.3 Confirm a token-bearing request to the orchestrator's API now returns JSON
       rather than a challenge page
-- [ ] 0.4 Validation gate: the orchestrator API is reachable with a token from a
+- [x] 0.4 Validation gate: the orchestrator API is reachable with a token from a
       non-browser client, so every remaining phase can run through it rather than by hand
 
 ## 1. Host access hardening — production host
