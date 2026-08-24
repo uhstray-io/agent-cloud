@@ -310,6 +310,15 @@ _committed_files() {
   local shared="$pb/tasks/assert-bao-transport.yml"
   [ -f "$shared" ]
 
+  # Exactly ONE definition of the rule may exist. Six independently-worded copies
+  # is how the userinfo bypass survived in two playbooks after being fixed in the
+  # other three.
+  # `run` so a no-match grep (exit 1, which is the PASSING case here) does not
+  # abort the test before the assertion is evaluated.
+  run bash -c "grep -l 'Refusing to send secret material' '$pb'/*.yml 2>/dev/null || true"
+  [ -z "$output" ]
+  grep -q 'Refusing to send secret material' "$shared"
+
   # The dots must be written `\\.` in the YAML. Jinja processes escapes in its
   # string literals, so `\\.` arrives as `\.` — an escaped dot. A single `\.`
   # happens to behave the same today only because Python passes an unrecognised
@@ -317,8 +326,12 @@ _committed_files() {
   grep -qE '127\(\\\\\.\[0-9\]' "$shared"
   ! grep -qE '127\(\\\.\[0-9\]' "$shared"
 
+  # Every playbook that reaches OpenBao, not just the ones the guard started in.
+  # The two seed playbooks kept their own inline copies for one commit and were
+  # therefore still bypassable in exactly the way the shared task now prevents.
   local f n_url n_inc
-  for f in distribute-ssh-keys.yml store-ssh-password.yml; do
+  for f in distribute-ssh-keys.yml store-ssh-password.yml \
+           seed-postiz-secrets.yml seed-openbao-key.yml; do
     n_url=$(grep -cE '^    _bao_url:' "$pb/$f")
     n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb/$f")
     [ "$n_url" -gt 0 ]
