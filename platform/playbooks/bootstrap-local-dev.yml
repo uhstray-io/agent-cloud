@@ -45,6 +45,13 @@
     # a host with something else on 8088 (any other local dev tool) could not
     # bootstrap at all, and editing the documented variable had no effect.
     _caddy_decl: "{{ hostvars['caddy-local'] | default({}) }}"
+    # ONE definition of the edge HTTPS port. It is consumed by the Caddy block
+    # below AND by every service that advertises a public URL through that edge —
+    # postiz_public_url among them. Two copies means an override moves the
+    # listener and leaves the advertised URL pointing at the old port, which is
+    # the same defect class as caddy_http_port being hardcoded here while being
+    # documented as inventory-editable.
+    _edge_https_port: "{{ _caddy_decl.caddy_https_port | default(8443, true) }}"
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -895,11 +902,11 @@
           caddy_http_bind={{ _caddy_decl.caddy_http_bind | default('127.0.0.1', true) }}
           caddy_http_port={{ _caddy_decl.caddy_http_port | default(8088, true) }}
           caddy_https_bind={{ _caddy_decl.caddy_https_bind | default('127.0.0.1', true) }}
-          caddy_https_port={{ _caddy_decl.caddy_https_port | default(8443, true) }}
+          caddy_https_port={{ _edge_https_port }}
           caddy_internal_zone={{ _dev_zone }}
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
-          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}, {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}, {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}]
+          caddy_routes=[{'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}, {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}, {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}, {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}, {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}, {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}, {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}, {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}, {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}, {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}]
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1032,8 +1039,8 @@
           local_mode=true
           postiz_bind=127.0.0.1
           postiz_port=5001
-          postiz_public_url=https://postiz.{{ _dev_zone }}:8443
-          postiz_authentik_base=https://auth.{{ _dev_zone }}:8443
+          postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}
+          postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
           postiz_disable_registration=false
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy

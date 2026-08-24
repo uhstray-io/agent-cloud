@@ -15,6 +15,8 @@
 # Structural only (grep/file asserts) — no live deploy.
 # Run: bats platform/tests/test_service_postiz.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/postiz/deployment"
@@ -33,8 +35,8 @@ setup() {
 @test "postiz: default images are pinned (no :latest drift)" {
   local f="$DEPLOY_DIR/compose.yml"
   grep -qE '\$\{POSTIZ_IMAGE:-ghcr\.io/gitroomhq/postiz-app:v[0-9]' "$f"
-  ! grep -qE 'postiz-app:latest' "$f"
-  ! grep -qE ':latest' "$f"
+  refute_grep -qE 'postiz-app:latest' "$f"
+  refute_grep -qE ':latest' "$f"
 }
 
 @test "postiz: five-container stack (app + pg + redis + temporal + temporal pg)" {
@@ -50,9 +52,9 @@ setup() {
   local f="$DEPLOY_DIR/compose.yml"
   # Upstream's reference compose adds these three; we deliberately do not.
   # The engine runs standard visibility on its own Postgres instead.
-  ! grep -qE '^\s+temporal-elasticsearch:' "$f"
-  ! grep -qE '^\s+temporal-ui:' "$f"
-  ! grep -qE '^\s+temporal-admin-tools:' "$f"
+  refute_grep -qE '^\s+temporal-elasticsearch:' "$f"
+  refute_grep -qE '^\s+temporal-ui:' "$f"
+  refute_grep -qE '^\s+temporal-admin-tools:' "$f"
   grep -qE 'ENABLE_ES:\s*"false"' "$f"
 }
 
@@ -78,20 +80,44 @@ setup() {
   # `restart: always` looking like a slow boot).
   local f="$REPO_ROOT/platform/services/postiz/deployment/compose.yml"
 
-  # Sourced inside the container, with `set -a` so the values are EXPORTED —
-  # without it they are shell-local and the app's child processes never see them.
-  grep -qF 'set -a; . /config/postiz.env; set +a' "$f"
+  # READ into the environment, never SOURCED. `.` subjects every line to shell
+  # parsing and the template renders values unquoted, so a value containing
+  # `$(...)` EXECUTES (measured) — command execution for anyone who can write the
+  # secret path, and it reintroduces the `${...}` corruption Option B prevents.
+  # This assertion previously pinned the sourcing form in place.
+  # Asserted on the COMMAND VALUE ONLY, not the file. A first attempt grepped the
+  # whole file and passed against a mutated command, because the explanatory
+  # comment beside it contains the same text — the test was satisfied by prose
+  # describing the property rather than by the property.
+  local cmd
+  cmd=$(awk '/^      - >-$/{f=1;next} f&&/^      [^ ]/{exit} f&&/^  /{print}' "$f" | tr '\n' ' ')
+  [ -n "$cmd" ]
+
+  # READ into the environment, never SOURCED. `.` subjects every line to shell
+  # parsing and the template renders values unquoted, so a value containing
+  # `$(...)` EXECUTES (measured) — command execution for anyone who can write the
+  # secret path, and it reintroduces the `${...}` corruption Option B prevents.
+  refute_contains "$cmd" ". /config/postiz.env"
+  assert_contains "$cmd" 'export "$$l"'
+
+  # `set -a` still matters: without it the values are shell-local and the app's
+  # child processes never see them.
+  assert_contains "$cmd" "set -a"
+
+  # `read` returns false on a final line with no trailing newline and would drop
+  # it silently — the same defect as a `while read` loop over a .env file.
+  assert_contains "$cmd" '|| [ -n "$$l" ]'
 
   # NOT via env_file, which compose interpolates. Measured under podman-compose:
   # `${HOME}` inside an env_file value is expanded before the container sees it,
   # so a client secret containing `${` would be corrupted.
-  ! grep -qE '^\s+env_file:' "$f"
+  refute_grep -qE '^\s+env_file:' "$f"
 
   # Done as `command:`, NOT an `entrypoint:` wrapper inheriting the image CMD via
   # "$@": podman-compose sets Cmd to null when entrypoint is overridden, so the
   # wrapper execs nothing and the container exits 0 instantly — a silent no-op.
   grep -qE '^\s+command:$' "$f"
-  ! grep -qE '^\s+entrypoint:$' "$f"
+  refute_grep -qE '^\s+entrypoint:$' "$f"
 
   # Because the CMD is copied, pin it. Upstream postiz-app v2.23.0 ships
   # CMD ["sh","-c","nginx && pnpm run pm2"]; if that changes, this fails loudly
@@ -109,7 +135,14 @@ setup() {
   #
   # Asserted repo-wide for this port rather than per file, because the bug was a
   # missed copy.
-  run bash -c "grep -rn '127\.0\.0\.1:7233' '$REPO_ROOT/platform' 2>/dev/null | grep -v '^.*#' || true"
+  # Scoped to EXECUTABLE artifacts. Markdown legitimately quotes the bad address
+  # when stating the prohibition, and the previous exclusion — `grep -v '^.*#'` —
+  # dropped any line containing a `#` ANYWHERE, so a live
+  # `--address 127.0.0.1:7233  # temporal` would have passed it. Comment-only
+  # lines are excluded by anchoring `#` to the start.
+  run bash -c "find '$REPO_ROOT/platform' \\( -name '*.yml' -o -name '*.sh' -o -name '*.j2' \\) -type f \\
+                 -exec grep -Hn '127\\.0\\.0\\.1:7233' {} + 2>/dev/null \\
+               | grep -vE ':[[:space:]]*#' || true"
   [ -z "$output" ]
 
   # Both places must resolve the container's own address, with no pipe (a piped
@@ -118,8 +151,8 @@ setup() {
   local d="$REPO_ROOT/platform/playbooks/deploy-postiz.yml"
   grep -qF 'a=$$(hostname -i)' "$c"
   grep -qF 'a=$(hostname -i)' "$d"
-  ! grep -qF 'hostname -i | awk' "$c"
-  ! grep -qF 'hostname -i | awk' "$d"
+  refute_grep -qF 'hostname -i | awk' "$c"
+  refute_grep -qF 'hostname -i | awk' "$d"
 }
 
 @test "postiz: healthchecks on all five containers, app dependencies gated" {
@@ -147,19 +180,22 @@ setup() {
   # The whole point of Option B: ~60 social credential slots must not pass
   # through compose, where a '$' in a client secret is silently mangled. So the
   # app service must have no env_file and no credential-bearing environment.
-  ! grep -qE '^\s+env_file:' "$f"
-  ! grep -qE 'JWT_SECRET' "$f"
-  ! grep -qE 'DATABASE_URL' "$f"
-  ! grep -qE 'CLIENT_SECRET' "$f"
+  refute_grep -qE '^\s+env_file:' "$f"
+  refute_grep -qE 'JWT_SECRET' "$f"
+  # Assert the absence of the SETTING, not of the name. The name legitimately
+  # appears in comments explaining why the app config is not passed through
+  # compose; matching the bare token made a correct file fail.
+  refute_grep -qE '^[^#]*DATABASE_URL[:=]' "$f"
+  refute_grep -qE 'CLIENT_SECRET' "$f"
 }
 
 @test "postiz: compose has no hardcoded credentials or IPs" {
   local f="$DEPLOY_DIR/compose.yml"
   # Upstream's compose ships postiz-user/postiz-password and temporal/temporal;
   # the previous stub in this repo carried them too. They must be gone.
-  ! grep -qE 'postiz-password|my-postiz-password' "$f"
-  ! grep -qE 'POSTGRES_PWD:\s*temporal\s*$' "$f"
-  ! grep -qE '(192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.)' "$f"
+  refute_grep -qE 'postiz-password|my-postiz-password' "$f"
+  refute_grep -qE 'POSTGRES_PWD:\s*temporal\s*$' "$f"
+  refute_grep -qE '(192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.)' "$f"
   # Every password is a substitution reference.
   grep -qE 'POSTGRES_PASSWORD: \$\{POSTIZ_DB_PASSWORD\}' "$f"
   grep -qE 'POSTGRES_PWD: \$\{TEMPORAL_DB_PASSWORD\}' "$f"
@@ -169,7 +205,7 @@ setup() {
   local f="$DEPLOY_DIR/deploy.sh"
   [ -f "$f" ]
   [ -x "$f" ]
-  ! grep -qE 'gen_secret|put_secret|get_secret|bao |vault |openbao' "$f"
+  refute_grep -qE 'gen_secret|put_secret|get_secret|bao |vault |openbao' "$f"
   grep -q 'detect_runtime' "$f"
   grep -q 'wait_for_healthy postiz' "$f"
 }
@@ -197,7 +233,7 @@ setup() {
   grep -qE '^POSTIZ_DB_PASSWORD=\{\{ secrets\.postiz_db_password \}\}' "$f"
   # App config must NOT leak into this file (that would reintroduce the
   # interpolation hazard Option B exists to avoid).
-  ! grep -qE '^JWT_SECRET=|^POSTIZ_OAUTH|^X_API_KEY=' "$f"
+  refute_grep -qE '^JWT_SECRET=|^POSTIZ_OAUTH|^X_API_KEY=' "$f"
 }
 
 @test "postiz: postiz.env.j2 sources every secret from OpenBao, none literal" {
@@ -207,14 +243,16 @@ setup() {
   grep -qE '^POSTIZ_OAUTH_CLIENT_SECRET=\{\{ secrets\.postiz_oidc_client_secret \}\}' "$f"
   grep -qE '^TEMPORAL_ADDRESS=temporal:7233' "$f"
   # No literal credential values anywhere.
-  ! grep -qiE '(secret|password|api_key|token)=[A-Za-z0-9]{8}' "$f"
+  refute_grep -qiE '(secret|password|api_key|token)=[A-Za-z0-9]{8}' "$f"
 }
 
 @test "postiz: NOT_SECURED is absent (upstream documents it as dev-only)" {
   # The prior developer-machine .env set it; it disables security checks and
   # must never reach an internet-reachable host.
-  ! grep -qE 'NOT_SECURED' "$DEPLOY_DIR/templates/postiz.env.j2"
-  ! grep -qE 'NOT_SECURED' "$DEPLOY_DIR/compose.yml"
+  # The template carries a NOTE saying this is deliberately absent, so match the
+  # ASSIGNMENT rather than the name.
+  refute_grep -qE '^NOT_SECURED=' "$DEPLOY_DIR/templates/postiz.env.j2"
+  refute_grep -qE 'NOT_SECURED' "$DEPLOY_DIR/compose.yml"
 }
 
 @test "postiz: POSTIZ_OAUTH_SCOPE is not templated (upstream never reads it)" {
@@ -222,7 +260,7 @@ setup() {
   # hardcodes the scope. Templating it would imply control we do not have.
   # Anchored: the name appears in a comment explaining WHY it is omitted, so
   # assert there is no actual assignment rather than no mention.
-  ! grep -qE '^POSTIZ_OAUTH_SCOPE=' "$DEPLOY_DIR/templates/postiz.env.j2"
+  refute_grep -qE '^POSTIZ_OAUTH_SCOPE=' "$DEPLOY_DIR/templates/postiz.env.j2"
 }
 
 @test "postiz: registration lockdown is config, not a manual host step" {
@@ -246,7 +284,7 @@ setup() {
   grep -q 'local-dev' "$f"
   # The overlay must NOT re-publish a port: compose merges ports by APPENDING,
   # so this would publish a second one rather than replacing the base's.
-  ! grep -qE '^\s+ports:' "$f"
+  refute_grep -qE '^\s+ports:' "$f"
 }
 
 @test "postiz: deploy playbook is composable and scopes no_log to secrets" {
@@ -261,7 +299,7 @@ setup() {
   grep -qE 'state: directory' "$PLAYBOOK"
   # no_log must NOT appear on the deploy/verify tasks — a past failure in this
   # repo was censored exactly that way and made the run undiagnosable.
-  ! grep -qE 'no_log' "$PLAYBOOK"
+  refute_grep -qE 'no_log' "$PLAYBOOK"
 }
 
 @test "postiz: playbook shared-reads the OIDC secret rather than storing a copy" {
@@ -297,7 +335,7 @@ setup() {
   grep -qE 'scope_name, openid' "$BLUEPRINT"
   grep -qE 'scope_name, profile' "$BLUEPRINT"
   # No secret literal in git.
-  ! grep -qiE 'client_secret: [A-Za-z0-9]{8}' "$BLUEPRINT"
+  refute_grep -qiE 'client_secret: [A-Za-z0-9]{8}' "$BLUEPRINT"
 }
 
 @test "postiz: the OIDC client secret chain has no copy anywhere" {
@@ -323,7 +361,7 @@ setup() {
   local f="$REPO_ROOT/platform/inventory/local-dev.yml.example"
   grep -qE 'host: "postiz\.agent-cloud\.test", upstream: "postiz:5000"' "$f"
   # An edge gate would also gate /api/public/v1 and break n8n's API-key calls.
-  ! grep -qE 'postiz\.agent-cloud\.test.*forward_auth' "$f"
+  refute_grep -qE 'postiz\.agent-cloud\.test.*forward_auth' "$f"
 }
 
 @test "postiz: Semaphore templates exist for deploy, clean, and seeding" {
@@ -354,7 +392,7 @@ setup() {
   grep -qE 'postiz_svc:' "$f"
   grep -qE '\{\{ postiz_host \}\}' "$f"
   # Real addresses belong in site-config, never here.
-  ! grep -qE 'postiz.*(192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.)' "$f"
+  refute_grep -qE 'postiz.*(192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.)' "$f"
 }
 
 @test "postiz: psql credential check preserves its exit status" {
@@ -387,7 +425,7 @@ setup() {
   # test only checks that the playbook delegates to the shared guard.
   local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
   grep -qE 'include_tasks: tasks/assert-bao-transport\.yml' "$f"
-  ! grep -q 'Refusing to send secret material' "$f"
+  refute_grep -q 'Refusing to send secret material' "$f"
 }
 
 @test "postiz: every provider slot has a seedable key and a declaration" {
@@ -404,8 +442,8 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
 @test "postiz: docs do not tell an operator to create DNS by hand" {
   # The zone is config-as-code via OpenTofu and the record already exists;
   # a manual instruction contradicts the edge-as-code standard.
-  ! grep -qE '^- Create the public DNS record\.$' "$REPO_ROOT/platform/services/postiz/deployment/README.md"
-  ! grep -qE 'Operator: create the `postiz\.uhstray\.io` DNS record' "$REPO_ROOT/plan/development/14-postiz-social-publishing.md"
+  refute_grep -qE '^- Create the public DNS record\.$' "$REPO_ROOT/platform/services/postiz/deployment/README.md"
+  refute_grep -qE 'Operator: create the `postiz\.uhstray\.io` DNS record' "$REPO_ROOT/plan/development/14-postiz-social-publishing.md"
 }
 
 # ── deploy.sh lifecycle (phase 5.10) ─────────────────────────────────────────

@@ -38,6 +38,10 @@
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
     preflight_group: postiz_svc
+    # Paired so a `-e preflight_group=<something else>` cannot redirect the guard
+    # at a group this playbook does not deploy. An extra var beats these vars, but
+    # it cannot change both, and the guard asserts they agree.
+    preflight_group_expected: postiz_svc
 
 - name: "Phase 1: Place repo + manage postiz secrets"
   hosts: postiz_svc

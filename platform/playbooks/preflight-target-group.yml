@@ -28,17 +28,35 @@
 # plays use, e.g. `preflight_group: "{{ target_service }}"`.
 
 - name: "Pre-flight: the target group must exist and contain hosts"
+  # KNOWN LIMITATION, stated rather than papered over: this play is subject to
+  # --limit like any other, so `--limit <host not in the target group>` skips the
+  # guard AND the work and exits 0 — the false green the guard exists to prevent.
+  # `hosts: localhost:all[0]` was tried and does not help, because the limit is
+  # intersected with the play's host list either way; Ansible has no un-limitable
+  # play. What bounds the risk: passing such a --limit is an explicit operator
+  # act, no template in this repo passes one, and the result is a run that
+  # visibly does nothing. The extra-var redirect below IS fixed, because that one
+  # was reachable through a survey field.
   hosts: localhost
   gather_facts: false
   become: false
   connection: local
+  any_errors_fatal: true
 
   tasks:
-    - name: "Require a group name to check"
+    # An EXTRA VAR beats an import_playbook `vars:` entry, so `-e
+    # preflight_group=all` made the guard check a group it was never asked about:
+    # it reported "'all' has 1 host(s)" and passed while the real target matched
+    # nothing and the run exited 0. Demonstrated. The caller therefore passes the
+    # group under a name an operator has no reason to set, and the guard refuses
+    # to run if the two disagree.
+    - name: "Require a group name to check, and refuse a conflicting override"
       ansible.builtin.assert:
         that:
           - preflight_group is defined
           - preflight_group | string | trim | length > 0
+          - (preflight_group_expected is not defined)
+            or (preflight_group | string == preflight_group_expected | string)
         fail_msg: >-
           preflight_group is not set. Pass it in the import: `vars:
           preflight_group: <group>`. Without it this guard would pass
@@ -57,5 +75,6 @@
           plane and the host use SEPARATE inventories, because their filesystem
           paths differ.
         success_msg: >-
-          '{{ preflight_group }}' has {{ groups[preflight_group] | length }}
-          host(s): {{ groups[preflight_group] | join(', ') }}.
+          '{{ preflight_group }}' has
+          {{ groups[preflight_group] | default([]) | length }} host(s):
+          {{ groups[preflight_group] | default([]) | join(', ') }}.

@@ -30,11 +30,14 @@ supersede it with a new entry and link both.
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file | Unverified claim | Convention |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
+| 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
 | 2.4 | Test asserted state that lived on a different branch | False-green test | CI |
 | 2.5 | Safety guard specified without ever being evaluated against the declarations it judges | False-green test | Test |
+| 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | Convention |
+| 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -45,12 +48,16 @@ supersede it with a new entry and link both.
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Convention |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
+| 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | **Pre-push gate (proposed)** |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
+| 10.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
+| 10.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | Test |
+| 10.3 | Committed without running the suite — third occurrence | Process | Convention |
 | 9.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
 | 9.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
 | 9.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
@@ -119,6 +126,23 @@ and read it, or capture `${PIPESTATUS[0]}`. Applies especially to background
 jobs, where the exit code is the only signal that arrives unprompted.
 
 **Enforced by.** Convention.
+
+
+### 1.4 Guessed a resource id rather than reading the one just returned
+
+**What happened.** Immediately after creating a runner group, its access list was checked
+at `.../runner-groups/5/repositories`. The group's real id was 6. The check silently
+verified a different group, and the shape of the output gave no hint — the id had been
+inferred from the count of pre-existing groups rather than read from the create response.
+
+**The rule.** An identifier returned by the operation you just performed is the only
+identifier to use. Never derive one by counting, incrementing, or inferring from
+adjacent state — especially in a verification step, where a wrong id turns "verified"
+into "verified something else".
+
+**Enforced by.** Convention. The playbook itself does this correctly, threading the
+created id through rather than recomputing it; the slip was in an ad-hoc check beside it,
+which is an argument for verifying through the automation rather than around it.
 
 ---
 
@@ -223,6 +247,39 @@ against accepted and rejected declaration shapes, rather than only grepping for 
 presence, and pins the predicate text so the two cannot drift apart. (That case arrives
 with the self-hosted-runner change on `feat/github-actions-runners`; until it merges the
 reference is forward-looking, which per 8.2 is worth saying rather than implying.)
+
+
+### 2.6 Test windows sized by line count instead of by construct
+
+**What happened.** Three separate times, a test asserted a property inside a task or
+function using `grep -A<N> '<anchor>'`. Each broke as soon as a line was added inside
+that construct — once from a comment explaining the very property being tested. In every
+case the subject was correct and the test was wrong.
+
+**Why it matters.** A test that fails for its own reasons is worse than no test: the
+fastest way to make it green is to edit the test, which is entry 2.2 arriving by a
+different road. It also cost three debugging detours on code that was already right.
+
+**The rule.** Scope an assertion's window to the construct, not to a guessed line count —
+`sed -n '/<start>/,/<next boundary>/p'` for a task, or extract the block, then assert
+within it. If a window must be fixed-width, the assertion is probably in the wrong place.
+
+**Enforced by.** Convention. Every window added in this change is construct-scoped, so
+the pattern is present in the repository as the worked example.
+
+### 2.7 A test whose own quoting was the failure
+
+**What happened.** A test grepped for a playbook fragment containing `default('')`, with
+the whole pattern wrapped in single quotes. The embedded `''` terminated the bash string,
+so the pattern reaching `grep` was not the pattern written. The test failed against a
+correct playbook, and the first reading was that the playbook was wrong.
+
+**The rule.** When an assertion fails against code you have just read and believe to be
+correct, check the assertion's own syntax before the subject — the same discipline as
+8.3, applied to a test rather than a tool. For a fragment containing quotes, match a
+quote-free substring instead of escaping your way through it.
+
+**Enforced by.** Convention.
 
 ---
 
@@ -437,6 +494,27 @@ and continue. Never end a turn short of the requested work on a skill's authorit
 **Enforced by.** Convention, plus the goal-tracking stop hook — which is the only thing
 that actually caught it, and should be treated as a required control on multi-phase work
 rather than a safety net.
+
+
+### 5.5 §5.2 repeated — committed with a failing test, again
+
+**What happened.** A commit landed while one test in the suite was failing. The pre-commit
+hooks all passed, because they cover secret scanning, private addresses, credentials,
+`.env` files, YAML and whitespace — not the test suite. The failure was noticed
+immediately afterwards and the commit amended, but the gate did not catch it.
+
+**Why this is the second entry and not a footnote.** §5.2 records the same mistake with
+"Convention" as its enforcement. Convention has now failed twice in this repository, and
+this is the clearest case in this document for converting a rule into a gate.
+
+**The rule (unchanged, restated).** Run the suite before committing, not after.
+
+**Enforced by.** Nothing yet, and that is the finding. The suite takes ~37 seconds, which
+is too slow for a pre-commit hook that fires on every commit but well suited to a
+**pre-push** stage — the moment code leaves the machine is exactly when a red suite
+matters. Proposed as the highest-value enforcement in this document, alongside tightening
+the CI address audit (§4.3). Not added unilaterally: it changes the hook path for every
+contributor and that is the repository owner's call.
 
 ---
 
@@ -802,3 +880,97 @@ suspect the invocation before the subject — and it recurred within the hour, o
 test written specifically to avoid being fooled.
 
 **Enforced by.** Convention.
+
+---
+
+## 10. The largest one
+
+### 10.1 Seventy-six assertions that could not fail
+
+**What happened.** An audit of this test suite found **76 assertions that can never
+fail.** Bats runs a test body under `set -e`, but bash's `set -e` is documented to
+ignore the status of two constructs, and both are the natural way to write an
+assertion:
+
+```
+! some_command        # a bang-inverted pipeline
+[[ "$a" == "$b" ]]    # the [[ ]] keyword
+```
+
+Measured on Bats 1.13.0: either one, **anywhere except the final statement of a
+test**, leaves the test passing when it should fail. Only as the last line does
+the body's exit status carry it.
+
+**Why this is the largest entry in this document.** The negative form is the
+common shape of a *security* assertion — "must NOT contain the loopback address",
+"must NOT source the config file", "no playbook keeps its own copy of the guard".
+Every one of those was decoration. It also undercuts the mutation testing this
+document repeatedly cites: a mutation that "was killed" may have been killed by a
+neighbouring positive assertion rather than the one under test.
+
+**How it was found.** Not by reading. A test was failing against code believed
+correct, so a deliberately false assertion was inserted to check the test was
+running at all — and the test still passed. That single probe is what exposed the
+class.
+
+**Two things it was hiding**, both surfaced the moment the assertions became real:
+an "app config does not go through compose interpolation" check that matched a
+*comment*, and the same for a dev-only setting. Neither was a defect in the
+subject; both were assertions written against a token rather than a construct.
+
+**The rule.** An assertion must be a simple command whose non-zero status fails
+the test — `[ ]`, a plain `grep`, or a function call. Never a bare `!` pipeline or
+`[[ ]]` except as the final line. When a test fails against code you believe is
+correct, insert a deliberately false assertion and confirm the test *can* fail
+before debugging the subject.
+
+**Enforced by.** `platform/tests/test_assertions_are_real.bats` — a ratchet. The
+count may go down freely and may not go up. `platform/tests/assert_helpers.bash`
+provides `refute_grep` / `assert_contains` / `refute_contains`, which work because
+a function call is a simple command. 20 assertions were converted in the file
+where the class was found; the ratchet holds the rest at a visible number rather
+than pretending the debt is gone.
+
+### 10.2 Sourcing a config file instead of reading it
+
+**What happened.** Loading the app's config was implemented as `. /config/app.env`
+inside the container. The template renders every credential slot unquoted, so
+`.` subjected each value to full shell parsing. Demonstrated: `x$(id -u)y` **executed**,
+`ab$HOME/cd` expanded, and `my user` word-split to empty.
+
+Two consequences. It is command execution in the container for anyone able to write
+the secret path — which is a *credential-seeding* privilege, not an execution one.
+And it silently reintroduced the exact `${...}` corruption the whole configuration
+design existed to prevent, arriving at the same failure from the opposite
+direction.
+
+**Why it was not obvious.** The change was made to fix a real bug (nothing was
+loading the file at all), it worked, and the service came up healthy. A fix that
+resolves the visible symptom is the easiest place to stop looking.
+
+**The rule.** Never `source` a file whose contents are data. Read it line by line
+and `export "$line"`, which assigns without re-expanding. Reserve `.` for files
+that are code and are yours.
+
+**Enforced by.** A test asserting the read form and rejecting the sourcing form —
+and it had to be scoped to the command value, because a first version was
+satisfied by the explanatory comment beside it.
+
+### 10.3 Committed without running the suite, a third time
+
+**What happened.** A documentation commit added a line quoting a forbidden address
+in order to prohibit it. A test scanned the whole directory for that address and
+so failed — in CI, after the push. The suite was not run between the edit and the
+commit.
+
+§5.2 records this. §5.5 records it recurring. This is the third, and the failure
+was introduced by a commit whose entire purpose was to document earlier failures.
+
+**The rule (unchanged).** Run the suite before committing. The gap is that nothing
+enforces it: the pre-commit hooks cover secrets, addresses, credentials and
+whitespace, not the tests.
+
+**Enforced by.** Nothing yet. A pre-push hook remains the proposal — the suite
+takes ~40 seconds, too slow per commit and well matched to the moment code leaves
+the machine. Still the repository owner's call, and still the clearest
+convention-to-gate conversion available here.

@@ -18,9 +18,10 @@
 #
 # Mounting the file is NOT sufficient by itself, which is easy to miss: the
 # image's entrypoint is a generic node wrapper and never reads it, so the app
-# starts with no DATABASE_URL and crash-loops. The service therefore wraps the
-# entrypoint to source the file and then exec the image's own CMD — see the
-# comment on `entrypoint:` below. The .env beside this file therefore holds
+# starts with no DATABASE_URL and crash-loops. The service therefore overrides
+# `command:` to READ the file into the environment and then run the image's own
+# CMD — see the comment on `command:` below. It reads rather than sources,
+# because sourcing makes every value shell code. The .env beside this file therefore holds
 # ONLY compose-substitution values (image tags, bind/port, the two Postgres
 # passwords) — never app config.
 #
@@ -73,7 +74,26 @@ services:
     command:
       - sh
       - -c
-      - set -a; . /config/postiz.env; set +a; nginx && pnpm run pm2
+      # READ the file, do not SOURCE it. `.` subjects every line to full shell
+      # parsing, and postiz.env.j2 renders all ~60 credential slots unquoted — so a
+      # value is shell code. Measured: `x$$(id -u)y` EXECUTES, `ab$$HOME/cd` expands,
+      # and `my user` word-splits to empty. That is command execution in this
+      # container for anyone who can write the secret path (i.e. anyone permitted to
+      # run Seed Postiz Secrets), and it reintroduces the exact `${...}` corruption
+      # Option B exists to prevent — the same failure as env_file:, arrived at from
+      # the other direction.
+      #
+      # `export "$$l"` assigns without re-expanding, so a value is only ever data.
+      # `|| [ -n "$$l" ]` is required because `read` returns false on a final line
+      # with no trailing newline and would silently drop it.
+      - >-
+        set -a;
+        while IFS= read -r l || [ -n "$$l" ]; do
+        case "$$l" in ""|\#*) continue;; esac;
+        export "$$l";
+        done < /config/postiz.env;
+        set +a;
+        nginx && pnpm run pm2
     volumes:
       # Option B: the rendered app config. Bind the single FILE, not the
       # directory — postiz-config below still mounts the rest of /config, and a

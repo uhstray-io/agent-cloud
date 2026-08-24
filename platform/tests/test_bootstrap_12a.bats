@@ -6,6 +6,8 @@
 # Plan: plan/development/LOCAL-DEV-12A-IMPLEMENTATION.md (design: LOCAL-DEV-DEPLOYMENT.md §12A).
 # Run: bats platform/tests/test_bootstrap_12a.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks"
@@ -167,8 +169,15 @@ setup() {
   # machine with anything else on 8088 could not bootstrap at all.
   local f="$PB/bootstrap-local-dev.yml"
   grep -qE "caddy_http_port=\{\{ _caddy_decl\.caddy_http_port \| default\(8088, true\) \}\}" "$f"
-  grep -qE "caddy_https_port=\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}" "$f"
-  # A bare literal for either port means the override is dead again.
-  ! grep -qE "^ *caddy_http_port=8088$" "$f"
-  ! grep -qE "^ *caddy_https_port=8443$" "$f"
+  # The HTTPS port is defined ONCE and consumed by name, because more than the
+  # Caddy block depends on it: a service advertising a public URL through that
+  # edge (postiz_public_url) must name the same port, or an override moves the
+  # listener and leaves the advertised URL pointing at the old one.
+  grep -qE "^ *_edge_https_port: \"\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}\"$" "$f"
+  grep -qE "^ *caddy_https_port=\{\{ _edge_https_port \}\}$" "$f"
+  grep -qE "postiz_public_url=https://postiz\.\{\{ _dev_zone \}\}:\{\{ _edge_https_port \}\}" "$f"
+  # A bare literal for any of them means the override is dead again.
+  refute_grep -qE "^ *caddy_http_port=8088$" "$f"
+  refute_grep -qE "^ *caddy_https_port=8443$" "$f"
+  refute_grep -qE "^ *postiz_public_url=.*:8443$" "$f"
 }
