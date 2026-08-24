@@ -6,6 +6,93 @@
 #
 # Usage: -e "target_service=agent_cloud"
 
+# ── Bootstrap: a freshly built VM has no key yet ──────────────────────────────
+# This playbook installs authorized_keys over a connection it does not create, so
+# on a host that was not provisioned with a cloud-init key it had no way in at
+# all: `Permission denied (publickey,password)`. store-ssh-password.yml has always
+# written `login_password` to OpenBao for exactly this, but nothing ever read it.
+#
+# The password is injected with add_host rather than set as a play var, because a
+# play var cannot be conditional. An EMPTY `ansible_password` is not harmless: it
+# makes Ansible shell out to sshpass, so every already-keyed host would fail on a
+# runner without sshpass installed. add_host sets the var only when a password
+# actually exists, leaving keyed hosts on exactly the path they use today.
+#
+# SSH offers publickey before password, so this only ever adds a fallback — a host
+# that already trusts the key still authenticates by key, and once harden-ssh has
+# disabled password auth the var is simply never used.
+#
+# From OpenBao, never an extra var: Semaphore persists a task's extra-var JSON and
+# serves it back over its API indefinitely.
+- name: "Resolve the bootstrap login password (controller-side)"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # This password is strictly an ENHANCEMENT — a host that is already keyed does
+    # not need it — so failing to read it must never be worse than not looking.
+    # block/rescue rather than errors='ignore' alone, because that option only
+    # covers a vault-level error: a missing hvac library, bad AppRole creds or an
+    # unreachable OpenBao all raise while the task's arguments are being
+    # templated, which aborts the play outright. That is the same abort class as
+    # the undefined-key-path failure fixed in verify-host-access.yml, and here it
+    # would break key-auth hosts that worked fine before this play existed.
+    - name: "Read login_password from OpenBao (absent is fine)"
+      block:
+        - name: "Attempt the read"
+          ansible.builtin.set_fact:
+            _bootstrap_pw: "{{ lookup('community.hashi_vault.hashi_vault',
+              'secret/data/services/ssh:login_password',
+              url=_bao_url, auth_method='approle',
+              role_id=_bao_role_id, secret_id=_bao_secret_id,
+              errors='ignore') | default('', true) }}"
+          no_log: true
+      rescue:
+        - name: "No password fallback — carry on with key auth only"
+          ansible.builtin.set_fact:
+            _bootstrap_pw: ""
+
+        - name: "Say so, so a failed read is never silent"
+          ansible.builtin.debug:
+            msg: >-
+              Could not read secret/services/ssh:login_password — continuing with
+              key auth only. Harmless for a host that already trusts the key; if
+              this host has no key yet, fix the OpenBao read and re-run.
+
+    - name: "Offer it as a password fallback to the target hosts"
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        ansible_password: "{{ _bootstrap_pw }}"
+      loop: "{{ groups[target_service] | default([]) }}"
+      when: _bootstrap_pw | length > 0
+      changed_when: false
+      no_log: true
+
+    - name: "Report whether a fallback is available (never the value)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'A bootstrap password is available as a fallback for '
+             ~ (groups[target_service] | default([]) | length) ~ ' host(s); key auth
+             is still tried first.'
+             if (_bootstrap_pw | length > 0)
+             else 'No login_password in OpenBao — key auth only. If the host has no
+                   key yet, run Store SSH Password first.' }}
+
 - name: "Distribute SSH keys to {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
   gather_facts: false
@@ -13,11 +100,21 @@
   vars:
     target_service: "ungrouped"
     _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Validate service_name is defined"
       ansible.builtin.assert:
         that:
@@ -76,11 +173,21 @@
   vars:
     target_service: "ungrouped"
     _ssh_user: "{{ ansible_user }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Honour OPENBAO_ADDR, matching store-ssh-password.yml. With default('')
+    # alone, a Semaphore run that supplies only the environment variable would
+    # store the password fine and then read it back through an empty URL — the
+    # bootstrap read below would enter its rescue and omit ansible_password, so a
+    # keyless host stays unreachable. Exactly the failure this play exists to fix.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Fetch management private key from OpenBao"
       ansible.builtin.set_fact:
         _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',

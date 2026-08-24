@@ -263,3 +263,79 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   run bash -c "awk '/^  - name: Store SSH Password\$/{f=1;next} f&&/^  - name: /{exit} f' '$TPL' | grep -c 'dev_variant: true'"
   [ "$output" = "1" ]
 }
+
+@test "the probe play tolerates an unreachable host so the report still renders" {
+  # An unreachable host is a verdict, not an error. Without this play keyword
+  # Ansible drops the host before the report task, so the report's
+  # "host unreachable by any method" branch is dead code and the operator gets
+  # exit 4 instead of a NO-GO. `failed_when: false` does not cover it —
+  # unreachable is a host state, not a task result.
+  #
+  # Scoped to the PROBE play's play-level keys: the slice runs from that play's
+  # header to its `tasks:` line. A file-wide grep would pass with the keyword on
+  # the pre-flight play (where it does nothing) or buried on a single task
+  # (where it protects only that task).
+  local head
+  head=$(awk '/^- name: "Verify host access/{f=1} f{print} f&&/^  tasks:/{exit}' "$PB")
+  [ -n "$head" ]
+  echo "$head" | grep -qE '^  ignore_unreachable: true$'
+}
+
+@test "store-ssh-password lets the environment secret win over an extra var" {
+  # Semaphore persists a task's extra-var JSON and serves it back over its API, so
+  # `-e ssh_password=...` leaves the credential in plaintext outside OpenBao. An
+  # environment secret is encrypted at rest and not API-readable.
+  #
+  # ORDER is the assertion. With the extra var first, a run that passed BOTH would
+  # use the persisted one even though the secret was configured — the leak, still
+  # open. The environment must be the first operand.
+  local pb="$REPO_ROOT/platform/playbooks/store-ssh-password.yml"
+  [ -f "$pb" ]
+  grep -qE "_ssh_password:.*lookup\('env', *'SSH_PASSWORD'\) *\| *default\(ssh_password" "$pb"
+  # The reverse order must NOT be present.
+  ! grep -qE "_ssh_password:.*ssh_password *\| *default\(lookup" "$pb"
+
+  # The write must consume the resolved fact. A bare `ssh_password` here would
+  # store an EMPTY password whenever the value came from the environment.
+  grep -qE "'become_password': _ssh_password" "$pb"
+  grep -qE "'login_password': _ssh_password" "$pb"
+  ! grep -qE "^ *- ssh_password is defined" "$pb"
+
+  # Credentials cross this connection, so public cleartext is refused. The rule now
+  # lives in ONE shared task (tasks/assert-bao-transport.yml) rather than a copy
+  # per playbook; the pattern itself is tested in test_credential_leaks.bats.
+  grep -qE "include_tasks: tasks/assert-bao-transport\.yml" "$pb"
+
+  # And the operator-facing template must not still teach the leaking form.
+  local tpl="$REPO_ROOT/platform/semaphore/templates.yml"
+  local slice
+  slice=$(awk '/^  - name: Store SSH Password$/{f=1} f&&/^  - name: Verify Host Access$/{exit} f{print}' "$tpl")
+  [ -n "$slice" ]
+  echo "$slice" | grep -q "SSH_PASSWORD"
+  ! echo "$slice" | grep -qE '^ *# *-e ssh_password=<the bootstrap password>$'
+}
+
+@test "distribute-ssh-keys offers the bootstrap password only when one exists" {
+  # A freshly built VM with no cloud-init key has no way in: this playbook writes
+  # authorized_keys over a connection it does not create. login_password has always
+  # been written to OpenBao for this and was read by nothing.
+  #
+  # The guard is what matters. An EMPTY ansible_password is NOT harmless — it makes
+  # Ansible shell out to sshpass, so every already-keyed host would fail on a runner
+  # without sshpass. Asserted on the add_host task's own slice, because a file-wide
+  # grep for `when:` would pass on any of the playbook's other conditionals.
+  local pb="$REPO_ROOT/platform/playbooks/distribute-ssh-keys.yml"
+  [ -f "$pb" ]
+
+  local slice
+  slice=$(awk '/^    - name: "Offer it as a password fallback/{f=1} f{print} f&&/^$/{exit}' "$pb")
+  [ -n "$slice" ]
+  echo "$slice" | grep -qE 'ansible_password: "\{\{ _bootstrap_pw \}\}"'
+  echo "$slice" | grep -qE '^      when: _bootstrap_pw \| length > 0$'
+
+  # The read is an enhancement, so failing to read it must not abort the run.
+  # errors='"'"'ignore'"'"' alone does not cover a lookup that raises while the task
+  # arguments are templated (missing hvac, bad creds, unreachable OpenBao).
+  grep -qE '^      rescue:$' "$pb"
+  grep -qE '_bootstrap_pw: ""' "$pb"
+}

@@ -405,9 +405,26 @@ templates:
     #
     # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
     # database, so a password typed into a survey field would be stored there
-    # indefinitely. Pass it as a launch-time extra var instead:
-    #   -e ssh_password=<the bootstrap password>
-    # (Same convention as Seed OpenBao Key's bao_value below.)
+    # indefinitely.
+    #
+    # A LAUNCH-TIME EXTRA VAR IS NOT THE ANSWER EITHER, and this comment used to
+    # say it was. Semaphore persists a task's extra-var JSON exactly the same way
+    # and serves it back over its API indefinitely — verified by reading a
+    # completed task, whose `environment` field came back verbatim. So `-e
+    # ssh_password=...` left the bootstrap credential in plaintext outside
+    # OpenBao, which the platform rules forbid.
+    #
+    # Supply it as the SSH_PASSWORD **environment secret** instead. Semaphore
+    # encrypts environment secrets at rest and does not return their values over
+    # the API, and it is the same channel this playbook's OpenBao AppRole
+    # credentials already arrive on. The playbook prefers the environment over the
+    # extra var, so a stray `-e ssh_password=` cannot override it.
+    #
+    #   Project -> Environment -> (the environment this template uses)
+    #     -> Secrets -> add `SSH_PASSWORD` (type: environment variable)
+    #
+    # The extra var still works for a LOCAL run, where the value comes from
+    # site-config and nothing persists it.
 
   - name: Verify Host Access
     playbook: platform/playbooks/verify-host-access.yml

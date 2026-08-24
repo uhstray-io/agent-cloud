@@ -242,3 +242,91 @@ _committed_files() {
     false
   fi
 }
+
+# ── The OpenBao transport guard ───────────────────────────────────────────────
+# The AppRole secret_id, the client token OpenBao returns, and whatever secret is
+# being read or written all cross that connection. http:// is permitted to
+# loopback/RFC1918 because the platform's OpenBao sits on an internal VLAN;
+# public cleartext is refused.
+
+@test "every play that resolves an OpenBao URL includes the transport guard" {
+  # Counted, not merely present: a playbook with three plays and one include
+  # leaves two plays unguarded, and a file-wide grep cannot tell the difference.
+  local pb="$REPO_ROOT/platform/playbooks"
+  local shared="$pb/tasks/assert-bao-transport.yml"
+  [ -f "$shared" ]
+
+  # The dots must be written `\\.` in the YAML. Jinja processes escapes in its
+  # string literals, so `\\.` arrives as `\.` — an escaped dot. A single `\.`
+  # happens to behave the same today only because Python passes an unrecognised
+  # escape through unchanged, which is deprecated. Pin the explicit form.
+  grep -qE '127\(\\\\\.\[0-9\]' "$shared"
+  ! grep -qE '127\(\\\.\[0-9\]' "$shared"
+
+  local f n_url n_inc
+  for f in distribute-ssh-keys.yml store-ssh-password.yml; do
+    n_url=$(grep -cE '^    _bao_url:' "$pb/$f")
+    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb/$f")
+    [ "$n_url" -gt 0 ]
+    [ "$n_inc" -eq "$n_url" ]
+  done
+}
+
+@test "the transport pattern accepts internal endpoints and refuses public ones" {
+  # Tests the regex itself rather than running a playbook: the Unit Tests CI job
+  # installs pytest and bats, not ansible, so an execution test would fail there.
+  # The pattern is what actually decides, so it is what gets tested.
+  #
+  # The pattern must be decoded the way JINJA decodes it. In the YAML the dots are
+  # written `\\.`, and Jinja processes escapes in its string literals, so what the
+  # regex engine finally receives is `\.`. Compiling the raw file text instead would
+  # treat it as "a literal backslash then any character" and the whole table would
+  # come out wrong — passing or failing for entirely the wrong reason.
+  run python3 -c "
+import re, codecs, sys
+src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
+m = re.search(r\"_assert_bao_url is match\\('(.*?)'\\)\", src, re.S)
+assert m, 'pattern not found in the shared task'
+pat = codecs.decode(m.group(1), 'unicode_escape')
+
+# Generic RFC1918 examples, deliberately NOT the platform's real endpoint —
+# that address is site data and lives in site-config, not here.
+accept = [
+    'https://bao.example.com:8200',        # example: TLS anywhere is fine
+    'http://localhost:8200',               # example: loopback by name
+    'http://127.0.0.1:8200',               # example: loopback by address
+    'http://10.1.2.3:8200',                # example: RFC1918 10/8
+    'http://10.1.2.3',                     # example: no port at all
+    'http://192.168.0.1:8200/v1',          # example: RFC1918 192.168/16 with path
+    'http://172.16.0.1:8200',              # example: RFC1918 lower bound
+    'http://172.31.255.254:8200',          # example: RFC1918 upper bound
+]
+refuse = [
+    'http://bao.example.com:8200',         # example: public host, cleartext
+    'http://10.evil.example/',             # example: prefix-match bypass
+    'http://192.168.0.1.evil.example/',    # example: private-looking public host
+    'http://172.32.0.1:8200',              # example: just OUTSIDE RFC1918
+    'http://172.15.0.1:8200',              # example: just BELOW RFC1918
+    'http://1270.0.0.1:8200',              # example: not loopback
+    # userinfo bypasses: everything before the @ is credentials, not the host, so
+    # the request actually goes to the PUBLIC host after it. These carry
+    # trufflehog:ignore because a <user>:<pass>@<host> shape is exactly what a
+    # URI-credential detector looks for — the strings hold no secret, they are the
+    # attack they exist to prove is refused.
+    'http://127.0.0.1:80@bao.evil.example/v1/auth/approle/login',  # trufflehog:ignore
+    'http://127.0.0.1@bao.evil.example/v1',                        # trufflehog:ignore
+    'http://10.1.2.3:8200@bao.evil.example/v1',                    # trufflehog:ignore
+    'http://192.168.0.1:8200@bao.evil.example/',                   # trufflehog:ignore
+]
+bad = []
+for u in accept:
+    if not re.match(pat, u): bad.append('should ACCEPT: ' + u)
+for u in refuse:
+    if re.match(pat, u): bad.append('should REFUSE: ' + u)
+if bad:
+    print('\\n'.join(bad)); sys.exit(1)
+print('all %d cases correct' % (len(accept) + len(refuse)))
+"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all 18 cases correct"* ]]
+}
