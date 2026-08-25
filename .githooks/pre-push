@@ -81,28 +81,53 @@ if [ -d platform/tests ]; then
 fi
 
 # ── pytest ──────────────────────────────────────────────────────────────────
-# Same PYTHONPATH as CI, run from the same place (the repo root). Its dependencies (pytest,
-# netboxlabs-diode-sdk, proxmoxer, requests) are frequently absent locally, so absence
-# is a warning rather than a failure — the import error would otherwise read as a broken
-# test rather than a missing dependency.
 # Run from the REPO ROOT so pyproject's `testpaths` selects the suites, exactly as
 # CI does. Passing an explicit path overrides testpaths, so a suite added to that
 # list ran nowhere — and running nowhere is indistinguishable from passing.
+#
+# Its dependencies (pytest, pyyaml, netboxlabs-diode-sdk, proxmoxer, requests) are
+# frequently absent locally, so a MISSING DEPENDENCY is a warning rather than a
+# failure: refusing the push because a library is not installed would contradict
+# the fail-open contract above, and the import error would read as a broken test.
+#
+# But fail-open applies to that case ONLY. A collection failure also happens when a
+# test file has a syntax error, a bad import of its own, or pytest config is
+# invalid — and those are defects, not environment gaps. Treating every collection
+# failure as "dependency missing" skipped the suite silently and let a genuinely
+# broken test module reach CI: exactly how an undeclared `yaml` import took the
+# whole Unit Tests job down on PR #136 while nothing locally objected.
+#
+# RESIDUAL LIMIT, stated rather than papered over: a typo'd import and a genuinely
+# missing dependency both raise ModuleNotFoundError and cannot be distinguished from
+# the message alone — that would need a dependency manifest to compare against. So
+# that case still skips, but it now PRINTS the module it could not import and says
+# to declare it. Syntax errors and invalid config, which are unambiguous defects,
+# now fail. Verified all four cases: clean+deps runs, missing dep skips, a syntax
+# error fails, a bogus import skips with the module named.
 py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
 if [ -f pyproject.toml ]; then
-  # COLLECTION decides whether to run, not `import pytest`. pytest can be installed while
-  # the suite's other dependencies are not, and collection then fails — which under a
-  # blocking hook would refuse the push for a missing dependency, contradicting the
-  # fail-open contract above. Asking pytest to collect also needs no dependency list here
-  # to drift out of step with what the tests actually import.
-  if ( PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only ) >/dev/null 2>&1; then
+  # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
+  # whether a failure is forgivable. Keeping the output means no dependency list has
+  # to be maintained here to drift out of step with what the tests actually import.
+  collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
+  collect_rc=$?
+  if [ "$collect_rc" -eq 0 ]; then
     printf 'pre-push: running Python suite...\n' >&2
     if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q ); then
       failed=1
     fi
+  elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+    printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
+    printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
+    printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
+    printf '          If this names a module the tests legitimately need, DECLARE it in\n' >&2
+    printf '          .github/workflows/lint-and-test.yml before pushing.\n' >&2
   else
-    printf 'pre-push: Python suite not collectable here (pytest or a test dependency\n' >&2
-    printf '          is missing) — skipped. CI installs them and runs it.\n' >&2
+    printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
+    printf '          dependency — a syntax error, a bad import, or invalid config.\n' >&2
+    printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
+    printf '%s\n' "$collect_out" | tail -15 | sed 's/^/          /' >&2
+    failed=1
   fi
 fi
 

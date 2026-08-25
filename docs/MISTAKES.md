@@ -186,9 +186,9 @@ denial, all three verified on the live host.
 
 ### 1.6 Concluded a host had no address, from one vantage, on a network with an address conflict
 
-**What happened.** Investigating why a service was unreachable, I swept
-`192.168.1.0/24` from my workstation, matched MACs, and found the target's MAC
-nowhere among the eighteen that answered. I reported that the host "has no IP
+**What happened.** Investigating why a service was unreachable, I swept the
+internal `/24` from my workstation, matched hardware addresses, and found the
+target's nowhere among the eighteen that answered. I reported that the host "has no IP
 address at all" and built a causal chain on it: that it boots, finds its address
 already taken, and declines to configure one.
 
