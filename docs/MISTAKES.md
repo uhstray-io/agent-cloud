@@ -44,12 +44,15 @@ supersede it with a new entry and link both.
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
+| 2.12 | Refuted two forbidden verbs instead of the invariant; a third walked past it | False green on a safety check | Test (invariant + closed-set) |
+| 2.15 | Allow-list matched a prefix, so an appended live write passed the invariant that replaced a blacklist | False green on a safety check | Test (anchored, mutation-proven) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
+| 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -69,6 +72,7 @@ supersede it with a new entry and link both.
 | 10.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | Test (mutation-proven) |
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
@@ -467,6 +471,75 @@ times without failure, where the previous form had a measurable per-run failure 
 
 ---
 
+### 2.12 A refute that enumerated forbidden verbs instead of asserting the invariant
+
+**What happened.** A test asserted that the network playbook's validation step
+never writes to the live `/etc/netplan`. It did so by refuting two specific
+forms — `mv /etc/netplan/` and `dest: /etc/netplan`. Mutation testing inserted a
+third, `cp "$root/..." /etc/netplan/`, and the test passed. The check enumerated
+the ways I happened to imagine the mistake being made, so it caught exactly those
+and nothing else. `install`, a shell redirect, `tee` and `rm` would all have
+walked past it too — verified afterwards, once the check was rewritten.
+
+**Consequence.** A safety assertion guarding the destructive step of a playbook
+that reconfigures a host's network. It read as coverage while leaving the most
+likely regression — someone reaching for a different copy verb — undetected.
+
+**The rule.** Assert the invariant, not a list of its violations. The invariant
+here is "the live directory may be read, never written", which is a property of
+every line, so the check strips the sandbox path and requires each remaining bare
+mention to be the one permitted read. That formulation kills five write-verbs I
+never enumerated.
+
+**The exception, and why it is not the same thing.** The rewritten check
+structurally cannot see a command that acts on the live system without naming a
+path — `netplan apply` survived it, while being the worst thing that could appear
+in a validation step: it applies config *before* the revert timer is armed, so a
+bad address strands the host with nothing scheduled to undo it. That needs a
+second, named assertion. Naming it is legitimate because the commands that apply
+config are a **closed, enumerable set** — `netplan apply` and `netplan try`, both
+of which the assertion names. Enumeration over a closed set is a specification;
+enumeration over an open set (all the ways to copy a file) is a guess. An earlier
+wording here said "exactly one applying subcommand", which contradicted the very
+assertion it was describing: the test guards both, and `try` applies config too.
+
+**Enforced by.** `network config: validation never touches the live /etc/netplan`
+in `platform/tests/test_configure_host_network.bats`, proven against seven
+mutations: five unanticipated write-verbs, plus `netplan apply` and `netplan try`.
+
+**How it was found.** Mutation testing, not review. The assertion was written,
+passed, and looked correct; only inserting the defect it claimed to prevent
+revealed that it did not. This is the fourth entry in this section found that way
+(§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
+
+### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
+
+**What happened.** 2.12 records replacing a blacklist of forbidden write verbs
+with an invariant: within the validation step, every mention of the live
+configuration directory must be the one permitted read. The implementation
+filtered the permitted read out with an unanchored `grep -v` pattern.
+
+Unanchored, it matches a safe prefix and ignores whatever follows.
+`cp -a /etc/netplan/. "SANDBOX/" && cp x /etc/netplan/` was filtered out as
+permitted while appending a live write — the exact defect 2.12 exists to prevent,
+reintroduced by the shape of its own fix. Found by review, not by the seven
+mutations already run against that test.
+
+**Root cause.** An allow-list entry is a claim about a whole line; written as a
+substring it is only a claim about a prefix. The mutations missed it because they
+shared an assumption with the code — that a violation would appear on its own
+line — and mutations drawn from the same assumption as the code cannot test that
+assumption.
+
+**The rule.** Anchor an allow-list end to end, never merely match it. And when
+mutating to test a filter, include at least one mutation that EXTENDS an existing
+permitted line rather than adding a new one; appending to something already
+allowed is the cheapest way past a substring check.
+
+**Enforced by.** `network config: validation never touches the live /etc/netplan`
+in `platform/tests/test_configure_host_network.bats`, now anchored, proven against
+both an appended write on the permitted line and a separate write line.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -601,6 +674,43 @@ done once, and a case covering an offline member, would move this out of prose; 
 helper exists yet.
 
 ---
+
+### 4.5 Truncated a live file by opening it for writing in the same expression that computed its content
+
+**What happened.** An edit to the private inventory was written as
+`open(path, "w").write(transform(open(src).read()))`. Python evaluates the
+`open(path, "w")` call before it evaluates the argument, so the destination is
+truncated **first** and the content is computed second. The transform raised on a
+mismatched anchor, and the file was left at zero bytes.
+
+The file held another session's uncommitted work — 141 lines of host declarations
+that existed nowhere else. It was recovered only because a copy had been taken
+seconds earlier for an unrelated reason (committing a single hunk without
+sweeping that work). Had that copy not existed, the loss would have been total
+and silent: the very next check printed "YAML parses", because an empty file
+parses fine as `None`.
+
+**Root cause.** Two mistakes compounding. The destructive act and the fallible
+act were placed in one expression, with the destruction ordered first by the
+language's evaluation rules. And the verification that followed — "does it
+parse?" — cannot distinguish a correct file from an empty one, so it reported
+success on a destroyed file.
+
+**The rule.** Compute the new content in full, assert it is plausible, and only
+then open the destination — or write a temporary file and move it into place.
+Never let a destination be opened for writing in the same expression as the
+computation that produces its content. And a post-write check must be able to
+fail on emptiness: assert a line count or a known-present key, never just "it
+parses". This is the same lesson as the isolated-validation fix in 2.12's
+neighbourhood, arrived at from the opposite direction — there the danger was
+writing to the live path during validation; here it was truncating it before
+validation could happen.
+
+**Enforced by.** Convention, and one concrete habit that did work: the backup
+existed because editing a shared file always begins by copying it. That copy is
+what made this recoverable, and it is worth keeping as a rule of its own —
+before editing a file that carries anyone else's uncommitted work, copy it
+first.
 
 ## 5. Duplication and process
 
@@ -1136,6 +1246,35 @@ test written specifically to avoid being fooled.
 
 ---
 
+### 10.4 A safety mechanism whose second run could never work
+
+**What happened.** The network playbook arms a systemd timer that restores the
+previous configuration if the new address does not answer — the whole reason the
+playbook is safe to run against a host it can lock itself out of. The arm step
+stopped `agent-cloud-netrevert.timer` before creating it, so re-arming looked
+idempotent. `systemd-run --on-active` creates a `.timer` **and** a `.service`.
+Stopping only the timer leaves the service loaded, and the next arm fails:
+`Unit agent-cloud-netrevert.service was already loaded or has a fragment file.`
+
+**Consequence.** The failing run is the SECOND one — which is the retry after a
+revert, i.e. the exact path the mechanism exists to make survivable. First run
+works, so nothing looks wrong until the moment it is needed. It fails closed (the
+arm precedes the apply, so the abort leaves the network untouched), which is the
+only reason this is a defect and not an outage.
+
+**Why it happened.** Every existing test for the arm/disarm mechanism was a grep
+over the playbook text. Greps confirm a command was *written*; they cannot
+observe that systemd rejects it. The mechanism had never been executed anywhere.
+
+**The rule.** Where a mechanism's correctness depends on how an external system
+responds, run it against that system once — a throwaway container is enough.
+Verified here by booting systemd in a container: second arm `rc=1`, and with
+`stop` + `reset-failed` naming **both** units, `rc=0` three runs running.
+
+**Enforced by.** `network config: arming the revert is re-runnable after a
+previous arm`, proven against three mutations including a straight revert to the
+original one-unit form.
+
 ### 10.5 Added a test suite to a config key nothing reads
 
 **What happened.** A new pytest suite was added under
@@ -1233,7 +1372,6 @@ moving the retire task back outside the block — the original bug.
 **How it was found.** A security review pass, which flagged it as a non-security
 correctness note while reporting no vulnerabilities. The finding that mattered
 was the one outside the thing being looked for.
-
 ## 11. The largest one
 
 ### 11.1 Seventy-six assertions that could not fail

@@ -24,22 +24,54 @@ relies on. Without this phase, no later phase can be driven programmatically.
 Every task here is a separate orchestrated run. Do not batch them: 1.5 is the gate that
 protects 1.7, which is the only irreversible step in the change.
 
-- [ ] 1.1 Record the host's bootstrap login and privilege-escalation credential into the
+- [x] 1.1 Record the host's bootstrap login and privilege-escalation credential into the
       secret store, additively, and confirm the pre-existing administrative key pair at
       that location is untouched
-- [ ] 1.2 Register the host in the private inventory repo with its service identity,
+- [x] 1.2 Register the host in the private inventory repo with its service identity,
       deployment path, and container runtime; confirm the orchestrator reaches it **by
       password** — this is the baseline access being protected
-- [ ] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
+      REGISTRATION DONE AND CONFIRMED. The host
+      carries its service identity, deployment path and runtime in both the private
+      inventory and the orchestrator's stored copy, which points it at the declared
+      address. What blocked the confirmation was not credentials: another guest was
+      claiming the same address, so the orchestrator's connection reached that guest
+      instead and its password was rejected — while the same password succeeded from a
+      workstation whose resolution happened to land on the intended host. Probed at one
+      moment from two machines, the address returned two different SSH host keys. The
+      squatting guest was powered off on the operator's instruction 2026-08-25, and the
+      address now resolves to the intended host from every vantage tested, serving only
+      SSH. CONFIRMED 2026-08-25: an orchestrator run against the group reached the host
+      over the bootstrap password and completed (18 tasks ok, 5 changed), which is the
+      baseline access this requirement protects.
+- [x] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
       the same pair rather than generating a new one; back the pair up per the private
       repo's convention
-- [ ] 1.4 Distribute the administrative and per-service keys to the host; confirm both are
+- [x] 1.4 Distribute the administrative and per-service keys to the host; confirm both are
       authorized, that the host's authentication configuration was not modified, and that
       password authentication still works
-- [ ] 1.5 Prove key-only access from two independent directions: an orchestrator run using
+      DONE 2026-08-25 via the orchestrator. All three conditions checked from the operator
+      side afterwards: two authorized keys present (the shared administrative key and the
+      host's own), the server still offers both public-key and password so nothing was
+      tightened, and the main config's only authentication directive predates this work. A
+      cloud-init drop-in also exists, noted because hardening must cover the drop-in
+      directory and not only the main file.
+      One operational note worth keeping: the first distribution attempt timed out. The
+      orchestrator was still resolving the target address to a guest that had just been
+      powered off, and self-healed on retry — an address-reuse artefact, not a playbook
+      fault.
+- [x] 1.5 Prove key-only access from two independent directions: an orchestrator run using
       the key credential, and an operator-workstation connection with password
       authentication explicitly refused. **If either fails, stop here** — the password path
       is still the safety net and 1.7 removes it
+      BOTH DIRECTIONS PROVEN 2026-08-25. Orchestrator: the access gate's key-only probe
+      succeeded with the host key pinned and password authentication refused. Operator
+      workstation: a separate connection succeeded with password authentication explicitly
+      disabled and public-key the only permitted method, which satisfies the scenario that
+      a silent password fallback cannot be mistaken for success.
+      Worth recording why this waited: the operator direction is unobtainable from
+      off-network, and the operator was off-network for most of this work. That is not a
+      quirk of this host — it blocks hardening of every future host the same way, which is
+      what plan 15 exists to fix.
 - [ ] 1.6 Install the container runtime on the host — this doubles as the cheapest proof
       that privilege escalation still works over the new credential, while the password
       fallback is still open
@@ -103,6 +135,18 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 3.8 Validation gate: scenario "A social platform credential is added later" holds —
       seeding a previously-unset provider credential and redeploying makes that provider
       connectable with no code change
+      NO-CODE-CHANGE HALF VERIFIED by inspection 2026-08-25; the "connectable" half
+      still needs a live deploy and an OAuth round trip. Every provider credential the
+      config template reads defaults to empty when unset, so an unseeded provider
+      renders harmlessly and a later-seeded one is picked up by a redeploy alone. The
+      seeder takes only the values it is given, so adding one is a seed plus a
+      redeploy. Cross-checked the two lists against each other, because a credential
+      seeded into a key nothing reads is the failure this repo has already recorded
+      once: of the keys the seeder can place, ZERO are unread by the template, and
+      every key the template reads has a declared source — two generated once and
+      deliberately never regenerated, one shared-read from the identity provider, and
+      two operator-supplied but not social-platform credentials. No orphans in either
+      direction.
 
 ## 4. Identity, edge, and inventory wiring
 
@@ -124,10 +168,20 @@ protects 1.7, which is the only irreversible step in the change.
       secret seeding; publish them through the template-management playbook
 - [x] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
       so the estate inventory reflects a host that was provisioned before this change
-- [ ] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
+- [x] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
       guarded — the public URL, the registered redirect, and the environment's actual
       browse URL are the same string in each environment, sourced from one inventory
       variable
+      SATISFIED 2026-08-25, but it FAILED first and needed a fix. Production stated the
+      hostname three times independently — as the service's advertised URL on one host,
+      and as the registered redirect and launch URL on the identity provider's host —
+      each a hand-written string that "MUST byte-match" the others by comment alone.
+      It is now declared once in the shared group vars both hosts can see, with the
+      redirect and launch URL derived from it. Verified by rendering them through
+      Ansible on the identity-provider host: both resolve to exactly the strings they
+      previously hard-coded, so the change is behaviour-identical and can no longer
+      drift. A mismatch here fails at the IdP rather than at the service that drifted,
+      which is why one declaration matters more than a careful comment.
 
 ## 5. Local validation
 
