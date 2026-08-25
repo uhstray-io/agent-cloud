@@ -24,13 +24,13 @@ relies on. Without this phase, no later phase can be driven programmatically.
 Every task here is a separate orchestrated run. Do not batch them: 1.5 is the gate that
 protects 1.7, which is the only irreversible step in the change.
 
-- [ ] 1.1 Record the host's bootstrap login and privilege-escalation credential into the
+- [x] 1.1 Record the host's bootstrap login and privilege-escalation credential into the
       secret store, additively, and confirm the pre-existing administrative key pair at
       that location is untouched
 - [ ] 1.2 Register the host in the private inventory repo with its service identity,
       deployment path, and container runtime; confirm the orchestrator reaches it **by
       password** — this is the baseline access being protected
-- [ ] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
+- [x] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
       the same pair rather than generating a new one; back the pair up per the private
       repo's convention
 - [ ] 1.4 Distribute the administrative and per-service keys to the host; confirm both are
