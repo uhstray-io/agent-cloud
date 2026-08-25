@@ -18,4 +18,7 @@ ignore = [
 "platform/services/netbox/deployment/lib/pfsense-sync.py" = ["E501"]  # legacy script, long lines
 
 [tool.pytest.ini_options]
-testpaths = ["platform/services/netbox/deployment/tests"]
+testpaths = [
+    "platform/services/netbox/deployment/tests",
+    "platform/services/caddy/deployment/tests",
+]

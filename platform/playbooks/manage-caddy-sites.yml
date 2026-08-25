@@ -25,6 +25,21 @@
 #   caddy_probe_host       a hostname from the block, to detect "already loaded"
 #   caddy_container        container name (default 'caddy')
 #   container_engine       default 'podman'
+#   caddy_retire_sites     optional list of hostnames whose HAND-MAINTAINED block
+#                          should be deleted so caddy_managed_sites can own them
+#
+# READ + UPDATE. Every run first REPORTS the site blocks the live file defines —
+# addresses, upstreams, and whether each sits inside the managed region. That
+# report is the point: routes arrived here by hand and the file became their only
+# record, which is how devlog.uhstray.io kept pointing at an address declared for
+# a different host long after the two machines started answering one IP.
+#
+# MIGRATING A HAND-MAINTAINED ROUTE. Caddy refuses a file that defines one
+# hostname twice, so adopting a route means deleting the old block in the same
+# pass that adds the new one: declare it in caddy_managed_sites AND list it in
+# caddy_retire_sites. One-way on purpose — the block moves into inventory, where
+# it is reviewable, rather than being edited in place where the next drift would
+# be just as invisible.
 #
 # Usage (via Semaphore): -e target_service=caddy_svc
 
@@ -36,6 +51,7 @@
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
     _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
+    _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
 
   tasks:
     - name: "Require managed-sites content"
@@ -44,6 +60,49 @@
           - caddy_managed_sites is defined
           - caddy_managed_sites | trim | length > 0
         fail_msg: "Set caddy_managed_sites (the site block[s]) in inventory for this host."
+
+    # Taken BEFORE any edit, and it is what a failed validation restores. The
+    # blockinfile backup is NOT sufficient once retirement exists: it is written
+    # after the retire, so restoring it would roll back the managed block while
+    # leaving a hand-maintained route deleted — the one outcome worse than either
+    # edit failing on its own.
+    - name: "Back up the Caddyfile before any edit"
+      ansible.builtin.copy:
+        src: "{{ _caddyfile }}"
+        dest: "{{ _caddyfile }}.pre-agent-cloud"
+        remote_src: true
+        mode: "0644"
+      changed_when: false
+
+    - name: "Read the site blocks the live Caddyfile defines"
+      ansible.builtin.script:
+        cmd: "{{ _sites_tool }} {{ _caddyfile }} list"
+        executable: python3
+      register: _sites_raw
+      changed_when: false
+
+    - name: "Report the current routes"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.addresses | join(',') }}
+          [{{ 'managed by inventory' if item.managed else 'HAND-MAINTAINED' }}]
+          -> {{ item.upstreams | join(', ') | default('(no upstream)', true) }}
+      loop: "{{ _sites_raw.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.addresses | join(',') }}"
+
+    # Deleting the hand-maintained block so caddy_managed_sites can define the
+    # same hostname. Refuses on its own if the block is already managed, or if it
+    # serves other hostnames too — see the tool's docstring.
+    - name: "Retire hand-maintained blocks that inventory now owns"
+      ansible.builtin.script:
+        cmd: >-
+          {{ _sites_tool }} {{ _caddyfile }} retire --write
+          {{ caddy_retire_sites | map('regex_replace', '^', '--address ') | join(' ') }}
+        executable: python3
+      register: _retired
+      changed_when: (_retired.stdout | from_json).changed | default(false)
+      when: caddy_retire_sites | default([]) | length > 0
 
     - name: "Insert/update the managed site block in the Caddyfile"
       ansible.builtin.blockinfile:
@@ -66,16 +125,17 @@
       changed_when: false
       failed_when: false
 
-    - name: "Restore the backup if the updated Caddyfile is invalid"
+    # Restores the PRE-EDIT copy, not blockinfile's, so a retire is undone too.
+    # Also no longer gated on _bi.changed: a retire alone can invalidate the file
+    # without blockinfile reporting a change, and that case previously fell
+    # through to the failure below with the broken file left in place.
+    - name: "Restore the pre-edit Caddyfile if the update is invalid"
       ansible.builtin.copy:
-        src: "{{ _bi.backup_file }}"
+        src: "{{ _caddyfile }}.pre-agent-cloud"
         dest: "{{ _caddyfile }}"
         remote_src: true
         mode: "0644"
-      when:
-        - _bi.changed
-        - _val.rc != 0
-        - _bi.backup_file is defined
+      when: _val.rc != 0
 
     - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
       ansible.builtin.fail:
@@ -96,6 +156,7 @@
       changed_when: true
       when: >-
         _bi.changed
+        or (_retired is defined and _retired is changed)
         or (caddy_probe_host | default('') | length > 0
             and caddy_probe_host not in (_running.stdout | default('')))
 
