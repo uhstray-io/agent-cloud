@@ -17,7 +17,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from caddyfile_sites import find_site, parse_sites, retire  # noqa: E402
+from caddyfile_sites import (  # noqa: E402
+    _strip_comment,
+    find_site,
+    parse_sites,
+    retire,
+)
 
 CADDYFILE = """\
 {
@@ -211,3 +216,18 @@ def test_single_line_block_is_not_a_site():
     # brace", verified against the live binary), so ignoring it matches the
     # grammar. Pinned so nobody "fixes" the parser to accept invalid syntax.
     assert parse_sites('a.example.io { respond "hi" }\n') == []
+
+
+def test_hash_inside_a_quoted_token_is_literal():
+    # "Inside quoted tokens, all other characters are treated literally." So a
+    # `#` in a quoted token is literal even with a space before it — the
+    # position rule alone truncated this. Both rules apply, not either.
+    sites = parse_sites('a.example.io {\n\trespond "a # b"\n}\n')
+    assert sites[0]["addresses"] == ["a.example.io"]
+    assert _strip_comment('\trespond "a # b"') == '\trespond "a # b"'
+    assert _strip_comment("\trespond `x # y`") == "\trespond `x # y`"
+
+
+def test_a_real_trailing_comment_is_still_removed():
+    assert _strip_comment("\treverse_proxy 192.0.2.1:80 # note") == "\treverse_proxy 192.0.2.1:80 "
+    assert _strip_comment("# whole line") == ""

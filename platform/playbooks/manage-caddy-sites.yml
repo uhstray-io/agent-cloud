@@ -91,58 +91,71 @@
       loop_control:
         label: "{{ item.addresses | join(',') }}"
 
-    # Deleting the hand-maintained block so caddy_managed_sites can define the
-    # same hostname. Refuses on its own if the block is already managed, or if it
-    # serves other hostnames too — see the tool's docstring.
-    - name: "Retire hand-maintained blocks that inventory now owns"
-      ansible.builtin.script:
-        cmd: >-
-          {{ _sites_tool }} {{ _caddyfile }} retire --write
-          {{ caddy_retire_sites | map('regex_replace', '^', '--address ') | join(' ') }}
-        executable: python3
-      register: _retired
-      changed_when: (_retired.stdout | from_json).changed | default(false)
-      when: caddy_retire_sites | default([]) | length > 0
+    # EVERY mutating step lives in this block so that ANY failure rolls the file
+    # back, not just a failed validation. Previously the restore was a task gated
+    # on the validate result: if `retire` succeeded and `blockinfile` then failed,
+    # the play aborted before the restore was ever reached, leaving the route
+    # deleted and nothing to put it back. A rescue cannot be skipped that way.
+    - name: "Edit the Caddyfile — any failure restores the pre-edit copy"
+      block:
+        # Deleting the hand-maintained block so caddy_managed_sites can define the
+        # same hostname. Refuses on its own if the block is already managed, or if it
+        # serves other hostnames too — see the tool's docstring.
+        - name: "Retire hand-maintained blocks that inventory now owns"
+          ansible.builtin.script:
+            cmd: >-
+              {{ _sites_tool }} {{ _caddyfile }} retire --write
+              {{ caddy_retire_sites | map('regex_replace', '^', '--address ') | join(' ') }}
+            executable: python3
+          register: _retired
+          changed_when: (_retired.stdout | from_json).changed | default(false)
+          when: caddy_retire_sites | default([]) | length > 0
 
-    - name: "Insert/update the managed site block in the Caddyfile"
-      ansible.builtin.blockinfile:
-        path: "{{ _caddyfile }}"
-        marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
-        block: "{{ caddy_managed_sites }}"
-        backup: true
-        create: false
-      register: _bi
+        - name: "Insert/update the managed site block in the Caddyfile"
+          ansible.builtin.blockinfile:
+            path: "{{ _caddyfile }}"
+            marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
+            block: "{{ caddy_managed_sites }}"
+            backup: true
+            create: false
+          register: _bi
 
-    - name: "Copy the updated Caddyfile into the container for validation"
-      # Validate the actual updated file, NOT /etc/caddy/Caddyfile (the stale
-      # file-mount inode) — otherwise validation passes against old content.
-      ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
-      changed_when: false
+        - name: "Copy the updated Caddyfile into the container for validation"
+          # Validate the actual updated file, NOT /etc/caddy/Caddyfile (the stale
+          # file-mount inode) — otherwise validation passes against old content.
+          ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
+          changed_when: false
 
-    - name: "Validate the updated Caddyfile"
-      ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
-      register: _val
-      changed_when: false
-      failed_when: false
+        - name: "Validate the updated Caddyfile"
+          ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
+          register: _val
+          changed_when: false
+          failed_when: false
 
-    # Restores the PRE-EDIT copy, not blockinfile's, so a retire is undone too.
-    # Also no longer gated on _bi.changed: a retire alone can invalidate the file
-    # without blockinfile reporting a change, and that case previously fell
-    # through to the failure below with the broken file left in place.
-    - name: "Restore the pre-edit Caddyfile if the update is invalid"
-      ansible.builtin.copy:
-        src: "{{ _caddyfile }}.pre-agent-cloud"
-        dest: "{{ _caddyfile }}"
-        remote_src: true
-        mode: "0644"
-      when: _val.rc != 0
+        # Restores the PRE-EDIT copy, not blockinfile's, so a retire is undone too.
+        # Also no longer gated on _bi.changed: a retire alone can invalidate the file
+        # without blockinfile reporting a change, and that case previously fell
+        # through to the failure below with the broken file left in place.
+        - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
+          ansible.builtin.fail:
+            msg: >-
+              Caddy rejected the updated Caddyfile; rolled back. validate output:
+              {{ _val.stderr | default(_val.stdout) | default('(none)') }}
+          when: _val.rc != 0
+      rescue:
+        - name: "Roll the Caddyfile back to its pre-edit state"
+          ansible.builtin.copy:
+            src: "{{ _caddyfile }}.pre-agent-cloud"
+            dest: "{{ _caddyfile }}"
+            remote_src: true
+            mode: "0644"
 
-    - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
-      ansible.builtin.fail:
-        msg: >-
-          Caddy rejected the updated Caddyfile; rolled back. validate output:
-          {{ _val.stderr | default(_val.stdout) | default('(none)') }}
-      when: _val.rc != 0
+        - name: "Fail, having rolled back"
+          ansible.builtin.fail:
+            msg: >-
+              The Caddyfile edit failed and has been rolled back to its pre-edit
+              state; Caddy was not restarted, so the running config is untouched.
+              validate output: {{ _val.stderr | default(_val.stdout) | default('(validation not reached)', true) }}
 
     - name: "Read the running config (to detect whether the block is already loaded)"
       ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"

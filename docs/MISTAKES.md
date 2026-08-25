@@ -70,6 +70,7 @@ supersede it with a new entry and link both.
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
+| 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1147,6 +1148,40 @@ rules the sample does not exercise are exactly where the parser will be wrong.
 `test_caddyfile_sites.py`, each quoting the documented rule it pins, each of
 which failed before it was written. The single-line-block case is additionally
 confirmed against the live `caddy` binary, which rejects it.
+
+### 10.7 Named the rollback hazard, then closed only half of it
+
+**What happened.** Adding a retire step to the Caddyfile playbook created a new
+failure mode, and I identified it correctly in the commit message: blockinfile's
+own backup is written *after* the retire, so restoring it would roll back the
+managed block while leaving a hand-maintained route deleted. The fix was a
+pre-edit backup taken before any change.
+
+The restore that consumed it stayed an ordinary task, gated on
+`when: _val.rc != 0` — the validation result. If `retire --write` succeeded and
+`blockinfile` then failed, the play aborted at that task, and every task after
+it, including the restore, was never reached. `_val` was never even registered.
+So the exact sequence I had described was still unhandled: a route deleted, and
+nothing to put it back.
+
+**Root cause.** A conditional restore only runs if control reaches it. Gating on
+"validation failed" silently assumes validation *ran*, which is false for every
+failure earlier in the sequence — and the earlier steps are the ones doing the
+destructive work.
+
+**The rule.** Rollback belongs in a construct that cannot be skipped by the
+failure it exists to handle — `block`/`rescue` in Ansible, `defer`/`finally`
+elsewhere. A cleanup task guarded by `when:` on a later step's result is not a
+rollback; it is a rollback for one of the several ways the thing can fail.
+
+**Enforced by.** `test_manage_caddy_sites_playbook.py`, which parses the
+playbook and asserts every mutating step sits inside the guarded block and that
+the rescue restores the pre-edit copy. Proven against four mutations, including
+moving the retire task back outside the block — the original bug.
+
+**How it was found.** A security review pass, which flagged it as a non-security
+correctness note while reporting no vulnerabilities. The finding that mattered
+was the one outside the thing being looked for.
 
 ## 11. The largest one
 

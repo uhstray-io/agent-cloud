@@ -53,22 +53,36 @@ def _split_addresses(header: str) -> list[str]:
 
 
 def _strip_comment(line: str) -> str:
-    """Drop a trailing comment, per the documented rule.
+    """Drop a trailing comment, per the two documented rules TOGETHER.
 
-    The Caddyfile spec is positional, not quote-based: "The hash character `#`
-    for a comment cannot appear in the middle of a token (i.e. it must be
-    preceded by a space or appear at the beginning of a line)." That is
-    precisely so a `#` inside a URI needs no quoting.
+    Position: "The hash character `#` for a comment cannot appear in the middle
+    of a token (i.e. it must be preceded by a space or appear at the beginning of
+    a line)." That is precisely so a `#` inside a URI needs no quoting.
 
-    An earlier version here tracked quotes instead, which truncated
-    `reverse_proxy http://host/#frag` to `http://host/` — reporting an upstream
-    the server does not use.
+    Quoting: "Inside quoted tokens, all other characters are treated literally."
+    So a `#` inside a quoted token is literal even when a space precedes it.
+
+    Both rules are needed. An earlier version applied only quoting and truncated
+    `reverse_proxy http://host/#frag`; the version after it applied only position
+    and truncated `respond "a # b"`. Each was right about one rule and wrong
+    about the other.
     """
-    if line.lstrip().startswith("#"):
-        return ""
-    for i, ch in enumerate(line):
-        if ch == "#" and i > 0 and line[i - 1] in " \t":
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            # Within a double-quoted token a quote may be escaped: "\"abc\"".
+            if quote == '"' and ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "`"):
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
             return line[:i]
+        i += 1
     return line
 
 
