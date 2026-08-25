@@ -27,7 +27,7 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 1.1 Record the host's bootstrap login and privilege-escalation credential into the
       secret store, additively, and confirm the pre-existing administrative key pair at
       that location is untouched
-- [ ] 1.2 Register the host in the private inventory repo with its service identity,
+- [x] 1.2 Register the host in the private inventory repo with its service identity,
       deployment path, and container runtime; confirm the orchestrator reaches it **by
       password** — this is the baseline access being protected
       REGISTRATION DONE; the confirmation is now unblocked but not yet run. The host
@@ -40,18 +40,38 @@ protects 1.7, which is the only irreversible step in the change.
       moment from two machines, the address returned two different SSH host keys. The
       squatting guest was powered off on the operator's instruction 2026-08-25, and the
       address now resolves to the intended host from every vantage tested, serving only
-      SSH. Remaining: run one orchestrator task against the group to confirm the
-      password path end to end.
+      SSH. CONFIRMED 2026-08-25: an orchestrator run against the group reached the host
+      over the bootstrap password and completed (18 tasks ok, 5 changed), which is the
+      baseline access this requirement protects.
 - [x] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
       the same pair rather than generating a new one; back the pair up per the private
       repo's convention
-- [ ] 1.4 Distribute the administrative and per-service keys to the host; confirm both are
+- [x] 1.4 Distribute the administrative and per-service keys to the host; confirm both are
       authorized, that the host's authentication configuration was not modified, and that
       password authentication still works
-- [ ] 1.5 Prove key-only access from two independent directions: an orchestrator run using
+      DONE 2026-08-25 via the orchestrator. All three conditions checked from the operator
+      side afterwards: two authorized keys present (the shared administrative key and the
+      host's own), the server still offers both public-key and password so nothing was
+      tightened, and the main config's only authentication directive predates this work. A
+      cloud-init drop-in also exists, noted because hardening must cover the drop-in
+      directory and not only the main file.
+      One operational note worth keeping: the first distribution attempt timed out. The
+      orchestrator was still resolving the target address to a guest that had just been
+      powered off, and self-healed on retry — an address-reuse artefact, not a playbook
+      fault.
+- [x] 1.5 Prove key-only access from two independent directions: an orchestrator run using
       the key credential, and an operator-workstation connection with password
       authentication explicitly refused. **If either fails, stop here** — the password path
       is still the safety net and 1.7 removes it
+      BOTH DIRECTIONS PROVEN 2026-08-25. Orchestrator: the access gate's key-only probe
+      succeeded with the host key pinned and password authentication refused. Operator
+      workstation: a separate connection succeeded with password authentication explicitly
+      disabled and public-key the only permitted method, which satisfies the scenario that
+      a silent password fallback cannot be mistaken for success.
+      Worth recording why this waited: the operator direction is unobtainable from
+      off-network, and the operator was off-network for most of this work. That is not a
+      quirk of this host — it blocks hardening of every future host the same way, which is
+      what plan 15 exists to fix.
 - [ ] 1.6 Install the container runtime on the host — this doubles as the cheapest proof
       that privilege escalation still works over the new credential, while the password
       fallback is still open
