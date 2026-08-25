@@ -60,7 +60,24 @@ setup() {
   ident_line=$(grep -n 'Refuse to disarm unless it is the intended host' "$PB" | head -1 | cut -d: -f1)
   [ -n "$ident_line" ]
   [ "$ident_line" -lt "$disarm_line" ]
-  assert_grep -qE '_new_hostname\.stdout \| trim\) == _expect_hostname' "$PB"
+
+  # Asserted inside the identity task's OWN body. A whole-file search is satisfied
+  # by a matching expression in any other task, so it cannot tell a working gate
+  # from a regressed one.
+  local ident_task
+  ident_task=$(awk '/Refuse to disarm unless it is the intended host/{f=1} f&&/^    - name:/&&!/Refuse to disarm/{exit} f{print}' "$PB")
+  [ -n "$ident_task" ]
+  assert_contains "$ident_task" '_new_hostname.stdout | trim) == _expect_hostname'
+}
+
+@test "network config: the revert window is long enough to confirm within" {
+  # The confirmation window is (net_revert_seconds - 30). At 30 or below it is
+  # zero or negative: the wait returns immediately, the identity check never runs,
+  # and the revert fires over an apply that actually worked.
+  local task
+  task=$(awk '/Require a revert window long enough to confirm within/{f=1} f&&/^    - name:/&&!/Require a revert window/{exit} f{print}' "$PB")
+  [ -n "$task" ]
+  assert_contains "$task" '(_revert_seconds | int) >= 60'
 }
 
 @test "network config: the confirmation probe honours a non-default SSH port" {
@@ -111,8 +128,38 @@ setup() {
   # The previous approach moved the candidate into place under its real name to run
   # the check — which OVERWROTE an existing managed file from a prior confirmed run
   # and then removed it, before the backup that could have restored it was taken.
-  assert_grep -q 'netplan generate --root-dir' "$PB"
-  refute_grep -qE 'mv /etc/netplan/99-agent-cloud\.yaml' "$PB"
+  # Scoped to the validation task's own body, so a match elsewhere cannot stand in
+  # for it, and so the absence of a live write is asserted where it matters.
+  local vtask
+  vtask=$(awk '/Validate the rendered configuration in an isolated root/{f=1} f&&/^    - name:/&&!/Validate the rendered/{exit} f{print}' "$PB")
+  [ -n "$vtask" ]
+  assert_contains "$vtask" 'netplan generate --root-dir'
+
+  # Enumerating forbidden verbs does not work: a refute listing `mv` and `dest:`
+  # was walked straight past by `cp "$root/..." /etc/netplan/` (demonstrated by
+  # mutation). Assert the INVARIANT instead — the live directory may be READ
+  # (existing config is copied INTO the sandbox so netplan sees the full picture)
+  # but never WRITTEN. So every bare, non-sandbox mention of it must be the one
+  # permitted read; anything else is a write by some verb or other.
+  local bare
+  bare=$(printf '%s\n' "$vtask" | sed 's|\$root/etc/netplan|SANDBOX|g' | grep -n '/etc/netplan' || true)
+  [ -n "$bare" ]   # the read itself must still be there; an empty result means the awk slice missed
+  local offending
+  offending=$(printf '%s\n' "$bare" | grep -v 'cp -a /etc/netplan/\. "SANDBOX' || true)
+  if [ -n "$offending" ]; then
+    echo "validation task references the LIVE /etc/netplan outside the permitted read:" >&2
+    printf '%s\n' "$offending" >&2
+    return 1
+  fi
+
+  # A path-based invariant structurally cannot see a command that acts on the live
+  # system without naming a path, and `netplan apply` is exactly that — it survived
+  # the check above while being the worst thing that could appear here: it would
+  # apply the config during VALIDATION, before the revert timer is armed, so a bad
+  # address would strand the host with nothing scheduled to undo it. netplan has
+  # exactly one applying subcommand, so naming it is enumeration over a closed set,
+  # not the open-ended verb blacklist rejected above.
+  refute_grep -qE 'netplan[[:space:]]+(apply|try)' <<<"$vtask"
 }
 
 @test "network config: the rendered config is validated before it can be applied" {

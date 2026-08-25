@@ -59,6 +59,22 @@
     _confirm: "{{ net_confirm | default(false) | bool }}"
 
   tasks:
+    # The confirmation window is derived as (net_revert_seconds - 30). At 30 or
+    # below that is zero or negative, so Phase 2 would get no usable window: the
+    # wait returns immediately, the identity check never runs, and the revert stays
+    # armed and fires over a perfectly good apply. A floor of 60 guarantees at
+    # least 30s to establish SSH AND keeps the wait strictly shorter than the
+    # revert, so the two can never race.
+    - name: "Require a revert window long enough to confirm within"
+      ansible.builtin.assert:
+        that:
+          - (_revert_seconds | int) >= 60
+        fail_msg: >-
+          net_revert_seconds is {{ _revert_seconds }}; it must be at least 60. The
+          confirmation window is that value minus 30 seconds, so anything lower
+          leaves no time to prove the new address works — and an unproven address
+          means the revert fires after a change that actually succeeded.
+
     - name: "Require a complete network declaration"
       ansible.builtin.assert:
         that:

@@ -43,6 +43,7 @@ supersede it with a new entry and link both.
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
+| 2.12 | Refuted two forbidden verbs instead of the invariant; a third walked past it | False green on a safety check | Test (invariant + closed-set) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -430,6 +431,44 @@ failure probability to negligible with an explicit sample count and say so in th
 times without failure, where the previous form had a measurable per-run failure rate.
 
 ---
+
+### 2.12 A refute that enumerated forbidden verbs instead of asserting the invariant
+
+**What happened.** A test asserted that the network playbook's validation step
+never writes to the live `/etc/netplan`. It did so by refuting two specific
+forms — `mv /etc/netplan/` and `dest: /etc/netplan`. Mutation testing inserted a
+third, `cp "$root/..." /etc/netplan/`, and the test passed. The check enumerated
+the ways I happened to imagine the mistake being made, so it caught exactly those
+and nothing else. `install`, a shell redirect, `tee` and `rm` would all have
+walked past it too — verified afterwards, once the check was rewritten.
+
+**Consequence.** A safety assertion guarding the destructive step of a playbook
+that reconfigures a host's network. It read as coverage while leaving the most
+likely regression — someone reaching for a different copy verb — undetected.
+
+**The rule.** Assert the invariant, not a list of its violations. The invariant
+here is "the live directory may be read, never written", which is a property of
+every line, so the check strips the sandbox path and requires each remaining bare
+mention to be the one permitted read. That formulation kills five write-verbs I
+never enumerated.
+
+**The exception, and why it is not the same thing.** The rewritten check
+structurally cannot see a command that acts on the live system without naming a
+path — `netplan apply` survived it, while being the worst thing that could appear
+in a validation step: it applies config *before* the revert timer is armed, so a
+bad address strands the host with nothing scheduled to undo it. That needs a
+second, named assertion. Naming it is legitimate because `netplan` has exactly one
+applying subcommand: enumeration over a **closed** set is a specification;
+enumeration over an open set (all the ways to copy a file) is a guess.
+
+**Enforced by.** `network config: validation never touches the live /etc/netplan`
+in `platform/tests/test_configure_host_network.bats`, proven against seven
+mutations: five unanticipated write-verbs, plus `netplan apply` and `netplan try`.
+
+**How it was found.** Mutation testing, not review. The assertion was written,
+passed, and looked correct; only inserting the defect it claimed to prevent
+revealed that it did not. This is the fourth entry in this section found that way
+(§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
 ## 3. Acting on live state
 
