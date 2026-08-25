@@ -50,6 +50,7 @@ supersede it with a new entry and link both.
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
+| 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -605,6 +606,43 @@ done once, and a case covering an offline member, would move this out of prose; 
 helper exists yet.
 
 ---
+
+### 4.5 Truncated a live file by opening it for writing in the same expression that computed its content
+
+**What happened.** An edit to the private inventory was written as
+`open(path, "w").write(transform(open(src).read()))`. Python evaluates the
+`open(path, "w")` call before it evaluates the argument, so the destination is
+truncated **first** and the content is computed second. The transform raised on a
+mismatched anchor, and the file was left at zero bytes.
+
+The file held another session's uncommitted work — 141 lines of host declarations
+that existed nowhere else. It was recovered only because a copy had been taken
+seconds earlier for an unrelated reason (committing a single hunk without
+sweeping that work). Had that copy not existed, the loss would have been total
+and silent: the very next check printed "YAML parses", because an empty file
+parses fine as `None`.
+
+**Root cause.** Two mistakes compounding. The destructive act and the fallible
+act were placed in one expression, with the destruction ordered first by the
+language's evaluation rules. And the verification that followed — "does it
+parse?" — cannot distinguish a correct file from an empty one, so it reported
+success on a destroyed file.
+
+**The rule.** Compute the new content in full, assert it is plausible, and only
+then open the destination — or write a temporary file and move it into place.
+Never let a destination be opened for writing in the same expression as the
+computation that produces its content. And a post-write check must be able to
+fail on emptiness: assert a line count or a known-present key, never just "it
+parses". This is the same lesson as the isolated-validation fix in 2.12's
+neighbourhood, arrived at from the opposite direction — there the danger was
+writing to the live path during validation; here it was truncating it before
+validation could happen.
+
+**Enforced by.** Convention, and one concrete habit that did work: the backup
+existed because editing a shared file always begins by copying it. That copy is
+what made this recoverable, and it is worth keeping as a rule of its own —
+before editing a file that carries anyone else's uncommitted work, copy it
+first.
 
 ## 5. Duplication and process
 

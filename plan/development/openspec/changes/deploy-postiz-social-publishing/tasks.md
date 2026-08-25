@@ -124,10 +124,20 @@ protects 1.7, which is the only irreversible step in the change.
       secret seeding; publish them through the template-management playbook
 - [x] 4.7 Record the host's static address and VM id in the private repo's VM spec file,
       so the estate inventory reflects a host that was provisioned before this change
-- [ ] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
+- [x] 4.8 Validation gate: scenario "Advertised URL does not match the browser URL" is
       guarded — the public URL, the registered redirect, and the environment's actual
       browse URL are the same string in each environment, sourced from one inventory
       variable
+      SATISFIED 2026-08-25, but it FAILED first and needed a fix. Production stated the
+      hostname three times independently — as the service's advertised URL on one host,
+      and as the registered redirect and launch URL on the identity provider's host —
+      each a hand-written string that "MUST byte-match" the others by comment alone.
+      It is now declared once in the shared group vars both hosts can see, with the
+      redirect and launch URL derived from it. Verified by rendering them through
+      Ansible on the identity-provider host: both resolve to exactly the strings they
+      previously hard-coded, so the change is behaviour-identical and can no longer
+      drift. A mismatch here fails at the IdP rather than at the service that drifted,
+      which is why one declaration matters more than a careful comment.
 
 ## 5. Local validation
 
