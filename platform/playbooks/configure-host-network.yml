@@ -249,7 +249,16 @@
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
-          systemctl stop agent-cloud-netrevert.timer 2>/dev/null || true
+          # BOTH units, and reset-failed as well as stop. systemd-run --on-active
+          # creates a .timer AND a .service; stopping only the timer leaves the
+          # service loaded, and the next arm dies with "Unit
+          # agent-cloud-netrevert.service was already loaded or has a fragment
+          # file." Measured in a systemd container: second arm rc=1, and with this
+          # cleanup rc=0 three runs running. That second run is not an edge case —
+          # it is the retry after a revert, i.e. the exact path this playbook
+          # exists to make survivable.
+          systemctl stop agent-cloud-netrevert.timer agent-cloud-netrevert.service 2>/dev/null || true
+          systemctl reset-failed agent-cloud-netrevert.timer agent-cloud-netrevert.service 2>/dev/null || true
           systemd-run --unit=agent-cloud-netrevert --on-active={{ _revert_seconds }} \
             /bin/bash -c 'rm -f /etc/netplan/*.yaml; \
                           cp -a /var/backups/agent-cloud-netplan/. /etc/netplan/; \

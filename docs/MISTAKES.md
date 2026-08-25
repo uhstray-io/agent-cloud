@@ -69,6 +69,7 @@ supersede it with a new entry and link both.
 | 10.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | Test (mutation-proven) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1120,6 +1121,35 @@ test written specifically to avoid being fooled.
 **Enforced by.** Convention.
 
 ---
+
+### 10.4 A safety mechanism whose second run could never work
+
+**What happened.** The network playbook arms a systemd timer that restores the
+previous configuration if the new address does not answer — the whole reason the
+playbook is safe to run against a host it can lock itself out of. The arm step
+stopped `agent-cloud-netrevert.timer` before creating it, so re-arming looked
+idempotent. `systemd-run --on-active` creates a `.timer` **and** a `.service`.
+Stopping only the timer leaves the service loaded, and the next arm fails:
+`Unit agent-cloud-netrevert.service was already loaded or has a fragment file.`
+
+**Consequence.** The failing run is the SECOND one — which is the retry after a
+revert, i.e. the exact path the mechanism exists to make survivable. First run
+works, so nothing looks wrong until the moment it is needed. It fails closed (the
+arm precedes the apply, so the abort leaves the network untouched), which is the
+only reason this is a defect and not an outage.
+
+**Why it happened.** Every existing test for the arm/disarm mechanism was a grep
+over the playbook text. Greps confirm a command was *written*; they cannot
+observe that systemd rejects it. The mechanism had never been executed anywhere.
+
+**The rule.** Where a mechanism's correctness depends on how an external system
+responds, run it against that system once — a throwaway container is enough.
+Verified here by booting systemd in a container: second arm `rc=1`, and with
+`stop` + `reset-failed` naming **both** units, `rc=0` three runs running.
+
+**Enforced by.** `network config: arming the revert is re-runnable after a
+previous arm`, proven against three mutations including a straight revert to the
+original one-unit form.
 
 ## 11. The largest one
 

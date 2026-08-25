@@ -70,6 +70,22 @@ setup() {
   assert_contains "$ident_task" '_new_hostname.stdout | trim) == _expect_hostname'
 }
 
+@test "network config: arming the revert is re-runnable after a previous arm" {
+  # systemd-run --on-active creates a .timer AND a .service. Stopping only the
+  # timer leaves the service loaded and the NEXT arm fails outright — verified in
+  # a systemd container (rc=1, "already loaded or has a fragment file"). The retry
+  # after a revert is precisely the second run, so a non-re-runnable arm breaks
+  # the recovery path rather than some rare corner.
+  local task
+  task=$(awk '/ARM THE REVERT before applying anything/{f=1} f&&/^    - name:/&&!/ARM THE REVERT/{exit} f{print}' "$PB")
+  [ -n "$task" ]
+  local cleanup
+  cleanup=$(printf '%s\n' "$task" | grep -E '^\s*systemctl (stop|reset-failed)')
+  # Both verbs, and each naming the .service — not just the .timer.
+  assert_grep -qE 'systemctl stop .*agent-cloud-netrevert\.service' <<<"$cleanup"
+  assert_grep -qE 'systemctl reset-failed .*agent-cloud-netrevert\.service' <<<"$cleanup"
+}
+
 @test "network config: the revert window is long enough to confirm within" {
   # The confirmation window is (net_revert_seconds - 30). At 30 or below it is
   # zero or negative: the wait returns immediately, the identity check never runs,
