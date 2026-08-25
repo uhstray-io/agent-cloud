@@ -157,11 +157,13 @@
           handles netplan-managed hosts; it refuses rather than guessing at
           another network stack.
 
-    - name: "Render the desired configuration to a staging path"
-      ansible.builtin.copy:
-        dest: /etc/netplan/99-agent-cloud.yaml.staged
-        mode: "0600"
-        content: |
+    # Held as a VARIABLE, not written to /etc/netplan. A dry run must leave no
+    # trace: an earlier version staged the file on disk and relied on
+    # `changed_when: false`, which hides the change from the report without
+    # preventing it.
+    - name: "Render the desired configuration"
+      ansible.builtin.set_fact:
+        _desired_config: |
           # Managed by agent-cloud configure-host-network.yml — do not edit by hand.
           # The address here is the one declared for this host in inventory; edit
           # the inventory and re-run instead, so the declaration stays the source
@@ -177,71 +179,85 @@
                     via: {{ net_gateway }}
                 nameservers:
                   addresses: {{ net_nameservers | default([net_gateway], true) | to_json }}
-      changed_when: false
 
-    - name: "Validate the rendered configuration before it can be applied"
-      # `netplan generate` parses every file in /etc/netplan, so the staged file is
-      # given its real name only for the duration of the check and moved back
-      # immediately. Applying an unparseable config is how a host is lost.
+    # Validated inside an ISOLATED ROOT. `netplan generate --root-dir` reads and
+    # writes only under the directory given, so /etc/netplan is never touched by a
+    # validation — not even momentarily.
+    #
+    # The previous approach moved the candidate into place under its real name to
+    # run the check and moved it back afterwards. On a host where a prior
+    # confirmed run had already installed a managed file, that OVERWROTE the
+    # active configuration and then removed it, leaving the host with no managed
+    # file and no copy of it — and the backup, taken later, could not restore what
+    # had already been destroyed.
+    - name: "Validate the rendered configuration in an isolated root"
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
-          tmp=$(mktemp -d)
-          cp -a /etc/netplan/. "$tmp"/
-          mv /etc/netplan/99-agent-cloud.yaml.staged /etc/netplan/99-agent-cloud.yaml
-          if netplan generate 2>&1; then rc=0; else rc=1; fi
-          mv /etc/netplan/99-agent-cloud.yaml /etc/netplan/99-agent-cloud.yaml.staged
-          rm -rf "$tmp"
-          exit $rc
+          root=$(mktemp -d)
+          trap 'rm -rf "$root"' EXIT
+          mkdir -p "$root/etc/netplan"
+          cp -a /etc/netplan/. "$root/etc/netplan/" 2>/dev/null || true
+          cat > "$root/etc/netplan/99-agent-cloud.yaml" <<'NETPLAN_EOF'
+          {{ _desired_config }}
+          NETPLAN_EOF
+          chmod 600 "$root/etc/netplan/99-agent-cloud.yaml"
+          netplan generate --root-dir "$root"
         executable: /bin/bash
       register: _np_validate
       changed_when: false
       failed_when: _np_validate.rc != 0
 
+    - name: "Stop here on a dry run — nothing has been modified"
+      ansible.builtin.meta: end_host
+      when: not _confirm
+
     - name: "Back up the configuration the revert will restore"
+      # Taken BEFORE the managed file is written, so it captures the state to
+      # return to — including any managed file a previous confirmed run installed.
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
           rm -rf /var/backups/agent-cloud-netplan
           mkdir -p /var/backups/agent-cloud-netplan
           cp -a /etc/netplan/. /var/backups/agent-cloud-netplan/
-          rm -f /var/backups/agent-cloud-netplan/99-agent-cloud.yaml.staged
         executable: /bin/bash
       changed_when: true
-      when: _confirm
 
     - name: "ARM THE REVERT before applying anything"
-      # The whole safety property of this playbook. A transient systemd timer
-      # restores the backup and re-applies it after net_revert_seconds. It is
-      # cancelled ONLY once the controller has confirmed the host answers on its
-      # new address, so an address that does not work undoes itself without anyone
+      # The safety property of this playbook. A transient systemd timer restores
+      # the backup and re-applies it after net_revert_seconds. It is cancelled
+      # ONLY once the controller has confirmed the intended host answers on its new
+      # address, so an address that does not work undoes itself without anyone
       # watching. This is the non-interactive equivalent of `netplan try`.
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
           systemctl stop agent-cloud-netrevert.timer 2>/dev/null || true
           systemd-run --unit=agent-cloud-netrevert --on-active={{ _revert_seconds }} \
-            /bin/bash -c 'rm -f /etc/netplan/99-agent-cloud.yaml; \
+            /bin/bash -c 'rm -f /etc/netplan/*.yaml; \
                           cp -a /var/backups/agent-cloud-netplan/. /etc/netplan/; \
                           netplan apply'
         executable: /bin/bash
       changed_when: true
-      when: _confirm
 
-    - name: "Apply the new configuration (fire-and-forget — this drops our own connection)"
+    - name: "Install the validated configuration"
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-agent-cloud.yaml
+        mode: "0600"
+        content: "{{ _desired_config }}"
+      changed_when: true
+
+    - name: "Apply it (fire-and-forget — this drops our own connection)"
       # async + poll:0 on purpose. Changing the address severs the SSH session
       # mid-task, so a normal task would be reported as a failure even when the
       # change succeeded. The controller verifies the outcome in the next play.
       ansible.builtin.shell:
-        cmd: |
-          mv /etc/netplan/99-agent-cloud.yaml.staged /etc/netplan/99-agent-cloud.yaml
-          chmod 600 /etc/netplan/99-agent-cloud.yaml
-          netplan apply
+        cmd: netplan apply
         executable: /bin/bash
       async: 45
       poll: 0
       changed_when: true
-      when: _confirm
 
     - name: "Publish the new address for the confirmation play"
       ansible.builtin.add_host:
@@ -249,13 +265,17 @@
         groups: _netchanged
         ansible_host: "{{ net_address | regex_replace('/.*$', '') }}"
         ansible_user: "{{ ansible_user | default(omit) }}"
+        # Carried forward deliberately: a host on a non-default SSH port would
+        # otherwise be probed on 22, time out, and have its revert fire after a
+        # perfectly good apply.
+        ansible_port: "{{ ansible_port | default(22) }}"
         _orig_host: "{{ inventory_hostname }}"
+        _expect_hostname: "{{ net_expect_hostname | default(inventory_hostname, true) }}"
         _revert_seconds: "{{ _revert_seconds }}"
       changed_when: false
-      when: _confirm
 
-# ── Phase 2: the CONTROLLER verifies the new address answers ──────────────────
-- name: "Phase 2: confirm the host answers on its new address"
+# ── Phase 2: the CONTROLLER confirms the INTENDED host answers ────────────────
+- name: "Phase 2: confirm the intended host answers on its new address"
   hosts: _netchanged
   gather_facts: false
   become: false
@@ -264,29 +284,46 @@
     - name: "Wait for SSH on the new address"
       ansible.builtin.wait_for:
         host: "{{ ansible_host }}"
-        port: 22
+        port: "{{ ansible_port | default(22) }}"
         timeout: "{{ (_revert_seconds | int) - 30 }}"
         state: started
       delegate_to: localhost
       register: _newaddr
       failed_when: false
 
-    - name: "Report the verdict, and what happens if it failed"
-      ansible.builtin.debug:
-        msg: >-
-          {{ ansible_host }} {{ 'ANSWERS — the change holds and the revert will be disarmed.'
-             if not _newaddr.failed
-             else 'DID NOT ANSWER. Nothing to undo by hand: the armed revert restores the
-                   previous configuration automatically, within ' ~ _revert_seconds ~ 's of the apply.' }}
-
     - name: "Fail the run when the new address never answered"
       ansible.builtin.fail:
         msg: >-
-          The host did not answer on {{ ansible_host }}:22. The revert timer will
-          restore the previous address; re-check the declaration before retrying.
+          Nothing answered on {{ ansible_host }}:{{ ansible_port | default(22) }}.
+          Nothing to undo by hand — the armed revert restores the previous
+          configuration within {{ _revert_seconds }}s of the apply. Re-check the
+          declaration before retrying.
       when: _newaddr.failed
 
-    - name: "DISARM the revert — only now that the new address is proven"
+    # An open port proves only that SOME machine answers at that address. If
+    # another machine already holds it, connecting here would report success, the
+    # intended host would keep its revert armed, and it would silently roll back —
+    # while the run claimed to have succeeded. This is the same mistake the
+    # identity guard in Phase 1 exists to prevent, and it needs making twice.
+    - name: "Ask whoever answered what it calls itself"
+      ansible.builtin.command: hostname
+      register: _new_hostname
+      changed_when: false
+
+    - name: "Refuse to disarm unless it is the intended host"
+      ansible.builtin.assert:
+        that:
+          - (_new_hostname.stdout | trim) == _expect_hostname
+        fail_msg: >-
+          {{ ansible_host }} answers, but it calls itself
+          '{{ _new_hostname.stdout | trim }}' rather than '{{ _expect_hostname }}'.
+          Another machine already holds this address. NOT disarming the revert:
+          {{ _orig_host }} will restore its previous configuration on its own,
+          which is the correct outcome — the address it was given is taken.
+        success_msg: >-
+          {{ ansible_host }} answers and identifies as {{ _expect_hostname }}.
+
+    - name: "DISARM the revert — only now that the intended host is proven"
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
@@ -301,6 +338,5 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          {{ _orig_host }} is now reachable at {{ ansible_host }} and the revert is
-          disarmed. Update the inventory only if this address is NOT what it
-          declared — the declaration is the source of truth, not the guest.
+          {{ _orig_host }} is reachable at {{ ansible_host }}, identified itself,
+          and the revert is disarmed.
