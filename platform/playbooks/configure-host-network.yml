@@ -1,0 +1,306 @@
+---
+# configure-host-network.yml — converge a host's IPv4 configuration to what the
+# inventory declares.
+#
+# WHY THIS EXISTS. An address that lives only inside a guest drifts from the
+# address the inventory claims, and nothing notices until two machines answer the
+# same IP. That is not hypothetical: one host was found holding the address
+# declared for a DIFFERENT host in this fleet. Different parts of the
+# network had cached different MACs for .153, so one machine reached postiz while
+# another reached devlog — and an orchestrated deploy authenticated against the
+# wrong host for hours while every credential check passed.
+#
+# THE LOCKOUT PROBLEM. Changing the address of the host you are connected to drops
+# that connection by definition, and a mistake leaves the host unreachable with no
+# second path. `netplan try` solves this interactively by auto-reverting after a
+# timeout; there is no non-interactive equivalent, so this playbook builds one:
+#
+#   1. render + `netplan generate` (syntax is validated BEFORE anything is applied)
+#   2. back up the existing config
+#   3. ARM A REVERT — a systemd timer that restores the backup and re-applies
+#   4. apply, fire-and-forget, because the connection dies mid-task by design
+#   5. the CONTROLLER waits for the NEW address to answer
+#   6. only on success is the revert disarmed
+#
+# If step 5 fails, nobody has to do anything: the timer fires and the host comes
+# back on its old address. The dangerous window is bounded by net_revert_seconds,
+# not by an operator noticing.
+#
+# Declare per host in inventory:
+#   net_address       "<host-ip>/<prefix>"   required, CIDR — unique per host
+#   net_gateway       "<gateway-ip>"         required; declare on the group
+#   net_nameservers   ["<resolver-ip>"]      optional, defaults to the gateway
+#   net_interface     "ens18"                optional, autodetected when omitted
+#   net_revert_seconds 180                   optional
+#
+# Usage: -e target_service=<inventory group>
+#        -e net_confirm=true                 required; without it this is a DRY RUN
+#
+# A run without net_confirm renders and validates the config, prints the diff, and
+# changes nothing — so the safe thing to do first is always the default.
+
+# The sentinel default exists so the playbook PARSES without target_service set;
+# it names no real group, so a run without the variable matches nothing and the
+# pre-flight play above fails loudly rather than silently doing nothing.
+- name: "Pre-flight: the target group must exist and contain hosts"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: "{{ target_service | default('__configure_host_network_no_target__') }}"
+    preflight_group_expected: "{{ target_service | default('__configure_host_network_no_target__') }}"
+
+# ── Phase 1: validate the declaration and render, WITHOUT applying ────────────
+- name: "Phase 1: render and validate the declared network configuration"
+  hosts: "{{ target_service | default('__configure_host_network_no_target__') }}"
+  gather_facts: true
+  become: true
+
+  vars:
+    _revert_seconds: "{{ net_revert_seconds | default(180) | int }}"
+    _confirm: "{{ net_confirm | default(false) | bool }}"
+
+  tasks:
+    - name: "Require a complete network declaration"
+      ansible.builtin.assert:
+        that:
+          - net_address is defined and (net_address | trim | length) > 0
+          - net_address is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+          - net_gateway is defined and (net_gateway | trim | length) > 0
+          - net_gateway is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+        fail_msg: >-
+          Declare net_address (CIDR, e.g. <host-ip>/<prefix>) and net_gateway for
+          this host in inventory. A partial declaration is refused rather than
+          half-applied — a host with an address and no gateway is unreachable off
+          its own subnet, which looks exactly like the lockout this playbook is
+          built to avoid.
+
+    # IDENTITY GUARD — refuse to reconfigure a host that is not the one intended.
+    # This is the lesson of the incident that produced this playbook: when two
+    # machines answer one address, "connect to the declared IP" reaches whichever
+    # the local ARP cache points at, and reconfiguring the wrong guest is
+    # unrecoverable from here. The connection is only trusted once the host says
+    # its own name and that name matches the inventory entry being converged.
+    #
+    # net_expect_hostname overrides the comparison for a host whose OS hostname
+    # legitimately differs from its inventory key.
+    - name: "Ask the host what it calls itself"
+      ansible.builtin.command: hostname
+      register: _remote_hostname
+      changed_when: false
+
+    - name: "Refuse to continue if this is not the intended host"
+      ansible.builtin.assert:
+        that:
+          - (_remote_hostname.stdout | trim) == (net_expect_hostname | default(inventory_hostname, true))
+        fail_msg: >-
+          Connected to a host calling itself '{{ _remote_hostname.stdout | trim }}'
+          while converging '{{ inventory_hostname }}' at {{ ansible_host }}. Refusing
+          to change its network configuration. Two machines answering one address is
+          exactly how this playbook came to exist — resolve the conflict, or set
+          net_expect_hostname if the OS hostname legitimately differs.
+        success_msg: >-
+          Host identity confirmed: {{ _remote_hostname.stdout | trim }}.
+
+    - name: "Resolve the interface carrying the default route"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}'
+        executable: /bin/bash
+      register: _defroute_if
+      changed_when: false
+
+    - name: "Settle on the interface to configure"
+      ansible.builtin.set_fact:
+        _iface: "{{ net_interface | default((_defroute_if.stdout | trim), true) }}"
+
+    - name: "Require an interface to have been resolved"
+      ansible.builtin.assert:
+        that:
+          - _iface | trim | length > 0
+        fail_msg: >-
+          No interface carries the default route and net_interface is not set.
+          Refusing to guess which NIC to reconfigure.
+
+    - name: "Record the address the host holds now"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          ip -4 -o addr show dev {{ _iface | quote }} | awk '{print $4; exit}'
+        executable: /bin/bash
+      register: _current_cidr
+      changed_when: false
+
+    - name: "Report the change this run would make"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ _iface }}): {{ (_current_cidr.stdout | trim) | default('none', true) }}
+          -> {{ net_address }}
+          {{ '[ALREADY CONVERGED]' if (_current_cidr.stdout | trim) == net_address
+             else ('[WILL APPLY]' if _confirm else '[DRY RUN — pass -e net_confirm=true to apply]') }}
+
+    - name: "Stop here when the declared address is already in place"
+      ansible.builtin.meta: end_host
+      when: (_current_cidr.stdout | trim) == net_address
+
+    - name: "Find the netplan configuration this host actually uses"
+      ansible.builtin.find:
+        paths: /etc/netplan
+        patterns: "*.yaml,*.yml"
+      register: _netplan_files
+
+    - name: "Require netplan"
+      ansible.builtin.assert:
+        that:
+          - _netplan_files.files | length > 0
+        fail_msg: >-
+          No netplan configuration found under /etc/netplan. This playbook only
+          handles netplan-managed hosts; it refuses rather than guessing at
+          another network stack.
+
+    - name: "Render the desired configuration to a staging path"
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-agent-cloud.yaml.staged
+        mode: "0600"
+        content: |
+          # Managed by agent-cloud configure-host-network.yml — do not edit by hand.
+          # The address here is the one declared for this host in inventory; edit
+          # the inventory and re-run instead, so the declaration stays the source
+          # of truth rather than drifting from it.
+          network:
+            version: 2
+            ethernets:
+              {{ _iface }}:
+                dhcp4: false
+                addresses: [{{ net_address }}]
+                routes:
+                  - to: default
+                    via: {{ net_gateway }}
+                nameservers:
+                  addresses: {{ net_nameservers | default([net_gateway], true) | to_json }}
+      changed_when: false
+
+    - name: "Validate the rendered configuration before it can be applied"
+      # `netplan generate` parses every file in /etc/netplan, so the staged file is
+      # given its real name only for the duration of the check and moved back
+      # immediately. Applying an unparseable config is how a host is lost.
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          cp -a /etc/netplan/. "$tmp"/
+          mv /etc/netplan/99-agent-cloud.yaml.staged /etc/netplan/99-agent-cloud.yaml
+          if netplan generate 2>&1; then rc=0; else rc=1; fi
+          mv /etc/netplan/99-agent-cloud.yaml /etc/netplan/99-agent-cloud.yaml.staged
+          rm -rf "$tmp"
+          exit $rc
+        executable: /bin/bash
+      register: _np_validate
+      changed_when: false
+      failed_when: _np_validate.rc != 0
+
+    - name: "Back up the configuration the revert will restore"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          rm -rf /var/backups/agent-cloud-netplan
+          mkdir -p /var/backups/agent-cloud-netplan
+          cp -a /etc/netplan/. /var/backups/agent-cloud-netplan/
+          rm -f /var/backups/agent-cloud-netplan/99-agent-cloud.yaml.staged
+        executable: /bin/bash
+      changed_when: true
+      when: _confirm
+
+    - name: "ARM THE REVERT before applying anything"
+      # The whole safety property of this playbook. A transient systemd timer
+      # restores the backup and re-applies it after net_revert_seconds. It is
+      # cancelled ONLY once the controller has confirmed the host answers on its
+      # new address, so an address that does not work undoes itself without anyone
+      # watching. This is the non-interactive equivalent of `netplan try`.
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          systemctl stop agent-cloud-netrevert.timer 2>/dev/null || true
+          systemd-run --unit=agent-cloud-netrevert --on-active={{ _revert_seconds }} \
+            /bin/bash -c 'rm -f /etc/netplan/99-agent-cloud.yaml; \
+                          cp -a /var/backups/agent-cloud-netplan/. /etc/netplan/; \
+                          netplan apply'
+        executable: /bin/bash
+      changed_when: true
+      when: _confirm
+
+    - name: "Apply the new configuration (fire-and-forget — this drops our own connection)"
+      # async + poll:0 on purpose. Changing the address severs the SSH session
+      # mid-task, so a normal task would be reported as a failure even when the
+      # change succeeded. The controller verifies the outcome in the next play.
+      ansible.builtin.shell:
+        cmd: |
+          mv /etc/netplan/99-agent-cloud.yaml.staged /etc/netplan/99-agent-cloud.yaml
+          chmod 600 /etc/netplan/99-agent-cloud.yaml
+          netplan apply
+        executable: /bin/bash
+      async: 45
+      poll: 0
+      changed_when: true
+      when: _confirm
+
+    - name: "Publish the new address for the confirmation play"
+      ansible.builtin.add_host:
+        name: "{{ inventory_hostname }}-newaddr"
+        groups: _netchanged
+        ansible_host: "{{ net_address | regex_replace('/.*$', '') }}"
+        ansible_user: "{{ ansible_user | default(omit) }}"
+        _orig_host: "{{ inventory_hostname }}"
+        _revert_seconds: "{{ _revert_seconds }}"
+      changed_when: false
+      when: _confirm
+
+# ── Phase 2: the CONTROLLER verifies the new address answers ──────────────────
+- name: "Phase 2: confirm the host answers on its new address"
+  hosts: _netchanged
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: "Wait for SSH on the new address"
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: "{{ (_revert_seconds | int) - 30 }}"
+        state: started
+      delegate_to: localhost
+      register: _newaddr
+      failed_when: false
+
+    - name: "Report the verdict, and what happens if it failed"
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_host }} {{ 'ANSWERS — the change holds and the revert will be disarmed.'
+             if not _newaddr.failed
+             else 'DID NOT ANSWER. Nothing to undo by hand: the armed revert restores the
+                   previous configuration automatically, within ' ~ _revert_seconds ~ 's of the apply.' }}
+
+    - name: "Fail the run when the new address never answered"
+      ansible.builtin.fail:
+        msg: >-
+          The host did not answer on {{ ansible_host }}:22. The revert timer will
+          restore the previous address; re-check the declaration before retrying.
+      when: _newaddr.failed
+
+    - name: "DISARM the revert — only now that the new address is proven"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          systemctl stop agent-cloud-netrevert.timer 2>/dev/null || true
+          systemctl reset-failed agent-cloud-netrevert.service 2>/dev/null || true
+          echo disarmed
+        executable: /bin/bash
+      become: true
+      register: _disarm
+      changed_when: "'disarmed' in _disarm.stdout"
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _orig_host }} is now reachable at {{ ansible_host }} and the revert is
+          disarmed. Update the inventory only if this address is NOT what it
+          declared — the declaration is the source of truth, not the guest.
