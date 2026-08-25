@@ -723,6 +723,39 @@ templates:
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Configure Host Network
+    playbook: platform/playbooks/configure-host-network.yml
+    dev_variant: true
+    # Converges a host's IPv4 configuration to what the inventory declares. Built
+    # after `devlog` was found holding `postiz`'s declared address: two machines
+    # answered one IP, different ARP caches resolved it differently, and an
+    # orchestrated deploy authenticated against the wrong host for hours while
+    # every credential check passed.
+    #
+    # DRY RUN BY DEFAULT. Without `net_confirm=true` it renders, validates with
+    # `netplan generate`, prints the before/after and changes nothing.
+    #
+    # Two safety properties, both mutation-tested:
+    #  - an IDENTITY GUARD refuses to proceed unless the host states a name
+    #    matching the inventory entry being converged, so a contested address
+    #    cannot cause the wrong guest to be reconfigured
+    #  - a REVERT IS ARMED before the apply (a transient systemd timer restoring
+    #    the previous config) and disarmed only after the CONTROLLER confirms the
+    #    new address answers. An address that does not work undoes itself; the
+    #    exposure is bounded by net_revert_seconds rather than by someone noticing.
+    survey_vars:
+      - name: target_service
+        title: "Service"
+        description: "Inventory group whose host to converge (e.g. devlog_svc)"
+        type: string
+        required: true
+      - name: net_confirm
+        title: "Apply"
+        description: "false (default) renders and validates only; true applies the change"
+        type: string
+        required: false
+        default_value: "false"
+
   # ── Self-hosted GitHub Actions runners ─────────────────────────────────────
   # Runner-group access control. Converges the org's group to its declaration, so the
   # exclusion of public repositories is a reviewable diff rather than a console setting.
