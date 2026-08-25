@@ -330,6 +330,29 @@
       register: _newaddr
       failed_when: false
 
+    # A host's SSH key is pinned in the CONTROLLER's known_hosts against the ADDRESS,
+    # not the machine. This playbook moves a machine to a new address by design, so
+    # whatever used that address before left its key behind — and the access
+    # playbooks connect with StrictHostKeyChecking=accept-new, which accepts an
+    # unknown key and REFUSES a changed one. The identity check below would then fail
+    # for a reason unrelated to the network change, Phase 2 would not confirm, and the
+    # armed revert would fire over an apply that worked.
+    #
+    # Not hypothetical: after one guest stopped squatting a declared address, the next
+    # connection to it aborted with a host-key-mismatch warning until the stale entry
+    # was dropped. Every controller that ever reached the old occupant holds one.
+    #
+    # Dropping it is safe here precisely BECAUSE the identity check does not rely on
+    # it: that check asks the host its own name and compares it to the inventory,
+    # which is a stronger claim than key continuity across an address whose occupant
+    # just changed on purpose.
+    - name: "Drop the controller's stale host key for the new address"
+      ansible.builtin.known_hosts:
+        name: "{{ ansible_host }}"
+        state: absent
+      delegate_to: localhost
+      changed_when: false
+
     - name: "Fail the run when the new address never answered"
       ansible.builtin.fail:
         msg: >-

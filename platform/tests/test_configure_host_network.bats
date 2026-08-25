@@ -96,6 +96,30 @@ setup() {
   assert_contains "$task" '(_revert_seconds | int) >= 60'
 }
 
+@test "network config: a stale controller host key cannot fail the confirmation" {
+  # An SSH key is pinned against the ADDRESS, not the machine. This playbook moves
+  # a machine to a new address on purpose, so whatever held that address before
+  # left its key in the controller's known_hosts — and accept-new REFUSES a changed
+  # key. Without dropping it, the identity check fails for a reason unrelated to
+  # the network change and the revert fires over an apply that worked.
+  local p2 drop ident
+  p2=$(awk '/^# ── Phase 2/{f=1} f{print}' "$PB")
+  [ -n "$p2" ]
+  assert_grep -q 'ansible.builtin.known_hosts' <<<"$p2"
+  assert_grep -qE 'state: absent' <<<"$p2"
+  # Delegated to the controller: the stale entry is the CONTROLLER's, not the
+  # target's, so running it on the target would clear the wrong machine's file.
+  drop=$(awk "/Drop the controller's stale host key/{f=1} f&&/^    - name:/&&!/Drop the controller/{exit} f{print}" "$PB")
+  [ -n "$drop" ]
+  assert_grep -qE 'delegate_to: localhost' <<<"$drop"
+  # ...and it must precede the identity probe, or it fixes nothing.
+  local drop_line ident_line
+  drop_line=$(grep -n "Drop the controller's stale host key" "$PB" | head -1 | cut -d: -f1)
+  ident_line=$(grep -n 'Ask whoever answered what it calls itself' "$PB" | head -1 | cut -d: -f1)
+  [ -n "$drop_line" ] && [ -n "$ident_line" ]
+  [ "$drop_line" -lt "$ident_line" ]
+}
+
 @test "network config: the confirmation host inherits Phase 1's transport" {
   # add_host starts from NOTHING: a connection setting Phase 1 used is absent in
   # Phase 2 unless named. Phase 2 runs a command ON that host to check identity,
