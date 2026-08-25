@@ -81,7 +81,13 @@ flowchart TD
 - [ ] Install container runtime via "Install Docker" template (if Docker needed)
 - [ ] Generate SSH key pair, store in OpenBao at `secret/services/ssh/<service>`
 - [ ] Distribute SSH keys via "Distribute SSH Keys" template
-- [ ] Verify SSH key auth works, then harden SSH via "Harden SSH" template
+- [ ] Verify SSH key auth works **from two independent paths** — the orchestrator's
+      "Verify Host Access" gate AND an operator workstation — then harden SSH via
+      the "Harden SSH" template. The gate caps its own verdict at `PENDING-OPERATOR`
+      precisely because it can only prove one direction; the path that still works may
+      be the one hardening removes. A gate run that **aborted** is not a pass and not a
+      fail — it is no answer, and must not be treated as either. See `PRINCIPLES.md`
+      Section 5 ("A lockdown is authorised by proof from two independent paths").
 
 **Co-location exception:** Auxiliary-tier services may skip VM provisioning and deploy to an existing shared VM. Add the service to the existing host's inventory groups.
 

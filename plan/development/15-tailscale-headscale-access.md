@@ -52,10 +52,13 @@ the management network.
 2. **Config as code, orchestrated.** The server is deployed by a playbook run
    from the orchestrator, its policy is a file in a repository, and its secrets
    come from OpenBao. No console clicks, no hand-edited state.
-3. **Never share a device identity.** Onboarding a teammate issues *them* a
-   credential that mints *their own* node. Copying a configured client's keys to
-   a second machine is forbidden — it destroys per-device attribution and makes
-   revocation impossible.
+3. **Share what a device needs; never share a device's identity.** Onboarding is
+   expected to hand over the control-server URL, the command to run, and — where
+   the identity provider cannot be used — one short-lived credential. What must
+   never travel is an existing client's **private node key**: copying it makes two
+   machines one identity, so attribution and revocation both break. The split is
+   itemised in Phase 5; "share nothing" is the wrong rule, because it leaves an
+   operator unable to configure a laptop.
 4. **Least reachability, not flat access.** Joining the mesh must not equal
    reaching everything. Policy is written per-role and denies by default.
 5. **The mesh must not become the only way in.** A control plane that is itself
@@ -131,7 +134,13 @@ of the platform's existing RBAC can be reused:
 - **"OIDC groups cannot be used in policy rules."** Groups can gate *who may
   authenticate* (`allowed_groups`, alongside `allowed_domains` and
   `allowed_users`), but they cannot express *what a member may reach*. Policy
-  must therefore be written against users and tags.
+  must therefore be written against users and tags. Verified as referenceable in
+  rules: users (`alice@`), tags (`tag:prod-app-servers`), CIDRs, and autogroups
+  (`autogroup:internet`, `member`, `tagged`, `self`, `nonroot`, `danger-all`).
+  Whether the policy file supports its own locally-declared groups is **not
+  established** by the pages read — see §9; if it does, those would be a second
+  membership list to maintain beside Authentik's, which is a cost to weigh, not a
+  free substitute.
 - **"Headscale only supports a single OIDC provider."** Fine here — Authentik is
   the platform's one identity provider — but it means the mesh inherits
   Authentik's availability.
@@ -188,32 +197,61 @@ route approval explicit rather than automatic on first request.
 - **Acceptance:** an off-LAN operator reaches a host that runs no client; a node
   outside the operator role does not.
 
-### Phase 5 — Onboarding, and the secure-sharing question
+### Phase 5 — Client onboarding: what reaches the device, and how
 
-This is the part the request specifically asked for, and the answer is that
-**client configuration is never what gets shared.**
+A person joining the mesh needs their machine configured, so **something does have
+to reach them**. The question is not whether to share, but *which* items travel,
+by which channel, and what each one costs if it leaks. Splitting the bundle that
+way is the whole design; refusing to share anything would just leave the operator
+unable to set up a laptop.
 
-Two supported paths, in preference order:
+**The onboarding bundle, item by item.**
 
-1. **OIDC login (preferred).** The teammate runs the official client, is sent to
-   Authentik, and their node is created under their own identity. Nothing is
-   handed over at all. Membership is a group change; revocation is an account
-   change.
-2. **Pre-authentication key (for machines and for people who cannot use the
-   IdP).** A key is minted per recipient, scoped to a tag, short-lived, and
-   single-use unless there is a stated reason otherwise. It is delivered by
-   writing it to a path in OpenBao that only that recipient can read — not
-   pasted into chat, not emailed, not committed.
+| Item | Secret? | Channel | If it leaks |
+|---|---|---|---|
+| Control-server URL (`--login-server https://<host>`) | **No** | Any — it may sit in this repository's docs | Nothing. It is a public endpoint that still refuses unauthenticated registration |
+| The exact `tailscale up` invocation, including whether to accept advertised routes | **No** | Same as above | Nothing |
+| Internal CA root certificate, if the control plane is served by the internal CA rather than a public one | **No** (a public certificate) — but **integrity matters** | Fetched over an already-trusted path, then verified against a fingerprint published separately | A *substituted* root is the real risk, not a read one; hence the fingerprint |
+| Registration credential | **Yes** | See the two paths below | Someone else can mint a node. Short-lived, single-use, tag-scoped |
 
-**Forbidden, and worth stating explicitly because it is the obvious shortcut:**
-copying an already-configured client's private key or state directory to a second
-machine. It yields two devices with one identity, so audit attributes their
-actions to the same node and revoking one revokes both.
+So three of the four items are publishable and can live in a runbook. Exactly one
+is a credential, and it is the only thing needing a protected channel.
 
-- **Acceptance:** a second person reaches an internal host from off-LAN without
-  any private key having been transmitted; revoking their access removes
-  reachability within one policy apply; the audit log attributes their session
-  to them and not to the operator.
+**Path A — OIDC login (preferred; nothing confidential is handed over).**
+The recipient installs the official client and runs the published command. The
+client opens a browser to the platform's identity provider, they authenticate as
+themselves, and the node is created under their own identity. Membership is a
+group change at the identity provider; revocation is an account or group change.
+Nothing is transmitted to them that is worth intercepting. This is the path to
+build first, and the reason the whole bundle above is otherwise publishable.
+
+**Path B — pre-authentication key (for machines, and for people the IdP cannot
+cover).** One key per recipient, single-use, short-lived, scoped to a tag. It is
+a credential, so it moves like one: written to a path in the secret store that
+only that recipient can read, and it expires whether or not it was used. Not
+pasted into chat, not emailed, not committed, not read aloud. If a recipient
+cannot reach the secret store, that is the problem to fix — inventing a side
+channel for the key is how the key ends up in a message history forever.
+
+**Why not simply copy a working client's configuration?** Because a client's
+state directory contains that device's *private node key*. Copying it produces
+two machines with one identity: the audit log attributes both to the same node,
+and revoking one revokes both, so an offboarding leaves an unknown second device
+still connected. This is the one item that must never be shared, and it is
+distinct from the four publishable/protected items above — the earlier framing of
+"never share client configuration" was too broad, and would have left an operator
+with no way to set up a laptop at all.
+
+**Self-service is the goal.** The end state is that a new member needs no
+person-to-person handover: a runbook page with the URL and command, an identity
+provider that already knows them, and — only where Path A is unavailable — one
+credential waiting in the secret store under their own name.
+
+- **Acceptance:** a second person configures a client and reaches an internal
+  host from off-LAN using only published instructions plus, at most, one
+  single-use credential fetched by themselves; no private node key is ever
+  transmitted; revoking their access removes reachability within one policy
+  apply; the audit log attributes their session to them and not to the operator.
 
 ### Phase 6 — Close the loop that motivated this
 
@@ -298,12 +336,21 @@ Verified against headscale's official documentation while writing this:
   authentication.
 - Admin API keys are created server-side, default to a 90-day expiry, and cannot
   be retrieved after creation; the REST interface uses bearer authentication.
+- `allowed_groups` is an **authentication filter**: it "checks the OIDC `groups`
+  claim of each authenticating user ... and only authorize users which are
+  members in at least one of the referenced groups". Groups are usable there and
+  nowhere else in policy.
+- Rules may reference users, tags, CIDRs and autogroups (list in §4).
 - Remote gRPC administration defaults to port 50443, requires TLS, and the
   documentation advises against disabling certificate validation.
 
 **Not verified, and therefore not asserted anywhere above as fact:** exact CLI
-flags for minting pre-auth keys, the policy file's schema, node-expiry behaviour
-(§7.5), and container image tags. Each must be read from the documentation at
+flags for minting pre-auth keys, the policy file's full schema, whether the
+policy supports locally-declared groups, how tags are applied and who may apply
+them (`tagOwners`), what happens to a user's mesh identity when their IdP groups
+change, node-expiry behaviour (§7.5), and container image tags. The policy
+reference page read for this draft did not document tags or a groups construct;
+it points at Tailscale's own documentation instead. Each must be read from the documentation at
 implementation time rather than recalled.
 
 ---

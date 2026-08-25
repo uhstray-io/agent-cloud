@@ -309,6 +309,28 @@ volume/Proxmox snapshot.
 *Why: the branch-testing workflow promises "instant rollback by re-deploying main," but migrations
 persist. Tagging reversibility makes the one-way risk visible at launch, not after corruption.*
 
+**A lockdown is authorised by proof from two independent paths — and an aborted gate is not proof.**
+Any automated step that *narrows* access — withdrawing password authentication, enabling default-deny
+egress, retiring the previous credential, tightening a policy — runs only after a gate has proven the
+replacement works from **at least two independent directions, one of which is not the path being
+removed**. Three corollaries, each earned the hard way: (a) the gate must **render a verdict** — a run
+that aborts has produced no answer, and an absent answer is never read as either pass or fail;
+(b) a verifier must read its inputs from the **same source** as the step it authorises, or it can
+clear a host the step then fails on; (c) the gate must **refuse to pass on the credential being
+retired** — proving password auth works says nothing about the key that replaces it.
+*Why: the one path that still works may be exactly the one the lockdown removes, so single-path proof
+is indistinguishable from no proof at the moment it matters. Measured 2026-08-25: the SSH access gate
+proved key-only auth from the orchestrator and then died on a sudo step it could not escalate for,
+losing the verdict — the proof had succeeded and no output said so, because "Missing sudo password" is
+raised by the become plugin before `failed_when` can see it. Separately, a host declared at one
+address answered as two different machines depending on which host asked (two distinct SSH host keys,
+same moment), so one vantage could not even establish which machine it had reached. As-built:
+`verify-host-access.yml` caps its verdict at PENDING-OPERATOR by design, refuses to pass on password
+auth, and now reads the sudo password from the same path `harden-ssh.yml` uses, with both escalation
+tasks skipping rather than aborting when none exists. The second, operator-side direction is still
+manual and unobtainable off-LAN — `plan/development/15-tailscale-headscale-access.md` exists to fix
+exactly that, and is currently the binding constraint on hardening any new host.*
+
 ---
 
 ## 6. Infrastructure & Resilience

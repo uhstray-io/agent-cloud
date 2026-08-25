@@ -290,7 +290,7 @@ All of the following MUST go through Semaphore; direct SSH execution is prohibit
 |--------------------|----------|-----------|
 | **Service deployment** | `deploy-netbox.yml`, `deploy-nocodb.yml`, `deploy-all.yml` | AppRole injected via Semaphore environment; deploy.sh has no vault access |
 | **Secret management** | `manage-secrets.yml`, `check-secrets.yml`, `validate-secrets.yml` | Secrets flow OpenBao -> Ansible memory -> Jinja2 templates; never on disk as intermediary files |
-| **SSH key distribution** | `distribute-ssh-keys.yml`, `harden-ssh.yml` | Keys fetched from OpenBao at runtime; verify-before-harden pattern |
+| **SSH key distribution** | `distribute-ssh-keys.yml`, `harden-ssh.yml` | Keys fetched from OpenBao at runtime; **two-path** verify-before-harden — the orchestrator gate proves one direction and caps at `PENDING-OPERATOR`, an operator workstation proves the other; an aborted gate is no answer (PRINCIPLES.md Section 5) |
 | **VM provisioning** | `provision-vm.yml`, `provision-template.yml` | Proxmox API calls require tokens stored in OpenBao |
 | **Branch testing** | Any template with `service_branch` survey var | Semaphore selects branch, deploys to target, validates health |
 | **OpenBao policy management** | `apply-openbao-policies.yml`, `apply-policy-*.yml` | Policies are code (.hcl files); Semaphore applies via API |
