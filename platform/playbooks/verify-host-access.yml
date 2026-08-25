@@ -272,6 +272,38 @@
             - "{{ _keyfile.path }}.known_hosts"
           when: _keyfile.path is defined
 
+    # ── Escalation needs a sudo password on a host that is not yet hardened ──
+    # The two tasks below need root. A host that has not been through harden-ssh
+    # has no NOPASSWD sudo, so sudo asks for a password — and Ansible raises
+    # "Missing sudo password" from the become plugin BEFORE the module runs, which
+    # `failed_when: false` cannot catch. The comment below called those tasks
+    # best-effort; they were not, and the gate aborted on exactly the hosts it
+    # exists to assess. Measured on a freshly keyed host: the key-only proof
+    # succeeded and then the run died here, so no verdict was ever rendered.
+    #
+    # Fetched the same way harden-ssh.yml fetches it, so the two agree about where
+    # the sudo password lives. errors='ignore' because its ABSENCE is a finding the
+    # report is meant to state, not a reason to abort.
+    - name: "Fetch the sudo password so escalation can be attempted"
+      ansible.builtin.set_fact:
+        _become_pw: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+                'secret/data/services/ssh:become_password',
+                url=_bao_url, auth_method='approle',
+                role_id=_bao_role_id, secret_id=_bao_secret_id,
+                errors='ignore') | default('', true) }}
+      become: false
+      no_log: true
+      failed_when: false
+      when: _bao_url | length > 0
+
+    - name: "Use it for escalation when one was found"
+      ansible.builtin.set_fact:
+        ansible_become_password: "{{ _become_pw }}"
+      become: false
+      no_log: true
+      when: (_become_pw | default('') | length) > 0
+
     # ── What does sshd actually allow right now? ─────────────────────────────
     # `sshd -T` gives the EFFECTIVE config, accounting for sshd_config.d
     # drop-ins that a grep of the main file would miss. Needs root, so it is
@@ -283,7 +315,11 @@
       become: true
       changed_when: false
       failed_when: false
-      when: _reach.rc | default(1) == 0
+      when:
+        - _reach.rc | default(1) == 0
+        # Skip rather than abort when no sudo password is available; the report
+        # states escalation as unavailable, which is the documented behaviour.
+        - (_become_pw | default('') | length) > 0
 
     - name: "Check whether privilege escalation works"
       ansible.builtin.raw: "id -un"
@@ -291,7 +327,11 @@
       become: true
       changed_when: false
       failed_when: false
-      when: _reach.rc | default(1) == 0
+      when:
+        - _reach.rc | default(1) == 0
+        # Skip rather than abort when no sudo password is available; the report
+        # states escalation as unavailable, which is the documented behaviour.
+        - (_become_pw | default('') | length) > 0
 
     - name: "Count authorized keys for the connecting user"
       ansible.builtin.raw: "wc -l < ~/.ssh/authorized_keys 2>/dev/null || echo 0"
