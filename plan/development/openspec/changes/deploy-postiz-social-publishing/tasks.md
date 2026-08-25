@@ -115,6 +115,18 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 3.8 Validation gate: scenario "A social platform credential is added later" holds —
       seeding a previously-unset provider credential and redeploying makes that provider
       connectable with no code change
+      NO-CODE-CHANGE HALF VERIFIED by inspection 2026-08-25; the "connectable" half
+      still needs a live deploy and an OAuth round trip. Every provider credential the
+      config template reads defaults to empty when unset, so an unseeded provider
+      renders harmlessly and a later-seeded one is picked up by a redeploy alone. The
+      seeder takes only the values it is given, so adding one is a seed plus a
+      redeploy. Cross-checked the two lists against each other, because a credential
+      seeded into a key nothing reads is the failure this repo has already recorded
+      once: of the keys the seeder can place, ZERO are unread by the template, and
+      every key the template reads has a declared source — two generated once and
+      deliberately never regenerated, one shared-read from the identity provider, and
+      two operator-supplied but not social-platform credentials. No orphans in either
+      direction.
 
 ## 4. Identity, edge, and inventory wiring
 
