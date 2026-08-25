@@ -294,6 +294,20 @@
         # otherwise be probed on 22, time out, and have its revert fire after a
         # perfectly good apply.
         ansible_port: "{{ ansible_port | default(22) }}"
+        # The rest of the transport, for the same reason as the port. add_host starts
+        # from NOTHING, so a setting Phase 1 connected with is absent here unless it is
+        # named. Phase 2 runs a command ON this host to check its identity, so a target
+        # reached via a key file, a jump host, or a non-default interpreter would pass
+        # Phase 1, fail confirmation, and have its revert fire over an apply that
+        # actually worked — the false negative this playbook exists to prevent. None of
+        # these is set in this fleet today (the orchestrator supplies its key by its own
+        # mechanism); they are carried so adding one later cannot quietly break it.
+        ansible_connection: "{{ ansible_connection | default(omit) }}"
+        ansible_private_key_file: "{{ ansible_private_key_file | default(omit) }}"
+        ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file | default(omit) }}"
+        ansible_ssh_common_args: "{{ ansible_ssh_common_args | default(omit) }}"
+        ansible_ssh_extra_args: "{{ ansible_ssh_extra_args | default(omit) }}"
+        ansible_python_interpreter: "{{ ansible_python_interpreter | default(omit) }}"
         _orig_host: "{{ inventory_hostname }}"
         _expect_hostname: "{{ net_expect_hostname | default(inventory_hostname, true) }}"
         _revert_seconds: "{{ _revert_seconds }}"

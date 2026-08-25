@@ -96,6 +96,24 @@ setup() {
   assert_contains "$task" '(_revert_seconds | int) >= 60'
 }
 
+@test "network config: the confirmation host inherits Phase 1's transport" {
+  # add_host starts from NOTHING: a connection setting Phase 1 used is absent in
+  # Phase 2 unless named. Phase 2 runs a command ON that host to check identity,
+  # so a target reached via a key file, a jump host, or a non-default interpreter
+  # would pass Phase 1, fail confirmation, and have its revert fire over an apply
+  # that actually worked — the false negative this playbook exists to prevent.
+  local task
+  task=$(awk '/Publish the new address for the confirmation play/{f=1} f&&/^    - name:/&&!/Publish the new address/{exit} f{print}' "$PB")
+  [ -n "$task" ]
+  for v in ansible_connection ansible_private_key_file ansible_ssh_private_key_file \
+           ansible_ssh_common_args ansible_ssh_extra_args ansible_python_interpreter; do
+    assert_grep -qE "^ +${v}:" <<<"$task"
+  done
+  # Each must default to omit — a literal empty string is not "unset" to Ansible
+  # and would override a value the play would otherwise inherit.
+  refute_grep -qE '(ansible_private_key_file|ansible_ssh_common_args): *"" *$' <<<"$task"
+}
+
 @test "network config: the confirmation probe honours a non-default SSH port" {
   # A host on another port would otherwise be probed on 22, time out, and have its
   # revert fire after a perfectly good apply.

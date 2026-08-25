@@ -459,9 +459,12 @@ structurally cannot see a command that acts on the live system without naming a
 path — `netplan apply` survived it, while being the worst thing that could appear
 in a validation step: it applies config *before* the revert timer is armed, so a
 bad address strands the host with nothing scheduled to undo it. That needs a
-second, named assertion. Naming it is legitimate because `netplan` has exactly one
-applying subcommand: enumeration over a **closed** set is a specification;
-enumeration over an open set (all the ways to copy a file) is a guess.
+second, named assertion. Naming it is legitimate because the commands that apply
+config are a **closed, enumerable set** — `netplan apply` and `netplan try`, both
+of which the assertion names. Enumeration over a closed set is a specification;
+enumeration over an open set (all the ways to copy a file) is a guess. An earlier
+wording here said "exactly one applying subcommand", which contradicted the very
+assertion it was describing: the test guards both, and `try` applies config too.
 
 **Enforced by.** `network config: validation never touches the live /etc/netplan`
 in `platform/tests/test_configure_host_network.bats`, proven against seven
