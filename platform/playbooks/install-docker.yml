@@ -14,6 +14,12 @@
     target_service: "ungrouped"
 
   tasks:
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      # Play-level become means even fact gathering escalates, so this must be the
+      # first task or the play dies at "Gathering Facts" with ok=0 on any host that
+      # still requires a sudo password. See the task file for the measured failure.
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Check if Docker is installed"
       ansible.builtin.command: docker --version
       register: _docker_check

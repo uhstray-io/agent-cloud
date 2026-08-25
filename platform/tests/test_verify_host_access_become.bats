@@ -15,14 +15,18 @@ setup() {
   [ -f "$PB" ]
 }
 
-@test "access gate: the sudo password is fetched before escalation is attempted" {
-  local fetch_line sshd_line esc_line
-  fetch_line=$(grep -n 'Fetch the sudo password so escalation can be attempted' "$PB" | head -1 | cut -d: -f1)
+@test "access gate: the sudo password is resolved before escalation is attempted" {
+  # The gate delegates to the shared resolver rather than carrying its own copy,
+  # so every pre-hardening playbook names one secret location. What still matters
+  # here is ORDER: the resolve must precede the tasks that escalate, or they abort
+  # before it runs.
+  local res_line sshd_line esc_line
+  res_line=$(grep -n 'tasks/resolve-become-password.yml' "$PB" | head -1 | cut -d: -f1)
   sshd_line=$(grep -n "Read sshd's effective configuration" "$PB" | head -1 | cut -d: -f1)
   esc_line=$(grep -n 'Check whether privilege escalation works' "$PB" | head -1 | cut -d: -f1)
-  [ -n "$fetch_line" ] && [ -n "$sshd_line" ] && [ -n "$esc_line" ]
-  [ "$fetch_line" -lt "$sshd_line" ]
-  [ "$fetch_line" -lt "$esc_line" ]
+  [ -n "$res_line" ] && [ -n "$sshd_line" ] && [ -n "$esc_line" ]
+  [ "$res_line" -lt "$sshd_line" ]
+  [ "$res_line" -lt "$esc_line" ]
 }
 
 @test "access gate: it reads the sudo password from the same place harden-ssh does" {
@@ -45,14 +49,13 @@ setup() {
   done
 }
 
-@test "access gate: the fetched password is never logged" {
-  # It is a credential; the fetch and the assignment both carry no_log.
-  local task
-  for t in "Fetch the sudo password so escalation can be attempted" "Use it for escalation when one was found"; do
-    task=$(awk -v pat="$t" 'index($0,pat){f=1} f&&/^    - name:/&&!index($0,pat){exit} f{print}' "$PB")
-    [ -n "$task" ]
-    assert_grep -qE 'no_log: true' <<<"$task"
-  done
+@test "access gate: it carries no second copy of the credential fetch" {
+  # The credential fetch and its no_log live in the shared resolver (asserted in
+  # test_become_password_resolution.bats). The gate must not reintroduce its own
+  # set_fact of ansible_become_password, which would be a second declaration that
+  # can drift from the one harden-ssh agrees with.
+  refute_grep -qE '^\s*ansible_become_password:' "$PB"
+  assert_grep -q 'tasks/resolve-become-password.yml' "$PB"
 }
 
 @test "access gate: the verdict still cannot reach an unqualified GO" {

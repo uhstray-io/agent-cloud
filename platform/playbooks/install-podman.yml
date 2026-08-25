@@ -24,6 +24,12 @@
     _docker_cli: "{{ podman_docker_cli | default(false) | bool }}"
 
   tasks:
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      # Play-level become means even fact gathering escalates, so this must be the
+      # first task or the play dies at "Gathering Facts" with ok=0 on any host that
+      # still requires a sudo password. See the task file for the measured failure.
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Wait for a freshly-booted host to accept package installs"
       ansible.builtin.include_tasks: tasks/wait-for-apt.yml
 

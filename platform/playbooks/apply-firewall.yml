@@ -118,6 +118,12 @@
     _deny_egress: "{{ firewall_deny_egress | default([]) }}"
 
   tasks:
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      # Play-level become means even fact gathering escalates, so this must be the
+      # first task or the play dies at "Gathering Facts" with ok=0 on any host that
+      # still requires a sudo password. See the task file for the measured failure.
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Skip non-Linux / local-connection hosts (UFW targets real Linux VMs)"
       # local-dev runs services as containers via ansible_connection=local on
       # macOS — there is no per-service Linux host to firewall there.
