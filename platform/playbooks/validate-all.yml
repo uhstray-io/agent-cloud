@@ -138,6 +138,26 @@
       ansible.builtin.debug:
         msg: "honcho: {{ 'HEALTHY' if honcho_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate postiz"
+  hosts: postiz_svc
+  gather_facts: false
+  tasks:
+    - name: Check postiz health
+      ansible.builtin.uri:
+        url: "{{ service_url }}/"
+        method: GET
+        # The app answers 200 or a redirect on / depending on session state;
+        # only a 5xx means it is actually broken. Narrower than the other
+        # services here because postiz has no unauthenticated health endpoint.
+        status_code: [200, 301, 302, 307, 308]
+        timeout: 10
+      register: postiz_health
+      ignore_errors: true
+
+    - name: Report postiz status
+      ansible.builtin.debug:
+        msg: "postiz: {{ 'HEALTHY' if postiz_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Summary"
   hosts: localhost
   connection: local

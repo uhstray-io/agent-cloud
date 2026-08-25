@@ -14,3 +14,11 @@ ignore:
   - netbox-docker/
   - platform/services/netbox/deployment/netbox-docker/
   - .github/
+  # Installed Ansible collections — a generated dependency tree, not our code.
+  # `ansible-lint` / `ansible-galaxy` populate this during CI, and galaxy always
+  # resolves the latest collection versions, so third-party test fixtures land
+  # here and get linted. A collection bump introducing trailing whitespace in one
+  # of ITS fixtures then fails our Static Analysis job with nothing wrong in this
+  # repo. Linting a dependency tree was never the intent.
+  - .ansible/
+  - collections/ansible_collections/

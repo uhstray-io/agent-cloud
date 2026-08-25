@@ -1,4 +1,18 @@
 ---
+# set-semaphore-branch.yml — DEPRECATED. Use
+# platform/semaphore/bootstrap-semaphore-repositories.yml instead.
+#
+# Why: this playbook mutates ONE shared repository record's branch. That is
+# global mutable state — two people testing different branches overwrite each
+# other, and any template run afterwards silently uses whatever branch was left
+# set, with nothing in the run output saying which. The replacement declares a
+# repository record PER branch (repositories.yml) and lets each template name the
+# record it runs from, so there is no shared thing to flip.
+#
+# Kept, not deleted: it still works, and it is the quickest way to correct a
+# single record by hand. Prefer the declarative path for anything reviewable.
+#
+# ── original description ────────────────────────────────────────────────────
 # set-semaphore-branch.yml — flip the branch Semaphore runs playbooks from.
 #
 # OPERATOR-SIDE tool (run from a workstation, NOT as a Semaphore job) — managing

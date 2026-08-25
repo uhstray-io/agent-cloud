@@ -1,0 +1,266 @@
+---
+# netbox-allocate-ip.yml — Ask the address authority for free addresses, and
+# optionally record an allocation.
+#
+# NetBox is the platform's IPAM authority (plan/development/03-guardrails-governance.md).
+# Every service VM needs an address, and until now the only ways to pick one were to
+# read the inventory (which records what is DECLARED, not what is allocated) or to eyeball
+# the network — neither of which is the authority. That is the gap this closes, for every
+# future service and not only the one that surfaced it.
+#
+# Two modes, and the default is the safe one:
+#
+#   report  (default)  GET only. Prints the next free addresses in a prefix. Safe to run
+#                      at any time, changes nothing, and is the preview of an allocation.
+#   reserve            -e reserve=true. Additionally CREATES the address records, so the
+#                      authority knows they are taken. Idempotent: an address that already
+#                      exists is left exactly as it is, never re-described or re-assigned.
+#
+# Usage:
+#   ansible-playbook netbox-allocate-ip.yml -e prefix=<cidr> -e count=2
+#   ansible-playbook netbox-allocate-ip.yml -e prefix=<cidr> \
+#       -e reserve=true -e '{"assignments":[{"address":"...","dns_name":"gh-runner-01"}]}'
+#
+# Reserving takes EXPLICIT addresses rather than "reserve the next two". A run that
+# allocates whatever happens to be free at the time is not reproducible: two runs a minute
+# apart reserve different addresses, and the declaration that follows would disagree with
+# the ledger. So the operator (or an earlier report run) names the addresses, and this
+# playbook records exactly those.
+#
+# Auth: OpenBao AppRole -> secret/services/netbox:automation_api_token (provisioned by
+# provision-netbox-automation-token.yml). Only the credential tasks are no_log'd; the
+# address operations stay visible so a Semaphore run is diagnosable.
+
+- name: "Allocate addresses from the NetBox IPAM authority"
+  hosts: localhost
+  gather_facts: false
+  become: false
+
+  vars:
+    # localhost play: inherits no group vars, so the address comes from an extra-var or
+    # the environment Semaphore injects.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
+    _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
+    _prefix: "{{ prefix | default('') }}"
+    _count: "{{ (count | default(2)) | int }}"
+    _reserve: "{{ reserve | default(false) | bool }}"
+    _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _netbox_url | length > 0
+          - _prefix | length > 0
+          - "'/' in _prefix"
+          - _count | int > 0
+          - _count | int <= 32
+          # A reserve run must name what it is recording. Without this, `reserve=true`
+          # with no assignments would silently do nothing and report success — the
+          # false-green shape docs/MISTAKES.md §2 is about.
+          - (not _reserve) or (_assignments | length > 0)
+          - _assignments | rejectattr('address', 'defined') | list | length == 0
+        fail_msg: >-
+          Need the OpenBao address, -e netbox_url=<url>, -e prefix=<cidr> (with a mask),
+          0 < count <= 32, and — when -e reserve=true — a non-empty `assignments` list
+          in which every entry has an `address`.
+        success_msg: "Querying {{ _prefix }} for {{ _count }} free address(es); mode={{ 'reserve' if _reserve else 'report' }}."
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext NetBox endpoint"
+      # The NetBox automation token is sent in an Authorization header on every call
+      # below, so the same rule that protects the OpenBao hop protects this one. Guarding
+      # only the secret store while shipping its contents in cleartext to another host
+      # would defeat the point of guarding either.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+
+    # ── credentials (no_log boundary) ──────────────────────────────────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Read the NetBox automation token from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _nb_secret
+      no_log: true
+
+    # A no_log step that merely fails is undiagnosable, which is the failure mode
+    # AGENTS.md calls out. The credential tasks above keep no_log; these two report only
+    # SHAPES and VERDICTS — whether the auth succeeded, whether the path exists, and which
+    # keys are present by NAME — so a missing key is distinguishable from a bad AppRole
+    # without any value being emitted.
+    - name: "Classify the credential outcome (names and verdicts only)"
+      ansible.builtin.set_fact:
+        _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
+        _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
+        _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
+      no_log: true
+
+    - name: "Report the credential outcome"
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao auth ok={{ _auth_ok }}; secret/services/netbox holds keys
+          {{ _nb_keys }}; requested key '{{ _token_key }}' present={{ _token_present }}
+
+    - name: "Require the NetBox automation token"
+      ansible.builtin.assert:
+        that:
+          - _auth_ok | bool
+          - _token_present | bool
+        fail_msg: >-
+          No usable NetBox token. auth_ok={{ _auth_ok }}, key '{{ _token_key }}'
+          present={{ _token_present }}, keys at that path: {{ _nb_keys }}.
+          If the key is absent, mint it with provision-netbox-automation-token.yml
+          rather than by hand.
+
+    - name: "Set the NetBox auth header"
+      ansible.builtin.set_fact:
+        _nb_headers:
+          Authorization: "Token {{ _nb_secret.json.data.data[_token_key] }}"
+          Accept: "application/json"
+      no_log: true
+
+    # ── resolve the prefix ─────────────────────────────────────────────────
+    - name: "Resolve the prefix to its NetBox id"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/prefixes/?prefix={{ _prefix | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _pfx
+
+    - name: "Require the prefix to exist in the authority"
+      ansible.builtin.assert:
+        that:
+          - (_pfx.json.results | default([])) | length == 1
+        fail_msg: >-
+          Prefix '{{ _prefix }}' resolved to {{ (_pfx.json.results | default([])) | length }}
+          records in NetBox, expected exactly 1. Declare the prefix in NetBox first —
+          inventing an address outside a declared prefix is how a ledger stops being one.
+        success_msg: "Prefix '{{ _prefix }}' -> id {{ (_pfx.json.results | first).id | default('?') }}."
+
+    - name: "Ask the authority for the next free addresses"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/prefixes/{{ (_pfx.json.results | first).id }}/available-ips/?limit={{ _count }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _free
+
+    - name: "Report the free addresses"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _prefix }} has {{ (_free.json | default([])) | length }} free address(es)
+          available (limit {{ _count }}): {{ (_free.json | default([])) | map(attribute='address') | list }}
+
+    # ── optional allocation ────────────────────────────────────────────────
+    # Existence is checked BEFORE creating, per address, rather than relying on a
+    # create-or-fail. NetBox permits duplicate addresses in some configurations, so a
+    # blind POST can silently produce a second record for the same address and leave the
+    # ledger ambiguous about which one is authoritative.
+      # ONE contract, stated once. The pre-create read below runs ONLY when reserving:
+      # its only job is to decide what needs creating. The question report mode exists to
+      # answer — is this address recorded, and as what? — is answered by the re-read AFTER
+      # the writes, further down, and that one runs in both modes. Leaving this read
+      # ungated made a report run query every named address twice for one answer.
+    - name: "Check whether each named address is already recorded"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _existing
+      loop: "{{ _assignments }}"
+      loop_control:
+        label: "{{ item.address }}"
+      when: _reserve
+
+    - name: "Record each new address as allocated"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/"
+        method: POST
+        headers: "{{ _nb_headers }}"
+        body_format: json
+        body:
+          address: "{{ item.item.address }}"
+          status: "{{ item.item.status | default('active') }}"
+          dns_name: "{{ item.item.dns_name | default('') }}"
+          description: "{{ item.item.description | default('Allocated by netbox-allocate-ip.yml') }}"
+        status_code: [201]
+      loop: "{{ _existing.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.address }}"
+      when:
+        - _reserve
+        - (item.json.results | default([])) | length == 0
+
+    # RE-QUERY before reporting. The report used to iterate the pre-create GET results, so
+    # an address this run had just created (HTTP 201) still printed "NOT recorded in the
+    # authority" — the run contradicted itself, and an operator reading that would retry a
+    # reservation that had already succeeded. The authority is asked again, after the
+    # writes, so the report describes the state that now exists rather than the state
+    # before the run.
+    - name: "Re-read each named address after any writes"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _final_state
+      loop: "{{ _assignments }}"
+      loop_control:
+        label: "{{ item.address }}"
+
+    - name: "Report the recorded state of each named address"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.address }}:
+          {{ ('RECORDED as id=' ~ (item.json.results | first).id
+              ~ ' status=' ~ ((item.json.results | first).status.value | default('?'))
+              ~ ' dns_name=' ~ ((item.json.results | first).dns_name | default('') | default('(none)', true))
+              ~ ' description=' ~ ((item.json.results | first).description | default('') | default('(none)', true))
+              ~ ' tags=' ~ ((item.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
+             if ((item.json.results | default([])) | length > 0)
+             else 'NOT recorded in the authority' }}
+      loop: "{{ _final_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.address }}"
+
+    - name: "Refuse to report success for an address a reserve run failed to create"
+      # A reserve run whose POST silently did nothing would otherwise end on a green
+      # report. If we were asked to reserve, every named address must now exist.
+      ansible.builtin.assert:
+        that:
+          - (item.json.results | default([])) | length > 0
+        fail_msg: >-
+          {{ item.item.address }} is still not recorded after a reserve run. The create
+          either did not run or did not take effect — check the task above rather than
+          re-running, since a partial run may have created the others.
+      loop: "{{ _final_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.address }}"
+      when: _reserve

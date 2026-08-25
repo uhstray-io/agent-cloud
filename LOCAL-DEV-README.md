@@ -270,7 +270,8 @@ through Semaphore), all behind Caddy TLS + Authentik SSO.
 | n8n | Tier-3 | ✅ | workflow automation; `forward_auth` + seeded owner account |
 | NetBox | Tier-3 | ✅ | app tier **under podman** (no Docker — see `plan/development/NETBOX-LOCAL-ENGINE.md`); `forward_auth` + header `REMOTE_AUTH`. `make local-netbox` → `make local-netbox-discover` |
 | UhhCraft | Tier-3 | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
-| NocoDB / Postiz | Tier-3 | 📋 planned | composable local profiles not yet added |
+| Postiz | Tier-3 | 🧪 code-complete | `make local-deploy-postiz`; 5 containers, native Authentik OIDC at `postiz.agent-cloud.test`; pending first local bring-up |
+| NocoDB | Tier-3 | 📋 planned | composable local profile not yet added |
 
 ---
 

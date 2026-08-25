@@ -531,3 +531,131 @@ Upgrade the existing SNMP discovery from SNMPv2c (plaintext community string) to
 |------|----------|
 | `secret/services/discovery/snmp_v3` | username, auth_password, priv_password |
 | `secret/services/netbox/snmp_community` | Legacy SNMPv2c community string (keep until migration complete) |
+
+<!-- ======================= source: DISCOVERY-STALLED-2026-08-24.md ======================= -->
+
+# Discovery Pipeline Stalled Since 2026-04-23 — Diagnosis & Fix Plan
+
+**Status:** open. Found 2026-08-24 while checking whether two newly-provisioned hosts
+would be auto-registered in IPAM. They were not, and the reason is not specific to them.
+
+## Symptom
+
+IPAM has not been written to by discovery in four months, while every component reports
+healthy. Nothing alerts, because the containers are up and the agent is running — it is
+simply failing every cycle.
+
+Observed (read-only, on the NetBox host):
+
+```
+<gh-runner-01-ip>: NOT in NetBox     # provisioned 2026-08-24
+<gh-runner-02-ip>: NOT in NetBox     # provisioned 2026-08-24
+
+IPAddress records: 24 | VirtualMachine: 20 | Device: 13
+Most recent discovery-tagged write: 2026-04-23
+netbox-orb-agent: Up 4 months | 252 log lines in the last 24h, all errors
+```
+
+## Evidence
+
+Every cycle, `netbox-orb-agent` fails to resolve six vault references and then has no
+usable policy to run:
+
+```
+ERROR "Failed to retrieve secret during polling" path=secret/services/discovery/pfsense/api_key
+ERROR "Failed to retrieve secret during polling" path=secret/services/discovery/pfsense/host
+ERROR "Failed to retrieve secret during polling" path=secret/services/discovery/proxmox_api/url
+ERROR "Failed to retrieve secret during polling" path=secret/services/discovery/proxmox_api/token_id
+ERROR "Failed to retrieve secret during polling" path=secret/services/discovery/proxmox_api/api_token
+ERROR "Failed to retrieve secret during polling" path=secret/services/netbox/snmp_community
+ERROR "failed to get policy" error="unknown policy ID"          (x4, once per cycle)
+ERROR "error running scanner" backend=network_discovery error="exit status 1"
+```
+
+## Diagnosis
+
+**It is missing secret material, not broken syntax or a broken agent.**
+
+The discriminator: `agent.yaml.j2` resolves its refs with the same
+`vault://secret/<path>/<key>` form throughout — lines 29-30 use
+`secret/services/netbox/orb_agent_client_id` and `.../orb_agent_client_secret`, and
+those are **absent from the failure list**. The agent authenticates to OpenBao and
+resolves some references successfully. If the syntax or the AppRole were wrong, all of
+them would fail, not six of them.
+
+So the six paths above hold no readable value. With their policies unresolvable, the
+agent reports `unknown policy ID` and the scanner exits 1 — which is why `pfsense_sync`,
+`proxmox_discovery` and `snmp_discovery` have all been silently inert.
+
+## Scope of impact
+
+- **IPAM is stale as an authority.** Anything that trusts NetBox to know what addresses
+  are in use has been trusting four-month-old data. Address selection for new hosts has
+  effectively been falling back to reading the inventory and pinging, which records
+  what is *declared*, not what is *allocated*.
+- **The 15-minute expectation does not hold today.** The cadence is real (workers are
+  declared to run every 15 minutes) but no cycle has completed since April.
+- **Separate but adjacent blocker:** `secret/services/netbox` has no
+  `automation_api_token` (verified: OpenBao auth succeeds, that key is absent). That is
+  the key `create-netbox-device.yml` reads, so **Build #1 cannot run either**, and
+  `provision-netbox-automation-token.yml` currently fails when asked to mint it. Its
+  NetBox-v4 model paths are NOT the cause — `users.models.Token`,
+  `users.models.ObjectPermission` and `core.models.ObjectType` all import cleanly on
+  NetBox 4.5.3-Docker-4.0.0, and 13 tokens already exist. Cause still unidentified: the
+  minting task carries `no_log: true`, so its failure is censored. Give that task a
+  verdict-only classification (as `netbox-allocate-ip.yml` and
+  `deploy-github-runner.yml` now have) before guessing further.
+
+## Fix plan, in order
+
+Only step 1 is fully code-managed today; steps 2 and 3 need material only an operator
+holds.
+
+1. **Proxmox refs — run the existing playbook.** `seed-discovery-credentials.yml` copies
+   `secret/services/proxmox` → `secret/services/discovery/proxmox_api`. That source path
+   is known-good: `provision-vm.yml` reads it successfully on every VM build. This should
+   resolve three of the six failures with no new credential.
+2. **pfSense refs — no source exists.** Nothing in OpenBao holds a pfSense API key or
+   host, and `seed-discovery-credentials.yml` does not cover them (it handles Proxmox
+   only). An operator must place `api_key` and `host` at
+   `secret/services/discovery/pfsense`. Use `seed-openbao-key.yml`, which takes its value
+   from the `BAO_VALUE` **environment secret** rather than an extra var — Semaphore
+   persists a task's extra-var JSON and serves it back over its API, so seeding a
+   credential with `-e` leaves it in the clear outside OpenBao.
+3. **`snmp_community` — decide first.** Either place it at `secret/services/netbox`, or
+   disable the `snmp_discovery` worker in `agent.yaml.j2` so the agent stops depending on
+   a secret nobody intends to provide. A permanently-unresolvable reference is
+   indistinguishable from an outage, which is precisely how this went unnoticed.
+4. **Confirm the AppRole grants the paths it needs.** `orb-agent.hcl` +
+   `provision-orb-agent-approle.yml` are the code-managed source. Worth re-applying once
+   the paths exist, since a policy written against paths that did not exist has never
+   been exercised.
+
+## Verification (the test this issue was found by)
+
+After step 1, wait one 15-minute cycle and re-run the check. Both are read-only:
+
+- Through automation: `netbox-allocate-ip.yml` in report mode (`reserve=false`) names
+  addresses and reports whether each is recorded, with id/status/dns_name/description/tags.
+  Needs `secret/services/netbox:automation_api_token`, so it is blocked until the
+  adjacent blocker above is cleared.
+- Directly, no token needed: the NetBox Django shell on the NetBox host, querying
+  `ipam.models.IPAddress.objects.filter(address__net_host=...)`.
+
+Success is a `discovery`-tagged record appearing for a host nobody registered by hand,
+with a `last_updated` inside the last cycle.
+
+## Do not
+
+- **Do not mint a NetBox token by hand.** `provision-netbox-automation-token.yml` is the
+  code-managed path; fix it rather than working around it.
+- **Do not treat "containers up" as "pipeline working" again.** Every component here has
+  been `Up 4 months` throughout a total four-month outage. The check that would have
+  caught it is the age of the newest discovery-tagged write, not container health.
+
+## Follow-up worth its own work
+
+A staleness check: if the newest `discovery:auto`-tagged record is older than a small
+multiple of the 15-minute cadence, the pipeline is down. That single assertion converts
+this class of failure from "noticed four months later, by accident" into an alert, and it
+is the reason this outage is documented here rather than only fixed.

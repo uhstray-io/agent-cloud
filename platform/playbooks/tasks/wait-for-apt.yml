@@ -1,0 +1,38 @@
+---
+# wait-for-apt.yml — wait until a freshly-booted host will accept package installs.
+#
+# A VM that has just been provisioned is still running cloud-init, which does its own
+# apt work and holds /var/lib/dpkg/lock-frontend. Any playbook that installs a package
+# immediately after provisioning therefore fails with
+#   E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process N (apt-get)
+# — a transient race that looks like a broken playbook and is fixed by waiting.
+#
+# Included rather than copied because it is not runner-specific: every service deployed
+# onto a newly provisioned host has this race, and the ones that appear not to are simply
+# the ones nobody ran soon enough after boot.
+#
+# Dependency-free on purpose: `apt-get check` needs no extra package (fuser/lsof are not
+# guaranteed present) and returns non-zero precisely while the lock is held, which is the
+# condition being waited on.
+
+- name: "Wait for cloud-init to finish its own package work"
+  # Non-fatal: a host without cloud-init (a container, an older image) is a perfectly
+  # good target and should not be blocked by the absence of a tool it never needed.
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+  # Bounded. `--wait` blocks until cloud-init finishes, which is indefinite if it stalls,
+  # and failed_when: false does not limit a wait — it only forgives the outcome. Ten
+  # minutes is well past a normal first boot; past that, fall through and let the bounded
+  # apt-get check below handle whatever lock state remains.
+  timeout: 600
+  failed_when: false
+  become: true
+
+- name: "Wait until the package manager will accept a lock"
+  ansible.builtin.command: apt-get check
+  register: _apt_ready
+  until: _apt_ready.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false
+  become: true

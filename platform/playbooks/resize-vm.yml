@@ -1,0 +1,459 @@
+---
+# resize-vm.yml — converge a live Proxmox VM's cores/memory/disk to its declared
+# spec. Composable and reusable for any service VM, now and later.
+#
+# THE MODEL: `site-config/proxmox/vm-specs.yml` is already the declared source of
+# truth that provision-vm.yml builds from. This playbook makes that declaration
+# enforceable AFTER provisioning too: edit the spec, run this, and the live VM is
+# reconciled to match. That is why the interface is "converge to declared" rather
+# than "pass in numbers" — a number passed at launch time is not recorded
+# anywhere, so the next person cannot tell what the VM is supposed to be.
+#
+# Launch overrides exist for ad-hoc work and take precedence, but they are the
+# exception: prefer editing vm-specs.yml so the change is reviewable.
+#
+# Usage (via Semaphore):
+#   -e target_service=postiz                       converge to the declared spec
+#   -e target_service=postiz -e allow_reboot=true  ...and reboot to apply
+#   -e target_service=postiz -e resize_memory=16384   ad-hoc override
+#
+# Direct-by-vmid (a VM with no vm-specs entry yet):
+#   -e target_vmid=215 -e target_node=primordial -e resize_memory=8192
+#
+# SAFETY PROPERTIES, each deliberate:
+#   * Idempotent. Nothing to change => no API write, reported as ok.
+#   * DISK GROWTH ONLY. Proxmox cannot shrink a disk without data loss, so a
+#     smaller declared disk is refused outright rather than attempted.
+#   * Reboots are opt-in. cores/memory writes land in the VM's config
+#     immediately, but a guest without hotplug only picks them up on next boot.
+#     Without allow_reboot=true this playbook applies the config and REPORTS the
+#     pending change instead of restarting a live service under you.
+#   * Read-only first. It reports the current-vs-desired diff before any write,
+#     so a run with allow_reboot unset is a safe way to see what would change.
+#
+# Requires the Proxmox API token in OpenBao at secret/services/proxmox
+# (url, token_id, api_token) — same source provision-vm.yml uses.
+
+- name: "Resize VM — {{ target_service | default('vmid ' ~ (target_vmid | default('?'))) }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      # Inventory-driven, defaulting to the platform's current posture rather
+      # than hardcoded, so turning verification on is a one-line inventory change
+      # (`proxmox_validate_certs: true`) once the PVE CA is distributed to the
+      # Semaphore runner — not a code edit here. Today it is false because PVE
+      # serves a self-signed certificate and that CA is not on the runner, which
+      # is the same posture provision-vm.yml and proxmox-validate.yml already
+      # take; flipping one playbook alone would just break this one. HTTPS itself
+      # is NOT optional — asserted below.
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      headers:
+        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  vars:
+    _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+      'secret/data/services/proxmox',
+      url=_bao_url, auth_method='approle',
+      role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+    _pve_secret: "{{ _pve_data.api_token }}"
+
+    # WHERE THE DESIRED SPEC COMES FROM, in precedence order:
+    #
+    #   1. launch override      resize_cores / resize_memory / resize_disk
+    #   2. INVENTORY host vars  vm_cores / vm_memory / vm_disk  <-- the Semaphore path
+    #   3. proxmox/vm-specs.yml in site-config, only when readable
+    #
+    # (2) is the primary path and (3) is the fallback, not the other way round,
+    # because vm-specs.yml lives in the PRIVATE site-config repo which the
+    # Semaphore runner never checks out — it receives a static inventory instead.
+    # Reading the file first is what made the initial version of this playbook
+    # crash on its first real run: `lookup('file', ...)` resolved to
+    # platform/proxmox/vm-specs.yml inside the agent-cloud checkout, which does
+    # not exist. (provision-vm.yml has the same latent defect and is therefore
+    # not Semaphore-runnable either — tracked separately, it needs vm-specs for
+    # IP/gateway/tags so it cannot simply move to inventory.)
+    #
+    # errors='ignore' so a missing file yields empty rather than an exception:
+    # absent is the NORMAL case on the runner, not a failure.
+    _specs_raw: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml', errors='ignore') | default('', true) }}"
+    _specs: "{{ (_specs_raw | from_yaml) if (_specs_raw | length > 0) else {} }}"
+    _svc: "{{ (_specs.vms | default({}))[target_service] | default({}) }}"
+
+    _vmid: "{{ target_vmid | default(vm_vmid | default(_svc.vmid | default(''))) }}"
+    _node: "{{ target_node | default(vm_node | default(_svc.node | default(''))) }}"
+
+    _want_cores: "{{ resize_cores | default(vm_cores | default(_svc.cores | default(''))) }}"
+    _want_memory: "{{ resize_memory | default(vm_memory | default(_svc.memory | default(''))) }}"
+    # Declared disk is like "32G"; strip the unit for arithmetic.
+    _want_disk_gb: "{{ (resize_disk | default(vm_disk | default(_svc.disk | default(''))))
+                       | regex_replace('(?i)\\s*g(b)?$', '') }}"
+
+    _allow_reboot: "{{ allow_reboot | default(false) | bool }}"
+    # Seconds to wait for a clean guest shutdown before giving up. A guest
+    # without the agent, or one ignoring ACPI, will hit this.
+    _shutdown_timeout: "{{ resize_shutdown_timeout | default(120) | int }}"
+
+  tasks:
+    # This play runs on localhost (it talks to the PVE API, not to the guest), so
+    # the target service's own inventory vars are NOT in scope automatically.
+    # Hoist them out of hostvars for the matching host in the <service>_svc group.
+    - name: "Resolve the target host's inventory vars"
+      ansible.builtin.set_fact:
+        vm_cores: "{{ _hv.vm_cores | default(omit) }}"
+        vm_memory: "{{ _hv.vm_memory | default(omit) }}"
+        vm_disk: "{{ _hv.vm_disk | default(omit) }}"
+        vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
+        vm_node: "{{ _hv.vm_node | default(omit) }}"
+      vars:
+        _grp: "{{ target_service | default('') }}_svc"
+        _hv: "{{ hostvars[(groups[_grp] | default([]) | first) | default('')] | default({}) }}"
+      when:
+        - target_service is defined
+        - (groups[target_service ~ '_svc'] | default([]) | length) > 0
+
+    # The PVE API token is sent on EVERY request below, so the transport matters.
+    # HTTPS is required outright. validate_certs stays false — PVE presents a
+    # self-signed certificate and its CA is not installed on the Semaphore
+    # runner, the same posture provision-vm.yml and proxmox-validate.yml already
+    # take. That is a known, scoped exception, not an oversight: the follow-up is
+    # distributing the PVE CA to the runner and flipping validate_certs across
+    # all three playbooks together, which is infrastructure work beyond this one.
+    - name: "Require HTTPS for the Proxmox API"
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+        fail_msg: >-
+          Refusing to send the PVE API token over cleartext. secret/services/proxmox
+          `url` must be an https:// endpoint (Proxmox serves TLS on :8006 by
+          default); got a non-HTTPS value.
+
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - _vmid | string | length > 0
+          - _node | string | length > 0
+          - _bao_url | length > 0
+        fail_msg: >-
+          Pass -e target_service=<name> (with an entry in proxmox/vm-specs.yml),
+          or -e target_vmid=<id> -e target_node=<node>. openbao_addr (or
+          OPENBAO_ADDR) + AppRole creds must also be set.
+
+    - name: "Require at least one dimension to converge"
+      ansible.builtin.assert:
+        that:
+          - (_want_cores | string | length > 0)
+            or (_want_memory | string | length > 0)
+            or (_want_disk_gb | string | length > 0)
+        fail_msg: >-
+          Nothing to converge for '{{ target_service | default("(by vmid)") }}':
+          no vm_cores/vm_memory/vm_disk on its inventory host, no readable
+          proxmox/vm-specs.yml, and no resize_* override passed. Declare the
+          sizes on the service's inventory host (the Semaphore-runnable path) or
+          pass an override.
+
+    # ── Read current state ──────────────────────────────────────────────────
+    - name: "Read the VM's current config"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+        method: GET
+      register: _cfg
+
+    - name: "Read the VM's current run state"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+        method: GET
+      register: _state
+
+    - name: "Resolve current values + the disk device to grow"
+      ansible.builtin.set_fact:
+        _have_cores: "{{ _cfg.json.data.cores | default(0) | int }}"
+        _have_memory: "{{ _cfg.json.data.memory | default(0) | int }}"
+        _is_running: "{{ (_state.json.data.status | default('unknown')) == 'running' }}"
+        # What the guest is ACTUALLY running right now, which is not the same as
+        # what its config says: a config write lands immediately but a guest
+        # without hotplug keeps its old allocation until it next boots.
+        # status/current reports maxmem in BYTES.
+        _running_memory: "{{ ((_state.json.data.maxmem | default(0) | int) / 1048576) | round | int }}"
+        # status/current.cpus is the TOTAL live vCPU count, while the config's
+        # `cores` is per-SOCKET. On a 2-socket VM, cores=2 runs as cpus=4, so
+        # comparing them directly would see a permanent mismatch and restart the
+        # guest on every run forever. Sockets are captured so the comparison
+        # multiplies out. (vmid 215 is single-socket, which is why the naive
+        # comparison looked correct — right by coincidence.)
+        _running_cores: "{{ _state.json.data.cpus | default(0) | int }}"
+        _sockets: "{{ _cfg.json.data.sockets | default(1) | int }}"
+        # Auto-detect the primary disk unless told otherwise: the first
+        # scsi/virtio/sata/ide entry that is NOT a cdrom. Named explicitly with
+        # -e resize_disk_device=scsi1 for a VM with several.
+        _disk_device: >-
+          {{ resize_disk_device | default(
+               (_cfg.json.data | dict2items
+                | selectattr('key', 'match', '^(scsi|virtio|sata|ide)[0-9]+$')
+                | rejectattr('value', 'search', 'media=cdrom')
+                | map(attribute='key') | sort | first | default('')), true) }}
+
+    # regex_search WITH a capture group raises AttributeError on a non-match
+    # (it calls .group() on None) rather than returning None, so a `| first |
+    # default(0)` after it never runs — this failed on the first real run.
+    # regex_replace returns its input unchanged instead, and the `size=` guard
+    # means it is only reached when there is something to parse.
+    #
+    # _disk_parsed matters more than it looks: if the size could not be read and
+    # _have_disk_gb silently defaulted to 0, the grow delta (want - have) would
+    # compute the FULL declared size, so a 32G disk would be grown by another
+    # 32G — and the shrink guard (want >= have) would pass happily. An
+    # unparseable size must refuse to touch the disk, not assume zero.
+    - name: "Resolve the current disk size in GB"
+      ansible.builtin.set_fact:
+        _have_disk_gb: "{{ (_raw | regex_replace('^.*size=([0-9]+)G.*$', '\\1') | int) if _parsed else 0 }}"
+        _disk_parsed: "{{ _parsed }}"
+      vars:
+        _raw: "{{ _cfg.json.data[_disk_device | trim] | default('') }}"
+        # Only a size expressed in whole GB is understood. Proxmox can report K/M/T
+        # (the attached install ISO reports size=3226020K, for instance), and
+        # guessing a conversion is how a resize turns into a wrong-sized disk.
+        _parsed: "{{ (_raw | regex_search('size=[0-9]+G')) is not none }}"
+      when: (_disk_device | trim | length) > 0
+
+    # One assert covering BOTH ways a requested disk change can be unsafe, and
+    # gated ONLY on a size having been requested. Gating it on a device having
+    # been detected was the bug: with no device, this refusal skipped, the shrink
+    # guard skipped, the grow skipped — and the run reported "Config unchanged"
+    # while silently ignoring the disk size it was asked to apply. A requested
+    # change that cannot be made must fail, never pass quietly.
+    - name: "Refuse a requested disk change that cannot be made safely"
+      ansible.builtin.assert:
+        that:
+          - (_disk_device | trim | length) > 0
+          - _disk_parsed | default(false) | bool
+        fail_msg: >-
+          A disk size of {{ _want_disk_gb }}G was requested, but
+          {{ 'no disk device could be detected on this VM — auto-detection looks for
+              the first scsi/virtio/sata/ide entry that is not a cdrom'
+             if (_disk_device | trim | length) == 0
+             else ("the current size of " ~ (_disk_device | trim) ~ " could not be parsed from '"
+                   ~ (_cfg.json.data[_disk_device | trim] | default('')) ~
+                   "' (only whole-GB sizes are understood)") }}.
+          Refusing rather than proceeding — skipping it silently would report the
+          run as converged while the disk was untouched, and guessing a baseline
+          would compute a wrong grow delta. Pass -e resize_disk_device=<dev> to
+          name the device explicitly.
+      when: (_want_disk_gb | string | length) > 0
+
+    # ── Report the diff BEFORE writing anything ─────────────────────────────
+    - name: "Current vs desired"
+      ansible.builtin.debug:
+        msg:
+          - "vmid {{ _vmid }} on {{ _node }} — currently {{ 'RUNNING' if _is_running else 'stopped' }}"
+          - "cores:  {{ _have_cores }} -> {{ _want_cores if (_want_cores | string | length > 0) else '(unchanged)' }}"
+          - "memory: {{ _have_memory }}MB -> {{ _want_memory ~ 'MB' if (_want_memory | string | length > 0) else '(unchanged)' }}"
+          - >-
+            disk:   {{ (_have_disk_gb | default('?')) ~ 'G' }} ->
+            {{ (_want_disk_gb ~ 'G') if (_want_disk_gb | string | length > 0) else '(unchanged)' }}
+            on {{ _disk_device | default('(none found)') }}
+
+    # ── Guard: never attempt to shrink a disk ───────────────────────────────
+    - name: "Refuse to shrink the disk"
+      ansible.builtin.assert:
+        that:
+          - (_want_disk_gb | int) >= (_have_disk_gb | default(0) | int)
+        fail_msg: >-
+          Declared disk {{ _want_disk_gb }}G is SMALLER than the live
+          {{ _have_disk_gb | default(0) }}G. Proxmox cannot shrink a disk without
+          data loss, so this is refused. Fix the declared spec, or migrate the
+          data deliberately — do not do it here.
+      when:
+        - _want_disk_gb | string | length > 0
+        - _disk_device | length > 0
+
+    # ── Apply: cores + memory ───────────────────────────────────────────────
+    # THE RESTART DECISION. Deliberately NOT "did this run change the config":
+    # that was the original condition and it is wrong in a way that hides itself.
+    # A run without allow_reboot writes the config and leaves the guest as-is; a
+    # LATER run with allow_reboot then sees no config delta, skips the restart,
+    # and reports the VM as converged — while the guest is still running the old
+    # allocation. Measured on vmid 215: config memory=8192 with the guest running
+    # maxmem=4096, reported as "already matched the declared spec".
+    #
+    # Comparing what the guest is RUNNING against what is WANTED makes the
+    # playbook genuinely converging: run it any number of times, in any order,
+    # and it restarts exactly when the guest is out of step with its declaration.
+    - name: "Decide whether the guest needs a restart to pick up its config"
+      ansible.builtin.set_fact:
+        _needs_restart: >-
+          {{ _is_running and (
+               ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
+               or ((_want_cores | string | length > 0)
+                   and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
+             ) }}
+
+    - name: "Compute the config changes actually needed"
+      ansible.builtin.set_fact:
+        _cfg_changes: >-
+          {{ ({} if (_want_cores | string | length == 0) or ((_want_cores | int) == (_have_cores | int))
+               else {'cores': _want_cores | int})
+             | combine(
+               {} if (_want_memory | string | length == 0) or ((_want_memory | int) == (_have_memory | int))
+               else {'memory': _want_memory | int}) }}
+
+    - name: "Apply cores/memory to the VM config"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+        method: PUT
+        body_format: form-urlencoded
+        body: "{{ _cfg_changes }}"
+        status_code: [200]
+      register: _cfg_put
+      when: _cfg_changes | length > 0
+      changed_when: _cfg_changes | length > 0
+
+    # ── Apply: disk growth ──────────────────────────────────────────────────
+    - name: "Grow the disk"
+      # Proxmox takes an INCREMENT (+NG) for a grow. Computed as the delta so
+      # re-running is a no-op rather than adding the full size again.
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/resize"
+        method: PUT
+        body_format: form-urlencoded
+        body:
+          disk: "{{ _disk_device | trim }}"
+          size: "+{{ (_want_disk_gb | int) - (_have_disk_gb | int) }}G"
+        status_code: [200]
+      register: _disk_put
+      when:
+        - _want_disk_gb | string | length > 0
+        - _disk_device | length > 0
+        - (_want_disk_gb | int) > (_have_disk_gb | int)
+      changed_when: true
+
+    # ── Reboot, only when explicitly allowed ────────────────────────────────
+    - name: "Report a pending change that needs a reboot"
+      ansible.builtin.debug:
+        msg: >-
+          The VM's config declares
+          cores={{ _want_cores if (_want_cores | string | length > 0) else _have_cores }}
+          memory={{ _want_memory if (_want_memory | string | length > 0) else _have_memory }}MB,
+          but the guest is RUNNING cores={{ _running_cores }} (total vCPUs across
+          {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
+          has no hotplug, so it keeps its old allocation until it next boots. It
+          was NOT restarted. Re-run with -e allow_reboot=true during a
+          maintenance window, or reboot the guest yourself.
+      when:
+        - _needs_restart | bool
+        - not (_allow_reboot | bool)
+
+    # The stop -> start sequence is wrapped so a shutdown that never completes
+    # cannot leave the guest POWERED OFF. Without the rescue, a wait timeout
+    # fails the play between "shutdown issued" and "start issued" — turning a
+    # resize into an outage, which is the worst possible failure mode here.
+    - name: "Restart the guest so cores/memory take effect"
+      when:
+        - _needs_restart | bool
+        - _allow_reboot | bool
+      block:
+        - name: "Shut the guest down cleanly"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/shutdown"
+            method: POST
+            status_code: [200]
+          changed_when: true
+
+        - name: "Wait for the guest to stop"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _stop_wait
+          until: (_stop_wait.json.data.status | default('')) == 'stopped'
+          retries: "{{ ((_shutdown_timeout | int) / 5) | round(0, 'ceil') | int }}"
+          delay: 5
+          changed_when: false
+
+        - name: "Start the guest again"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          changed_when: true
+
+        - name: "Wait for the guest to be running again"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _start_wait
+          until: (_start_wait.json.data.status | default('')) == 'running'
+          retries: 24
+          delay: 5
+          changed_when: false
+
+      rescue:
+        # Read the real state rather than assuming which step failed.
+        - name: "Recovery: read the guest's actual state"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _rescue_state
+          changed_when: false
+
+        - name: "Recovery: bring a stopped guest back up"
+          # Only when it is actually stopped. A guest still mid-shutdown must not
+          # be sent start — that is how a VM ends up wedged.
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          when: (_rescue_state.json.data.status | default('')) == 'stopped'
+          changed_when: true
+
+        - name: "Fail with the reason, after recovering"
+          ansible.builtin.fail:
+            msg: >-
+              Restart sequence failed for vmid {{ _vmid }} on {{ _node }}. Guest
+              state when recovery ran: {{ _rescue_state.json.data.status | default('unknown') }}.
+              {{ 'It was stopped, so a start was issued — verify it came up.'
+                 if (_rescue_state.json.data.status | default('')) == 'stopped'
+                 else 'It was NOT stopped, so no start was issued (sending start to a
+                       guest mid-shutdown can wedge it) — check it by hand.' }}
+              The cores/memory config WAS written and will apply on the next boot.
+              A guest that ignores ACPI shutdown, or has no qemu-guest-agent, will
+              hit this every time; raise resize_shutdown_timeout or stop it manually.
+
+    # ── Verify by re-reading, not by assuming the writes took ───────────────
+    - name: "Re-read the config to confirm"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+        method: GET
+      register: _cfg_after
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          - >-
+            vmid {{ _vmid }} now: cores={{ _cfg_after.json.data.cores | default('?') }}
+            memory={{ _cfg_after.json.data.memory | default('?') }}MB
+            disk={{ _cfg_after.json.data[_disk_device] | default('(n/a)')
+                    | regex_search('size=[0-9]+G') | default('?') }}
+          - >-
+            {{ 'Config unchanged — already matched the declared spec.'
+               if (_cfg_changes | length == 0) and (_disk_put is skipped)
+               else 'Converged.' }}
+          - >-
+            {{ 'Guest was restarted, so cores/memory are live.'
+               if (_needs_restart | bool) and (_allow_reboot | bool)
+               else ('Guest NOT restarted — its config is correct but it is still
+                      RUNNING the old allocation until it next boots. Re-run with
+                      -e allow_reboot=true during a maintenance window.'
+                     if (_needs_restart | bool)
+                     else 'Guest is already running what its config declares — no reboot needed.') }}
+          - >-
+            {{ 'A grown disk still needs the FILESYSTEM extended inside the guest
+                (e.g. growpart + resize2fs / lvextend) — Proxmox only grew the
+                block device.' if (_disk_put is not skipped) else '' }}

@@ -6,6 +6,8 @@
 # Plan: plan/development/LOCAL-DEV-12A-IMPLEMENTATION.md (design: LOCAL-DEV-DEPLOYMENT.md §12A).
 # Run: bats platform/tests/test_bootstrap_12a.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks"
@@ -141,4 +143,56 @@ setup() {
   # local-all chains creds at the end
   run grep -q "LOCAL_DEV) creds" "$REPO_ROOT/Makefile"
   [ "$status" -eq 0 ]
+}
+
+@test "genesis registers repository records before applying templates" {
+  # setup-templates.yml asserts that every record a template names exists, so a
+  # dev-bound template cannot silently bind to the wrong branch. A freshly created
+  # local instance has no records, so applying templates first fails that assert on
+  # every dev-bound template — genesis had the declarations and never applied them.
+  #
+  # Order is the whole point: asserted by comparing line numbers, not by grepping
+  # for both strings, which would pass with the steps in the wrong order.
+  local f="$PB/bootstrap-local-dev.yml"
+  local repos tmpl
+  repos=$(grep -n "bootstrap-semaphore-repositories.yml" "$f" | head -1 | cut -d: -f1)
+  tmpl=$(grep -n "semaphore/setup-templates.yml" "$f" | head -1 | cut -d: -f1)
+  [ -n "$repos" ]
+  [ -n "$tmpl" ]
+  [ "$repos" -lt "$tmpl" ]
+}
+
+@test "genesis sources the Caddy edge ports from the declaration, not literals" {
+  # The genesis inline inventory declares the same host the working inventory
+  # declares, so a restated literal is a second source of truth that wins during
+  # bootstrap. caddy_http_port was documented as editable and had no effect, so a
+  # machine with anything else on 8088 could not bootstrap at all.
+  local f="$PB/bootstrap-local-dev.yml"
+  # Scoped to the specific INI [<group>:vars] blocks. A whole-file grep is
+  # satisfied by a matching assignment anywhere, including in another service's
+  # block, so it cannot tell "the caddy block is parameterised" from "some block
+  # somewhere is".
+  local caddy_blk postiz_blk
+  caddy_blk=$(awk '/^ *\[caddy_svc:vars\]/{f=1;next} f&&/^ *\[/{exit} f{print}' "$f")
+  postiz_blk=$(awk '/^ *\[postiz_svc:vars\]/{f=1;next} f&&/^ *\[/{exit} f{print}' "$f")
+  [ -n "$caddy_blk" ]
+  [ -n "$postiz_blk" ]
+
+  assert_contains "$caddy_blk" 'caddy_http_port={{ _caddy_decl.caddy_http_port | default(8088, true) }}'
+  # The HTTPS port is defined ONCE and consumed by name, because more than the
+  # Caddy block depends on it: every service advertising a public URL through that
+  # edge must name the same port, or an override moves the listener and leaves the
+  # advertised URL on the old one.
+  assert_grep -qE "^ *_edge_https_port: \"\{\{ _caddy_decl\.caddy_https_port \| default\(8443, true\) \}\}\"$" "$f"
+  assert_contains "$caddy_blk" 'caddy_https_port={{ _edge_https_port }}'
+
+  # BOTH postiz URLs, not just the public one — the OIDC base can regress to a
+  # literal on its own and the service would then send users to the wrong origin.
+  assert_contains "$postiz_blk" 'postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}'
+  assert_contains "$postiz_blk" 'postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}'
+
+  # A bare literal in either block means the override is dead again.
+  refute_contains "$caddy_blk" 'caddy_http_port=8088'
+  refute_contains "$caddy_blk" 'caddy_https_port=8443'
+  refute_contains "$postiz_blk" ":8443"
 }

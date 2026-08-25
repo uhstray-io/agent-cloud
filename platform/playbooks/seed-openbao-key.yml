@@ -23,7 +23,11 @@
 # wildcard policy grants `patch` on secret/data/services/*).
 #
 # Usage (via Semaphore):
-#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key -e bao_value=<secret>
+#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key
+#   BAO_VALUE supplied as a Semaphore environment SECRET (encrypted at rest, not
+#   returned by the API). Do NOT pass -e bao_value=... under Semaphore: it
+#   persists the extra-var JSON and serves it back over its API. The extra-var
+#   form is for a LOCAL run only.
 #   -e openbao_addr=https://<bao>:8200   (AppRole creds injected by Semaphore env)
 # openbao_addr must be https, OR http only to a loopback/RFC1918 host (the
 # internal OpenBao VLAN) — the transport guard below refuses public cleartext.
@@ -36,6 +40,15 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # The ENVIRONMENT WINS over the extra var. Semaphore persists a task's
+    # extra-var JSON in its own database and serves it back over its API
+    # indefinitely, so `-e bao_value=...` leaves the secret in plaintext outside
+    # OpenBao — the opposite of what this playbook is for. A Semaphore environment
+    # secret is encrypted at rest and its value is not returned by the API, and it
+    # is the same channel this playbook's AppRole credentials already arrive on.
+    # Environment first, so a stray extra var cannot override a configured secret.
+    # The extra var still serves a local run, where nothing persists it.
+    _bao_value: "{{ lookup('env', 'BAO_VALUE') | default(bao_value | default(''), true) }}"
 
   tasks:
     # Non-secret validation stays VISIBLE (no no_log) so a missing path/key/url
@@ -54,22 +67,19 @@
     - name: "Validate the secret value is present"
       ansible.builtin.assert:
         that:
-          - bao_value is defined and bao_value | length > 0
-        fail_msg: "Pass -e bao_value=<secret> (the value to store)."
+          - _bao_value | length > 0
+        fail_msg: >-
+          Supply the value as the BAO_VALUE environment secret (Semaphore) or
+          -e bao_value=<secret> (local run).
       no_log: true
 
     # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
     # secret material over public cleartext. https is always allowed; http is
     # allowed ONLY to loopback/RFC1918 (the internal OpenBao VLAN).
-    - name: "Require a non-cleartext transport to OpenBao"
-      ansible.builtin.assert:
-        that:
-          - "_bao_url is match('^(https://|http://(localhost|127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.))')"
-        fail_msg: >-
-          Refusing to send secret material over public cleartext. Set openbao_addr
-          to an https:// URL, or an http:// endpoint on loopback/RFC1918 (the
-          internal OpenBao VLAN).
-
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
@@ -111,11 +121,11 @@
           Content-Type: application/merge-patch+json
         body_format: json
         body:
-          data: "{{ {bao_key: bao_value} }}"
+          data: "{{ {bao_key: _bao_value} }}"
         status_code: [200]
       when:
         - _path_exists | bool
-        - _existing_data[bao_key] | default(none) != bao_value
+        - _existing_data[bao_key] | default(none) != _bao_value
       register: _patch
       no_log: true
 
@@ -128,7 +138,7 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         body_format: json
         body:
-          data: "{{ {bao_key: bao_value} }}"
+          data: "{{ {bao_key: _bao_value} }}"
         status_code: [200]
       when:
         - not (_path_exists | bool)

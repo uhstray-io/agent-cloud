@@ -1,0 +1,16 @@
+# Python packages the ORCHESTRATOR (Semaphore controller) needs, beyond what Ansible
+# itself pulls in. These are used by playbooks running on localhost — never installed on
+# a service VM.
+#
+# Why this file exists: platform/lib/github_app_token.py signs the GitHub App assertion
+# with `cryptography`, and an earlier version of that helper assumed the package was
+# "already present via the collections". That was an assumption, not a check. The
+# package IS present on the current controller — a runner registration succeeded through
+# it — but nothing declared it, so a rebuilt image could drop it and the failure would
+# surface from inside a no_log boundary as an unexplained credential error.
+#
+# Install with:  pip install -r platform/requirements-controller.txt
+
+# RS256 signing for the GitHub App credential chain (platform/lib/github_app_token.py).
+# Any 3.x release provides the primitives used (load_pem_private_key, PKCS1v15, SHA256).
+cryptography>=3.4

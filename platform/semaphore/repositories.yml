@@ -1,0 +1,48 @@
+---
+# repositories.yml — the Semaphore repository entries for this project, as code.
+#
+# Semaphore binds each task template to ONE repository record, and that record
+# carries the git branch. Declaring several records means a template can name the
+# branch it runs from, instead of everyone sharing one record whose branch gets
+# flipped back and forth.
+#
+# WHY THIS REPLACED set-semaphore-branch.yml: flipping one shared record's branch
+# is global mutable state. Two people testing different branches overwrite each
+# other, and — worse — any template run silently uses whichever branch the last
+# person left it on, with nothing in the run output saying so. Declaring the
+# records removes the shared mutable thing entirely.
+#
+# Applied by bootstrap-semaphore-repositories.yml. Idempotent: a record is
+# created if missing and corrected if it drifted, otherwise left alone.
+#
+# Per entry:
+#   name        the record name templates reference (templates.yml `repository:`)
+#   git_url     clone URL. Use https:// unless a real deploy key is attached —
+#               an ssh:// or git@ URL with ssh_key `none` cannot authenticate and
+#               every checkout fails.
+#   git_branch  branch this record checks out
+#   ssh_key     Semaphore key-store entry name. The "no key attached" entry is
+#               named inconsistently across instances — this production project
+#               calls it `local-none` while the local-dev bootstrap creates one
+#               named `none` — so the apply playbook accepts either for the
+#               logical value `none` rather than forking this file per
+#               environment.
+
+repositories:
+  # Production. Templates default to this record when they name no repository.
+  - name: agent-cloud
+    git_url: "https://github.com/uhstray-io/agent-cloud.git"
+    git_branch: main
+    ssh_key: none
+
+  # Integration. For validating orchestration code on `dev` before promoting it
+  # to `main` — the branch-deploy workflow in
+  # plan/architecture/03-testing-ci-quality.md. A template opts in by setting
+  # `repository: agent-cloud dev`; nothing is flipped globally.
+  #
+  # NOTE: https, not git@. The record added by hand used an SSH URL with ssh_key
+  # `none`, which cannot authenticate — this corrects that on the next run.
+  - name: agent-cloud dev
+    git_url: "https://github.com/uhstray-io/agent-cloud.git"
+    git_branch: dev
+    ssh_key: none

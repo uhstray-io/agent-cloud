@@ -10,6 +10,8 @@
 #
 # Run: bats platform/tests/test_apply_firewall.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/apply-firewall.yml"
   [ -f "$PLAYBOOK" ]
@@ -85,4 +87,121 @@ setup() {
   bridge_line=$(grep -n 'ufw allow in on {{ item.0 }}' "$PLAYBOOK" | head -1 | cut -d: -f1)
   [ -n "$enable_line" ] && [ -n "$bridge_line" ]
   [ "$bridge_line" -lt "$enable_line" ]
+}
+
+# ── Egress containment (firewall_deny_egress) ──────────────────────────────────
+# Added for the self-hosted CI runner hosts, which run repository-authored code and
+# must be denied the platform's interior (secret store, hypervisor, orchestrator) at
+# the NETWORK boundary rather than merely by withholding a credential.
+#
+# The behavioural test at the bottom is deliberate: §2.5 in docs/MISTAKES.md records
+# a guard on this very feature that was specified without ever being evaluated against
+# the declarations it would judge — and which, as written, would have rejected every
+# legitimate entry. Grepping for the predicate is not enough; it is executed here.
+
+@test "firewall: firewall_deny_egress is wired to a _deny_egress loop var, default EMPTY" {
+  # Default-empty is the regression guard for every EXISTING service host: a host that
+  # declares no egress list must emit a byte-identical rule set to before this feature.
+  grep -qF '_deny_egress: "{{ firewall_deny_egress | default([]) }}"' "$PLAYBOOK"
+}
+
+@test "firewall: egress denials emit ufw deny out, with the port clause optional" {
+  # Omitting `port` denies the destination entirely; supplying it scopes the denial.
+  grep -qF 'ufw deny out to {{ item.to }}' "$PLAYBOOK"
+  grep -qF "(' port ' ~ item.port ~ ' proto ' ~ (item.proto | default('tcp'))) if item.port is defined else ''" "$PLAYBOOK"
+  grep -qF 'loop: "{{ _deny_egress }}"' "$PLAYBOOK"
+}
+
+@test "firewall: the single-host guard predicate is present verbatim (drift guard)" {
+  # This pins the predicate that the behavioural test below executes. If the playbook's
+  # predicate is edited, this fails — forcing the behavioural cases to be revisited
+  # rather than silently drifting away from what is actually enforced.
+  grep -qF "('/' not in item.to)" "$PLAYBOOK"
+  grep -qF "or ((item.to.split('/') | last) == '32')" "$PLAYBOOK"
+  grep -qF "or (item.broad | default(false) | bool)" "$PLAYBOOK"
+  grep -qF 'item.to not in _ssh_cidrs' "$PLAYBOOK"
+  grep -qF "(item.reason | default('')) | length > 0" "$PLAYBOOK"
+  # And it must reference the recorded rationale, so the next reader finds the why.
+  grep -qF '§2.5' "$PLAYBOOK"
+}
+
+@test "firewall: egress denials are applied BEFORE enable (no uncontained window)" {
+  local enable_line deny_line assert_line
+  enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  deny_line=$(grep -n 'ufw deny out to' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  assert_line=$(grep -n 'Validate each egress denial' "$PLAYBOOK" | head -1 | cut -d: -f1)
+  [ -n "$enable_line" ] && [ -n "$deny_line" ] && [ -n "$assert_line" ]
+  # Validation precedes the rules, and the rules precede enabling.
+  [ "$assert_line" -lt "$deny_line" ]
+  [ "$deny_line" -lt "$enable_line" ]
+}
+
+@test "firewall: the default outbound policy is still allow (denials are specific)" {
+  # Egress containment must be a set of specific denials evaluated ahead of the default
+  # policy — NOT a flip to default-deny outbound, which would break package fetches,
+  # DNS, and NTP on every host this shared playbook touches.
+  grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
+  ! grep -qF 'ufw default deny outgoing' "$PLAYBOOK"
+}
+
+@test "firewall: the egress guard accepts real shapes and cannot express the self-lock" {
+  # Behavioural, not structural: it executes the predicate the playbook enforces against
+  # the declaration shapes it will really judge (docs/MISTAKES.md §2.5 — that predicate's
+  # first draft would have rejected every legitimate entry).
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+
+  cat > "$BATS_TEST_TMPDIR/guard.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # RFC 5737 / RFC 3849 documentation ranges standing in for the declared management
+    # prefixes. Real addresses live only in the private site-config repo (§4.3).
+    _ssh_cidrs: ["192.0.2.0/24", "198.51.100.0/24"]
+  tasks:
+    - ansible.builtin.assert:
+        that:
+          - (item.to | default('')) | length > 0
+          - >-
+            ('/' not in item.to)
+            or ((item.to.split('/') | last) == '32')
+            or (item.broad | default(false) | bool)
+          - item.to not in _ssh_cidrs
+          - >-
+            (not (item.broad | default(false) | bool))
+            or ((item.reason | default('')) | length > 0)
+      loop: "{{ cases }}"
+YAML
+
+  guard() {
+    ansible-playbook "$BATS_TEST_TMPDIR/guard.yml" -e "{\"cases\":[$1]}" >/dev/null 2>&1
+  }
+
+  # ACCEPTED — the shape the runner hosts actually declare. Every target sits INSIDE the
+  # management prefix, which is exactly why the guard must not be phrased as "reject
+  # anything within an SSH CIDR".
+  guard '{"to":"192.0.2.164","port":8200,"comment":"secret store"}'
+  guard '{"to":"192.0.2.117","port":3000,"comment":"orchestrator"}'
+  guard '{"to":"192.0.2.110/32","port":8006,"comment":"hypervisor"}'
+  # ACCEPTED — a wider mask OUTSIDE the management prefixes, flagged and justified.
+  guard '{"to":"203.0.113.0/24","broad":true,"reason":"third-party range"}'
+
+  # REJECTED — a supernet of the management network, which would cut the host off the LAN.
+  # `run` + `[ ]` rather than `! guard`: a bang-inverted command is exempt from set -e
+  # anywhere but the final line, so `! guard ...` mid-body can never fail (§2.9).
+  run guard '{"to":"192.0.2.0/24"}'
+  [ "$status" -ne 0 ]
+  run guard '{"to":"192.0.0.0/16"}'
+  [ "$status" -ne 0 ]
+  # REJECTED even WITH the flag and a reason: `broad` is an escape hatch for a wider mask,
+  # never a bypass of the one thing this guard exists to prevent. A target equal to a
+  # declared SSH CIDR IS the self-lock, so no opt-in may express it.
+  run guard '{"to":"192.0.2.0/24","broad":true,"reason":"stated"}'
+  [ "$status" -ne 0 ]
+  # REJECTED — broad with no stated reason, so it cannot be set in passing.
+  run guard '{"to":"203.0.113.0/24","broad":true}'
+  [ "$status" -ne 0 ]
+  # REJECTED — a malformed entry with no destination at all.
+  run guard '{"port":8200}'
+  [ "$status" -ne 0 ]
 }

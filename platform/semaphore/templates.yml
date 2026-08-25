@@ -4,6 +4,27 @@
 # Each template maps to a playbook in this monorepo.
 # No secrets or sensitive data — safe for public repo.
 
+# Per-template fields:
+#   name          template name shown in Semaphore
+#   playbook      path within the repo
+#   survey_vars   optional launch-time inputs (NEVER for secret values —
+#                 Semaphore persists survey values in its database)
+#   repository    optional Semaphore repository RECORD name to bind to; omitted
+#                 means 'agent-cloud' (main). Records are declared in
+#                 repositories.yml and applied by
+#                 bootstrap-semaphore-repositories.yml.
+#   dev_variant   optional; when true, setup-templates.yml ALSO emits a
+#                 "<name> (Dev)" copy bound to the `agent-cloud dev` record, so
+#                 the orchestration code can be exercised from `dev` before it is
+#                 promoted to `main`.
+#
+#                 This is the supported way to test a template from a branch.
+#                 Do NOT flip a shared repository record's branch (global mutable
+#                 state — why set-semaphore-branch.yml is deprecated), and do NOT
+#                 re-point a template's repository_id through the API by hand:
+#                 that is an ad-hoc change to config that is meant to be code,
+#                 it leaves no trace, and the next person cannot tell it happened.
+
 templates:
   # ── Deployment ─────────────────────────────────────────────────
   - name: Deploy All Services
@@ -70,6 +91,39 @@ templates:
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
+
+  # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
+  # prefix so a VM's address comes from the authority rather than from the inventory
+  # (which records what is declared) or from eyeballing the network. Reserving is opt-in
+  # AND takes explicit addresses, so two runs cannot quietly allocate different ones.
+  - name: Allocate NetBox IP
+    playbook: platform/playbooks/netbox-allocate-ip.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: prefix
+        title: "Prefix (CIDR)"
+        description: "Prefix to ask for free addresses in; must already exist in NetBox"
+        type: string
+        required: true
+      - name: count
+        title: "How many"
+        description: "Free addresses to report (1-32)"
+        type: string
+        required: false
+        default_value: "2"
+      - name: reserve
+        title: "Reserve"
+        description: "true = also CREATE the address records named in assignments"
+        type: string
+        required: false
+        default_value: "false"
+      - name: assignments
+        title: "Assignments (JSON)"
+        description: "[{address, dns_name, description}] — required when reserve=true"
+        type: string
+        required: false
 
   - name: Create NetBox Device
     playbook: platform/playbooks/create-netbox-device.yml
@@ -138,6 +192,22 @@ templates:
 
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy Postiz
+    playbook: platform/playbooks/deploy-postiz.yml
+    dev_variant: true
+    # Five-container rootless stack: the app, its Postgres + Redis, and the
+    # Temporal workflow engine + that engine's Postgres. The engine is what
+    # executes scheduled publishing. Native Authentik OIDC in-app (not a Caddy
+    # forward_auth gate) so the /api/public/v1 automation path stays usable by
+    # n8n with an API key.
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -272,6 +342,23 @@ templates:
         default_value: "main"
 
   # ── Updates ────────────────────────────────────────────────────
+  - name: Clean Deploy Postiz
+    playbook: platform/playbooks/clean-deploy-postiz.yml
+    # DESTRUCTIVE: wipes postiz's Postgres, Redis, uploads, AND the workflow
+    # engine's Postgres. Every connected social account must be re-authorized by
+    # hand afterwards, so this is not a routine recovery step. API keys survive
+    # (the signing secret is reused), so an n8n workflow keeps authenticating
+    # against an account that no longer exists — re-issue the key after
+    # re-registering. Set postiz_disable_registration back to false first, or
+    # nobody can sign in to the rebuilt stack.
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Update NocoDB
     playbook: platform/playbooks/update-nocodb.yml
 
@@ -309,6 +396,16 @@ templates:
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets
     playbook: platform/playbooks/check-secrets.yml
+    # target_service is REQUIRED. Without it the play matches no hosts, prints
+    # "skipping: no hosts matched", and still reports SUCCESS — a false green that
+    # reads exactly like a passing check. Making it a required survey var is what
+    # stops that.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group whose secrets to inventory (e.g. postiz_svc)"
+        type: string
+        required: true
 
   - name: Validate Secrets
     playbook: platform/playbooks/validate-secrets.yml
@@ -322,12 +419,87 @@ templates:
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
 
+  - name: Store SSH Password
+    playbook: platform/playbooks/store-ssh-password.yml
+    # This playbook already exists on main — only its template declaration was
+    # missing. The variant is added anyway so the whole of Phase 1 executes one
+    # branch's code: running the irreversible steps from main while the gate that
+    # clears them runs from dev would mean the thing being verified is not the
+    # thing being run.
+    dev_variant: true
+    # The FIRST step of onboarding a host: put the bootstrap login/sudo password
+    # into OpenBao BEFORE anything modifies the host, so the secret store — not
+    # an operator's local file — is what the automation reads from. harden-ssh
+    # sources the sudo password from there to write the NOPASSWD drop-in on a host
+    # that still requires one, which is why this has to come first.
+    #
+    # Additive: merges the password fields into secret/services/ssh without
+    # touching the management keypair already at that path.
+    #
+    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
+    # database, so a password typed into a survey field would be stored there
+    # indefinitely.
+    #
+    # A LAUNCH-TIME EXTRA VAR IS NOT THE ANSWER EITHER, and this comment used to
+    # say it was. Semaphore persists a task's extra-var JSON exactly the same way
+    # and serves it back over its API indefinitely — verified by reading a
+    # completed task, whose `environment` field came back verbatim. So `-e
+    # ssh_password=...` left the bootstrap credential in plaintext outside
+    # OpenBao, which the platform rules forbid.
+    #
+    # Supply it as the SSH_PASSWORD **environment secret** instead. Semaphore
+    # encrypts environment secrets at rest and does not return their values over
+    # the API, and it is the same channel this playbook's OpenBao AppRole
+    # credentials already arrive on. The playbook prefers the environment over the
+    # extra var, so a stray `-e ssh_password=` cannot override it.
+    #
+    #   Project -> Environment -> (the environment this template uses)
+    #     -> Secrets -> add `SSH_PASSWORD` (type: environment variable)
+    #
+    # The extra var still works for a LOCAL run, where the value comes from
+    # site-config and nothing persists it.
+
+  - name: Verify Host Access
+    playbook: platform/playbooks/verify-host-access.yml
+    # The playbook itself lands on main only at the next promotion, so the
+    # main-bound base fails with "playbook could not be found" until then. The
+    # dev variant is what makes the Phase 1 gate runnable beforehand — which
+    # matters more for this template than most, since it is the check that
+    # decides whether the irreversible hardening step is safe.
+    dev_variant: true
+    # READ-ONLY gate for the hardening sequence. Reports whether the host is
+    # reachable, whether privilege escalation works, what sshd EFFECTIVELY allows
+    # (sshd -T, so drop-ins are accounted for), how many authorized keys are in
+    # place, and whether the sudo password harden-ssh needs is actually in the
+    # secret store — then prints an explicit GO / NO-GO.
+    #
+    # Run it BEFORE harden-ssh (is it safe?), AFTER harden-ssh (did anything
+    # break?), and after Apply Firewall (can we still get in?). It changes
+    # nothing, so it is always safe to run.
+    #
+    # It cannot prove YOUR workstation still has access — only the orchestrator's
+    # own path. Prove the second direction yourself before the irreversible step;
+    # the single path that works might be the one about to be removed.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to verify (e.g. postiz_svc)"
+        type: string
+        required: true
+
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
-    # honcho reads secret/services/nemoclaw:gemini_api_key). bao_value is passed
-    # as a launch-time extra-var (-e bao_value=...), not a stored survey field.
+    # honcho reads secret/services/nemoclaw:gemini_api_key).
+    #
+    # The VALUE is not a survey field, because Semaphore persists survey values in
+    # its database. Nor is it a launch-time extra var, which this comment used to
+    # recommend: Semaphore persists a task's extra-var JSON exactly the same way
+    # and serves it back over its API indefinitely. Supply it as the BAO_VALUE
+    # **environment secret** — encrypted at rest, value not returned by the API,
+    # the same channel the AppRole credentials already use. The playbook prefers
+    # the environment, so a stray -e bao_value= cannot override it.
     survey_vars:
       - name: bao_path
         title: "Secret path"
@@ -340,6 +512,45 @@ templates:
         type: string
         required: true
 
+  - name: Seed Postiz Secrets
+    playbook: platform/playbooks/seed-postiz-secrets.yml
+    dev_variant: true
+    # Places the operator's social-platform application credentials at
+    # secret/services/postiz, additively (KV-v2 merge-patch), so the three
+    # generated secrets already there survive. deploy-postiz.yml declares these
+    # as `type: existing` — it surfaces them to the rendered config but never
+    # generates them, because they are the operator's own credentials from each
+    # platform's developer console.
+    #
+    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
+    # database, so a credential typed into a survey field would be stored there
+    # indefinitely.
+    #
+    # LAUNCH-TIME EXTRA VARS ARE NOT THE ANSWER EITHER, and this comment used to
+    # say they were. Semaphore persists a task's extra-var JSON the same way and
+    # serves it back over its API indefinitely — so `-e seed_x_api_secret=...`
+    # would leave a live social-platform credential in plaintext outside OpenBao,
+    # which is the exact thing this template exists to prevent.
+    #
+    # Supply each credential as an **environment secret** named after its key,
+    # upper-cased. Semaphore encrypts environment secrets at rest and does not
+    # return their values over the API. Only the ones you have:
+    #   SEED_X_API_KEY            SEED_X_API_SECRET
+    #   SEED_LINKEDIN_CLIENT_ID   SEED_LINKEDIN_CLIENT_SECRET
+    #   SEED_YOUTUBE_CLIENT_ID    SEED_YOUTUBE_CLIENT_SECRET
+    #   SEED_DISCORD_CLIENT_ID    SEED_DISCORD_CLIENT_SECRET
+    #   SEED_DISCORD_BOT_TOKEN_ID
+    #
+    #   Project -> Environment -> (the environment this template uses)
+    #     -> Secrets -> add each as type "environment variable"
+    #
+    # The playbook prefers the environment over the matching seed_* extra var, so
+    # a stray -e cannot override a configured secret. The extra-var form remains
+    # for a LOCAL run, where the value comes from site-config and nothing
+    # persists it.
+    # Re-running with unchanged values writes nothing. Verify with Check
+    # Secrets, then run Deploy Postiz.
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
@@ -349,6 +560,9 @@ templates:
 
   - name: Apply Cloudflare Tofu
     playbook: platform/playbooks/apply-cloudflare-tofu.yml
+    # Edge changes are written on a branch and have to be planned from that
+    # branch before promotion, so this needs a dev-bound variant.
+    dev_variant: true
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
     # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
     # tofu_action=plan (safe, default) or apply (gated change; run after review).
@@ -360,10 +574,14 @@ templates:
         required: false
         default_value: "plan"
 
-  # NOTE: set-semaphore-branch.yml is an OPERATOR-SIDE tool (run from a
-  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml) —
-  # deliberately NOT a Semaphore template, since managing Semaphore's own config
-  # from inside a Semaphore job is avoided by convention.
+  # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
+  # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
+  # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
+  # Deliberately NOT Semaphore templates: managing Semaphore's own config from
+  # inside a Semaphore job is avoided by convention.
+  #
+  # To run a template against `dev` instead of `main`, give it
+  # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.
 
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
@@ -392,12 +610,27 @@ templates:
   # ── SSH ────────────────────────────────────────────────────────
   - name: Distribute SSH Keys
     playbook: platform/playbooks/distribute-ssh-keys.yml
+    # Phase 1's way IN to a host that has no key yet. The dev branch reads
+    # login_password from the secret store as an ansible_password fallback; main
+    # has no password path at all and simply cannot reach a keyless host
+    # (verified: the access gate reports "unreachable by any method"). Semaphore
+    # does NOT honour a launch-time repository override — tested, the field comes
+    # back null and the run still fetches main — so the variant is the only way to
+    # run the fixed code.
+    dev_variant: true
 
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
+    # THE IRREVERSIBLE STEP. It must run the same branch as the gate that clears
+    # it — verifying dev's code and then hardening with main's would mean the thing
+    # checked is not the thing run, on the one action that can lock the host out.
+    dev_variant: true
 
   - name: Apply Firewall
     playbook: platform/playbooks/apply-firewall.yml
+    # Variant so the phase's last enforcement step matches the branch its
+    # verification ran from.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Target group"
@@ -407,6 +640,10 @@ templates:
 
   - name: Generate Service SSH Key
     playbook: platform/playbooks/generate-service-ssh-key.yml
+    # Variant so the whole of Phase 1 executes ONE branch's code. This playbook is
+    # byte-identical on main and dev today, but relying on that means the guarantee
+    # quietly lapses the first time either branch moves.
+    dev_variant: true
     survey_vars:
       - name: service_name
         title: "Service name"
@@ -459,15 +696,93 @@ templates:
 
   - name: Install Podman
     playbook: platform/playbooks/install-podman.yml
+    # Variant for the same reason as Generate Service SSH Key: one branch for the
+    # whole phase, rather than a guarantee that depends on files staying identical.
+    dev_variant: true
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+    # main's copy of this playbook predates the inventory-first fix ("make it runnable
+    # from Semaphore at all"), so the dev-bound variant is the only way to exercise the
+    # current code before promotion. Permanent, not a branch workaround.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. github_runner)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host to provision — REQUIRED when the group declares more than one"
+        type: string
+        required: false
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  # ── Self-hosted GitHub Actions runners ─────────────────────────────────────
+  # Runner-group access control. Converges the org's group to its declaration, so the
+  # exclusion of public repositories is a reviewable diff rather than a console setting.
+  # Read-only unless dry_run=false.
+  - name: Manage GitHub Runner Group
+    playbook: platform/playbooks/manage-github-runner-group.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: dry_run
+        title: "Dry run"
+        description: "true = resolve + report, change nothing"
+        type: string
+        required: false
+        default_value: "true"
+
+  - name: Deploy GitHub Runner
+    playbook: platform/playbooks/deploy-github-runner.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group holding the runner hosts (github_runner_svc)"
+        type: string
+        required: true
+      - name: github_app_client_id
+        title: "App client id"
+        description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
+        type: string
+        required: false
+
+  - name: Resize VM
+    playbook: platform/playbooks/resize-vm.yml
+    dev_variant: true
+    # Converges a live VM's cores/memory/disk to the spec declared in
+    # site-config/proxmox/vm-specs.yml. Edit the spec, then run this — the
+    # declared file stays the source of truth rather than a number typed at
+    # launch time that nobody can look up later.
+    #
+    # Safe by default: disk GROWTH only (Proxmox cannot shrink without data
+    # loss, so a smaller declared disk is refused), and reboots are opt-in —
+    # without allow_reboot the cores/memory config is written and the pending
+    # change is reported instead of restarting a live service. A run with
+    # allow_reboot unset is a safe way to preview the diff.
+    survey_vars:
+      - name: target_service
+        title: "Service"
+        description: "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"
+        type: string
+        required: true
+      - name: allow_reboot
+        title: "Allow reboot"
+        description: "true to stop/start the guest so cores+memory take effect now; false (default) writes config only"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Snapshot VM
     playbook: platform/playbooks/snapshot-vm.yml
     survey_vars:
