@@ -43,6 +43,7 @@ supersede it with a new entry and link both.
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
+| 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -430,6 +431,47 @@ failure probability to negligible with an explicit sample count and say so in th
 times without failure, where the previous form had a measurable per-run failure rate.
 
 ---
+
+### 2.13 A test that asserted the fix was present, on a configuration where it could not run
+
+**What happened.** Five playbooks escalated privilege at play level without
+resolving a sudo password, so they died on any host that was not already
+hardened. The fix promoted the working fetch into a shared task and included it as
+each play's **first task**. Tests asserted exactly that: the include exists, it is
+first, it reads the right secret path. All green.
+
+The fix was inert. **Fact gathering runs before tasks.** A play with
+`become: true` and automatic gathering left on escalates during gathering, so it
+died at "Gathering Facts" exactly as before — the first task never ran. The one
+playbook that already worked, `harden-ssh.yml`, works because it sets
+`gather_facts: false`; I had read its inline fetch and copied that, without
+noticing the play-level setting that made the fetch reachable at all.
+
+Caught by review, not by the suite. Three playbooks were changed, tested, and
+committed in that state.
+
+**Root cause.** The assertion was about the *presence and position of the fix*
+rather than about *the condition that made the failure possible*. "First task" is
+only meaningful if tasks are the first thing that runs, and the measured failure —
+`ok=0` at Gathering Facts — was itself the evidence that they are not. I had the
+disproof in hand and tested around it.
+
+**The rule.** When fixing an ordering bug, the test must pin the precondition that
+makes the ordering reachable, not merely the order. Concretely: after writing a
+test for a fix, construct the *original broken configuration* and confirm the new
+test fails on it. Here that is one line — `gather_facts: true` — and it would have
+failed immediately. A test that cannot distinguish the fix from the bug it
+replaces is not a test of that fix.
+
+**Enforced by.** `become: automatic fact gathering is OFF wherever the resolver is
+used` in `platform/tests/test_become_password_resolution.bats`, proven against
+four mutations including restoring `gather_facts: true`.
+
+**Still outstanding, stated rather than glossed.** The corrected fix is
+statically verified and mutation-proven but has **not** been exercised against a
+host, because the orchestrator runs playbooks from the integration and production
+branches and this change is on neither yet. That is the same gap this entry is
+about, so it is named here instead of being called done.
 
 ## 3. Acting on live state
 

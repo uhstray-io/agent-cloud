@@ -17,7 +17,7 @@
 
 - name: "Install Podman on {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
-  gather_facts: true
+  gather_facts: false
   become: true
   vars:
     target_service: "ungrouped"
@@ -29,6 +29,12 @@
       # first task or the play dies at "Gathering Facts" with ok=0 on any host that
       # still requires a sudo password. See the task file for the measured failure.
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: "Gather facts now that escalation is possible"
+      # Gathering is deferred, not skipped. Automatic gathering would have run
+      # BEFORE the resolver above and escalated without a password, killing the
+      # play at "Gathering Facts" — which is exactly what happened before this.
+      ansible.builtin.setup:
 
     - name: "Wait for a freshly-booted host to accept package installs"
       ansible.builtin.include_tasks: tasks/wait-for-apt.yml
