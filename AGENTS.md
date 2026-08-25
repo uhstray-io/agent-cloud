@@ -277,7 +277,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
-| Manage Caddy Sites | `manage-caddy-sites.yml` | Insert/update marked site blocks in a flat (non-composable) Caddyfile; validate + restart |
+| Manage Caddy Sites | `manage-caddy-sites.yml` | **Read** the live Caddyfile (reports every site block, its upstreams, and whether inventory or a hand edit owns it), insert/update the marked block, optionally **retire** hand-maintained blocks (`caddy_retire_sites`) so inventory can adopt that hostname; validate + restart |
 | Deploy Orb Agent | `deploy-orb-agent.yml` | Standalone: Diode creds + agent.yaml template + start agent |
 | Provision Orb Agent AppRole | `provision-orb-agent-approle.yml` | Code-managed: scoped policy + AppRole from `orb-agent.hcl`, creds → `secret/services/approles/orb-agent` |
 | Clean Deploy NetBox | `clean-deploy-netbox.yml` | Destructive: wipe volumes + fresh deploy |
@@ -341,6 +341,7 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
 - **Caddy (flat-Caddyfile site)** — `auth`/`canvas` routes managed via `manage-caddy-sites.yml` (tls internal); composable Phase-4 fragment distribution gated behind `caddy_composable`
+- **Caddy routes are readable** — `platform/services/caddy/deployment/lib/caddyfile_sites.py` parses the live Caddyfile so routes can be compared against the inventory declaration. Routes that arrived by hand are migrated into `caddy_managed_sites` by listing them in `caddy_retire_sites`; Caddy rejects a hostname defined twice, so the old block must go in the same pass. Six routes (`nocodb`, `n8n`, `pve`, `netbox`, `devlog`, `semaphore`) were hand-maintained when this landed — `devlog` was the first adopted, after it was found pointing at an address declared for a different host
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 - **tududi + honcho deployed (prod)** — to-do app at `todo.uhstray.io` (native Authentik OIDC) and memory API at `memory.uhstray.io` (JWT `/v3` + Authentik-gated `/docs`), both composable rootless-podman deploys
@@ -481,7 +482,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (452 tests, Bash)
+- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (459 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 
