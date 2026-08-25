@@ -30,6 +30,18 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 1.2 Register the host in the private inventory repo with its service identity,
       deployment path, and container runtime; confirm the orchestrator reaches it **by
       password** — this is the baseline access being protected
+      REGISTRATION DONE; the confirmation is now unblocked but not yet run. The host
+      carries its service identity, deployment path and runtime in both the private
+      inventory and the orchestrator's stored copy, which points it at the declared
+      address. What blocked the confirmation was not credentials: another guest was
+      claiming the same address, so the orchestrator's connection reached that guest
+      instead and its password was rejected — while the same password succeeded from a
+      workstation whose resolution happened to land on the intended host. Probed at one
+      moment from two machines, the address returned two different SSH host keys. The
+      squatting guest was powered off on the operator's instruction 2026-08-25, and the
+      address now resolves to the intended host from every vantage tested, serving only
+      SSH. Remaining: run one orchestrator task against the group to confirm the
+      password path end to end.
 - [x] 1.3 Issue the host's own key pair into the secret store; confirm re-running returns
       the same pair rather than generating a new one; back the pair up per the private
       repo's convention
