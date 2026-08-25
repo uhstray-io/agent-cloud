@@ -28,10 +28,26 @@ teardown() {
   [[ ! "$result" =~ [/+=] ]]
 }
 
-@test "gen_django_key: 64 chars with special characters" {
+@test "gen_django_key: 64 chars, all from the declared alphabet" {
+  # Deterministic. The previous form asserted that ONE generated key happened to contain
+  # a character from [!@#$%^] — 6 of the generator's 76 — which fails whenever the draw
+  # misses them: (70/76)^64, about one run in 193. It failed CI exactly that way.
+  #
+  # The property worth testing is that the key is the right length and contains nothing
+  # OUTSIDE the intended alphabet; whether a particular draw includes a particular
+  # character is chance, not behaviour.
   result=$(gen_django_key)
   [ ${#result} -eq 64 ]
-  [[ "$result" =~ [!@#\$%\^] ]]
+  # Nothing outside the declared alphabet: letters, digits, and !@#$%^&*(-_=+)
+  [ -z "$(printf '%s' "$result" | tr -d 'A-Za-z0-9!@#$%^&*(-_=+)')" ]
+}
+
+@test "gen_django_key: the generator's alphabet includes special characters" {
+  # The intent behind the old flaky assertion, tested where it is deterministic: at the
+  # source of the alphabet rather than in one random sample of it.
+  local lib="$SCRIPT_DIR/lib/common.sh"
+  run grep -F "chars = string.ascii_letters + string.digits + '!@#" "$lib"
+  [ "$status" -eq 0 ]
 }
 
 # ── get_secret / put_secret ─────────────────────────────────────────

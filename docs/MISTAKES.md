@@ -42,6 +42,7 @@ supersede it with a new entry and link both.
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | Convention |
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … || true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
+| 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -401,6 +402,32 @@ assertion that has never been observed failing is indistinguishable from a comme
 restoring the stale variable in the report fails the test, removing it passes. The
 `platform/tests/test_assertions_are_real.bats` ratchet does not catch this shape, since
 `grep -v` is not a bang-inverted command; that gap is worth closing.
+
+### 2.11 A test that asserted a property of one random draw
+
+**What happened.** `test_netbox_common.bats` asserted that a generated Django key contains
+a character from `[!@#$%^]`. The generator draws 64 characters from an alphabet of 76, of
+which 6 are in that class, so the assertion fails whenever the draw misses them:
+`(70/76)^64` — **0.518% of runs, about one in 193**. It failed CI on an unrelated pull
+request, on a file that request had not touched.
+
+**Root cause.** The intent was "the key contains special characters", and that was
+translated into a property of *one sample* rather than a property of the *generator*. A
+random sample cannot establish an invariant; it can only fail to contradict it.
+
+**Why it costs more than its failure rate.** A test that fails ~0.5% of the time on
+unrelated changes trains people to re-run CI rather than read it, which is the habit that
+lets a real failure through. It also cost a full diagnostic detour on a PR whose diff did
+not include the file.
+
+**The rule.** Never assert that a random value has a particular property. Assert the
+deterministic ones — the length, and that nothing appears *outside* the intended alphabet
+— and test the intent at its source: that the generator's alphabet contains the class, by
+reading the generator. If a probabilistic assertion is genuinely unavoidable, drive the
+failure probability to negligible with an explicit sample count and say so in the test.
+
+**Enforced by.** Test — the assertion is now deterministic and was run 40 consecutive
+times without failure, where the previous form had a measurable per-run failure rate.
 ---
 
 ## 3. Acting on live state
