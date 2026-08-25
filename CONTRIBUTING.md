@@ -181,6 +181,38 @@ Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN
 
 ---
 
+## Writing BATS Tests
+
+Four conventions, each earned by a defect that reached a pull request. `docs/MISTAKES.md`
+records the incident behind each; this is the short form you need while writing one.
+
+**Assert absence with `refute_grep`, never `! grep` or `grep -v`.** Bats runs a test body
+under `set -e`, and bash's `set -e` ignores the status of a `!`-inverted command — so
+`! grep -q forbidden "$f"` anywhere but the final line **cannot fail**. `grep -v -q` is
+worse: it exits 0 when *any* line lacks the string, so it passes with the string present.
+`load assert_helpers` and use `assert_grep` / `refute_grep`, which are function calls and
+therefore do fail the test. Never write `|| true` near an assertion.
+
+**Scope an assertion to the construct it is about.** A whole-file `grep` can be satisfied
+by a comment, or by an unrelated task, while the thing under test is wrong. Extract the
+task or function first — `sed -n '/name: X/,/^$/p' "$f" > "$BATS_TEST_TMPDIR/x.yml"` — and
+assert on that. This applies especially to counts: comparing two whole-file totals lets an
+ungated item pass because enough other items carry the guard.
+
+**Never assert a property of a random value.** A generated secret containing a particular
+character class is chance, not behaviour; one such assertion failed roughly 1 run in 193
+and did it on unrelated pull requests. Assert the deterministic properties — the length,
+and that nothing appears *outside* the intended alphabet — and test the intent at its
+source by reading the generator.
+
+**Mutate the thing it guards and watch it fail once.** A test that has never been observed
+failing is indistinguishable from a comment. Break the code deliberately, confirm the test
+goes red, restore, confirm green. This is the only step that distinguishes a real
+assertion from a decorative one, and it is how every defect above was found.
+
+`platform/tests/test_assertions_are_real.bats` ratchets the count of assertions that cannot
+fail: it may go down and may not go up. It does not catch the `grep -v` form.
+
 ## Code Standards
 
 ### Python

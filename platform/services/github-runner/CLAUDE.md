@@ -104,6 +104,15 @@ system's discovery pipeline has written nothing since 2026-04-23
 gets trusted more than it deserves. Once discovery is repaired it registers these hosts
 itself, and IPAM becomes a cross-check rather than a second record to maintain.
 
+**Where the code lives on the host.** `monorepo_deploy_path` is the path *within* the
+repo — `platform/services/github-runner/deployment` — exactly as every other service uses
+it and as `platform/playbooks/README.md` defines it. The repo root on the target comes
+from `local_monorepo_dir`, defaulting to `/opt/agent-cloud`. That default is under `/opt`
+rather than the peer services' `~ansible_user` deliberately: `deploy.sh` executes as the
+unprivileged runner account, which cannot be relied on to read another user's home
+directory. Reading `monorepo_deploy_path` as the root instead — an earlier bug here —
+yields `<deploy-path>/<deploy-path>/deploy.sh` and `rc=127`.
+
 Key vars: pinned `github_runner_version` / `github_runner_hooks_version` (an upgrade is a
 declaration change and a review, never something that happens because time passed),
 `github_runner_labels`, `github_runner_group`, `github_runner_account`,

@@ -28,10 +28,36 @@ teardown() {
   [[ ! "$result" =~ [/+=] ]]
 }
 
-@test "gen_django_key: 64 chars with special characters" {
+@test "gen_django_key: 64 chars, all from the declared alphabet" {
+  # Deterministic. The previous form asserted that ONE generated key happened to contain
+  # a character from [!@#$%^] — 6 of the generator's 76 — which fails whenever the draw
+  # misses them: (70/76)^64, about one run in 193. It failed CI exactly that way.
+  #
+  # The property worth testing is that the key is the right length and contains nothing
+  # OUTSIDE the intended alphabet; whether a particular draw includes a particular
+  # character is chance, not behaviour.
   result=$(gen_django_key)
   [ ${#result} -eq 64 ]
-  [[ "$result" =~ [!@#\$%\^] ]]
+  # Nothing outside the declared alphabet: letters, digits, and !@#$%^&*()-_=+
+  #
+  # `-` LAST and LC_ALL=C, both deliberately. Written as `...&*(-_=+)` the `(-_` is a
+  # tr RANGE, not three literals, so the set swallowed everything from `(` to `_` — this
+  # assertion then accepted ,./:;<>?[\] as though they were in the alphabet. Verified:
+  # with the range form the result of the tr is empty for every input.
+  [ -z "$(printf '%s' "$result" | LC_ALL=C tr -d 'A-Za-z0-9!@#$%^&*()=+_-')" ]
+}
+
+@test "gen_django_key: the generator's alphabet includes special characters" {
+  # The intent behind the old flaky assertion, tested where it is deterministic: at the
+  # source of the alphabet rather than in one random sample of it.
+  # Scoped to the FUNCTION, not the file: an unrelated comment or another generator's
+  # alphabet elsewhere in common.sh could otherwise satisfy this while gen_django_key had
+  # stopped declaring specials.
+  local lib="$SCRIPT_DIR/lib/common.sh"
+  sed -n '/^gen_django_key()/,/^}/p' "$lib" > "$BATS_TEST_TMPDIR/gen_django_key.sh"
+  [ -s "$BATS_TEST_TMPDIR/gen_django_key.sh" ]
+  run grep -F "string.ascii_letters + string.digits + '!@#" "$BATS_TEST_TMPDIR/gen_django_key.sh"
+  [ "$status" -eq 0 ]
 }
 
 # ── get_secret / put_secret ─────────────────────────────────────────

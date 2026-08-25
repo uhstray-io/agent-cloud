@@ -487,6 +487,13 @@ Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 
 Tests: `platform/services/netbox/deployment/tests/` (Python), `platform/tests/` (BATS)
 
+**Writing a BATS test:** see "Writing BATS Tests" in `CONTRIBUTING.md`. In short — assert
+absence with `refute_grep` (a `!`-inverted command mid-body cannot fail under `set -e`, and
+`grep -v -q` passes when the string IS present), scope each assertion to the task or
+function it is about rather than the whole file, never assert a property of a randomly
+generated value, and mutate the guarded code once to watch the test go red. Each rule is an
+incident in `docs/MISTAKES.md` §2.
+
 See `plan/architecture/03-testing-ci-quality.md` for the full testing strategy, local
 setup, and the pre-PR checklist. (This previously pointed at `docs/LINTING-AND-TESTING.md`,
 which does not exist — the content lives in the numbered architecture doc.)

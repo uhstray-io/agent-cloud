@@ -47,12 +47,24 @@
     _home: "{{ github_runner_home | default('/opt/actions-runner') }}"
     _account: "{{ github_runner_account | default('ghrunner') }}"
     _rver: "{{ github_runner_version | default('2.336.0') }}"
-    # Where the monorepo lands ON THE TARGET. The install script runs on the host, so it
-    # must be reached by a path that exists there — playbook_dir is the CONTROLLER's
-    # checkout and resolving a remote command against it yields rc=127. Templates are
-    # different: `template:` reads its src on the controller, so playbook_dir is correct
-    # for those and wrong here, which is why the two are not interchangeable.
-    _monorepo_dir: "{{ monorepo_deploy_path | default('/opt/agent-cloud') }}"
+    # Where the monorepo lands ON THE TARGET, and where this service's deploy.sh sits
+    # inside it. The script runs on the host, so it must be reached by a path that exists
+    # there — playbook_dir is the CONTROLLER's checkout and resolving a remote command
+    # against it yields rc=127. Templates are the opposite case: `template:` reads its src
+    # on the controller, so playbook_dir is correct for those and wrong here.
+    #
+    # monorepo_deploy_path is the path WITHIN the repo — that is what
+    # platform/playbooks/README.md defines and what all twelve other services pass to
+    # tasks/manage-secrets.yml and friends. An earlier version of this play read it as the
+    # repo ROOT, which only worked because the inventory had been set to an absolute path
+    # to match. Anyone following the documented convention would have produced
+    # <deploy-path>/<deploy-path>/deploy.sh and an rc=127.
+    #
+    # The root default is under /opt rather than the peer services' ~ansible_user,
+    # deliberately: deploy.sh executes as the unprivileged RUNNER account, which cannot be
+    # relied on to read another user's home directory.
+    _monorepo_dir: "{{ local_monorepo_dir | default('/opt/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
 
@@ -65,12 +77,21 @@
           - github_runner_name | default('') | length > 0
           - (github_runner_labels | default([])) | length > 0
           - github_runner_group | default('') | length > 0
+          - monorepo_deploy_path | default('') | length > 0
+          # CONTAINED. Non-empty is not enough: this value is concatenated onto the repo
+          # root and the result is EXECUTED, so `../../etc` would run a script from
+          # outside the checkout. Reject an absolute path and any parent traversal.
+          - not (monorepo_deploy_path | default('') is match('^/'))
+          - "'..' not in ((monorepo_deploy_path | default('')).split('/'))"
         fail_msg: >-
           Need the OpenBao address, the App's client id (or app id), and this host's
           github_runner_name / github_runner_labels / github_runner_group in inventory.
           The declaration is the allocation — a runner without declared labels cannot be
           targeted by a workflow, and a runner without a group would land in the default
           group, which may admit repositories this plane must not serve.
+          monorepo_deploy_path is the path WITHIN the repo to this service's deploy.sh —
+          relative, and with no `..` component: it is concatenated onto the repo root and
+          the result is executed.
         success_msg: "Declaration complete for {{ github_runner_name }}."
 
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -335,7 +356,7 @@
       # (AGENTS.md — no_log is for the credential boundary, not the whole run).
       ansible.builtin.shell: |
         set -euo pipefail
-        printf '%s' "$REG_TOKEN" | {{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh configure
+        printf '%s' "$REG_TOKEN" | {{ _deploy_dir }}/deploy.sh configure
       args:
         executable: /bin/bash
       environment:

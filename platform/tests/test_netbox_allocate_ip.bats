@@ -8,6 +8,8 @@
 #
 # Run: bats platform/tests/test_netbox_allocate_ip.bats
 
+load assert_helpers
+
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/netbox-allocate-ip.yml"
   [ -f "$PLAYBOOK" ]
@@ -82,4 +84,43 @@ setup() {
 @test "netbox-allocate: carries no real addresses" {
   # Documentation and fixtures in this public repo never carry site data (§4.3).
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
+}
+
+@test "netbox-allocate: the report re-reads after writing, so a created address is not reported absent" {
+  # The report used to iterate the PRE-create GET, so an address this run had just created
+  # (HTTP 201) still printed "NOT recorded in the authority" — the run contradicting
+  # itself, and an operator reading that would retry a reservation that had succeeded.
+  assert_grep -qF 'Re-read each named address after any writes' "$PLAYBOOK"
+  assert_grep -qF 'register: _final_state' "$PLAYBOOK"
+  assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
+  # The report must NOT read the pre-create results any more.
+  # Extract the report task to a file and assert on THAT. The previous form was a no-op
+  # twice over: `grep -vq` succeeds when ANY line lacks the string, so it passed with
+  # `_existing.results` present, and `|| true` discarded even that. Written while fixing
+  # exactly this class (docs/MISTAKES.md §2.9).
+  sed -n '/Report the recorded state of each named address/,/^$/p' "$PLAYBOOK" \
+    > "$BATS_TEST_TMPDIR/report.yml"
+  assert_grep -qF '_final_state.results' "$BATS_TEST_TMPDIR/report.yml"
+  refute_grep -qF '_existing.results' "$BATS_TEST_TMPDIR/report.yml"
+}
+
+@test "netbox-allocate: a reserve run that failed to create is not reported as success" {
+  assert_grep -qF 'Refuse to report success for an address a reserve run failed to create' "$PLAYBOOK"
+  assert_grep -qF 'is still not recorded after a reserve run' "$PLAYBOOK"
+}
+
+@test "netbox-allocate: a report run reads each address once, not twice" {
+  # The pre-create read exists only to decide what needs creating, and the report re-reads
+  # after the writes. Leaving the first read ungated made a plain report run query every
+  # named address twice for one answer.
+  local check
+  check=$(sed -n '/Check whether each named address is already recorded/,/^$/p' "$PLAYBOOK")
+  printf '%s' "$check" | grep -qF 'when: _reserve'
+  # The create loop must still tolerate the skipped register: `_reserve` is evaluated
+  # FIRST so the json lookup is never reached on a report run (verified behaviourally —
+  # a skipped looped register yields results entries with no .json).
+  local create
+  create=$(sed -n '/Record each new address as allocated/,/^$/p' "$PLAYBOOK")
+  printf '%s' "$create" | grep -qF '_existing.results | default([])'
+  printf '%s' "$create" | grep -A2 'when:' | head -2 | grep -qF '_reserve'
 }

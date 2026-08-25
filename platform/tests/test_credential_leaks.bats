@@ -397,3 +397,16 @@ print('all %d cases correct' % (len(accept) + len(refuse)))
   [ "$status" -eq 0 ]
   [[ "$output" == *"all 18 cases correct"* ]]
 }
+
+@test "repo: no generated Python bytecode is tracked" {
+  # A __pycache__ under platform/lib/ was committed because the ignore rule was scoped to
+  # one service. Bytecode is interpreter-specific, unreviewable as source, and churns on
+  # every run.
+  local root tracked
+  root=$(git rev-parse --show-toplevel)
+  tracked=$(cd "$root" && git ls-files | grep -E '\.py[cod]$|(^|/)__pycache__/' || true)
+  [ -z "$tracked" ] || { echo "tracked bytecode: $tracked"; false; }
+  # And the ignore rule must be general, not per-service.
+  grep -qE '^__pycache__/$' "$root/.gitignore"
+  grep -qE '^\*\.py\[cod\]$' "$root/.gitignore"
+}

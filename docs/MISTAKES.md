@@ -41,6 +41,8 @@ supersede it with a new entry and link both.
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | Convention |
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
+| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
+| 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -366,6 +368,66 @@ once. An assertion never observed failing is indistinguishable from a comment.
 of assertions that cannot fail; it may go down and may not go up. That ratchet is what
 surfaced this, on a branch whose author believed the suite had verified these very
 properties.
+
+
+### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
+
+**What happened.** Fixing a report that read pre-write state, I added a test asserting the
+report no longer references the stale variable:
+
+```shell
+printf '%s' "$report" | grep -vqF '_existing.results' || true
+```
+
+It cannot fail, twice over. `grep -v -q` exits 0 when **any** line lacks the string, so a
+report still containing `_existing.results` passes it. And `|| true` discards even that
+result. A reviewer caught it; the suite could not have.
+
+**Root cause.** `grep -v` reads as "assert absent" and means "print non-matching lines".
+Under `-q` it answers a question nobody asked. The `|| true` was reflex, added so a
+non-matching grep would not trip `set -e` — the very reflex that makes an assertion
+inert.
+
+**Why it is its own entry.** §2.9 recorded fifteen assertions that could never fail, and
+`assert_helpers.bash` exists to prevent exactly this. I wrote a new one anyway, in the
+commit that fixed the old ones, in a file that already loads the helpers. Knowing the rule
+and applying it are different acts.
+
+**The rule.** Absence is asserted with `refute_grep`, never with `grep -v`, and never with
+`|| true` anywhere near it. Extract the region to a file first so the assertion has an
+unambiguous subject. Then mutate the thing it guards and watch it fail once — a negative
+assertion that has never been observed failing is indistinguishable from a comment.
+
+**Enforced by.** Test — the corrected assertion is mutation-verified in both directions:
+restoring the stale variable in the report fails the test, removing it passes. The
+`platform/tests/test_assertions_are_real.bats` ratchet does not catch this shape, since
+`grep -v` is not a bang-inverted command; that gap is worth closing.
+
+### 2.11 A test that asserted a property of one random draw
+
+**What happened.** `test_netbox_common.bats` asserted that a generated Django key contains
+a character from `[!@#$%^]`. The generator draws 64 characters from an alphabet of 76, of
+which 6 are in that class, so the assertion fails whenever the draw misses them:
+`(70/76)^64` — **0.518% of runs, about one in 193**. It failed CI on an unrelated pull
+request, on a file that request had not touched.
+
+**Root cause.** The intent was "the key contains special characters", and that was
+translated into a property of *one sample* rather than a property of the *generator*. A
+random sample cannot establish an invariant; it can only fail to contradict it.
+
+**Why it costs more than its failure rate.** A test that fails ~0.5% of the time on
+unrelated changes trains people to re-run CI rather than read it, which is the habit that
+lets a real failure through. It also cost a full diagnostic detour on a PR whose diff did
+not include the file.
+
+**The rule.** Never assert that a random value has a particular property. Assert the
+deterministic ones — the length, and that nothing appears *outside* the intended alphabet
+— and test the intent at its source: that the generator's alphabet contains the class, by
+reading the generator. If a probabilistic assertion is genuinely unavoidable, drive the
+failure probability to negligible with an explicit sample count and say so in the test.
+
+**Enforced by.** Test — the assertion is now deterministic and was run 40 consecutive
+times without failure, where the previous form had a measurable per-run failure rate.
 
 ---
 

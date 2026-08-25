@@ -182,9 +182,11 @@
     # create-or-fail. NetBox permits duplicate addresses in some configurations, so a
     # blind POST can silently produce a second record for the same address and leave the
     # ledger ambiguous about which one is authoritative.
-    # Runs in BOTH modes: it is a GET, and "is this address already recorded, and by
-    # what?" is the question report mode is for. Gating it on `reserve` meant the only way
-    # to find out was to attempt a write.
+      # ONE contract, stated once. The pre-create read below runs ONLY when reserving:
+      # its only job is to decide what needs creating. The question report mode exists to
+      # answer — is this address recorded, and as what? — is answered by the re-read AFTER
+      # the writes, further down, and that one runs in both modes. Leaving this read
+      # ungated made a report run query every named address twice for one answer.
     - name: "Check whether each named address is already recorded"
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
@@ -195,6 +197,7 @@
       loop: "{{ _assignments }}"
       loop_control:
         label: "{{ item.address }}"
+      when: _reserve
 
     - name: "Record each new address as allocated"
       ansible.builtin.uri:
@@ -215,6 +218,23 @@
         - _reserve
         - (item.json.results | default([])) | length == 0
 
+    # RE-QUERY before reporting. The report used to iterate the pre-create GET results, so
+    # an address this run had just created (HTTP 201) still printed "NOT recorded in the
+    # authority" — the run contradicted itself, and an operator reading that would retry a
+    # reservation that had already succeeded. The authority is asked again, after the
+    # writes, so the report describes the state that now exists rather than the state
+    # before the run.
+    - name: "Re-read each named address after any writes"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _final_state
+      loop: "{{ _assignments }}"
+      loop_control:
+        label: "{{ item.address }}"
+
     - name: "Report the recorded state of each named address"
       ansible.builtin.debug:
         msg: >-
@@ -226,6 +246,21 @@
               ~ ' tags=' ~ ((item.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
              if ((item.json.results | default([])) | length > 0)
              else 'NOT recorded in the authority' }}
-      loop: "{{ _existing.results | default([]) }}"
+      loop: "{{ _final_state.results | default([]) }}"
       loop_control:
         label: "{{ item.item.address }}"
+
+    - name: "Refuse to report success for an address a reserve run failed to create"
+      # A reserve run whose POST silently did nothing would otherwise end on a green
+      # report. If we were asked to reserve, every named address must now exist.
+      ansible.builtin.assert:
+        that:
+          - (item.json.results | default([])) | length > 0
+        fail_msg: >-
+          {{ item.item.address }} is still not recorded after a reserve run. The create
+          either did not run or did not take effect — check the task above rather than
+          re-running, since a partial run may have created the others.
+      loop: "{{ _final_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.address }}"
+      when: _reserve

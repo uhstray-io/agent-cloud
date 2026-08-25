@@ -132,13 +132,63 @@ setup() {
   ! grep -qE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$PLAYBOOK"
 }
 
+@test "deploy-runner: monorepo_deploy_path is used as a path WITHIN the repo" {
+  # Scoped to the constructs that enforce it. A whole-file grep can be satisfied by a
+  # comment while the live `vars` or validation is wrong.
+  sed -n '/^  vars:/,/^  tasks:/p' "$PLAYBOOK" > "$BATS_TEST_TMPDIR/vars.yml"
+  sed -n '/Validate the declaration/,/^$/p' "$PLAYBOOK" > "$BATS_TEST_TMPDIR/validate.yml"
+
+  # The root comes from its own variable with a literal default, never from a path var.
+  assert_grep -qF "_monorepo_dir: \"{{ local_monorepo_dir | default('/opt/agent-cloud') }}\"" "$BATS_TEST_TMPDIR/vars.yml"
+  assert_grep -qF '_deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"' "$BATS_TEST_TMPDIR/vars.yml"
+  refute_grep -qF '_monorepo_dir: "{{ monorepo_deploy_path' "$BATS_TEST_TMPDIR/vars.yml"
+
+  # A declaration missing it, absolute, or escaping the repo is refused. The value is
+  # concatenated onto the root and the result is EXECUTED, so containment is a security
+  # property, not tidiness.
+  assert_grep -qF "monorepo_deploy_path | default('') | length > 0" "$BATS_TEST_TMPDIR/validate.yml"
+  assert_grep -qF "is match('^/')" "$BATS_TEST_TMPDIR/validate.yml"
+  assert_grep -qF "'..' not in" "$BATS_TEST_TMPDIR/validate.yml"
+}
+
+@test "deploy-runner: the containment guard accepts a repo-relative path and rejects escapes" {
+  # Behavioural. The predicate above is executed against the values it will really judge,
+  # because a guard is not designed until it has been observed refusing the thing it
+  # forbids (docs/MISTAKES.md §2.5, §1.5).
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/guard.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.assert:
+        that:
+          - monorepo_deploy_path | default('') | length > 0
+          - not (monorepo_deploy_path | default('') is match('^/'))
+          - "'..' not in ((monorepo_deploy_path | default('')).split('/'))"
+YAML
+  guard() {
+    ansible-playbook "$BATS_TEST_TMPDIR/guard.yml" -e "{\"monorepo_deploy_path\":\"$1\"}" >/dev/null 2>&1
+  }
+  guard 'platform/services/github-runner/deployment'
+  run guard '../../etc'
+  [ "$status" -ne 0 ]
+  run guard '/opt/agent-cloud'
+  [ "$status" -ne 0 ]
+  run guard 'a/../../b'
+  [ "$status" -ne 0 ]
+  run guard ''
+  [ "$status" -ne 0 ]
+}
+
 @test "deploy-runner: the install script is reached by a REMOTE path, not playbook_dir" {
   # playbook_dir is the controller's checkout. A shell/command task runs on the host,
   # where that path does not exist, so resolving a remote command against it yields
   # rc=127. `template:` is the opposite — it reads its src on the controller — which is
   # why the two paths are not interchangeable and both appear in this playbook.
-  grep -qF '{{ _monorepo_dir }}/platform/services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
-  refute_grep -qF '{{ playbook_dir }}/../services/github-runner/deployment/deploy.sh' "$PLAYBOOK"
+  sed -n '/Install and register the runner/,/^$/p' "$PLAYBOOK" > "$BATS_TEST_TMPDIR/install.yml"
+  assert_grep -qF '{{ _deploy_dir }}/deploy.sh configure' "$BATS_TEST_TMPDIR/install.yml"
+  refute_grep -qF 'playbook_dir' "$BATS_TEST_TMPDIR/install.yml"
   # The repo must actually be placed before anything on the host tries to run from it.
   local place_line run_line
   place_line=$(grep -n 'place-monorepo.yml' "$PLAYBOOK" | head -1 | cut -d: -f1)
