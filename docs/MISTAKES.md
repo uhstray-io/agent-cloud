@@ -41,7 +41,7 @@ supersede it with a new entry and link both.
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | Convention |
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
-| 2.10 | Repeated 2.9 — a `grep -v … || true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
+| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
@@ -375,7 +375,7 @@ properties.
 **What happened.** Fixing a report that read pre-write state, I added a test asserting the
 report no longer references the stale variable:
 
-```
+```shell
 printf '%s' "$report" | grep -vqF '_existing.results' || true
 ```
 
@@ -428,6 +428,7 @@ failure probability to negligible with an explicit sample count and say so in th
 
 **Enforced by.** Test — the assertion is now deterministic and was run 40 consecutive
 times without failure, where the previous form had a measurable per-run failure rate.
+
 ---
 
 ## 3. Acting on live state

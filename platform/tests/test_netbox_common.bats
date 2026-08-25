@@ -38,15 +38,25 @@ teardown() {
   # character is chance, not behaviour.
   result=$(gen_django_key)
   [ ${#result} -eq 64 ]
-  # Nothing outside the declared alphabet: letters, digits, and !@#$%^&*(-_=+)
-  [ -z "$(printf '%s' "$result" | tr -d 'A-Za-z0-9!@#$%^&*(-_=+)')" ]
+  # Nothing outside the declared alphabet: letters, digits, and !@#$%^&*()-_=+
+  #
+  # `-` LAST and LC_ALL=C, both deliberately. Written as `...&*(-_=+)` the `(-_` is a
+  # tr RANGE, not three literals, so the set swallowed everything from `(` to `_` — this
+  # assertion then accepted ,./:;<>?[\] as though they were in the alphabet. Verified:
+  # with the range form the result of the tr is empty for every input.
+  [ -z "$(printf '%s' "$result" | LC_ALL=C tr -d 'A-Za-z0-9!@#$%^&*()=+_-')" ]
 }
 
 @test "gen_django_key: the generator's alphabet includes special characters" {
   # The intent behind the old flaky assertion, tested where it is deterministic: at the
   # source of the alphabet rather than in one random sample of it.
+  # Scoped to the FUNCTION, not the file: an unrelated comment or another generator's
+  # alphabet elsewhere in common.sh could otherwise satisfy this while gen_django_key had
+  # stopped declaring specials.
   local lib="$SCRIPT_DIR/lib/common.sh"
-  run grep -F "chars = string.ascii_letters + string.digits + '!@#" "$lib"
+  sed -n '/^gen_django_key()/,/^}/p' "$lib" > "$BATS_TEST_TMPDIR/gen_django_key.sh"
+  [ -s "$BATS_TEST_TMPDIR/gen_django_key.sh" ]
+  run grep -F "string.ascii_letters + string.digits + '!@#" "$BATS_TEST_TMPDIR/gen_django_key.sh"
   [ "$status" -eq 0 ]
 }
 
