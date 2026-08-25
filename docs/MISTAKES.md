@@ -32,6 +32,7 @@ supersede it with a new entry and link both.
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
+| 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -182,6 +183,38 @@ destruction between jobs, no host administration from a job, and network-level e
 denial, all three verified on the live host.
 
 ---
+
+### 1.6 Concluded a host had no address, from one vantage, on a network with an address conflict
+
+**What happened.** Investigating why a service was unreachable, I swept
+`192.168.1.0/24` from my workstation, matched MACs, and found the target's MAC
+nowhere among the eighteen that answered. I reported that the host "has no IP
+address at all" and built a causal chain on it: that it boots, finds its address
+already taken, and declines to configure one.
+
+Minutes later the same address, probed from a different host, resolved to that
+MAC and its neighbour entry went STALE → DELAY → **REACHABLE**. The host was up
+and answering the whole time. My sweep had simply lost the ARP race and never
+seen its reply.
+
+**Root cause.** On a network where two machines claim one address, an ARP sweep
+does not measure who holds it — it measures whose reply arrived first *at the
+sweeping host*, and that result then persists in that host's cache. Absence of a
+MAC from one table is evidence about the table, not about the network. I treated
+a single vantage as the network's state, which is the very error the incident
+under investigation was an instance of.
+
+**The rule.** A negative claim about reachability needs at least two vantages
+before it is stated, and on a suspected address conflict the vantages are the
+finding rather than a detail. Prefer evidence that names the machine — an SSH
+host-key fingerprint identifies which box answered; an ARP entry identifies only
+which reply won. Probing the same address from two hosts and getting two
+different host keys is a proof; one silent sweep is not.
+
+**Enforced by.** Convention. The mechanical form would be a playbook that probes
+a declared address from two or more hosts and fails when the identities differ —
+worth building, since this is the second time one address answering as two
+machines has cost an investigation.
 
 ## 2. Tests that would have passed for the wrong reason
 
