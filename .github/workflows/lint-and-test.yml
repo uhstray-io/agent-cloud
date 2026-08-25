@@ -196,11 +196,15 @@ jobs:
           # platform/requirements-controller.txt.
           pip install -r platform/requirements-controller.txt
 
+      # Run from the REPO ROOT so `testpaths` in pyproject.toml is what selects the
+      # suites. Passing an explicit path (as this did) overrides testpaths entirely,
+      # so a suite added to that list ran nowhere and its absence looked exactly like
+      # it passing — which is what happened to the Caddyfile suite. Adding a suite is
+      # now one line in pyproject.toml, not a new step here.
       - name: Run Python tests
-        working-directory: platform/services/netbox/deployment
         env:
-          PYTHONPATH: workers/proxmox_discovery:workers/pfsense_sync
-        run: pytest tests/ -v
+          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+        run: pytest -v
 
       - name: Install BATS
         run: |

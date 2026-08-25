@@ -68,6 +68,8 @@ supersede it with a new entry and link both.
 | 10.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | CI (root-level pytest) |
+| 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1081,6 +1083,70 @@ test written specifically to avoid being fooled.
 **Enforced by.** Convention.
 
 ---
+
+### 10.5 Added a test suite to a config key nothing reads
+
+**What happened.** A new pytest suite was added under
+`platform/services/caddy/deployment/tests/`, and its directory was added to
+`testpaths` in `pyproject.toml`. That was reported as wiring the tests into CI.
+CI runs `pytest tests/ -v` with `working-directory:
+platform/services/netbox/deployment` — an explicit path argument, which
+overrides `testpaths` entirely. The pre-push hook did the same. So all sixteen
+tests ran on my machine, in the one command I typed by hand, and nowhere else.
+
+**Consequence.** The worst shape a test can take: a suite that exists, passes
+when run deliberately, and is absent from every gate. A regression in the parser
+would have reached `dev` with CI green, and the green would have been honest —
+CI never saw the file.
+
+**Root cause.** `testpaths` is a *default* for when pytest is invoked with no
+path. Adding to it looks like registration but is inert wherever a path is
+passed. I checked that the tests passed; I did not check that the thing which
+runs tests in CI would select them.
+
+**The rule.** Adding a test suite is not done when the tests pass. It is done
+when the suite has been observed running **through the gate that will run it** —
+the CI command, invoked the way CI invokes it. `pytest <path>` proves the tests
+work; only reproducing CI's own invocation proves they are covered.
+
+**Enforced by.** CI and `.githooks/pre-push` now run `pytest` from the repository
+root with no path argument, so `testpaths` is authoritative and adding a suite is
+one line in `pyproject.toml`. Verified by reproducing CI's invocation: 95
+collected, up from 79.
+
+### 10.6 Wrote a parser from one example file instead of from the grammar
+
+**What happened.** The Caddyfile parser was written by reading the live
+Caddyfile and matching its shape, then verified by checking that its output
+matched a hand-written `awk` probe over that same file. Both agreed, and it was
+called correct. Reading the published Caddyfile specification afterwards found
+four deviations, every one of which the live file happened not to exercise:
+
+- addresses may be separated by whitespace as well as commas — `a.io b.io {`
+  parsed as the single address `"a.io b.io"`, which no lookup can match, so the
+  multi-address safety refusal in `retire()` would not have fired either
+- `#` starts a comment only at line start or after whitespace, so
+  `reverse_proxy http://host/#frag` had its upstream truncated to
+  `http://host/` — reporting an upstream the server does not use
+- `(name) {` snippets and `&(name) {` named routes are not sites; both were
+  reported as sites, and `retire` would have deleted a snippet every site imports
+- heredoc contents are literal, so one unbalanced brace inside one desynced
+  brace depth for the rest of the file and `parse_sites` returned **nothing** —
+  the file read as having no routes rather than as unparseable
+
+**Root cause.** Agreement between two readings of the *same* example is not
+evidence about the language. The `awk` probe and the parser shared the
+assumption they were both meant to test.
+
+**The rule.** When parsing a format that has a specification, the specification
+is the test oracle — not a sample, however real. A sample tells you the parser
+handles that sample. Read the grammar and write one case per stated rule; the
+rules the sample does not exercise are exactly where the parser will be wrong.
+
+**Enforced by.** Six grammar-conformance cases in
+`test_caddyfile_sites.py`, each quoting the documented rule it pins, each of
+which failed before it was written. The single-line-block case is additionally
+confirmed against the live `caddy` binary, which rejects it.
 
 ## 11. The largest one
 

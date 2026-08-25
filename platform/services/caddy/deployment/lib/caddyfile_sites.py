@@ -34,28 +34,49 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 
 MANAGED_BEGIN = "# BEGIN ANSIBLE MANAGED"
 MANAGED_END = "# END ANSIBLE MANAGED"
 
+# `respond <<HTML` ... a line that is exactly `HTML` ends it.
+_HEREDOC = re.compile(r"(?<!\\)<<([A-Za-z_][A-Za-z0-9_]*)\s*$")
+
+
+def _split_addresses(header: str) -> list[str]:
+    """Addresses may be separated by commas OR whitespace, per the docs:
+    `localhost:8080, example.com` and `localhost:8080 example.com` are both one
+    site with two addresses. Splitting on commas alone yielded the single
+    address "a.example.io b.example.io", which no lookup could ever match."""
+    return [a for a in re.split(r"[,\s]+", header.strip()) if a]
+
 
 def _strip_comment(line: str) -> str:
-    """Drop a trailing comment.
+    """Drop a trailing comment, per the documented rule.
 
-    A '#' inside a quoted string would be mis-read as a comment. No block in this
-    Caddyfile has one, and treating the rare case as a comment fails toward
-    *not* matching a site header, which is the safe direction: the block is left
-    alone rather than silently retired.
+    The Caddyfile spec is positional, not quote-based: "The hash character `#`
+    for a comment cannot appear in the middle of a token (i.e. it must be
+    preceded by a space or appear at the beginning of a line)." That is
+    precisely so a `#` inside a URI needs no quoting.
+
+    An earlier version here tracked quotes instead, which truncated
+    `reverse_proxy http://host/#frag` to `http://host/` — reporting an upstream
+    the server does not use.
     """
-    out, in_quote = [], False
-    for ch in line:
-        if ch == '"':
-            in_quote = not in_quote
-        if ch == "#" and not in_quote:
-            break
-        out.append(ch)
-    return "".join(out)
+    if line.lstrip().startswith("#"):
+        return ""
+    for i, ch in enumerate(line):
+        if ch == "#" and i > 0 and line[i - 1] in " \t":
+            return line[:i]
+    return line
+
+
+# A site header is an address list; these column-0 blocks are not sites.
+#   (name) {   snippet, invoked with `import`
+#   &(name) {  named route, invoked with `invoke`
+def _is_site_header(header: str) -> bool:
+    return not header.startswith(("(", "&("))
 
 
 def parse_sites(text: str) -> list[dict]:
@@ -64,18 +85,35 @@ def parse_sites(text: str) -> list[dict]:
     depth = 0
     managed = False
     cur: dict | None = None
+    heredoc: str | None = None
 
     for idx, raw in enumerate(text.splitlines()):
         if MANAGED_BEGIN in raw:
             managed = True
+
+        # Inside a heredoc every character is literal, braces included. Counting
+        # them desyncs depth for the rest of the file: one unbalanced brace in a
+        # heredoc made parse_sites return NOTHING, so the file read as having no
+        # routes at all rather than as unparseable.
+        if heredoc is not None:
+            if raw.strip() == heredoc:
+                heredoc = None
+            continue
+
         code = _strip_comment(raw)
         stripped = code.strip()
 
+        m = _HEREDOC.search(stripped)
+        if m:
+            heredoc = m.group(1)
+
         if depth == 0 and stripped.endswith("{") and not raw[:1].isspace():
             header = stripped[:-1].strip()
-            if header:  # a bare '{' at column 0 is the global options block
+            # A bare '{' at column 0 is the global options block; '(x)' is a
+            # snippet and '&(x)' a named route. None of the three is a site.
+            if header and _is_site_header(header):
                 cur = {
-                    "addresses": [a.strip() for a in header.split(",") if a.strip()],
+                    "addresses": _split_addresses(header),
                     "start": idx,
                     "end": None,
                     "upstreams": [],

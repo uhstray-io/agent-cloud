@@ -146,3 +146,68 @@ def test_retire_leaves_the_file_parseable():
         "beta.example.io",
         "canvas.example.io",
     ]
+
+
+# ── Conformance to the documented Caddyfile grammar ──────────────────────────
+# Each case below is a rule quoted from https://caddyserver.com/docs/caddyfile/
+# concepts, and each one FAILED before these tests existed. The parser was
+# written from the shape of one live file, which is why it agreed with that file
+# and disagreed with the grammar.
+
+
+def test_addresses_may_be_space_separated():
+    # "localhost:8080 example.com www.example.com" — comma OR whitespace.
+    # Splitting on commas alone produced the single address
+    # "a.example.io b.example.io", which no lookup could ever match, so the
+    # multi-address refusal in retire() would not have fired either.
+    sites = parse_sites("a.example.io b.example.io {\n\treverse_proxy 192.0.2.1:80\n}\n")
+    assert [s["addresses"] for s in sites] == [["a.example.io", "b.example.io"]]
+
+
+def test_hash_mid_token_is_not_a_comment():
+    # "The hash character # for a comment cannot appear in the middle of a token
+    # (i.e. it must be preceded by a space or appear at the beginning of a
+    # line)." Quote-tracking instead of position truncated this upstream to
+    # http://192.0.2.1:80/ — reporting an upstream the server does not use.
+    sites = parse_sites("a.example.io {\n\treverse_proxy http://192.0.2.1:80/#frag\n}\n")
+    assert sites[0]["upstreams"] == ["http://192.0.2.1:80/#frag"]
+
+
+def test_trailing_comment_is_still_stripped():
+    sites = parse_sites("a.example.io {\n\treverse_proxy 192.0.2.1:80 # note\n}\n")
+    assert sites[0]["upstreams"] == ["192.0.2.1:80"]
+
+
+def test_snippets_and_named_routes_are_not_sites():
+    # A snippet `(name) {` and a named route `&(name) {` are column-0 brace
+    # blocks that are not sites. Treating them as sites let `list` misreport
+    # them and would let `retire` delete a snippet every site imports.
+    text = (
+        "(common) {\n\theader X 1\n}\n"
+        "&(myroute) {\n\trespond \"x\"\n}\n"
+        "a.example.io {\n\timport common\n}\n"
+    )
+    assert [s["addresses"] for s in parse_sites(text)] == [["a.example.io"]]
+
+
+def test_heredoc_contents_do_not_affect_brace_depth():
+    # "Inside quoted tokens, all other characters are treated literally."
+    # An unbalanced brace inside a heredoc desynced depth for the REST of the
+    # file: parse_sites returned [] — the file read as having no routes at all,
+    # rather than as unparseable, which is the dangerous direction.
+    text = (
+        "a.example.io {\n\trespond <<HTML\n\t{ unbalanced\n\tHTML\n}\n"
+        "b.example.io {\n\treverse_proxy 192.0.2.2:80\n}\n"
+    )
+    assert [s["addresses"] for s in parse_sites(text)] == [
+        ["a.example.io"],
+        ["b.example.io"],
+    ]
+
+
+def test_single_line_block_is_not_a_site():
+    # "The open curly brace { must be at the end of its line." A one-line block
+    # is rejected by Caddy itself ("Unexpected '}' because no matching opening
+    # brace", verified against the live binary), so ignoring it matches the
+    # grammar. Pinned so nobody "fixes" the parser to accept invalid syntax.
+    assert parse_sites('a.example.io { respond "hi" }\n') == []
