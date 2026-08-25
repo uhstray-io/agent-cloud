@@ -47,6 +47,7 @@ supersede it with a new entry and link both.
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
 | 2.15 | Allow-list matched a prefix, so an appended live write passed the invariant that replaced a blacklist | False green on a safety check | Test (anchored, mutation-proven) |
+| 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -579,6 +580,45 @@ allowed is the cheapest way past a substring check.
 **Enforced by.** `network config: validation never touches the live /etc/netplan`
 in `platform/tests/test_configure_host_network.bats`, now anchored, proven against
 both an appended write on the permitted line and a separate write line.
+
+### 2.16 A test whose population was selected by the presence of the fix
+
+**What happened.** A review pointed out that a test compared only task NAME lines
+and then grepped the whole file, so a playbook whose first task was merely *named*
+"Resolve the sudo password" would pass without including the resolver. Fixing that
+was straightforward — bind each assertion to its own task block.
+
+The fix did not work, and mutation testing showed why. The loop selected its
+population with `grep -q 'resolve-become-password' "$f" || continue` — the same
+string the assertion checks. Deleting the include therefore removed the file from
+the population, and the test passed **vacuously**. The bypass the review described
+survived the fix for the review's finding.
+
+Selecting instead on the *condition* — every playbook that escalates at play level,
+whether or not it currently resolves a password — killed it immediately.
+
+**Root cause.** A filter keyed on the thing being asserted cannot fail: removing
+the property removes the subject. The test was shaped like "for everything that has
+X, assert X", which is a tautology dressed as coverage.
+
+**The rule.** A test's population is selected by the CONDITION that makes the
+requirement apply, never by the presence of the fix that satisfies it. If deleting
+the implementation makes the test skip rather than fail, the selector is wrong.
+Check it by deleting the implementation and confirming a FAILURE, not a pass.
+
+**A second thing this surfaced.** Once the population was the honest one, the test
+failed on `harden-ssh.yml` — which resolves the password with its own inline fetch
+rather than the shared task. That is a real inconsistency, not a test defect, so
+the assertion now accepts either shape and pins what actually matters: whichever
+mechanism supplies the credential must be the FIRST task. Consolidating the two
+onto one mechanism stays a follow-up, deliberately not done inside a change that
+deploys through the irreversible step.
+
+**Enforced by.** `become: the first task is what makes escalation possible` and
+`become: gathering, where it happens at all, happens after escalation is possible`
+in `platform/tests/test_become_password_resolution.bats`, proven against removing
+the include, moving the gather out of position, and moving the inline fetch off
+first position.
 
 ## 3. Acting on live state
 

@@ -75,19 +75,48 @@ setup() {
   fi
 }
 
-@test "become: gathering is deferred, not lost" {
-  # Disabling automatic gathering without gathering explicitly would silently
-  # remove the facts the rest of the play depends on. Every play that turns it off
-  # for this reason must gather straight after the resolver.
+@test "become: the first task is what makes escalation possible" {
+  # THE ORDERING INVARIANT. Play-level become escalates during fact gathering and
+  # on the first privileged task, so whatever supplies the sudo password has to run
+  # before either. "First task" is the only position that satisfies that.
+  #
+  # Two shapes are accepted because two exist: the shared resolver include, and
+  # harden-ssh.yml's own inline fetch, which predates it. Both make escalation
+  # possible; what is asserted is that one of them is FIRST.
+  #
+  # Selected on the CONDITION (escalates at play level), never on the presence of
+  # the fix — selecting on the fix made this vacuous, because deleting the include
+  # dropped the file out of scope and the test passed.
   for f in "$PBDIR"/*.yml; do
-    grep -q 'resolve-become-password' "$f" || continue
     grep -qE '^  become: true' "$f" || continue
-    local first second
-    first=$(awk '/^  tasks:/{f=1;next} f&&/^    - name:/{n++; if(n==1){print; exit}}' "$f")
-    second=$(awk '/^  tasks:/{f=1;next} f&&/^    - name:/{n++; if(n==2){print; exit}}' "$f")
-    assert_contains "$first" 'Resolve the sudo password'
-    assert_contains "$second" 'Gather facts'
-    assert_grep -qE '^ +ansible\.builtin\.setup:' "$f"
+    [ "$(basename "$f")" = "$KNOWN_GAP" ] && continue
+    local first
+    first=$(awk '/^  tasks:/{t=1;next} t&&/^    - name:/{n++; if(n>1) exit} t&&n==1{print}' "$f")
+    [ -n "$first" ]
+    if ! printf '%s' "$first" | grep -qE 'tasks/resolve-become-password\.yml|become_password'; then
+      echo "first task of $(basename "$f") does not make escalation possible:" >&2
+      printf '%s\n' "$first" >&2
+      return 1
+    fi
+  done
+}
+
+@test "become: gathering, where it happens at all, happens after escalation is possible" {
+  # Turning automatic gathering off without gathering explicitly would silently
+  # remove facts the play depends on — so where a play gathers explicitly, that
+  # task must come straight after the resolver, never before it.
+  #
+  # Conditional on the play HAVING a setup task: harden-ssh.yml never gathered
+  # facts and needs none, so requiring one there would assert a shape rather than
+  # a property.
+  for f in "$PBDIR"/*.yml; do
+    grep -qE '^  become: true' "$f" || continue
+    [ "$(basename "$f")" = "$KNOWN_GAP" ] && continue
+    grep -qE '^ +ansible\.builtin\.setup:' "$f" || continue
+    local second
+    second=$(awk '/^  tasks:/{t=1;next} t&&/^    - name:/{n++; if(n>2) exit} t&&n==2{print}' "$f")
+    [ -n "$second" ]
+    assert_grep -qE '^ +ansible\.builtin\.setup:' <<<"$second"
   done
 }
 
