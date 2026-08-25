@@ -58,7 +58,7 @@ supersede it with a new entry and link both.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
-| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Test |
+| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -776,6 +776,8 @@ was written to make the claim true rather than the claim weakened to match.
 
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
 
+**Occurrences: 2** — 2026-08-23, 2026-08-25
+
 **What happened.** The App credential helper was written in shell using `openssl` and
 `jq`, reasoned about explicitly as "no new dependency, matching the existing HTTP client
 library". The orchestrator's container image has neither. Every registration failed with
@@ -796,6 +798,22 @@ reports a missing library as such instead of as a bad credential.
 
 **Enforced by.** Test — `platform/tests/test_github_app_token.bats` asserts the signer
 depends on neither `openssl` nor `jq` and shells out to nothing.
+
+**Occurrence 2 — 2026-08-25.** A new test module imported a yaml parser to assert a
+playbook's structure. It passed locally and failed collection on the CI runner with
+`No module named 'yaml'`, taking the whole suite down with it — pytest treats a
+collection error as a run failure, so one undeclared import hid the other 97 tests'
+results. The parser was present locally only because it had been installed by hand
+minutes earlier while inspecting inventory, so the local pass was an artefact of the
+investigation, not evidence about the runner.
+
+Why the existing rule did not fire: it is written about the machine that runs an
+*automated step*, and I read "the machine" as the deploy target. A CI runner is also
+a machine that runs a step, and a test's imports are also dependencies. The rule was
+right and I applied it too narrowly — the widened form is that a dependency is
+verified on **every** environment declared to run it, and a test dependency counts.
+The cheap mechanical check is to install only what the pipeline declares and run the
+suite in that environment before pushing.
 
 ---
 

@@ -189,7 +189,11 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest netboxlabs-diode-sdk proxmoxer requests
+          # pyyaml: the Caddy playbook-structure suite asserts against the PARSED
+          # playbook rather than its text, so it needs a yaml parser. It was absent
+          # here and present in the author's virtualenv, which is exactly how an
+          # undeclared dependency passes locally and fails on a clean runner.
+          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests
           # cryptography: the BATS suite signs a real App assertion with a throwaway key
           # and verifies it, which is the only check that the credential chain's signing
           # is correct rather than merely well-formed. Declared for the orchestrator in
