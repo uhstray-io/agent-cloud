@@ -94,10 +94,14 @@ setup() {
   assert_grep -qF 'register: _final_state' "$PLAYBOOK"
   assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
   # The report must NOT read the pre-create results any more.
-  local report
-  report=$(sed -n '/Report the recorded state of each named address/,/^$/p' "$PLAYBOOK")
-  printf '%s' "$report" | grep -qF '_final_state.results'
-  printf '%s' "$report" | grep -vqF '_existing.results' || true
+  # Extract the report task to a file and assert on THAT. The previous form was a no-op
+  # twice over: `grep -vq` succeeds when ANY line lacks the string, so it passed with
+  # `_existing.results` present, and `|| true` discarded even that. Written while fixing
+  # exactly this class (docs/MISTAKES.md §2.9).
+  sed -n '/Report the recorded state of each named address/,/^$/p' "$PLAYBOOK" \
+    > "$BATS_TEST_TMPDIR/report.yml"
+  assert_grep -qF '_final_state.results' "$BATS_TEST_TMPDIR/report.yml"
+  refute_grep -qF '_existing.results' "$BATS_TEST_TMPDIR/report.yml"
 }
 
 @test "netbox-allocate: a reserve run that failed to create is not reported as success" {

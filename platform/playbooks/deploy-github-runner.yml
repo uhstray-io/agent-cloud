@@ -78,13 +78,20 @@
           - (github_runner_labels | default([])) | length > 0
           - github_runner_group | default('') | length > 0
           - monorepo_deploy_path | default('') | length > 0
+          # CONTAINED. Non-empty is not enough: this value is concatenated onto the repo
+          # root and the result is EXECUTED, so `../../etc` would run a script from
+          # outside the checkout. Reject an absolute path and any parent traversal.
+          - not (monorepo_deploy_path | default('') is match('^/'))
+          - "'..' not in ((monorepo_deploy_path | default('')).split('/'))"
         fail_msg: >-
           Need the OpenBao address, the App's client id (or app id), and this host's
           github_runner_name / github_runner_labels / github_runner_group in inventory.
           The declaration is the allocation — a runner without declared labels cannot be
           targeted by a workflow, and a runner without a group would land in the default
           group, which may admit repositories this plane must not serve.
-          monorepo_deploy_path is the path WITHIN the repo to this service's deploy.sh.
+          monorepo_deploy_path is the path WITHIN the repo to this service's deploy.sh —
+          relative, and with no `..` component: it is concatenated onto the repo root and
+          the result is executed.
         success_msg: "Declaration complete for {{ github_runner_name }}."
 
     - name: "Refuse a cleartext OpenBao endpoint"
