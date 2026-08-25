@@ -44,6 +44,7 @@ supersede it with a new entry and link both.
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
+| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -472,6 +473,40 @@ statically verified and mutation-proven but has **not** been exercised against a
 host, because the orchestrator runs playbooks from the integration and production
 branches and this change is on neither yet. That is the same gap this entry is
 about, so it is named here instead of being called done.
+
+### 2.14 One value, five resolution rules, and a verdict that lied because of it
+
+**What happened.** A review found that the access gate reported `NO-GO` while the
+secrets it needed were available. The gate resolved the secret-store address as
+`openbao_addr | default('')`; the shared resolver I had just added used
+`openbao_addr | default(env OPENBAO_ADDR)`. With only the environment variable
+set, the resolver found the sudo password and the gate's own address stayed empty
+— which skipped both of the gate's lookups, so it concluded the credentials were
+missing and refused to authorise hardening.
+
+Looking wider, that same variable is defined across the playbooks in at least
+**five mutually inconsistent forms**: bare, empty-default, one env fallback, two
+env fallbacks, and one that falls back to a **localhost URL** — which would
+silently talk to the wrong secret store rather than fail.
+
+**Root cause.** I added a second resolution rule for a value that already had one,
+without checking what the existing one was. The failure is not that either rule is
+wrong; it is that two paths depending on one value disagreed about how to compute
+it, so one could succeed while the other reported the opposite.
+
+**The rule.** Before introducing a derivation for a value that other code already
+derives, grep for the existing derivations and count the variants. If there is more
+than one, that is the finding — reconcile or explicitly scope around it, but do not
+add a sixth. A value two paths depend on gets one rule.
+
+**Enforced by.** `access gate: it resolves the store address the same way the
+resolver does` in `platform/tests/test_verify_host_access_become.bats`, proven by
+reverting the gate to the no-fallback form.
+
+**Scoped, not fixed.** Only the two rules that disagreed *within this change* were
+reconciled. Normalising the address across every playbook — including retiring the
+localhost-defaulting variant, which is the dangerous one — is a separate change,
+recorded here so it is not mistaken for done.
 
 ## 3. Acting on live state
 

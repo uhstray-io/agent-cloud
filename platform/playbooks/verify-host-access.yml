@@ -88,11 +88,24 @@
   # task result (same abort class as the undefined-key-path failure).
   ignore_unreachable: true
   vars:
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Same fallback chain the shared resolver uses. They MUST agree: when only the
+    # environment variable was set, the resolver found the sudo password while this
+    # stayed empty, which skipped both of this play's own lookups and made the
+    # verdict report NO-GO with the secrets sitting right there.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    # Both of this play's OpenBao lookups send AppRole credentials and receive
+    # secret material, so the shared cleartext guard runs before either of them.
+    # no_log protects the log, not the wire.
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: _bao_url | length > 0
+
     # ── Can we get in at all, by whatever means Ansible is configured with? ──
     # Note carefully what this does NOT tell you: which auth method was used.
     - name: "Reach the host with the orchestrator's current credential"

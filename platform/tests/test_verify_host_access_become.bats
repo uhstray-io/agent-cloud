@@ -65,3 +65,27 @@ setup() {
   assert_grep -q 'PENDING-OPERATOR' "$PB"
   refute_grep -qE "'GO —|\"GO —" "$PB"
 }
+
+@test "access gate: both of its OpenBao lookups sit behind the transport guard" {
+  # The AppRole secret_id, the returned token, the per-service private key and the
+  # sudo password all cross that connection. no_log protects the log, not the wire.
+  assert_grep -q 'tasks/assert-bao-transport.yml' "$PB"
+  local guard first last
+  guard=$(grep -n 'assert-bao-transport' "$PB" | head -1 | cut -d: -f1)
+  first=$(grep -n 'hashi_vault' "$PB" | head -1 | cut -d: -f1)
+  last=$(grep -n 'hashi_vault' "$PB" | tail -1 | cut -d: -f1)
+  [ -n "$guard" ] && [ -n "$first" ] && [ -n "$last" ]
+  [ "$guard" -lt "$first" ]
+  [ "$guard" -lt "$last" ]
+}
+
+@test "access gate: it resolves the store address the same way the resolver does" {
+  # When only the environment variable was set, the resolver found the sudo
+  # password while the gate's own address stayed empty — which skipped both of its
+  # lookups and made the verdict report NO-GO with the secrets available. One value
+  # that two paths depend on must have one resolution rule.
+  local task="${BATS_TEST_DIRNAME}/../playbooks/tasks/resolve-become-password.yml"
+  [ -f "$task" ]
+  assert_grep -qE "lookup\('env', 'OPENBAO_ADDR'\)" "$PB"
+  assert_grep -qE "lookup\('env', 'OPENBAO_ADDR'\)" "$task"
+}
