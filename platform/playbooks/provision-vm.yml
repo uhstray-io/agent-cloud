@@ -72,7 +72,14 @@
 
     # The declaring host: the entry in <service>_svc carrying the vm_* vars. This
     # play runs on localhost, so its vars are not in scope automatically.
-    _decl: "{{ hostvars[(groups[target_service ~ '_svc'] | default([]) | first) | default('')] | default({}) }}"
+    # Which declared host to provision. `first` is the right default — most services
+    # declare exactly one host — but it is NOT sufficient: a service with two declared
+    # hosts (a pool of CI runners, say) could only ever provision one of them, and a run
+    # aimed at the second would silently rebuild the first under the second's overrides.
+    # `-e target_host=<name>` selects the declaration explicitly.
+    _group_hosts: "{{ groups[target_service ~ '_svc'] | default([]) }}"
+    _decl_host: "{{ target_host | default(_group_hosts | first | default('')) }}"
+    _decl: "{{ hostvars[_decl_host] | default({}) }}"
 
     # Resolved VM config — launch override, then declaration, then ledger.
     _vmid: "{{ target_vmid | default(_decl.vm_vmid | default(_svc.vmid | default(''))) }}"
@@ -94,6 +101,20 @@
     _runner_token: "{{ runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default('')) }}"
 
   tasks:
+    - name: "Require an explicit target_host when the service declares more than one"
+      # Refusing beats guessing. With several declarations in the group, `first` is an
+      # accident of file order — provisioning the wrong host is a rebuild of a live VM.
+      ansible.builtin.assert:
+        that:
+          - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
+          - _decl_host | length == 0 or _decl_host in _group_hosts
+        fail_msg: >-
+          {{ target_service }}_svc declares {{ _group_hosts | length }} hosts
+          ({{ _group_hosts | join(', ') }}). Pass -e target_host=<name> to say which one
+          to provision{{ ", and it must be one of those names" if (_decl_host | length > 0
+          and _decl_host not in _group_hosts) else "" }}.
+        success_msg: "Provisioning declaration '{{ _decl_host }}'."
+
     - name: "Validate target_service is provided"
       ansible.builtin.fail:
         msg: "target_service must be specified (e.g., -e target_service=openbao)"
@@ -198,6 +219,30 @@
       when: clone_result is changed and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
 
     # ── Configure VM (single PUT with all settings) ───────────────────────
+    - name: "Wait for the clone lock to clear before configuring"
+      # Proxmox reports the clone TASK complete while it still holds the VM's config
+      # lock, so the very next config write fails with
+      #   can't lock file '/var/lock/qemu-server/lock-<vmid>.conf'
+      # Waiting on the task is therefore necessary but NOT sufficient: the thing that
+      # must be true is that the VM is unlocked, so that is what is waited on. Polling
+      # the VM's own state also means a slow disk copy simply takes longer rather than
+      # failing, and a VM that never unlocks fails with a diagnosis instead of a lock
+      # error five tasks later.
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+        method: GET
+      register: _vm_lock
+      # `is succeeded` first: without it a FAILED request has no json.data.lock, the
+      # default makes the expression '' == '' true, and the wait exits declaring the VM
+      # unlocked on the strength of a request that never answered.
+      until: (_vm_lock is succeeded) and ((_vm_lock.json.data.lock | default('')) == '')
+      retries: 60
+      delay: 10
+      changed_when: false
+      failed_when:
+        - (_vm_lock.json.data.lock | default('')) != ''
+        - _vm_lock.attempts | default(0) >= 60
+
     - name: "Configure VM resources and cloud-init"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"

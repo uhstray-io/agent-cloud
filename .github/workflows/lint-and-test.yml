@@ -190,6 +190,11 @@ jobs:
       - name: Install test dependencies
         run: |
           pip install pytest netboxlabs-diode-sdk proxmoxer requests
+          # cryptography: the BATS suite signs a real App assertion with a throwaway key
+          # and verifies it, which is the only check that the credential chain's signing
+          # is correct rather than merely well-formed. Declared for the orchestrator in
+          # platform/requirements-controller.txt.
+          pip install -r platform/requirements-controller.txt
 
       - name: Run Python tests
         working-directory: platform/services/netbox/deployment

@@ -56,6 +56,12 @@ platform/services/*/deployment/web/static/css/app.css
 platform/services/inference-*/deployment/app/.venv/
 platform/services/inference-*/deployment/app/__pycache__/
 
+# Generated Python bytecode, anywhere. The rule above is scoped to one service, so a
+# __pycache__ under platform/lib/ slipped into version control — interpreter-specific,
+# unreviewable as source, and it churns on every run.
+__pycache__/
+*.py[cod]
+
 # Local .env files (Compose reads these; gitignored per CLAUDE.md secret rules)
 platform/services/*/deployment/.env
 platform/services/*/deployment/.env.local

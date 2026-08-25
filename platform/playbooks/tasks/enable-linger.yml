@@ -18,10 +18,14 @@
 # (tasks/place-monorepo.yml) so EVERY rootless service gets reboot persistence,
 # not only the ones that remember to include it — tracked as a follow-up.
 #
-# Required vars: none — uses `ansible_user` (the rootless service account).
+# Required vars: none. Optional `linger_user` names the account to linger when it is
+# NOT the connecting user — needed by any service that runs under a DEDICATED
+# unprivileged account rather than as ansible_user (a CI runner must, since
+# ansible_user holds NOPASSWD sudo after hardening and the runner must hold none).
+# Defaults to ansible_user, so every existing caller is unaffected.
 
-- name: "Check whether lingering is already enabled for {{ ansible_user }}"
-  ansible.builtin.command: "loginctl show-user {{ ansible_user }} --property=Linger"
+- name: "Check whether lingering is already enabled for {{ linger_user | default(ansible_user) }}"
+  ansible.builtin.command: "loginctl show-user {{ linger_user | default(ansible_user) }} --property=Linger"
   register: _linger_state
   changed_when: false
   # `show-user` exits non-zero when the user has no session AND no linger yet —
@@ -30,8 +34,8 @@
   failed_when: false
   when: not (local_mode | default(false) | bool)
 
-- name: "Enable lingering (rootless containers survive reboot) for {{ ansible_user }}"
-  ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
+- name: "Enable lingering (rootless containers survive reboot) for {{ linger_user | default(ansible_user) }}"
+  ansible.builtin.command: "loginctl enable-linger {{ linger_user | default(ansible_user) }}"
   become: true
   when:
     - not (local_mode | default(false) | bool)

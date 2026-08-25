@@ -97,6 +97,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/tududi/deployment/CLAUDE.md` — tududi to-do app (rootless podman, SQLite, native Authentik OIDC; weft's NocoDB-migration sink)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
 - `platform/services/postiz/deployment/CLAUDE.md` — postiz social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres; native Authentik OIDC, API-key automation endpoint ungated at the edge for n8n; upstream "Option B" config mount)
+- `platform/services/github-runner/CLAUDE.md` — self-hosted GitHub Actions runners (two hosts, one pool; org-scoped `uhstray-selfhosted` group restricted to the five PRIVATE repos — `agent-cloud` deliberately excluded as public; App-signed credential chain minted on the controller because the hosts are firewalled away from OpenBao; per-job containerisation is explicitly NOT an enforced control — read the isolation table before placing anything on a runner host)
 - `platform/services/inference-comfyui/CLAUDE.md` — Image-generation sidecar (Flux.1)
 - `platform/services/inference-hunyuan3d/CLAUDE.md` — 3D-mesh sidecar (Hunyuan3D)
 - `platform/services/dns/context/architecture.md` — hickory-dns internal DNS (zones-as-code; local-dev live, prod planned)
@@ -225,6 +226,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/honcho` | honcho JWT signing secret + its Postgres password (member-scoped API JWTs land under `secret/services/honcho/tokens/<member>` post-deploy) |
 | `secret/services/cloudflare` | Cloudflare edge-as-code: scoped API token, `zone_id`, `caddy_origin_ip`, R2 state-backend S3 endpoint + access keys — read by `apply-cloudflare-tofu.yml` (see "Cloudflare edge as code" below) |
 | `secret/services/postiz` | postiz signing secret + its Postgres password + the Temporal Postgres password (all generated once and reused — a new signing secret invalidates every session AND every API key), plus the operator's social-platform application credentials seeded by `seed-postiz-secrets.yml`; the OIDC client secret is shared-read from `authentik` |
+| `secret/services/github-runner` | GitHub App private key (`app_private_key`) for the org runner-automation App. The App's OAuth client secret is NOT used and is not stored; the client id is the JWT issuer and is not secret. Read only by the orchestrator — a runner host is denied OpenBao by its own firewall declaration and never holds this |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |
@@ -241,6 +243,13 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/deploy-orb-agent.yml` | Start privileged orb-agent with vault-integrated config |
 | `tasks/clean-service.yml` | Destroy containers, volumes, clone for full rebuild |
 | `tasks/clone-and-deploy.yml` | Clone monorepo, run deploy.sh, health check (legacy services) |
+| `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys |
+| `tasks/enable-linger.yml` | `loginctl enable-linger` so rootless containers survive a reboot; takes an optional `linger_user` for a dedicated service account |
+| `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
+| `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
+
+`platform/playbooks/tasks/` holds 22 tasks in total; the table above is the curated set
+most services compose. `platform/playbooks/README.md` is the fuller reference.
 
 ## Independent Workflows
 
@@ -261,6 +270,9 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Deploy Postiz | `deploy-postiz.yml` | Social publishing (rootless podman, 5 containers): secrets (+OIDC shared-read) → render BOTH env files → deploy.sh → verify app AND workflow engine |
 | Clean Deploy Postiz | `clean-deploy-postiz.yml` | Destructive: wipe containers + all four volumes + fresh deploy (social accounts need re-authorizing by hand afterwards) |
 | Seed Postiz Secrets | `seed-postiz-secrets.yml` | Additively place the operator's social-platform credentials at `secret/services/postiz` (KV-v2 merge-patch; no survey vars — Semaphore persists those, so values are launch-time extra vars) |
+| Deploy GitHub Runner | `deploy-github-runner.yml` | Install + register one self-hosted runner: prereqs (incl. `acl`) → unprivileged account asserted sudo-less → pinned artefacts verified against their published digests → registration token minted ON THE CONTROLLER (the host cannot reach OpenBao) → per-job cleanup hook → systemd user service. Idempotent; a re-run leaves an existing registration intact |
+| Manage GitHub Runner Group | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false`; convergence REPLACES the list, so a grant made outside the declaration is removed |
+| Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
@@ -272,6 +284,10 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | Deploy keys from OpenBao, verify key auth |
 | Harden SSH | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown (after key verification) |
 | Install Docker | `install-docker.yml` | Docker CE from official repo (idempotent) |
+| Preflight Target Group | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
+| Verify Host Access | `verify-host-access.yml` | Prove KEY-ONLY SSH works before `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
+| Provision VM | `provision-vm.yml` | Clone the template and provision a declared VM. Inventory-first; `-e target_host=` REQUIRED when the group declares more than one host |
+| Apply Firewall | `apply-firewall.yml` | Default-deny inbound + optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: SSH allows precede enable, then a fresh handshake is forced |
 | Validate All | `validate-all.yml` | Health check all services |
 | Check Secrets | `check-secrets.yml` | Read-only secret inventory from OpenBao |
 | Validate Secrets | `validate-secrets.yml` | Test credentials against live services |
@@ -320,7 +336,7 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **Phase 0-0.5**: Foundation + per-VM deployment
 - **Monorepo consolidation** — two repos: agent-cloud (public) + site-config (private)
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
-- **Semaphore pipeline** — 25+ task templates, SSH key auth
+- **Semaphore pipeline** — 74 declared task templates (plus generated `(Dev)` variants), SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
@@ -329,6 +345,8 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 - **tududi + honcho deployed (prod)** — to-do app at `todo.uhstray.io` (native Authentik OIDC) and memory API at `memory.uhstray.io` (JWT `/v3` + Authentik-gated `/docs`), both composable rootless-podman deploys
 - **Cloudflare edge as code** — WAF rulesets + platform DNS adopted into OpenTofu (R2 state backend), applied via `apply-cloudflare-tofu.yml`; API-first is now the standard for edge changes
+- **Postiz deployed (prod)** — social publishing at `postiz.uhstray.io` (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres), native Authentik OIDC, API-key automation endpoint for n8n
+- **Self-hosted GitHub Actions runners (prod)** — `gh-runner-01` + `gh-runner-02`, one interchangeable pool, org-scoped to the FIVE PRIVATE repos via the `uhstray-selfhosted` group; `agent-cloud` deliberately excluded because it is public. Workflows opt in with `runs-on: [self-hosted, linux, x64, uhstray-lan]`. Enforced isolation is workspace destruction between jobs, no host administration from a job, and network-level egress denial — **per-job containerisation and process reaping are NOT enforced**, so nothing may sit on a runner host that all five repos are not entitled to read (see `platform/services/github-runner/CLAUDE.md`)
 
 ### In Progress
 - NocoDB and n8n deployment via composable pattern — both are deployed today via the **legacy** `deploy.sh` path (bash-generated secrets in an on-VM `secrets/` dir). Migration to the composable pattern is planned in `plan/development/09-service-migrations-tooling.md` but **execution is HELD**: it's an in-place migration of live services with stateful secrets (n8n `N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) that must be pre-seeded into OpenBao before cutover or they'd be regenerated — needs live OpenBao access first (see that plan's "Migration Safety").
@@ -382,6 +400,38 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 **Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
+### Test check on push (`.githooks/pre-push`)
+
+`core.hooksPath=.githooks` also activates a **pre-push** hook that ATTEMPTS the BATS suite
+and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. No install
+step; live as soon as `make git-setup` has been run.
+
+`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
+3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+`PATH`.
+
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
+means the suites passed on your machine or were skipped, which is not evidence CI will
+pass — and CI never sees a push the hook stopped.
+
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+the Python suite is not collectable because pytest or a test dependency is missing, and on
+a branch-deletion push. Failing open like that is deliberate and the opposite of the
+pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
+is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+
+Why push and not commit: the suite is ~37s for 452 tests, which on every commit is
+friction people route around with `--no-verify` — turning a gate into a habit of
+bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
+failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
+times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
+keys — nothing about tests, so there was no gate to pass.
+
+Failing open is the deliberate opposite of the pre-commit secret gate, which fails closed.
+A leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
+Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+
 ### Mandatory Pre-Push Audit
 
 Run as a **separate step** before every commit. Review the output. Then commit separately.
@@ -431,13 +481,22 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (133 tests, Bash)
+- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (452 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 
 Tests: `platform/services/netbox/deployment/tests/` (Python), `platform/tests/` (BATS)
 
-See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
+**Writing a BATS test:** see "Writing BATS Tests" in `CONTRIBUTING.md`. In short — assert
+absence with `refute_grep` (a `!`-inverted command mid-body cannot fail under `set -e`, and
+`grep -v -q` passes when the string IS present), scope each assertion to the task or
+function it is about rather than the whole file, never assert a property of a randomly
+generated value, and mutate the guarded code once to watch the test go red. Each rule is an
+incident in `docs/MISTAKES.md` §2.
+
+See `plan/architecture/03-testing-ci-quality.md` for the full testing strategy, local
+setup, and the pre-PR checklist. (This previously pointed at `docs/LINTING-AND-TESTING.md`,
+which does not exist — the content lives in the numbered architecture doc.)
 
 ### Sub-directory Documentation (additional)
 
@@ -454,6 +513,13 @@ See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
 Ansible collections (auto-installed from `collections/requirements.yml`):
 - `community.hashi_vault` — OpenBao/Vault lookups
 - `ansible.posix` — `authorized_key` module
+
+Controller Python packages (`platform/requirements-controller.txt`) — used only by
+playbooks running on localhost, never installed on a service VM:
+- `cryptography` — RS256 signing for the GitHub App credential chain
+  (`platform/lib/github_app_token.py`). Declared because it was previously assumed to
+  arrive with the collections; an undeclared dependency that vanishes on an image rebuild
+  fails inside a `no_log` boundary, where the symptom is an unexplained credential error.
 
 Shared bash libraries:
 - `platform/lib/common.sh` — logging, secret helpers, compose wrapper, health checks
@@ -478,7 +544,7 @@ operator has one, takes precedence — this is the repo-level default.
 The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`
 attribute on the graph artifact is inert without it, so a concurrent re-index would
 produce a binary conflict that looks like the attribute simply failed. The second
-activates the capture hooks and the secret-scanning gate.
+activates the capture hooks, the secret-scanning gate, and the pre-push test check.
 
 **Read routing.** Try the graph **first** for anything derivable from source —
 it is free, deterministic, and sub-millisecond. Go to the bank for rationale,

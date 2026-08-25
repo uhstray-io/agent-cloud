@@ -678,7 +678,7 @@ When this spec was authored, UhhCraft was a standalone project. As of 2026-05-25
 
 - **Original spec:** "Deployment uses Kamal."
 - **agent-cloud alignment:** Deployment is **Semaphore-orchestrated Ansible** via composable playbooks (`platform/playbooks/deploy-uhhcraft.yml`). Kamal is not used.
-- **Rationale:** Single deployment surface across the platform. Per `plan/architecture/AUTOMATION-COMPOSABILITY.md`.
+- **Rationale:** Single deployment surface across the platform. Per `plan/architecture/01-automation-model.md`.
 
 ### Reverse proxy — central Caddy, not per-service
 

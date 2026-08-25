@@ -92,6 +92,39 @@ templates:
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
 
+  # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
+  # prefix so a VM's address comes from the authority rather than from the inventory
+  # (which records what is declared) or from eyeballing the network. Reserving is opt-in
+  # AND takes explicit addresses, so two runs cannot quietly allocate different ones.
+  - name: Allocate NetBox IP
+    playbook: platform/playbooks/netbox-allocate-ip.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: prefix
+        title: "Prefix (CIDR)"
+        description: "Prefix to ask for free addresses in; must already exist in NetBox"
+        type: string
+        required: true
+      - name: count
+        title: "How many"
+        description: "Free addresses to report (1-32)"
+        type: string
+        required: false
+        default_value: "2"
+      - name: reserve
+        title: "Reserve"
+        description: "true = also CREATE the address records named in assignments"
+        type: string
+        required: false
+        default_value: "false"
+      - name: assignments
+        title: "Assignments (JSON)"
+        description: "[{address, dns_name, description}] — required when reserve=true"
+        type: string
+        required: false
+
   - name: Create NetBox Device
     playbook: platform/playbooks/create-netbox-device.yml
     survey_vars:
@@ -672,6 +705,21 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+    # main's copy of this playbook predates the inventory-first fix ("make it runnable
+    # from Semaphore at all"), so the dev-bound variant is the only way to exercise the
+    # current code before promotion. Permanent, not a branch workaround.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. github_runner)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host to provision — REQUIRED when the group declares more than one"
+        type: string
+        required: false
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
@@ -707,6 +755,40 @@ templates:
         type: string
         required: false
         default_value: "false"
+
+  # ── Self-hosted GitHub Actions runners ─────────────────────────────────────
+  # Runner-group access control. Converges the org's group to its declaration, so the
+  # exclusion of public repositories is a reviewable diff rather than a console setting.
+  # Read-only unless dry_run=false.
+  - name: Manage GitHub Runner Group
+    playbook: platform/playbooks/manage-github-runner-group.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: dry_run
+        title: "Dry run"
+        description: "true = resolve + report, change nothing"
+        type: string
+        required: false
+        default_value: "true"
+
+  - name: Deploy GitHub Runner
+    playbook: platform/playbooks/deploy-github-runner.yml
+    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
+    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group holding the runner hosts (github_runner_svc)"
+        type: string
+        required: true
+      - name: github_app_client_id
+        title: "App client id"
+        description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
+        type: string
+        required: false
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml

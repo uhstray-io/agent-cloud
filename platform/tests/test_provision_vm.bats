@@ -81,3 +81,46 @@ setup() {
     grep -qE "$v" "$RESIZE" || { echo "resize-vm missing $v"; return 1; }
   done
 }
+
+@test "provision-vm: a multi-host service must name which declaration to provision" {
+  # `first` is an accident of file order. With two declared hosts — a pool of CI runners,
+  # say — it would provision one of them and silently apply the other's overrides to it,
+  # which against a live VM is a rebuild. Refusing beats guessing.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  grep -qF '_decl_host: "{{ target_host | default(_group_hosts | first' "$PB"
+  grep -qF "(_group_hosts | length) <= 1 or (target_host | default('') | length > 0)" "$PB"
+  # And a named host that is not in the group is refused, not silently defaulted.
+  grep -qF '_decl_host | length == 0 or _decl_host in _group_hosts' "$PB"
+}
+
+@test "proxmox-validate: a guest on an OFFLINE node cannot abort the pre-flight check" {
+  # The cluster API omits `name` for a guest whose node is down. A bare item.name aborted
+  # the whole validation play — and since provision-vm.yml imports it as a precondition,
+  # one powered-off hypervisor blocked provisioning anywhere on the cluster. A pre-flight
+  # check that fails on a degraded fleet member is inverted: that is what it is for.
+  local PV="$BATS_TEST_DIRNAME/../playbooks/proxmox-validate.yml"
+  grep -qF "item.name | default(" "$PV"
+  grep -qF "item.node | default(" "$PV"
+  grep -qF "item.status | default(" "$PV"
+  # No undefaulted field may remain in that message.
+  ! grep -qE 'msg: "\{\{ item\.vmid \}\}: \{\{ item\.name \}\}' "$PV"
+}
+
+@test "provision-vm: waits for the VM to be UNLOCKED, not merely for the clone task" {
+  # Proxmox reports the clone task complete while still holding the config lock, so the
+  # next config write fails with "can't lock file lock-<vmid>.conf". Waiting on the task
+  # is necessary but not sufficient — the condition that must hold is that the VM is
+  # unlocked, so that is what must be polled.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  grep -qF 'Wait for the clone lock to clear before configuring' "$PB"
+  # And the wait must require the request to have SUCCEEDED. Without that, a failed
+  # request has no json.data.lock, the default makes '' == '' true, and the wait exits
+  # declaring the VM unlocked on the strength of a request that never answered.
+  grep -qF "(_vm_lock is succeeded)" "$PB"
+  grep -qF "(_vm_lock.json.data.lock | default('')) == ''" "$PB"
+  # And the wait must precede the first config write, or it protects nothing.
+  local wait_line cfg_line
+  wait_line=$(grep -n 'Wait for the clone lock to clear' "$PB" | head -1 | cut -d: -f1)
+  cfg_line=$(grep -n 'Configure VM resources and cloud-init' "$PB" | head -1 | cut -d: -f1)
+  [ "$wait_line" -lt "$cfg_line" ]
+}

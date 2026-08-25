@@ -346,3 +346,25 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qE '^      rescue:$' "$pb"
   grep -qE '_bootstrap_pw: ""' "$pb"
 }
+
+@test "harden-ssh: a display variable cannot abort the verification it describes" {
+  # service_name appears only in report strings, but an undefined one aborted the whole
+  # "Confirm password auth disabled" task — so two hosts that HAD been hardened correctly
+  # reported as failures. A label must never be able to fail the check it labels.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/harden-ssh.yml"
+
+  # EVERY use must carry the default, not just one somewhere in the file. An unguarded
+  # `{{ service_name | upper }}` would otherwise pass because another line has it.
+  cat > "$BATS_TEST_TMPDIR/sn.py" <<'PYSCRIPT'
+import re, sys
+src = open(sys.argv[1]).read()
+uses = re.findall(r'\{\{\s*service_name\b[^}]*\}\}', src)
+if not uses:
+    print('service_name is not referenced at all'); sys.exit(0)
+bad = [u for u in uses if 'default(' not in u]
+print('OK' if not bad else 'undefaulted uses: ' + '; '.join(bad))
+PYSCRIPT
+  run python3 "$BATS_TEST_TMPDIR/sn.py" "$PB"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
+}

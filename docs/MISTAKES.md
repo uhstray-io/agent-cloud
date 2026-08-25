@@ -31,6 +31,7 @@ supersede it with a new entry and link both.
 | 1.2 | Asserted a config gap that did not exist, without reading the file | Unverified claim | Convention |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
+| 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -38,6 +39,10 @@ supersede it with a new entry and link both.
 | 2.5 | Safety guard specified without ever being evaluated against the declarations it judges | False-green test | Test |
 | 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | Convention |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | Convention |
+| 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | Convention |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
+| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
+| 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -45,12 +50,14 @@ supersede it with a new entry and link both.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Convention |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
-| 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | **Pre-push gate (proposed)** |
+| 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
+| 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
+| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -143,6 +150,33 @@ into "verified something else".
 **Enforced by.** Convention. The playbook itself does this correctly, threading the
 created id through rather than recomputing it; the slip was in an ad-hoc check beside it,
 which is an argument for verifying through the automation rather than around it.
+
+
+### 1.5 A security control asserted from documentation, disproved by the first measurement
+
+**What happened.** The self-hosted runner design claimed that setting the runner's
+container-hook variable makes every job's steps execute inside a container "whether or
+not the workflow asked", and argued at length that this beat a workflow-level
+`container:` because the latter fails open. A smoke job declaring no container reported
+`ISOLATION=host`: it ran directly against the host filesystem as the runner account. The
+hook mechanism manages containers for a job that *declares* one; it does not invent one.
+
+**Root cause.** The mechanism's existence was verified — the environment variable is
+real, the hooks project is real, the version was checked — and its *behaviour* was then
+inferred from what would be useful. Verifying that a feature exists is not verifying what
+it does.
+
+**The rule.** A control is not a control until it has been observed failing to permit the
+thing it forbids. Test it from the attacker's position — a job that asks for nothing, a
+request with the field absent — not the happy path. Where a design argues that one
+mechanism is safer *because* it cannot be opted out of, that property is the one to
+measure first.
+
+**Enforced by.** Test — a smoke workflow that declares no container and reports whether
+it is containerised, so the claim cannot be re-made without the measurement
+contradicting it. The corrected spec states what is actually enforced: workspace
+destruction between jobs, no host administration from a job, and network-level egress
+denial, all three verified on the live host.
 
 ---
 
@@ -280,6 +314,120 @@ correct, check the assertion's own syntax before the subject — the same discip
 quote-free substring instead of escaping your way through it.
 
 **Enforced by.** Convention.
+
+
+### 2.8 §2.6 repeated — a test assertion forbidding the comment that documents the hazard
+
+**What happened.** Three times in one change, an assertion written as "this file must not
+mention X" failed against correct code, because the file's *rationale* named X to explain
+why it was avoided. Once for `openbao` in a script whose header explains the credential
+division; once for `run_once` in a playbook whose header explains why it is absent; once
+for `fuser`/`lsof` in a task whose comment explains why they are not used.
+
+**Root cause.** A prohibition expressed as a whole-file text search cannot distinguish
+code from commentary about it — and commentary naming a hazard is exactly what is worth
+keeping.
+
+**The rule.** Scope a prohibition to executable lines. A check that punishes documenting
+the hazard trains people to delete the documentation.
+
+**Enforced by.** Convention, and this is the third instance — the honest status is that
+nothing mechanical catches it.
+
+
+### 2.9 Fifteen negative assertions that could never fail, reported as verified
+
+**What happened.** A branch added roughly fifteen assertions of the form
+`! grep -q <forbidden> "$file"` in the MIDDLE of test bodies — including
+"the key is never accepted through argv", "no real addresses", "no client secret
+appears", "no speculative API socket is configured". Every one was reported as passing,
+and the suite was cited as evidence in a pull request.
+
+Merging `dev` brought in `assert_helpers.bash` and its measurement: on Bats 1.13.0 a
+`!`-inverted command anywhere but the final statement of a body leaves the test
+**passing**, because `set -e` is documented to ignore it. Converting those assertions to
+`refute_grep` — a function call, whose status does fail the test — turned **two of them
+red immediately**. They had never run.
+
+**Root cause.** Two compounding errors. The assertions were written in the natural-looking
+form without checking whether Bats would honour it, and "the suite is green" was then
+treated as evidence that each assertion had been evaluated. A green suite only proves no
+assertion *failed*; it does not prove any assertion *ran*.
+
+**What the two red ones actually caught.** Both were §2.8 again — the assertion forbade
+the comment that documents the hazard, not the hazard. Once scoped to executable lines,
+both were mutation-tested in each direction: introducing the forbidden construct into
+code fails the test, removing it passes.
+
+**The rule.** A negative assertion must be a simple command — `refute_grep`, or `run` plus
+`[ ]`. Never `! cmd`, and never `[[ ]]`, anywhere but the final line. And a new assertion
+is not verified because the suite is green: mutate the thing it guards and watch it fail
+once. An assertion never observed failing is indistinguishable from a comment.
+
+**Enforced by.** Test — `platform/tests/test_assertions_are_real.bats` ratchets the count
+of assertions that cannot fail; it may go down and may not go up. That ratchet is what
+surfaced this, on a branch whose author believed the suite had verified these very
+properties.
+
+
+### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
+
+**What happened.** Fixing a report that read pre-write state, I added a test asserting the
+report no longer references the stale variable:
+
+```shell
+printf '%s' "$report" | grep -vqF '_existing.results' || true
+```
+
+It cannot fail, twice over. `grep -v -q` exits 0 when **any** line lacks the string, so a
+report still containing `_existing.results` passes it. And `|| true` discards even that
+result. A reviewer caught it; the suite could not have.
+
+**Root cause.** `grep -v` reads as "assert absent" and means "print non-matching lines".
+Under `-q` it answers a question nobody asked. The `|| true` was reflex, added so a
+non-matching grep would not trip `set -e` — the very reflex that makes an assertion
+inert.
+
+**Why it is its own entry.** §2.9 recorded fifteen assertions that could never fail, and
+`assert_helpers.bash` exists to prevent exactly this. I wrote a new one anyway, in the
+commit that fixed the old ones, in a file that already loads the helpers. Knowing the rule
+and applying it are different acts.
+
+**The rule.** Absence is asserted with `refute_grep`, never with `grep -v`, and never with
+`|| true` anywhere near it. Extract the region to a file first so the assertion has an
+unambiguous subject. Then mutate the thing it guards and watch it fail once — a negative
+assertion that has never been observed failing is indistinguishable from a comment.
+
+**Enforced by.** Test — the corrected assertion is mutation-verified in both directions:
+restoring the stale variable in the report fails the test, removing it passes. The
+`platform/tests/test_assertions_are_real.bats` ratchet does not catch this shape, since
+`grep -v` is not a bang-inverted command; that gap is worth closing.
+
+### 2.11 A test that asserted a property of one random draw
+
+**What happened.** `test_netbox_common.bats` asserted that a generated Django key contains
+a character from `[!@#$%^]`. The generator draws 64 characters from an alphabet of 76, of
+which 6 are in that class, so the assertion fails whenever the draw misses them:
+`(70/76)^64` — **0.518% of runs, about one in 193**. It failed CI on an unrelated pull
+request, on a file that request had not touched.
+
+**Root cause.** The intent was "the key contains special characters", and that was
+translated into a property of *one sample* rather than a property of the *generator*. A
+random sample cannot establish an invariant; it can only fail to contradict it.
+
+**Why it costs more than its failure rate.** A test that fails ~0.5% of the time on
+unrelated changes trains people to re-run CI rather than read it, which is the habit that
+lets a real failure through. It also cost a full diagnostic detour on a PR whose diff did
+not include the file.
+
+**The rule.** Never assert that a random value has a particular property. Assert the
+deterministic ones — the length, and that nothing appears *outside* the intended alphabet
+— and test the intent at its source: that the generator's alphabet contains the class, by
+reading the generator. If a probabilistic assertion is genuinely unavoidable, drive the
+failure probability to negligible with an explicit sample count and say so in the test.
+
+**Enforced by.** Test — the assertion is now deterministic and was run 40 consecutive
+times without failure, where the previous form had a measurable per-run failure rate.
 
 ---
 
@@ -447,9 +595,7 @@ the next statement rather than a dependent one.
 Either separate them into two turns and read the result, or chain with `&&` so
 failure actually stops the commit. Printing a warning is not a gate.
 
-**Enforced by.** Convention. (The pre-commit hooks do not run the test suite, by
-design — it is too slow for every commit — so CI is the backstop, one step later
-than it should be.)
+**Enforced by.** `.githooks/pre-push` — added 2026-08-24; see §5.6 for the mechanism, its fail-open rationale, and the red suite it caught on its first run.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -509,12 +655,36 @@ this is the clearest case in this document for converting a rule into a gate.
 
 **The rule (unchanged, restated).** Run the suite before committing, not after.
 
-**Enforced by.** Nothing yet, and that is the finding. The suite takes ~37 seconds, which
-is too slow for a pre-commit hook that fires on every commit but well suited to a
-**pre-push** stage — the moment code leaves the machine is exactly when a red suite
-matters. Proposed as the highest-value enforcement in this document, alongside tightening
-the CI address audit (§4.3). Not added unilaterally: it changes the hook path for every
-contributor and that is the repository owner's call.
+**Enforced by.** `.githooks/pre-push` — added 2026-08-24; see §5.6 for the mechanism, its fail-open rationale, and the red suite it caught on its first run.
+
+### 5.6 §5.2 repeated, twice more — committed with a failing suite
+
+**What happened.** Two further commits landed while a test was failing. In both cases
+every pre-commit hook passed: they cover secret scanning, private addresses, credentials,
+`.env`, YAML and whitespace — not the test suite. Both were caught immediately after and
+amended.
+
+**Why it is recorded again rather than appended to §5.2 or §5.5.** This is the third and
+fourth occurrence of one mistake whose recorded enforcement was "Convention". The repeats
+*are* the argument: a rule that has failed four times is not enforced, it is written down.
+
+**The rule (unchanged).** Run the suite before committing, not after.
+
+**Enforced by.** `.githooks/pre-push` — added 2026-08-24. It runs the BATS suite (and
+pytest when its dependencies are present) with the same invocation, working directory and
+PYTHONPATH as CI, and refuses the push on failure. Escape hatch `SKIP_TESTS=1 git push`,
+deliberately loud.
+
+It fails OPEN when a runner is missing, which is the opposite of the pre-commit secret
+gate and deliberately so: a leaked secret is irreversible, a red test is not — CI runs
+both suites on every PR and blocks the merge. Blocking a contributor who lacks `bats`
+from pushing at all would be a large cost for a check whose only benefit is earlier
+feedback.
+
+It earned itself on its first execution, catching a genuinely red suite: a `no_log` count
+assertion left stale by a playbook change made minutes earlier, whose author had not
+re-run the suite. That is this entry's exact failure mode, caught by the mechanism
+instead of by chance.
 
 ---
 
@@ -566,6 +736,30 @@ mechanism fails its test.
 This entry previously cited that file before it existed — a dangling enforcement claim,
 which is entry 8.2's mistake applied to a citation rather than an identifier. The test
 was written to make the claim true rather than the claim weakened to match.
+
+
+### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
+
+**What happened.** The App credential helper was written in shell using `openssl` and
+`jq`, reasoned about explicitly as "no new dependency, matching the existing HTTP client
+library". The orchestrator's container image has neither. Every registration failed with
+`openssl: command not found` (rc=127), and because signing sits inside a `no_log`
+boundary it surfaced as an unexplained credential error. Worse, the first classification
+written for it blamed the key rather than the missing binary, sending the next run in the
+wrong direction.
+
+**Root cause.** The same shape as §6.2: an integration designed from what the environment
+plausibly has rather than what it demonstrably has. "openssl is everywhere" is true of
+hosts and false of minimal images.
+
+**The rule.** A dependency of an automated step is verified on the machine that will run
+that step, before the step is built on it — and where a step runs inside a `no_log`
+boundary it needs its own diagnosis path, because "it failed" is all anyone will see. The
+rewrite uses the standard library plus a library the orchestrator already needs, and
+reports a missing library as such instead of as a bad credential.
+
+**Enforced by.** Test — `platform/tests/test_github_app_token.bats` asserts the signer
+depends on neither `openssl` nor `jq` and shells out to nothing.
 
 ---
 

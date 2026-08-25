@@ -134,8 +134,16 @@
         all_vmids: "{{ pve_vms.json.data | map(attribute='vmid') | list }}"
 
     - name: "List VMs in range"
+      # Every field is defaulted. A guest on an OFFLINE node comes back from the cluster
+      # API without `name` (and with an 'unknown' status), so a bare item.name aborted
+      # this whole play — and with it every VM provisioning run, because this validation
+      # is imported as a precondition. One powered-off hypervisor should not stop the
+      # cluster being provisioned on; that is the opposite of what a pre-flight check is
+      # for. Assume at least one member of a real fleet is degraded, because one always is.
       ansible.builtin.debug:
-        msg: "{{ item.vmid }}: {{ item.name }} @ {{ item.node }} ({{ item.status }})"
+        msg: >-
+          {{ item.vmid }}: {{ item.name | default('(no name — node offline?)') }}
+          @ {{ item.node | default('?') }} ({{ item.status | default('unknown') }})
       loop: "{{ range_vms }}"
       loop_control:
         label: "{{ item.vmid }}"

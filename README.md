@@ -124,6 +124,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
 | **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
 | **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (code-complete, first bring-up pending) |
+| **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the five PRIVATE repos (`agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
 
 ## Repository Structure
 
@@ -226,19 +227,34 @@ For new services, start with `plan/architecture/02-service-onboarding.md`. For n
 
 ## CI/CD and Testing
 
-Every pull request to main runs three automated checks:
+Every pull request runs these automated checks. The three below are the gates; a PR also
+runs change detection, CodeQL analysis per language, conditional Go jobs for uhhcraft, a
+CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (79 tests), BATS (133 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+
+`.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
+working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
+`make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's; the
+pytest run is not — CI pins Python 3.11 and installs the test dependencies, while the hook
+uses whatever `python3` is on your `PATH`.
+
+**Two different gates, on two different things.** The hook blocks *your push* when a suite
+runs and fails; CI blocks *the merge*. A green push means the suites passed on your machine
+or were skipped, which is not evidence CI will pass. It skips, with a message, on
+`SKIP_TESTS=1`, when `bats` is absent, when the Python suite is not collectable, and on a
+branch-deletion push — failing open deliberately, unlike the pre-commit secret gate, which
+fails closed because a leaked secret is irreversible and a skipped test is not.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
 `main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
 
-For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
+For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack
 
