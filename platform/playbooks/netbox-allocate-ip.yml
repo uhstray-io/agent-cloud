@@ -182,14 +182,12 @@
     # create-or-fail. NetBox permits duplicate addresses in some configurations, so a
     # blind POST can silently produce a second record for the same address and leave the
     # ledger ambiguous about which one is authoritative.
-    # Runs in BOTH modes: it is a GET, and "is this address already recorded, and by
-    # what?" is the question report mode is for. Gating it on `reserve` meant the only way
-    # to find out was to attempt a write.
+      # ONE contract, stated once. The pre-create read below runs ONLY when reserving:
+      # its only job is to decide what needs creating. The question report mode exists to
+      # answer — is this address recorded, and as what? — is answered by the re-read AFTER
+      # the writes, further down, and that one runs in both modes. Leaving this read
+      # ungated made a report run query every named address twice for one answer.
     - name: "Check whether each named address is already recorded"
-      # Only when reserving. This read exists solely to decide which addresses need
-      # creating; the report below re-reads after the writes and is what a reader sees.
-      # Running it unconditionally meant a plain report run queried every named address
-      # TWICE for one answer.
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
         method: GET
