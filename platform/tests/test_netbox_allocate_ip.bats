@@ -104,3 +104,19 @@ setup() {
   assert_grep -qF 'Refuse to report success for an address a reserve run failed to create' "$PLAYBOOK"
   assert_grep -qF 'is still not recorded after a reserve run' "$PLAYBOOK"
 }
+
+@test "netbox-allocate: a report run reads each address once, not twice" {
+  # The pre-create read exists only to decide what needs creating, and the report re-reads
+  # after the writes. Leaving the first read ungated made a plain report run query every
+  # named address twice for one answer.
+  local check
+  check=$(sed -n '/Check whether each named address is already recorded/,/^$/p' "$PLAYBOOK")
+  printf '%s' "$check" | grep -qF 'when: _reserve'
+  # The create loop must still tolerate the skipped register: `_reserve` is evaluated
+  # FIRST so the json lookup is never reached on a report run (verified behaviourally —
+  # a skipped looped register yields results entries with no .json).
+  local create
+  create=$(sed -n '/Record each new address as allocated/,/^$/p' "$PLAYBOOK")
+  printf '%s' "$create" | grep -qF '_existing.results | default([])'
+  printf '%s' "$create" | grep -A2 'when:' | head -2 | grep -qF '_reserve'
+}

@@ -186,6 +186,10 @@
     # what?" is the question report mode is for. Gating it on `reserve` meant the only way
     # to find out was to attempt a write.
     - name: "Check whether each named address is already recorded"
+      # Only when reserving. This read exists solely to decide which addresses need
+      # creating; the report below re-reads after the writes and is what a reader sees.
+      # Running it unconditionally meant a plain report run queried every named address
+      # TWICE for one answer.
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
         method: GET
@@ -195,6 +199,7 @@
       loop: "{{ _assignments }}"
       loop_control:
         label: "{{ item.address }}"
+      when: _reserve
 
     - name: "Record each new address as allocated"
       ansible.builtin.uri:
