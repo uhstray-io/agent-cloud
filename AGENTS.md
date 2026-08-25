@@ -126,6 +126,7 @@ plan/                        Architecture, implementation, and composability pla
 - `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
 - `plan/development/00-foundation-local-dev.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/00-foundation-local-dev.md`
 - `plan/development/00-foundation-local-dev.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
+- `plan/development/15-tailscale-headscale-access.md` — Operator access mesh (self-hosted headscale + official Tailscale clients): PLANNING. Restores the second, off-LAN vantage the safety gates require — the host-access gate caps at `PENDING-OPERATOR` and needs operator-side proof, which is unobtainable off-network. Notes the constraint that headscale cannot use OIDC groups in policy rules, so Authentik groups gate login while reachability is tag-based policy-as-code; onboarding issues per-person credentials and never shares a configured client's keys
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
