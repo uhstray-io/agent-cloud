@@ -112,6 +112,15 @@ setup() {
   drop=$(awk "/Drop the controller's stale host key/{f=1} f&&/^    - name:/&&!/Drop the controller/{exit} f{print}" "$PB")
   [ -n "$drop" ]
   assert_grep -qE 'delegate_to: localhost' <<<"$drop"
+
+  # A NON-DEFAULT PORT IS A DIFFERENT known_hosts KEY. OpenSSH writes `[host]:port`
+  # for anything other than 22, and a lookup by the bare host does not match it —
+  # verified with ssh-keygen -F: a `[host]:2222` entry is found by `[host]:2222`
+  # and NOT by `host`. Removing only the bare form would leave the stale key on
+  # exactly the hosts this play carries ansible_port forward for, so the
+  # confirmation would still fail for the incidental reason this task removes.
+  assert_grep -qE 'ansible_port' <<<"$drop"
+  assert_grep -qE "\\[' ~ ansible_host ~ '\\]:" <<<"$drop"
   # ...and it must precede the identity probe, or it fixes nothing.
   local drop_line ident_line
   drop_line=$(grep -n "Drop the controller's stale host key" "$PB" | head -1 | cut -d: -f1)
@@ -203,7 +212,14 @@ setup() {
   bare=$(printf '%s\n' "$vtask" | sed 's|\$root/etc/netplan|SANDBOX|g' | grep -n '/etc/netplan' || true)
   [ -n "$bare" ]   # the read itself must still be there; an empty result means the awk slice missed
   local offending
-  offending=$(printf '%s\n' "$bare" | grep -v 'cp -a /etc/netplan/\. "SANDBOX' || true)
+  # ANCHORED. An unanchored allow-list matches a safe prefix and ignores whatever
+  # follows it, so `cp -a /etc/netplan/. "SANDBOX/" && cp x /etc/netplan/` would be
+  # filtered out as permitted while appending a live write. The permitted read must
+  # be the WHOLE line (line-number prefix from grep -n, leading whitespace, the
+  # copy, and nothing else).
+  offending=$(printf '%s\n' "$bare" \
+    | grep -vE '^[0-9]+:[[:space:]]*cp -a /etc/netplan/\. "SANDBOX/?"[[:space:]]*(2>/dev/null)?[[:space:]]*(\|\| true)?[[:space:]]*$' \
+    || true)
   if [ -n "$offending" ]; then
     echo "validation task references the LIVE /etc/netplan outside the permitted read:" >&2
     printf '%s\n' "$offending" >&2

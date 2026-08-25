@@ -44,6 +44,7 @@ supersede it with a new entry and link both.
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
 | 2.12 | Refuted two forbidden verbs instead of the invariant; a third walked past it | False green on a safety check | Test (invariant + closed-set) |
+| 2.15 | Allow-list matched a prefix, so an appended live write passed the invariant that replaced a blacklist | False green on a safety check | Test (anchored, mutation-proven) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -474,6 +475,34 @@ mutations: five unanticipated write-verbs, plus `netplan apply` and `netplan try
 passed, and looked correct; only inserting the defect it claimed to prevent
 revealed that it did not. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
+
+### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
+
+**What happened.** 2.12 records replacing a blacklist of forbidden write verbs
+with an invariant: within the validation step, every mention of the live
+configuration directory must be the one permitted read. The implementation
+filtered the permitted read out with an unanchored `grep -v` pattern.
+
+Unanchored, it matches a safe prefix and ignores whatever follows.
+`cp -a /etc/netplan/. "SANDBOX/" && cp x /etc/netplan/` was filtered out as
+permitted while appending a live write — the exact defect 2.12 exists to prevent,
+reintroduced by the shape of its own fix. Found by review, not by the seven
+mutations already run against that test.
+
+**Root cause.** An allow-list entry is a claim about a whole line; written as a
+substring it is only a claim about a prefix. The mutations missed it because they
+shared an assumption with the code — that a violation would appear on its own
+line — and mutations drawn from the same assumption as the code cannot test that
+assumption.
+
+**The rule.** Anchor an allow-list end to end, never merely match it. And when
+mutating to test a filter, include at least one mutation that EXTENDS an existing
+permitted line rather than adding a new one; appending to something already
+allowed is the cheapest way past a substring check.
+
+**Enforced by.** `network config: validation never touches the live /etc/netplan`
+in `platform/tests/test_configure_host_network.bats`, now anchored, proven against
+both an appended write on the permitted line and a separate write line.
 
 ## 3. Acting on live state
 

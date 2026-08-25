@@ -30,7 +30,7 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 1.2 Register the host in the private inventory repo with its service identity,
       deployment path, and container runtime; confirm the orchestrator reaches it **by
       password** — this is the baseline access being protected
-      REGISTRATION DONE; the confirmation is now unblocked but not yet run. The host
+      REGISTRATION DONE AND CONFIRMED. The host
       carries its service identity, deployment path and runtime in both the private
       inventory and the orchestrator's stored copy, which points it at the declared
       address. What blocked the confirmation was not credentials: another guest was
