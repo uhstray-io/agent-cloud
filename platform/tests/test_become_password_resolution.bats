@@ -142,3 +142,25 @@ setup() {
     return 1
   fi
 }
+
+@test "become: the transport guard needs no privilege, and says so" {
+  # This file is included from plays that escalate at PLAY level, and it runs
+  # BEFORE the password is resolved. So anything in the guard that needed
+  # privilege would fail exactly where this whole change exists to stop failing.
+  #
+  # The real invariant is that the guard stays privilege-free — it must remain a
+  # pure precondition check. Measured: an `assert` under play-level become returns
+  # ok on a host that still requires a sudo password, because assert evaluates on
+  # the controller. This pins that the guard cannot acquire a task which does not.
+  local guard="${PBDIR}/tasks/assert-bao-transport.yml"
+  [ -f "$guard" ]
+  # Only non-connecting actions are permitted here. A module that touches the
+  # target (command, shell, copy, file, stat, uri, package...) would escalate.
+  refute_grep -qE '^ +ansible\.builtin\.(command|shell|raw|copy|file|stat|uri|get_url|package|apt|systemd|service|lineinfile|template|slurp):' "$guard"
+  # And the include of it declares become:false, so the intent survives someone
+  # later adding such a task without reading this test.
+  local inc
+  inc=$(awk '/Refuse a cleartext secret-store endpoint/{f=1} f&&/^- name:/&&!/Refuse a cleartext/{exit} f{print}' "$TASK")
+  [ -n "$inc" ]
+  assert_grep -qE 'become: false' <<<"$inc"
+}
