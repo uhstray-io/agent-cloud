@@ -80,3 +80,6 @@ platform/inventory/local-dev.yml
 # A generated dependency tree — never committed, and excluded from yamllint
 # (see .yamllint.yml) so a third-party collection bump cannot fail our CI.
 .ansible/
+
+# Session continuation file — local working state, never committed
+.claude/CONTINUE.md

@@ -167,10 +167,61 @@ setup() {
     printf '%s\n' "$modules" >&2
     return 1
   fi
-  # And the include of it declares become:false, so the intent survives someone
+  # And the guard's OWN task declares become:false, so the intent survives someone
   # later adding such a task without reading this test.
-  local inc
-  inc=$(awk '/Refuse a cleartext secret-store endpoint/{f=1} f&&/^- name:/&&!/Refuse a cleartext/{exit} f{print}' "$TASK")
-  [ -n "$inc" ]
-  assert_grep -qE 'become: false' <<<"$inc"
+  #
+  # Pinned on the guard file, NOT on the include in the resolver: `become` is not
+  # a valid attribute for a TaskInclude, so the previous form of this assertion
+  # required a construct that made the resolver unparseable at runtime while this
+  # suite stayed green (docs/MISTAKES.md 2.17).
+  assert_grep -qE '^[[:space:]]*become: false' "$guard"
+}
+
+@test "become: no dynamic include anywhere carries a become keyword" {
+  # THE MECHANISM GUARD for docs/MISTAKES.md 2.17. `become` is never valid on a
+  # TaskInclude; a dynamic include_tasks carrying it raises
+  #   ERROR! 'become' is not a valid attribute for a TaskInclude
+  # the moment a play reaches that task. Nothing static catches it: dynamic
+  # includes are not parsed by --syntax-check, ansible-lint or this suite, so a
+  # playbook can be fully green and completely unrunnable.
+  #
+  # This is a CLOSED rule, not a blacklist -- the keyword is invalid on every
+  # include_tasks, everywhere, so enumerating the whole set is the specification.
+  local offenders
+  offenders=$(python3 - "$PBDIR" <<'PY_FIND'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+for path in sorted(root.rglob('*.yml')):
+    lines = path.read_text().split('\n')
+    i = 0
+    while i < len(lines):
+        m = re.match(r'^(\s*)-\s', lines[i])
+        if not m:
+            i += 1
+            continue
+        indent = len(m.group(1))
+        key = indent + 2
+        # Re-indent the item's own keys to column 0 so a PLAY (whose become: is a
+        # play key and whose include_tasks sits deeper, under tasks:) cannot be
+        # mistaken for a task that carries both.
+        block, j = [lines[i][key:]], i + 1
+        while j < len(lines):
+            nxt = lines[j]
+            if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
+                break
+            block.append(nxt[key:] if len(nxt) > key else nxt.strip())
+            j += 1
+        keys = [b for b in block if b and not b[:1].isspace()]
+        has_include = any(re.match(r'(ansible\.builtin\.)?include_tasks:', k) for k in keys)
+        has_become = any(re.match(r'become:', k) for k in keys)
+        if has_include and has_become:
+            print("%s:%d" % (path, i + 1))
+        i = j
+PY_FIND
+)
+  if [ -n "$offenders" ]; then
+    echo "include_tasks with a become keyword (invalid on a TaskInclude):" >&2
+    printf '%s\n' "$offenders" >&2
+    return 1
+  fi
 }

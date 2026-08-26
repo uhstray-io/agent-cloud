@@ -32,6 +32,19 @@
 #       _assert_bao_url: "{{ _bao_url }}"
 
 - name: "Require a non-cleartext transport to {{ _assert_url_label | default('OpenBao') }}"
+  # become:false lives HERE, on the guard's own task, and not on the include in
+  # any caller. `become` is not a valid attribute for a TaskInclude — a dynamic
+  # include_tasks carrying it makes the file unparseable at RUNTIME, which no
+  # syntax check catches because dynamic includes are not parsed until reached
+  # (measured on ansible-core 2.21.0; see docs/MISTAKES.md 2.17).
+  #
+  # It is stated rather than relied upon. assert evaluates on the controller and
+  # never runs as a privileged module on the target, so today it cannot fail on
+  # escalation. But this guard is included by plays that escalate at PLAY level
+  # and run it BEFORE a sudo password is available; if it ever grew a task that
+  # touches the target, it would inherit that escalation and fail there. One line
+  # makes the precondition explicit for every caller at once.
+  become: false
   ansible.builtin.assert:
     that:
       - >-
