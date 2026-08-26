@@ -75,6 +75,18 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 1.6 Install the container runtime on the host — this doubles as the cheapest proof
       that privilege escalation still works over the new credential, while the password
       fallback is still open
+      ATTEMPTED 2026-08-26, and it earned its keep. The run reached the resolver task,
+      which is the thing this step exists to prove: the play no longer dies during fact
+      gathering, so the deferred-gathering fix works against a real host. It then failed
+      one task later on a defect that no static gate in this repo could see — the guard
+      include carried a keyword that is invalid on a dynamic include, making the task
+      file unloadable at runtime while the syntax check, the linter and the whole test
+      suite stayed green. Reproduced locally on the same runtime, fixed at the mechanism
+      level (the declaration moved onto the guard's own task, so every caller inherits
+      it), and pinned by a closed, mutation-proven test. Recorded as MISTAKES 2.17.
+      BLOCKED until that fix reaches the integration branch: the orchestrator runs
+      playbooks from the integration or production branch, never from a feature branch —
+      the same reason 2.13 went unproven for so long.
 - [ ] 1.7 Harden authentication: disable password and interactive authentication, disable
       direct administrative login, configure validated passwordless escalation for the
       service account; confirm the step's own verification passed and re-confirm 1.5's

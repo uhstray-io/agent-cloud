@@ -49,6 +49,7 @@ supersede it with a new entry and link both.
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
+| 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -686,6 +687,62 @@ deploys through the irreversible step.
 in `platform/tests/test_become_password_resolution.bats`, proven against removing
 the include, moving the gather out of position, and moving the inline fetch off
 first position.
+
+### 2.17 A keyword that is invalid at runtime and invisible to every static gate
+
+**What happened.** The fix for 2.13 added `become: false` to the *include* of the
+transport guard inside `platform/playbooks/tasks/resolve-become-password.yml` —
+"insurance, if the guard ever grows a real task". The branch went green:
+`ansible-playbook --syntax-check` passed, `ansible-lint` passed at the `production`
+profile, 489 BATS and 79 pytest passed, five CodeRabbit reviews approved it, and CI
+was green on the merge.
+
+The first orchestrated run after merging died immediately:
+
+```text
+TASK [Resolve the sudo password (host may not be hardened yet)] ****
+ERROR! 'become' is not a valid attribute for a TaskInclude
+```
+
+`become` is valid on `import_tasks`, where inheritance is resolved at parse time.
+It is not valid on `include_tasks`, which builds a `TaskInclude` object that has no
+such attribute. Reproduced locally on the same ansible-core 2.21.0, so this was not
+runner drift.
+
+**Root cause.** A *dynamic* include is not parsed until a play actually reaches it.
+`--syntax-check` walks the playbook and stops at the include; ansible-lint checks
+the task file's shape but not its validity as an included task under a play; the
+BATS suite reads both files as text. **Every gate the repo owns operates on files
+that were never assembled into a play.** So the construct was verified as text by
+four independent mechanisms, none of which could observe the only thing that
+mattered.
+
+This is 2.13's shape a second time: the proof and the runtime were never in
+contact. 2.13 was an ordering fix that tests confirmed was *present* on a config
+where fact gathering ran before it. This was a keyword that tests confirmed was
+*present* in a file that could not be loaded.
+
+**The rule.** `become` is never a valid attribute on `include_tasks` — put it on
+the included file's own tasks, where it is valid and where every caller of that
+file inherits it, rather than on any one include. More generally: a construct
+inside a dynamically-included file is not verified by any static gate in this repo.
+Either exercise it in a real play, or pin it with a test that encodes the runtime
+rule directly — and mutation-prove that test, because a text assertion about an
+unloadable file passes just as happily as one about a working file.
+
+**Where the fix landed.** `become: false` moved onto the assert task in
+`platform/playbooks/tasks/assert-bao-transport.yml`. That is the mechanism-level
+placement: all seven plays that include the guard now carry the declaration, not
+just the one that surfaced the bug.
+
+**Enforced by.** `become: no dynamic include anywhere carries a become keyword` in
+`platform/tests/test_become_password_resolution.bats` — a **closed** rule (the
+keyword is invalid on every `include_tasks`, everywhere, so enumerating the whole
+set is the specification, not a blacklist). Mutation-proven: reintroducing the
+keyword on the resolver's include makes it fail with the file and line; removing it
+makes it pass. The companion assertion in `become: the transport guard needs no
+privilege, and says so` now pins `become: false` on the guard's own task, because
+its previous form required the very construct that broke the runtime.
 
 ## 3. Acting on live state
 
