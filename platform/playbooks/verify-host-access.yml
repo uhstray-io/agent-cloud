@@ -88,11 +88,24 @@
   # task result (same abort class as the undefined-key-path failure).
   ignore_unreachable: true
   vars:
-    _bao_url: "{{ openbao_addr | default('') }}"
+    # Same fallback chain the shared resolver uses. They MUST agree: when only the
+    # environment variable was set, the resolver found the sudo password while this
+    # stayed empty, which skipped both of this play's own lookups and made the
+    # verdict report NO-GO with the secrets sitting right there.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    # Both of this play's OpenBao lookups send AppRole credentials and receive
+    # secret material, so the shared cleartext guard runs before either of them.
+    # no_log protects the log, not the wire.
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: _bao_url | length > 0
+
     # ── Can we get in at all, by whatever means Ansible is configured with? ──
     # Note carefully what this does NOT tell you: which auth method was used.
     - name: "Reach the host with the orchestrator's current credential"
@@ -272,6 +285,14 @@
             - "{{ _keyfile.path }}.known_hosts"
           when: _keyfile.path is defined
 
+    # ── Escalation needs a sudo password on a host that is not yet hardened ──
+    # The two tasks below need root, and a host that has not been hardened has no
+    # NOPASSWD sudo. Shared with every other playbook that escalates before
+    # hardening, so all of them name one secret location; see the task file for
+    # the measured failure and why absence is reported rather than fatal.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     # ── What does sshd actually allow right now? ─────────────────────────────
     # `sshd -T` gives the EFFECTIVE config, accounting for sshd_config.d
     # drop-ins that a grep of the main file would miss. Needs root, so it is
@@ -283,7 +304,11 @@
       become: true
       changed_when: false
       failed_when: false
-      when: _reach.rc | default(1) == 0
+      when:
+        - _reach.rc | default(1) == 0
+        # Skip rather than abort when no sudo password is available; the report
+        # states escalation as unavailable, which is the documented behaviour.
+        - (_resolved_become_pw | default('') | length) > 0
 
     - name: "Check whether privilege escalation works"
       ansible.builtin.raw: "id -un"
@@ -291,7 +316,11 @@
       become: true
       changed_when: false
       failed_when: false
-      when: _reach.rc | default(1) == 0
+      when:
+        - _reach.rc | default(1) == 0
+        # Skip rather than abort when no sudo password is available; the report
+        # states escalation as unavailable, which is the documented behaviour.
+        - (_resolved_become_pw | default('') | length) > 0
 
     - name: "Count authorized keys for the connecting user"
       ansible.builtin.raw: "wc -l < ~/.ssh/authorized_keys 2>/dev/null || echo 0"

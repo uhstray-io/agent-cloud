@@ -44,8 +44,11 @@ supersede it with a new entry and link both.
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
-| 2.12 | Refuted two forbidden verbs instead of the invariant; a third walked past it | False green on a safety check | Test (invariant + closed-set) |
-| 2.15 | Allow-list matched a prefix, so an appended live write passed the invariant that replaced a blacklist | False green on a safety check | Test (anchored, mutation-proven) |
+| 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | Test (closed allow-list) |
+| 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
+| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
+| 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
+| 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -473,6 +476,8 @@ times without failure, where the previous form had a measurable per-run failure 
 
 ### 2.12 A refute that enumerated forbidden verbs instead of asserting the invariant
 
+**Occurrences: 2** — 2026-08-24, 2026-08-25
+
 **What happened.** A test asserted that the network playbook's validation step
 never writes to the live `/etc/netplan`. It did so by refuting two specific
 forms — `mv /etc/netplan/` and `dest: /etc/netplan`. Mutation testing inserted a
@@ -509,10 +514,102 @@ mutations: five unanticipated write-verbs, plus `netplan apply` and `netplan try
 
 **How it was found.** Mutation testing, not review. The assertion was written,
 passed, and looked correct; only inserting the defect it claimed to prevent
-revealed that it did not. This is the fourth entry in this section found that way
+revealed that it did not.
+
+**Occurrence 2 — 2026-08-25.** The same shape, in a different guard. A test
+asserting that the shared transport guard needs no privilege did so by refuting a
+list of target-touching modules — `command`, `shell`, `copy`, `uri`, `slurp` and
+nine others. `ansible.builtin.ping` is not on that list and walked straight past
+it; measured, not supposed. Replaced with a closed allow-list: the guard is a
+precondition check, so exactly one module belongs in it, and the test now requires
+the set of modules present to equal `{ansible.builtin.assert}`.
+
+Why the existing rule did not fire: 2.12's rule is written about *verbs* — "assert
+the invariant, not a list of its violations" — and I read the module list as a
+different kind of thing. It is not. Any enumeration over an open set is the same
+mistake, whether the members are shell verbs or module names. The distinguishing
+question is not what the list contains but whether the set is closed: here it is,
+because the guard is allowed exactly one module, which is why the allow-list form
+is available at all. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
+### 2.13 A test that asserted the fix was present, on a configuration where it could not run
+
+**What happened.** Five playbooks escalated privilege at play level without
+resolving a sudo password, so they died on any host that was not already
+hardened. The fix promoted the working fetch into a shared task and included it as
+each play's **first task**. Tests asserted exactly that: the include exists, it is
+first, it reads the right secret path. All green.
+
+The fix was inert. **Fact gathering runs before tasks.** A play with
+`become: true` and automatic gathering left on escalates during gathering, so it
+died at "Gathering Facts" exactly as before — the first task never ran. The one
+playbook that already worked, `harden-ssh.yml`, works because it sets
+`gather_facts: false`; I had read its inline fetch and copied that, without
+noticing the play-level setting that made the fetch reachable at all.
+
+Caught by review, not by the suite. Three playbooks were changed, tested, and
+committed in that state.
+
+**Root cause.** The assertion was about the *presence and position of the fix*
+rather than about *the condition that made the failure possible*. "First task" is
+only meaningful if tasks are the first thing that runs, and the measured failure —
+`ok=0` at Gathering Facts — was itself the evidence that they are not. I had the
+disproof in hand and tested around it.
+
+**The rule.** When fixing an ordering bug, the test must pin the precondition that
+makes the ordering reachable, not merely the order. Concretely: after writing a
+test for a fix, construct the *original broken configuration* and confirm the new
+test fails on it. Here that is one line — `gather_facts: true` — and it would have
+failed immediately. A test that cannot distinguish the fix from the bug it
+replaces is not a test of that fix.
+
+**Enforced by.** `become: automatic fact gathering is OFF wherever the resolver is
+used` in `platform/tests/test_become_password_resolution.bats`, proven against
+four mutations including restoring `gather_facts: true`.
+
+**Still outstanding, stated rather than glossed.** The corrected fix is
+statically verified and mutation-proven but has **not** been exercised against a
+host, because the orchestrator runs playbooks from the integration and production
+branches and this change is on neither yet. That is the same gap this entry is
+about, so it is named here instead of being called done.
+
+### 2.14 One value, five resolution rules, and a verdict that lied because of it
+
+**What happened.** A review found that the access gate reported `NO-GO` while the
+secrets it needed were available. The gate resolved the secret-store address as
+`openbao_addr | default('')`; the shared resolver I had just added used
+`openbao_addr | default(env OPENBAO_ADDR)`. With only the environment variable
+set, the resolver found the sudo password and the gate's own address stayed empty
+— which skipped both of the gate's lookups, so it concluded the credentials were
+missing and refused to authorise hardening.
+
+Looking wider, that same variable is defined across the playbooks in at least
+**five mutually inconsistent forms**: bare, empty-default, one env fallback, two
+env fallbacks, and one that falls back to a **localhost URL** — which would
+silently talk to the wrong secret store rather than fail.
+
+**Root cause.** I added a second resolution rule for a value that already had one,
+without checking what the existing one was. The failure is not that either rule is
+wrong; it is that two paths depending on one value disagreed about how to compute
+it, so one could succeed while the other reported the opposite.
+
+**The rule.** Before introducing a derivation for a value that other code already
+derives, grep for the existing derivations and count the variants. If there is more
+than one, that is the finding — reconcile or explicitly scope around it, but do not
+add a sixth. A value two paths depend on gets one rule.
+
+**Enforced by.** `access gate: it resolves the store address the same way the
+resolver does` in `platform/tests/test_verify_host_access_become.bats`, proven by
+reverting the gate to the no-fallback form.
+
+**Scoped, not fixed.** Only the two rules that disagreed *within this change* were
+reconciled. Normalising the address across every playbook — including retiring the
+localhost-defaulting variant, which is the dangerous one — is a separate change,
+recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
+
+**Occurrences: 2** — 2026-08-25, 2026-08-25
 
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
@@ -539,6 +636,56 @@ allowed is the cheapest way past a substring check.
 **Enforced by.** `network config: validation never touches the live /etc/netplan`
 in `platform/tests/test_configure_host_network.bats`, now anchored, proven against
 both an appended write on the permitted line and a separate write line.
+
+**Occurrence 2 — 2026-08-25.** Same lesson, different surface: matching a token
+*anywhere in a file* rather than binding to the active construct. Two tests on the
+access gate searched the whole file for `assert-bao-transport` and for
+`OPENBAO_ADDR`. A guard that had been **commented out** still satisfied the first,
+because the string also appears in the prose above the task; and two *divergent*
+address-resolution chains both satisfied the second, because both happened to
+mention the same environment variable. Both bypasses were reproduced before
+fixing. The guard check now matches an active `include_tasks:` line, and the
+address check compares the whole normalised expression rather than a token within
+it.
+
+### 2.16 A test whose population was selected by the presence of the fix
+
+**What happened.** A review pointed out that a test compared only task NAME lines
+and then grepped the whole file, so a playbook whose first task was merely *named*
+"Resolve the sudo password" would pass without including the resolver. Fixing that
+was straightforward — bind each assertion to its own task block.
+
+The fix did not work, and mutation testing showed why. The loop selected its
+population with `grep -q 'resolve-become-password' "$f" || continue` — the same
+string the assertion checks. Deleting the include therefore removed the file from
+the population, and the test passed **vacuously**. The bypass the review described
+survived the fix for the review's finding.
+
+Selecting instead on the *condition* — every playbook that escalates at play level,
+whether or not it currently resolves a password — killed it immediately.
+
+**Root cause.** A filter keyed on the thing being asserted cannot fail: removing
+the property removes the subject. The test was shaped like "for everything that has
+X, assert X", which is a tautology dressed as coverage.
+
+**The rule.** A test's population is selected by the CONDITION that makes the
+requirement apply, never by the presence of the fix that satisfies it. If deleting
+the implementation makes the test skip rather than fail, the selector is wrong.
+Check it by deleting the implementation and confirming a FAILURE, not a pass.
+
+**A second thing this surfaced.** Once the population was the honest one, the test
+failed on `harden-ssh.yml` — which resolves the password with its own inline fetch
+rather than the shared task. That is a real inconsistency, not a test defect, so
+the assertion now accepts either shape and pins what actually matters: whichever
+mechanism supplies the credential must be the FIRST task. Consolidating the two
+onto one mechanism stays a follow-up, deliberately not done inside a change that
+deploys through the irreversible step.
+
+**Enforced by.** `become: the first task is what makes escalation possible` and
+`become: gathering, where it happens at all, happens after escalation is possible`
+in `platform/tests/test_become_password_resolution.bats`, proven against removing
+the include, moving the gather out of position, and moving the inline fetch off
+first position.
 
 ## 3. Acting on live state
 

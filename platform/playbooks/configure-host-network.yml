@@ -51,7 +51,7 @@
 # ── Phase 1: validate the declaration and render, WITHOUT applying ────────────
 - name: "Phase 1: render and validate the declared network configuration"
   hosts: "{{ target_service | default('__configure_host_network_no_target__') }}"
-  gather_facts: true
+  gather_facts: false
   become: true
 
   vars:
@@ -59,6 +59,16 @@
     _confirm: "{{ net_confirm | default(false) | bool }}"
 
   tasks:
+    # Play-level become escalates during fact gathering, so this must come before
+    # anything else and automatic gathering must be off — otherwise the play dies
+    # at "Gathering Facts" on any host that still needs a sudo password, which is
+    # every host this playbook is pointed at before hardening.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: "Gather facts now that escalation is possible"
+      ansible.builtin.setup:
+
     # The confirmation window is derived as (net_revert_seconds - 30). At 30 or
     # below that is zero or negative, so Phase 2 would get no usable window: the
     # wait returns immediately, the identity check never runs, and the revert stays
