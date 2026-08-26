@@ -569,11 +569,29 @@ replaces is not a test of that fix.
 used` in `platform/tests/test_become_password_resolution.bats`, proven against
 four mutations including restoring `gather_facts: true`.
 
-**Still outstanding, stated rather than glossed.** The corrected fix is
-statically verified and mutation-proven but has **not** been exercised against a
-host, because the orchestrator runs playbooks from the integration and production
-branches and this change is on neither yet. That is the same gap this entry is
-about, so it is named here instead of being called done.
+**Closed 2026-08-26 — exercised against a host.** The gap named below stood for
+as long as this entry did: the corrected fix was statically verified and
+mutation-proven but had never run against a host, because the orchestrator runs
+playbooks from the integration and production branches and the change was on
+neither. It has now run. `Install Podman` against the postiz host cleared
+`Gathering Facts`, reported `sudo password resolved from the secret store`, and
+installed the runtime (`ok=14 changed=1 failed=0`). The ordering fix works at
+runtime, not only in the suite.
+
+**What the same run also proved — about this entry's own limits.** The first
+attempt did *not* succeed. It cleared fact gathering, which is what this entry is
+about, and then died one task later on a keyword that is invalid at runtime and
+invisible to every static gate the repo owns (2.17). So the branch that closed
+this gap was itself unrunnable while its tests were green — the identical shape,
+one layer down. The lesson is not that the rule below was wrong; it is that
+"statically verified and mutation-proven" was never the same claim as "runs", and
+this ledger now has two entries saying so.
+
+**Original text, kept as written.** The corrected fix is statically verified and
+mutation-proven but has **not** been exercised against a host, because the
+orchestrator runs playbooks from the integration and production branches and this
+change is on neither yet. That is the same gap this entry is about, so it is named
+here instead of being called done.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
