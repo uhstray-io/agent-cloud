@@ -154,9 +154,19 @@ setup() {
   # the controller. This pins that the guard cannot acquire a task which does not.
   local guard="${PBDIR}/tasks/assert-bao-transport.yml"
   [ -f "$guard" ]
-  # Only non-connecting actions are permitted here. A module that touches the
-  # target (command, shell, copy, file, stat, uri, package...) would escalate.
-  refute_grep -qE '^ +ansible\.builtin\.(command|shell|raw|copy|file|stat|uri|get_url|package|apt|systemd|service|lineinfile|template|slurp):' "$guard"
+  # CLOSED ALLOW-LIST, not a blacklist of modules that touch the target. Listing
+  # forbidden modules is the same mistake this repo has recorded twice already:
+  # `ansible.builtin.ping` walked straight past the enumerated list (measured).
+  # The guard is a precondition check, so exactly ONE module belongs in it — and
+  # naming that one is a specification, whereas naming everything else is a guess
+  # against an open set.
+  local modules
+  modules=$(awk '/^[[:space:]]*ansible\.builtin\./ { gsub(/^[[:space:]]+/, "", $1); print $1 }' "$guard" | sort -u)
+  if [ "$modules" != "ansible.builtin.assert:" ]; then
+    echo "the transport guard must contain only ansible.builtin.assert; found:" >&2
+    printf '%s\n' "$modules" >&2
+    return 1
+  fi
   # And the include of it declares become:false, so the intent survives someone
   # later adding such a task without reading this test.
   local inc

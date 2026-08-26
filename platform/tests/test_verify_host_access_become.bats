@@ -69,12 +69,19 @@ setup() {
 @test "access gate: both of its OpenBao lookups sit behind the transport guard" {
   # The AppRole secret_id, the returned token, the per-service private key and the
   # sudo password all cross that connection. no_log protects the log, not the wire.
-  assert_grep -q 'tasks/assert-bao-transport.yml' "$PB"
+  #
+  # Matched on the ACTIVE include, not on the token appearing anywhere: the string
+  # also occurs in prose above the task, so a guard that had been commented out
+  # would still have satisfied a bare grep while protecting nothing.
   local guard first last
-  guard=$(grep -n 'assert-bao-transport' "$PB" | head -1 | cut -d: -f1)
+  guard=$(grep -nE '^[[:space:]]*ansible\.builtin\.include_tasks:[[:space:]]*tasks/assert-bao-transport\.yml[[:space:]]*$' "$PB" | head -1 | cut -d: -f1)
+  if [ -z "$guard" ]; then
+    echo "no ACTIVE include of the transport guard in $(basename "$PB")" >&2
+    return 1
+  fi
   first=$(grep -n 'hashi_vault' "$PB" | head -1 | cut -d: -f1)
   last=$(grep -n 'hashi_vault' "$PB" | tail -1 | cut -d: -f1)
-  [ -n "$guard" ] && [ -n "$first" ] && [ -n "$last" ]
+  [ -n "$first" ] && [ -n "$last" ]
   [ "$guard" -lt "$first" ]
   [ "$guard" -lt "$last" ]
 }
@@ -84,8 +91,21 @@ setup() {
   # password while the gate's own address stayed empty — which skipped both of its
   # lookups and made the verdict report NO-GO with the secrets available. One value
   # that two paths depend on must have one resolution rule.
-  local task="${BATS_TEST_DIRNAME}/../playbooks/tasks/resolve-become-password.yml"
+  #
+  # Compares the WHOLE fallback chain, not the presence of a token. Two divergent
+  # expressions can both mention OPENBAO_ADDR and still disagree about precedence
+  # or about what an empty value means — which is exactly how they diverged.
+  local task gate_expr res_expr
+  task="${BATS_TEST_DIRNAME}/../playbooks/tasks/resolve-become-password.yml"
   [ -f "$task" ]
-  assert_grep -qE "lookup\('env', 'OPENBAO_ADDR'\)" "$PB"
-  assert_grep -qE "lookup\('env', 'OPENBAO_ADDR'\)" "$task"
+  # strip the differing variable name, then normalise whitespace
+  gate_expr=$(grep -E '^[[:space:]]*_bao_url:' "$PB" | head -1 | sed 's/^[^:]*://' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+  res_expr=$(grep -E '^[[:space:]]*_rbp_bao_url:' "$task" | head -1 | sed 's/^[^:]*://' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+  [ -n "$gate_expr" ] && [ -n "$res_expr" ]
+  if [ "$gate_expr" != "$res_expr" ]; then
+    echo "the gate and the resolver derive the store address differently:" >&2
+    echo "  gate:     $gate_expr" >&2
+    echo "  resolver: $res_expr" >&2
+    return 1
+  fi
 }

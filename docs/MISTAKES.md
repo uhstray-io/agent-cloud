@@ -43,10 +43,10 @@ supersede it with a new entry and link both.
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | Test (ratchet) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | Test (deterministic) |
-| 2.12 | Refuted two forbidden verbs instead of the invariant; a third walked past it | False green on a safety check | Test (invariant + closed-set) |
+| 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Allow-list matched a prefix, so an appended live write passed the invariant that replaced a blacklist | False green on a safety check | Test (anchored, mutation-proven) |
+| 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
@@ -440,6 +440,8 @@ times without failure, where the previous form had a measurable per-run failure 
 
 ### 2.12 A refute that enumerated forbidden verbs instead of asserting the invariant
 
+**Occurrences: 2** — 2026-08-24, 2026-08-25
+
 **What happened.** A test asserted that the network playbook's validation step
 never writes to the live `/etc/netplan`. It did so by refuting two specific
 forms — `mv /etc/netplan/` and `dest: /etc/netplan`. Mutation testing inserted a
@@ -476,7 +478,23 @@ mutations: five unanticipated write-verbs, plus `netplan apply` and `netplan try
 
 **How it was found.** Mutation testing, not review. The assertion was written,
 passed, and looked correct; only inserting the defect it claimed to prevent
-revealed that it did not. This is the fourth entry in this section found that way
+revealed that it did not.
+
+**Occurrence 2 — 2026-08-25.** The same shape, in a different guard. A test
+asserting that the shared transport guard needs no privilege did so by refuting a
+list of target-touching modules — `command`, `shell`, `copy`, `uri`, `slurp` and
+nine others. `ansible.builtin.ping` is not on that list and walked straight past
+it; measured, not supposed. Replaced with a closed allow-list: the guard is a
+precondition check, so exactly one module belongs in it, and the test now requires
+the set of modules present to equal `{ansible.builtin.assert}`.
+
+Why the existing rule did not fire: 2.12's rule is written about *verbs* — "assert
+the invariant, not a list of its violations" — and I read the module list as a
+different kind of thing. It is not. Any enumeration over an open set is the same
+mistake, whether the members are shell verbs or module names. The distinguishing
+question is not what the list contains but whether the set is closed: here it is,
+because the guard is allowed exactly one module, which is why the allow-list form
+is available at all. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
 ### 2.13 A test that asserted the fix was present, on a configuration where it could not run
@@ -555,6 +573,8 @@ localhost-defaulting variant, which is the dangerous one — is a separate chang
 recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
+**Occurrences: 2** — 2026-08-25, 2026-08-25
+
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
 configuration directory must be the one permitted read. The implementation
@@ -580,6 +600,17 @@ allowed is the cheapest way past a substring check.
 **Enforced by.** `network config: validation never touches the live /etc/netplan`
 in `platform/tests/test_configure_host_network.bats`, now anchored, proven against
 both an appended write on the permitted line and a separate write line.
+
+**Occurrence 2 — 2026-08-25.** Same lesson, different surface: matching a token
+*anywhere in a file* rather than binding to the active construct. Two tests on the
+access gate searched the whole file for `assert-bao-transport` and for
+`OPENBAO_ADDR`. A guard that had been **commented out** still satisfied the first,
+because the string also appears in the prose above the task; and two *divergent*
+address-resolution chains both satisfied the second, because both happened to
+mention the same environment variable. Both bypasses were reproduced before
+fixing. The guard check now matches an active `include_tasks:` line, and the
+address check compares the whole normalised expression rather than a token within
+it.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
