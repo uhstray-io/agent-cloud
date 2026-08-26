@@ -246,6 +246,7 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys |
 | `tasks/enable-linger.yml` | `loginctl enable-linger` so rootless containers survive a reboot; takes an optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
+| `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
 `platform/playbooks/tasks/` holds 22 tasks in total; the table above is the curated set
@@ -274,7 +275,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Manage GitHub Runner Group | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false`; convergence REPLACES the list, so a grant made outside the declaration is removed |
 | Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
-| Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates) |
+| Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates). Backs the pair up to site-config **in the same run when `site_config_dir` points at a clone** — and says so loudly when it cannot, because a key that exists only in the store leaves nobody able to log in |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
 | Manage Caddy Sites | `manage-caddy-sites.yml` | **Read** the live Caddyfile (reports every site block, its upstreams, and whether inventory or a hand edit owns it), insert/update the marked block, optionally **retire** hand-maintained blocks (`caddy_retire_sites`) so inventory can adopt that hostname; validate + restart |
@@ -317,6 +318,17 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
   omitting it uses `main`. Idempotent, never deletes, and refuses an SSH clone URL paired with
   no key (which cannot authenticate even to a public repo). Run it BEFORE `setup-templates.yml`
   on a fresh instance.
+- `backup-service-ssh-key.yml` — copy an SSH keypair OUT of OpenBao into the private
+  site-config clone, in that repo's `secrets/ssh/<name>/id_ed25519` convention. Read-only
+  against OpenBao, idempotent, and it **refuses to overwrite a file whose content differs**
+  unless `-e force_overwrite=true` — a private key is not regenerable from its public half.
+  Operator-side because a Semaphore job runs on the orchestrator: it cannot write to your
+  clone, and one that could would be writing private keys into a CI workspace and its logs.
+  Auth via `BAO_TOKEN`, or `BAO_ROLE_ID`/`BAO_SECRET_ID`.
+  Why it exists: `generate-service-ssh-key.yml` mints INTO the store and
+  `distribute-ssh-keys.yml` authorizes the public halves on the host, so without this
+  nothing ever moves a pair outward — and the operator half of the two-path access proof
+  that gates `harden-ssh.yml` becomes impossible to perform.
 - `set-semaphore-branch.yml` — **deprecated** in favour of the above. It flipped one shared
   record's `git_branch`, which is global mutable state: concurrent testers overwrite each other
   and later runs silently use whatever branch was left set. Kept only as a manual one-record fix.
@@ -465,7 +477,10 @@ Follow `plan/architecture/01-automation-model.md`:
 5. Define `_secret_definitions` and `_env_templates` for the service
 6. Create `clean-deploy-<name>.yml` using `tasks/clean-service.yml`
 7. Add Semaphore template to `platform/semaphore/templates.yml`, run `setup-templates.yml`
-8. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`
+8. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml` — then confirm the
+   pair reached site-config (`generate-service-ssh-key.yml` does it when given
+   `site_config_dir`; otherwise run `backup-service-ssh-key.yml`). A key that exists only
+   in OpenBao cannot be used from a workstation, which blocks hardening
 9. Optionally provision an AppRole via `tasks/manage-approle.yml`
 
 ## Operational Access
@@ -482,7 +497,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (490 tests, Bash)
+- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (497 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

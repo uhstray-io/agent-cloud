@@ -236,7 +236,11 @@ For the complete onboarding checklist (7 phases, all tiers), see `plan/architect
 4. Create `platform/playbooks/clean-deploy-<name>.yml` using `tasks/clean-service.yml`
 5. Add host to site-config inventory with `service_name`, `monorepo_deploy_path`, `service_url`
 6. Add Semaphore templates to `platform/semaphore/templates.yml`, run `setup-templates.yml`
-7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`
+7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`, and confirm the
+   pair reached site-config — `generate-service-ssh-key.yml` writes it there when passed
+   `site_config_dir`, and `backup-service-ssh-key.yml` copies an existing pair out. A key
+   that lives only in OpenBao cannot be used from a workstation, so the operator half of
+   the two-path access proof cannot be performed and the host cannot safely be hardened
 8. Optionally provision a dedicated AppRole via `tasks/manage-approle.yml`
 
 **Legacy pattern (for services not yet migrated):**
