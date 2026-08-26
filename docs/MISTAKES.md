@@ -699,7 +699,7 @@ was green on the merge.
 
 The first orchestrated run after merging died immediately:
 
-```
+```text
 TASK [Resolve the sudo password (host may not be hardened yet)] ****
 ERROR! 'become' is not a valid attribute for a TaskInclude
 ```

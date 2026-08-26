@@ -174,7 +174,21 @@ setup() {
   # a valid attribute for a TaskInclude, so the previous form of this assertion
   # required a construct that made the resolver unparseable at runtime while this
   # suite stayed green (docs/MISTAKES.md 2.17).
-  assert_grep -qE '^[[:space:]]*become: false' "$guard"
+  #
+  # SCOPED TO THE ASSERT TASK, not to the file. The file happens to hold exactly one
+  # task today, which makes a file-wide grep pass for the wrong reason — and the whole
+  # point of this declaration is to survive the guard GROWING a task. A file-wide
+  # search would then be satisfied by become:false on the new task while the assert
+  # task silently lost it. That is docs/MISTAKES.md 2.15, already recorded twice.
+  #
+  # Bounded by the construct (next top-level task, or end of file), never by a line
+  # count — 2.6 is the entry for windows that break when a line is added inside them.
+  local guard_task
+  guard_task=$(awk '/^- name: "Require a non-cleartext transport/ { f = 1; next }
+                    f && /^- / { exit }
+                    f { print }' "$guard")
+  [ -n "$guard_task" ]
+  assert_grep -qE '^[[:space:]]*become: false' <<<"$guard_task"
 }
 
 @test "become: no dynamic include anywhere carries a become keyword" {
