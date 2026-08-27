@@ -52,6 +52,7 @@
       # once + reused (stable), OpenBao-owned; worker reads via !Env.
       - { name: wisward_password, type: random, length: 32 }
       - { name: andrew_password, type: random, length: 32 }
+      - { name: jacob_password, type: random, length: 32 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
     # Blueprints always applied regardless of environment (groups, flows, admin
