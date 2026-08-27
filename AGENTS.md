@@ -276,6 +276,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates). Backs the pair up to site-config **in the same run when `site_config_dir` points at a clone** — and says so loudly when it cannot, because a key that exists only in the store leaves nobody able to log in |
+| Back Up Credentials to site-config | `backup-credentials-to-site-config.yml` | Copy credentials out of OpenBao into the private repo **on a new branch per backup, without any of them reaching a log**. The runner clones site-config with a deploy key from `secret/services/ssh/site-config`, writes `secrets/<service>/<field>.txt`, commits and pushes; the task output carries only field NAMES, counts and the branch. Exists because Semaphore v2.17 has no API to clear a task's output while keeping the task — printing would force a choice between a live credential in the orchestrator and destroying the run record. Requires that deploy key to be registered on the GitHub repo **with write access** |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
 | Manage Caddy Sites | `manage-caddy-sites.yml` | **Read** the live Caddyfile (reports every site block, its upstreams, and whether inventory or a hand edit owns it), insert/update the marked block, optionally **retire** hand-maintained blocks (`caddy_retire_sites`) so inventory can adopt that hostname; validate + restart |
@@ -497,7 +498,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (497 tests, Bash)
+- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (503 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 
