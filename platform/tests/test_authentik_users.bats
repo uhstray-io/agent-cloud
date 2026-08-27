@@ -113,3 +113,110 @@ _env_names() {
     return 1
   fi
 }
+
+@test "authentik users: a retired username can never collide with an active one" {
+  # `state: absent` DELETES. If a retired entry names the same username variable as
+  # an active entry, one converging run both creates and deletes that account, and
+  # which wins is entry ORDER rather than intent — a coin flip that looks like a
+  # flaky login. Closed: the two sets must not intersect, whatever they contain.
+  local overlap
+  overlap=$(python3 - "$USERS" <<'PY_ENT'
+import re, sys
+text = open(sys.argv[1]).read()
+# Split on entry boundaries; an entry is a "- model:" item at list indent.
+entries = re.split(r'\n(?=  - model:)', text)
+active, retired = set(), set()
+for e in entries:
+    if '- model: authentik_core.user' not in e:
+        continue
+    m = re.search(r'username:\s*!Env\s*\[?([A-Z][A-Z0-9_]*)', e)
+    if not m:
+        continue
+    (retired if re.search(r'^\s+state:\s*absent\s*$', e, re.M) else active).add(m.group(1))
+for name in sorted(active & retired):
+    print(name)
+PY_ENT
+)
+  if [ -n "$overlap" ]; then
+    echo "username variables used by BOTH an active and an absent entry:" >&2
+    printf '%s\n' "$overlap" >&2
+    return 1
+  fi
+  # And there is at least one of each, so this is not passing on an empty set.
+  grep -q 'state: absent' "$USERS"
+}
+
+@test "authentik users: an unset retired username deletes nothing" {
+  # A delete entry whose variable is unset must fall back to a username nothing
+  # ever creates. The alternative — a plausible default — means a missing
+  # site-config value silently removes a real account, which is the worst possible
+  # direction for a default to fail in. Closed: EVERY absent entry uses the one
+  # sentinel, so a new retirement cannot invent its own weaker default.
+  local bad
+  bad=$(python3 - "$USERS" <<'PY_DEF'
+import re, sys
+text = open(sys.argv[1]).read()
+SENTINEL = "retired-account-never-created"
+for e in re.split(r'\n(?=  - model:)', text):
+    if '- model: authentik_core.user' not in e:
+        continue
+    if not re.search(r'^\s+state:\s*absent\s*$', e, re.M):
+        continue
+    m = re.search(r'username:\s*!Env\s*\[([A-Z][A-Z0-9_]*),\s*"([^"]*)"\]', e)
+    if not m:
+        print("an absent entry has no [VAR, \"default\"] username form")
+    elif m.group(2) != SENTINEL:
+        print("%s defaults to %r, not the sentinel" % (m.group(1), m.group(2)))
+PY_DEF
+)
+  if [ -n "$bad" ]; then
+    echo "unsafe defaults on a deleting entry:" >&2
+    printf '%s\n' "$bad" >&2
+    return 1
+  fi
+}
+
+@test "credential print: it cannot run without an explicit acknowledgement" {
+  # The single most dangerous playbook in this repo — it writes a live credential
+  # into durable task output. Its gate must be an explicit opt-in that DEFAULTS
+  # to refusing, because the failure direction of a permissive default here is a
+  # password sitting in a log nobody knew to delete.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  [ -f "$pb" ]
+  local blk
+  blk=$(awk '/^    - name: "Refuse unless the caller has said the quiet part out loud"/ { f = 1; next }
+             f && /^    - name:/ { exit }
+             f { print }' "$pb")
+  [ -n "$blk" ]
+  assert_grep -q 'i_understand_this_prints_secrets | default(false) | bool' <<<"$blk"
+}
+
+@test "credential print: exactly one task emits credential material" {
+  # CLOSED COUNT. Every other task that touches the secret is no_log'd so that the
+  # one deliberate exposure is obvious in review. A second unguarded debug — added
+  # later while diagnosing something — would leak without changing how the file
+  # reads, which is precisely how this goes wrong.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  local emitters
+  emitters=$(grep -cE '_secret\.json\.data\.data\[item ~ .{1}_password.{1}\] \}\}' "$pb")
+  if [ "$emitters" != "1" ]; then
+    echo "expected exactly 1 task emitting a password, found $emitters" >&2
+    grep -nE '_secret\.json\.data\.data' "$pb" >&2
+    return 1
+  fi
+  # And every task that READS the secret without printing it is no_log'd.
+  local reads no_logs
+  reads=$(grep -cE '^      register: (_bao_auth|_secret)$' "$pb")
+  no_logs=$(grep -cE '^      no_log: true$' "$pb")
+  [ "$reads" -eq 2 ]
+  [ "$no_logs" -ge "$reads" ]
+}
+
+@test "credential print: the secret path is fixed, not caller-supplied" {
+  # A parameterized path turns a scoped credential hand-off into a general-purpose
+  # store dump, from a playbook whose whole job is to print what it reads.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  assert_grep -qE '^    _bao_path: "secret/data/services/authentik"$' "$pb"
+  # No variable indirection anywhere in the declaration.
+  refute_grep -qE '_bao_path:.*(default\(|lookup\(|\{\{)' "$pb"
+}
