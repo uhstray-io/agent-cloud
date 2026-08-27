@@ -250,26 +250,62 @@ PY_DEF
   # time.
   local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
   assert_grep -q '_active_usernames | intersect(_retired_usernames)' "$dep"
-  # Derived from the variable names, so a user added later is covered.
-  assert_grep -q "selectattr('key', 'search', '_legacy_username\$')" "$dep"
-  assert_grep -q "rejectattr('key', 'search', '_legacy_username\$')" "$dep"
 
-  # ORDER IS THE POINT, and the anchor has to be the FIRST task that touches the
-  # target — not the one that assembles blueprints. An earlier attempt pinned it
-  # ahead of "Assemble active blueprints" and passed while the guard sat after
-  # "Reset the active-blueprints dir", which had already emptied the directory.
-  # Anchoring on any single later task is a guess about which one matters.
+  # EFFECTIVE values, not defined variables. `vars | dict2items` sees only what is
+  # DEFINED, so with jacob_username unset it does not contain "jacob" — while
+  # env.j2 renders JACOB_USERNAME={{ jacob_username | default('jacob') }} and the
+  # account created is called jacob. A retired entry set to "jacob" sailed past
+  # the first version of this guard. The declarations are read out of env.j2,
+  # which is where the defaults live, and each is resolved through lookup('vars',
+  # name, default=...).
+  assert_grep -q "regex_findall(\"(\[A-Z0-9_\]\*USERNAME)=" "$dep"
+  assert_grep -q "lookup('vars', item\[1\], default=item\[2\])" "$dep"
+  # And it cannot pass vacuously if the regex ever stops matching.
+  assert_grep -q '_uname_decls | length > 0' "$dep"
+  assert_grep -q "selectattr('env', 'search', 'LEGACY_USERNAME\$')" "$dep"
+  assert_grep -q "rejectattr('env', 'search', 'LEGACY_USERNAME\$')" "$dep"
+
+  # ORDER IS THE POINT, and no magic number expresses it. An earlier attempt
+  # pinned the guard ahead of "Assemble active blueprints" and passed while it sat
+  # after "Reset the active-blueprints dir", which had already emptied the
+  # directory. A "first three tasks" rule then broke the moment the guard grew a
+  # task, which is a test failing for being right about the wrong thing.
   #
-  # So the rule is closed instead: the guard is the FIRST assert in the play, and
-  # nothing precedes it but the fact-gathering that computes what it checks.
-  local first_tasks
-  first_tasks=$(awk '/^  tasks:/ { f = 1; next }
-                     f && /^    - name: / { sub(/^    - name: /, ""); print }' "$dep" | head -3)
-  [ -n "$first_tasks" ]
-  if ! printf '%s\n' "$first_tasks" | grep -q 'Refuse to both create and delete the same account'; then
-    echo "the collision guard is not among the first three tasks of the play." >&2
-    echo "anything that runs before it has already acted on the target. First three:" >&2
-    printf '%s\n' "$first_tasks" >&2
+  # The precise rule: every task BEFORE the guard must be pure computation.
+  # set_fact touches nothing on the target, so anything else preceding the guard
+  # means the run has already acted before deciding whether it should.
+  local preceding
+  preceding=$(python3 - "$dep" <<'PY_ORDER'
+import re, sys
+lines = open(sys.argv[1]).read().split('\n')
+in_tasks = False
+for i, line in enumerate(lines):
+    if re.match(r'^  tasks:\s*$', line):
+        in_tasks = True
+        continue
+    if not in_tasks:
+        continue
+    m = re.match(r'^    - name: "(.*)"\s*$', line)
+    if not m:
+        continue
+    if 'Refuse to both create and delete the same account' in m.group(1):
+        break
+    # Look ahead for this task's module line.
+    body = []
+    for nxt in lines[i + 1:]:
+        if re.match(r'^    - name: ', nxt):
+            break
+        body.append(nxt)
+    if not any(re.match(r'^      ansible\.builtin\.set_fact:', b) for b in body):
+        print(m.group(1))
+PY_ORDER
+)
+  if [ -n "$preceding" ]; then
+    echo "these run BEFORE the collision guard and are not pure set_fact:" >&2
+    printf '%s\n' "$preceding" >&2
+    echo "the guard must decide before the run acts on anything." >&2
     return 1
   fi
+  # And the guard is actually present, so this cannot pass on an empty scan.
+  grep -q 'Refuse to both create and delete the same account' "$dep"
 }
