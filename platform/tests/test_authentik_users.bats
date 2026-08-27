@@ -220,3 +220,56 @@ PY_DEF
   # No variable indirection anywhere in the declaration.
   refute_grep -qE '_bao_path:.*(default\(|lookup\(|\{\{)' "$pb"
 }
+
+@test "credential print: the allow-list is DERIVED from the blueprint, not hand-kept" {
+  # A fixed PATH is not a fixed SCOPE. secret/services/authentik also holds
+  # db_password, bootstrap_password, the service-account token and every OIDC
+  # client secret, and `<name>_password` indexing reaches all of them — so an
+  # unrestricted `credential_users` turns a scoped hand-off into
+  # `-e credential_users=db` printing the Postgres password.
+  #
+  # Derived, because a hand-kept list drifts from the blueprint and the drift
+  # direction that matters is "a user was added and cannot be handed their login",
+  # which looks like a bug rather than a stale list.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  assert_grep -q "regex_findall('!Env (\[A-Z\]\[A-Z0-9_\]\*)_PASSWORD')" "$pb"
+  assert_grep -q "lookup('file', _blueprint)" "$pb"
+  # The requested set is FILTERED through it, and what falls out is refused.
+  assert_grep -qE "_users: .*_requested \| select\('in', _allowed\)" "$pb"
+  assert_grep -qE "_rejected: .*_requested \| reject\('in', _allowed\)" "$pb"
+  assert_grep -q '_rejected | length == 0' "$pb"
+  # No literal user list anywhere — that would be the hand-kept form this forbids.
+  refute_grep -qE "_allowed: *\[" "$pb"
+}
+
+@test "authentik deploy: a retired username is checked against the ACTIVE ones, before applying" {
+  # The blueprint-level test compares variable NAMES, which are trivially
+  # different. The condition that actually deletes someone is two different
+  # variables carrying the same VALUE — and those values live in site-config,
+  # which this repo never sees. So the real guard has to resolve them at deploy
+  # time.
+  local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  assert_grep -q '_active_usernames | intersect(_retired_usernames)' "$dep"
+  # Derived from the variable names, so a user added later is covered.
+  assert_grep -q "selectattr('key', 'search', '_legacy_username\$')" "$dep"
+  assert_grep -q "rejectattr('key', 'search', '_legacy_username\$')" "$dep"
+
+  # ORDER IS THE POINT, and the anchor has to be the FIRST task that touches the
+  # target — not the one that assembles blueprints. An earlier attempt pinned it
+  # ahead of "Assemble active blueprints" and passed while the guard sat after
+  # "Reset the active-blueprints dir", which had already emptied the directory.
+  # Anchoring on any single later task is a guess about which one matters.
+  #
+  # So the rule is closed instead: the guard is the FIRST assert in the play, and
+  # nothing precedes it but the fact-gathering that computes what it checks.
+  local first_tasks
+  first_tasks=$(awk '/^  tasks:/ { f = 1; next }
+                     f && /^    - name: / { sub(/^    - name: /, ""); print }' "$dep" | head -3)
+  [ -n "$first_tasks" ]
+  if ! printf '%s\n' "$first_tasks" | grep -q 'Refuse to both create and delete the same account'; then
+    echo "the collision guard is not among the first three tasks of the play." >&2
+    echo "anything that runs before it has already acted on the target. First three:" >&2
+    printf '%s\n' "$first_tasks" >&2
+    return 1
+  fi
+}

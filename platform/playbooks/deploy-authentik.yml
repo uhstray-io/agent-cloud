@@ -68,6 +68,45 @@
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
+    # ── Retirement collision guard ───────────────────────────────────────────
+    # A `state: absent` entry DELETES. platform-users.yaml keeps active and
+    # retired accounts apart by using different variables, and a test refuses any
+    # blueprint where one entry names another's variable. That check cannot see
+    # the part that actually matters: two DIFFERENT variables can be set to the
+    # SAME username in site-config, which the public repo never sees. The
+    # blueprint would then create and delete one account in a single run, and
+    # which wins is entry order rather than intent.
+    #
+    # So it is resolved here, against the values in force, BEFORE anything is
+    # applied. Derived from the variable names rather than a hand-kept pairing,
+    # so a user added later is covered without editing this.
+    - name: "Resolve the active and retired usernames actually configured"
+      ansible.builtin.set_fact:
+        _active_usernames: >-
+          {{ vars | dict2items
+             | selectattr('key', 'match', '^[a-z0-9_]+_username$')
+             | rejectattr('key', 'search', '_legacy_username$')
+             | map(attribute='value') | select('string')
+             | map('trim') | reject('equalto', '') | list }}
+        _retired_usernames: >-
+          {{ vars | dict2items
+             | selectattr('key', 'search', '_legacy_username$')
+             | map(attribute='value') | select('string')
+             | map('trim') | reject('equalto', '') | list }}
+
+    - name: "Refuse to both create and delete the same account"
+      ansible.builtin.assert:
+        that:
+          - (_active_usernames | intersect(_retired_usernames)) | length == 0
+        fail_msg: >-
+          A retired username is also an ACTIVE username:
+          {{ _active_usernames | intersect(_retired_usernames) | join(', ') }}.
+          Applying the blueprints would create and delete that account in one run.
+          Fix the *_legacy_username value in site-config before deploying.
+        success_msg: >-
+          {{ _retired_usernames | length }} retired username(s), none of which
+          collide with the {{ _active_usernames | length }} active one(s).
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
