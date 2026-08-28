@@ -152,6 +152,13 @@ templates:
 
   - name: Deploy Authentik
     playbook: platform/playbooks/deploy-authentik.yml
+    # The IdP's blueprints change on `dev` — new users, retired accounts, OIDC
+    # clients — and every one of those is a change to who can log in where. A
+    # generated "(Dev)" copy is how such a change is exercised against the live
+    # instance BEFORE it is promoted, rather than promoted on the strength of a
+    # green test suite alone (docs/MISTAKES.md 2.13, 2.17, 10.8: three entries,
+    # one lesson — a playbook that has only been linted has never run).
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
