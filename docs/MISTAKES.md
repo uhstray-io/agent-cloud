@@ -57,6 +57,7 @@ supersede it with a new entry and link both.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
+| 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -915,6 +916,39 @@ existed because editing a shared file always begins by copying it. That copy is
 what made this recoverable, and it is worth keeping as a rule of its own —
 before editing a file that carries anyone else's uncommitted work, copy it
 first.
+
+### 4.6 The error branch printed what the happy path protected
+
+**What happened.** A one-off script pulled two freshly generated passwords out of a
+Semaphore task's output to write them into site-config. Its regex did not match
+Semaphore's rendering (`msg: jacob -> …`, not JSON-quoted), so it fell into the
+diagnostic branch — which printed "every `msg` line that does not contain the word
+password" to help me see the shape. Both lines carrying the passwords were of the
+form `msg: <name> -> <value>` and contain no such word. Both values landed in the
+tool output, and therefore in this session's transcript.
+
+The success path had been written carefully: values to files at 0600, only lengths
+to stdout, the fetched output deleted afterwards. The failure path had been written
+in ten seconds to answer "what does the output look like".
+
+**Root cause.** Redaction was applied to the branch I expected to run and not to the
+branch I expected never to run. A diagnostic that dumps raw context is exactly as
+capable of leaking as a success path, and is written with less care precisely
+because it is "just for debugging". The filter it used — exclude lines containing
+"password" — was a blacklist against an open set (2.12's shape) for a task where the
+allow-list was obvious: print field NAMES, never the right-hand side of `->`.
+
+**The rule.** Any code path that can touch secret material is redacted the same way
+on every branch, including the ones that only run when something has gone wrong.
+Concretely: never print raw context to diagnose a parse failure over secret-bearing
+output — print the *structure* (line count, which patterns matched, which did not),
+or a version with every value after a separator replaced. And the cost is bounded
+here only because these are first-login passwords the users are told to change; a
+long-lived credential leaked the same way would have needed rotation.
+
+**Enforced by.** Convention. The mechanical fix is the one already built:
+`backup-credentials-to-site-config.yml` never routes a value through stdout on any
+path, which is why the operator-side print flow is the stopgap and not the design.
 
 ## 5. Duplication and process
 
