@@ -167,6 +167,26 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Print User Credentials
+    playbook: platform/playbooks/print-platform-user-credentials.yml
+    # GATED, and it PRINTS a live credential into this task's output. Exists so an
+    # operator can hand a new platform user their first login — initial passwords
+    # are OpenBao-generated and otherwise never seen. Refuses without the
+    # acknowledgement var; prints only <user>_password fields the users blueprint
+    # declares; the store path is fixed. Semaphore keeps task output until the
+    # task is deleted, so this is a deliberate, bounded exposure — not a pattern.
+    dev_variant: true
+    survey_vars:
+      - name: credential_users
+        title: "Users (comma-separated blueprint names, e.g. jacob,andrew)"
+        type: string
+        required: true
+      - name: i_understand_this_prints_secrets
+        title: "Type true to confirm: this writes live passwords into the task output"
+        type: string
+        required: true
+        default_value: "false"
+
   - name: Deploy OpenHands
     playbook: platform/playbooks/deploy-openhands.yml
     survey_vars:
