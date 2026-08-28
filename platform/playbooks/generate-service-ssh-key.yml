@@ -12,7 +12,23 @@
 # rotates a live key). Runs from the Semaphore runner (localhost), which holds
 # the OpenBao AppRole.
 #
+# BACKUP TO site-config. A keypair that exists only in OpenBao leaves the operator
+# with no key of their own, and therefore unable to complete the workstation half
+# of the two-path access proof that must pass before harden-ssh.yml withdraws
+# password authentication (PRINCIPLES.md §5). So when a site-config clone is
+# reachable, the pair is written there in the same run, through the shared task
+# tasks/backup-ssh-key-to-site-config.yml.
+#
+# It is OPTIONAL and skips loudly, because where this runs decides whether it can
+# happen at all: a Semaphore job executes on the orchestrator, which has no
+# site-config clone and must not grow one — a private key written into a CI
+# workspace is an exfiltration path, not a backup. From an operator workstation the
+# clone is right there. Same pair, one implementation, two places it can run.
+#
 # Usage (via Semaphore): -e service_name=authentik
+# Usage (operator, with backup):
+#   ansible-playbook generate-service-ssh-key.yml \
+#     -e service_name=authentik -e site_config_dir=/path/to/site-config
 
 - name: "Generate + store a per-service SSH key in OpenBao"
   hosts: localhost
@@ -22,6 +38,9 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Empty unless the caller points at a clone — see BACKUP TO site-config above.
+    _sc_dir: "{{ site_config_dir | default('', true) }}"
+    _bk_dest: "{{ dest_dir | default(_sc_dir ~ '/secrets/ssh/' ~ service_name, true) }}"
 
   tasks:
     - name: "Validate inputs"
@@ -31,6 +50,14 @@
           - service_name | length > 0
           - _bao_url | length > 0
         fail_msg: "Pass -e service_name=... and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id, the token, and a freshly minted PRIVATE KEY all cross
+      # this connection. This playbook predates the shared guard and was the one
+      # OpenBao-reaching play without it — found in review, 2026-08-27.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -97,6 +124,50 @@
           ansible.builtin.file:
             path: "{{ _kd.path }}"
             state: absent
+
+    - name: "Decide whether a site-config clone is reachable"
+      ansible.builtin.stat:
+        path: "{{ _sc_dir }}"
+      register: _sc
+      when: _sc_dir | length > 0
+
+    - name: "Read the pair back for backup"
+      # Read from OpenBao rather than reusing the generated material, so the branch
+      # that generated and the branch that found one already present both back up
+      # the SAME thing — the bytes the store actually holds. A backup of what we
+      # think we wrote is not a backup.
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/ssh/{{ service_name }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+      register: _pair
+      when:
+        - _sc_dir | length > 0
+        - _sc.stat.exists | default(false)
+      no_log: true
+
+    - name: "Back the pair up into site-config"
+      ansible.builtin.include_tasks: tasks/backup-ssh-key-to-site-config.yml
+      vars:
+        _bk_private_key: "{{ _pair.json.data.data.private_key }}"
+        _bk_public_key: "{{ _pair.json.data.data.public_key }}"
+        _bk_dest_dir: "{{ _bk_dest }}"
+        _bk_force: "{{ force_overwrite | default(false) | bool }}"
+      when:
+        - _sc_dir | length > 0
+        - _sc.stat.exists | default(false)
+
+    - name: "Say plainly that no backup was taken"
+      # Skipping silently is how "the backup is a documented step" became "the
+      # backup never happened and nothing said so".
+      ansible.builtin.debug:
+        msg: >-
+          NO site-config BACKUP TAKEN — {{ 'no site_config_dir was passed'
+          if _sc_dir | length == 0 else (_sc_dir ~ ' does not exist here') }}.
+          The pair lives only in OpenBao. Run backup-service-ssh-key.yml from a
+          workstation that has the clone, or nobody holds this key.
+      when: (_sc_dir | length == 0) or not (_sc.stat.exists | default(false))
 
     - name: "Report"
       ansible.builtin.debug:
