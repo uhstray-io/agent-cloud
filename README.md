@@ -235,7 +235,7 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+| **Unit Tests** | pytest (100 tests), BATS (500+ tests; `bats -c platform/tests/*.bats` for the exact count) | Discovery worker logic, bash helpers, per-service deployment structure |
 
 `.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
