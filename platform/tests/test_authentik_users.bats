@@ -309,3 +309,67 @@ PY_ORDER
   # And the guard is actually present, so this cannot pass on an empty scan.
   grep -q 'Refuse to both create and delete the same account' "$dep"
 }
+
+@test "authentik deploy: inventory URLs are resolved through lookup('vars'), never vars[]" {
+  # The `vars` magic dict returns the RAW string. An inventory value written as
+  # "{{ postiz_public_url }}/settings" — a template referencing another var, which
+  # is exactly how site-config declares the redirect once and derives the rest —
+  # arrives with its braces intact. The promotion guard's two checks (non-empty,
+  # no agent-cloud.test) pass on that string, and the verifier one phase later
+  # compares the live URL against a literal template and fails. Measured on the
+  # first prod deploy after that inventory change, 2026-08-27.
+  #
+  # CLOSED over both files that read those inventory URLs: neither may use vars[].
+  local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-oidc.py.j2"
+  [ -f "$dep" ]; [ -f "$ver" ]
+  refute_grep -qF 'vars[item]' "$dep"
+  refute_grep -qF 'vars[a.verify_redirect]' "$ver"
+  assert_grep -q "lookup('vars', item, default='')" "$dep"
+  assert_grep -q "lookup('vars', a.verify_redirect, default='')" "$ver"
+  # And the guard now refuses an UNRESOLVED template outright, so a broken
+  # reference fails at the guard rather than one phase later.
+  local blk
+  blk=$(awk '/^    - name: "Promotion guard \(prod\): OIDC prod URLs are set/ { f = 1; next }
+             f && /^    - name:/ { exit }
+             f { print }' "$dep")
+  [ -n "$blk" ]
+  assert_grep -qF "'{{ '{{' }}' not in" <<<"$blk"
+}
+
+@test "authentik deploy: Phase 3 reads the live state back — blueprints applied, accounts present/absent" {
+  # Blueprint application is asynchronous in the worker. A deploy that placed the
+  # files and saw a healthy server has proven only that the files landed — not
+  # that a single account exists, which is what an operator is about to hand
+  # someone a password for. Measured 2026-08-27: a deploy reached Phase 3 with the
+  # user blueprints assembled and nothing in the run able to say whether the
+  # accounts existed.
+  local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-users.py.j2"
+  [ -f "$ver" ]
+  # Rendered and executed inside the container, the same way as the OIDC check.
+  assert_grep -q 'templates/verify-users.py.j2' "$dep"
+  assert_grep -qE 'exec -i authentik-server python - < /tmp/verify-users\.py' "$dep"
+  # NOT gated on prod. The render and run tasks carry no `when:` — a local deploy
+  # that creates nobody is just as wrong as a prod one.
+  local blk
+  blk=$(awk '/^    - name: "Blueprint verify: render the live-state checker"/ { f = 1 }
+             f && /^    - name: "Blueprint verify: result"/ { exit }
+             f { print }' "$dep")
+  [ -n "$blk" ]
+  refute_grep -qE '^      when:' <<<"$blk"
+  # A non-zero exit fails the deploy; it is not advisory.
+  assert_grep -q 'failed_when: _users_verify.rc != 0' <<<"$blk"
+  # The checker consumes the SAME resolved lists the collision guard compared, so
+  # the create/delete intent and the verified state cannot drift apart.
+  assert_grep -q '_active_usernames' "$ver"
+  assert_grep -q '_retired_usernames' "$ver"
+  # And it checks every leg: applied, present+active, in a group, absent.
+  assert_grep -q '"successful"' "$ver"
+  assert_grep -q 'is_active' "$ver"
+  assert_grep -q 'groups_obj' "$ver"
+  assert_grep -q 'EXPECT_ABSENT' "$ver"
+  # Exact-match on this side: the API filter's semantics are unstated, so a
+  # superstring must never satisfy a check for its prefix.
+  assert_grep -q 'u.get("username") == username' "$ver"
+}
