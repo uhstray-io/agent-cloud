@@ -80,6 +80,12 @@ flowchart TD
 - [ ] Provision VM via Semaphore "Provision VM" template (clone VMID 9000, configure cloud-init)
 - [ ] Install container runtime via "Install Docker" template (if Docker needed)
 - [ ] Generate SSH key pair, store in OpenBao at `secret/services/ssh/<service>`
+- [ ] Back the pair up into site-config at `secrets/ssh/<service>/id_ed25519` —
+      `generate-service-ssh-key.yml` does this in the same run when passed
+      `site_config_dir`, or `backup-service-ssh-key.yml` copies an existing pair out.
+      This is not filing: a pair that exists only in OpenBao means no operator holds a
+      key, so the workstation direction of the two-path access proof cannot be produced
+      and `harden-ssh.yml` must not run. Verified missing on a real host 2026-08-26
 - [ ] Distribute SSH keys via "Distribute SSH Keys" template
 - [ ] Verify SSH key auth works, then harden SSH via "Harden SSH" template
 

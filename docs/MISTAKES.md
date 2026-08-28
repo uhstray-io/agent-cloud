@@ -50,6 +50,7 @@ supersede it with a new entry and link both.
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -80,6 +81,7 @@ supersede it with a new entry and link both.
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
+| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -743,6 +745,41 @@ keyword on the resolver's include makes it fail with the file and line; removing
 makes it pass. The companion assertion in `become: the transport guard needs no
 privilege, and says so` now pins `become: false` on the guard's own task, because
 its previous form required the very construct that broke the runtime.
+
+### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
+
+**What happened.** `test_credential_leaks.bats` carried a test named *every play
+that resolves an OpenBao URL includes the transport guard*. Its body looped over
+four filenames written into the test. While extending that list by one for a review
+finding, the population was derived from the playbooks instead — every file with a
+`_bao_url:` play var — and **40 of 52** such plays had no transport guard. Among
+them: every `apply-policy-*.yml`, `apply-openbao-policies.yml` (which *writes*
+policy), `harden-ssh.yml`, and most `deploy-*.yml`.
+
+The test had been green throughout, and its name had been read as a fact.
+
+**Root cause.** The population was a list, and a list is a claim about the world
+that nothing re-checks. It was correct on the day it was written — those four plays
+were the ones the guard had been extracted from — and every play added afterwards
+was invisible to it. A test whose population is hand-kept asserts only "these N are
+fine", however its name reads.
+
+This is the same mechanism as 2.16 (population selected by the presence of the fix)
+in a different coat: there, the selector was the property under test; here, the
+selector was a snapshot. Both make the test unable to fail on the case that matters,
+which is the one that was not there when the test was written.
+
+**The rule.** A test that speaks about "every X" derives X from the code. If the
+honest derived result cannot be made to pass today — because fixing it is a large
+change with its own risk — the test becomes a **ratchet**: a committed file names
+the known exceptions, the test fails on any exception *not* in the file, **and**
+fails on any file entry that is no longer an exception. The list can then only
+shrink, and shrinking it is visible work rather than a comment nobody reads.
+
+**Enforced by.** The rewritten test in `platform/tests/test_credential_leaks.bats`
+with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
+38 remaining plays is tracked as its own change — it touches live-service deploys
+and was deliberately not folded into the change that found it.
 
 ## 3. Acting on live state
 
@@ -1576,6 +1613,56 @@ moving the retire task back outside the block — the original bug.
 **How it was found.** A security review pass, which flagged it as a non-security
 correctness note while reporting no vulnerabilities. The finding that mattered
 was the one outside the thing being looked for.
+
+### 10.8 Two constructs that lint cleanly and mean something else when they run
+
+**What happened.** A new playbook copies credentials from OpenBao into the private
+repo and pushes a branch. It passed `ansible-lint` at the `production` profile and
+read correctly. Run end-to-end against a mock store and a local bare remote, it
+failed twice, for two unrelated reasons:
+
+1. `ansible.builtin.command` with `cmd:` **word-splits**. `git config user.name
+   Joseph A. Wisneski IV` arrived as four arguments and git answered `error: no
+   action specified`. The quotes that look like they protect the value are consumed
+   by YAML — `command` never invokes a shell, so nothing else honours them.
+
+2. A `vars:` entry holding `lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ')` is
+   **re-evaluated at every reference**. `git switch -c {{ _branch }}` and
+   `git push origin {{ _branch }}` named two different branches one second apart.
+   The push failed with `src refspec ... does not match any` — *after* the
+   credentials had been written and committed into the clone on the runner.
+
+**Root cause.** Both are runtime semantics with no static representation.
+`ansible-lint` checks shape, not argument arity, and cannot know whether a value
+contains a space. Nothing at all expresses "this Jinja expression is evaluated
+lazily, so two references may disagree" — the file reads as if `_branch` is a
+value when it is a recipe.
+
+The second is the dangerous one. It does not fail cleanly: it fails *after* the
+credential material is on disk, in a clone, in a state the run then abandons. A
+mechanism that only half-completes is worse than one that refuses.
+
+**The rule.** A playbook that has only been linted has never run. Exercise it end
+to end before it touches anything real — a mock store and a local bare repository
+are enough, and both bugs surfaced on the first two attempts. Concretely:
+`command` uses `argv:` whenever any argument can contain a space; and a value that
+must be stable across references is computed with `set_fact`, never held in
+`vars:`, because `vars:` is a template re-run on each use.
+
+This is [2.17](#217-a-keyword-that-is-invalid-at-runtime-and-invisible-to-every-static-gate)
+one layer out. That entry is about a construct inside a dynamically-included file
+being invisible to static gates; this is about constructs in a plain playbook whose
+*meaning* is invisible to them. Same lesson, wider: the gates this repo owns read
+files, and a playbook is not a file, it is a program.
+
+**Enforced by.** `cred backup: no non-deterministic lookup sits in a play's vars
+block` and `cred backup: every git call carrying a space uses argv, not cmd` in
+`platform/tests/test_backup_credentials.bats`. The first is a **closed** rule
+across every playbook in the repo — `lookup('pipe'/'url'/'random_choice')`,
+`now()` and the `random` filter are refused inside any play's `vars:` block, while
+`lookup('file')` is deliberately allowed because re-reading a file gives the same
+answer. Both mutation-proven by reintroducing the exact original bug.
+
 ## 11. The largest one
 
 ### 11.1 Seventy-six assertions that could not fail

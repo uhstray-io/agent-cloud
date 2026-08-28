@@ -329,14 +329,45 @@ _committed_files() {
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
   # The two seed playbooks kept their own inline copies for one commit and were
   # therefore still bypassable in exactly the way the shared task now prevents.
-  local f n_url n_inc
-  for f in distribute-ssh-keys.yml store-ssh-password.yml \
-           seed-postiz-secrets.yml seed-openbao-key.yml; do
-    n_url=$(grep -cE '^    _bao_url:' "$pb/$f")
-    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb/$f")
-    [ "$n_url" -gt 0 ]
-    [ "$n_inc" -eq "$n_url" ]
+  # Population selected by the CONDITION (the play resolves a store URL), never
+  # by a hand-kept list of names. The previous form of this test listed FOUR files
+  # under a comment claiming "every playbook that reaches OpenBao" — deriving the
+  # population found 40 of 52 unguarded (docs/MISTAKES.md 2.18).
+  #
+  # A RATCHET rather than a blanket assertion, because guarding 38 live-service
+  # deploys is its own change: every unguarded play must be named in the ratchet
+  # file, and every play named there must still be unguarded — so a gap cannot
+  # appear silently, and a fix cannot leave its exception behind.
+  local ratchet="$REPO_ROOT/platform/tests/known_unguarded_bao_plays.txt"
+  [ -f "$ratchet" ]
+  local f base n_url n_inc n_seen=0 unguarded="" bad=""
+  for f in "$pb"/*.yml; do
+    n_url=$(grep -cE '^    _bao_url:' "$f" || true)
+    [ "$n_url" -gt 0 ] || continue
+    n_seen=$((n_seen + 1))
+    base=$(basename "$f")
+    # >= not ==: a play may guard MORE endpoints than it resolves store URLs for
+    # (netbox-allocate-ip.yml guards the NetBox API too, via _assert_url_label).
+    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$f" || true)
+    if [ "$n_inc" -lt "$n_url" ]; then
+      unguarded="${unguarded}${base}"$'\n'
+      grep -qxF "$base" "$ratchet" || bad="${bad}NEW unguarded play not in the ratchet: ${base}"$'\n'
+    fi
   done
+  # The other direction: a listed play that is now guarded must leave the list.
+  local listed
+  while read -r listed; do
+    case "$listed" in ''|'#'*) continue ;; esac
+    [ -f "$pb/$listed" ] || { bad="${bad}ratchet names a play that no longer exists: ${listed}"$'\n'; continue; }
+    printf '%s' "$unguarded" | grep -qxF "$listed" \
+      || bad="${bad}${listed} is now guarded — remove it from the ratchet"$'\n'
+  done < "$ratchet"
+  if [ -n "$bad" ]; then
+    printf '%s' "$bad" >&2
+    return 1
+  fi
+  # Not vacuous: the guard's original four plays, plus this change's, are in the set.
+  [ "$n_seen" -ge 8 ]
 }
 
 @test "the transport pattern accepts internal endpoints and refuses public ones" {

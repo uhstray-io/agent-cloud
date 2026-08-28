@@ -205,6 +205,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/enable-linger.yml` | Implemented | `loginctl enable-linger` so rootless containers survive a reboot; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
+| `tasks/backup-ssh-key-to-site-config.yml` | Implemented | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/distribute-ca-root.yml` | Implemented | Distribute the internal CA root to a host's trust store |
 | `tasks/distribute-caddy-site.yml` | Implemented | Place a per-service Caddy site fragment (composable Caddy model) |
 | `tasks/mint-internal-cert.yml` | Implemented | Mint a certificate from the internal step-ca |
@@ -236,7 +237,11 @@ For the complete onboarding checklist (7 phases, all tiers), see `plan/architect
 4. Create `platform/playbooks/clean-deploy-<name>.yml` using `tasks/clean-service.yml`
 5. Add host to site-config inventory with `service_name`, `monorepo_deploy_path`, `service_url`
 6. Add Semaphore templates to `platform/semaphore/templates.yml`, run `setup-templates.yml`
-7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`
+7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`, and confirm the
+   pair reached site-config — `generate-service-ssh-key.yml` writes it there when passed
+   `site_config_dir`, and `backup-service-ssh-key.yml` copies an existing pair out. A key
+   that lives only in OpenBao cannot be used from a workstation, so the operator half of
+   the two-path access proof cannot be performed and the host cannot safely be hardened
 8. Optionally provision a dedicated AppRole via `tasks/manage-approle.yml`
 
 **Legacy pattern (for services not yet migrated):**
