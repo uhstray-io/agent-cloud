@@ -38,18 +38,68 @@ entries:
       groups:
         - !Find [authentik_core.group, [name, platform-admins]]
 
-  # User 2 — developer (rw n8n/Grafana/OpenHands/tududi, read Semaphore) via
-  # platform-developers, PLUS business (rw ERPNext) via platform-business. Real
-  # identity via site-config (ANDREW_*).
+  # User 2 — BUSINESS tier only (platform-business): rw ERPNext, and admitted to
+  # every tier-`member` app by the platform-member access gate, which is what
+  # grants tududi. Real identity via site-config (ANDREW_*).
+  #
+  # Narrowed from platform-developers + platform-business to business alone on
+  # 2026-08-26, at the operator's direction. That REMOVES the developer tier — a
+  # real reduction in access, recorded here rather than left to be inferred from
+  # a diff. Re-adding is one !Find line.
   - model: authentik_core.user
     identifiers:
-      username: !Env [ANDREW_USERNAME, "developer"]
+      username: !Env [ANDREW_USERNAME, "business"]
     attrs:
-      name: !Env [ANDREW_NAME, "Platform Developer"]
-      email: !Env [ANDREW_EMAIL, "developer@agent-cloud.test"]
+      name: !Env [ANDREW_NAME, "Platform Business User"]
+      email: !Env [ANDREW_EMAIL, "business@agent-cloud.test"]
       is_active: true
       path: users
       password: !Env ANDREW_PASSWORD
       groups:
-        - !Find [authentik_core.group, [name, platform-developers]]
         - !Find [authentik_core.group, [name, platform-business]]
+
+  # User 3 — full admin, member of platform-admins (Authentik superuser group;
+  # top role in every SSO'd app, same tier as agent-cloud-admin and stray). Real
+  # identity via site-config (JACOB_*).
+  - model: authentik_core.user
+    identifiers:
+      username: !Env [JACOB_USERNAME, "jacob"]
+    attrs:
+      name: !Env [JACOB_NAME, "Platform Admin 2"]
+      email: !Env [JACOB_EMAIL, "jacob@agent-cloud.test"]
+      is_active: true
+      path: users
+      password: !Env JACOB_PASSWORD
+      groups:
+        - !Find [authentik_core.group, [name, platform-admins]]
+
+  # ── RETIRED ACCOUNTS ────────────────────────────────────────────────────────
+  # `state: absent` DELETES the account Authentik matches on `identifiers`. This is
+  # the deletion mechanism for this platform: declared, reviewable, and applied by
+  # the same converging run as everything else — not a one-off API call that leaves
+  # no record of who removed what or why.
+  #
+  # Why it is needed at all: a user is keyed on `username`, so changing someone's
+  # username does not RENAME them, it declares a second account. The first one
+  # keeps existing, keeps its group memberships, and keeps working. Retiring it has
+  # to be stated.
+  #
+  # SAFETY. The default is a username that is never created by anything, so an
+  # unset variable deletes nothing — the failure mode of a delete-by-default entry
+  # is not one this platform should carry. Re-applying is idempotent: absent stays
+  # absent.
+  #
+  # Adding one: append here, expose <NAME>_LEGACY_USERNAME in env.j2, set the real
+  # value in site-config. A retired username must never equal an ACTIVE one above —
+  # the same run would then create and delete the same account, and which of those
+  # wins is entry order, not intent. platform/tests/test_authentik_users.bats
+  # refuses that arrangement.
+
+  # Andrew's pre-2026-08-26 account, superseded when usernames became email
+  # addresses. Retired rather than left in place because it carries the
+  # platform-developers tier that the replacement account deliberately drops —
+  # leaving it would silently preserve the access the change exists to remove.
+  - model: authentik_core.user
+    state: absent
+    identifiers:
+      username: !Env [ANDREW_LEGACY_USERNAME, "retired-account-never-created"]

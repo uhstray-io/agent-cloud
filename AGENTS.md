@@ -260,6 +260,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 |----------|----------|---------|
 | Deploy NetBox | `deploy-netbox.yml` | 5-phase: secrets → containers → app config → Diode creds → verify |
 | Deploy Authentik | `deploy-authentik.yml` | Central IdP/SSO (podman): secrets → server+worker+pg+redis → blueprints → verify → Caddy fragment (composable) |
+| Print User Credentials | `print-platform-user-credentials.yml` | **GATED, and it PRINTS a live credential.** Reads named `<user>_password` fields from `secret/services/authentik` and emits them, so an operator can hand someone their first login. Refuses without `-e i_understand_this_prints_secrets=true`; the secret path is fixed, not a parameter. Semaphore stores task output durably — **delete the task as soon as the credential is captured**. Exists because initial passwords are OpenBao-generated and never seen; the real fix is Authentik enrollment links, which need prod SMTP |
 | Deploy OpenHands | `deploy-openhands.yml` | Agent Canvas (Docker; host docker.sock): clone → env → container → verify → Caddy fragment (composable) |
 | Clean Deploy OpenHands | `clean-deploy-openhands.yml` | Destructive: wipe openhands-state volume + fresh deploy |
 | Deploy tududi | `deploy-tududi.yml` | To-do app (rootless podman): secrets (+OIDC shared-read) → deploy.sh → verify; local adds step-ca trust for OIDC |
@@ -498,7 +499,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (503 tests, Bash)
+- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (514 tests, Bash)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

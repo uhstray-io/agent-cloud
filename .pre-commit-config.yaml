@@ -184,7 +184,20 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
         args: [--allow-multiple-documents]
-        exclude: (netbox-docker/|platform/services/.*/deployment/templates/)
+        # Authentik blueprints are excluded because they are not plain YAML: the
+        # blueprint language uses custom tags (!Env, !Find, !Context, !KeyOf) that
+        # Authentik's own loader resolves, and a strict constructor rejects every
+        # one of them. Verified 2026-08-26 — this hook fails on all 17 committed
+        # blueprints untouched, which means every blueprint in the repo was
+        # committed past this gate rather than through it. Excluding them makes
+        # that explicit instead of leaving a hook everyone has to --no-verify
+        # around, which is how a gate becomes a habit of skipping gates.
+        # They are still linted: yamllint reads them (it does not resolve tags),
+        # and platform/tests/test_authentik_users.bats checks the semantics a
+        # parser cannot — that every !Env is wired and every !Find names a group
+        # that exists.
+        exclude: >-
+          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/)
       - id: check-added-large-files
         args: [--maxkb=500]
         # The codebase-memory graph artifact is a deliberately-committed

@@ -52,6 +52,7 @@
       # once + reused (stable), OpenBao-owned; worker reads via !Env.
       - { name: wisward_password, type: random, length: 32 }
       - { name: andrew_password, type: random, length: 32 }
+      - { name: jacob_password, type: random, length: 32 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
     # Blueprints always applied regardless of environment (groups, flows, admin
@@ -67,6 +68,71 @@
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
+    # ── Retirement collision guard ───────────────────────────────────────────
+    # A `state: absent` entry DELETES. platform-users.yaml keeps active and
+    # retired accounts apart by using different variables, and a test refuses any
+    # blueprint where one entry names another's variable. That check cannot see
+    # the part that actually matters: two DIFFERENT variables can be set to the
+    # SAME username in site-config, which the public repo never sees. The
+    # blueprint would then create and delete one account in a single run, and
+    # which wins is entry order rather than intent.
+    #
+    # So it is resolved here, against the values in force, BEFORE anything is
+    # applied. Derived from the variable names rather than a hand-kept pairing,
+    # so a user added later is covered without editing this.
+    - name: "Read the username declarations out of env.j2"
+      # DERIVED from the template that actually renders them, because the template
+      # is where the DEFAULTS live and the defaults are the half that bites.
+      #
+      # `vars | dict2items` sees only variables that are DEFINED. With
+      # jacob_username unset, it does not contain "jacob" — but env.j2 renders
+      # JACOB_USERNAME={{ jacob_username | default('jacob') }} and the account
+      # created is called jacob. A retired entry set to "jacob" would then sail
+      # past a check built on defined variables and delete the account the same
+      # run creates. Caught in review; the guard compares EFFECTIVE values now.
+      #
+      # Each match is (ENV_NAME, inventory_var, default).
+      ansible.builtin.set_fact:
+        _uname_decls: >-
+          {{ lookup('file', playbook_dir ~ '/../services/authentik/deployment/templates/env.j2')
+             | regex_findall("([A-Z0-9_]*USERNAME)=\{\{\s*([a-z0-9_]+)\s*\|\s*default\('([^']*)'\)") }}
+
+    - name: "Resolve each declaration to the username that will actually exist"
+      ansible.builtin.set_fact:
+        _uname_effective: >-
+          {{ (_uname_effective | default([]))
+             + [{'env': item[0],
+                 'value': (lookup('vars', item[1], default=item[2]) | string | trim)}] }}
+      loop: "{{ _uname_decls }}"
+      loop_control:
+        label: "{{ item[0] }}"
+
+    - name: "Split them into the accounts being kept and the ones being deleted"
+      ansible.builtin.set_fact:
+        _active_usernames: >-
+          {{ _uname_effective | rejectattr('env', 'search', 'LEGACY_USERNAME$')
+             | map(attribute='value') | reject('equalto', '') | list }}
+        _retired_usernames: >-
+          {{ _uname_effective | selectattr('env', 'search', 'LEGACY_USERNAME$')
+             | map(attribute='value') | reject('equalto', '') | list }}
+
+    - name: "Refuse to both create and delete the same account"
+      ansible.builtin.assert:
+        that:
+          - _uname_decls | length > 0
+          - (_active_usernames | intersect(_retired_usernames)) | length == 0
+        fail_msg: >-
+          {{ 'No USERNAME declarations found in env.j2 — this guard would pass
+              vacuously, which is worse than failing.'
+             if (_uname_decls | length == 0)
+             else ('A retired username is also an ACTIVE username: '
+                   ~ (_active_usernames | intersect(_retired_usernames) | join(', '))
+                   ~ '. Applying the blueprints would create and delete that account
+                   in one run. Fix the *_legacy_username value in site-config.') }}
+        success_msg: >-
+          {{ _retired_usernames | length }} retired username(s), none colliding
+          with the {{ _active_usernames | length }} active one(s).
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
