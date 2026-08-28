@@ -183,13 +183,20 @@
     # redirect_uri at deploy time instead of in the browser.
     - name: "Promotion guard (prod): OIDC prod URLs are set + not local-dev defaults"
       ansible.builtin.assert:
+        # lookup('vars'), not the vars magic dict indexed by name: that returns the RAW string, so
+        # a value that is itself a template ("{{ postiz_public_url }}/settings")
+        # passes both checks below with its braces intact and the bug surfaces one
+        # phase later in the verifier, where it did (2026-08-27). Resolving here
+        # means a broken reference fails at the guard, before anything is applied.
         that:
-          - "(vars[item] | default('')) | length > 0"
-          - "'agent-cloud.test' not in (vars[item] | default(''))"
+          - "(lookup('vars', item, default='')) | length > 0"
+          - "'agent-cloud.test' not in (lookup('vars', item, default=''))"
+          - "'{{ '{{' }}' not in (lookup('vars', item, default=''))"
         fail_msg: >-
-          Promotion guard: inventory var '{{ item }}' must be set to a prod URL (in
-          site-config) and not an agent-cloud.test default. Refusing to deploy a
-          local-dev URL to prod — set it, or drop the app from prod authentik_apps.
+          Promotion guard: inventory var '{{ item }}' must resolve to a prod URL (in
+          site-config), not an agent-cloud.test default and not an unresolved
+          template. Got: {{ lookup('vars', item, default='<unset>') }}. Refusing to
+          deploy — set it, or drop the app from prod authentik_apps.
         quiet: true
       loop: "{{ _oidc_prod_required }}"
       when: not (local_mode | default(false) | bool)
@@ -358,6 +365,30 @@
       ansible.builtin.debug:
         var: _oidc_verify.stdout_lines
       when: _do_oidc_verify | bool
+
+    # ── Blueprint + account verify (every environment) ───────────────────────
+    # Blueprint application is asynchronous in the worker. Placing the files and
+    # seeing a healthy server proves the files landed — not that a single account
+    # was created, which is what an operator is about to hand someone a password
+    # for. This reads the live state back: every custom blueprint applied
+    # successfully, every declared account present and active and in a group,
+    # every retired account gone. Not gated on prod: a local deploy that creates
+    # nobody is just as wrong. Runs inside the container, same as the OIDC check.
+    - name: "Blueprint verify: render the live-state checker"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-users.py.j2"
+        dest: /tmp/verify-users.py
+        mode: "0644"
+
+    - name: "Blueprint verify: custom blueprints applied, declared accounts present/absent"
+      ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-users.py"
+      register: _users_verify
+      changed_when: false
+      failed_when: _users_verify.rc != 0
+
+    - name: "Blueprint verify: result"
+      ansible.builtin.debug:
+        var: _users_verify.stdout_lines
 
     - name: "Report"
       ansible.builtin.debug:

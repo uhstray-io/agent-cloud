@@ -309,3 +309,138 @@ PY_ORDER
   # And the guard is actually present, so this cannot pass on an empty scan.
   grep -q 'Refuse to both create and delete the same account' "$dep"
 }
+
+@test "authentik deploy: inventory URLs are resolved through lookup('vars'), never vars[]" {
+  # The `vars` magic dict returns the RAW string. An inventory value written as
+  # "{{ postiz_public_url }}/settings" — a template referencing another var, which
+  # is exactly how site-config declares the redirect once and derives the rest —
+  # arrives with its braces intact. The promotion guard's two checks (non-empty,
+  # no agent-cloud.test) pass on that string, and the verifier one phase later
+  # compares the live URL against a literal template and fails. Measured on the
+  # first prod deploy after that inventory change, 2026-08-27.
+  #
+  # CLOSED over both files that read those inventory URLs: neither may use vars[].
+  local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-oidc.py.j2"
+  [ -f "$dep" ]; [ -f "$ver" ]
+  refute_grep -qF 'vars[item]' "$dep"
+  refute_grep -qF 'vars[a.verify_redirect]' "$ver"
+  assert_grep -q "lookup('vars', item, default='')" "$dep"
+  assert_grep -q "lookup('vars', a.verify_redirect, default='')" "$ver"
+  # And the guard now refuses an UNRESOLVED template outright, so a broken
+  # reference fails at the guard rather than one phase later.
+  local blk
+  blk=$(awk '/^    - name: "Promotion guard \(prod\): OIDC prod URLs are set/ { f = 1; next }
+             f && /^    - name:/ { exit }
+             f { print }' "$dep")
+  [ -n "$blk" ]
+  assert_grep -qF "'{{ '{{' }}' not in" <<<"$blk"
+}
+
+@test "authentik deploy: Phase 3 reads the live state back — blueprints applied, accounts present/absent" {
+  # Blueprint application is asynchronous in the worker. A deploy that placed the
+  # files and saw a healthy server has proven only that the files landed — not
+  # that a single account exists, which is what an operator is about to hand
+  # someone a password for. Measured 2026-08-27: a deploy reached Phase 3 with the
+  # user blueprints assembled and nothing in the run able to say whether the
+  # accounts existed.
+  local dep="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-users.py.j2"
+  [ -f "$ver" ]
+  # Rendered and executed inside the container, the same way as the OIDC check.
+  assert_grep -q 'templates/verify-users.py.j2' "$dep"
+  assert_grep -qE 'exec -i authentik-server python - < /tmp/verify-users\.py' "$dep"
+  # NOT gated on prod. The render and run tasks carry no `when:` — a local deploy
+  # that creates nobody is just as wrong as a prod one.
+  local blk
+  blk=$(awk '/^    - name: "Blueprint verify: render the live-state checker"/ { f = 1 }
+             f && /^    - name: "Blueprint verify: result"/ { exit }
+             f { print }' "$dep")
+  [ -n "$blk" ]
+  refute_grep -qE '^      when:' <<<"$blk"
+  # A non-zero exit fails the deploy; it is not advisory.
+  assert_grep -q 'failed_when: _users_verify.rc != 0' <<<"$blk"
+  # The checker consumes the SAME resolved lists the collision guard compared, so
+  # the create/delete intent and the verified state cannot drift apart.
+  assert_grep -q '_active_usernames' "$ver"
+  assert_grep -q '_retired_usernames' "$ver"
+  # And it checks every leg: applied, present+active, in a group, absent.
+  assert_grep -q '"successful"' "$ver"
+  assert_grep -q 'is_active' "$ver"
+  assert_grep -q 'groups_obj' "$ver"
+  assert_grep -q 'EXPECT_ABSENT' "$ver"
+  # Exact-match on this side: the API filter's semantics are unstated, so a
+  # superstring must never satisfy a check for its prefix.
+  assert_grep -q 'u.get("username") == username' "$ver"
+}
+
+@test "authentik deploy: the verifier fails when a placed blueprint has NO instance, even if its siblings succeeded" {
+  # Behavioural: render the checker and run it against a stubbed API. The trap it
+  # closes: the worker discovers blueprints on its own schedule, and a file it never
+  # picked up has no API record at all — so "every instance under custom/ is
+  # successful" is vacuously true of the one file that matters. The verifier must
+  # derive the expected set from what the deploy PLACED, and require each by path.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-users.py.j2"
+
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<YAML
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _shared_blueprints: [platform-groups.yaml, platform-users.yaml]
+    _enabled_apps: [tududi]
+    authentik_app_catalog: { tududi: { file: tududi-oidc.yaml } }
+    _active_usernames: [alice]
+    _retired_usernames: []
+    authentik_blueprint_settle_seconds: 0
+  tasks:
+    - ansible.builtin.template:
+        src: "$ver"
+        dest: "$BATS_TEST_TMPDIR/verify-users.py"
+        mode: "0644"
+YAML
+  ansible-playbook "$BATS_TEST_TMPDIR/render.yml" >/dev/null 2>&1
+
+  # A stand-in http.client: one canned JSON body per path prefix, chosen by the
+  # scenario file. Shadows the stdlib package via PYTHONPATH — the checker imports
+  # http.client and nothing else from it.
+  mkdir -p "$BATS_TEST_TMPDIR/stub/http"
+  : > "$BATS_TEST_TMPDIR/stub/http/__init__.py"
+  cat > "$BATS_TEST_TMPDIR/stub/http/client.py" <<'PY'
+import io, json, os
+class _Resp(io.BytesIO):
+    status = 200
+class HTTPConnection:
+    def __init__(self, *a, **k): pass
+    def request(self, method, path, headers=None):
+        data = json.load(open(os.environ["STUB_SCENARIO"]))
+        key = "blueprints" if "/managed/blueprints/" in path else "users"
+        self._body = json.dumps({"results": data[key]}).encode()
+    def getresponse(self): return _Resp(self._body)
+PY
+  run_verifier() {
+    STUB_SCENARIO="$1" AUTHENTIK_BOOTSTRAP_TOKEN=x PYTHONPATH="$BATS_TEST_TMPDIR/stub" \
+      python3 "$BATS_TEST_TMPDIR/verify-users.py"
+  }
+  local alice='{"username":"alice","is_active":true,"groups_obj":[{"name":"platform-admins"}]}'
+  local ok='{"path":"custom/platform-groups.yaml","status":"successful"}'
+  local users_ok='{"path":"custom/platform-users.yaml","status":"successful"}'
+  local tududi_ok='{"path":"custom/tududi-oidc.yaml","status":"successful"}'
+  local sso_ok='{"path":"custom/zz-sso-bindings.yaml","status":"successful"}'
+
+  # PASSES when every placed file has a successful instance and the account is right.
+  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s]}' "$ok" "$users_ok" "$tududi_ok" "$sso_ok" "$alice" \
+    > "$BATS_TEST_TMPDIR/all.json"
+  run run_verifier "$BATS_TEST_TMPDIR/all.json"
+  [ "$status" -eq 0 ]
+  assert_grep -q 'VERIFY OK' <<<"$output"
+
+  # FAILS when platform-users.yaml was placed but never discovered — its siblings
+  # are all successful, which is exactly the state the old check waved through.
+  printf '{"blueprints":[%s,%s,%s],"users":[%s]}' "$ok" "$tududi_ok" "$sso_ok" "$alice" \
+    > "$BATS_TEST_TMPDIR/missing.json"
+  run run_verifier "$BATS_TEST_TMPDIR/missing.json"
+  [ "$status" -eq 2 ]
+  assert_grep -q 'custom/platform-users.yaml: placed by this deploy but the worker never discovered it' <<<"$output"
+}
