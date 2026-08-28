@@ -1,0 +1,58 @@
+---
+# site-config-push.yml — stage ONE path in the site-config clone, commit if it
+# changed, push the branch, and say what moved (names and counts, never values).
+#
+# Pairs with site-config-clone.yml, which set _sc_clone, _sc_branch, _sc_git_env.
+#
+# Caller passes:
+#   _sc_add_path        path RELATIVE to the clone to stage — scoped, never -A
+#   _sc_commit_subject  first commit line
+#   _sc_commit_body     second commit line (what and from where; never a value)
+#   _sc_report_what     short human phrase for the final report
+
+- name: "Stage only the path this run wrote"
+  # Scoped, never `git add -A`. The clone is shallow and clean, but a blanket add
+  # is how unrelated working state gets swept into a credentials commit.
+  ansible.builtin.command:
+    argv: ["git", "add", "--", "{{ _sc_add_path }}"]
+    chdir: "{{ _sc_clone }}"
+  changed_when: true
+
+- name: "Is there anything to commit?"
+  ansible.builtin.command:
+    cmd: "git diff --cached --quiet"
+    chdir: "{{ _sc_clone }}"
+  register: _sc_staged
+  changed_when: false
+  failed_when: false
+
+- name: "Commit"
+  # argv: the quotes that look like they protect the message are consumed by
+  # YAML, not by a shell — `command` never invokes one.
+  ansible.builtin.command:
+    argv:
+      - git
+      - commit
+      - "-m"
+      - "{{ _sc_commit_subject }}"
+      - "-m"
+      - "{{ _sc_commit_body }}"
+    chdir: "{{ _sc_clone }}"
+  when: _sc_staged.rc != 0
+  changed_when: true
+
+- name: "Push the branch"
+  ansible.builtin.command:
+    cmd: "git push origin {{ _sc_branch }}"
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  when: _sc_staged.rc != 0
+  changed_when: true
+
+- name: "Report"
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('Pushed branch ' ~ _sc_branch ~ ' to site-config: ' ~ _sc_report_what
+          ~ '. Open a PR there to keep it.')
+         if _sc_staged.rc != 0
+         else ('No change — site-config already holds ' ~ _sc_report_what ~ '. Nothing pushed.') }}

@@ -19,6 +19,10 @@ load assert_helpers
 setup() {
   PBDIR="${BATS_TEST_DIRNAME}/../playbooks"
   PB="${PBDIR}/backup-credentials-to-site-config.yml"
+  SSHPB="${PBDIR}/backup-service-ssh-key.yml"
+  CLONE="${PBDIR}/tasks/site-config-clone.yml"
+  PUSH="${PBDIR}/tasks/site-config-push.yml"
+  SEM="${BATS_TEST_DIRNAME}/../semaphore"
 }
 
 @test "cred backup: the playbook exists and guards its transport" {
@@ -77,12 +81,12 @@ PY_VARS
     echo "move it to set_fact — a vars entry is re-evaluated at every reference." >&2
     return 1
   fi
-  # And this playbook does freeze its branch name that way.
-  assert_grep -q '_branch: >-' "$PB"
+  # And the shared clone task does freeze its branch name that way.
+  assert_grep -q '_sc_branch: >-' "$CLONE"
   local blk
-  blk=$(awk '/^    - name: "Freeze the branch name for this run"/ { f = 1; next }
-             f && /^    - name:/ { exit }
-             f { print }' "$PB")
+  blk=$(awk '/^- name: "Freeze the branch name/ { f = 1; next }
+             f && /^- name:/ { exit }
+             f { print }' "$CLONE")
   [ -n "$blk" ]
   assert_grep -q 'ansible.builtin.set_fact' <<<"$blk"
 }
@@ -93,25 +97,30 @@ PY_VARS
   # when no argument contains a space, and the two that do here are a person's
   # name and a commit message.
   local bad
-  bad=$(awk '/^\s*- name: "Identify the commit"/,/changed_when/ { if (/cmd:/) print "identity task uses cmd:" }
-             /^\s*- name: "Commit"/,/chdir:/ { if (/cmd:/) print "commit task uses cmd:" }' "$PB")
+  bad=$(awk '/^\s*- name: "Identify the commit"/,/changed_when/ { if (/cmd:/) print "identity task uses cmd:" }' "$CLONE"
+        awk '/^\s*- name: "Commit"/,/chdir:/ { if (/cmd:/) print "commit task uses cmd:" }
+             /^\s*- name: "Stage only the path this run wrote"/,/chdir:/ { if (/cmd:/) print "stage task uses cmd:" }' "$PUSH")
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" >&2
     return 1
   fi
-  assert_grep -q 'argv: \["git", "config", "user.{{ item.k }}", "{{ item.v }}"\]' "$PB"
+  assert_grep -q 'argv: \["git", "config", "user.{{ item.k }}", "{{ item.v }}"\]' "$CLONE"
 }
 
 @test "cred backup: the scratch dir is wiped even when the run fails" {
-  # It holds the deploy key AND every credential fetched. Leaving either on the
-  # orchestrator after a failure is worse than the failure. `always`, not a final
-  # task — a final task does not run when an earlier one aborts the block.
-  assert_grep -qE '^      always:' "$PB"
-  local blk
-  blk=$(awk '/^      always:/ { f = 1; next } f { print }' "$PB")
-  [ -n "$blk" ]
-  assert_grep -q 'state: absent' <<<"$blk"
-  assert_grep -q '_wd.path' <<<"$blk"
+  # It holds every credential fetched. Leaving it on the orchestrator after a
+  # failure is worse than the failure. `always`, not a final task — a final task
+  # does not run when an earlier one aborts the block. BOTH callers of the shared
+  # clone task, since the scratch dir is created inside the include and only the
+  # caller can wrap it.
+  local pb blk
+  for pb in "$PB" "$SSHPB"; do
+    assert_grep -qE '^      always:' "$pb"
+    blk=$(awk '/^      always:/ { f = 1; next } f { print }' "$pb")
+    [ -n "$blk" ]
+    assert_grep -q 'state: absent' <<<"$blk"
+    assert_grep -q '_sc_wd' <<<"$blk"
+  done
 }
 
 @test "cred backup: nothing it prints can carry a credential value" {
@@ -139,4 +148,55 @@ PY_VARS
   assert_grep -qE '^    _bao_path: "secret/data/services/\{\{ credential_service' "$PB"
   assert_grep -q "credential_service is match('\^\[a-z0-9\]\[a-z0-9_-\]\*\$')" "$PB"
   refute_grep -qE '^    _bao_path: "\{\{ (bao_path|credential_path)' "$PB"
+}
+
+@test "cred backup: the deploy key exists on the runner only inside the dir that is always wiped" {
+  # The key is read from OpenBao with the token the play already holds, written
+  # 0600 into the scratch dir, and dies with that dir. Pin each piece: the store
+  # path is fixed (not caller-supplied), the write is 0600 and no_log, ssh is told
+  # to use exactly that file and nothing the runner's agent or ~/.ssh may hold,
+  # host keys are pinned, and the key file lives UNDER _sc_wd — anywhere else and
+  # the always: wipe would miss it.
+  local pb
+  for pb in "$PB" "$SSHPB"; do
+    assert_grep -qE '^    _key_path: "secret/data/services/ssh/site-config"$' "$pb"
+    refute_grep -qE '^    _key_path: "\{\{' "$pb"
+    assert_grep -q '_sc_deploy_key: "{{ _key.json.data.data.private_key }}"' "$pb"
+  done
+  local blk
+  blk=$(awk '/^- name: "Materialise the deploy key/ { f = 1; next } f && /^- name:/ { exit } f { print }' "$CLONE")
+  [ -n "$blk" ]
+  assert_grep -qE '^    mode: "0600"' <<<"$blk"
+  assert_grep -qE '^  no_log: true' <<<"$blk"
+  assert_grep -qE '^    dest: "\{\{ _sc_key \}\}"' <<<"$blk"
+  assert_grep -qE '^    _sc_key: "\{\{ _sc_wd_result.path \}\}/deploy_key"' "$CLONE"
+  # Exactly one GIT_SSH_COMMAND definition; it names that file, IdentitiesOnly, and
+  # strict pinned host keys. Comments may name accept-new; code may not.
+  local code
+  code=$(grep -vE '^[[:space:]]*#' "$CLONE")
+  [ "$(grep -c 'GIT_SSH_COMMAND:' <<<"$code")" -eq 1 ]
+  blk=$(awk '/GIT_SSH_COMMAND: >-/ { f = 1; next } f && /^[^ ]/ { exit } f { print }' "$CLONE")
+  assert_grep -q 'ssh -i {{ _sc_wd_result.path }}/deploy_key -o IdentitiesOnly=yes' <<<"$blk"
+  assert_grep -q 'StrictHostKeyChecking=yes' <<<"$blk"
+  assert_grep -q 'UserKnownHostsFile=' <<<"$blk"
+  refute_grep -q 'accept-new' <<<"$code"
+  # And the key is written only AFTER the scratch dir exists, never before.
+  local mk wr
+  mk=$(grep -nE '^- name: "Create a scratch dir' "$CLONE" | cut -d: -f1)
+  wr=$(grep -nE '^- name: "Materialise the deploy key' "$CLONE" | cut -d: -f1)
+  [ -n "$mk" ]; [ -n "$wr" ]; [ "$mk" -lt "$wr" ]
+}
+
+@test "cred backup: the key is never taken from a task parameter, and the seed path says why" {
+  # Semaphore persists a task's extra vars and serves them back over its API, so a
+  # deploy key passed as -e would live in the orchestrator's database in plaintext.
+  # The only way in is the store; the only way into the store is the Seed template
+  # with the value as an environment SECRET — which is what every "key missing"
+  # message must point at.
+  local pb
+  for pb in "$PB" "$SSHPB"; do
+    refute_grep -qE 'deploy_key \| default|site_config_deploy_key|lookup\(.env., .(SITE_CONFIG|DEPLOY)' "$pb"
+    assert_grep -q 'BAO_VALUE' "$pb"
+  done
+  assert_grep -q 'BAO_VALUE' "$CLONE"
 }

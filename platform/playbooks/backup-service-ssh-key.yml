@@ -1,46 +1,36 @@
 ---
-# backup-service-ssh-key.yml — OPERATOR-SIDE. Copy an SSH keypair out of OpenBao
-# into the private site-config clone, in that repo's existing convention
-# (secrets/ssh/<name>/id_ed25519 + .pub).
+# backup-service-ssh-key.yml — copy an SSH keypair out of OpenBao into the private
+# site-config repo, on a NEW BRANCH per backup, in that repo's existing convention
+# (secrets/ssh/<name>/id_ed25519 + .pub). Nothing sensitive reaches the job output.
 #
 # WHY THIS EXISTS
 #
 # generate-service-ssh-key.yml mints a keypair INTO OpenBao and never emits it;
-# distribute-ssh-keys.yml authorizes the public halves of the management key and
-# the per-service key on the host. Nothing copies either pair back out. So an
-# operator holds no key of their own, and cannot complete the workstation half of
-# the two-path access proof that must pass before harden-ssh.yml withdraws
-# password authentication (PRINCIPLES.md §5).
+# distribute-ssh-keys.yml authorizes the public halves on the host. Nothing copied
+# either pair back out. So an operator held no key of their own, and could not
+# complete the workstation half of the two-path access proof that must pass before
+# harden-ssh.yml withdraws password authentication. Measured 2026-08-26 on the
+# postiz host: the store held the pair, the host authorized both public halves,
+# and no operator key existed anywhere.
 #
-# The service-onboarding checklist already calls that backup a step. Until now it
-# was a step with no mechanism — a manual action recorded in prose, which is
-# exactly the failure this repo's engineering principles name: "no manual one-off
-# steps — encode them". A host was hardened-ready with no operator key in
-# existence and nothing in the repo able to say so.
-#
-# OPERATOR-SIDE, deliberately NOT a Semaphore template. A Semaphore job runs on
-# the orchestrator and cannot write to the operator's site-config clone; a job
-# that could would be exfiltrating private keys into its own logs and workspace.
-# Same category as platform/semaphore/bootstrap-semaphore-repositories.yml.
+# HOW IT REACHES SITE-CONFIG — the same way backup-credentials-to-site-config.yml
+# does (tasks/site-config-clone.yml + site-config-push.yml): the site-config deploy
+# key is read from secret/services/ssh/site-config with the token this play already
+# holds, written 0600 into a scratch dir, used for clone and push, and wiped with
+# that dir in `always:`. The first version of this play was operator-side and wrote
+# into a local clone, on the reasoning that a job could not reach the operator's
+# checkout; cloning the private repo from the runner removes that limit, and the
+# key is on the runner only for the length of the run.
 #
 # READ-ONLY against OpenBao. This playbook never writes, rotates, or deletes a
 # secret. Losing a live key is unrecoverable, so the only direction it moves data
 # is out.
 #
-# Auth, in precedence order:
-#   BAO_TOKEN                      an operator token (e.g. from an OIDC login)
-#   BAO_ROLE_ID / BAO_SECRET_ID    an AppRole, as the Semaphore-run playbooks use
-#
-# Usage:
-#   OPENBAO_ADDR=http://<bao>:8200 BAO_TOKEN=<token> \
-#     ansible-playbook platform/playbooks/backup-service-ssh-key.yml \
-#       -e service_name=postiz -e site_config_dir=/path/to/site-config
-#
+# Usage (Semaphore extra vars):
+#   -e service_name=postiz
 #   # the SHARED MANAGEMENT key, which lives one level up in OpenBao:
-#   ... -e service_name=management -e bao_ssh_path=secret/data/services/ssh
-#
-# The written files land inside a git repository. Committing them is the
-# operator's call and the operator's action — this playbook does not touch git.
+#   -e service_name=management -e bao_ssh_path=secret/data/services/ssh
+#   -e force_overwrite=true    # replace a DIFFERING pair already in the repo
 
 - name: "Back up a service SSH keypair from OpenBao into site-config"
   hosts: localhost
@@ -54,8 +44,8 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
     # KV-v2 read path. Defaulted per service, overridable for the management key,
     # which sits at secret/services/ssh rather than under a service name.
-    _bao_ssh_path: "{{ bao_ssh_path | default('secret/data/services/ssh/' ~ service_name, true) }}"
-    _dest_dir: "{{ dest_dir | default(site_config_dir ~ '/secrets/ssh/' ~ service_name, true) }}"
+    _bao_ssh_path: "{{ bao_ssh_path | default('secret/data/services/ssh/' ~ (service_name | default('')), true) }}"
+    _key_path: "secret/data/services/ssh/site-config"
     _force: "{{ force_overwrite | default(false) | bool }}"
 
   tasks:
@@ -65,13 +55,11 @@
           - service_name is defined
           - service_name | length > 0
           - service_name is match('^[a-z0-9][a-z0-9_-]*$')
-          - site_config_dir is defined or dest_dir is defined
           - _bao_url | length > 0
         fail_msg: >-
-          Pass -e service_name=<name> and -e site_config_dir=<path> (or an explicit
-          -e dest_dir=<path>), and set openbao_addr or OPENBAO_ADDR. service_name is
-          used to build a filesystem path, so it is restricted to lowercase, digits,
-          dash and underscore.
+          Pass -e service_name=<name> and set openbao_addr or OPENBAO_ADDR.
+          service_name is used to build a filesystem path, so it is restricted to
+          lowercase, digits, dash and underscore.
 
     - name: "Refuse a cleartext secret-store endpoint"
       # The token and the private key both cross this connection. Same shared
@@ -138,16 +126,73 @@
                    if _secret.status == 404
                    else 'Read ' ~ _bao_ssh_path ~ ' but it carries no public_key/private_key pair') }}
 
-    - name: "Write the pair into site-config"
-      # The shared task, not a second copy of it — the generator writes through the
-      # same file, so "how a keypair lands on disk" has exactly one definition.
-      ansible.builtin.include_tasks: tasks/backup-ssh-key-to-site-config.yml
-      vars:
-        _bk_private_key: "{{ _secret.json.data.data.private_key }}"
-        _bk_public_key: "{{ _secret.json.data.data.public_key }}"
-        _bk_dest_dir: "{{ _dest_dir }}"
-        _bk_force: "{{ _force }}"
+    - name: "Fetch the site-config deploy key"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/{{ _key_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _token }}"
+        status_code: [200, 403, 404]
+      register: _key
+      no_log: true
 
-    - name: "Report the source"
-      ansible.builtin.debug:
-        msg: "source ....... {{ _bao_ssh_path }}"
+    - name: "Say plainly when the deploy key is missing"
+      ansible.builtin.assert:
+        that:
+          - _key.status == 200
+          - (_key.json.data.data.private_key | default('')) | length > 0
+        fail_msg: >-
+          No deploy key at {{ _key_path }} (HTTP {{ _key.status }}). Seed it from the
+          operator's copy with the Seed OpenBao Key template — bao_path
+          services/ssh/site-config, bao_key private_key, value as the BAO_VALUE
+          environment secret — and register its PUBLIC half on the site-config
+          GitHub repo as a deploy key WITH WRITE ACCESS.
+
+    # ── Clone, write, push ───────────────────────────────────────────────────
+    - name: "Everything below runs inside a block so the scratch dir is always wiped"
+      # The clone holds two live private keys — the one being backed up and the
+      # deploy key. The wipe is an `always`, not a final task, so a failure cannot
+      # leave either on the runner.
+      block:
+        - name: "Clone site-config on a fresh branch"
+          ansible.builtin.include_tasks: tasks/site-config-clone.yml
+          vars:
+            _sc_deploy_key: "{{ _key.json.data.data.private_key }}"
+            _sc_branch_prefix: "backup/ssh-{{ service_name }}"
+            _sc_repo_url: "{{ site_config_repo | default('', true) }}"
+            _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+
+        - name: "Create the key directory in the clone"
+          ansible.builtin.file:
+            path: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
+            state: directory
+            mode: "0700"
+
+        - name: "Write the pair into the clone"
+          # The shared task, not a second copy of it — the generator writes through
+          # the same file, so "how a keypair lands on disk" has exactly one
+          # definition: derive-and-compare, 0600/0644, refuse a differing file.
+          ansible.builtin.include_tasks: tasks/backup-ssh-key-to-site-config.yml
+          vars:
+            _bk_private_key: "{{ _secret.json.data.data.private_key }}"
+            _bk_public_key: "{{ _secret.json.data.data.public_key }}"
+            _bk_dest_dir: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
+            _bk_force: "{{ _force }}"
+
+        - name: "Commit and push"
+          ansible.builtin.include_tasks: tasks/site-config-push.yml
+          vars:
+            _sc_add_path: "secrets/ssh/{{ service_name }}"
+            _sc_commit_subject: "secrets(ssh/{{ service_name }}): back up the keypair from OpenBao"
+            _sc_commit_body: >-
+              Written by backup-service-ssh-key.yml from {{ _bao_ssh_path }}
+              (id_ed25519 0600, id_ed25519.pub 0644). The key never passed through
+              the job output.
+            _sc_report_what: "the keypair under secrets/ssh/{{ service_name }}/"
+
+      always:
+        - name: "Wipe the scratch dir"
+          ansible.builtin.file:
+            path: "{{ _sc_wd }}"
+            state: absent
+          when: _sc_wd is defined

@@ -192,6 +192,41 @@ templates:
         required: true
         default_value: "false"
 
+  - name: Back Up Credentials to site-config
+    playbook: platform/playbooks/backup-credentials-to-site-config.yml
+    # Copies named fields out of OpenBao into the private repo on a NEW BRANCH per
+    # run; the task output carries field NAMES, counts and the branch — never a
+    # value. The deploy key is read from secret/services/ssh/site-config in the
+    # same run (seeded once with Seed OpenBao Key) and lives on the runner only
+    # inside the scratch dir the play always wipes.
+    dev_variant: true
+    survey_vars:
+      - name: credential_service
+        title: "Service (OpenBao path segment under secret/services/, e.g. authentik)"
+        type: string
+        required: true
+      - name: credential_fields
+        title: "Fields (comma-separated; empty = every field at the path)"
+        type: string
+        required: false
+
+  - name: Back Up Service SSH Key
+    playbook: platform/playbooks/backup-service-ssh-key.yml
+    # Copies one per-service keypair out of OpenBao into site-config's
+    # secrets/ssh/<name>/ on a new branch, with the same deploy key. Refuses a
+    # mismatched pair and a differing existing file (force_overwrite to replace).
+    dev_variant: true
+    survey_vars:
+      - name: service_name
+        title: "Service (key lives at secret/services/ssh/<service>)"
+        type: string
+        required: true
+      - name: force_overwrite
+        title: "Type true to replace a DIFFERING pair already in the repo"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Deploy OpenHands
     playbook: platform/playbooks/deploy-openhands.yml
     survey_vars:

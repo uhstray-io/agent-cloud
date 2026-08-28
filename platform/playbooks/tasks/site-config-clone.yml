@@ -1,0 +1,120 @@
+---
+# site-config-clone.yml — clone the private site-config repo into a scratch dir on
+# a FRESH branch, authenticating with the deploy key the caller fetched from OpenBao.
+#
+# The deploy key lives at secret/services/ssh/site-config — seeded there ONCE from
+# the operator's copy with the Seed OpenBao Key template (value as the BAO_VALUE
+# environment secret, never a task parameter), with its PUBLIC half registered on
+# the GitHub repo as a deploy key WITH WRITE ACCESS. The caller reads it with the token it already
+# holds and hands the private half in; this task writes it to a 0600 file inside
+# the scratch dir, points ssh at exactly that file, and the caller's `always:`
+# wipes the whole dir. The key exists on the runner only for the length of the run.
+#
+# Caller passes:
+#   _sc_branch_prefix   e.g. "backup/authentik" — the branch becomes
+#                       <prefix>-<UTC stamp>-<6 hex>, frozen ONCE here (set_fact)
+#   _sc_deploy_key      the private key material (from OpenBao; never a parameter)
+#   _sc_repo_url        optional; default the site-config SSH URL
+#   _sc_known_hosts     optional; default files/github_known_hosts (pinned)
+#
+# Sets for the caller:
+#   _sc_wd        scratch dir (caller MUST wipe it in an `always:`)
+#   _sc_clone     path of the clone inside it
+#   _sc_branch    the branch name
+#   _sc_git_env   environment: mapping for every git command that talks to the remote
+
+- name: "Require the deploy key material"
+  ansible.builtin.assert:
+    that:
+      - _sc_deploy_key is defined
+      - _sc_deploy_key | length > 0
+    fail_msg: >-
+      No deploy key passed. Read secret/services/ssh/site-config first — seed it
+      with the Seed OpenBao Key template (bao_path services/ssh/site-config,
+      bao_key private_key, value as the BAO_VALUE environment secret) and register
+      the public half on the site-config GitHub repo WITH WRITE ACCESS.
+
+- name: "Resolve the remote and the pinned host keys"
+  ansible.builtin.set_fact:
+    _sc_repo: "{{ _sc_repo_url | default('git@github.com:uhstray-io/site-config.git', true) }}"
+    # accept-new is trust-on-first-use, and the first use here carries a
+    # credentials commit. files/github_known_hosts holds GitHub's published keys;
+    # their fingerprints were checked against GitHub's /meta endpoint when the
+    # file was committed. A different remote supplies its own file.
+    _sc_kh: "{{ _sc_known_hosts | default(playbook_dir ~ '/files/github_known_hosts', true) }}"
+
+- name: "Look for the pinned host-key file"
+  ansible.builtin.stat:
+    path: "{{ _sc_kh }}"
+  register: _sc_kh_stat
+
+- name: "Require the pinned host-key file"
+  # Here, before the clone, rather than letting ssh report an unreadable
+  # known_hosts as "host key verification failed" mid-run.
+  ansible.builtin.assert:
+    that:
+      - _sc_kh_stat.stat.exists
+      - _sc_kh_stat.stat.size > 0
+    fail_msg: >-
+      No known_hosts file at {{ _sc_kh }}. Strict host-key checking is not
+      optional here; pass _sc_known_hosts=<path> for a non-GitHub remote.
+
+- name: "Create a scratch dir for the clone and the key"
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ".scbackup_"
+  register: _sc_wd_result
+
+- name: "Freeze the branch name and the scratch paths for this run"
+  # set_fact, NOT a play var. A `vars:` entry holding lookup('pipe', 'date') is
+  # re-evaluated at EVERY reference, so the branch created and the branch pushed
+  # were once named one second apart — the push failed AFTER the credentials had
+  # been committed into the clone. set_fact evaluates once and stores.
+  #
+  # Seconds, so two backups an hour apart are two records. A 6-hex suffix, so two
+  # runs started in the same second do not race for one branch. lookup('password')
+  # with /dev/null generates without storing.
+  ansible.builtin.set_fact:
+    _sc_branch: >-
+      {{ _sc_branch_prefix
+         ~ '-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ')
+         ~ '-' ~ lookup('password', '/dev/null chars=hexdigits length=6') | lower }}
+    _sc_wd: "{{ _sc_wd_result.path }}"
+    _sc_clone: "{{ _sc_wd_result.path }}/site-config"
+    _sc_key: "{{ _sc_wd_result.path }}/deploy_key"
+    _sc_git_env:
+      # Exactly this key and no other: IdentitiesOnly stops ssh offering whatever
+      # the runner's agent or ~/.ssh happens to hold.
+      GIT_SSH_COMMAND: >-
+        ssh -i {{ _sc_wd_result.path }}/deploy_key -o IdentitiesOnly=yes
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}
+
+- name: "Materialise the deploy key (runner-local, 0600)"
+  ansible.builtin.copy:
+    content: "{{ _sc_deploy_key }}"
+    dest: "{{ _sc_key }}"
+    mode: "0600"
+  no_log: true
+
+- name: "Clone site-config"
+  ansible.builtin.command:
+    cmd: "git clone --depth 1 {{ _sc_repo }} {{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  changed_when: true
+
+- name: "Start a fresh branch for this backup"
+  ansible.builtin.command:
+    cmd: "git switch -c {{ _sc_branch }}"
+    chdir: "{{ _sc_clone }}"
+  changed_when: true
+
+- name: "Identify the commit"
+  # argv, not cmd. `command` word-splits a cmd string, so a name with spaces
+  # arrives as four arguments and git answers "no action specified".
+  ansible.builtin.command:
+    argv: ["git", "config", "user.{{ item.k }}", "{{ item.v }}"]
+    chdir: "{{ _sc_clone }}"
+  loop:
+    - {k: "name", v: "Joseph A. Wisneski IV"}
+    - {k: "email", v: "stray@uhstray.io"}
+  changed_when: true
