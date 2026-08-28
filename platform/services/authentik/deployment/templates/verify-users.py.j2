@@ -24,6 +24,14 @@ EXPECT_ABSENT = {{ (_retired_usernames | default([])) | to_json }}
 # blueprints-active/ is mounted at /blueprints/custom; every instance under that
 # prefix is one this deploy is responsible for.
 CUSTOM_PREFIX = "custom/"
+# The files THIS deploy assembled, by name — the same expression the assemble task
+# loops over, plus the rendered bindings file. Asserted against the API by exact
+# path: an instance the worker never discovered has no API record at all, so
+# "every instance under custom/ is successful" is silently true of a file that was
+# never picked up. Measured in review, 2026-08-28.
+EXPECT_BLUEPRINTS = {{ ((_shared_blueprints | default([]))
+                        + ((_enabled_apps | default([])) | map('extract', authentik_app_catalog | default({}), 'file') | list)
+                        + ['zz-sso-bindings.yaml']) | map('regex_replace', '^', 'custom/') | list | to_json }}
 SETTLE_SECONDS = {{ authentik_blueprint_settle_seconds | default(120) | int }}
 
 tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
@@ -58,6 +66,12 @@ while True:
 bad = []
 if not instances:
     bad.append("no blueprint instances under %s — the assembled files were not picked up" % CUSTOM_PREFIX)
+# Every file this deploy placed must have an API record — a missing one is a file
+# the worker never discovered, and no amount of "successful" siblings covers it.
+seen_paths = {b.get("path") for b in instances}
+for p in EXPECT_BLUEPRINTS:
+    if p not in seen_paths:
+        bad.append("blueprint %s: placed by this deploy but the worker never discovered it (no instance)" % p)
 for b in sorted(instances, key=lambda x: x.get("path") or ""):
     status = b.get("status")
     if status == "successful":

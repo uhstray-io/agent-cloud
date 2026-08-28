@@ -373,3 +373,74 @@ PY_ORDER
   # superstring must never satisfy a check for its prefix.
   assert_grep -q 'u.get("username") == username' "$ver"
 }
+
+@test "authentik deploy: the verifier fails when a placed blueprint has NO instance, even if its siblings succeeded" {
+  # Behavioural: render the checker and run it against a stubbed API. The trap it
+  # closes: the worker discovers blueprints on its own schedule, and a file it never
+  # picked up has no API record at all — so "every instance under custom/ is
+  # successful" is vacuously true of the one file that matters. The verifier must
+  # derive the expected set from what the deploy PLACED, and require each by path.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local ver="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-users.py.j2"
+
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<YAML
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _shared_blueprints: [platform-groups.yaml, platform-users.yaml]
+    _enabled_apps: [tududi]
+    authentik_app_catalog: { tududi: { file: tududi-oidc.yaml } }
+    _active_usernames: [alice]
+    _retired_usernames: []
+    authentik_blueprint_settle_seconds: 0
+  tasks:
+    - ansible.builtin.template:
+        src: "$ver"
+        dest: "$BATS_TEST_TMPDIR/verify-users.py"
+        mode: "0644"
+YAML
+  ansible-playbook "$BATS_TEST_TMPDIR/render.yml" >/dev/null 2>&1
+
+  # A stand-in http.client: one canned JSON body per path prefix, chosen by the
+  # scenario file. Shadows the stdlib package via PYTHONPATH — the checker imports
+  # http.client and nothing else from it.
+  mkdir -p "$BATS_TEST_TMPDIR/stub/http"
+  : > "$BATS_TEST_TMPDIR/stub/http/__init__.py"
+  cat > "$BATS_TEST_TMPDIR/stub/http/client.py" <<'PY'
+import io, json, os
+class _Resp(io.BytesIO):
+    status = 200
+class HTTPConnection:
+    def __init__(self, *a, **k): pass
+    def request(self, method, path, headers=None):
+        data = json.load(open(os.environ["STUB_SCENARIO"]))
+        key = "blueprints" if "/managed/blueprints/" in path else "users"
+        self._body = json.dumps({"results": data[key]}).encode()
+    def getresponse(self): return _Resp(self._body)
+PY
+  run_verifier() {
+    STUB_SCENARIO="$1" AUTHENTIK_BOOTSTRAP_TOKEN=x PYTHONPATH="$BATS_TEST_TMPDIR/stub" \
+      python3 "$BATS_TEST_TMPDIR/verify-users.py"
+  }
+  local alice='{"username":"alice","is_active":true,"groups_obj":[{"name":"platform-admins"}]}'
+  local ok='{"path":"custom/platform-groups.yaml","status":"successful"}'
+  local users_ok='{"path":"custom/platform-users.yaml","status":"successful"}'
+  local tududi_ok='{"path":"custom/tududi-oidc.yaml","status":"successful"}'
+  local sso_ok='{"path":"custom/zz-sso-bindings.yaml","status":"successful"}'
+
+  # PASSES when every placed file has a successful instance and the account is right.
+  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s]}' "$ok" "$users_ok" "$tududi_ok" "$sso_ok" "$alice" \
+    > "$BATS_TEST_TMPDIR/all.json"
+  run run_verifier "$BATS_TEST_TMPDIR/all.json"
+  [ "$status" -eq 0 ]
+  assert_grep -q 'VERIFY OK' <<<"$output"
+
+  # FAILS when platform-users.yaml was placed but never discovered — its siblings
+  # are all successful, which is exactly the state the old check waved through.
+  printf '{"blueprints":[%s,%s,%s],"users":[%s]}' "$ok" "$tududi_ok" "$sso_ok" "$alice" \
+    > "$BATS_TEST_TMPDIR/missing.json"
+  run run_verifier "$BATS_TEST_TMPDIR/missing.json"
+  [ "$status" -eq 2 ]
+  assert_grep -q 'custom/platform-users.yaml: placed by this deploy but the worker never discovered it' <<<"$output"
+}
