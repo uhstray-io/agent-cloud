@@ -31,10 +31,62 @@
       _bk_dest_dir.
   no_log: true
 
+# ── The pair must BE a pair ───────────────────────────────────────────────────
+# A private key and a public key that do not belong together back up nothing: the
+# host authorizes one, the operator holds the other, and the first login fails in a
+# way that reads as "wrong key" forever. Derive the public half from the private
+# half and compare, before a single byte is written to the destination.
+- name: "Scratch file to derive the public key from"
+  # tempfile takes no mode. The file is empty until the copy below writes it, and
+  # that copy sets 0600 explicitly — so the material is never on disk at any other
+  # mode.
+  ansible.builtin.tempfile:
+    state: file
+    prefix: ".bkderive_"
+  register: _bk_tmp
+
+- name: "Derive the public key and compare it to the one supplied"
+  block:
+    - name: "Write the private key to scratch (0600, never to the destination yet)"
+      ansible.builtin.copy:
+        content: "{{ _bk_private_key }}"
+        dest: "{{ _bk_tmp.path }}"
+        mode: "0600"
+      no_log: true
+
+    - name: "Derive the public half"
+      ansible.builtin.command:
+        argv: ["ssh-keygen", "-y", "-f", "{{ _bk_tmp.path }}"]
+      register: _bk_derived
+      changed_when: false
+      no_log: true
+
+    - name: "Refuse a pair that does not match"
+      # Compare type+key only; the comment field is free text and may differ.
+      ansible.builtin.assert:
+        that:
+          - (_bk_derived.stdout | trim | split(' '))[0:2] == (_bk_public_key | trim | split(' '))[0:2]
+        fail_msg: >-
+          The public key supplied does not match the private key. Refusing to back
+          up a mismatched pair — the host would authorize one half while the
+          operator holds the other.
+      # No no_log here: the comparison is between two PUBLIC halves and the message
+      # is the only thing telling the operator WHY the run stopped.
+  always:
+    - name: "Remove the scratch private key"
+      ansible.builtin.file:
+        path: "{{ _bk_tmp.path }}"
+        state: absent
+
 - name: "Look at what is already on disk before writing anything"
   ansible.builtin.stat:
     path: "{{ _bk_dest_dir }}/id_ed25519"
   register: _bk_existing
+
+- name: "And the public half"
+  ansible.builtin.stat:
+    path: "{{ _bk_dest_dir }}/id_ed25519.pub"
+  register: _bk_existing_pub
 
 - name: "Read the existing private key to compare"
   ansible.builtin.slurp:
@@ -42,6 +94,28 @@
   register: _bk_existing_material
   when: _bk_existing.stat.exists
   no_log: true
+
+- name: "Read the existing public key to compare"
+  ansible.builtin.slurp:
+    src: "{{ _bk_dest_dir }}/id_ed25519.pub"
+  register: _bk_existing_pub_material
+  when: _bk_existing_pub.stat.exists
+
+- name: "Refuse to overwrite a DIFFERENT public key"
+  # The same protection for the .pub: a public key is not secret, but a .pub that
+  # differs from the private key beside it is exactly the mismatched-pair state
+  # the derivation above exists to prevent.
+  ansible.builtin.assert:
+    that:
+      - ((_bk_existing_pub_material.content | b64decode | trim | split(' '))[0:2])
+        == ((_bk_public_key | trim | split(' '))[0:2])
+    fail_msg: >-
+      {{ _bk_dest_dir }}/id_ed25519.pub exists and does NOT match the public key
+      being written. Refusing — re-run with -e force_overwrite=true if replacing
+      it is genuinely what you want.
+  when:
+    - _bk_existing_pub.stat.exists
+    - not (_bk_force | default(false) | bool)
 
 - name: "Refuse to overwrite a DIFFERENT key"
   # An identical file is a no-op, so re-running converges. A file that DIFFERS is

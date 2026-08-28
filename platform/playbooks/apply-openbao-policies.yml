@@ -17,6 +17,16 @@
     _policies_dir: "{{ playbook_dir }}/../services/openbao/deployment/config/policies"
 
   tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id and the token cross this connection, and this play
+      # then WRITES policy — the most privileged thing the store accepts. It was
+      # the second OpenBao-reaching play without the shared guard, found the same
+      # way as the first: a coverage test that derives its population instead of
+      # keeping a list (2026-08-27).
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"

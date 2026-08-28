@@ -1,0 +1,54 @@
+# Plays that resolve an OpenBao URL and do NOT yet include tasks/assert-bao-transport.yml.
+#
+# A RATCHET, not an allow-list. platform/tests/test_credential_leaks.bats derives the
+# set of OpenBao-reaching plays from the playbooks themselves and then requires:
+#   - every unguarded play is named here        (a NEW gap cannot appear silently)
+#   - every play named here is still unguarded  (a fix cannot leave its exception behind)
+# So this file only ever shrinks, and shrinking it is the work.
+#
+# Why it exists: the test that claimed "every play that reaches OpenBao includes the
+# guard" kept a hand-typed list of FOUR filenames. Deriving the population instead
+# found 40 of 52 unguarded (2026-08-27; docs/MISTAKES.md 2.18). Guarding them is a
+# repo-wide change to live-service deploys and is tracked as its own work, not folded
+# into the change that found it.
+#
+# One filename per line. Remove a line in the same commit that adds the guard.
+apply-policy-inference-comfyui.yml
+apply-policy-inference-hunyuan3d.yml
+apply-policy-nemoclaw.yml
+apply-policy-orb-agent.yml
+apply-policy-semaphore.yml
+apply-policy-uhhcraft.yml
+check-secrets.yml
+create-netbox-device.yml
+deploy-all.yml
+deploy-authentik.yml
+deploy-erpnext.yml
+deploy-honcho.yml
+deploy-inference-comfyui.yml
+deploy-inference-hunyuan3d.yml
+deploy-n8n.yml
+deploy-netbox.yml
+deploy-o11y.yml
+deploy-orb-agent.yml
+deploy-postiz.yml
+deploy-service.yml
+deploy-step-ca.yml
+deploy-tududi.yml
+deploy-uhhcraft.yml
+deploy-wisbot.yml
+harden-ssh.yml
+mint-honcho-team-jwt.yml
+promote-semaphore-admins.yml
+provision-netbox-automation-token.yml
+provision-orb-agent-approle.yml
+provision-vm.yml
+proxmox-validate.yml
+resize-vm.yml
+seed-discovery-credentials.yml
+seed-n8n-secrets.yml
+snapshot-vm.yml
+sync-secrets-to-openbao.yml
+update-proxmox-token.yml
+validate-secrets.yml
+wire-caddy-cloudflare-token.yml

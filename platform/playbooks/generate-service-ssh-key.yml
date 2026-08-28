@@ -51,6 +51,14 @@
           - _bao_url | length > 0
         fail_msg: "Pass -e service_name=... and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
 
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id, the token, and a freshly minted PRIVATE KEY all cross
+      # this connection. This playbook predates the shared guard and was the one
+      # OpenBao-reaching play without it — found in review, 2026-08-27.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"

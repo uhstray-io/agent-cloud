@@ -51,6 +51,14 @@ for path in sorted(root.rglob('*.yml')):
     in_vars = False
     vars_indent = 0
     for n, line in enumerate(lines, 1):
+        # Flow-style `vars: { a: "{{ lookup('pipe', ...) }}" }` sits on one line and
+        # a block-style scanner walks straight past it. Check the declaration line
+        # itself when it carries an inline mapping.
+        f = re.match(r'^(\s*)vars:\s*\{.*$', line)
+        if f:
+            if BAD.search(line):
+                print("%s:%d: %s" % (path, n, line.strip()[:80]))
+            continue
         m = re.match(r'^(\s*)vars:\s*$', line)
         if m:
             in_vars, vars_indent = True, len(m.group(1))

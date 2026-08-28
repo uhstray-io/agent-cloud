@@ -42,6 +42,15 @@
           - _bao_url | length > 0
         fail_msg: "Pass tofu_action=plan|apply and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
 
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id, the token, and the Cloudflare API token all cross
+      # this connection. This was the one OpenBao-reaching play without the shared
+      # guard — hidden by a hand-kept list in the coverage test, found the moment
+      # that test derived its population instead (2026-08-27).
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"

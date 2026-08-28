@@ -20,8 +20,11 @@ setup() {
 
 @test "ssh backup: the shared task exists and both callers reach it" {
   [ -f "$SHARED" ]
-  assert_grep -q 'include_tasks: tasks/backup-ssh-key-to-site-config.yml' "$BACKUP"
-  assert_grep -q 'include_tasks: tasks/backup-ssh-key-to-site-config.yml' "$GEN"
+  # Anchored to the module KEY at task indent, not a bare substring: both callers
+  # also NAME the shared task in comments, which a substring match would accept
+  # after the real include was deleted (docs/MISTAKES.md 2.15).
+  assert_grep -qE '^[[:space:]]+ansible\.builtin\.include_tasks: tasks/backup-ssh-key-to-site-config\.yml$' "$BACKUP"
+  assert_grep -qE '^[[:space:]]+ansible\.builtin\.include_tasks: tasks/backup-ssh-key-to-site-config\.yml$' "$GEN"
 }
 
 @test "ssh backup: exactly ONE file writes a private key to a backup directory" {
@@ -96,6 +99,13 @@ setup() {
   n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$BACKUP")
   [ "$n_url" -gt 0 ]
   [ "$n_inc" -eq "$n_url" ]
+  # And the guard runs BEFORE the first request that carries a credential — a
+  # guard placed after the AppRole login has already sent the secret_id.
+  local guard_line first_uri_line
+  guard_line=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$BACKUP" | head -1 | cut -d: -f1)
+  first_uri_line=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$BACKUP" | head -1 | cut -d: -f1)
+  [ -n "$guard_line" ]; [ -n "$first_uri_line" ]
+  [ "$guard_line" -lt "$first_uri_line" ]
 }
 
 @test "ssh backup: the operator playbook never writes to the store" {
@@ -112,9 +122,24 @@ setup() {
     printf '%s\n' "$methods" >&2
     return 1
   fi
-  # And the only POST target is the login endpoint.
-  local posts
-  posts=$(grep -B4 'method: POST' "$BACKUP" | grep -cE 'auth/approle/login' || true)
-  [ "$posts" -ge 1 ]
+  # EVERY POST, individually, targets the login endpoint — not "at least one
+  # does", which a second secret-writing POST would slip past. Each uri block is
+  # extracted and its own url checked.
+  local offenders
+  offenders=$(awk '
+    /^[[:space:]]+ansible\.builtin\.uri:/ { inblk = 1; url = ""; method = ""; next }
+    inblk && /^[[:space:]]+url:/    { url = $0 }
+    inblk && /^[[:space:]]+method:/ { method = $2 }
+    inblk && /^[[:space:]]+- name:/ {
+      if (method == "POST" && url !~ /auth\/approle\/login/) print "POST to: " url
+      inblk = 0
+    }
+    END { if (inblk && method == "POST" && url !~ /auth\/approle\/login/) print "POST to: " url }
+  ' "$BACKUP")
+  if [ -n "$offenders" ]; then
+    echo "a POST that is not the AppRole login:" >&2
+    printf '%s\n' "$offenders" >&2
+    return 1
+  fi
   refute_grep -qE 'method: (PUT|DELETE|PATCH)' "$BACKUP"
 }

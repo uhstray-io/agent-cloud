@@ -205,6 +205,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/enable-linger.yml` | Implemented | `loginctl enable-linger` so rootless containers survive a reboot; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
+| `tasks/backup-ssh-key-to-site-config.yml` | Implemented | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/distribute-ca-root.yml` | Implemented | Distribute the internal CA root to a host's trust store |
 | `tasks/distribute-caddy-site.yml` | Implemented | Place a per-service Caddy site fragment (composable Caddy model) |
 | `tasks/mint-internal-cert.yml` | Implemented | Mint a certificate from the internal step-ca |

@@ -50,6 +50,7 @@ supersede it with a new entry and link both.
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -744,6 +745,41 @@ keyword on the resolver's include makes it fail with the file and line; removing
 makes it pass. The companion assertion in `become: the transport guard needs no
 privilege, and says so` now pins `become: false` on the guard's own task, because
 its previous form required the very construct that broke the runtime.
+
+### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
+
+**What happened.** `test_credential_leaks.bats` carried a test named *every play
+that resolves an OpenBao URL includes the transport guard*. Its body looped over
+four filenames written into the test. While extending that list by one for a review
+finding, the population was derived from the playbooks instead — every file with a
+`_bao_url:` play var — and **40 of 52** such plays had no transport guard. Among
+them: every `apply-policy-*.yml`, `apply-openbao-policies.yml` (which *writes*
+policy), `harden-ssh.yml`, and most `deploy-*.yml`.
+
+The test had been green throughout, and its name had been read as a fact.
+
+**Root cause.** The population was a list, and a list is a claim about the world
+that nothing re-checks. It was correct on the day it was written — those four plays
+were the ones the guard had been extracted from — and every play added afterwards
+was invisible to it. A test whose population is hand-kept asserts only "these N are
+fine", however its name reads.
+
+This is the same mechanism as 2.16 (population selected by the presence of the fix)
+in a different coat: there, the selector was the property under test; here, the
+selector was a snapshot. Both make the test unable to fail on the case that matters,
+which is the one that was not there when the test was written.
+
+**The rule.** A test that speaks about "every X" derives X from the code. If the
+honest derived result cannot be made to pass today — because fixing it is a large
+change with its own risk — the test becomes a **ratchet**: a committed file names
+the known exceptions, the test fails on any exception *not* in the file, **and**
+fails on any file entry that is no longer an exception. The list can then only
+shrink, and shrinking it is visible work rather than a comment nobody reads.
+
+**Enforced by.** The rewritten test in `platform/tests/test_credential_leaks.bats`
+with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
+38 remaining plays is tracked as its own change — it touches live-service deploys
+and was deliberately not folded into the change that found it.
 
 ## 3. Acting on live state
 
