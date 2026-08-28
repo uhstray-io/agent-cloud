@@ -34,6 +34,25 @@ the worker applies them idempotently on boot. The seed creates an `agent-cloud`
 group. Flows, OIDC providers, and per-app gating are added here as services are
 onboarded — never click-configured in the UI (that would drift from code).
 
+## Verify — the deploy reads the live state back
+
+Blueprint application is **asynchronous** in the worker: a deploy that placed the files
+and saw a healthy server has proven only that the files landed. So the last step of
+`deploy-authentik.yml` renders `templates/verify-users.py.j2` and runs it inside
+`authentik-server` (bootstrap token from the container env, same as the OIDC check).
+It fails the deploy unless:
+
+- every blueprint **this deploy assembled** (shared + enabled apps + `zz-sso-bindings`)
+  has an API record under `custom/` **and** its status is `successful` — a file the
+  worker never discovered has no record at all, which is why the expected set is
+  derived from what was placed, not from what the API lists;
+- every account the users blueprint declares present exists, is active, and is in at
+  least one group (a `!Find` that matched nothing leaves a user every gate refuses);
+- every account declared `state: absent` is gone.
+
+It prints usernames, group names and blueprint statuses — never a credential. Handing
+a new user their first login waits on this step passing.
+
 ## Files
 
 | File | Role |
@@ -43,6 +62,7 @@ onboarded — never click-configured in the UI (that would drift from code).
 | `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait healthy — long first boot) |
 | `deployment/templates/env.j2` | compose-subst vars + authentik runtime config + secrets from OpenBao |
 | `deployment/blueprints/*.yaml` | config-as-code applied by the worker (committed; non-secret) |
+| `deployment/templates/verify-users.py.j2` | post-apply live-state check (above); rendered per deploy, run inside the server container |
 
 `deployment/.env` is rendered per-deploy and gitignored. Local issuance/TLS is
 handled by Caddy + step-ca (`*.agent-cloud.test`); prod uses Caddy + Let's

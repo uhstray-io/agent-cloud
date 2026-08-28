@@ -141,7 +141,7 @@ promotion-source check:
 | --- | ----- | -------- |
 | **Static Analysis** | ruff, shellcheck, ansible-lint, yamllint, hadolint, terraform fmt | Any lint error or warning |
 | **Security Scan** | trufflehog, bandit, IP/credential grep | Leaked secrets, security issues, hardcoded IPs |
-| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Any test failure |
+| **Unit Tests** | pytest (100 tests), BATS (500+ tests; `bats -c platform/tests/*.bats` for the exact count) | Any test failure |
 
 All three must pass before merging. See `plan/architecture/03-testing-ci-quality.md` for
 full details.

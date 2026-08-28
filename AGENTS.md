@@ -259,7 +259,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Workflow | Playbook | Purpose |
 |----------|----------|---------|
 | Deploy NetBox | `deploy-netbox.yml` | 5-phase: secrets → containers → app config → Diode creds → verify |
-| Deploy Authentik | `deploy-authentik.yml` | Central IdP/SSO (podman): secrets → server+worker+pg+redis → blueprints → verify → Caddy fragment (composable) |
+| Deploy Authentik | `deploy-authentik.yml` | Central IdP/SSO (podman): secrets → server+worker+pg+redis → blueprints → verify → Caddy fragment (composable). The verify step **reads the live state back** (`verify-users.py.j2`, run inside the server container): every blueprint this deploy placed must have an API record AND be `successful`, every declared account present + active + in a group, every retired account gone — or the deploy fails. Exists because blueprint application is async in the worker: "files landed" proved nothing about accounts |
 | Print User Credentials | `print-platform-user-credentials.yml` | **GATED, and it PRINTS a live credential.** Reads named `<user>_password` fields from `secret/services/authentik` and emits them, so an operator can hand someone their first login. Refuses without `-e i_understand_this_prints_secrets=true`; the secret path is fixed, not a parameter. Semaphore stores task output durably — **delete the task as soon as the credential is captured**. Exists because initial passwords are OpenBao-generated and never seen; the real fix is Authentik enrollment links, which need prod SMTP |
 | Deploy OpenHands | `deploy-openhands.yml` | Agent Canvas (Docker; host docker.sock): clone → env → container → verify → Caddy fragment (composable) |
 | Clean Deploy OpenHands | `clean-deploy-openhands.yml` | Destructive: wipe openhands-state volume + fresh deploy |
@@ -278,6 +278,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates). Backs the pair up to site-config **in the same run when `site_config_dir` points at a clone** — and says so loudly when it cannot, because a key that exists only in the store leaves nobody able to log in |
 | Back Up Credentials to site-config | `backup-credentials-to-site-config.yml` | Copy credentials out of OpenBao into the private repo **on a new branch per backup, without any of them reaching a log**. The runner clones site-config with a deploy key from `secret/services/ssh/site-config`, writes `secrets/<service>/<field>.txt`, commits and pushes; the task output carries only field NAMES, counts and the branch. Exists because Semaphore v2.17 has no API to clear a task's output while keeping the task — printing would force a choice between a live credential in the orchestrator and destroying the run record. Requires that deploy key to be registered on the GitHub repo **with write access** |
+| Back Up SSH Key | `backup-service-ssh-key.yml` | Copy one per-service keypair OUT of OpenBao into the site-config clone (`secrets/ssh/<name>/`), via the same shared task the generator uses. Read-only against the store; derives the public half from the private and refuses a mismatched pair; refuses to overwrite a differing file without `-e force_overwrite=true`. Exists because a key that lives only in OpenBao leaves nobody able to log in when the store is unreachable |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
 | Manage Caddy Sites | `manage-caddy-sites.yml` | **Read** the live Caddyfile (reports every site block, its upstreams, and whether inventory or a hand edit owns it), insert/update the marked block, optionally **retire** hand-maintained blocks (`caddy_retire_sites`) so inventory can adopt that hostname; validate + restart |
@@ -350,7 +351,7 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **Phase 0-0.5**: Foundation + per-VM deployment
 - **Monorepo consolidation** — two repos: agent-cloud (public) + site-config (private)
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
-- **Semaphore pipeline** — 74 declared task templates (plus generated `(Dev)` variants), SSH key auth
+- **Semaphore pipeline** — 76 declared task templates (plus generated `(Dev)` variants), SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
@@ -436,7 +437,7 @@ a branch-deletion push. Failing open like that is deliberate and the opposite of
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
 is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
-Why push and not commit: the suite is ~37s for 452 tests, which on every commit is
+Why push and not commit: the suite is ~40s for 500+ tests, which on every commit is
 friction people route around with `--no-verify` — turning a gate into a habit of
 bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
 failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
@@ -499,7 +500,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (517 tests, Bash)
+- **Unit Tests**: pytest (100 tests, Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (Bash — `bats -c platform/tests/*.bats` prints the current count; the number is deliberately not written here, because a hardcoded count conflicted on every branch merge)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

@@ -106,6 +106,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |
 | `deploy-inference-comfyui.yml` | Composable | Deploy ComfyUI sidecar (GPU prereqs + secrets + containers + verify) |
 | `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
+| `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy |
 | `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 
@@ -126,6 +127,10 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 |----------|---------|
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao, verify key auth (no sudo) |
 | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown + post-lockdown verification (requires sudo) |
+| `generate-service-ssh-key.yml` | Generate + store a per-service ed25519 key in OpenBao (never rotates); backs the pair up to site-config in the same run when `site_config_dir` is set |
+| `backup-service-ssh-key.yml` | Copy an existing per-service keypair OUT of OpenBao into the site-config clone. Read-only against the store; refuses a mismatched pair and a differing existing file (`force_overwrite` to replace) |
+| `backup-credentials-to-site-config.yml` | Copy named credential fields out of OpenBao into site-config on a NEW branch per run, pushed with a deploy key over pinned GitHub host keys; no value ever reaches task output |
+| `print-platform-user-credentials.yml` | GATED stopgap that PRINTS first-login passwords into task output (`-e i_understand_this_prints_secrets=true`); Semaphore cannot restrict it per-template, so prefer the backup playbook above |
 | `verify-host-access.yml` | Prove KEY-ONLY SSH works BEFORE `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
 | `apply-firewall.yml` | Default-deny inbound (SSH from admin CIDRs, service ports from their intended source) plus optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: allows precede enable, then a fresh handshake is forced |
 
