@@ -296,9 +296,12 @@ protects 1.7, which is the only irreversible step in the change.
       MEDIUM (label=disable riding into prod via the search overlay) was fixed
       anyway by moving the local-only knobs to compose.local.yml — live-verified,
       ES confined on the prod path and still capped locally. 523 BATS green.
-- [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
+- [x] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit
+      OPENED 2026-08-30 on the operator's explicit ask: PR #145
+      (feat/postiz-temporal-search, 11 commits). The backup-path branch went up
+      alongside as PR #146. Merging remains the operator's step, after review.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
