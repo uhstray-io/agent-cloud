@@ -2,15 +2,15 @@
 
 ## 1. Community node as code
 
-- [ ] 1.1 Pin `n8n-nodes-postiz` 0.2.17: fetch its `dist.integrity` checksum from the
+- [x] 1.1 Pin `n8n-nodes-postiz` 0.2.17: fetch its `dist.integrity` checksum from the
       npm registry and add `N8N_COMMUNITY_PACKAGES_ENABLED`,
       `N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV=true`, and the `N8N_COMMUNITY_PACKAGES`
       JSON declaration to `n8n.env.j2` (values parameterized through inventory vars,
       no fork between local and prod)
-- [ ] 1.2 Confirm both n8n containers (app + worker) see the reconciled package via the
+- [x] 1.2 Confirm both n8n containers (app + worker) see the reconciled package via the
       shared `n8n_data` volume; wire any env var the worker needs into `compose.yml`
       anchors rather than duplicating
-- [ ] 1.3 Extend `platform/tests/test_service_n8n.bats`: the template declares the
+- [x] 1.3 Extend `platform/tests/test_service_n8n.bats`: the template declares the
       managed-package variables, pins name+version+checksum, and contains no literal
       secrets
 - [ ] 1.4 Validation gate: BATS suite green; scenario "Declared node present after
@@ -19,25 +19,25 @@
 
 ## 2. API-key capture into OpenBao
 
-- [ ] 2.1 Verify (against the deployed n8n 2.25.7 schema) the table/column holding
+- [x] 2.1 Verify (against the deployed n8n 2.25.7 schema) the table/column holding
       public-API keys; record it in the playbook header comment with the version it
       was verified against
-- [ ] 2.2 Write `store-n8n-api-key.yml` on the `store-postiz-api-key.yml` pattern:
+- [x] 2.2 Write `store-n8n-api-key.yml` on the `store-postiz-api-key.yml` pattern:
       read the key from n8n's own Postgres, KV-v2 merge-patch into
       `secret/services/n8n:n8n_api_key`, every key-bearing step `no_log`, output
       restricted to field names and counts; assert-and-fail with a named error when
       the schema or key is absent
-- [ ] 2.3 Add BATS coverage: all key-bearing tasks carry `no_log: true` (scoped to
+- [x] 2.3 Add BATS coverage: all key-bearing tasks carry `no_log: true` (scoped to
       those tasks only), no `debug` task can render the key
 - [ ] 2.4 Validation gate: scenario "Key capture leaves no trace in the run record"
       holds — local run stores the key, Semaphore task output shows names/counts only
 
 ## 3. Postiz credential provisioned in n8n
 
-- [ ] 3.1 Verify the n8n public-API credential endpoints (list/create/update shapes)
+- [x] 3.1 Verify the n8n public-API credential endpoints (list/create/update shapes)
       against the docs for the pinned version; record the verified routes in the
       playbook header
-- [ ] 3.2 Write `provision-n8n-postiz-credential.yml`: authenticate with
+- [x] 3.2 Write `provision-n8n-postiz-credential.yml`: authenticate with
       `secret/services/n8n:n8n_api_key`, shared-read
       `secret/services/postiz:postiz_api_key` (never copied to another path),
       upsert one `postizApi` credential with `Host` from inventory
