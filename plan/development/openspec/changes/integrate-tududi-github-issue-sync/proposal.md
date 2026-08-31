@@ -62,8 +62,8 @@ engine this bridge needs; this change is its first real workflow consumer.
   provisioning playbook for the workflows + GitHub/tududi credentials, BATS
   coverage; Semaphore template(s) for provisioning.
 - **Secrets layout**: `secret/services/tududi:api_token` gains its planned value;
-  a GitHub credential for the sync lands under an existing or new
-  `secret/services/github` field — scoping decided in design.
+  the sync's GitHub credential lands at `secret/services/github:tududi_sync_pat`
+  (fine-grained, scoped to the six repos — design D7).
 - **External state**: issues created/updated in six GitHub repositories; tasks
   updated in tududi. Both under a dedicated sync identity, so its writes are
   distinguishable and echo-suppressible.
@@ -82,5 +82,7 @@ engine this bridge needs; this change is its first real workflow consumer.
   values in comments. No destructive operation exists in the sync at all — it
   never deletes issues or tasks.
 - **Credentials**: revoke the tududi token in its UI and the GitHub credential at
-  the provider; delete the n8n credentials by re-running provisioning against an
-  empty declaration.
+  the provider (both revocation steps documented beside the seeding steps);
+  re-running provisioning against an empty declaration removes the workflows and
+  credentials it owns from n8n — provisioning prunes its own objects by design
+  (design D1), so this is specified behavior, not a hope.

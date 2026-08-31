@@ -49,6 +49,13 @@ same custody chain the Postiz credential provisioning uses. Idempotent:
 list-by-name, update-in-place, never duplicate; activation is part of
 provisioning.
 
+Provisioning also **prunes what it owns**: every workflow and credential it
+creates carries the sync's name prefix, and a re-run removes any owned object
+absent from the current declaration — which is what makes "re-provision against
+an empty declaration" a real rollback rather than a claim. Objects without the
+prefix are never touched, so an operator's unrelated workflows survive any
+provisioning run.
+
 - *Building workflows in the n8n UI* rejected: invisible to review, unreproducible
   on a clean deploy — the exact drift the platform exists to prevent.
 - *A dedicated sync service container* rejected: a whole service to own for one
@@ -86,11 +93,21 @@ repo; no credential or address appears in the mapping.
 ### D4 — Linkage lives in the artifacts themselves; the sync stays stateless
 
 An issue created from a task carries a machine-readable marker block in its body
-(HTML comment): the tududi task `uid`, the last-synced content hash, and the
-last-synced timestamps for both sides. The tududi task carries the issue
-reference on its own record (which field — description suffix vs a dedicated
-field — is settled by the spike against the 1.1.1 OpenAPI spec). Any cycle can
-rebuild its entire working state by reading the two systems.
+(HTML comment): the tududi task `uid`, **per-field baselines** — a canonical
+hash of each synced field (title, description, status, tags/labels) as of the
+last sync — and the last-synced timestamps for both sides. The tududi task
+carries the issue reference on its own record (which field — description suffix
+vs a dedicated field — is settled by the spike against the 1.1.1 OpenAPI spec).
+Any cycle can rebuild its entire working state by reading the two systems.
+
+Creation is idempotent through the marker, not through memory: before creating
+an issue for a tagged task, the cycle searches the paired repository for an
+existing issue whose marker carries that task's `uid`. So the
+created-issue-but-failed-to-link crash window cannot produce a duplicate — the
+next cycle finds the orphan by `uid` and completes the linkage instead of
+re-creating. The same search is the recovery path for a corrupted marker whose
+`uid` line survives; a marker damaged beyond that is logged for a human, never
+guessed at.
 
 - *External mapping store* (n8n static data, a DB) rejected: invisible state
   that can drift from both systems and dies with the engine; the artifacts are
@@ -102,13 +119,20 @@ rebuild its entire working state by reading the two systems.
 
 Both credentials belong to a dedicated sync identity (a tududi user whose token
 the sync uses; the GitHub PAT's account). A cycle ignores changes whose author
-is the sync identity, and independently skips any write whose content hash
-equals the marker's last-synced hash — so even if authorship filtering fails
-(tududi's audit-trail exposure through the API is verified in the spike, not
-assumed), the hash makes a quiet cycle a no-op and kills ping-pong loops.
-Last-writer-wins compares the two systems' own `updated_at` values against the
-marker's recorded pair — never the poller's wall clock, so clock skew between
-the poller and either system cannot flip a conflict.
+is the sync identity, and independently skips any write for a field whose
+current hash equals that field's marker baseline — so even if authorship
+filtering fails (tududi's audit-trail exposure through the API is verified in
+the spike, not assumed), the baselines make a quiet cycle a no-op and kill
+ping-pong loops.
+
+Last-writer-wins resolves **per field**, against the per-field baselines from
+D4: a field changed on only one side simply propagates, so both sides editing
+*different* fields merges cleanly with nothing overwritten — only the same
+field changed on both sides is a conflict, and there the newer side's
+`updated_at` wins (the spec's conflict scenario is per-field for exactly this
+reason). Timestamps compared are always the two systems' own `updated_at`
+values against the marker's recorded pair — never the poller's wall clock, so
+clock skew between the poller and either system cannot flip a conflict.
 
 ### D6 — Status and tag mapping are documented tables, built from the real enums
 
@@ -119,14 +143,32 @@ sync contract doc next to the Postiz automation contract. Fixed rules decided
 now: the sync tag itself is a control marker and is never propagated as a
 label; label/tag comparison is name-based and case-insensitive; a task archived
 or deleted in tududi closes its issue as not-planned with an audit comment (the
-sync never deletes an issue or a task — spec requirement).
+sync never deletes an issue or a task — spec requirement). **Removing the sync
+tag gets the same treatment as archive**: the issue is closed as not-planned
+with an audit comment naming the un-tagging, the task itself is untouched, and
+the marker linkage survives — re-adding the tag reopens the same issue rather
+than creating a duplicate. Un-tagging expresses "stop tracking this in GitHub",
+and a closed issue with an audit trail says that; a silently stale open issue
+does not.
 
 ### D7 — GitHub credential: fine-grained PAT scoped to the six repos, in OpenBao
 
 A fine-grained personal access token restricted to the six repositories with
-Issues read/write, stored in OpenBao (field under `secret/services/github`,
-seeded via the existing `Seed OpenBao Key` mechanism), provisioned into n8n by
+Issues read/write, stored at **`secret/services/github:tududi_sync_pat`**
+(seeded via the existing `Seed OpenBao Key` mechanism), provisioned into n8n by
 playbook.
+
+Credential lifecycle honesty: creating a fine-grained PAT is an operation on
+GitHub's own settings surface, and the tududi token mint is UI-side unless the
+spike finds a token-mint route in the 1.1.1 API (spike task — if one exists,
+the mint is automated on the n8n `store-n8n-api-key.yml` model). What IS
+encoded either way: the provisioning playbook **precondition-validates both
+credentials against their live APIs before touching n8n** and fails with a
+named error when one is absent or dead, re-validation is a standing check
+(`Validate Secrets` pattern), and the revocation steps for both providers are
+documented next to the seeding steps. Provider-side creation that cannot be
+API-driven is a labelled operator step with a deterministic gate behind it —
+never an unstated assumption.
 
 - *Reusing the existing platform PAT* (`secret/services/github`) rejected:
   over-scoped for a standing automation that writes to repos on a timer.
@@ -149,9 +191,11 @@ playbook.
   every write attributable and filterable; the sync has no delete operation by
   design; per-cycle write caps in the workflow fail the run loudly rather than
   fan out damage.
-- **[Marker block corrupted or hand-edited in an issue body]** → the cycle
-  treats an unparseable marker as "unlinked", logs it, and never guesses — a
-  human relinks by restoring the marker or re-tagging.
+- **[Marker block corrupted or hand-edited in an issue body]** → recovery is
+  the D4 `uid` search: if the marker's `uid` line survives, the cycle re-links
+  and rewrites a clean marker; damaged beyond that, it logs for a human and
+  never guesses — and the pre-create `uid` search means even a fully lost
+  marker cannot cause a duplicate issue, only a stalled pair.
 - **[n8n substrate slips]** → this change is sequenced strictly after
   `complete-n8n-composable-deployment`; nothing here can start until that
   change's credential-provisioning pattern exists in prod.

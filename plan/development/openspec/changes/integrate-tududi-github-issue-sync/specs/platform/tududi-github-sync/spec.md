@@ -34,8 +34,11 @@ deleting or altering existing tasks or issues.
 ### Requirement: A work item crosses only when tagged for it
 
 A tududi task SHALL be represented as a GitHub issue only when it carries the
-designated sync tag AND belongs to a project in a declared pair. Tasks without
-the sync tag MUST never appear in GitHub in any form, regardless of project.
+designated sync tag AND belongs to a project in a declared pair. A task that has
+never carried the sync tag MUST never appear in GitHub in any form, regardless
+of project. Removing the sync tag from a linked task SHALL stop propagation and
+close its issue as not-planned with an audit note — never delete it — and the
+linkage MUST survive so re-tagging reopens the same issue.
 
 #### Scenario: Untagged task stays private
 
@@ -48,6 +51,20 @@ the sync tag MUST never appear in GitHub in any form, regardless of project.
 - **THEN** a subsequent cycle creates one issue in the paired repository carrying
   the task's title, description, status and tags, the pair is durably linked,
   and further cycles update rather than re-create it
+
+#### Scenario: Interrupted creation recovers without a duplicate
+
+- **WHEN** a cycle created the issue but failed before recording the link on the
+  task, and a later cycle processes the same tagged task
+- **THEN** the later cycle finds the existing issue by the task identity it
+  carries, completes the linkage, and no second issue is created
+
+#### Scenario: Removing the sync tag closes the issue, destroys nothing
+
+- **WHEN** the sync tag is removed from a linked task
+- **THEN** the next cycle closes the issue as not-planned with an audit note,
+  the task itself is unchanged, and re-adding the tag later reopens the same
+  issue rather than creating a new one
 
 ### Requirement: Linked pairs converge bidirectionally
 
@@ -114,6 +131,9 @@ The tududi token and the GitHub credential the sync uses SHALL be stored in the
 secret store and provisioned into the workflow engine by automation. The GitHub
 credential MUST be scoped to no more than the declared repositories, and no
 credential value may appear in workflow definitions, task output, or logs.
+Provisioning MUST validate both credentials against their live services before
+changing the engine, and MUST remove engine objects it owns that the current
+declaration no longer implies.
 
 #### Scenario: Credentials provisioned as code
 
@@ -127,3 +147,17 @@ credential value may appear in workflow definitions, task output, or logs.
 - **WHEN** the workflow definitions, the mapping configuration, and the
   provisioning run's output are inspected
 - **THEN** none contains a credential value — only secret-store path references
+
+#### Scenario: Removal from the declaration removes the engine objects
+
+- **WHEN** a workflow or credential the provisioning previously created is no
+  longer implied by the declaration and provisioning re-runs
+- **THEN** that object is removed from the workflow engine, while objects the
+  provisioning did not create are left untouched
+
+#### Scenario: Provisioning refuses dead credentials
+
+- **WHEN** provisioning runs while either stored credential is absent or no
+  longer accepted by its service
+- **THEN** it fails with an error naming which credential failed, before
+  changing anything in the workflow engine
