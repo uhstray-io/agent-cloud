@@ -97,9 +97,12 @@ PY_VARS
   # when no argument contains a space, and the two that do here are a person's
   # name and a commit message.
   local bad
-  bad=$(awk '/^\s*- name: "Identify the commit"/,/changed_when/ { if (/cmd:/) print "identity task uses cmd:" }' "$CLONE"
-        awk '/^\s*- name: "Commit"/,/chdir:/ { if (/cmd:/) print "commit task uses cmd:" }
-             /^\s*- name: "Stage only the path this run wrote"/,/chdir:/ { if (/cmd:/) print "stage task uses cmd:" }' "$PUSH")
+  # [[:space:]], not \s — awk's ERE has no \s, so the anchor matched nothing and
+  # every selector silently inspected zero lines (the reviewer caught it; the
+  # fixed form is mutation-tested by reintroducing a cmd: in the Commit task).
+  bad=$(awk '/^[[:space:]]*- name: "Identify the commit"/,/changed_when/ { if (/cmd:/) print "identity task uses cmd:" }' "$CLONE"
+        awk '/^[[:space:]]*- name: "Commit"/,/chdir:/ { if (/cmd:/) print "commit task uses cmd:" }
+             /^[[:space:]]*- name: "Stage only the path this run wrote"/,/chdir:/ { if (/cmd:/) print "stage task uses cmd:" }' "$PUSH")
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" >&2
     return 1
