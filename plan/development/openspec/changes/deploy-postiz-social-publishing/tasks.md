@@ -229,6 +229,14 @@ protects 1.7, which is the only irreversible step in the change.
       gate could run, because without the search node the backend does not even
       bind (see 2.2). The gate's own scenario — a connected account publishing a
       scheduled post — still needs the operator's browser.
+      PROVIDER REALITY CHECK 2026-08-30, from live attempts: LinkedIn refused the
+      unregistered local redirect (fixable by registering it in the console);
+      Google refused the local redirect URI OUTRIGHT — "Error 400:
+      invalid_request … doesn't comply with Google's OAuth 2.0 policy" — so
+      YouTube cannot be connected on the .test host at all and its connect gate
+      moves to production (6.5/7.7). Run this gate locally with a provider whose
+      console accepts the local URL (Discord or LinkedIn), or accept it lands in
+      phase 7.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
 - [x] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
