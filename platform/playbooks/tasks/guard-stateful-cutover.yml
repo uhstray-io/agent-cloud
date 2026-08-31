@@ -1,0 +1,66 @@
+---
+# guard-stateful-cutover.yml — refuse an in-place cutover whose rendered env
+# disagrees with the live legacy env on any STATEFUL value, before any
+# container is touched.
+#
+# On a host still carrying the legacy env file, regenerated stateful secrets
+# are data loss, not rotation: a re-keyed n8n encryption key makes every stored
+# workflow credential permanently undecryptable; a regenerated Postgres
+# password fails auth against the existing data volume. Operator vigilance is
+# the thing that fails at 2am — this diff is mechanical, fails closed, and
+# prints KEY NAMES ONLY. Hosts with no legacy file (greenfield) skip entirely.
+#
+# Shared because the same guard is prescribed for every held in-place migration
+# (plan/development/09-service-migrations-tooling.md Task 0 step 4 — n8n now,
+# NocoDB when unpaused); the fail-closed / no_log / names-only property set
+# should be gotten right once, not re-derived per service.
+#
+# Caller passes:
+#   _gsc_live_env      path of the LIVE legacy env file (absent -> guard skips)
+#   _gsc_rendered_env  path of the freshly rendered env file
+#   _gsc_keys          list of stateful KEY names to compare
+#   _gsc_fix_hint      optional one-line remediation for the refusal message
+
+- name: "Check for a live legacy env (cutover detection)"
+  ansible.builtin.stat:
+    path: "{{ _gsc_live_env }}"
+  register: _gsc_legacy
+
+- name: "Guard the cutover: rendered stateful values must match the live ones"
+  when: _gsc_legacy.stat.exists
+  block:
+    - name: "Read both env files"
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ _gsc_live_env }}"
+        - "{{ _gsc_rendered_env }}"
+      register: _gsc_envs
+      no_log: true
+
+    - name: "Diff the stateful values (names only)"
+      # One pass per key; only the NAME of a differing key survives into the
+      # fact. A key absent from a file reads as '' — if it is absent from
+      # both, the pair agrees vacuously and the assert stays green.
+      ansible.builtin.set_fact:
+        _gsc_mismatches: >-
+          {{ (_gsc_mismatches | default([]))
+             + ([item] if _gsc_live_val != _gsc_new_val else []) }}
+      vars:
+        _gsc_live_txt: "{{ _gsc_envs.results[0].content | b64decode }}"
+        _gsc_new_txt: "{{ _gsc_envs.results[1].content | b64decode }}"
+        _gsc_live_val: "{{ (_gsc_live_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
+        _gsc_new_val: "{{ (_gsc_new_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
+      loop: "{{ _gsc_keys }}"
+      no_log: true
+
+    - name: "Refuse to proceed on a stateful mismatch (names only, never values)"
+      ansible.builtin.assert:
+        that:
+          - _gsc_mismatches | length == 0
+        fail_msg: >-
+          CUTOVER REFUSED before touching the running service: the rendered
+          {{ _gsc_rendered_env }} disagrees with the live {{ _gsc_live_env }}
+          on {{ _gsc_mismatches | default([]) | join(', ') }}.
+          {{ _gsc_fix_hint | default('Pre-seed the live values into the secret
+          store, verify them, then re-run.') }} No container was restarted.

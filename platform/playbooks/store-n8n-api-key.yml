@@ -146,27 +146,30 @@
           guess which one automation should hold. Remove the extras in n8n
           (Settings -> API) and re-run.
 
+    # OpenBao is spoken to from the RUNNER (delegate_to: localhost) — it holds
+    # the AppRole and the route to the store. ONE login serves the whole play:
+    # the owner-password read on the mint path and the merge at the end.
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
     # ── Mint path: only when no key with our label exists yet ──────────────
     - name: "Mint the API key via the owner session"
       when: _key_count | int == 0
       block:
-        - name: "Authenticate to OpenBao for the owner password (AppRole)"
-          ansible.builtin.uri:
-            url: "{{ _bao_url }}/v1/auth/approle/login"
-            method: POST
-            body_format: json
-            body:
-              role_id: "{{ _bao_role_id }}"
-              secret_id: "{{ _bao_secret_id }}"
-          register: _bao_owner_auth
-          delegate_to: localhost
-          no_log: true
-
         - name: "Read the n8n owner password from OpenBao"
           ansible.builtin.uri:
             url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
             headers:
-              X-Vault-Token: "{{ _bao_owner_auth.json.auth.client_token }}"
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
           register: _n8n_secret
           delegate_to: localhost
           no_log: true
@@ -234,20 +237,6 @@
           No API-key value in hand after the {{ 'mint' if _key_count | int == 0
           else 'database read' }} — refusing to store an empty secret at
           secret/{{ _bao_path }}:{{ _bao_key }}.
-
-    # OpenBao is spoken to from the RUNNER (delegate_to: localhost) — it holds
-    # the AppRole and the route to the store; same shape as store-postiz-api-key.
-    - name: "Authenticate to OpenBao (AppRole)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/auth/approle/login"
-        method: POST
-        body_format: json
-        body:
-          role_id: "{{ _bao_role_id }}"
-          secret_id: "{{ _bao_secret_id }}"
-      register: _bao_auth
-      delegate_to: localhost
-      no_log: true
 
     - name: "Merge the key into the store (shared write path: fetch, refuse-missing, patch, verify)"
       # tasks/bao-merge-keys.yml is THE merge-patch implementation — it preserves

@@ -98,13 +98,15 @@ setup() {
   done < <(printf '%s\n' \
     "Look for the automation key" \
     "Parse what the database answered" \
-    "Authenticate to OpenBao for the owner password" \
     "Read the n8n owner password" \
     "Log in to n8n as the seeded owner" \
     "Fetch the valid API-key scopes" \
     "Create the API key" \
     "Take the raw key" \
     "Authenticate to OpenBao (AppRole)")
+  # ONE AppRole login serves the whole play — a second inline copy is the
+  # duplication bao-merge-keys.yml's history warns about.
+  [ "$(grep -c 'auth/approle/login' "$pb")" -eq 1 ]
   # ...and no_log is SCOPED there: schema assert + report stay diagnosable.
   for n in "Assert the API-key schema exists" "Require the user_api_keys table" "Report (names and counts only"; do
     blk=$(task_block "$pb" "$n")
@@ -115,14 +117,14 @@ setup() {
   blk=$(task_block "$pb" "Merge the key into the store")
   assert_grep -q '_bm_on_missing: fail' <<<"$blk"
   # The one debug prints a LENGTH, never the value: inside the Report block,
-  # every line naming _api_key must pipe it through length.
+  # every line naming _api_key must pipe it through length — and the play holds
+  # exactly one debug task, so no other can render the key.
   local rep
-  rep=$(awk '/- name: "Report \(names and counts only/{f=1;next} f&&/^    - name:/{exit} f{print}' "$pb")
+  rep=$(task_block "$pb" "Report (names and counts only")
   [ -n "$rep" ]
   [ -z "$(grep -oE '_api_key[^|]*' <<<"$rep" | grep -v '_api_key \| length')" ]
   assert_grep -q '_api_key | length' <<<"$rep"
-  # No other debug task can render the key either.
-  refute_grep -qE 'debug:[[:space:]]*$' <<<"$(grep -A2 '_api_key' "$pb" | grep -v no_log | grep 'ansible.builtin.debug' || true)"
+  [ "$(grep -c 'ansible.builtin.debug' "$pb")" -eq 1 ]
   # Transport guards precede the first request that carries a credential, and
   # BOTH endpoints (OpenBao and n8n) are guarded.
   assert_guard_precedes_first_uri "$pb"
@@ -156,7 +158,6 @@ setup() {
     "List n8n's credentials" \
     "Create the credential" \
     "Update the credential in place" \
-    "Re-test after the update" \
     "Test the stored credential")
   # ...and scoped: the report and the assertions stay diagnosable.
   for n in "Report (names, outcome and test status" "Require the Postiz API key"; do
@@ -166,7 +167,7 @@ setup() {
   done
   # The report never renders either key and restates the Postiz rate ceiling.
   local rep
-  rep=$(awk '/- name: "Report \(names, outcome and test status/{f=1;next} f&&/^    - name:/{exit} f{print}' "$pb")
+  rep=$(task_block "$pb" "Report (names, outcome and test status")
   [ -n "$rep" ]
   refute_grep -q 'api_key' <<<"$rep"
   assert_grep -q '90 posts/hour' <<<"$rep"
@@ -176,36 +177,41 @@ setup() {
   assert_grep -q '_assert_url_label: "n8n"' "$pb"
   assert_grep -q 'n8n@2.25.7' "$pb"
   assert_grep -q 'n8n-nodes-postiz@0.2.17' "$pb"
-  # HTTP Request-node usage stays pinned to the Postiz host, on create AND on
-  # the in-place update (PATCH replaces the whole data blob).
-  [ "$(grep -c 'allowedHttpRequestDomains: domains' "$pb")" -eq 2 ]
-  [ "$(grep -c "allowedDomains: \"{{ _postiz_host | urlsplit('hostname') }}\"" "$pb")" -eq 2 ]
+  # HTTP Request-node usage stays pinned to the Postiz host: the ONE data blob
+  # carries the restriction, and both write paths send that blob verbatim.
+  assert_grep -qF 'allowedHttpRequestDomains: domains' "$pb"
+  assert_grep -qF "allowedDomains: \"{{ _postiz_host | urlsplit('hostname') }}\"" "$pb"
+  [ "$(grep -c 'data: "{{ _cred_data }}"' "$pb")" -eq 2 ]
 }
 
 @test "n8n: cutover guard diffs stateful values before deploy.sh and prints names only" {
   local f="$PB_DIR/deploy-n8n.yml"
-  # The guard covers exactly the three stateful keys.
+  local shared="$PB_DIR/tasks/guard-stateful-cutover.yml"
+  [ -f "$shared" ]
+  # deploy-n8n declares exactly the three stateful keys and hands them to the
+  # SHARED guard task (one implementation for every held in-place migration).
   assert_grep -qF '_stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]' "$f"
-  # It fails closed BEFORE the container lifecycle: the refuse-assert must
-  # appear earlier in the play than the deploy.sh task.
+  assert_grep -q 'include_tasks: tasks/guard-stateful-cutover.yml' "$f"
+  # It fails closed BEFORE the container lifecycle: the include must appear
+  # earlier in the play than the deploy.sh task.
   local g d
-  g=$(grep -n 'Refuse to proceed on a stateful mismatch' "$f" | head -1 | cut -d: -f1)
+  g=$(grep -n 'include_tasks: tasks/guard-stateful-cutover.yml' "$f" | head -1 | cut -d: -f1)
   d=$(grep -n 'Run deploy.sh (container lifecycle)' "$f" | head -1 | cut -d: -f1)
   [ -n "$g" ] && [ -n "$d" ] && [ "$g" -lt "$d" ]
-  # Value-bearing steps are no_log; the assert prints key NAMES only.
+  # In the shared task: value-bearing steps are no_log; the refuse-assert
+  # prints key NAMES only; greenfield hosts (no legacy file) skip.
   local blk
   for n in "Read both env files" "Diff the stateful values"; do
-    blk=$(task_block "$f" "$n")
+    blk=$(task_block "$shared" "$n")
     [ -n "$blk" ]
     assert_grep -q 'no_log: true' <<<"$blk"
   done
-  blk=$(task_block "$f" "Refuse to proceed on a stateful mismatch")
+  blk=$(task_block "$shared" "Refuse to proceed on a stateful mismatch")
   [ -n "$blk" ]
-  refute_grep -qE '_live_val|_new_val|_live_txt|_new_txt' <<<"$blk"
-  assert_grep -q '_stateful_mismatches' <<<"$blk"
-  # Greenfield hosts skip: the whole block is gated on the legacy file existing.
-  blk=$(task_block "$f" "Guard the cutover")
-  assert_grep -q '_legacy.stat.exists' <<<"$blk"
+  refute_grep -qE '_gsc_live_val|_gsc_new_val|_gsc_live_txt|_gsc_new_txt' <<<"$blk"
+  assert_grep -q '_gsc_mismatches' <<<"$blk"
+  blk=$(task_block "$shared" "Guard the cutover")
+  assert_grep -q '_gsc_legacy.stat.exists' <<<"$blk"
 }
 
 @test "n8n: every lifecycle concern is a declared Semaphore template, destructive one marked" {
