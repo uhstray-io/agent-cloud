@@ -63,7 +63,10 @@ step_start() {
   # a plain `up -d` would leave it running with stale configuration. The blanket
   # --force-recreate this replaces also tore down the datastores, the engine and
   # the search node's JVM on every no-op redeploy — none of which read that file.
-  compose up -d
+  # --remove-orphans: flipping the search-node gate OFF removes the overlay
+  # from the file set, and without this the existing temporal-elasticsearch
+  # container would simply be left running outside the model.
+  compose up -d --remove-orphans
   compose up -d --force-recreate postiz
 }
 

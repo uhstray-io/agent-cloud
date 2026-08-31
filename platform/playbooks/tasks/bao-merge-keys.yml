@@ -87,7 +87,12 @@
   delegate_to: localhost
   no_log: true
 
-- name: "Create the new path (nothing to preserve)"
+- name: "Create the new path (nothing to preserve — and prove it with CAS)"
+  # options.cas: 0 makes the create atomic: it succeeds ONLY if no version
+  # exists. Without it, a concurrent creation between our GET (404) and this
+  # POST would be silently overwritten, dropping its sibling keys — the same
+  # clobbering race merge-patch closes on the update path. Measured against the
+  # store: cas:0 on an existing path answers 400, on a fresh one 200.
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: POST
@@ -96,18 +101,40 @@
     body_format: json
     body:
       data: "{{ _bm_data }}"
-    status_code: [200]
+      options:
+        cas: 0
+    status_code: [200, 400]
   when:
     - _bm_existing.status == 404
     - (_bm_on_missing | default('create')) == 'create'
   register: _bm_create
-  changed_when: true  # same as the PATCH above — executing IS the change
+  changed_when: _bm_create.status | default(0) == 200
+  delegate_to: localhost
+  no_log: true
+
+- name: "Losing the create race means the path now exists — merge into it"
+  # The winner's siblings are preserved exactly as on the normal update path.
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: PATCH
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+      Content-Type: application/merge-patch+json
+    body_format: json
+    body:
+      data: "{{ _bm_data }}"
+    status_code: [200]
+  when: (_bm_create.status | default(0)) == 400
+  register: _bm_patch_after_race
+  changed_when: true
   delegate_to: localhost
   no_log: true
 
 - name: "Record whether anything was written"
   ansible.builtin.set_fact:
-    _bm_changed: "{{ (_bm_patch is changed) or (_bm_create is changed) }}"
+    _bm_changed: >-
+      {{ (_bm_patch is changed) or (_bm_create is changed)
+         or (_bm_patch_after_race is changed) }}
 
 - name: "Verify the merged keys (only after an actual write)"
   # On the idempotent path the fetch above already proved equality; a second

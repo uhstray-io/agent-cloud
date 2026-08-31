@@ -82,9 +82,14 @@ setup() {
   # Pinned image, parameterized like every other one.
   grep -qE '\$\{ELASTICSEARCH_IMAGE:-docker\.io/elasticsearch:7\.17' "$ov"
   # And the gate: the deploy playbook wires the overlay from the inventory var,
-  # through the generic COMPOSE_OVERLAYS mechanism in common.sh.
+  # through the generic COMPOSE_OVERLAYS mechanism in common.sh. Scoped to the
+  # deploy task's own block (2.15: a full-file token search passes on a comment
+  # after the active wiring is deleted); mutation-tested by removing the line.
   local pb="${BATS_TEST_DIRNAME}/../playbooks/deploy-postiz.yml"
-  grep -qE 'COMPOSE_OVERLAYS:.*compose\.search\.yml.*postiz_temporal_search' "$pb"
+  local depblk
+  depblk=$(task_block "$pb" "Run deploy.sh (container lifecycle)")
+  [ -n "$depblk" ]
+  assert_grep -qE "^        COMPOSE_OVERLAYS: .*compose\.search\.yml.*postiz_temporal_search \| default\(true\)" <<<"$depblk"
 }
 
 @test "postiz: temporal's Postgres stays on 16 (its supported ceiling)" {

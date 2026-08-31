@@ -469,3 +469,20 @@ print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len
   grep -qE '^__pycache__/$' "$root/.gitignore"
   grep -qE '^\*\.py\[cod\]$' "$root/.gitignore"
 }
+
+@test "bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge" {
+  # Without options.cas: 0 the create path can overwrite a concurrent creation,
+  # dropping its sibling keys — the same clobbering race merge-patch closes on
+  # the update path. Measured: cas:0 answers 400 on an existing path, 200 fresh.
+  local t="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
+  local blk
+  blk=$(task_block "$t" "Create the new path")
+  [ -n "$blk" ]
+  assert_grep -qE '^        cas: 0' <<<"$blk"
+  assert_grep -qE 'status_code: \[200, 400\]' <<<"$blk"
+  # And the 400 (lost race) path merges instead of failing or clobbering.
+  blk=$(task_block "$t" "Losing the create race")
+  [ -n "$blk" ]
+  assert_grep -q 'method: PATCH' <<<"$blk"
+  assert_grep -q 'merge-patch' <<<"$blk"
+}

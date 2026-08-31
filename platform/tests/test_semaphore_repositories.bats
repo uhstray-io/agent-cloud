@@ -214,7 +214,11 @@ print('\n'.join(bad) if bad else 'OK')
   # code that is not the code being written (docs/MISTAKES.md 10.9).
   local setup="$BATS_TEST_DIRNAME/../semaphore/setup-templates.yml"
   local locals="$BATS_TEST_DIRNAME/../semaphore/templates-local.yml"
-  assert_grep -q "_local_repo_name" "$setup"
-  assert_grep -qE "map\('combine', \{'repository': _local_repo_name\}\)" "$setup"
+  # Scoped to the _templates_local ASSIGNMENT (2.15: the same string in a
+  # comment must not satisfy this); mutation-tested by dropping the combine.
+  local blk
+  blk=$(awk '/^    _templates_local: >-/{f=1;next} f&&/^    [_a-z]/{exit} f{print}' "$setup")
+  [ -n "$blk" ]
+  assert_grep -qE "map\('combine', \{'repository': _local_repo_name\}\)" <<<"$blk"
   refute_grep -qE '^    repository:' "$locals"
 }
