@@ -108,6 +108,11 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 2.2 Configure the workflow engine for relational-datastore visibility with the
       search node absent and no dynamic-configuration path set; add a comment naming the
       add-back path in case phase 5 shows it is needed
+      THE ADD-BACK PATH FIRED 2026-08-30 and is now deployed: the app's backend
+      registers >3 Text search attributes at startup, relational visibility caps
+      that type at 3, and the backend never binds — so the search node returned as
+      the scoped overlay (compose.search.yml), gated on postiz_temporal_search and
+      applied via COMPOSE_OVERLAYS. The base definition stays the trimmed five.
 - [x] 2.3 Publish only the application's port, bound per inventory; confirm the datastores,
       cache, and workflow engine publish no host port
 - [x] 2.4 Write the application config template covering URLs, signing secret, datastore
@@ -205,6 +210,12 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 5.3 Deploy the service locally; confirm all five containers reach health and the
       rendered config contains no unsubstituted template markers and is not
       world-readable
+      CORRECTED 2026-08-30: the original green was partly false. The app
+      healthcheck probed the frontend's path, so "healthy" held while the backend
+      had never bound (docs/MISTAKES.md 2.19); and local templates were executing
+      GitHub main's playbooks rather than the working tree (docs/MISTAKES.md
+      10.9). With both fixed, the stack is six containers (search node included),
+      the backend binds, and /api/ answers 200 under a probe that would notice.
 - [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
@@ -214,6 +225,10 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 5.7 **The workflow-engine gate.** Connect one social account, schedule a post a few
       minutes out, and confirm it publishes. If it does not, add the search node back as
       the inventory-gated block scoped in task 2.2 and re-run before proceeding
+      PRECONDITION ALREADY FORCED 2026-08-30: the add-back happened before this
+      gate could run, because without the search node the backend does not even
+      bind (see 2.2). The gate's own scenario — a connected account publishing a
+      scheduled post — still needs the operator's browser.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
 - [ ] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses

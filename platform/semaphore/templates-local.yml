@@ -8,78 +8,106 @@
 # stays prod-clean; applying THIS file to production is structurally prevented
 # by that flag defaulting to false.
 
+# EVERY template here binds to the `agent-cloud worktree` repository record
+# (created by bootstrap-local-dev.yml: the /workspace/agent-cloud mount at HEAD),
+# NOT to the default `agent-cloud` record, which repositories.yml converges to
+# GitHub main. Local templates exist to exercise the developer's working tree;
+# bound to GitHub they silently validate code that is not the code being written
+# (found 2026-08-30 when an uncommitted deploy gate never fired).
 templates:
   # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
   # Plan: DNS-SERVER-DEPLOYMENT.md (local half: LOCAL-DEV-DEPLOYMENT.md §5.1).
   - name: "Deploy DNS (Local)"
     playbook: platform/playbooks/deploy-dns.yml
+    repository: agent-cloud worktree
 
   # step-ca — internal CA (stable root; issues certs for *.agent-cloud.test).
   - name: "Deploy step-ca (Local)"
     playbook: platform/playbooks/deploy-step-ca.yml
+    repository: agent-cloud worktree
 
   # Local Caddy — internal-CA TLS, reverse-proxies the control plane by name.
   - name: "Deploy Caddy (Local)"
     playbook: platform/playbooks/deploy-caddy.yml
+    repository: agent-cloud worktree
 
   # Authentik — central IdP / SSO (server+worker+Postgres+Redis behind Caddy).
   - name: "Deploy Authentik (Local)"
     playbook: platform/playbooks/deploy-authentik.yml
+    repository: agent-cloud worktree
 
   # o11y — observability stack (Grafana + Prometheus + Loki + Alloy).
   - name: "Deploy o11y (Local)"
     playbook: platform/playbooks/deploy-o11y.yml
+    repository: agent-cloud worktree
 
   # OPA — Guardrail-layer policy engine (agent action authorization).
   - name: "Deploy OPA (Local)"
     playbook: platform/playbooks/deploy-opa.yml
+    repository: agent-cloud worktree
 
   # n8n — workflow automation (composable; greenfield locally). The legacy
   # secret-gen deploy.sh path is replaced by manage-secrets + a templated .env.
   - name: "Deploy n8n (Local)"
     playbook: platform/playbooks/deploy-n8n.yml
+    repository: agent-cloud worktree
 
   # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml
+    repository: agent-cloud worktree
 
   # tududi - self-hosted to-do app (single rootless container, SQLite; native OIDC).
   - name: "Deploy tududi (Local)"
     playbook: platform/playbooks/deploy-tududi.yml
+    repository: agent-cloud worktree
 
   # honcho - memory API (api+deriver+pgvector+redis; /v3 JWT, /docs forward_auth).
   - name: "Deploy honcho (Local)"
     playbook: platform/playbooks/deploy-honcho.yml
+    repository: agent-cloud worktree
 
   # postiz - social publishing (app + postgres + redis + temporal + temporal-pg;
   # native OIDC, API-key automation endpoint ungated at the edge).
   - name: "Deploy Postiz (Local)"
     playbook: platform/playbooks/deploy-postiz.yml
+    repository: agent-cloud worktree
 
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
     playbook: platform/playbooks/clean-deploy-dns.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy step-ca (Local)"
     playbook: platform/playbooks/clean-deploy-step-ca.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy Caddy (Local)"
     playbook: platform/playbooks/clean-deploy-caddy.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy Authentik (Local)"
     playbook: platform/playbooks/clean-deploy-authentik.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy o11y (Local)"
     playbook: platform/playbooks/clean-deploy-o11y.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy OPA (Local)"
     playbook: platform/playbooks/clean-deploy-opa.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy n8n (Local)"
     playbook: platform/playbooks/clean-deploy-n8n.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy ERPNext (Local)"
     playbook: platform/playbooks/clean-deploy-erpnext.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy tududi (Local)"
     playbook: platform/playbooks/clean-deploy-tududi.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy honcho (Local)"
     playbook: platform/playbooks/clean-deploy-honcho.yml
+    repository: agent-cloud worktree
   - name: "Clean Deploy Postiz (Local)"
     playbook: platform/playbooks/clean-deploy-postiz.yml
+    repository: agent-cloud worktree
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"
