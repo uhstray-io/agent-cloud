@@ -538,14 +538,25 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   assert_grep -qE '^    _bao_path: "services/postiz"$' "$pb"
   assert_grep -qE '^    _bao_key: "postiz_api_key"$' "$pb"
   refute_grep -qE '^    _bao_(path|key): "\{\{' "$pb"
-  # Every step that touches the key value is no_log'd: the DB read, the parse,
-  # the OpenBao fetch/patch/verify, and the round-trip assert.
+  # Every step that touches the key value is no_log'd: the DB read and parse in
+  # the playbook, and the fetch/patch/verify chain in the SHARED write task the
+  # playbook now includes (tasks/bao-merge-keys.yml).
+  local shared="${BATS_TEST_DIRNAME}/../playbooks/tasks/bao-merge-keys.yml"
+  assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$pb"
   local blk n
   while IFS= read -r n; do
-    blk=$(awk -v name="$n" '$0 ~ "- name: \""name {f=1} f&&/^    - name:/&&!($0 ~ "- name: \""name){exit} f{print}' "$pb")
+    blk=$(task_block "$pb" "$n")
     [ -n "$blk" ]
     assert_grep -q 'no_log: true' <<<"$blk"
-  done < <(printf '%s\n' "Read the API key" "Parse what the database" "Fetch the existing secret" "Merge the key" "Verify the stored key" "Require the round trip")
+  done < <(printf '%s\n' "Read the API key" "Parse what the database")
+  while IFS= read -r n; do
+    blk=$(task_block "$shared" "$n")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done < <(printf '%s\n' "Fetch the current secret" "Merge the differing keys" "Create the new path" "Verify the merged keys" "Require every merged key to hold")
+  # And this caller REFUSES to create the path — deploy-postiz owns it.
+  blk=$(task_block "$pb" "Merge the key into the store")
+  assert_grep -q '_bm_on_missing: fail' <<<"$blk"
   # The one debug prints a LENGTH, never the value: inside the Report task block,
   # every line naming _api_key must pipe it through length. Scoped to the whole
   # block — the msg is a folded scalar, so a fixed -A window can miss the line
@@ -556,10 +567,7 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   [ -z "$(grep -oE '_api_key[^|]*' <<<"$rep" | grep -v '_api_key \| length')" ]
   assert_grep -q '_api_key | length' <<<"$rep"
   # Transport guard precedes the first request that carries a credential.
-  local g u
-  g=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb" | head -1 | cut -d: -f1)
-  u=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$pb" | head -1 | cut -d: -f1)
-  [ -n "$g" ]; [ -n "$u" ]; [ "$g" -lt "$u" ]
+  assert_guard_precedes_first_uri "$pb"
   # Declared as a Semaphore template with a (Dev) variant.
   grep -qE '^  - name: Store Postiz API Key$' "${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
 }

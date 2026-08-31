@@ -6,6 +6,8 @@
 
 REPO_ROOT=""
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
 }
@@ -276,8 +278,12 @@ _committed_files() {
   # stored value against the RAW extra var while writing the resolved one would
   # misjudge whether a write is needed on every environment-supplied run.
   local f="$REPO_ROOT/platform/playbooks/seed-openbao-key.yml"
-  [ "$(grep -cE 'data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f")" -eq 2 ]
-  grep -qE '_existing_data\[bao_key\] \| default\(none\) != _bao_value' "$f"
+  # The write path is now tasks/bao-merge-keys.yml; the property this test owns
+  # is that the RESOLVED value (_bao_value — env-first) is what reaches it, and
+  # that change detection happens against that same dict inside the shared task.
+  grep -qE '_bm_data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f"
+  refute_grep -qE '_bm_data: "\{\{ \{bao_key: bao_value\} \}\}"' "$f"
+  grep -qE 'combine\(_bm_data\)\) != _bm_current' "$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
   # The validation gate must test the resolved value too, or a run supplying only
   # the environment would fail the check it just satisfied.
   grep -qE '^\s+- _bao_value \| length > 0' "$f"

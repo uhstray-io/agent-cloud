@@ -121,69 +121,22 @@
       delegate_to: localhost
       no_log: true
 
-    - name: "Fetch the existing secret (idempotency + sibling preservation)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200, 404]
-      register: _existing
-      delegate_to: localhost
-      no_log: true
-
-    - name: "Refuse to run before the service's secrets exist"
-      # A 404 means deploy-postiz has never managed this path — storing the key
-      # first would invert the ownership order and hide that miss. Checked HERE,
-      # before any write depends on it, not after.
-      ansible.builtin.assert:
-        that:
-          - _existing.status == 200
-        fail_msg: >-
+    - name: "Merge the key into the store (shared write path: fetch, refuse-missing, patch, verify)"
+      # tasks/bao-merge-keys.yml is THE merge-patch implementation — fetch for
+      # idempotency, refuse the missing path (deploy-postiz owns creating it;
+      # storing first would invert the ownership order), merge-patch preserving
+      # the signing secret / datastore passwords / social credentials beside it,
+      # and verify the round trip only after an actual write.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "{{ _bao_path }}"
+        _bm_data: "{{ {_bao_key: _api_key} }}"
+        _bm_on_missing: fail
+        _bm_missing_msg: >-
           secret/{{ _bao_path }} does not exist — run Deploy Postiz first;
           manage-secrets creates and owns that path.
-
-    - name: "Merge the key via KV-v2 PATCH (siblings preserved, no version churn)"
-      # merge-patch, never a full-secret POST over an existing path: this path
-      # also holds the signing secret, both datastore passwords, and the social
-      # credentials — a read-modify-write could clobber a concurrent seed.
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
-        method: PATCH
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-          Content-Type: application/merge-patch+json
-        body_format: json
-        body:
-          data: "{{ {_bao_key: _api_key} }}"
-        status_code: [200]
-      when:
-        - (_existing.json.data.data[_bao_key] | default('')) != _api_key
-      register: _patch
-      delegate_to: localhost
-      no_log: true
-
-    - name: "Verify the stored key matches the database (never printing either)"
-      # Only after an actual write: on the idempotent path the fetch above
-      # already proved equality, and a second authenticated read would re-prove
-      # a fact in hand.
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-      register: _after
-      when: _patch is changed  # noqa: no-handler — sequential verify of THIS run's write, not an event
-      delegate_to: localhost
-      no_log: true
-
-    - name: "Require the round trip to hold"
-      ansible.builtin.assert:
-        that:
-          - (_after.json.data.data[_bao_key] | default('')) == _api_key
-        fail_msg: "Stored value does not match the database after the write."
-      when: _patch is changed  # noqa: no-handler — pairs with the gated verify above
-      no_log: true
 
     - name: "Report (names and lengths only, never the value)"
       ansible.builtin.debug:

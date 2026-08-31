@@ -74,3 +74,28 @@ refute_contains() {
     *) return 0 ;;
   esac
 }
+
+# Extract one ansible task's body lines (everything after its `- name:` line,
+# until the next task at the same-or-shallower indent). Replaces the bespoke
+# per-file awk extractors, whose quoting was fragile in three copies.
+#   task_block <file> <task name>
+task_block() {
+  awk -v name="$2" '
+    f && /^[[:space:]]*- name:/ { cur = index($0, "-"); if (cur <= ind) exit }
+    f { print }
+    !f && index($0, "- name: \"" name) { f = 1; ind = index($0, "-") }
+  ' "$1"
+}
+
+# The transport guard must run BEFORE the first request that carries a
+# credential — a guard placed after the AppRole login has already sent the
+# secret_id. Line-number comparison over the file.
+#   assert_guard_precedes_first_uri <file>
+assert_guard_precedes_first_uri() {
+  local g u
+  g=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$1" | head -1 | cut -d: -f1)
+  u=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$1" | head -1 | cut -d: -f1)
+  [ -n "$g" ] || { echo "assert_guard_precedes_first_uri: no guard include in $1" >&2; return 1; }
+  [ -n "$u" ] || { echo "assert_guard_precedes_first_uri: no uri task in $1" >&2; return 1; }
+  [ "$g" -lt "$u" ] || { echo "assert_guard_precedes_first_uri: guard (line $g) after first uri (line $u) in $1" >&2; return 1; }
+}

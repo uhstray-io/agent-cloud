@@ -1065,9 +1065,8 @@
           postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}
           postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
           postiz_disable_registration=false
-          # Search node — required as of v2.23.0: the backend registers >3 Text
-          # search attributes at startup and SQL visibility caps at 3, so the
-          # backend never binds without it (compose.search.yml via COMPOSE_OVERLAYS).
+          # Search node — required as of v2.23.0; the full account lives in
+          # platform/services/postiz/deployment/CLAUDE.md. Default is true.
           postiz_temporal_search=true
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
