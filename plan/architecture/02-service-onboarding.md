@@ -82,7 +82,8 @@ flowchart TD
 - [ ] Generate SSH key pair, store in OpenBao at `secret/services/ssh/<service>`
 - [ ] Back the pair up into site-config at `secrets/ssh/<service>/id_ed25519` —
       `generate-service-ssh-key.yml` does this in the same run when passed
-      `site_config_dir`, or `backup-service-ssh-key.yml` copies an existing pair out.
+      `site_config_dir`, or the `Back Up Service SSH Key` Semaphore template copies an
+      existing pair out onto a new site-config branch.
       This is not filing: a pair that exists only in OpenBao means no operator holds a
       key, so the workstation direction of the two-path access proof cannot be produced
       and `harden-ssh.yml` must not run. Verified missing on a real host 2026-08-26

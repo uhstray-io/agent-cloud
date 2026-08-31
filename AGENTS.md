@@ -246,10 +246,11 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys |
 | `tasks/enable-linger.yml` | `loginctl enable-linger` so rootless containers survive a reboot; takes an optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
+| `tasks/site-config-clone.yml` / `tasks/site-config-push.yml` | Clone site-config on a fresh branch with the deploy key the caller read from OpenBao (0600 inside the scratch dir, `IdentitiesOnly`, pinned host keys), then stage one path, commit, push and report names only. The shared path both backup playbooks use; the caller wipes the dir in `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
-`platform/playbooks/tasks/` holds 22 tasks in total; the table above is the curated set
+`platform/playbooks/tasks/` holds 26 tasks in total; the table above is the curated set
 most services compose. `platform/playbooks/README.md` is the fuller reference.
 
 ## Independent Workflows
@@ -278,8 +279,8 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Allocate NetBox IP | `netbox-allocate-ip.yml` | Ask the IPAM authority for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses — never "the next free one", which two runs a minute apart would resolve differently |
 | Resize VM | `resize-vm.yml` | Converge a live VM's cores/memory/disk to the spec declared in `site-config/proxmox/vm-specs.yml` (grow-only disk, opt-in reboot; a run without `allow_reboot` is a safe diff preview) |
 | Generate Service SSH Key | `generate-service-ssh-key.yml` | Generate+store a per-service ed25519 key in OpenBao (idempotent; never rotates). Backs the pair up to site-config **in the same run when `site_config_dir` points at a clone** — and says so loudly when it cannot, because a key that exists only in the store leaves nobody able to log in |
-| Back Up Credentials to site-config | `backup-credentials-to-site-config.yml` | Copy credentials out of OpenBao into the private repo **on a new branch per backup, without any of them reaching a log**. The runner clones site-config with a deploy key from `secret/services/ssh/site-config`, writes `secrets/<service>/<field>.txt`, commits and pushes; the task output carries only field NAMES, counts and the branch. Exists because Semaphore v2.17 has no API to clear a task's output while keeping the task — printing would force a choice between a live credential in the orchestrator and destroying the run record. Requires that deploy key to be registered on the GitHub repo **with write access** |
-| Back Up SSH Key | `backup-service-ssh-key.yml` | Copy one per-service keypair OUT of OpenBao into the site-config clone (`secrets/ssh/<name>/`), via the same shared task the generator uses. Read-only against the store; derives the public half from the private and refuses a mismatched pair; refuses to overwrite a differing file without `-e force_overwrite=true`. Exists because a key that lives only in OpenBao leaves nobody able to log in when the store is unreachable |
+| Back Up Credentials to site-config | `backup-credentials-to-site-config.yml` | Copy credentials out of OpenBao into the private repo **on a new branch per backup, without any of them reaching a log**. The runner reads the deploy key from `secret/services/ssh/site-config` with the same AppRole token, clones site-config with it (0600 file inside the scratch dir the play always wipes), writes `secrets/<service>/<field>.txt`, commits and pushes; the task output carries only field NAMES, counts and the branch. The key was seeded into OpenBao ONCE from the operator's copy via `Seed OpenBao Key` with the value as the `BAO_VALUE` environment secret — never a task parameter, which Semaphore persists. Exists because Semaphore v2.17 has no API to clear a task's output while keeping the task — printing would force a choice between a live credential in the orchestrator and destroying the run record. Requires the deploy key's public half registered on the GitHub repo **with write access** |
+| Back Up Service SSH Key | `backup-service-ssh-key.yml` | Copy one per-service keypair OUT of OpenBao into site-config (`secrets/ssh/<name>/`) **on a new branch per run**, via the same shared write task the generator uses and the same deploy-key clone/push as the credential backup. Read-only against the store; derives the public half from the private and refuses a mismatched pair; refuses to overwrite a differing file without `-e force_overwrite=true`. Exists because a key that lives only in OpenBao leaves nobody able to log in when the store is unreachable |
 | Store SSH Password | `store-ssh-password.yml` | Store the bootstrap login/sudo password in OpenBao (`secret/services/ssh:become_password`) |
 | Seed OpenBao Key | `seed-openbao-key.yml` | Idempotently merge ONE key/value into an existing secret path (siblings preserved) — code-managed placement of a shared secret a reader deploy needs (e.g. honcho's `secret/services/nemoclaw:gemini_api_key`) |
 | Manage Caddy Sites | `manage-caddy-sites.yml` | **Read** the live Caddyfile (reports every site block, its upstreams, and whether inventory or a hand edit owns it), insert/update the marked block, optionally **retire** hand-maintained blocks (`caddy_retire_sites`) so inventory can adopt that hostname; validate + restart |
@@ -322,13 +323,11 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
   omitting it uses `main`. Idempotent, never deletes, and refuses an SSH clone URL paired with
   no key (which cannot authenticate even to a public repo). Run it BEFORE `setup-templates.yml`
   on a fresh instance.
-- `backup-service-ssh-key.yml` — copy an SSH keypair OUT of OpenBao into the private
-  site-config clone, in that repo's `secrets/ssh/<name>/id_ed25519` convention. Read-only
-  against OpenBao, idempotent, and it **refuses to overwrite a file whose content differs**
-  unless `-e force_overwrite=true` — a private key is not regenerable from its public half.
-  Operator-side because a Semaphore job runs on the orchestrator: it cannot write to your
-  clone, and one that could would be writing private keys into a CI workspace and its logs.
-  Auth via `BAO_TOKEN`, or `BAO_ROLE_ID`/`BAO_SECRET_ID`.
+- `backup-service-ssh-key.yml` is **no longer operator-side** — it is a Semaphore template
+  (`Back Up Service SSH Key`) that reads the site-config deploy key from OpenBao, clones the
+  private repo with it and pushes a new branch, exactly like the credential backup. It **refuses to overwrite a file
+  whose content differs** unless `-e force_overwrite=true` — a private key is not
+  regenerable from its public half.
   Why it exists: `generate-service-ssh-key.yml` mints INTO the store and
   `distribute-ssh-keys.yml` authorizes the public halves on the host, so without this
   nothing ever moves a pair outward — and the operator half of the two-path access proof
@@ -352,7 +351,7 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **Phase 0-0.5**: Foundation + per-VM deployment
 - **Monorepo consolidation** — two repos: agent-cloud (public) + site-config (private)
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
-- **Semaphore pipeline** — 76 declared task templates (plus generated `(Dev)` variants), SSH key auth
+- **Semaphore pipeline** — 78 declared task templates (plus generated `(Dev)` variants), SSH key auth
 - **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
@@ -483,7 +482,7 @@ Follow `plan/architecture/01-automation-model.md`:
 7. Add Semaphore template to `platform/semaphore/templates.yml`, run `setup-templates.yml`
 8. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml` — then confirm the
    pair reached site-config (`generate-service-ssh-key.yml` does it when given
-   `site_config_dir`; otherwise run `backup-service-ssh-key.yml`). A key that exists only
+   `site_config_dir`; otherwise run the `Back Up Service SSH Key` template). A key that exists only
    in OpenBao cannot be used from a workstation, which blocks hardening
 9. Optionally provision an AppRole via `tasks/manage-approle.yml`
 

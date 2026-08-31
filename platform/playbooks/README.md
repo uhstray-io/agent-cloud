@@ -129,8 +129,8 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao, verify key auth (no sudo) |
 | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown + post-lockdown verification (requires sudo) |
 | `generate-service-ssh-key.yml` | Generate + store a per-service ed25519 key in OpenBao (never rotates); backs the pair up to site-config in the same run when `site_config_dir` is set |
-| `backup-service-ssh-key.yml` | Copy an existing per-service keypair OUT of OpenBao into the site-config clone. Read-only against the store; refuses a mismatched pair and a differing existing file (`force_overwrite` to replace) |
-| `backup-credentials-to-site-config.yml` | Copy named credential fields out of OpenBao into site-config on a NEW branch per run, pushed with a deploy key over pinned GitHub host keys; no value ever reaches task output |
+| `backup-service-ssh-key.yml` | Copy an existing per-service keypair OUT of OpenBao into site-config on a NEW branch per run, cloning with the deploy key read from `secret/services/ssh/site-config`. Read-only against the store; refuses a mismatched pair and a differing existing file (`force_overwrite` to replace) |
+| `backup-credentials-to-site-config.yml` | Copy named credential fields out of OpenBao into site-config on a NEW branch per run, pushed with the deploy key read from `secret/services/ssh/site-config` over pinned GitHub host keys (`tasks/site-config-clone.yml` + `site-config-push.yml`); no value ever reaches task output |
 | `print-platform-user-credentials.yml` | GATED stopgap that PRINTS first-login passwords into task output (`-e i_understand_this_prints_secrets=true`); Semaphore cannot restrict it per-template, so prefer the backup playbook above |
 | `verify-host-access.yml` | Prove KEY-ONLY SSH works BEFORE `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
 | `apply-firewall.yml` | Default-deny inbound (SSH from admin CIDRs, service ports from their intended source) plus optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: allows precede enable, then a fresh handshake is forced |
@@ -211,6 +211,8 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/enable-linger.yml` | Implemented | `loginctl enable-linger` so rootless containers survive a reboot; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
+| `tasks/site-config-clone.yml` | Implemented | Clone site-config into a scratch dir on a fresh `<prefix>-<UTC>-<6hex>` branch with the deploy key the caller read from OpenBao — written 0600 inside that dir, `IdentitiesOnly`, pinned GitHub host keys |
+| `tasks/site-config-push.yml` | Implemented | Stage ONE path, commit if changed, push the branch, report names and counts — never values. Pairs with the clone task; the caller wipes the scratch dir in an `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Implemented | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/distribute-ca-root.yml` | Implemented | Distribute the internal CA root to a host's trust store |
 | `tasks/distribute-caddy-site.yml` | Implemented | Place a per-service Caddy site fragment (composable Caddy model) |
@@ -245,7 +247,7 @@ For the complete onboarding checklist (7 phases, all tiers), see `plan/architect
 6. Add Semaphore templates to `platform/semaphore/templates.yml`, run `setup-templates.yml`
 7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`, and confirm the
    pair reached site-config — `generate-service-ssh-key.yml` writes it there when passed
-   `site_config_dir`, and `backup-service-ssh-key.yml` copies an existing pair out. A key
+   `site_config_dir`, and the `Back Up Service SSH Key` template copies an existing pair out. A key
    that lives only in OpenBao cannot be used from a workstation, so the operator half of
    the two-path access proof cannot be performed and the host cannot safely be hardened
 8. Optionally provision a dedicated AppRole via `tasks/manage-approle.yml`
