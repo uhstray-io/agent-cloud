@@ -191,6 +191,12 @@
         # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
         # leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # The ONE inventory-gated block the design scoped in advance (D1): with
+        # postiz_temporal_search true, compose() appends the search-node overlay
+        # — the engine runs ES visibility, which postiz's backend REQUIRES (its
+        # startup registers >3 Text search attributes; SQL visibility caps at 3
+        # and the backend never binds. Measured 2026-08-30, tasks 2.2/5.7).
+        COMPOSE_OVERLAYS: "{{ 'compose.search.yml' if (postiz_temporal_search | default(false) | bool) else '' }}"
       register: _deploy
       changed_when: true
 

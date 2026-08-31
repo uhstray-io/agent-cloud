@@ -1,0 +1,55 @@
+# Search-node overlay — the ONE inventory-gated block the postiz design scoped in
+# advance (plan/development/14-postiz-social-publishing.md D1; openspec change
+# deploy-postiz-social-publishing, tasks 2.2 / 5.7).
+#
+# WHY IT EXISTS. The trimmed topology ran the workflow engine on SQL visibility
+# (ENABLE_ES=false). Measured 2026-08-30 on the local stack: postiz v2.23.0's
+# backend registers its custom search attributes at startup in one call, the
+# engine refuses it — "cannot have more than 3 search attribute of type Text" —
+# and the backend never binds. Upstream's own compose runs the engine against
+# Elasticsearch, where that limit does not apply. So the gate 5.7 defined fired,
+# and this is the scoped add-back: the search node plus the three engine
+# variables that point at it, nothing else.
+#
+# GATING. Applied only when the deploy playbook sets COMPOSE_OVERLAYS to include
+# this file, which it does when the inventory sets `postiz_temporal_search: true`
+# (platform/lib/common.sh `compose()` appends each named overlay). Without the
+# flag the stack is byte-identical to the five-container trim.
+#
+# Values mirror upstream's reference compose (v2.23.0): ES 7.17 single-node,
+# security off (internal network only, never published), tight disk watermarks,
+# 256m heap. mem_limit and the SELinux label opt live HERE, not in
+# compose.local.yml — an overlay only shapes services it declares, and this
+# service exists only when this file is applied.
+
+services:
+  temporal:
+    environment:
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+    depends_on:
+      temporal-elasticsearch:
+        condition: service_started
+
+  temporal-elasticsearch:
+    image: ${ELASTICSEARCH_IMAGE:-docker.io/elasticsearch:7.17.27}
+    container_name: temporal-elasticsearch
+    restart: always
+    environment:
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - xpack.security.enabled=false
+    networks: [postiz]
+    mem_limit: 768m
+    security_opt:
+      - label=disable
+    volumes:
+      - postiz-es-data:/usr/share/elasticsearch/data
+
+volumes:
+  postiz-es-data:

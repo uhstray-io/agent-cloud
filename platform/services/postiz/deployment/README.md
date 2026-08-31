@@ -6,7 +6,7 @@ drives to automate post creation, media upload, and scheduling.
 
 - **Public URL (prod):** `https://postiz.uhstray.io`
 - **Local:** `https://postiz.agent-cloud.test:8443`
-- **Runtime:** rootless podman, five containers
+- **Runtime:** rootless podman, five containers (six with the required search-node overlay — see below)
 - **Plan:** [`plan/development/14-postiz-social-publishing.md`](../../../../plan/development/14-postiz-social-publishing.md)
 - **Change:** `plan/development/openspec/changes/deploy-postiz-social-publishing/`
 
@@ -24,10 +24,13 @@ Only the app publishes a port, so the host firewall needs exactly one service ru
 `apply-firewall.yml` detects published ports, and there is nothing else to detect.
 
 Upstream's reference deployment runs eight containers, adding Elasticsearch, a workflow
-UI, and admin tooling. We omit all three: the engine runs standard visibility against
-its own Postgres (`ENABLE_ES=false`), which executes workflows fine — Elasticsearch
-powers advanced workflow *search*, which nothing here needs. To add it back, see
-`compose.yml`'s header.
+UI, and admin tooling. The UI and admin tooling stay out. Elasticsearch was originally
+trimmed too, but the gate scoped for that decision fired: as of v2.23.0 the backend
+registers more than 3 `Text` search attributes at startup, SQL visibility refuses that,
+and the backend never binds (measured 2026-08-30). The search node is therefore added
+back as `compose.search.yml`, applied when the inventory sets `postiz_temporal_search:
+true` — which every working deployment now needs. The base compose stays five containers
+with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in inventory.
 
 ## Configuration — two files, two jobs
 

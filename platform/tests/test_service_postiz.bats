@@ -48,14 +48,39 @@ setup() {
   grep -qE '^\s+temporal-postgresql:' "$f"
 }
 
-@test "postiz: the trimmed topology omits elasticsearch and the workflow UI" {
+@test "postiz: the BASE topology omits elasticsearch and the workflow UI" {
   local f="$DEPLOY_DIR/compose.yml"
-  # Upstream's reference compose adds these three; we deliberately do not.
-  # The engine runs standard visibility on its own Postgres instead.
+  # Upstream's reference compose adds these three; the BASE deliberately does
+  # not — the search node lives ONLY in the gated overlay below.
   refute_grep -qE '^\s+temporal-elasticsearch:' "$f"
   refute_grep -qE '^\s+temporal-ui:' "$f"
   refute_grep -qE '^\s+temporal-admin-tools:' "$f"
   grep -qE 'ENABLE_ES:\s*"false"' "$f"
+}
+
+@test "postiz: the search-node overlay is complete, internal, and gated from inventory" {
+  # The one add-back the design scoped in advance (D1 / tasks 2.2, 5.7). Fired
+  # 2026-08-30: the backend registers >3 Text search attributes at startup and
+  # SQL visibility caps at 3, so without this overlay the backend never binds.
+  local ov="$DEPLOY_DIR/compose.search.yml"
+  [ -f "$ov" ]
+  # The overlay flips the engine to ES and adds the node — all three variables,
+  # because ENABLE_ES without seeds fails in a different place later.
+  grep -qE 'ENABLE_ES:\s*"true"' "$ov"
+  grep -qE 'ES_SEEDS:\s*temporal-elasticsearch' "$ov"
+  grep -qE 'ES_VERSION:\s*v7' "$ov"
+  grep -qE '^\s+temporal-elasticsearch:' "$ov"
+  # Internal only: the search node must never publish a host port, and single-node
+  # discovery with a bounded heap — this host's only job is publishing posts.
+  refute_grep -qE '^\s+ports:' "$ov"
+  grep -qE 'discovery.type=single-node' "$ov"
+  grep -qE 'mem_limit:' "$ov"
+  # Pinned image, parameterized like every other one.
+  grep -qE '\$\{ELASTICSEARCH_IMAGE:-docker\.io/elasticsearch:7\.17' "$ov"
+  # And the gate: the deploy playbook wires the overlay from the inventory var,
+  # through the generic COMPOSE_OVERLAYS mechanism in common.sh.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/deploy-postiz.yml"
+  grep -qE 'COMPOSE_OVERLAYS:.*compose\.search\.yml.*postiz_temporal_search' "$pb"
 }
 
 @test "postiz: temporal's Postgres stays on 16 (its supported ceiling)" {
@@ -484,4 +509,14 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   local f="$DEPLOY_DIR/deploy.sh"
   grep -qE '\[ -f "\$\{SCRIPT_DIR\}/config/postiz.env" \]' "$f"
   grep -q 'silently become a directory' "$f"
+}
+
+@test "postiz: the app healthcheck probes the BACKEND path, not the frontend" {
+  # nginx serves / from the frontend, so a probe on / stays green while the
+  # backend is dead — which is exactly how a backend that never bound sat
+  # "starting" behind a green-looking / for a whole validation phase. /api/ is
+  # proxied to the backend, so its answer (even a 404) proves the process bound.
+  local f="$DEPLOY_DIR/compose.yml"
+  grep -q "http://127.0.0.1:5000/api/" "$f"
+  refute_grep -qE "get\('http://127\.0\.0\.1:5000/'," "$f"
 }
