@@ -520,3 +520,44 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   grep -q "http://127.0.0.1:5000/api/" "$f"
   refute_grep -qE "get\('http://127\.0\.0\.1:5000/'," "$f"
 }
+
+@test "postiz api key: read-only capture, fixed path, key-bearing steps no_log" {
+  # The stored Organization.apiKey IS the bearer token (getOrgByApiKey compares
+  # the Authorization header directly to the column), so this playbook must only
+  # READ it — a write path could clobber the key every caller depends on — and
+  # nothing it prints may carry the value.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/store-postiz-api-key.yml"
+  [ -f "$pb" ]
+  # SELECT only: no mutating SQL anywhere in the play.
+  refute_grep -qiE 'UPDATE|INSERT|DELETE|ALTER' <<<"$(grep -vE '^[[:space:]]*#' "$pb")"
+  # The store path and key are fixed, never caller-supplied.
+  assert_grep -qE '^    _bao_path: "services/postiz"$' "$pb"
+  assert_grep -qE '^    _bao_key: "postiz_api_key"$' "$pb"
+  refute_grep -qE '^    _bao_(path|key): "\{\{' "$pb"
+  # Every step that touches the key value is no_log'd: the DB read, the parse,
+  # the OpenBao fetch/patch/verify, and the round-trip assert.
+  local names="Read the API key|Parse what the database|Fetch the existing secret|Merge the key|Verify the stored key|Require the round trip"
+  local blk n
+  while IFS= read -r n; do
+    blk=$(awk -v name="$n" '$0 ~ "- name: \""name {f=1} f&&/^    - name:/&&!($0 ~ "- name: \""name){exit} f{print}' "$pb")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done < <(printf '%s\n' "Read the API key" "Parse what the database" "Fetch the existing secret" "Merge the key" "Verify the stored key" "Require the round trip")
+  # The one debug prints a LENGTH, never the value: inside the Report task block,
+  # every line naming _api_key must pipe it through length. Scoped to the whole
+  # block — the msg is a folded scalar, so a fixed -A window can miss the line
+  # that actually carries the value (this refute was mutation-tested into shape).
+  local rep
+  rep=$(awk '/- name: "Report \(names and lengths only/{f=1;next} f&&/^    - name:/{exit} f{print}' "$pb")
+  [ -n "$rep" ]
+  refute_grep -qE '_api_key(?! \| length)' <<<"$(grep -oE '_api_key( \| length)?' <<<"$rep" | grep -v '| length')" 2>/dev/null || true
+  [ -z "$(grep -oE '_api_key[^|]*' <<<"$rep" | grep -v '_api_key \| length')" ]
+  assert_grep -q '_api_key | length' <<<"$rep"
+  # Transport guard precedes the first request that carries a credential.
+  local g u
+  g=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb" | head -1 | cut -d: -f1)
+  u=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$pb" | head -1 | cut -d: -f1)
+  [ -n "$g" ]; [ -n "$u" ]; [ "$g" -lt "$u" ]
+  # Declared as a Semaphore template with a (Dev) variant.
+  grep -qE '^  - name: Store Postiz API Key$' "${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
+}

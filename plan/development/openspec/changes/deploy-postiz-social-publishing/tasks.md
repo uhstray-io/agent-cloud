@@ -231,8 +231,15 @@ protects 1.7, which is the only irreversible step in the change.
       scheduled post — still needs the operator's browser.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
-- [ ] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
+- [x] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
       without it, and is reachable with no browser session
+      DONE 2026-08-30, and generation is now automation, not a UI copy-paste: the
+      app mints the key on the first authenticated request (the stored column IS
+      the bearer token — verified in upstream source), and the new
+      store-postiz-api-key.yml captures it from the service's own Postgres into
+      secret/services/postiz:postiz_api_key, no_log throughout, round-trip
+      verified. Probed locally: /api/public/v1/integrations answers 200 with the
+      key, 401 without it and with a wrong one — no browser session involved.
 - [x] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
       suites plus the local smoke check
 - [ ] 5.11 Validation gate: scenario "Post publishes at its scheduled time" and scenario

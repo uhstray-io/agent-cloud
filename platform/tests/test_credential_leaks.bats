@@ -398,6 +398,8 @@ accept = [
     'http://192.168.0.1:8200/v1',          # example: RFC1918 192.168/16 with path
     'http://172.16.0.1:8200',              # example: RFC1918 lower bound
     'http://172.31.255.254:8200',          # example: RFC1918 upper bound
+    'http://local-openbao:8200',           # single-label: container-DNS scope, cannot be public
+    'http://local-openbao:8200/v1',        # single-label with path
 ]
 refuse = [
     'http://bao.example.com:8200',         # example: public host, cleartext
@@ -415,6 +417,8 @@ refuse = [
     'http://127.0.0.1@bao.evil.example/v1',                        # trufflehog:ignore
     'http://10.1.2.3:8200@bao.evil.example/v1',                    # trufflehog:ignore
     'http://192.168.0.1:8200@bao.evil.example/',                   # trufflehog:ignore
+    'http://local-openbao@bao.evil.example/',                      # trufflehog:ignore
+    'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space, refused
 ]
 bad = []
 for u in accept:
@@ -426,7 +430,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 18 cases correct"* ]]
+  [[ "$output" == *"all 22 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

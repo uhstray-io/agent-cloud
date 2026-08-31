@@ -73,6 +73,12 @@ templates:
     playbook: platform/playbooks/deploy-postiz.yml
     repository: agent-cloud worktree
 
+  # Captures the app-minted public-API key into the local OpenBao — run after
+  # the first sign-in (the app mints the key on the first authenticated request).
+  - name: "Store Postiz API Key (Local)"
+    playbook: platform/playbooks/store-postiz-api-key.yml
+    repository: agent-cloud worktree
+
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
