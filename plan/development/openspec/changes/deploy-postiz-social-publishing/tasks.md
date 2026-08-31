@@ -220,8 +220,16 @@ protects 1.7, which is the only irreversible step in the change.
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
-- [ ] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
+- [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
+      DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
+      committed flip — a fresh bootstrap needs its first signup open, so the
+      committed local default stays false and D9's flip is runtime state. After
+      the redeploy the rendered config carries DISABLE_REGISTRATION=true and a
+      VALID second-identity register attempt is refused with "Registration is
+      disabled" (the first probe's 400 was its own payload failing validation —
+      worth remembering: a 400 is not proof the gate fired until the message is
+      the gate's).
 - [ ] 5.7 **The workflow-engine gate.** Connect one social account, schedule a post a few
       minutes out, and confirm it publishes. If it does not, add the search node back as
       the inventory-gated block scoped in task 2.2 and re-run before proceeding
