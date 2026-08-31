@@ -192,6 +192,14 @@ templates:
         required: true
         default_value: "false"
 
+  - name: Store Postiz API Key
+    playbook: platform/playbooks/store-postiz-api-key.yml
+    # Reads the org's API key from postiz's own Postgres (the app mints it on the
+    # first authenticated request — the stored value IS the bearer token) and
+    # places it at secret/services/postiz:postiz_api_key. Never printed; all
+    # key-bearing steps no_log. Automation (n8n) shared-reads it from there.
+    dev_variant: true
+
   - name: Back Up Credentials to site-config
     playbook: platform/playbooks/backup-credentials-to-site-config.yml
     # Copies named fields out of OpenBao into the private repo on a NEW BRANCH per

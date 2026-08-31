@@ -1,0 +1,159 @@
+---
+# bao-merge-keys.yml — merge a dict of keys into ONE OpenBao KV-v2 path,
+# preserving siblings, idempotently, with the write verified. The single
+# implementation of the merge-patch idiom — it existed in five near-copies
+# (seed-openbao-key, seed-postiz-secrets, store-postiz-api-key,
+# manage-diode-credentials, update-vault-field) before this extraction, and the
+# copies had already drifted: one wrote with a clobbering read-modify-POST, the
+# exact race the others' comments warn against.
+#
+# The CALLER owns authentication and the transport guard (both differ per
+# caller: token-vs-AppRole precedence, and the guard must run before the login).
+#
+# Caller passes:
+#   _bm_url          OpenBao base URL (already transport-guarded by the caller)
+#   _bm_token        an authenticated token
+#   _bm_path         KV-v2 path UNDER secret/data (e.g. services/postiz)
+#   _bm_data         dict of key -> value to merge
+#   _bm_on_missing   'create' (default) — POST a new path when absent;
+#                    'fail' — refuse, with _bm_missing_msg as the reason
+#   _bm_missing_msg  optional message for the 'fail' case
+#
+# Sets for the caller:
+#   _bm_changed      whether anything was written
+#   _bm_patch/_bm_create  the raw results, for callers that report create-vs-patch
+#
+# Every value-bearing step is no_log. Asserts print assertion TEXT, never values.
+
+- name: "Require the merge inputs"
+  ansible.builtin.assert:
+    that:
+      - _bm_url is defined and _bm_url | length > 0
+      - _bm_token is defined and _bm_token | length > 0
+      - _bm_path is defined and _bm_path | length > 0
+      - _bm_data is defined and _bm_data | length > 0
+    fail_msg: "bao-merge-keys.yml needs _bm_url, _bm_token, _bm_path and a non-empty _bm_data dict."
+  no_log: true
+
+- name: "Fetch the current secret (idempotency + sibling preservation)"
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+    status_code: [200, 404]
+  register: _bm_existing
+  delegate_to: localhost
+  no_log: true
+
+- name: "Refuse a missing path when the caller requires one"
+  ansible.builtin.assert:
+    that:
+      - _bm_existing.status == 200
+    fail_msg: >-
+      {{ _bm_missing_msg | default('secret/' ~ _bm_path ~ ' does not exist and
+      this caller refuses to create it.') }}
+  when: (_bm_on_missing | default('create')) == 'fail'
+
+- name: "Compute what this merge would change"
+  # combine() changes nothing iff every key already holds its target value —
+  # one expression instead of a per-key loop.
+  ansible.builtin.set_fact:
+    _bm_current: "{{ (_bm_existing.json.data.data | default({})) if _bm_existing.status == 200 else {} }}"
+  no_log: true
+
+- name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
+  # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a
+  # concurrent write to a sibling key cannot be clobbered by a read-modify-write.
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: PATCH
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+      Content-Type: application/merge-patch+json
+    body_format: json
+    body:
+      data: "{{ _bm_data }}"
+    status_code: [200]
+  when:
+    - _bm_existing.status == 200
+    - (_bm_current | combine(_bm_data)) != _bm_current
+  register: _bm_patch
+  # uri does not mark a POST/PATCH as changed on its own — measured: a PATCH that
+  # visibly rewrote the value still reported changed=false, which silently
+  # skipped the verify below and misreported "already up to date". The when:
+  # above already IS the change detector, so an executed task is a change.
+  changed_when: true
+  delegate_to: localhost
+  no_log: true
+
+- name: "Create the new path (nothing to preserve — and prove it with CAS)"
+  # options.cas: 0 makes the create atomic: it succeeds ONLY if no version
+  # exists. Without it, a concurrent creation between our GET (404) and this
+  # POST would be silently overwritten, dropping its sibling keys — the same
+  # clobbering race merge-patch closes on the update path. Measured against the
+  # store: cas:0 on an existing path answers 400, on a fresh one 200.
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+    body_format: json
+    body:
+      data: "{{ _bm_data }}"
+      options:
+        cas: 0
+    status_code: [200, 400]
+  when:
+    - _bm_existing.status == 404
+    - (_bm_on_missing | default('create')) == 'create'
+  register: _bm_create
+  changed_when: _bm_create.status | default(0) == 200
+  delegate_to: localhost
+  no_log: true
+
+- name: "Losing the create race means the path now exists — merge into it"
+  # The winner's siblings are preserved exactly as on the normal update path.
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: PATCH
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+      Content-Type: application/merge-patch+json
+    body_format: json
+    body:
+      data: "{{ _bm_data }}"
+    status_code: [200]
+  when: (_bm_create.status | default(0)) == 400
+  register: _bm_patch_after_race
+  changed_when: true
+  delegate_to: localhost
+  no_log: true
+
+- name: "Record whether anything was written"
+  ansible.builtin.set_fact:
+    _bm_changed: >-
+      {{ (_bm_patch is changed) or (_bm_create is changed)
+         or (_bm_patch_after_race is changed) }}
+
+- name: "Verify the merged keys (only after an actual write)"
+  # On the idempotent path the fetch above already proved equality; a second
+  # authenticated read would re-prove a fact in hand.
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+    status_code: [200]
+  register: _bm_after
+  when: _bm_changed | bool  # noqa: no-handler — sequential verify of THIS run's write, not an event
+  delegate_to: localhost
+  no_log: true
+
+- name: "Require every merged key to hold"
+  ansible.builtin.assert:
+    that:
+      - ((_bm_after.json.data.data | default({})) | combine(_bm_data)) == (_bm_after.json.data.data | default({}))
+    fail_msg: "Stored values at secret/{{ _bm_path }} do not match what was merged."
+  when: _bm_changed | bool  # noqa: no-handler — pairs with the gated verify above
+  no_log: true

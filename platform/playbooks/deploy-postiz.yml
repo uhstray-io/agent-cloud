@@ -191,6 +191,14 @@
         # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
         # leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # The gated block the design scoped in advance (D1) — and the gate FIRED,
+        # so it now defaults ON: postiz's backend REQUIRES ES visibility as of
+        # v2.23.0 (startup registers >3 Text search attributes; SQL visibility
+        # caps at 3 and the backend never binds — measured 2026-08-30, tasks
+        # 2.2/5.7). A requirement is not a preference: default(false) here would
+        # ship prod the exact failure this change fixed. postiz_temporal_search
+        # stays as an OPT-OUT for a future release where the trim suffices.
+        COMPOSE_OVERLAYS: "{{ 'compose.search.yml' if (postiz_temporal_search | default(true) | bool) else '' }}"
       register: _deploy
       changed_when: true
 
@@ -207,14 +215,17 @@
     _engine: "{{ container_engine | default('podman') }}"
 
   tasks:
-    - name: "App health (HTTP < 500 on / from inside the container)"
+    - name: "App health (HTTP < 500 on /api/ from inside the container)"
       # Exec inside the container so the check never depends on the published
-      # bind or the central Caddy. node is guaranteed in this image. <500 is the
-      # success condition: the app answers 3xx/4xx on / depending on session
-      # state, and only a 5xx or a connection failure means it is broken.
+      # bind or the central Caddy. node is guaranteed in this image. /api/, NOT
+      # /: nginx serves / from the FRONTEND, so a probe on / stays green over a
+      # dead backend (MISTAKES 2.19) — same rule as the compose healthcheck, and
+      # fixing one copy while leaving this one is the trap the engine check
+      # below already documents. <500 because a 404 from the backend IS proof
+      # the backend bound; a 502 from nginx is proof it did not.
       ansible.builtin.command: >-
         {{ _engine }} exec postiz
-        node -e "require('http').get('http://127.0.0.1:5000/',s=>process.exit(s.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+        node -e "require('http').get('http://127.0.0.1:5000/api/',s=>process.exit(s.statusCode<500?0:1)).on('error',()=>process.exit(1))"
       register: _postiz_health
       changed_when: false
       retries: 20

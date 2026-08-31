@@ -99,13 +99,8 @@ setup() {
   n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$BACKUP")
   [ "$n_url" -gt 0 ]
   [ "$n_inc" -eq "$n_url" ]
-  # And the guard runs BEFORE the first request that carries a credential — a
-  # guard placed after the AppRole login has already sent the secret_id.
-  local guard_line first_uri_line
-  guard_line=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$BACKUP" | head -1 | cut -d: -f1)
-  first_uri_line=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$BACKUP" | head -1 | cut -d: -f1)
-  [ -n "$guard_line" ]; [ -n "$first_uri_line" ]
-  [ "$guard_line" -lt "$first_uri_line" ]
+  # And the guard runs BEFORE the first request that carries a credential.
+  assert_guard_precedes_first_uri "$BACKUP"
 }
 
 @test "ssh backup: the operator playbook never writes to the store" {

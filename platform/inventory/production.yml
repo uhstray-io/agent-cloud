@@ -70,9 +70,10 @@ all:
         "{{ postiz_host }}":
           service_name: postiz
           service_url: "http://{{ postiz_host }}:5000"
-          # postiz has no unauthenticated health endpoint; / answers 200 or a
-          # redirect depending on session state.
-          health_path: "/"
+          # /api/, not /: nginx serves / from the frontend, so a probe on /
+          # stays green over a dead backend (MISTAKES 2.19). A 404 from /api/
+          # proves the backend bound; a 502 proves it did not.
+          health_path: "/api/"
           monorepo_deploy_path: platform/services/postiz/deployment
           container_engine: podman
 

@@ -80,13 +80,24 @@ detect_runtime() {
 # Local-dev overlay (plan/development/LOCAL-DEV-DEPLOYMENT.md): compose.local.yml
 # is appended only when LOCAL_MODE=true AND the overlay exists on disk.
 # LOCAL_MODE unset or file absent => byte-identical prod behavior.
+#
+# COMPOSE_OVERLAYS — optional, space-separated extra overlay files, appended
+# LAST (after the local overlay) so a declared overlay always wins. The deploy
+# playbook sets it from inventory (e.g. postiz's search-node gate); each named
+# file must exist, because a missing -f is how a gated topology silently
+# degrades to the base one while the run reports success.
 compose() {
   detect_runtime
+  local files=(-f compose.yml)
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
-    $COMPOSE_CMD -f compose.yml -f compose.local.yml "$@"
-  else
-    $COMPOSE_CMD -f compose.yml "$@"
+    files+=(-f compose.local.yml)
   fi
+  local ov
+  for ov in ${COMPOSE_OVERLAYS:-}; do
+    [ -f "$ov" ] || error "COMPOSE_OVERLAYS names '$ov', which does not exist here ($(pwd))"
+    files+=(-f "$ov")
+  done
+  $COMPOSE_CMD "${files[@]}" "$@"
 }
 
 # ── Health Waiters ────────────────────────────────────────────────────────────

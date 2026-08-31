@@ -108,6 +108,11 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 2.2 Configure the workflow engine for relational-datastore visibility with the
       search node absent and no dynamic-configuration path set; add a comment naming the
       add-back path in case phase 5 shows it is needed
+      THE ADD-BACK PATH FIRED 2026-08-30 and is now deployed: the app's backend
+      registers >3 Text search attributes at startup, relational visibility caps
+      that type at 3, and the backend never binds — so the search node returned as
+      the scoped overlay (compose.search.yml), gated on postiz_temporal_search and
+      applied via COMPOSE_OVERLAYS. The base definition stays the trimmed five.
 - [x] 2.3 Publish only the application's port, bound per inventory; confirm the datastores,
       cache, and workflow engine publish no host port
 - [x] 2.4 Write the application config template covering URLs, signing secret, datastore
@@ -205,40 +210,110 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 5.3 Deploy the service locally; confirm all five containers reach health and the
       rendered config contains no unsubstituted template markers and is not
       world-readable
+      CORRECTED 2026-08-30: the original green was partly false. The app
+      healthcheck probed the frontend's path, so "healthy" held while the backend
+      had never bound (docs/MISTAKES.md 2.19); and local templates were executing
+      GitHub main's playbooks rather than the working tree (docs/MISTAKES.md
+      10.9). With both fixed, the stack is six containers (search node included),
+      the backend binds, and /api/ answers 200 under a probe that would notice.
 - [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
-- [ ] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
+- [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
+      DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
+      committed flip — a fresh bootstrap needs its first signup open, so the
+      committed local default stays false and D9's flip is runtime state. After
+      the redeploy the rendered config carries DISABLE_REGISTRATION=true and a
+      VALID second-identity register attempt is refused with "Registration is
+      disabled" (the first probe's 400 was its own payload failing validation —
+      worth remembering: a 400 is not proof the gate fired until the message is
+      the gate's).
 - [ ] 5.7 **The workflow-engine gate.** Connect one social account, schedule a post a few
       minutes out, and confirm it publishes. If it does not, add the search node back as
       the inventory-gated block scoped in task 2.2 and re-run before proceeding
+      PRECONDITION ALREADY FORCED 2026-08-30: the add-back happened before this
+      gate could run, because without the search node the backend does not even
+      bind (see 2.2). The gate's own scenario — a connected account publishing a
+      scheduled post — still needs the operator's browser.
+      PROVIDER REALITY CHECK 2026-08-30, from live attempts: LinkedIn refused the
+      unregistered local redirect (fixable by registering it in the console);
+      Google refused the local redirect URI OUTRIGHT — "Error 400:
+      invalid_request … doesn't comply with Google's OAuth 2.0 policy" — so
+      YouTube cannot be connected on the .test host at all and its connect gate
+      moves to production (6.5/7.7). Run this gate locally with a provider whose
+      console accepts the local URL (Discord or LinkedIn), or accept it lands in
+      phase 7.
+      X 2026-08-30: the request-token call fails 401 code 32 "Could not
+      authenticate you" — X rejects the KEY PAIR before evaluating the callback,
+      so the seeded X credentials are not valid OAuth 1.0a Consumer Keys (the
+      portal also lists OAuth 2.0 Client ID/Secret, which postiz does not use
+      for X). Re-seed from the portal's "API Key and Secret" and register the
+      /integrations/social/x callback while there.
+      OPERATOR DECISION 2026-08-30: this gate MOVES TO PRODUCTION (7.7). Local
+      connects would require adding .test callback URLs to the real OAuth apps,
+      which the operator declines; the X consumer-key fix is deferred. This
+      knowingly relaxes design D8's "observed locally before prod is touched"
+      for the account-connect leg — everything short of the OAuth consent
+      (six containers, engine + search node, backend bound, API key captured,
+      automation endpoint auth) IS proven locally, so the residual risk moved
+      to prod is the connect/publish leg only.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
-- [ ] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
+      MOVES TO PRODUCTION with 5.7 (operator decision 2026-08-30) — a scheduled
+      post is a prerequisite this environment cannot produce without a connect.
+- [x] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
       without it, and is reachable with no browser session
+      DONE 2026-08-30, and generation is now automation, not a UI copy-paste: the
+      app mints the key on the first authenticated request (the stored column IS
+      the bearer token — verified in upstream source), and the new
+      store-postiz-api-key.yml captures it from the service's own Postgres into
+      secret/services/postiz:postiz_api_key, no_log throughout, round-trip
+      verified. Probed locally: /api/public/v1/integrations answers 200 with the
+      key, 401 without it and with a wrong one — no browser session involved.
 - [x] 5.10 Add shell tests for the lifecycle script; run the repo's linters and test
       suites plus the local smoke check
 - [ ] 5.11 Validation gate: scenario "Post publishes at its scheduled time" and scenario
       "Automation endpoint is reachable without an interactive session" both hold — the
       trimmed topology executes scheduled work, and the automation path is not gated by
       interactive authentication
+      SPLIT 2026-08-30: the second scenario HOLDS (proven at 5.9 — 200 with the
+      key, 401 without, no session). The first moves to production with 5.7/5.8
+      and is observed at 7.7.
 
 ## 6. Promotion to production
 
 - [x] 6.1 Update the repository documentation the change touches: root README service
       list, the agent instructions' service and workflow tables, and the local-dev tier
       table
-- [ ] 6.2 Run the simplification and security review passes over the branch changes
+- [x] 6.2 Run the simplification and security review passes over the branch changes
+      DONE 2026-08-30. Simplify: four parallel review agents; applied the
+      structural worktree bind, default-true search gate, superset teardown,
+      local_mode-scoped transport allowance, api-key playbook ordering/idempotency
+      fixes, /api/ probe on the Phase-3 sibling; four larger refactors recorded as
+      follow-ups. Security: no finding cleared the exploitability bar; the one
+      MEDIUM (label=disable riding into prod via the search overlay) was fixed
+      anyway by moving the local-only knobs to compose.local.yml — live-verified,
+      ES confined on the prod path and still capped locally. 523 BATS green.
 - [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit
+      SPLIT STATUS (the box stays unchecked until the MERGE lands — the task's own
+      text includes it): opened 2026-08-30 on the operator's explicit ask as PR
+      #145 (with #146 alongside); CodeRabbit findings addressed 2026-08-31;
+      checks + merge (operator's step, merge commit) still pending.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
 - [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at all four social
       platforms to the new public host — account connection fails until this is done
+      EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
+      LinkedIn refused the unregistered local URL with "redirect_uri does not
+      match the registered value"): each console must register
+      <public-url>/integrations/social/<identifier>, i.e. /discord, /linkedin,
+      /linkedin-page, /x, /youtube. The /settings path from the plan doc is the
+      Authentik OIDC sign-in callback, NOT the social-connect one.
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly
       asked** and merge it with a merge commit, so the orchestrator deploys from there
 - [ ] 6.7 Validation gate: scenario "Interface and automation share one hostname" is
@@ -261,6 +336,10 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 7.6 Complete the first production sign-in through the identity provider, then flip
       registration to closed and redeploy
 - [ ] 7.7 Connect the social accounts and confirm a scheduled post publishes in production
+      Now ALSO carries the workflow-engine gate moved from 5.7/5.8 (operator
+      decision 2026-08-30): first observed scheduled publish happens here.
+      Console prerequisites are in 6.5; X needs re-seeded Consumer Keys first
+      (deferred).
 - [ ] 7.8 Validation gate: scenario "Only the two intended paths are reachable" holds —
       administrative access from the designated ranges and the service port from the
       reverse proxy succeed, everything else inbound is refused; and scenario "Closed
