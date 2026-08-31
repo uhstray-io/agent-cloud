@@ -287,7 +287,15 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 6.1 Update the repository documentation the change touches: root README service
       list, the agent instructions' service and workflow tables, and the local-dev tier
       table
-- [ ] 6.2 Run the simplification and security review passes over the branch changes
+- [x] 6.2 Run the simplification and security review passes over the branch changes
+      DONE 2026-08-30. Simplify: four parallel review agents; applied the
+      structural worktree bind, default-true search gate, superset teardown,
+      local_mode-scoped transport allowance, api-key playbook ordering/idempotency
+      fixes, /api/ probe on the Phase-3 sibling; four larger refactors recorded as
+      follow-ups. Security: no finding cleared the exploitability bar; the one
+      MEDIUM (label=disable riding into prod via the search overlay) was fixed
+      anyway by moving the local-only knobs to compose.local.yml — live-verified,
+      ES confined on the prod path and still capped locally. 523 BATS green.
 - [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit

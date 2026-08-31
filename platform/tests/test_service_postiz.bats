@@ -74,7 +74,11 @@ setup() {
   # discovery with a bounded heap — this host's only job is publishing posts.
   refute_grep -qE '^\s+ports:' "$ov"
   grep -qE 'discovery.type=single-node' "$ov"
-  grep -qE 'mem_limit:' "$ov"
+  # The PROD-APPLIED overlay must carry no local-only knob: label=disable would
+  # strip SELinux confinement from the one container running an EOL-line JVM.
+  # Those live in compose.local.yml with every sibling's.
+  refute_grep -q 'label=disable' <<<"$(grep -vE '^[[:space:]]*#' "$ov")"
+  grep -qE 'temporal-elasticsearch:' "${DEPLOY_DIR}/compose.local.yml"
   # Pinned image, parameterized like every other one.
   grep -qE '\$\{ELASTICSEARCH_IMAGE:-docker\.io/elasticsearch:7\.17' "$ov"
   # And the gate: the deploy playbook wires the overlay from the inventory var,
@@ -567,6 +571,9 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   # cluster's state. Both teardown branches must glob the overlays in.
   local cs="${BATS_TEST_DIRNAME}/../playbooks/tasks/clean-service.yml"
   [ "$(grep -c 'compose\.\*\.yml' "$cs")" -ge 2 ]
+  # And the PROD branch skips compose.local.yml — it references local-only
+  # externals a prod host does not have, which can void the whole down -v.
+  grep -qE 'compose\.local\.yml\) continue' "$cs"
   # And the base still comes first (overlays reference its services).
   local first_base first_glob
   first_base=$(grep -nE 'for f in docker-compose\.yml compose\.yml' "$cs" | head -1 | cut -d: -f1)

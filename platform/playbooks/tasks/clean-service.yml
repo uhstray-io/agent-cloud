@@ -47,6 +47,11 @@
     done
     if [ -n "$COMPOSE_ARGS" ]; then
       for f in "${DEPLOY_DIR}"/compose.*.yml; do
+        # compose.local.yml is EXCLUDED here: it is part of the repo files on a
+        # prod clone too, and it references local-only externals (the local-dev
+        # network) that do not exist on a prod host — a model compose may refuse
+        # wholesale, turning `down -v` into a silent no-op under the `|| true`.
+        case "$(basename "$f")" in compose.local.yml) continue ;; esac
         [ -f "$f" ] && COMPOSE_ARGS="$COMPOSE_ARGS -f $(basename "$f")"
       done
       cd "$DEPLOY_DIR"

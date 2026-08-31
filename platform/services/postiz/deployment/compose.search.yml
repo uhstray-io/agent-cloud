@@ -18,9 +18,10 @@
 #
 # Values mirror upstream's reference compose (v2.23.0): ES 7.17 single-node,
 # security off (internal network only, never published), tight disk watermarks,
-# 256m heap. mem_limit and the SELinux label opt live HERE, not in
-# compose.local.yml — an overlay only shapes services it declares, and this
-# service exists only when this file is applied.
+# 256m heap. The LOCAL-ONLY knobs (mem_limit, the SELinux label opt the
+# podman-machine VM needs for named-volume mounts) live in compose.local.yml
+# like every other service's — label=disable must not ride into prod, where it
+# would strip confinement from the one container running an EOL-line JVM.
 
 services:
   temporal:
@@ -48,9 +49,6 @@ services:
       - ES_JAVA_OPTS=-Xms256m -Xmx256m
       - xpack.security.enabled=false
     networks: [postiz]
-    mem_limit: 768m
-    security_opt:
-      - label=disable
     healthcheck:
       # curl ships in the ES 7.17 image (verified in the running container).
       # Cluster health answering AT ALL is the readiness signal the engine needs.
