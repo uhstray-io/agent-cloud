@@ -52,8 +52,64 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The legacy path's env file. Present only on a host that ran the old
+    # secret-generating deploy.sh — i.e. exactly the in-place prod migration.
+    _live_env: "{{ live_n8n_env | default(_deploy_dir + '/config/n8n.env') }}"
+    _stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]
 
   tasks:
+    # ── Cutover guard (design D4) ────────────────────────────────────────────
+    # On a host still carrying the legacy env, the rendered .env MUST agree with
+    # the live file on every stateful value BEFORE any container is (re)started:
+    # a regenerated N8N_ENCRYPTION_KEY makes every stored workflow credential
+    # permanently undecryptable, and regenerated DB passwords lock the app out
+    # of its own data. Operator vigilance is the thing that fails at 2am — this
+    # diff is mechanical, fails closed, and prints KEY NAMES ONLY. Greenfield
+    # hosts (no legacy file) skip it entirely.
+    - name: "Check for a live legacy env (cutover detection)"
+      ansible.builtin.stat:
+        path: "{{ _live_env }}"
+      register: _legacy
+
+    - name: "Guard the cutover: rendered stateful values must match the live ones"
+      when: _legacy.stat.exists
+      block:
+        - name: "Read both env files"
+          ansible.builtin.slurp:
+            src: "{{ item }}"
+          loop:
+            - "{{ _live_env }}"
+            - "{{ _deploy_dir }}/.env"
+          register: _envs
+          no_log: true
+
+        - name: "Diff the stateful values (names only)"
+          # One pass per key; only the NAME of a differing key survives into the
+          # fact. A key absent from a file reads as '' — if it is absent from
+          # both, the pair agrees vacuously and the assert stays green.
+          ansible.builtin.set_fact:
+            _stateful_mismatches: >-
+              {{ (_stateful_mismatches | default([]))
+                 + ([item] if _live_val != _new_val else []) }}
+          vars:
+            _live_txt: "{{ _envs.results[0].content | b64decode }}"
+            _new_txt: "{{ _envs.results[1].content | b64decode }}"
+            _live_val: "{{ (_live_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
+            _new_val: "{{ (_new_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
+          loop: "{{ _stateful_keys }}"
+          no_log: true
+
+        - name: "Refuse to proceed on a stateful mismatch (names only, never values)"
+          ansible.builtin.assert:
+            that:
+              - _stateful_mismatches | length == 0
+            fail_msg: >-
+              CUTOVER REFUSED before touching the running service: the rendered
+              .env disagrees with the live {{ _live_env }} on
+              {{ _stateful_mismatches | join(', ') }}. Pre-seed the live values
+              with Seed n8n Secrets, verify with Check Secrets, then re-run.
+              No container was restarted.
+
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"

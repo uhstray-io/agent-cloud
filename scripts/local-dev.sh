@@ -122,10 +122,17 @@ _run_template() {
   _load_state
   local base="${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}"
   local tid
+  # PREFER the worktree-bound "(Local)" template for a playbook. Several
+  # templates can share one playbook path (shared/GitHub-main, (Dev)/GitHub-dev,
+  # (Local)/worktree); taking the first match dispatched the GitHub-main one, so
+  # "validated locally" ran code that was not the code being written
+  # (docs/MISTAKES.md 10.9, occurrence 2). Local runs exist to test the working
+  # tree — only the "(Local)" binding does that.
   tid=$(_api "${base}/templates" | python3 -c "
 import json, sys
 ts = json.load(sys.stdin)
 m = [t for t in ts if t.get('playbook') == '$playbook']
+m.sort(key=lambda t: 0 if t.get('name', '').endswith('(Local)') else 1)
 print(m[0]['id'] if m else '')")
   [ -n "$tid" ] || die "no template registered for playbook: $playbook"
   local body="{\"template_id\": ${tid}, \"project_id\": ${SEMAPHORE_PROJECT_ID}"

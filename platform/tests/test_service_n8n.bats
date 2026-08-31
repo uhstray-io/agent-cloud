@@ -178,6 +178,32 @@ setup() {
   assert_grep -q 'n8n-nodes-postiz@0.2.17' "$pb"
 }
 
+@test "n8n: cutover guard diffs stateful values before deploy.sh and prints names only" {
+  local f="$PB_DIR/deploy-n8n.yml"
+  # The guard covers exactly the three stateful keys.
+  assert_grep -qF '_stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]' "$f"
+  # It fails closed BEFORE the container lifecycle: the refuse-assert must
+  # appear earlier in the play than the deploy.sh task.
+  local g d
+  g=$(grep -n 'Refuse to proceed on a stateful mismatch' "$f" | head -1 | cut -d: -f1)
+  d=$(grep -n 'Run deploy.sh (container lifecycle)' "$f" | head -1 | cut -d: -f1)
+  [ -n "$g" ] && [ -n "$d" ] && [ "$g" -lt "$d" ]
+  # Value-bearing steps are no_log; the assert prints key NAMES only.
+  local blk
+  for n in "Read both env files" "Diff the stateful values"; do
+    blk=$(task_block "$f" "$n")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done
+  blk=$(task_block "$f" "Refuse to proceed on a stateful mismatch")
+  [ -n "$blk" ]
+  refute_grep -qE '_live_val|_new_val|_live_txt|_new_txt' <<<"$blk"
+  assert_grep -q '_stateful_mismatches' <<<"$blk"
+  # Greenfield hosts skip: the whole block is gated on the legacy file existing.
+  blk=$(task_block "$f" "Guard the cutover")
+  assert_grep -q '_legacy.stat.exists' <<<"$blk"
+}
+
 @test "n8n: every lifecycle concern is a declared Semaphore template, destructive one marked" {
   local t="${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
   local n

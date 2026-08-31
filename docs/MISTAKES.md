@@ -84,7 +84,7 @@ supersede it with a new entry and link both.
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
-| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written | Wrong code under validation | Bootstrap record + structural bind |
+| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1742,6 +1742,8 @@ answer. Both mutation-proven by reintroducing the exact original bug.
 
 ### 10.9 Local validation ran GitHub's code, not the working tree
 
+**Occurrences: 2** — 2026-08-30, 2026-08-31
+
 **What happened.** Every `(Local)` Semaphore template was bound to the repository
 record named `agent-cloud`, which points at GitHub `main`. The deploy DIR carried
 the working tree (rsync'd by place-monorepo), so service files were current — but
@@ -1767,6 +1769,15 @@ to it explicitly.
 creates/corrects the record, and setup-templates.yml binds the ENTIRE local
 template list to it with one `map('combine')` at the load site, so a new entry
 cannot omit the binding. It refuses to apply if the record is missing.
+
+**Occurrence 2 — 2026-08-31.** The rule fixed the BINDING but not the
+DISPATCHER: `scripts/local-dev.sh _run_template` selected a template by playbook
+path alone and took the first match, and the shared GitHub-main-bound template
+sorts before the `(Local)` one — so `local-dev.sh deploy n8n` ran main's
+playbooks while the deploy DIR carried the branch (same split as occurrence 1,
+one layer up). Caught because the branch's new env template visibly didn't
+render. The dispatcher now prefers the `(Local)`-named template for a playbook
+(scripts/local-dev.sh), which is the structural fix at the selection site.
 
 ## 11. The largest one
 
