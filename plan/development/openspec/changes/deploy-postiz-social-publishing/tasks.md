@@ -261,6 +261,12 @@ protects 1.7, which is the only irreversible step in the change.
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
 - [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at all four social
       platforms to the new public host — account connection fails until this is done
+      EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
+      LinkedIn refused the unregistered local URL with "redirect_uri does not
+      match the registered value"): each console must register
+      <public-url>/integrations/social/<identifier>, i.e. /discord, /linkedin,
+      /linkedin-page, /x, /youtube. The /settings path from the plan doc is the
+      Authentik OIDC sign-in callback, NOT the social-connect one.
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly
       asked** and merge it with a merge commit, so the orchestrator deploys from there
 - [ ] 6.7 Validation gate: scenario "Interface and automation share one hostname" is
