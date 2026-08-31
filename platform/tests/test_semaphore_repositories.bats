@@ -206,3 +206,15 @@ print('\n'.join(bad) if bad else 'OK')
   # running against records that may no longer exist.
   grep -qF 'IT DOES NOT DELETE' "$SETUP"
 }
+
+@test "templates: local templates are bound to the worktree record STRUCTURALLY, not per entry" {
+  # One map-combine at the load site binds every local template to the
+  # working-tree record. Per-template repository: lines are how a new entry
+  # silently falls through default('agent-cloud') to GitHub main and validates
+  # code that is not the code being written (docs/MISTAKES.md 10.9).
+  local setup="$BATS_TEST_DIRNAME/../semaphore/setup-templates.yml"
+  local locals="$BATS_TEST_DIRNAME/../semaphore/templates-local.yml"
+  assert_grep -q "_local_repo_name" "$setup"
+  assert_grep -qE "map\('combine', \{'repository': _local_repo_name\}\)" "$setup"
+  refute_grep -qE '^    repository:' "$locals"
+}

@@ -39,8 +39,16 @@
     _template_config: "{{ lookup('file', playbook_dir + '/templates.yml') | from_yaml }}"
     # Local-only templates are merged ONLY when explicitly requested (the local
     # bootstrap sets this); the shared templates.yml stays prod-clean.
+    #
+    # Every local template is bound to the working-tree repository record HERE,
+    # structurally, with one combine — never as a per-template `repository:` line
+    # in templates-local.yml. A hand-kept line per template is exactly how a new
+    # local template silently falls through default('agent-cloud') to GitHub main
+    # and validates code that is not the code being written (MISTAKES 10.9).
+    _local_repo_name: "{{ semaphore_local_repo_name | default('agent-cloud worktree') }}"
     _templates_local: >-
-      {{ (lookup('file', playbook_dir + '/templates-local.yml') | from_yaml).templates
+      {{ (((lookup('file', playbook_dir + '/templates-local.yml') | from_yaml).templates)
+          | map('combine', {'repository': _local_repo_name}) | list)
          if (semaphore_include_local_templates | default(false) | bool) else [] }}
     _base_templates: "{{ _template_config.templates + _templates_local }}"
     # Dev variants: a template marked `dev_variant: true` in templates.yml also

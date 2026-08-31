@@ -84,7 +84,7 @@ supersede it with a new entry and link both.
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
-| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written | Wrong code under validation | Bootstrap record + declared binding |
+| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written | Wrong code under validation | Bootstrap record + structural bind |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1763,10 +1763,10 @@ in place, uncommitted changes included), created by bootstrap-local-dev.yml and
 claimed by no other declaration; templates-local.yml binds every local template
 to it explicitly.
 
-**Enforced by.** Bootstrap record + declared binding — bootstrap-local-dev.yml
-creates/corrects the record, and every entry in templates-local.yml names
-`repository: agent-cloud worktree`, which setup-templates.yml refuses to apply if
-the record is missing.
+**Enforced by.** Bootstrap record + structural bind — bootstrap-local-dev.yml
+creates/corrects the record, and setup-templates.yml binds the ENTIRE local
+template list to it with one `map('combine')` at the load site, so a new entry
+cannot omit the binding. It refuses to apply if the record is missing.
 
 ## 11. The largest one
 

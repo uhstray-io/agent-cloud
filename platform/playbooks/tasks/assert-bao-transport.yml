@@ -10,12 +10,14 @@
 # on an internal VLAN and is reached at an http:// address. Requiring https
 # outright would break every real run.
 #
-# http:// to a SINGLE-LABEL hostname (no dots) is also allowed: such a name
-# cannot resolve on the public internet (a public FQDN needs a dot), so it is
-# container-network or link-local scope by construction — local-dev reaches its
-# store as http://local-openbao:8200 on the genesis podman network. The trailing
-# delimiter still applies, so http://name@evil.example is refused: the name
-# before @ is userinfo, and the request would go to the public host after it.
+# http:// to a SINGLE-LABEL hostname (no dots) is allowed ONLY under local_mode:
+# local-dev reaches its store as http://local-openbao:8200 on the genesis podman
+# network. It is NOT allowed unconditionally, because a resolver with a `search`
+# suffix in resolv.conf can turn a bare name into a public FQDN — the exact class
+# the anchored pattern exists to refuse. local_mode is the inventory axis that
+# actually distinguishes the two cases. The trailing delimiter still applies, so
+# http://name@evil.example is refused: the name before @ is userinfo, and the
+# request would go to the public host after it.
 #
 # Anchored on COMPLETE addresses with a trailing delimiter. A prefix match like
 # `http://10\.` also accepts http://10.evil.example/ — a public host whose name
@@ -52,10 +54,18 @@
   # touches the target, it would inherit that escalation and fail there. One line
   # makes the precondition explicit for every caller at once.
   become: false
+  vars:
+    # Named vars so neither regex line breaks the 200-char limit — a folded
+    # scalar would join with spaces INSERTED INTO the pattern. The behavioural
+    # table in test_credential_leaks.bats compiles both, exactly as decoded here.
+    _pat_strict: '^(https://|http://(localhost|127(\.[0-9]{1,3}){3}|10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})(?::[0-9]{1,5})?(?:/|$))'
+    _pat_single_label: '^http://[A-Za-z][A-Za-z0-9-]*(?::[0-9]{1,5})?(?:/|$)'
   ansible.builtin.assert:
     that:
       - >-
-        _assert_bao_url is match('^(https://|http://(localhost|127(\\.[0-9]{1,3}){3}|10(\\.[0-9]{1,3}){3}|192\\.168(\\.[0-9]{1,3}){2}|172\\.(1[6-9]|2[0-9]|3[01])(\\.[0-9]{1,3}){2}|[A-Za-z][A-Za-z0-9-]*)(?::[0-9]{1,5})?(?:/|$))')
+        _assert_bao_url is match(_pat_strict)
+        or ((local_mode | default(false) | bool)
+            and _assert_bao_url is match(_pat_single_label))
     fail_msg: >-
       Refusing to send secret material to {{ _assert_url_label | default('OpenBao') }}
       over public cleartext ({{ _assert_bao_url

@@ -536,7 +536,6 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   refute_grep -qE '^    _bao_(path|key): "\{\{' "$pb"
   # Every step that touches the key value is no_log'd: the DB read, the parse,
   # the OpenBao fetch/patch/verify, and the round-trip assert.
-  local names="Read the API key|Parse what the database|Fetch the existing secret|Merge the key|Verify the stored key|Require the round trip"
   local blk n
   while IFS= read -r n; do
     blk=$(awk -v name="$n" '$0 ~ "- name: \""name {f=1} f&&/^    - name:/&&!($0 ~ "- name: \""name){exit} f{print}' "$pb")
@@ -550,7 +549,6 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   local rep
   rep=$(awk '/- name: "Report \(names and lengths only/{f=1;next} f&&/^    - name:/{exit} f{print}' "$pb")
   [ -n "$rep" ]
-  refute_grep -qE '_api_key(?! \| length)' <<<"$(grep -oE '_api_key( \| length)?' <<<"$rep" | grep -v '| length')" 2>/dev/null || true
   [ -z "$(grep -oE '_api_key[^|]*' <<<"$rep" | grep -v '_api_key \| length')" ]
   assert_grep -q '_api_key | length' <<<"$rep"
   # Transport guard precedes the first request that carries a credential.
@@ -560,4 +558,18 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   [ -n "$g" ]; [ -n "$u" ]; [ "$g" -lt "$u" ]
   # Declared as a Semaphore template with a (Dev) variant.
   grep -qE '^  - name: Store Postiz API Key$' "${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
+}
+
+@test "postiz: teardown resolves the compose-file SUPERSET, so overlay-only resources die too" {
+  # A service/volume that exists only in an overlay (the search node,
+  # postiz-es-data) is invisible to a base-only `down -v` — a "destroy
+  # everything" rebuild would attach to a search node carrying the old
+  # cluster's state. Both teardown branches must glob the overlays in.
+  local cs="${BATS_TEST_DIRNAME}/../playbooks/tasks/clean-service.yml"
+  [ "$(grep -c 'compose\.\*\.yml' "$cs")" -ge 2 ]
+  # And the base still comes first (overlays reference its services).
+  local first_base first_glob
+  first_base=$(grep -nE 'for f in docker-compose\.yml compose\.yml' "$cs" | head -1 | cut -d: -f1)
+  first_glob=$(grep -n 'compose\.\*\.yml' "$cs" | head -1 | cut -d: -f1)
+  [ -n "$first_base" ]; [ -n "$first_glob" ]; [ "$first_base" -lt "$first_glob" ]
 }

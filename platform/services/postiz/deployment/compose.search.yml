@@ -30,7 +30,10 @@ services:
       ES_VERSION: v7
     depends_on:
       temporal-elasticsearch:
-        condition: service_started
+        # service_healthy, matching every other dependency in the stack: ES cold
+        # start is tens of seconds, and the engine blind-retrying against a node
+        # that is not accepting yet just burns restart cycles.
+        condition: service_healthy
 
   temporal-elasticsearch:
     image: ${ELASTICSEARCH_IMAGE:-docker.io/elasticsearch:7.17.27}
@@ -48,6 +51,14 @@ services:
     mem_limit: 768m
     security_opt:
       - label=disable
+    healthcheck:
+      # curl ships in the ES 7.17 image (verified in the running container).
+      # Cluster health answering AT ALL is the readiness signal the engine needs.
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     volumes:
       - postiz-es-data:/usr/share/elasticsearch/data
 

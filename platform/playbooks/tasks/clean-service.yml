@@ -37,13 +37,20 @@
     set -o pipefail
     DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     ENGINE="{{ container_engine | default('docker') }}"
-    COMPOSE_FILE=""
+    # The SUPERSET of compose files, not just the base: a service/volume that
+    # exists only in an overlay (compose.local.yml, compose.search.yml) is
+    # invisible to a base-only `down -v` and survives a "destroy everything"
+    # rebuild carrying stale state. Extra -f files are harmless on teardown.
+    COMPOSE_ARGS=""
     for f in docker-compose.yml compose.yml; do
-      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_FILE="${f}" && break
+      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_ARGS="-f ${f}" && break
     done
-    if [ -n "$COMPOSE_FILE" ]; then
+    if [ -n "$COMPOSE_ARGS" ]; then
+      for f in "${DEPLOY_DIR}"/compose.*.yml; do
+        [ -f "$f" ] && COMPOSE_ARGS="$COMPOSE_ARGS -f $(basename "$f")"
+      done
       cd "$DEPLOY_DIR"
-      $ENGINE compose --project-name {{ service_name }} -f "$COMPOSE_FILE" down -v 2>&1 || true
+      $ENGINE compose --project-name {{ service_name }} $COMPOSE_ARGS down -v 2>&1 || true
     fi
     # Remove any containers with the service name prefix
     $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
@@ -60,15 +67,19 @@
     set -o pipefail
     DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     ENGINE="{{ container_engine | default('podman') }}"
-    COMPOSE_FILE=""
+    # Superset of compose files — see the prod branch above for why.
+    COMPOSE_ARGS=""
     for f in docker-compose.yml compose.yml; do
-      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_FILE="${f}" && break
+      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_ARGS="-f ${f}" && break
     done
-    if [ -n "$COMPOSE_FILE" ]; then
+    if [ -n "$COMPOSE_ARGS" ]; then
+      for f in "${DEPLOY_DIR}"/compose.*.yml; do
+        [ -f "$f" ] && COMPOSE_ARGS="$COMPOSE_ARGS -f $(basename "$f")"
+      done
       cd "$DEPLOY_DIR"
       # No --project-name: let the compose `name:` field set the project (matches
       # how deploy.sh brought it up) so the right volumes are removed.
-      $ENGINE compose -f "$COMPOSE_FILE" down -v 2>&1 || true
+      $ENGINE compose $COMPOSE_ARGS down -v 2>&1 || true
     fi
     $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
   args:

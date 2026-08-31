@@ -319,12 +319,14 @@ _committed_files() {
   [ -z "$output" ]
   grep -q 'Refusing to send secret material' "$shared"
 
-  # The dots must be written `\\.` in the YAML. Jinja processes escapes in its
-  # string literals, so `\\.` arrives as `\.` — an escaped dot. A single `\.`
-  # happens to behave the same today only because Python passes an unrecognised
-  # escape through unchanged, which is deprecated. Pin the explicit form.
-  grep -qE '127\(\\\\\.\[0-9\]' "$shared"
-  ! grep -qE '127\(\\\.\[0-9\]' "$shared"
+  # ESCAPING PIN, updated for the var form. The pattern now lives in a YAML
+  # single-quoted VAR (_pat_strict), which Jinja passes to match() as a value —
+  # no string-literal escape processing — so a single `\.` IS the escaped dot
+  # and `\\.` would put a literal backslash into the regex. (The old inline
+  # `is match('...')` form was the opposite; runtime-proven 2026-08-30 across
+  # eight accept/refuse cases when this moved.)
+  grep -qE "_pat_strict: '.*127\(\\\.\[0-9\]" "$shared"
+  ! grep -qE "_pat_strict: '.*127\(\\\\\." "$shared"
 
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
   # The two seed playbooks kept their own inline copies for one commit and were
@@ -383,9 +385,15 @@ _committed_files() {
   run python3 -c "
 import re, codecs, sys
 src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
-m = re.search(r\"_assert_bao_url is match\\('(.*?)'\\)\", src, re.S)
-assert m, 'pattern not found in the shared task'
-pat = codecs.decode(m.group(1), 'unicode_escape')
+m = re.search(r\"_pat_strict: '(.*?)'\", src)
+ms = re.search(r\"_pat_single_label: '(.*?)'\", src)
+assert m and ms, 'patterns not found in the shared task'
+pat = m.group(1)
+pat_single = ms.group(1)
+# The single-label branch must be gated on local_mode in the assert expression —
+# unconditional single-label acceptance is what the resolver search-suffix
+# refusal below exists to prevent.
+assert re.search(r'local_mode \| default\(false\).*is match\(_pat_single_label\)', src, re.S), 'single-label branch not gated on local_mode'
 
 # Generic RFC1918 examples, deliberately NOT the platform's real endpoint —
 # that address is site data and lives in site-config, not here.
@@ -398,8 +406,6 @@ accept = [
     'http://192.168.0.1:8200/v1',          # example: RFC1918 192.168/16 with path
     'http://172.16.0.1:8200',              # example: RFC1918 lower bound
     'http://172.31.255.254:8200',          # example: RFC1918 upper bound
-    'http://local-openbao:8200',           # single-label: container-DNS scope, cannot be public
-    'http://local-openbao:8200/v1',        # single-label with path
 ]
 refuse = [
     'http://bao.example.com:8200',         # example: public host, cleartext
@@ -419,18 +425,30 @@ refuse = [
     'http://192.168.0.1:8200@bao.evil.example/',                   # trufflehog:ignore
     'http://local-openbao@bao.evil.example/',                      # trufflehog:ignore
     'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space, refused
+    'http://local-openbao:8200',           # single-label: allowed ONLY under local_mode, strict refuses
 ]
 bad = []
 for u in accept:
     if not re.match(pat, u): bad.append('should ACCEPT: ' + u)
 for u in refuse:
     if re.match(pat, u): bad.append('should REFUSE: ' + u)
+# The local_mode branch's own pattern: single-label only, same trailing anchor.
+sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1']
+sl_refuse = [
+    'http://local-openbao@bao.evil.example/',   # trufflehog:ignore — userinfo
+    'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space
+    'https://anything',                          # wrong scheme for this branch
+]
+for u in sl_accept:
+    if not re.match(pat_single, u): bad.append('single-label should ACCEPT: ' + u)
+for u in sl_refuse:
+    if re.match(pat_single, u): bad.append('single-label should REFUSE: ' + u)
 if bad:
     print('\\n'.join(bad)); sys.exit(1)
-print('all %d cases correct' % (len(accept) + len(refuse)))
+print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 22 cases correct"* ]]
+  [[ "$output" == *"all 26 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

@@ -56,12 +56,15 @@ step_pull_images() {
 }
 
 step_start() {
-  info "Step 3: Starting postiz (app + postgres + redis + temporal + temporal-postgresql)..."
-  # --force-recreate: the app reads its runtime config from a bind-mounted file.
-  # A change to that file's CONTENT is not a compose-spec change, so a plain
-  # `up -d` would leave the running container with stale configuration loaded.
-  # Force-recreate so a re-rendered config always takes effect.
-  compose up -d --force-recreate
+  info "Step 3: Starting postiz (app + postgres + redis + temporal + temporal-postgresql [+ search node])..."
+  # Two invocations, deliberately. `up -d` converges the whole stack. Then the
+  # APP ALONE is force-recreated: it reads runtime config from a bind-mounted
+  # file, and a change to that file's CONTENT is not a compose-spec change, so
+  # a plain `up -d` would leave it running with stale configuration. The blanket
+  # --force-recreate this replaces also tore down the datastores, the engine and
+  # the search node's JVM on every no-op redeploy — none of which read that file.
+  compose up -d
+  compose up -d --force-recreate postiz
 }
 
 step_wait_healthy() {
