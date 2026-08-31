@@ -61,8 +61,8 @@
 ## 5. Local-dev end-to-end proof
 
 - [ ] 5.1 Greenfield local run of the full chain via the `(Dev)` templates: deploy →
-      healthz → forward_auth gate → owner seeded → node reconciled → operator mints
-      key → capture → credential provisioned
+      healthz → forward_auth gate → owner seeded → node reconciled → key minted +
+      captured by `Store n8n API Key` (no manual step; D2) → credential provisioned
 - [ ] 5.2 Validation gate: scenario "Idempotent redeploy after cutover" holds locally —
       second deploy run reports no stateful change
 
@@ -78,8 +78,8 @@
 - [ ] 6.3 Run the guarded `Deploy n8n` cutover; operator confirms existing workflows
       execute and stored credentials decrypt
 - [ ] 6.4 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy),
-      operator mints the API key, `Store n8n API Key`,
-      `Provision n8n Postiz Credential`
+      then `Store n8n API Key` (mints via the owner session AND captures — no
+      manual step; D2), then `Provision n8n Postiz Credential`
 - [ ] 6.5 Validation gate: scenarios "Pre-seed makes the first composable deploy a
       fetch", "Cutover refuses to proceed on a stateful mismatch" (proven by the
       guard's test, not by breaking prod), and "Idempotent redeploy after cutover"

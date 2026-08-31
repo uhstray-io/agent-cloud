@@ -21,8 +21,9 @@ everything it contained; it needs a recorded disposition.
   `seed-n8n-secrets.yml`, verify they resolve as *pre-existing*, then run the
   composable `deploy-n8n.yml` — preserving every stored workflow credential.
 - **Add the missing Semaphore templates**: `Seed n8n Secrets`, `Clean Deploy n8n`,
-  and the new `Store n8n API Key` (only `Deploy n8n` and `Update n8n` exist today
-  in `platform/semaphore/templates.yml`).
+  the new `Store n8n API Key`, and `Provision n8n Postiz Credential` (only
+  `Deploy n8n` and `Update n8n` exist today in
+  `platform/semaphore/templates.yml`).
 - **Install `n8n-nodes-postiz` as code**: pin the community node
   (name + version + checksum) via `N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV` /
   `N8N_COMMUNITY_PACKAGES` in the n8n env template, so the node install is
@@ -60,7 +61,7 @@ everything it contained; it needs a recorded disposition.
 ## Impact
 
 - **Playbooks**: new `store-n8n-api-key.yml`, new credential-provisioning playbook;
-  `platform/semaphore/templates.yml` gains three templates.
+  `platform/semaphore/templates.yml` gains four templates.
 - **Templates/env**: `platform/services/n8n/deployment/templates/n8n.env.j2` and/or
   `compose.yml` gain the community-package variables.
 - **Shared lib**: `platform/lib/common.sh` loses `generate_n8n_env()` (post-validation).

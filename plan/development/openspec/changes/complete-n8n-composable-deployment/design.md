@@ -60,24 +60,39 @@ pinned version, removes anything undeclared, and disables UI installs — the ex
   dist.integrity`) at implementation time and is pinned in the template alongside
   the version.
 
-### D2 — API-key capture: from the service's own database, `no_log`, Semaphore-run
+### D2 — API-key MINT + capture: authenticated REST, `no_log`, Semaphore-run
 
-`store-n8n-api-key.yml` follows `store-postiz-api-key.yml`: the operator mints
-the key once in the n8n UI (Settings → n8n API), then the playbook reads it from
-n8n's own Postgres and merges it into `secret/services/n8n` (KV-v2 merge-patch,
-siblings preserved), with every key-bearing step `no_log`. Task output carries
-names and counts only.
+`store-n8n-api-key.yml` mints the key itself instead of waiting on a manual UI
+step (review finding on this change, corrected against n8n@2.25.7 source): the
+playbook logs in as the seeded owner (credentials already in OpenBao), calls the
+session-authenticated internal endpoint `POST /rest/api-keys`
+(`ApiKeysController`, `@GlobalScope('apiKey:manage')`, 404 unless the public
+API is enabled), takes `rawApiKey` from the creation response, and merges it
+into `secret/services/n8n:n8n_api_key` (KV-v2 merge-patch via the shared
+`tasks/bao-merge-keys.yml`, siblings preserved) — every credential-bearing step
+`no_log`, task output carrying names and counts only. Idempotent: it first
+lists existing keys and creates only if no key with our fixed label exists —
+every POST inserts a NEW key, so an unconditional mint would pile them up. NOTE
+the endpoint surface, verified at the pinned tag: the PUBLIC `/api/v1` spec has
+no api-keys paths; `/rest/api-keys` with a session cookie is the only mint
+route. The DB stores the raw JWT itself (`ApiKey.apiKey`, looked up by raw
+value), so a read-back verification against n8n's own Postgres remains possible.
 
-- *REST mint* (PR #15's approach: `POST /rest/...` with owner session + printing
-  `N8N_API_KEY=...` to stdout) rejected: it printed a live credential into the
-  Semaphore run record — the exact failure `store-postiz-api-key.yml` exists to
-  prevent, since Semaphore v2.17 cannot clear a task's output without deleting
-  the task.
+- *REST mint as PR #15 did it* (`POST /rest/...` with owner session + printing
+  `N8N_API_KEY=...` to stdout) stays rejected FOR THE PRINTING, not the minting:
+  it wrote a live credential into the Semaphore run record, which v2.17 cannot
+  clear without deleting the task. D2 keeps the mint and removes the print —
+  `rawApiKey` goes from the response straight to OpenBao under `no_log`.
+- *Manual UI mint + DB read-out* (this design's first draft) rejected as the
+  primary path: it works (the DB holds the raw key), but it leaves a human step
+  in an otherwise fully orchestrated chain, and the operator sees the key in the
+  UI — one more pair of eyes the automated mint never exposes it to.
 - *Skipping the key entirely* (CLI `import:credentials` inside the container)
   rejected for credential provisioning too — see D3.
-- The exact table/column holding n8n API keys is read from the deployed schema at
-  implementation (unverified today; the task carries the verification step).
-  n8n API keys are displayed once at creation in the UI — the DB read is what
+- Storage semantics verified at n8n@2.25.7 (`public-api-key.service.ts`): the
+  `ApiKey` row stores the raw JWT and is queried by raw value — no hashing — so
+  the read-back verification is a plain equality check. The creation response is
+  the only place `rawApiKey` appears unredacted through the API; listing
   makes capture repeatable without re-minting.
 
 ### D3 — Postiz credential provisioning: n8n public API, not CLI import
