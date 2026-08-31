@@ -8,6 +8,13 @@
 # stays prod-clean; applying THIS file to production is structurally prevented
 # by that flag defaulting to false.
 
+# EVERY template in this file is bound to the `agent-cloud worktree` repository
+# record (the /workspace/agent-cloud mount at HEAD, created by
+# bootstrap-local-dev.yml) — STRUCTURALLY, by setup-templates.yml's map-combine
+# at the load site, so the binding cannot be forgotten on a new entry. Do NOT
+# add per-template `repository:` lines here; the combine overrides them anyway.
+# Why: bound to GitHub, local templates silently validate code that is not the
+# code being written (MISTAKES 10.9, found 2026-08-30).
 templates:
   # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
   # Plan: DNS-SERVER-DEPLOYMENT.md (local half: LOCAL-DEV-DEPLOYMENT.md §5.1).
@@ -55,6 +62,11 @@ templates:
   # native OIDC, API-key automation endpoint ungated at the edge).
   - name: "Deploy Postiz (Local)"
     playbook: platform/playbooks/deploy-postiz.yml
+
+  # Captures the app-minted public-API key into the local OpenBao — run after
+  # the first sign-in (the app mints the key on the first authenticated request).
+  - name: "Store Postiz API Key (Local)"
+    playbook: platform/playbooks/store-postiz-api-key.yml
 
   # Clean-deploy (destructive): wipe a local service's containers+volumes, then
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.

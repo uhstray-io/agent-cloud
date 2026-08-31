@@ -50,11 +50,14 @@ bind-mounted file. Changing that file's *content* is not a compose-spec change, 
 plain `up -d` leaves the old container running with stale config — a redeploy that
 appears to succeed and changes nothing.
 
-**No Elasticsearch, no workflow UI, no admin tooling.** Five containers, not upstream's
-eight. The engine runs standard visibility on its own Postgres. Do not add the search
-node back because upstream's compose has it — add it back only if a scheduled post
-demonstrably fails to fire, and then via the inventory-gated path in `compose.yml`'s
-header.
+**No workflow UI, no admin tooling — and the Elasticsearch gate FIRED.** The trim's
+add-back condition was met on 2026-08-30: postiz v2.23.0's backend registers >3 `Text`
+search attributes at startup, SQL visibility caps at 3 (`INVALID_ARGUMENT` from the
+engine), and the backend never binds — pm2 keeps the frontend up, so the container sits
+"starting" forever and `podman exec` into it hangs. The search node ships as
+`compose.search.yml`, gated on `postiz_temporal_search` in inventory and applied through
+`COMPOSE_OVERLAYS` (common.sh). Do not fold it into the base compose: the base stays the
+honest five-container trim, and the gate stays declarative.
 
 **`temporal-postgresql` is pinned to Postgres 16 while `postiz-postgres` is 17.** Not an
 oversight — Temporal 1.28 supports up to 16. Do not "align" them.

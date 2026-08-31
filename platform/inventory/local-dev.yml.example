@@ -224,6 +224,10 @@ all:
           # Host debug port; Caddy reaches the container :5000 by name. Shifted
           # off 5000 because macOS AirPlay Receiver squats that port by default.
           postiz_port: 5001
+          # Search node (Elasticsearch) for the workflow engine — REQUIRED as
+          # of postiz v2.23.0 and defaulted true; kept here as the documented
+          # opt-out knob. Full account: services/postiz/deployment/CLAUDE.md.
+          postiz_temporal_search: true
           # MUST match the URL the browser actually uses — postiz derives its
           # OIDC redirect from this, so a mismatch is rejected by Authentik as an
           # unregistered destination. Includes :8443 unless `make local-https`

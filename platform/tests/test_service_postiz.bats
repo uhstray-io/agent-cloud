@@ -48,14 +48,48 @@ setup() {
   grep -qE '^\s+temporal-postgresql:' "$f"
 }
 
-@test "postiz: the trimmed topology omits elasticsearch and the workflow UI" {
+@test "postiz: the BASE topology omits elasticsearch and the workflow UI" {
   local f="$DEPLOY_DIR/compose.yml"
-  # Upstream's reference compose adds these three; we deliberately do not.
-  # The engine runs standard visibility on its own Postgres instead.
+  # Upstream's reference compose adds these three; the BASE deliberately does
+  # not — the search node lives ONLY in the gated overlay below.
   refute_grep -qE '^\s+temporal-elasticsearch:' "$f"
   refute_grep -qE '^\s+temporal-ui:' "$f"
   refute_grep -qE '^\s+temporal-admin-tools:' "$f"
   grep -qE 'ENABLE_ES:\s*"false"' "$f"
+}
+
+@test "postiz: the search-node overlay is complete, internal, and gated from inventory" {
+  # The one add-back the design scoped in advance (D1 / tasks 2.2, 5.7). Fired
+  # 2026-08-30: the backend registers >3 Text search attributes at startup and
+  # SQL visibility caps at 3, so without this overlay the backend never binds.
+  local ov="$DEPLOY_DIR/compose.search.yml"
+  [ -f "$ov" ]
+  # The overlay flips the engine to ES and adds the node — all three variables,
+  # because ENABLE_ES without seeds fails in a different place later.
+  grep -qE 'ENABLE_ES:\s*"true"' "$ov"
+  grep -qE 'ES_SEEDS:\s*temporal-elasticsearch' "$ov"
+  grep -qE 'ES_VERSION:\s*v7' "$ov"
+  grep -qE '^\s+temporal-elasticsearch:' "$ov"
+  # Internal only: the search node must never publish a host port, and single-node
+  # discovery with a bounded heap — this host's only job is publishing posts.
+  refute_grep -qE '^\s+ports:' "$ov"
+  grep -qE 'discovery.type=single-node' "$ov"
+  # The PROD-APPLIED overlay must carry no local-only knob: label=disable would
+  # strip SELinux confinement from the one container running an EOL-line JVM.
+  # Those live in compose.local.yml with every sibling's.
+  refute_grep -q 'label=disable' <<<"$(grep -vE '^[[:space:]]*#' "$ov")"
+  grep -qE 'temporal-elasticsearch:' "${DEPLOY_DIR}/compose.local.yml"
+  # Pinned image, parameterized like every other one.
+  grep -qE '\$\{ELASTICSEARCH_IMAGE:-docker\.io/elasticsearch:7\.17' "$ov"
+  # And the gate: the deploy playbook wires the overlay from the inventory var,
+  # through the generic COMPOSE_OVERLAYS mechanism in common.sh. Scoped to the
+  # deploy task's own block (2.15: a full-file token search passes on a comment
+  # after the active wiring is deleted); mutation-tested by removing the line.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/deploy-postiz.yml"
+  local depblk
+  depblk=$(task_block "$pb" "Run deploy.sh (container lifecycle)")
+  [ -n "$depblk" ]
+  assert_grep -qE "^        COMPOSE_OVERLAYS: .*compose\.search\.yml.*postiz_temporal_search \| default\(true\)" <<<"$depblk"
 }
 
 @test "postiz: temporal's Postgres stays on 16 (its supported ceiling)" {
@@ -484,4 +518,78 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   local f="$DEPLOY_DIR/deploy.sh"
   grep -qE '\[ -f "\$\{SCRIPT_DIR\}/config/postiz.env" \]' "$f"
   grep -q 'silently become a directory' "$f"
+}
+
+@test "postiz: the app healthcheck probes the BACKEND path, not the frontend" {
+  # nginx serves / from the frontend, so a probe on / stays green while the
+  # backend is dead — which is exactly how a backend that never bound sat
+  # "starting" behind a green-looking / for a whole validation phase. /api/ is
+  # proxied to the backend, so its answer (even a 404) proves the process bound.
+  local f="$DEPLOY_DIR/compose.yml"
+  grep -q "http://127.0.0.1:5000/api/" "$f"
+  refute_grep -qE "get\('http://127\.0\.0\.1:5000/'," "$f"
+}
+
+@test "postiz api key: read-only capture, fixed path, key-bearing steps no_log" {
+  # The stored Organization.apiKey IS the bearer token (getOrgByApiKey compares
+  # the Authorization header directly to the column), so this playbook must only
+  # READ it — a write path could clobber the key every caller depends on — and
+  # nothing it prints may carry the value.
+  local pb="${BATS_TEST_DIRNAME}/../playbooks/store-postiz-api-key.yml"
+  [ -f "$pb" ]
+  # SELECT only: no mutating SQL anywhere in the play.
+  refute_grep -qiE 'UPDATE|INSERT|DELETE|ALTER' <<<"$(grep -vE '^[[:space:]]*#' "$pb")"
+  # The store path and key are fixed, never caller-supplied.
+  assert_grep -qE '^    _bao_path: "services/postiz"$' "$pb"
+  assert_grep -qE '^    _bao_key: "postiz_api_key"$' "$pb"
+  refute_grep -qE '^    _bao_(path|key): "\{\{' "$pb"
+  # Every step that touches the key value is no_log'd: the DB read and parse in
+  # the playbook, and the fetch/patch/verify chain in the SHARED write task the
+  # playbook now includes (tasks/bao-merge-keys.yml).
+  local shared="${BATS_TEST_DIRNAME}/../playbooks/tasks/bao-merge-keys.yml"
+  assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$pb"
+  local blk n
+  while IFS= read -r n; do
+    blk=$(task_block "$pb" "$n")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done < <(printf '%s\n' "Read the API key" "Parse what the database")
+  while IFS= read -r n; do
+    blk=$(task_block "$shared" "$n")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done < <(printf '%s\n' "Fetch the current secret" "Merge the differing keys" "Create the new path" "Verify the merged keys" "Require every merged key to hold")
+  # And this caller REFUSES to create the path — deploy-postiz owns it.
+  blk=$(task_block "$pb" "Merge the key into the store")
+  assert_grep -q '_bm_on_missing: fail' <<<"$blk"
+  # The one debug prints a LENGTH, never the value: inside the Report task block,
+  # every line naming _api_key must pipe it through length. Scoped to the whole
+  # block — the msg is a folded scalar, so a fixed -A window can miss the line
+  # that actually carries the value (this refute was mutation-tested into shape).
+  local rep
+  rep=$(awk '/- name: "Report \(names and lengths only/{f=1;next} f&&/^    - name:/{exit} f{print}' "$pb")
+  [ -n "$rep" ]
+  [ -z "$(grep -oE '_api_key[^|]*' <<<"$rep" | grep -v '_api_key \| length')" ]
+  assert_grep -q '_api_key | length' <<<"$rep"
+  # Transport guard precedes the first request that carries a credential.
+  assert_guard_precedes_first_uri "$pb"
+  # Declared as a Semaphore template with a (Dev) variant.
+  grep -qE '^  - name: Store Postiz API Key$' "${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
+}
+
+@test "postiz: teardown resolves the compose-file SUPERSET, so overlay-only resources die too" {
+  # A service/volume that exists only in an overlay (the search node,
+  # postiz-es-data) is invisible to a base-only `down -v` — a "destroy
+  # everything" rebuild would attach to a search node carrying the old
+  # cluster's state. Both teardown branches must glob the overlays in.
+  local cs="${BATS_TEST_DIRNAME}/../playbooks/tasks/clean-service.yml"
+  [ "$(grep -c 'compose\.\*\.yml' "$cs")" -ge 2 ]
+  # And the PROD branch skips compose.local.yml — it references local-only
+  # externals a prod host does not have, which can void the whole down -v.
+  grep -qE 'compose\.local\.yml\) continue' "$cs"
+  # And the base still comes first (overlays reference its services).
+  local first_base first_glob
+  first_base=$(grep -nE 'for f in docker-compose\.yml compose\.yml' "$cs" | head -1 | cut -d: -f1)
+  first_glob=$(grep -n 'compose\.\*\.yml' "$cs" | head -1 | cut -d: -f1)
+  [ -n "$first_base" ]; [ -n "$first_glob" ]; [ "$first_base" -lt "$first_glob" ]
 }

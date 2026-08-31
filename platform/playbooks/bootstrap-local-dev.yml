@@ -99,7 +99,7 @@
     # clone, runs playbooks from the path in place).
     _repo_host_dir: "{{ playbook_dir | dirname | dirname }}"
     _repo_mount: /workspace/agent-cloud
-    _repo_branch: "{{ local_repo_branch | default('main') }}"
+    _repo_branch: "{{ local_repo_branch | default('HEAD') }}"
     # Shared deploy dir — the crux of running deploys through the mounted engine
     # socket. podman-compose runs INSIDE the Semaphore container, but bind-mount
     # source paths are resolved on the VM engine, which can't see the
@@ -794,24 +794,32 @@
         headers: *sem_hdr
       register: _repos
 
-    # Create-or-PUT: re-runs correct an existing record (e.g. one that still
-    # points at GitHub) to the local working-tree mount.
-    - name: "Create agent-cloud repository"
+    # The working-tree record gets its OWN NAME. The first version of this task
+    # pointed the record named `agent-cloud` at the mount — and Stage: templates
+    # below runs bootstrap-semaphore-repositories.yml, which converges that same
+    # name back to the GitHub URL repositories.yml declares. Two declared owners
+    # of one name meant the later one always won, so every (Local) template
+    # silently ran GitHub main's playbooks while the deploy dir carried the
+    # working tree. Found 2026-08-30 when an uncommitted deploy gate never fired.
+    # `agent-cloud worktree` is claimed by no other declaration; templates-local
+    # binds every (Local) template to it. HEAD = whatever branch the developer
+    # has checked out, at its last commit — the thing local-dev exists to test.
+    - name: "Create the agent-cloud worktree repository record"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
         method: POST
         headers: *sem_hdr
         body_format: json
         body:
-          name: agent-cloud
+          name: agent-cloud worktree
           project_id: "{{ _pid | int }}"
           git_url: "{{ _repo_mount }}"
           git_branch: "{{ _repo_branch }}"
           ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
         status_code: [201, 204]
-      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 0
 
-    - name: "Update agent-cloud repository to the working-tree mount"
+    - name: "Correct the worktree record if it drifted"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories/{{ _existing_repo.id }}"
         method: PUT
@@ -819,17 +827,17 @@
         body_format: json
         body:
           id: "{{ _existing_repo.id | int }}"
-          name: agent-cloud
+          name: agent-cloud worktree
           project_id: "{{ _pid | int }}"
           git_url: "{{ _repo_mount }}"
           git_branch: "{{ _repo_branch }}"
           ssh_key_id: "{{ _existing_repo.ssh_key_id | int }}"
-        status_code: [201, 204]
+        status_code: [200, 201, 204]
       vars:
-        _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud') | first }}"
+        _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | first }}"
       when:
-        - _repos.json | selectattr('name', 'equalto', 'agent-cloud') | list | length > 0
-        - _existing_repo.git_url != _repo_mount
+        - _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length > 0
+        - _existing_repo.git_url != _repo_mount or _existing_repo.git_branch != _repo_branch
       changed_when: true
 
     - name: "Ensure static local inventory"
@@ -1057,6 +1065,9 @@
           postiz_public_url=https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}
           postiz_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
           postiz_disable_registration=false
+          # Search node — required as of v2.23.0; the full account lives in
+          # platform/services/postiz/deployment/CLAUDE.md. Default is true.
+          postiz_temporal_search=true
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

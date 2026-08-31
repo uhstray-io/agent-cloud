@@ -25,13 +25,15 @@
 # ONLY compose-substitution values (image tags, bind/port, the two Postgres
 # passwords) — never app config.
 #
-# TRIMMED TOPOLOGY — upstream's reference compose runs eight containers, adding
-# an Elasticsearch node, a Temporal UI, and admin tooling. We run five.
-# temporalio/auto-setup runs standard visibility against its own Postgres with
-# ENABLE_ES=false, which is sufficient to EXECUTE workflows; Elasticsearch powers
-# advanced workflow SEARCH, which nothing here needs. To add it back (see
-# plan/development/14-postiz-social-publishing.md, D1): set ENABLE_ES=true plus
-# ES_SEEDS/ES_VERSION on `temporal` and add the elasticsearch service.
+# TRIMMED TOPOLOGY, PLUS THE GATE THAT FIRED — upstream's reference compose runs
+# eight containers (adding an Elasticsearch node, a Temporal UI, and admin
+# tooling); this base runs five. The Temporal UI and admin tooling stay out.
+# The Elasticsearch add-back that D1 scoped in advance FIRED on 2026-08-30:
+# postiz v2.23.0's backend registers its custom search attributes at startup,
+# SQL visibility caps Text attributes at 3, and the backend never binds without
+# the search node. The add-back is compose.search.yml, applied only when the
+# inventory sets postiz_temporal_search (deploy-postiz.yml -> COMPOSE_OVERLAYS).
+# This base file stays ENABLE_ES=false so an ungated deploy is the honest trim.
 #
 # Behind central Caddy: postiz serves plain HTTP on :5000 (Caddy terminates
 # TLS). Its internal nginx fronts everything on that one port — /api/ to the
@@ -121,15 +123,18 @@ services:
         condition: service_healthy
     healthcheck:
       # CMD-SHELL, not exec form: podman-compose mis-quotes ["CMD",...] lists.
-      # node is guaranteed in this image. Treat <500 as healthy — the app
-      # answers 3xx/4xx on / depending on session state, and only a 5xx or a
-      # connection failure means the process is actually broken.
+      # node is guaranteed in this image. Probe /api/, NOT / — nginx serves /
+      # from the FRONTEND, so a probe on / stayed green for a container whose
+      # backend never bound (measured 2026-08-30: the search-attribute refusal
+      # killed the backend while pm2 kept the frontend answering). /api/ is
+      # proxied to the backend: a 404 from it proves the backend is up; a 502
+      # from nginx means it is not. Treat <500 as healthy for that reason.
       # Split across lines to stay inside the repo's 200-char yamllint limit;
       # the folded scalar rejoins with single spaces, which the JS tolerates.
       test:
         - CMD-SHELL
         - >-
-          node -e "const r=require('http').get('http://127.0.0.1:5000/',
+          node -e "const r=require('http').get('http://127.0.0.1:5000/api/',
           s=>process.exit(s.statusCode<500?0:1));
           r.on('error',()=>process.exit(1));
           r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"

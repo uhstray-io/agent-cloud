@@ -91,80 +91,22 @@
       register: _bao_auth
       no_log: true
 
-    # GET serves two purposes: (a) idempotency — skip the write when the key
-    # already holds this value; (b) existence — 404 => create with POST, 200 =>
-    # update with a merge-patch PATCH (never a full-secret rewrite).
-    - name: "Fetch existing secret to check the key + path existence at secret/{{ bao_path }}"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200, 404]
-      register: _existing
-      no_log: true
+    - name: "Merge the key (shared write path: fetch, patch-or-create, verify)"
+      # tasks/bao-merge-keys.yml is THE merge-patch implementation: GET for
+      # idempotency and existence, server-side merge-PATCH preserving siblings
+      # (no read-modify-write race), POST only for a brand-new path, and a
+      # verified round trip after any actual write.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "{{ bao_path }}"
+        _bm_data: "{{ {bao_key: _bao_value} }}"
+        _bm_on_missing: create
 
-    - name: "Compute idempotency + path-existence facts"
-      ansible.builtin.set_fact:
-        _path_exists: "{{ _existing.status == 200 }}"
-        _existing_data: "{{ (_existing.json.data.data | default({})) if _existing.status == 200 else {} }}"
-      no_log: true
-
-    # Existing path: server-side JSON merge-patch — OpenBao merges {bao_key} into
-    # the current version, preserving siblings with no read-modify-write race.
-    - name: "Merge key via KV-v2 PATCH (merge-patch) into secret/{{ bao_path }}"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
-        method: PATCH
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-          Content-Type: application/merge-patch+json
-        body_format: json
-        body:
-          data: "{{ {bao_key: _bao_value} }}"
-        status_code: [200]
-      when:
-        - _path_exists | bool
-        - _existing_data[bao_key] | default(none) != _bao_value
-      register: _patch
-      no_log: true
-
-    # New path: nothing to preserve, so a plain create is correct.
-    - name: "Create the key at new secret/{{ bao_path }}"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
-        method: POST
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        body_format: json
-        body:
-          data: "{{ {bao_key: _bao_value} }}"
-        status_code: [200]
-      when:
-        - not (_path_exists | bool)
-      register: _create
-      no_log: true
-
-    - name: "Verify the key is present at secret/{{ bao_path }}"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200]
-      register: _verify
-      # no_log: the GET response returns EVERY sibling secret value at this path, not just
-      # ours — so the request is hidden, but the outcome stays visible via the assert below
-      # (name/count only, no values). This is the scoped-no_log pattern, not a hidden verify.
-      no_log: true
-
-    - name: "Assert key present (value not logged)"
-      ansible.builtin.assert:
-        that:
-          - bao_key in (_verify.json.data.data | default({}))
-        fail_msg: "Key '{{ bao_key }}' not found at secret/{{ bao_path }} after write."
-        success_msg: >-
-          Key '{{ bao_key }}' present at secret/{{ bao_path }}
-          ({{ 'created' if (_create.changed | default(false))
-              else ('patched' if (_patch.changed | default(false)) else 'already up to date') }};
-          {{ (_verify.json.data.data | default({}) | length) }} keys at path).
+    - name: "Report the outcome (name only, value not logged)"
+      ansible.builtin.debug:
+        msg: >-
+          Key '{{ bao_key }}' at secret/{{ bao_path }}:
+          {{ 'created' if (_bm_create is changed)
+             else ('patched' if (_bm_patch is changed) else 'already up to date') }}.

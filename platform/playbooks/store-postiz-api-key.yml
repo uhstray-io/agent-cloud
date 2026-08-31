@@ -1,0 +1,146 @@
+---
+# store-postiz-api-key.yml — capture postiz's public-API key into OpenBao,
+# repeatably and auditably (Semaphore), never a one-off SSH or a UI copy-paste.
+#
+# HOW THE KEY WORKS (read from upstream v2.23.0, not assumed):
+#   - auth.middleware.ts mints it LAZILY: the first session-authenticated request
+#     finds Organization.apiKey null and sets it to fixedEncryption(makeId(20)).
+#   - public.auth.middleware.ts + getOrgByApiKey compare the Authorization header
+#     DIRECTLY against that stored column — so the stored 64-hex value IS the
+#     bearer token. No decryption, and nothing to generate here: reimplementing
+#     the app's crypto to mint one ourselves would be a second copy of upstream
+#     internals that breaks silently on their next release.
+#
+# So this playbook READS the key from the service's own Postgres and places it at
+# secret/services/postiz:postiz_api_key (postiz owns it — same ownership
+# convention as the OIDC client secret; n8n shared-reads it when its workflows
+# land). If no key exists yet, it fails with the one action that mints it: sign
+# in once. Run it after the first sign-in, and after any clean-deploy that wiped
+# the app's database.
+#
+# READ-ONLY against the database. SELECT only — a write path here could clobber
+# the key every session and API caller depends on.
+#
+# Usage (via Semaphore): no survey vars; run against the postiz_svc group.
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: postiz_svc
+    preflight_group_expected: postiz_svc
+
+- name: "Store the postiz API key in OpenBao"
+  hosts: postiz_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Fixed path and key — postiz owns its API key. Not caller-supplied: a free
+    # path parameter would let one invocation write a live credential anywhere.
+    _bao_path: "services/postiz"
+    _bao_key: "postiz_api_key"
+    _db_user: "{{ postiz_postgres_user | default('postiz') }}"
+    _db_name: "{{ postiz_postgres_db | default('postiz') }}"
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+        fail_msg: "Set openbao_addr (inventory) — the key is stored in OpenBao, nowhere else."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id, the token, and the API key all cross this
+      # connection. Same shared guard every OpenBao-reaching play includes.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the API key from the service's own Postgres (SELECT only)"
+      # The app's database is the only place the key exists. -tA: bare value, no
+      # header/padding. Exactly one organization is expected on this deployment;
+      # taking "the oldest" on a multi-org install would silently hand automation
+      # a different org's key, so more than one row is a hard stop below.
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - postiz-postgres
+          - psql
+          - "-U"
+          - "{{ _db_user }}"
+          - "-d"
+          - "{{ _db_name }}"
+          - "-tAc"
+          - >-
+            SELECT count(*) || '|' || coalesce(min("apiKey"), '') FROM "Organization";
+      register: _row
+      changed_when: false
+      no_log: true
+
+    - name: "Parse what the database answered"
+      ansible.builtin.set_fact:
+        _org_count: "{{ (_row.stdout | trim | split('|'))[0] }}"
+        _api_key: "{{ (_row.stdout | trim | split('|'))[1] | default('') }}"
+      no_log: true
+
+    - name: "Require exactly one organization"
+      # Count is reportable; the value never is.
+      ansible.builtin.assert:
+        that:
+          - _org_count | int == 1
+        fail_msg: >-
+          Expected exactly 1 organization, found {{ _org_count }} — refusing to
+          guess which org automation should act as.
+
+    - name: "Require the key to exist"
+      # A missing key has exactly one fix, and it is not this playbook minting
+      # one: the app mints on the first authenticated request, in its own crypto.
+      ansible.builtin.assert:
+        that:
+          - _api_key | length > 0
+        fail_msg: >-
+          The organization exists but holds no API key yet. The app mints it on
+          the FIRST authenticated request: sign in once at the web UI, then
+          re-run this task.
+
+    # OpenBao is spoken to from the RUNNER (delegate_to: localhost) — it holds
+    # the AppRole and the route to the store; same shape as mint-honcho-team-jwt.
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Merge the key into the store (shared write path: fetch, refuse-missing, patch, verify)"
+      # tasks/bao-merge-keys.yml is THE merge-patch implementation — fetch for
+      # idempotency, refuse the missing path (deploy-postiz owns creating it;
+      # storing first would invert the ownership order), merge-patch preserving
+      # the signing secret / datastore passwords / social credentials beside it,
+      # and verify the round trip only after an actual write.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "{{ _bao_path }}"
+        _bm_data: "{{ {_bao_key: _api_key} }}"
+        _bm_on_missing: fail
+        _bm_missing_msg: >-
+          secret/{{ _bao_path }} does not exist — run Deploy Postiz first;
+          manage-secrets creates and owns that path.
+
+    - name: "Report (names and lengths only, never the value)"
+      ansible.builtin.debug:
+        msg: >-
+          secret/{{ _bao_path }}:{{ _bao_key }} holds the org's API key
+          ({{ _api_key | length }} chars). Automation reads it from there —
+          it is never printed and never a task parameter.

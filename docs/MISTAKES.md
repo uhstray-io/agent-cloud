@@ -51,6 +51,7 @@ supersede it with a new entry and link both.
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
+| 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
@@ -83,6 +84,7 @@ supersede it with a new entry and link both.
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
+| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written | Wrong code under validation | Bootstrap record + structural bind |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -799,6 +801,29 @@ shrink, and shrinking it is visible work rather than a comment nobody reads.
 with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
 38 remaining plays is tracked as its own change — it touches live-service deploys
 and was deliberately not folded into the change that found it.
+
+### 2.19 The healthcheck watched the frontend while the backend was dead
+
+**What happened.** postiz's container healthcheck probed `http://127.0.0.1:5000/`
+and treated any status under 500 as healthy. Inside the container, nginx serves
+`/` from the FRONTEND process and `/api/` from the backend. On 2026-08-30 the
+backend died at startup (Temporal refused its search-attribute registration) while
+pm2 kept the frontend answering — so the probe went green over a service that
+could not authenticate a user, publish a post, or answer its API. Task 5.3 of the
+postiz change had earlier recorded "all five containers reach health" on the
+strength of that probe.
+
+**Root cause.** The probe's path selected the one process that was NOT the thing
+being asserted. "The container answers on its port" and "the service works" were
+conflated; nginx made them differ per path.
+
+**The rule.** A health probe must exercise the process whose failure the check
+exists to catch. Where one port fronts several processes, probe the path routed to
+the one that does the work — here `/api/`, where a 404 proves the backend bound
+and a 502 proves it did not.
+
+**Enforced by.** Test — `platform/tests/test_service_postiz.bats` pins the probe
+to `/api/` and refutes the bare-`/` form (mutation-proven).
 
 ## 3. Acting on live state
 
@@ -1714,6 +1739,34 @@ across every playbook in the repo — `lookup('pipe'/'url'/'random_choice')`,
 `now()` and the `random` filter are refused inside any play's `vars:` block, while
 `lookup('file')` is deliberately allowed because re-reading a file gives the same
 answer. Both mutation-proven by reintroducing the exact original bug.
+
+### 10.9 Local validation ran GitHub's code, not the working tree
+
+**What happened.** Every `(Local)` Semaphore template was bound to the repository
+record named `agent-cloud`, which points at GitHub `main`. The deploy DIR carried
+the working tree (rsync'd by place-monorepo), so service files were current — but
+the PLAYBOOKS executed were main's. Found 2026-08-30 when a newly added deploy
+gate (`COMPOSE_OVERLAYS`) silently never fired across two deploy attempts: the
+running playbook predated it. Every prior "validated locally" that depended on
+playbook logic had actually exercised whatever main held at the time.
+
+**Root cause.** Two declared owners of one record name. bootstrap-local-dev.yml
+pointed `agent-cloud` at the read-only working-tree mount, then its own later
+stage ran bootstrap-semaphore-repositories.yml, which converges that same name to
+the GitHub URL repositories.yml declares. The later write always won, and nothing
+compared what local templates ran against what local-dev exists to test.
+
+**The rule.** A record two declarations both claim will be owned by whichever
+applies last — give each purpose its own name. The working-tree record is
+`agent-cloud worktree` (local path, HEAD; Semaphore runs a path-type repository
+in place, uncommitted changes included), created by bootstrap-local-dev.yml and
+claimed by no other declaration; templates-local.yml binds every local template
+to it explicitly.
+
+**Enforced by.** Bootstrap record + structural bind — bootstrap-local-dev.yml
+creates/corrects the record, and setup-templates.yml binds the ENTIRE local
+template list to it with one `map('combine')` at the load site, so a new entry
+cannot omit the binding. It refuses to apply if the record is missing.
 
 ## 11. The largest one
 
