@@ -176,6 +176,10 @@ setup() {
   assert_grep -q '_assert_url_label: "n8n"' "$pb"
   assert_grep -q 'n8n@2.25.7' "$pb"
   assert_grep -q 'n8n-nodes-postiz@0.2.17' "$pb"
+  # HTTP Request-node usage stays pinned to the Postiz host, on create AND on
+  # the in-place update (PATCH replaces the whole data blob).
+  [ "$(grep -c 'allowedHttpRequestDomains: domains' "$pb")" -eq 2 ]
+  [ "$(grep -c "allowedDomains: \"{{ _postiz_host | urlsplit('hostname') }}\"" "$pb")" -eq 2 ]
 }
 
 @test "n8n: cutover guard diffs stateful values before deploy.sh and prints names only" {

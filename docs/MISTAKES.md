@@ -85,6 +85,7 @@ supersede it with a new entry and link both.
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
+| 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1778,6 +1779,31 @@ playbooks while the deploy DIR carried the branch (same split as occurrence 1,
 one layer up). Caught because the branch's new env template visibly didn't
 render. The dispatcher now prefers the `(Local)`-named template for a playbook
 (scripts/local-dev.sh), which is the structural fix at the selection site.
+
+### 10.10 A register on a skipped task overwrote the result it was guarding
+
+**What happened.** provision-n8n-postiz-credential.yml tested a credential
+(`register: _test`, status OK), then a conditional heal block whose re-test also
+carried `register: _test`. The heal was correctly skipped — but in Ansible a
+SKIPPED task still overwrites its `register` variable with the skip result
+(`{'skipped': true}`), so `_test.json` vanished, the "Record the heal" task's
+`when` (reading `_test`) flipped true, the report printed `is-connected:
+unknown`, and the final assert failed two Semaphore runs (tasks 64/65) while
+manual curl of the same endpoint answered `{"status":"OK"}` every time. The
+`no_log` on the real task made the censored output unreadable, so the diagnosis
+had to be reproduced outside the play.
+
+**Root cause.** Reusing one register name across a primary task and its
+conditional retry sibling. Register-on-skip is documented Ansible behavior, not
+a bug — the play's logic assumed "skipped = untouched".
+
+**The rule.** Never reuse a `register` name on a task that can be skipped when a
+prior task's result is still live under that name. Register the conditional
+task under its own name and fold both into ONE `set_fact` the downstream tasks
+read (`_test_status` here) — facts survive skips; registers do not.
+
+**Enforced by.** Convention — plus the play's own end state: the final assert
+now reads the fact, so a recurrence fails loudly instead of misreporting.
 
 ## 11. The largest one
 

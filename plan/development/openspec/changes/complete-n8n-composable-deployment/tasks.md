@@ -13,7 +13,7 @@
 - [x] 1.3 Extend `platform/tests/test_service_n8n.bats`: the template declares the
       managed-package variables, pins name+version+checksum, and contains no literal
       secrets
-- [ ] 1.4 Validation gate: BATS suite green; scenario "Declared node present after
+- [x] 1.4 Validation gate: BATS suite green; scenario "Declared node present after
       redeploy" holds on local-dev — clean deploy, node installed at 0.2.17, UI
       install disabled
 
@@ -29,7 +29,7 @@
       the schema or key is absent
 - [x] 2.3 Add BATS coverage: all key-bearing tasks carry `no_log: true` (scoped to
       those tasks only), no `debug` task can render the key
-- [ ] 2.4 Validation gate: scenario "Key capture leaves no trace in the run record"
+- [x] 2.4 Validation gate: scenario "Key capture leaves no trace in the run record"
       holds — local run stores the key, Semaphore task output shows names/counts only
 
 ## 3. Postiz credential provisioned in n8n
@@ -44,31 +44,31 @@
       (`https://postiz.uhstray.io/api` prod, local Postiz host in local-dev);
       list-then-upsert so a re-run never duplicates; secret-bearing steps `no_log`;
       the report restates the 90/hour creation ceiling from the Postiz contract
-- [ ] 3.3 Validation gate: scenarios "Credential works against the self-hosted
+- [x] 3.3 Validation gate: scenarios "Credential works against the self-hosted
       instance" and "Provisioning is idempotent" hold on local-dev — `is-connected`
       test passes (or, if local Postiz is down, the credential exists with the right
       host and the degraded check is noted), second run creates nothing new
 
 ## 4. Semaphore templates
 
-- [ ] 4.1 Add `Seed n8n Secrets`, `Clean Deploy n8n` (marked destructive in its
+- [x] 4.1 Add `Seed n8n Secrets`, `Clean Deploy n8n` (marked destructive in its
       description), `Store n8n API Key`, and `Provision n8n Postiz Credential` to
       `platform/semaphore/templates.yml` with `dev_variant` where the local flow
       needs them; run `setup-templates.yml` locally
-- [ ] 4.2 Validation gate: scenario "Pre-seed and clean deploy exist as orchestrator
+- [x] 4.2 Validation gate: scenario "Pre-seed and clean deploy exist as orchestrator
       tasks" holds — both templates visible in Semaphore, destructive one labeled
 
 ## 5. Local-dev end-to-end proof
 
-- [ ] 5.1 Greenfield local run of the full chain via the `(Dev)` templates: deploy →
+- [x] 5.1 Greenfield local run of the full chain via the `(Dev)` templates: deploy →
       healthz → forward_auth gate → owner seeded → node reconciled → key minted +
       captured by `Store n8n API Key` (no manual step; D2) → credential provisioned
-- [ ] 5.2 Validation gate: scenario "Idempotent redeploy after cutover" holds locally —
+- [x] 5.2 Validation gate: scenario "Idempotent redeploy after cutover" holds locally —
       second deploy run reports no stateful change
 
 ## 6. Production cutover (the HELD migration)
 
-- [ ] 6.1 Add the mechanical cutover guard to the prod path (design D4): compare the
+- [x] 6.1 Add the mechanical cutover guard to the prod path (design D4): compare the
       three stateful values in the newly rendered env against the live
       `config/n8n.env` and fail before any container restart on mismatch, printing
       key names only
