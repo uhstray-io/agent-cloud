@@ -243,8 +243,18 @@ protects 1.7, which is the only irreversible step in the change.
       portal also lists OAuth 2.0 Client ID/Secret, which postiz does not use
       for X). Re-seed from the portal's "API Key and Secret" and register the
       /integrations/social/x callback while there.
+      OPERATOR DECISION 2026-08-30: this gate MOVES TO PRODUCTION (7.7). Local
+      connects would require adding .test callback URLs to the real OAuth apps,
+      which the operator declines; the X consumer-key fix is deferred. This
+      knowingly relaxes design D8's "observed locally before prod is touched"
+      for the account-connect leg — everything short of the OAuth consent
+      (six containers, engine + search node, backend bound, API key captured,
+      automation endpoint auth) IS proven locally, so the residual risk moved
+      to prod is the connect/publish leg only.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
+      MOVES TO PRODUCTION with 5.7 (operator decision 2026-08-30) — a scheduled
+      post is a prerequisite this environment cannot produce without a connect.
 - [x] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
       without it, and is reachable with no browser session
       DONE 2026-08-30, and generation is now automation, not a UI copy-paste: the
@@ -260,6 +270,9 @@ protects 1.7, which is the only irreversible step in the change.
       "Automation endpoint is reachable without an interactive session" both hold — the
       trimmed topology executes scheduled work, and the automation path is not gated by
       interactive authentication
+      SPLIT 2026-08-30: the second scenario HOLDS (proven at 5.9 — 200 with the
+      key, 401 without, no session). The first moves to production with 5.7/5.8
+      and is observed at 7.7.
 
 ## 6. Promotion to production
 
@@ -303,6 +316,10 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 7.6 Complete the first production sign-in through the identity provider, then flip
       registration to closed and redeploy
 - [ ] 7.7 Connect the social accounts and confirm a scheduled post publishes in production
+      Now ALSO carries the workflow-engine gate moved from 5.7/5.8 (operator
+      decision 2026-08-30): first observed scheduled publish happens here.
+      Console prerequisites are in 6.5; X needs re-seeded Consumer Keys first
+      (deferred).
 - [ ] 7.8 Validation gate: scenario "Only the two intended paths are reachable" holds —
       administrative access from the designated ranges and the service port from the
       reverse proxy succeed, everything else inbound is refused; and scenario "Closed
