@@ -237,6 +237,12 @@ protects 1.7, which is the only irreversible step in the change.
       moves to production (6.5/7.7). Run this gate locally with a provider whose
       console accepts the local URL (Discord or LinkedIn), or accept it lands in
       phase 7.
+      X 2026-08-30: the request-token call fails 401 code 32 "Could not
+      authenticate you" — X rejects the KEY PAIR before evaluating the callback,
+      so the seeded X credentials are not valid OAuth 1.0a Consumer Keys (the
+      portal also lists OAuth 2.0 Client ID/Secret, which postiz does not use
+      for X). Re-seed from the portal's "API Key and Secret" and register the
+      /integrations/social/x callback while there.
 - [ ] 5.8 Restart the service with a post still scheduled in the future; confirm it
       publishes at its scheduled time
 - [x] 5.9 Generate an API key; confirm the automation endpoint answers with it, refuses
