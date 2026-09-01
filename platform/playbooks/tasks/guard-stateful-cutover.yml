@@ -50,6 +50,10 @@
         _gsc_mismatches: >-
           {{ (_gsc_mismatches | default([]))
              + ([item] if _gsc_live_vals != _gsc_new_vals else []) }}
+        _gsc_duplicated: >-
+          {{ (_gsc_duplicated | default([]))
+             + ([item] if (_gsc_live_vals | length > 1
+                           or _gsc_new_vals | length > 1) else []) }}
       vars:
         _gsc_live_txt: "{{ _gsc_envs.results[0].content | b64decode }}"
         _gsc_new_txt: "{{ _gsc_envs.results[1].content | b64decode }}"
@@ -59,12 +63,18 @@
       no_log: true
 
     - name: "Refuse to proceed on a stateful mismatch (names only, never values)"
+      # A duplicated key refuses even when both files duplicate it identically:
+      # which occurrence the env-file parser honours is an implementation
+      # detail this guard does not model, so an ambiguous file is a mismatch.
       ansible.builtin.assert:
         that:
           - _gsc_mismatches | length == 0
+          - _gsc_duplicated | default([]) | length == 0
         fail_msg: >-
           CUTOVER REFUSED before touching the running service: the rendered
           {{ _gsc_rendered_env }} disagrees with the live {{ _gsc_live_env }}
-          on {{ _gsc_mismatches | default([]) | join(', ') }}.
+          on {{ _gsc_mismatches | default([]) | join(', ') }}
+          {{ '' if (_gsc_duplicated | default([]) | length == 0) else
+          '(duplicated assignments: ' ~ (_gsc_duplicated | join(', ')) ~ ')' }}.
           {{ _gsc_fix_hint | default('Pre-seed the live values into the secret
           store, verify them, then re-run.') }} No container was restarted.
