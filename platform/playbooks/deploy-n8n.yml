@@ -55,7 +55,15 @@
     # The legacy path's env file. Present only on a host that ran the old
     # secret-generating deploy.sh — i.e. exactly the in-place prod migration.
     _live_env: "{{ live_n8n_env | default(_deploy_dir + '/config/n8n.env') }}"
-    _stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]
+    # The encryption key carries a live-name alias: the standalone prod compose
+    # project (/home/<ansible_user>/n8n, design D6) names it ENCRYPTION_KEY in its
+    # .env and maps it to N8N_ENCRYPTION_KEY inside compose. The guard accepts
+    # either spelling on the live side and refuses a file carrying both.
+    _stateful_keys:
+      - name: N8N_ENCRYPTION_KEY
+        live_names: [N8N_ENCRYPTION_KEY, ENCRYPTION_KEY]
+      - POSTGRES_PASSWORD
+      - POSTGRES_NON_ROOT_PASSWORD
 
   tasks:
     # ── Cutover guard (design D4) ────────────────────────────────────────────

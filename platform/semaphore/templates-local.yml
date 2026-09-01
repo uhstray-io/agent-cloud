@@ -54,6 +54,13 @@ templates:
   - name: "Provision n8n Postiz Credential (Local)"
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
 
+  # n8n upgrade tooling (design D7): timestamped pg_dump + named-dump restore.
+  # Local is where the pair is proven before it carries the prod cutover.
+  - name: "Back Up n8n DB (Local)"
+    playbook: platform/playbooks/backup-n8n-db.yml
+  - name: "Restore n8n DB (Local)"
+    playbook: platform/playbooks/restore-n8n-db.yml
+
   # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml

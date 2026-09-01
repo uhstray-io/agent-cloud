@@ -191,6 +191,17 @@ validate() {
   _run_template "platform/playbooks/validate-all.yml"
 }
 
+# Run ANY registered template by playbook name via LOCAL Semaphore — the same
+# worktree-bound dispatch deploy/validate use, so one-off operational playbooks
+# (backup-n8n-db, restore-n8n-db, store-*-api-key, ...) never need hand-crafted
+# curl against the API. Extra vars ride as a JSON object.
+run_playbook() {
+  local name="${1:-}" extra="${2:-}"
+  [ -n "$name" ] || die "usage: local-dev.sh run <playbook-basename> ['{\"k\":\"v\"}']"
+  guard "$INV"
+  _run_template "platform/playbooks/${name%.yml}.yml" "$extra"
+}
+
 # Show the Authentik SSO logins so the developer can test login/access in the
 # browser. Passwords are read live from OpenBao (the source of truth) via the
 # local-semaphore AppRole — never stored in a second place. Two accounts:
@@ -504,6 +515,7 @@ case "${1:-}" in
   deploy)    shift; deploy "$@" ;;
   clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
+  run)       shift; run_playbook "$@" ;;
   creds)     creds ;;
   resolver)  shift; resolver "$@" ;;
   https)     shift; https "$@" ;;
@@ -521,6 +533,8 @@ usage: scripts/local-dev.sh <subcommand>
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
   validate           run Validate All via LOCAL Semaphore
+  run <playbook> [json]  run any registered template by playbook basename via
+                     LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON)
   creds              show the Authentik admin login (read from OpenBao) for browser testing
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)

@@ -1,0 +1,73 @@
+---
+# backup-n8n-db.yml — timestamped pg_dump of an n8n Postgres container
+# (design D7: a STANDING upgrade tool, not a one-shot migration step).
+#
+# Run before EVERY n8n version bump: the dump is the rollback artifact for the
+# one-way schema migrations n8n runs at startup. The Postgres container is
+# parameterized so the prod cutover can point this at the legacy project's
+# `n8n_postgres_1` while every later upgrade defaults to the composable
+# stack's `workflow-n8n-postgres`.
+#
+# Read-only against the database. Writes ONE new timestamped dump file into an
+# owner-only (0700) backup directory on the VM — the dump holds workflow data
+# plus credentials ENCRYPTED under the key OpenBao holds (data, not cleartext
+# secrets), so it stays on the host and is removed deliberately at close-out,
+# never silently. Re-running creates a new dump; it never overwrites one.
+#
+# The paired restore is restore-n8n-db.yml. The upgrade runbook:
+#   Back Up n8n DB -> bump n8n_image in inventory -> guarded Deploy n8n ->
+#   (on migration failure) re-pin the old image + Restore n8n DB.
+
+- name: "Back up the n8n database (pg_dump)"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _pg_container: "{{ n8n_pg_container | default('workflow-n8n-postgres') }}"
+    _db_user: n8n_admin
+    _db_name: n8n
+    _backup_dir: "{{ n8n_backup_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/n8n-db-backups') }}"
+    _stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+    _dump_file: "{{ _backup_dir }}/{{ _db_name }}-{{ _pg_container }}-{{ _stamp }}.sql"
+
+  tasks:
+    - name: "Assert the Postgres container is running"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", "inspect", "--format", "{{ '{{.State.Running}}' }}", "{{ _pg_container }}"]
+      register: _pg_state
+      changed_when: false
+      failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
+
+    - name: "Ensure the owner-only backup directory exists"
+      ansible.builtin.file:
+        path: "{{ _backup_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Dump the database (plain SQL, --clean --if-exists for a drop-and-recreate restore)"
+      # stdout goes straight to the file, so the dump's content never enters
+      # the run record; pipefail makes a mid-stream pg_dump failure fatal
+      # instead of leaving a silently truncated file behind.
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _engine }} exec {{ _pg_container }} pg_dump -U {{ _db_user }} -d {{ _db_name }} --clean --if-exists > "{{ _dump_file }}"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "Verify the dump is real (non-empty, carries the pg_dump header)"
+      ansible.builtin.shell: |
+        set -o pipefail
+        test -s "{{ _dump_file }}" && head -5 "{{ _dump_file }}" | grep -q "PostgreSQL database dump"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "Report the artifact"
+      ansible.builtin.debug:
+        msg: >-
+          Dumped {{ _db_name }} from {{ _pg_container }} to {{ _dump_file }}.
+          This file is the rollback artifact for the next n8n schema migration —
+          pass it to restore-n8n-db.yml as -e n8n_dump_file={{ _dump_file }}.
+          Remove it deliberately at close-out once the upgrade is validated.

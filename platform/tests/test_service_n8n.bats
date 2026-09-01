@@ -192,7 +192,12 @@ setup() {
   [ -f "$shared" ]
   # deploy-n8n declares exactly the three stateful keys and hands them to the
   # SHARED guard task (one implementation for every held in-place migration).
-  assert_grep -qF '_stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]' "$f"
+  # The encryption key carries the live-name alias for the standalone prod
+  # layout, which spells it ENCRYPTION_KEY in its .env (design D6).
+  assert_grep -qF 'name: N8N_ENCRYPTION_KEY' "$f"
+  assert_grep -qF 'live_names: [N8N_ENCRYPTION_KEY, ENCRYPTION_KEY]' "$f"
+  assert_grep -qE '^      - POSTGRES_PASSWORD$' "$f"
+  assert_grep -qE '^      - POSTGRES_NON_ROOT_PASSWORD$' "$f"
   assert_grep -q 'include_tasks: tasks/guard-stateful-cutover.yml' "$f"
   # It fails closed BEFORE the container lifecycle: the include must appear
   # earlier in the play than the deploy.sh task.
@@ -216,21 +221,91 @@ setup() {
   assert_grep -q '_gsc_legacy.stat.exists' <<<"$blk"
 }
 
+@test "n8n: shared guard resolves live-name aliases, defaulting to the key's own name" {
+  local shared="$PB_DIR/tasks/guard-stateful-cutover.yml"
+  # A key entry may be a plain string or {name, live_names}; the live side
+  # collects every declared spelling in one anchored alternation so a key
+  # duplicated ACROSS spellings is refused as ambiguous like any duplicate.
+  assert_grep -qF "_gsc_name: \"{{ item.name | default(item) }}\"" "$shared"
+  assert_grep -qF "_gsc_live_names: \"{{ item.live_names | default([_gsc_name]) }}\"" "$shared"
+  assert_grep -qF "regex_findall('(?m)^(?:' ~ (_gsc_live_names | join('|')) ~ ')=(.*)$')" "$shared"
+  # The rendered side still matches the canonical name only.
+  assert_grep -qF "regex_findall('(?m)^' ~ _gsc_name ~ '=(.*)$')" "$shared"
+}
+
+@test "n8n: pre-seed accepts both encryption-key spellings and stays exactly-one" {
+  local f="$PB_DIR/seed-n8n-secrets.yml"
+  # The standalone prod compose project writes ENCRYPTION_KEY; the monorepo
+  # legacy path wrote N8N_ENCRYPTION_KEY. One anchored alternation collects
+  # both, and the exactly-one assert refuses a file carrying both spellings.
+  assert_grep -qF "regex_findall('(?m)^(?:N8N_ENCRYPTION_KEY|ENCRYPTION_KEY)=(.*)$')" "$f"
+  blk=$(task_block "$f" "Require exactly one active assignment per stateful key")
+  [ -n "$blk" ]
+  assert_grep -qF '_enc_matches | length == 1' <<<"$blk"
+}
+
+@test "n8n: backup playbook dumps read-only into an owner-only dir, verified, no secrets" {
+  local f="$PB_DIR/backup-n8n-db.yml"
+  [ -f "$f" ]
+  # Parameterized container so the cutover can point at the legacy project.
+  assert_grep -qF "n8n_pg_container | default('workflow-n8n-postgres')" "$f"
+  # Owner-only backup dir; dump content bypasses the run record via redirect.
+  blk=$(task_block "$f" "Ensure the owner-only backup directory exists")
+  [ -n "$blk" ]
+  assert_grep -qF 'mode: "0700"' <<<"$blk"
+  assert_grep -qF -- '--clean --if-exists' "$f"
+  assert_grep -qF 'set -o pipefail' "$f"
+  # The dump is verified real, not assumed.
+  blk=$(task_block "$f" "Verify the dump is real")
+  [ -n "$blk" ]
+  assert_grep -qF 'PostgreSQL database dump' <<<"$blk"
+  # Read-only against the store and the DB: no OpenBao calls, no psql writes.
+  refute_grep -qE 'X-Vault-Token|approle/login' "$f"
+}
+
+@test "n8n: restore playbook demands an explicit dump and sequences stop -> restore -> start" {
+  local f="$PB_DIR/restore-n8n-db.yml"
+  [ -f "$f" ]
+  # Never "the latest dump" — the file is a required extra var.
+  blk=$(task_block "$f" "Require an explicit dump file")
+  [ -n "$blk" ]
+  assert_grep -qF 'n8n_dump_file is defined' <<<"$blk"
+  # All-or-nothing restore.
+  assert_grep -qF -- '-v ON_ERROR_STOP=1 --single-transaction' "$f"
+  # App containers are stopped before the restore and started after it,
+  # and health is verified rather than assumed.
+  local s r t h
+  s=$(grep -n 'Stop the n8n app containers' "$f" | head -1 | cut -d: -f1)
+  r=$(grep -n 'Restore the dump' "$f" | head -1 | cut -d: -f1)
+  t=$(grep -n 'Start the n8n app containers' "$f" | head -1 | cut -d: -f1)
+  h=$(grep -n 'Wait for n8n health' "$f" | head -1 | cut -d: -f1)
+  [ -n "$s" ] && [ -n "$r" ] && [ -n "$t" ] && [ -n "$h" ]
+  [ "$s" -lt "$r" ] && [ "$r" -lt "$t" ] && [ "$t" -lt "$h" ]
+}
+
 @test "n8n: every lifecycle concern is a declared Semaphore template, destructive one marked" {
   local t="${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
   local n
-  for n in "Deploy n8n" "Seed n8n Secrets" "Clean Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Update n8n"; do
+  for n in "Deploy n8n" "Seed n8n Secrets" "Clean Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Update n8n" "Back Up n8n DB" "Restore n8n DB"; do
     assert_grep -qE "^  - name: $n\$" "$t"
   done
-  # The destructive one says so, right in its declaration.
-  local blk
-  blk=$(awk '/^  - name: Clean Deploy n8n$/{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
-  [ -n "$blk" ]
-  assert_grep -q 'DESTRUCTIVE' <<<"$blk"
-  # The local (Dev) flow exists for the chain phase 5 exercises.
-  for n in "Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Clean Deploy n8n"; do
+  # The destructive ones say so, right in their declarations.
+  local blk n
+  for n in "Clean Deploy n8n" "Restore n8n DB"; do
+    blk=$(awk -v name="$n" '$0=="  - name: "name{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
+    [ -n "$blk" ]
+    assert_grep -q 'DESTRUCTIVE' <<<"$blk"
+  done
+  # The local (Dev) flow exists for the chain phase 5 exercises, and the
+  # upgrade pair is proven locally before it carries the prod cutover.
+  for n in "Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Clean Deploy n8n" "Back Up n8n DB" "Restore n8n DB"; do
     blk=$(awk -v name="$n" '$0=="  - name: "name{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
     [ -n "$blk" ]
     assert_grep -q 'dev_variant: true' <<<"$blk"
+  done
+  # The worktree-bound (Local) variants exist too.
+  local tl="${BATS_TEST_DIRNAME}/../semaphore/templates-local.yml"
+  for n in "Back Up n8n DB (Local)" "Restore n8n DB (Local)"; do
+    assert_grep -qF "  - name: \"$n\"" "$tl"
   done
 }

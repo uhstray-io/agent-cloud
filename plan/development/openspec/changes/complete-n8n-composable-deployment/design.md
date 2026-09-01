@@ -24,6 +24,22 @@ See `proposal.md — Why`. Current state, verified on `main`:
 - Community n8n has no SSO; access is gated by Caddy forward_auth (Authentik),
   and the composable deploy seeds an owner account so an SSO'd admin never sees
   `/setup`.
+- **Live prod layout, verified by SSH probe 2026-09-01** (this invalidated the
+  original cutover premise — see D6): prod n8n is NOT the legacy monorepo
+  `deploy.sh` path. It is a standalone rootless-podman compose project at
+  `/home/<ansible_user>/n8n` (source of record: the operator's
+  `dev-test/deployments/n8n`), project name `n8n`, four containers
+  (`n8n_n8n_1`, `n8n_n8n-worker_1`, `n8n_postgres_1`, `n8n_redis_1` — queue
+  mode), image `docker.n8n.io/n8nio/n8n:latest` frozen at pull time =
+  **n8n 2.8.3**, up 6 months. Its `.env` carries all three stateful values,
+  but the encryption key is named **`ENCRYPTION_KEY`** (compose maps it:
+  `N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}`). `POSTGRES_USER=n8n_admin`,
+  `POSTGRES_DB=n8n`, `POSTGRES_NON_ROOT_USER=n8n_user` — identical to what
+  `n8n.env.j2` renders, so a dump/restore needs no identity mapping. Old
+  volumes are `n8n_db_storage` / `n8n_n8n_storage` / `n8n_redis_storage`;
+  the composable compose declares `n8n_db_data` / `n8n_data` /
+  `n8n_redis_data` — **different volumes, so an env-only cutover would boot
+  an empty database**.
 
 ## Goals / Non-Goals
 
@@ -120,6 +136,16 @@ the newly rendered env against the live file and **fails before any container
 restart** on mismatch, printing key names only. Operator vigilance is the thing
 that fails at 2am; the diff is mechanical.
 
+**Amendment (2026-09-01, after the layout probe):** the live file names the
+encryption key `ENCRYPTION_KEY` while the rendered file names it
+`N8N_ENCRYPTION_KEY`, so a literal same-name diff can never verify the one
+value that matters most. The shared guard and the seed playbook both accept a
+per-key **live-name alias** (live `ENCRYPTION_KEY` ↔ rendered
+`N8N_ENCRYPTION_KEY`, defaulting to the same name), keeping the names-only /
+fail-closed / all-occurrences properties intact. Alias support lands in the
+shared task, not as an n8n special case — NocoDB's held migration gets it for
+free.
+
 ### D5 — Sequencing: local greenfield proves everything before prod is touched
 
 Local-dev (greenfield, no stateful history) validates the full chain — deploy,
@@ -128,6 +154,49 @@ via the `(Dev)` Semaphore variants. Only then does the prod sequence run:
 seed → verify pre-existing → deploy (guarded) → validate workflows decrypt →
 node/key/credential. Cleanup (`generate_n8n_env()` removal, HOLD lift, PR #15
 close) comes last, after prod validation.
+
+### D6 — Cutover data path: pg_dump → restore into the new stack
+
+The composable stack's volumes are new, so the cutover must MOVE the data, not
+just the env values. Chosen: dump the live database from the old project's
+Postgres container, bring the composable stack up, restore the dump into its
+Postgres, and let n8n 2.25.7 run its own schema migrations over the restored
+2.8.3-era data at startup. The old compose project is **stopped, never
+destroyed** — containers and volumes stay on disk as the rollback copy until
+close-out. The old n8n binds `0.0.0.0:5678`, so it must be down before the new
+stack starts.
+
+- *Adopting the old volumes* rejected: forks the compose naming (violates
+  one-codebase/no-forks), couples the new stack to legacy volume names forever,
+  and — decisive — leaves **no untouched rollback copy** while the 2.8.3→2.25.7
+  migrations rewrite the only schema in place.
+- *Greenfield + workflow export/import* rejected: loses all execution history
+  and every stored credential has to be re-entered by hand in the UI — a manual
+  step the platform bans when a mechanical path exists.
+- The dump lands in a root-only directory on the VM and contains workflow
+  definitions plus credentials **encrypted under the key OpenBao holds** — data,
+  not cleartext secrets; the restore report states where it is and that it is
+  the rollback artifact.
+
+### D7 — Backup/restore is a standing upgrade capability, not a one-shot
+
+Requirement stated by the operator at design revision: the cutover mechanics
+must be reusable for every future n8n upgrade. So the dump and restore are
+**two independent Semaphore-runnable playbooks**, parameterized by container
+name / compose project, and the cutover is merely their first composition:
+
+- `backup-n8n-db.yml` — timestamped `pg_dump` from a named Postgres container
+  (defaults to the composable stack; the cutover points it at the legacy
+  `n8n_postgres_1`). Run before **every** version bump.
+- `restore-n8n-db.yml` — stop the stack's n8n app containers, restore a named
+  dump into its Postgres, start them again (n8n re-runs migrations at boot).
+  This is both the cutover's import step and the standing rollback tool.
+
+The future upgrade runbook this yields: `Back Up n8n DB` → bump `n8n_image` in
+inventory → guarded `Deploy n8n` → if migrations fail, re-pin the old image and
+`Restore n8n DB`. One-shot alternatives (inline dump/restore steps buried in a
+migration-only playbook) rejected: they would leave the next upgrade with no
+tool and this platform treats that as a defect.
 
 ## Risks / Trade-offs
 
@@ -145,18 +214,29 @@ close) comes last, after prod validation.
   authors inherit the contract.
 - **[DB schema drift for the API-key read]** → the capture playbook asserts the
   table/column exists and fails with a named error rather than an empty secret.
+- **[2.8.3 → 2.25.7 is a large one-way migration jump]** → the dump taken by
+  D6/D7 IS the rollback (restore + restart the old stack); the deploy watches
+  n8n's startup for migration failure instead of assuming green; the old stack
+  and volumes stay untouched until close-out.
+- **[Dump file retention on the VM]** → root-only directory, named in the run
+  report; removed at close-out once prod validation passes, never silently.
 
 ## Migration Plan
 
 1. Land code + templates on the feature branch → `dev` (local-dev validation).
-2. Prod, in order, each independently retryable: `Seed n8n Secrets` →
-   `Check Secrets` (verify pre-existing) → `Deploy n8n` (guarded cutover) →
-   operator confirms workflows/credentials intact → node reconciliation lands via
-   the same deploy → operator mints API key → `Store n8n API Key` →
+2. Prod, in order, each independently retryable, with an explicit operator gate
+   before the old stack is stopped: `Seed n8n Secrets`
+   (`-e live_n8n_env=/home/<ansible_user>/n8n/.env`, alias-aware) → `Check Secrets`
+   (verify pre-existing) → `Back Up n8n DB` (pointed at legacy
+   `n8n_postgres_1`) → **GATE: operator go** → stop the legacy project →
+   guarded `Deploy n8n` → `Restore n8n DB` → operator confirms workflows
+   execute and stored credentials decrypt → `Store n8n API Key` →
    `Provision n8n Postiz Credential`.
 3. Cleanup PR: remove `generate_n8n_env()`, lift the HOLD in
-   `09-service-migrations-tooling.md`, close PR #15 (user-gated).
-4. Rollback: see `proposal.md — Rollback Plan`.
+   `09-service-migrations-tooling.md`, close PR #15 (user-gated), remove the
+   cutover dump after validation.
+4. Rollback: see `proposal.md — Rollback Plan` (amended: legacy = the
+   `/home/<ansible_user>/n8n` compose project, restartable in place).
 
 ## Open Questions
 
