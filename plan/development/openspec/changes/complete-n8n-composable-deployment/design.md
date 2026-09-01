@@ -173,10 +173,12 @@ stack starts.
 - *Greenfield + workflow export/import* rejected: loses all execution history
   and every stored credential has to be re-entered by hand in the UI — a manual
   step the platform bans when a mechanical path exists.
-- The dump lands in a root-only directory on the VM and contains workflow
-  definitions plus credentials **encrypted under the key OpenBao holds** — data,
-  not cleartext secrets; the restore report states where it is and that it is
-  the rollback artifact.
+- The dump lands in an owner-only (0700) directory on the VM, the file itself
+  umask'd to 0600 — owned by the same unprivileged account that runs the
+  rootless containers, matching the platform's become-false posture. It
+  contains workflow definitions plus credentials **encrypted under the key
+  OpenBao holds** — data, not cleartext secrets; the backup report states
+  where it is and that it is the rollback artifact.
 
 ### D7 — Backup/restore is a standing upgrade capability, not a one-shot
 

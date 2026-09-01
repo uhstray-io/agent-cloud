@@ -4,6 +4,12 @@
 # backup-n8n-db.yml; together they are the standing upgrade/rollback tool and,
 # composed once, the prod cutover's data path.
 #
+# This play addresses EXACTLY ONE stack — the composable one. The Postgres
+# container is deliberately NOT parameterized here (unlike the backup): a
+# destructive play whose target can be aimed half at one stack and half at
+# another (stop these app containers, restore into that other database) is a
+# wrong-target hazard, not flexibility.
+#
 # The dump file is REQUIRED and EXPLICIT (-e n8n_dump_file=<path>) — never
 # "the latest one", which two runs a minute apart would resolve differently.
 # The dump was taken with --clean --if-exists, and the restore runs it under
@@ -12,9 +18,19 @@
 #
 # Sequence: stop the n8n app containers (open connections would corrupt a
 # drop-and-recreate restore; Postgres itself stays up) -> restore -> start the
-# app containers -> wait for /healthz. n8n re-runs its schema migrations at
-# boot, so restoring an older version's dump under a newer image is the
-# UPGRADE path, not an error — watch the app container's logs on a major jump.
+# app containers. The start lives in an `always:` block — a failed restore
+# must leave the DB rolled back AND the service running, never both down.
+# n8n re-runs its schema migrations at boot, so restoring an older version's
+# dump under a newer image is the UPGRADE path, not an error — watch the app
+# container's logs on a major jump.
+
+# Ansible exits 0 on "no hosts matched" — the false green
+# preflight-target-group.yml exists to stop.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    preflight_group_expected: n8n_svc
 
 - name: "Restore the n8n database from a named dump"
   hosts: n8n_svc
@@ -22,9 +38,9 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
-    _pg_container: "{{ n8n_pg_container | default('workflow-n8n-postgres') }}"
-    _db_user: n8n_admin
-    _db_name: n8n
+    _pg_container: workflow-n8n-postgres
+    _db_user: "{{ n8n_db_user | default('n8n_admin') }}"
+    _db_name: "{{ n8n_db_name | default('n8n') }}"
     _app_containers: [workflow-n8n, workflow-n8n-worker]
     # Same default + override as deploy-n8n.yml Phase 3, so whatever hostname
     # works for the deploy's verify works here.
@@ -53,28 +69,29 @@
       changed_when: false
       failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
 
-    - name: "Stop the n8n app containers (Postgres stays up)"
-      ansible.builtin.command:
-        argv: ["{{ _engine }}", "stop", "{{ item }}"]
-      loop: "{{ _app_containers }}"
-      changed_when: true
+    - name: "Restore with the app stopped; ALWAYS start it back up"
+      block:
+        - name: "Stop the n8n app containers (one call — Postgres stays up)"
+          ansible.builtin.command:
+            argv: "{{ [_engine, 'stop'] + _app_containers }}"
+          changed_when: true
 
-    - name: "Restore the dump (single transaction, stop on first error)"
-      # stdin comes from the host file; the dump's content never enters the
-      # run record. --single-transaction makes the --clean drop-and-recreate
-      # all-or-nothing.
-      ansible.builtin.shell: |
-        set -o pipefail
-        {{ _engine }} exec -i {{ _pg_container }} psql -U {{ _db_user }} -d {{ _db_name }} -v ON_ERROR_STOP=1 --single-transaction < "{{ n8n_dump_file }}" > /dev/null
-      args:
-        executable: /bin/bash
-      changed_when: true
+        - name: "Restore the dump (single transaction, stop on first error)"
+          # stdin comes from the host file; the dump's content never enters the
+          # run record. --single-transaction makes the --clean drop-and-recreate
+          # all-or-nothing.
+          ansible.builtin.shell: >-
+            {{ _engine }} exec -i {{ _pg_container }}
+            psql -U {{ _db_user }} -d {{ _db_name }}
+            -v ON_ERROR_STOP=1 --single-transaction
+            < "{{ n8n_dump_file }}" > /dev/null
+          changed_when: true
 
-    - name: "Start the n8n app containers (n8n re-runs migrations at boot)"
-      ansible.builtin.command:
-        argv: ["{{ _engine }}", "start", "{{ item }}"]
-      loop: "{{ _app_containers }}"
-      changed_when: true
+      always:
+        - name: "Start the n8n app containers (n8n re-runs migrations at boot)"
+          ansible.builtin.command:
+            argv: "{{ [_engine, 'start'] + _app_containers }}"
+          changed_when: true
 
     - name: "Wait for n8n health (/healthz -> 200; migrations may take a while)"
       ansible.builtin.uri:

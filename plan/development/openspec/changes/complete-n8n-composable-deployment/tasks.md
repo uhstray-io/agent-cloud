@@ -78,8 +78,8 @@
       `N8N_ENCRYPTION_KEY`, default = same name), preserving fail-closed,
       names-only, and all-occurrences semantics; BATS coverage for both
 - [x] 6.3 Standing upgrade tooling (design D7): write `backup-n8n-db.yml`
-      (timestamped `pg_dump` from a parameterized Postgres container, root-only
-      dump dir, report names the artifact) and `restore-n8n-db.yml` (stop app
+      (timestamped `pg_dump` from a parameterized Postgres container, owner-only
+      0700 dump dir, report names the artifact) and `restore-n8n-db.yml` (stop app
       containers → restore named dump → start; n8n re-runs migrations at boot);
       Semaphore templates for both; BATS coverage (no_log scoping, destructive
       labeling on restore)

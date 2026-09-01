@@ -6,17 +6,28 @@
 # one-way schema migrations n8n runs at startup. The Postgres container is
 # parameterized so the prod cutover can point this at the legacy project's
 # `n8n_postgres_1` while every later upgrade defaults to the composable
-# stack's `workflow-n8n-postgres`.
+# stack's `workflow-n8n-postgres`; the DB identity moves with it
+# (n8n_db_user / n8n_db_name) rather than being welded to one stack.
 #
-# Read-only against the database. Writes ONE new timestamped dump file into an
-# owner-only (0700) backup directory on the VM — the dump holds workflow data
-# plus credentials ENCRYPTED under the key OpenBao holds (data, not cleartext
-# secrets), so it stays on the host and is removed deliberately at close-out,
-# never silently. Re-running creates a new dump; it never overwrites one.
+# Read-only against the database. Writes ONE new timestamped dump file (0600,
+# umask'd at creation) into an owner-only (0700) backup directory on the VM —
+# the dump holds workflow data plus credentials ENCRYPTED under the key
+# OpenBao holds (data, not cleartext secrets), so it stays on the host and is
+# removed deliberately at close-out, never silently. Re-running creates a new
+# dump; it never overwrites one.
 #
 # The paired restore is restore-n8n-db.yml. The upgrade runbook:
 #   Back Up n8n DB -> bump n8n_image in inventory -> guarded Deploy n8n ->
 #   (on migration failure) re-pin the old image + Restore n8n DB.
+
+# Ansible exits 0 on "no hosts matched", so without this an empty/misspelled
+# group reports SUCCESS having written no dump — right before a one-way
+# migration. The exact false green preflight-target-group.yml exists for.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    preflight_group_expected: n8n_svc
 
 - name: "Back up the n8n database (pg_dump)"
   hosts: n8n_svc
@@ -25,11 +36,9 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _pg_container: "{{ n8n_pg_container | default('workflow-n8n-postgres') }}"
-    _db_user: n8n_admin
-    _db_name: n8n
+    _db_user: "{{ n8n_db_user | default('n8n_admin') }}"
+    _db_name: "{{ n8n_db_name | default('n8n') }}"
     _backup_dir: "{{ n8n_backup_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/n8n-db-backups') }}"
-    _stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
-    _dump_file: "{{ _backup_dir }}/{{ _db_name }}-{{ _pg_container }}-{{ _stamp }}.sql"
 
   tasks:
     - name: "Assert the Postgres container is running"
@@ -45,23 +54,25 @@
         state: directory
         mode: "0700"
 
+    - name: "Name the dump artifact (frozen for the whole run)"
+      # A play var holding now() re-evaluates at EVERY reference, so the dump,
+      # verify, and report tasks would each derive a different filename once a
+      # second boundary is crossed. set_fact freezes it once.
+      ansible.builtin.set_fact:
+        _dump_file: "{{ _backup_dir }}/{{ _db_name }}-{{ _pg_container }}-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.sql"
+
     - name: "Dump the database (plain SQL, --clean --if-exists for a drop-and-recreate restore)"
       # stdout goes straight to the file, so the dump's content never enters
-      # the run record; pipefail makes a mid-stream pg_dump failure fatal
-      # instead of leaving a silently truncated file behind.
+      # the run record. A pg_dump failure fails the task because podman exec
+      # propagates its exit status. umask keeps the file itself 0600.
       ansible.builtin.shell: |
-        set -o pipefail
+        umask 077
         {{ _engine }} exec {{ _pg_container }} pg_dump -U {{ _db_user }} -d {{ _db_name }} --clean --if-exists > "{{ _dump_file }}"
-      args:
-        executable: /bin/bash
       changed_when: true
 
-    - name: "Verify the dump is real (non-empty, carries the pg_dump header)"
-      ansible.builtin.shell: |
-        set -o pipefail
-        test -s "{{ _dump_file }}" && head -5 "{{ _dump_file }}" | grep -q "PostgreSQL database dump"
-      args:
-        executable: /bin/bash
+    - name: "Verify the dump is real (carries the pg_dump header)"
+      ansible.builtin.command:
+        argv: ["grep", "-qm1", "PostgreSQL database dump", "{{ _dump_file }}"]
       changed_when: false
 
     - name: "Report the artifact"

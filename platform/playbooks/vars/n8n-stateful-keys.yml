@@ -1,0 +1,29 @@
+---
+# n8n-stateful-keys.yml — THE single declaration of n8n's stateful secrets.
+#
+# Consumed by BOTH halves of the cutover so they can never disagree:
+#   - deploy-n8n.yml hands it to the shared guard (tasks/guard-stateful-cutover.yml)
+#     as the keys whose rendered values must match the live env file
+#   - seed-n8n-secrets.yml builds its extraction regexes from it, so the
+#     pre-seed reads exactly the spellings the guard later compares
+#
+# Fields per entry:
+#   name        the canonical env-var name the composable template renders
+#   live_names  every spelling a LIVE legacy env file may use (the standalone
+#               prod compose project writes ENCRYPTION_KEY and maps it to
+#               N8N_ENCRYPTION_KEY inside compose — design D6); a file carrying
+#               more than one total assignment across these is refused as
+#               ambiguous by both consumers
+#   bao_field   the OpenBao field under secret/services/n8n the value seeds
+#               into / is fetched from
+
+n8n_stateful_keys:
+  - name: N8N_ENCRYPTION_KEY
+    live_names: [N8N_ENCRYPTION_KEY, ENCRYPTION_KEY]
+    bao_field: encryption_key
+  - name: POSTGRES_PASSWORD
+    live_names: [POSTGRES_PASSWORD]
+    bao_field: db_admin_password
+  - name: POSTGRES_NON_ROOT_PASSWORD
+    live_names: [POSTGRES_NON_ROOT_PASSWORD]
+    bao_field: db_user_password
