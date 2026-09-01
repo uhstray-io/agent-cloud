@@ -59,6 +59,7 @@ templates:
 
   - name: Deploy n8n
     playbook: platform/playbooks/deploy-n8n.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -198,6 +199,24 @@ templates:
     # first authenticated request — the stored value IS the bearer token) and
     # places it at secret/services/postiz:postiz_api_key. Never printed; all
     # key-bearing steps no_log. Automation (n8n) shared-reads it from there.
+    dev_variant: true
+
+  - name: Store n8n API Key
+    playbook: platform/playbooks/store-n8n-api-key.yml
+    # Mints (via the seeded owner's session — no manual UI step) AND captures
+    # n8n's public-API key into secret/services/n8n:n8n_api_key. Idempotent:
+    # re-runs recapture the key from n8n's own Postgres instead of re-minting.
+    # Never printed; all key-bearing steps no_log.
+    dev_variant: true
+
+  - name: Provision n8n Postiz Credential
+    playbook: platform/playbooks/provision-n8n-postiz-credential.yml
+    # Upserts the ONE postizApi credential in n8n: authenticates with
+    # secret/services/n8n:n8n_api_key, shared-reads
+    # secret/services/postiz:postiz_api_key (single custody — never copied), and
+    # tests is-connected against the self-hosted Postiz host. Idempotent and
+    # self-healing on key rotation. Local-dev without a live Postiz runs with
+    # -e allow_degraded_test=true.
     dev_variant: true
 
   - name: Back Up Credentials to site-config
@@ -417,6 +436,23 @@ templates:
         default_value: "main"
 
   # ── Updates ────────────────────────────────────────────────────
+  - name: Clean Deploy n8n
+    playbook: platform/playbooks/clean-deploy-n8n.yml
+    # DESTRUCTIVE: wipes n8n's containers AND volumes — the Postgres holding
+    # every workflow + execution, and the n8n_data volume. Stored workflow
+    # credentials only survive if the SAME N8N_ENCRYPTION_KEY is fetched back
+    # from OpenBao on the rebuild (it is, unless the secret was deleted there).
+    # Not a routine recovery step; for the prod cutover use Deploy n8n, never
+    # this.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy Postiz
     playbook: platform/playbooks/clean-deploy-postiz.yml
     # DESTRUCTIVE: wipes postiz's Postgres, Redis, uploads, AND the workflow
@@ -586,6 +622,16 @@ templates:
         description: "Field to set/update at that path (e.g. gemini_api_key)"
         type: string
         required: true
+
+  - name: Seed n8n Secrets
+    playbook: platform/playbooks/seed-n8n-secrets.yml
+    # Migration Task 0 for the EXISTING prod n8n: reads the live config/n8n.env
+    # on the host and pre-seeds the STATEFUL secrets (encryption_key + both
+    # Postgres passwords) into secret/services/n8n, so the first composable
+    # Deploy n8n FETCHES them instead of generating — re-keying
+    # N8N_ENCRYPTION_KEY makes every stored workflow credential permanently
+    # undecryptable. Non-destructive: never touches the running service. Skip
+    # for greenfield hosts (nothing to preserve).
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml

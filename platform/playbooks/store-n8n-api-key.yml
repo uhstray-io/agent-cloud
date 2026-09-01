@@ -1,0 +1,263 @@
+---
+# store-n8n-api-key.yml — mint (if needed) AND capture n8n's public-API key into
+# OpenBao, repeatably and auditably (Semaphore), never a UI copy-paste and never
+# a value in any run record.
+#
+# HOW THE KEY IS STORED (read from upstream at tag n8n@2.25.7, not assumed):
+#   - Table `user_api_keys`, column "apiKey" (packages/@n8n/db/src/entities/
+#     api-key.ts): the RAW JWT itself, unique-indexed, no hashing — lookups
+#     compare the presented bearer against the stored value directly. So the
+#     database read below recaptures the live key verbatim on any re-run.
+#   - Labels are unique per user (@Unique(['userId','label'])); this playbook
+#     owns ONE fixed label and never touches keys with any other label.
+#   - Minting: the PUBLIC /api/v1 surface has no api-keys paths. The only mint
+#     route is the session-authenticated internal POST /rest/api-keys
+#     (ApiKeysController, @GlobalScope('apiKey:manage'), 404 unless the public
+#     API is enabled). Its creation response carries `rawApiKey` — the one place
+#     the value appears through the API — and every POST inserts a NEW key, so
+#     the mint only runs when no key with our label exists yet.
+#   - Login: POST /rest/login with {emailOrLdapLoginId, password}
+#     (LoginRequestDto); valid scopes for the role come from
+#     GET /rest/api-keys/scopes and are passed back on create.
+#
+# FLOW (idempotent, DB-first so re-runs never need a session):
+#   1. Assert the schema (to_regclass) — fail NAMED on drift, never store empty.
+#   2. Key with our label in the DB?  yes -> read it, merge into OpenBao, done.
+#   3. No key -> log in as the seeded owner (password from OpenBao), fetch the
+#      role's scopes, POST the mint, take rawApiKey from the response.
+#   4. KV-v2 merge-patch into secret/services/n8n:n8n_api_key (siblings —
+#      encryption_key, DB passwords, owner_password — preserved).
+#
+# Every key/credential-bearing step is no_log; output is names + counts only.
+#
+# Usage (via Semaphore): no survey vars; run against the n8n_svc group.
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    preflight_group_expected: n8n_svc
+
+- name: "Mint + store the n8n API key in OpenBao"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Fixed path, key and label — n8n owns its API key. Not caller-supplied: a
+    # free path parameter would let one invocation write a live credential
+    # anywhere; a free label would orphan previously-minted keys.
+    _bao_path: "services/n8n"
+    _bao_key: "n8n_api_key"
+    _key_label: "agent-cloud-automation"
+    _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
+    _owner_email: "{{ n8n_owner_email | default('agent-cloud-admin@' ~ (dev_zone | default('agent-cloud.test'))) }}"
+    _db_container: workflow-n8n-postgres
+    _db_user: n8n_admin
+    _db_name: n8n
+
+  tasks:
+    - name: "Validate inputs"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+        fail_msg: "Set openbao_addr (inventory) — the key is stored in OpenBao, nowhere else."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      # AppRole secret_id, the OpenBao token, and the API key all cross this.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext n8n endpoint"
+      # The owner password (login) and the raw key (mint response) cross this.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _n8n_base }}"
+        _assert_url_label: "n8n"
+
+    - name: "Assert the API-key schema exists (named failure, never an empty capture)"
+      # to_regclass answers NULL (empty with -tA) when the table is absent —
+      # schema drift on an n8n upgrade must fail HERE with a name, not surface
+      # as a stored empty string.
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - "{{ _db_container }}"
+          - psql
+          - "-U"
+          - "{{ _db_user }}"
+          - "-d"
+          - "{{ _db_name }}"
+          - "-tAc"
+          - "SELECT to_regclass('public.user_api_keys');"
+      register: _schema
+      changed_when: false
+
+    - name: "Require the user_api_keys table (verified at n8n@2.25.7)"
+      ansible.builtin.assert:
+        that:
+          - (_schema.stdout | trim) == 'user_api_keys'
+        fail_msg: >-
+          Table public.user_api_keys not found — the deployed n8n's schema has
+          drifted from the one this playbook was verified against (n8n@2.25.7).
+          Re-verify the entity (packages/@n8n/db/src/entities/api-key.ts at the
+          deployed tag) before storing anything.
+
+    - name: "Look for the automation key in n8n's own Postgres (SELECT only)"
+      # count|value in one round trip, postiz-pattern shape. The label is fixed
+      # above, not caller input. More than one row is impossible per the schema
+      # (labels unique per user) unless two owners hold the same label — a state
+      # this playbook refuses to guess about.
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - "{{ _db_container }}"
+          - psql
+          - "-U"
+          - "{{ _db_user }}"
+          - "-d"
+          - "{{ _db_name }}"
+          - "-tAc"
+          - >-
+            SELECT count(*) || '|' || coalesce(min("apiKey"), '')
+            FROM user_api_keys WHERE label = '{{ _key_label }}';
+      register: _row
+      changed_when: false
+      no_log: true
+
+    - name: "Parse what the database answered"
+      ansible.builtin.set_fact:
+        _key_count: "{{ (_row.stdout | trim | split('|'))[0] }}"
+        _api_key: "{{ (_row.stdout | trim | split('|'))[1] | default('') }}"
+      no_log: true
+
+    - name: "Refuse an ambiguous key set"
+      ansible.builtin.assert:
+        that:
+          - _key_count | int <= 1
+        fail_msg: >-
+          Found {{ _key_count }} keys labelled '{{ _key_label }}' — refusing to
+          guess which one automation should hold. Remove the extras in n8n
+          (Settings -> API) and re-run.
+
+    # OpenBao is spoken to from the RUNNER (delegate_to: localhost) — it holds
+    # the AppRole and the route to the store. ONE login serves the whole play:
+    # the owner-password read on the mint path and the merge at the end.
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    # ── Mint path: only when no key with our label exists yet ──────────────
+    - name: "Mint the API key via the owner session"
+      when: _key_count | int == 0
+      block:
+        - name: "Read the n8n owner password from OpenBao"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+          register: _n8n_secret
+          delegate_to: localhost
+          no_log: true
+
+        - name: "Log in to n8n as the seeded owner"
+          # 401 here has one usual cause on a migrated instance: the live owner
+          # is not the OpenBao-seeded account. Align n8n_owner_email (inventory)
+          # + secret/services/n8n:owner_password with a real owner first.
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/rest/login"
+            method: POST
+            body_format: json
+            body:
+              emailOrLdapLoginId: "{{ _owner_email }}"
+              password: "{{ _n8n_secret.json.data.data.owner_password }}"
+            status_code: [200]
+          register: _login
+          no_log: true
+
+        - name: "Fetch the valid API-key scopes for the owner role"
+          # 404 = the public API is disabled at the instance level
+          # (isApiEnabledMiddleware) — named below rather than a bare status.
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/rest/api-keys/scopes"
+            headers:
+              Cookie: "{{ _login.cookies_string }}"
+            status_code: [200, 404]
+          register: _scopes
+          no_log: true
+
+        - name: "Require the public API to be enabled"
+          ansible.builtin.assert:
+            that:
+              - _scopes.status == 200
+            fail_msg: >-
+              /rest/api-keys answered 404 — n8n's public API is disabled on this
+              instance, and keys cannot be minted for it. Remove the disable
+              (N8N_PUBLIC_API_DISABLED) from the deployment and re-run.
+
+        - name: "Create the API key (rawApiKey goes straight to OpenBao, never to output)"
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/rest/api-keys"
+            method: POST
+            headers:
+              Cookie: "{{ _login.cookies_string }}"
+            body_format: json
+            body:
+              label: "{{ _key_label }}"
+              scopes: "{{ _scopes.json.data | default(_scopes.json) }}"
+              expiresAt: null
+            status_code: [200]
+          register: _mint
+          no_log: true
+
+        - name: "Take the raw key from the creation response"
+          ansible.builtin.set_fact:
+            _api_key: "{{ _mint.json.data.rawApiKey | default(_mint.json.rawApiKey) }}"
+          no_log: true
+
+    - name: "Require a key value to store"
+      ansible.builtin.assert:
+        that:
+          - _api_key | length > 0
+        fail_msg: >-
+          No API-key value in hand after the {{ 'mint' if _key_count | int == 0
+          else 'database read' }} — refusing to store an empty secret at
+          secret/{{ _bao_path }}:{{ _bao_key }}.
+
+    - name: "Merge the key into the store (shared write path: fetch, refuse-missing, patch, verify)"
+      # tasks/bao-merge-keys.yml is THE merge-patch implementation — it preserves
+      # the stateful siblings (encryption_key, DB passwords, owner_password) and
+      # verifies the round trip only after an actual write. refuse-missing:
+      # deploy-n8n's manage-secrets owns creating secret/services/n8n.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "{{ _bao_path }}"
+        _bm_data: "{{ {_bao_key: _api_key} }}"
+        _bm_on_missing: fail
+        _bm_missing_msg: >-
+          secret/{{ _bao_path }} does not exist — run Deploy n8n first;
+          manage-secrets creates and owns that path.
+
+    - name: "Report (names and counts only, never the value)"
+      ansible.builtin.debug:
+        msg: >-
+          secret/{{ _bao_path }}:{{ _bao_key }} holds the '{{ _key_label }}' key
+          ({{ _api_key | length }} chars, {{ 'minted this run' if _key_count | int == 0
+          else 'recaptured from the database' }}). Automation reads it from there —
+          it is never printed and never a task parameter.

@@ -46,6 +46,14 @@ templates:
   - name: "Deploy n8n (Local)"
     playbook: platform/playbooks/deploy-n8n.yml
 
+  # n8n Postiz substrate: mint+capture the API key, then provision the
+  # postizApi credential from shared custody (local Postiz reachable on the
+  # local-dev network — see n8n_postiz_credential_host in the inventory).
+  - name: "Store n8n API Key (Local)"
+    playbook: platform/playbooks/store-n8n-api-key.yml
+  - name: "Provision n8n Postiz Credential (Local)"
+    playbook: platform/playbooks/provision-n8n-postiz-credential.yml
+
   # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml

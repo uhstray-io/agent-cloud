@@ -52,8 +52,26 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The legacy path's env file. Present only on a host that ran the old
+    # secret-generating deploy.sh — i.e. exactly the in-place prod migration.
+    _live_env: "{{ live_n8n_env | default(_deploy_dir + '/config/n8n.env') }}"
+    _stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]
 
   tasks:
+    # ── Cutover guard (design D4) ────────────────────────────────────────────
+    # Shared fail-closed diff of the stateful values between the live legacy
+    # env and the rendered one, BEFORE any container is (re)started. Names
+    # only, never values; greenfield hosts (no legacy file) skip it entirely.
+    - name: "Guard the in-place cutover (stateful values must match)"
+      ansible.builtin.include_tasks: tasks/guard-stateful-cutover.yml
+      vars:
+        _gsc_live_env: "{{ _live_env }}"
+        _gsc_rendered_env: "{{ _deploy_dir }}/.env"
+        _gsc_keys: "{{ _stateful_keys }}"
+        _gsc_fix_hint: >-
+          Pre-seed the live values with Seed n8n Secrets, verify with
+          Check Secrets, then re-run.
+
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"

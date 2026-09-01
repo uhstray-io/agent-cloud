@@ -994,7 +994,15 @@
           openbao_addr={{ _bao_url_net }}
           local_mode=true
           n8n_bind=127.0.0.1
-          n8n_image=docker.io/n8nio/n8n:latest
+          # PINNED to prod's tag: local validation must prove node/API compat on
+          # the version prod actually runs (`latest` deployed 2.36.9 while prod
+          # holds 2.25.7 — a silently different system under test).
+          n8n_image=docker.io/n8nio/n8n:2.25.7
+          # Postiz credential host for provision-n8n-postiz-credential.yml: the
+          # n8n app container shares the local-dev network with postiz, so the
+          # in-container is-connected test reaches it directly (no .test DNS or
+          # CA trust inside the container). Same /api path shape as prod.
+          n8n_postiz_credential_host=http://postiz:5000/api
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

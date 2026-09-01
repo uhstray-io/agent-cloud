@@ -177,6 +177,11 @@ all:
           # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
           # mirror is the same image. Base compose default stays docker.n8n.io.
           n8n_image: docker.io/n8nio/n8n:2.25.7
+          # Postiz credential host for provision-n8n-postiz-credential.yml —
+          # the n8n app container shares the local-dev network with postiz, so
+          # the in-container test reaches it directly (no .test DNS / CA trust
+          # inside the container). Same /api path shape as the public route.
+          n8n_postiz_credential_host: "http://postiz:5000/api"
 
     # tududi - self-hosted to-do app (single rootless container, SQLite). Native
     # OIDC to Authentik (blueprints/tududi-oidc.yaml). Behind Caddy at
