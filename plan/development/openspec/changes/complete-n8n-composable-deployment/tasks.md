@@ -103,13 +103,17 @@
 ## 7. Cleanup and close-out
 
 - [ ] 7.1 Remove `generate_n8n_env()` from `platform/lib/common.sh` (leave
-      `generate_nocodb_env()` — NocoDB is paused); fix any callers/tests; remove
-      the cutover dump from the VM (named in the backup report) and record the
-      operator decision on when the stopped legacy `/home/<ansible_user>/n8n` project
-      gets deleted
+      `generate_nocodb_env()` for now — NocoDB is RETIRED, replaced by tududi,
+      and that helper's removal belongs to the separate NocoDB decommission
+      change alongside its playbooks and templates); fix any callers/tests;
+      remove the cutover dump from the VM (named in the backup report) and
+      record the operator decision on when the stopped legacy
+      `/home/<ansible_user>/n8n` project gets deleted
 - [ ] 7.2 Update docs: CLAUDE.md workflow table rows for the new playbooks, lift the
       n8n half of the HOLD in `plan/development/09-service-migrations-tooling.md`
-      (NocoDB half stays held), n8n deployment README/context notes
+      (the NocoDB half is superseded by the retirement decision — the separate
+      decommission change rewrites that section rather than executing it), n8n
+      deployment README/context notes
 - [x] 7.3 Close PR #15 as superseded (USER-GATED — closed 2026-09-01 on the
       operator's explicit instruction, ahead of prod validation), with a comment
       recording what superseded each n8n part. Scope change recorded in the same

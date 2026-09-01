@@ -52,8 +52,10 @@ See `proposal.md — Why`. Current state, verified on `main`:
 **Non-Goals**
 - No n8n workflows are authored here (the substrate is the deliverable).
 - No queue-mode/scaling changes; the 4-container topology stands.
-- No NocoDB work, including its `generate_nocodb_env()` — paused, not deferred
-  silently: PR #15's close-out comment records it.
+- No NocoDB work, including its `generate_nocodb_env()` — RETIRED (decision
+  2026-09-01: NocoDB is removed from the platform, replaced by tududi), not
+  deferred silently: PR #15's close-out comment records it, and the
+  decommission is scoped as its own change.
 
 ## Decisions
 
