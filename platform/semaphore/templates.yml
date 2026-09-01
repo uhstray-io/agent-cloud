@@ -625,6 +625,11 @@ templates:
 
   - name: Seed n8n Secrets
     playbook: platform/playbooks/seed-n8n-secrets.yml
+    # dev_variant because the cutover RUNS FROM dev (promotion to main comes
+    # after prod validation): the alias-aware seed only exists on dev, and the
+    # main-record template would run the old playbook, which refuses the
+    # standalone layout's ENCRYPTION_KEY spelling.
+    dev_variant: true
     # Migration Task 0 for the EXISTING prod n8n: reads the live env file on
     # the host (default config/n8n.env; the standalone prod layout passes
     # -e live_n8n_env=/home/<user>/n8n/.env) and pre-seeds the STATEFUL
