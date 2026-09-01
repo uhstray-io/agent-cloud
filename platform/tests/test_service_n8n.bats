@@ -382,4 +382,9 @@ YAML
   assert_grep -qF 'required: true' <<<"$blk"
   blk=$(awk '$0=="  - name: Back Up n8n DB"{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
   assert_grep -qF 'name: n8n_pg_container' <<<"$blk"
+  # The LOCAL restore variant needs the same required survey var — the play
+  # hard-requires n8n_dump_file regardless of which instance launches it.
+  blk=$(awk '$0=="  - name: \"Restore n8n DB (Local)\""{f=1;next} f&&/^  - name:/{exit} f{print}' "$tl")
+  assert_grep -qF 'name: n8n_dump_file' <<<"$blk"
+  assert_grep -qF 'required: true' <<<"$blk"
 }

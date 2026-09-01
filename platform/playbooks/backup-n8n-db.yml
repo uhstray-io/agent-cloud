@@ -64,10 +64,14 @@
     - name: "Dump the database (plain SQL, --clean --if-exists for a drop-and-recreate restore)"
       # stdout goes straight to the file, so the dump's content never enters
       # the run record. A pg_dump failure fails the task because podman exec
-      # propagates its exit status. umask keeps the file itself 0600.
+      # propagates its exit status. umask keeps the file itself 0600; noclobber
+      # (set -C) makes a same-second name collision fail loudly instead of
+      # overwriting an existing rollback artifact. Every interpolation is
+      # shell-quoted — the container name arrives as a survey string.
       ansible.builtin.shell: |
         umask 077
-        {{ _engine }} exec {{ _pg_container }} pg_dump -U {{ _db_user }} -d {{ _db_name }} --clean --if-exists > "{{ _dump_file }}"
+        set -C
+        {{ _engine | quote }} exec {{ _pg_container | quote }} pg_dump -U {{ _db_user | quote }} -d {{ _db_name | quote }} --clean --if-exists > {{ _dump_file | quote }}
       changed_when: true
 
     - name: "Verify the dump is real (carries the pg_dump header)"

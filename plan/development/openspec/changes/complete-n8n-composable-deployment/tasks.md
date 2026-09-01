@@ -110,9 +110,11 @@
 - [ ] 7.2 Update docs: CLAUDE.md workflow table rows for the new playbooks, lift the
       n8n half of the HOLD in `plan/development/09-service-migrations-tooling.md`
       (NocoDB half stays held), n8n deployment README/context notes
-- [ ] 7.3 Close PR #15 as superseded (USER-GATED — ask before closing), with a comment
-      recording what superseded each part and that the NocoDB half is paused, not
-      discarded
+- [x] 7.3 Close PR #15 as superseded (USER-GATED — closed 2026-09-01 on the
+      operator's explicit instruction, ahead of prod validation), with a comment
+      recording what superseded each n8n part. Scope change recorded in the same
+      comment: the NocoDB half is RETIRED, not paused — NocoDB is being removed
+      from the platform, replaced by tududi; its decommission gets its own change
 - [ ] 7.4 Retain one outcome memory into the repo's experience bank: whether the
       cutover preserved live state, labelled worked / dead end / corrected, with the
       root cause of anything that failed

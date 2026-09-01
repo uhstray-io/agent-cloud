@@ -79,12 +79,13 @@
         - name: "Restore the dump (single transaction, stop on first error)"
           # stdin comes from the host file; the dump's content never enters the
           # run record. --single-transaction makes the --clean drop-and-recreate
-          # all-or-nothing.
+          # all-or-nothing. Every interpolation is shell-quoted — the dump path
+          # arrives as a survey string.
           ansible.builtin.shell: >-
-            {{ _engine }} exec -i {{ _pg_container }}
-            psql -U {{ _db_user }} -d {{ _db_name }}
+            {{ _engine | quote }} exec -i {{ _pg_container | quote }}
+            psql -U {{ _db_user | quote }} -d {{ _db_name | quote }}
             -v ON_ERROR_STOP=1 --single-transaction
-            < "{{ n8n_dump_file }}" > /dev/null
+            < {{ n8n_dump_file | quote }} > /dev/null
           changed_when: true
 
       always:

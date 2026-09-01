@@ -220,7 +220,8 @@ tool and this platform treats that as a defect.
   D6/D7 IS the rollback (restore + restart the old stack); the deploy watches
   n8n's startup for migration failure instead of assuming green; the old stack
   and volumes stay untouched until close-out.
-- **[Dump file retention on the VM]** → root-only directory, named in the run
+- **[Dump file retention on the VM]** → owner-only `0700` directory owned by the
+  rootless deployment account, named in the run
   report; removed at close-out once prod validation passes, never silently.
 
 ## Migration Plan
