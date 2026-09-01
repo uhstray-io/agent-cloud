@@ -132,23 +132,23 @@ _run_template() {
   # worktree-bound template still dispatches (validate-all and friends exist
   # only in the shared catalog), but says loudly that the run executes the
   # bound branch's code, not the working tree.
-  local repos tpls
+  local repos tpls pick
   repos=$(_api "${base}/repositories")
   tpls=$(_api "${base}/templates")
-  tid=$(python3 -c "
+  pick=$(python3 -c "
 import json, sys
 repos = json.loads(sys.argv[1]); ts = json.loads(sys.argv[2])
 wt = [r['id'] for r in repos if r.get('name') == 'agent-cloud worktree']
 m = [t for t in ts if t.get('playbook') == '$playbook']
 local = [t for t in m if wt and t.get('repository_id') == wt[0]]
 pick = (local or m)
-if pick and not local:
-    print('FALLBACK', file=sys.stderr)
-print(pick[0]['id'] if pick else '')" "$repos" "$tpls" 2>/tmp/ldev-tpl-warn)
-  if grep -q FALLBACK /tmp/ldev-tpl-warn 2>/dev/null; then
-    info "WARN: no worktree-bound template for ${playbook} — dispatching a repo-bound one; this run executes that record's branch, NOT your working tree."
-  fi
-  rm -f /tmp/ldev-tpl-warn
+print(('' if local else 'FALLBACK ') + str(pick[0]['id']) if pick else '')" "$repos" "$tpls")
+  case "$pick" in
+    FALLBACK\ *)
+      tid="${pick#FALLBACK }"
+      info "WARN: no worktree-bound template for ${playbook} — dispatching a repo-bound one; this run executes that record's branch, NOT your working tree." ;;
+    *) tid="$pick" ;;
+  esac
   [ -n "$tid" ] || die "no template registered for playbook: $playbook"
   local body="{\"template_id\": ${tid}, \"project_id\": ${SEMAPHORE_PROJECT_ID}"
   [ -n "$extra" ] && body="${body}, \"environment\": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$extra")"

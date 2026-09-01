@@ -40,17 +40,21 @@
 
     - name: "Diff the stateful values (names only)"
       # One pass per key; only the NAME of a differing key survives into the
-      # fact. A key absent from a file reads as '' — if it is absent from
-      # both, the pair agrees vacuously and the assert stays green.
+      # fact. Assignments are matched at LINE START ((?m)^KEY=) so a commented
+      # example can never stand in for the real value, and ALL occurrences are
+      # compared as ordered lists — a duplicate key that differs between the
+      # files is a mismatch, never silently resolved by "first match wins"
+      # while the env-file parser picks a different one. A key absent from
+      # both files yields two empty lists, which agree vacuously.
       ansible.builtin.set_fact:
         _gsc_mismatches: >-
           {{ (_gsc_mismatches | default([]))
-             + ([item] if _gsc_live_val != _gsc_new_val else []) }}
+             + ([item] if _gsc_live_vals != _gsc_new_vals else []) }}
       vars:
         _gsc_live_txt: "{{ _gsc_envs.results[0].content | b64decode }}"
         _gsc_new_txt: "{{ _gsc_envs.results[1].content | b64decode }}"
-        _gsc_live_val: "{{ (_gsc_live_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
-        _gsc_new_val: "{{ (_gsc_new_txt | regex_search(item ~ '=(.*)', '\\1')) | default([''], true) | first }}"
+        _gsc_live_vals: "{{ _gsc_live_txt | regex_findall('(?m)^' ~ item ~ '=(.*)$') }}"
+        _gsc_new_vals: "{{ _gsc_new_txt | regex_findall('(?m)^' ~ item ~ '=(.*)$') }}"
       loop: "{{ _gsc_keys }}"
       no_log: true
 

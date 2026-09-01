@@ -48,7 +48,9 @@ setup() {
   # the Postiz node pin: name + exact version + npm dist.integrity checksum
   assert_grep -qF '"name": "n8n-nodes-postiz"' "$f"
   assert_grep -qF '"version": "0.2.17"' "$f"
-  assert_grep -qE '"checksum": "sha512-[A-Za-z0-9+/]+={0,2}"' "$f"
+  # The EXACT integrity value for n8n-nodes-postiz@0.2.17 (npm dist.integrity)
+  # — a shape-only check cannot detect checksum drift.
+  assert_grep -qF '"checksum": "sha512-+dlEfTLuDGUsaO6aldsw3EYwyFNQmhMwEM1hrP0gSuUtPzvwblOd2kPrwKDqE6GKXZa3EnKcdYDKlBps/M1SrQ=="' "$f"
 }
 
 @test "n8n: local overlay adds caps/SELinux/local-dev but does NOT republish ports" {

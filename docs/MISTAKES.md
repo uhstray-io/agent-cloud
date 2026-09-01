@@ -86,6 +86,7 @@ supersede it with a new entry and link both.
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
+| 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1804,6 +1805,32 @@ read (`_test_status` here) — facts survive skips; registers do not.
 
 **Enforced by.** Convention — plus the play's own end state: the final assert
 now reads the fact, so a recurrence fails loudly instead of misreporting.
+
+### 10.11 The shared secret store-back deleted every key it did not declare
+
+**What happened.** `tasks/manage-secrets.yml` stored its resolved secrets with a
+KV-v2 POST of the whole `_resolved` dict — a full-document write. `_resolved` is
+built only from `_secret_definitions`, so any key living beside the
+deploy-managed ones was silently deleted on every deploy. Found when a routine
+local `Deploy n8n` re-run erased `secret/services/n8n:n8n_api_key` (captured by
+`Store n8n API Key` minutes earlier) and the credential-provisioning play failed
+its named required-key assert. Latent for every service whose path accumulates
+post-deploy keys; postiz's operator credentials survive only because
+deploy-postiz happens to declare them all as `type: existing`.
+
+**Root cause.** The store-back predates `tasks/bao-merge-keys.yml` (the shared
+merge-patch extraction) and was never migrated onto it — the exact
+read-modify-clobber shape that extraction exists to kill, sitting in the one
+file every composable deploy includes.
+
+**The rule.** A writer owns the KEYS it manages, never the whole path. Every
+OpenBao write goes through `tasks/bao-merge-keys.yml` (server-side merge-patch,
+CAS-guarded create); a whole-document POST to `secret/data/...` is a defect even
+when it round-trips today's keys correctly.
+
+**Enforced by.** Test — `platform/tests/test_manage_secrets.bats` refuses any
+direct write method to `secret/data` in manage-secrets and requires the shared
+merge include.
 
 ## 11. The largest one
 
