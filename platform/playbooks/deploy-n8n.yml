@@ -49,13 +49,19 @@
   hosts: n8n_svc
   gather_facts: false
   become: false
+  # THE declaration of the stateful keys, their live-name aliases (the
+  # standalone prod layout spells the encryption key ENCRYPTION_KEY — design
+  # D6), and their OpenBao fields. Shared with seed-n8n-secrets.yml so the
+  # pre-seed and the guard can never disagree on a spelling.
+  vars_files:
+    - vars/n8n-stateful-keys.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     # The legacy path's env file. Present only on a host that ran the old
     # secret-generating deploy.sh — i.e. exactly the in-place prod migration.
     _live_env: "{{ live_n8n_env | default(_deploy_dir + '/config/n8n.env') }}"
-    _stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]
+    _stateful_keys: "{{ n8n_stateful_keys }}"
 
   tasks:
     # ── Cutover guard (design D4) ────────────────────────────────────────────

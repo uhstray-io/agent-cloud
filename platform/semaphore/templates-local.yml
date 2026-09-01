@@ -54,6 +54,21 @@ templates:
   - name: "Provision n8n Postiz Credential (Local)"
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
 
+  # n8n upgrade tooling (design D7): timestamped pg_dump + named-dump restore.
+  # Local is where the pair is proven before it carries the prod cutover.
+  # The restore hard-requires n8n_dump_file, so the survey var is declared
+  # here too — without it a direct local UI launch fails on task 1.
+  - name: "Back Up n8n DB (Local)"
+    playbook: platform/playbooks/backup-n8n-db.yml
+  - name: "Restore n8n DB (Local)"
+    playbook: platform/playbooks/restore-n8n-db.yml
+    survey_vars:
+      - name: n8n_dump_file
+        title: "Dump file path"
+        description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
+        type: string
+        required: true
+
   # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml

@@ -190,9 +190,17 @@ setup() {
   local f="$PB_DIR/deploy-n8n.yml"
   local shared="$PB_DIR/tasks/guard-stateful-cutover.yml"
   [ -f "$shared" ]
-  # deploy-n8n declares exactly the three stateful keys and hands them to the
+  # deploy-n8n consumes THE shared stateful-key manifest and hands it to the
   # SHARED guard task (one implementation for every held in-place migration).
-  assert_grep -qF '_stateful_keys: [N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD, POSTGRES_NON_ROOT_PASSWORD]' "$f"
+  # The manifest carries the live-name alias for the standalone prod layout,
+  # which spells the encryption key ENCRYPTION_KEY in its .env (design D6).
+  local manifest="$PB_DIR/vars/n8n-stateful-keys.yml"
+  [ -f "$manifest" ]
+  assert_grep -qF 'live_names: [N8N_ENCRYPTION_KEY, ENCRYPTION_KEY]' "$manifest"
+  assert_grep -qF 'live_names: [POSTGRES_PASSWORD]' "$manifest"
+  assert_grep -qF 'live_names: [POSTGRES_NON_ROOT_PASSWORD]' "$manifest"
+  assert_grep -qF 'vars/n8n-stateful-keys.yml' "$f"
+  assert_grep -qF '_stateful_keys: "{{ n8n_stateful_keys }}"' "$f"
   assert_grep -q 'include_tasks: tasks/guard-stateful-cutover.yml' "$f"
   # It fails closed BEFORE the container lifecycle: the include must appear
   # earlier in the play than the deploy.sh task.
@@ -216,21 +224,167 @@ setup() {
   assert_grep -q '_gsc_legacy.stat.exists' <<<"$blk"
 }
 
+@test "n8n: shared guard resolves live-name aliases, defaulting to the key's own name" {
+  local shared="$PB_DIR/tasks/guard-stateful-cutover.yml"
+  # A key entry may be a plain string or {name, live_names}; the live side
+  # collects every declared spelling in one anchored alternation so a key
+  # duplicated ACROSS spellings is refused as ambiguous like any duplicate.
+  assert_grep -qF "_gsc_name: \"{{ item.name | default(item) }}\"" "$shared"
+  assert_grep -qF "_gsc_live_names: \"{{ item.live_names | default([_gsc_name]) }}\"" "$shared"
+  assert_grep -qF "regex_findall('(?m)^(?:' ~ (_gsc_live_names | join('|')) ~ ')=(.*)$')" "$shared"
+  # The rendered side still matches the canonical name only.
+  assert_grep -qF "regex_findall('(?m)^' ~ _gsc_name ~ '=(.*)$')" "$shared"
+}
+
+@test "n8n: pre-seed reads spellings from the SAME manifest the guard compares" {
+  local f="$PB_DIR/seed-n8n-secrets.yml"
+  # The pre-seed and the cutover guard must agree on every live spelling or
+  # one half of the cutover reads a key the other never compares. Both consume
+  # vars/n8n-stateful-keys.yml; the seed builds its anchored alternation from
+  # each entry's live_names instead of hand-writing a regex.
+  assert_grep -qF 'vars/n8n-stateful-keys.yml' "$f"
+  assert_grep -qF "item.live_names | join('|')" "$f"
+  refute_grep -qF '(?:N8N_ENCRYPTION_KEY|ENCRYPTION_KEY)' "$f"
+  blk=$(task_block "$f" "Require exactly one non-empty active assignment per stateful key")
+  [ -n "$blk" ]
+  assert_grep -qF '_matches[item.bao_field] | length == 1' <<<"$blk"
+}
+
+@test "n8n: backup playbook dumps read-only into an owner-only dir, verified, no secrets" {
+  local f="$PB_DIR/backup-n8n-db.yml"
+  [ -f "$f" ]
+  # An empty/misspelled group would report SUCCESS having written no dump —
+  # right before a one-way migration. The preflight is the guard against that.
+  assert_grep -qF 'import_playbook: preflight-target-group.yml' "$f"
+  # Parameterized container so the cutover can point at the legacy project.
+  assert_grep -qF "n8n_pg_container | default('workflow-n8n-postgres')" "$f"
+  # Owner-only backup dir; the file itself is umask'd to 0600; dump content
+  # bypasses the run record via redirect.
+  blk=$(task_block "$f" "Ensure the owner-only backup directory exists")
+  [ -n "$blk" ]
+  assert_grep -qF 'mode: "0700"' <<<"$blk"
+  assert_grep -qF 'umask 077' "$f"
+  assert_grep -qF -- '--clean --if-exists' "$f"
+  # The artifact name is FROZEN once (set_fact): a play var holding now()
+  # re-evaluates per reference, so dump/verify/report could each name a
+  # different file across a second boundary.
+  blk=$(task_block "$f" "Name the dump artifact")
+  [ -n "$blk" ]
+  assert_grep -qF 'set_fact' <<<"$blk"
+  refute_grep -qF '_dump_file:' <(awk '/^  vars:/,/^  tasks:/' "$f")
+  # The dump is verified real, not assumed.
+  blk=$(task_block "$f" "Verify the dump is real")
+  [ -n "$blk" ]
+  assert_grep -qF 'PostgreSQL database dump' <<<"$blk"
+  # Read-only against the store and the DB: no OpenBao calls, no psql writes.
+  refute_grep -qE 'X-Vault-Token|approle/login' "$f"
+}
+
+@test "n8n: restore playbook demands an explicit dump and always restarts the app" {
+  local f="$PB_DIR/restore-n8n-db.yml"
+  [ -f "$f" ]
+  assert_grep -qF 'import_playbook: preflight-target-group.yml' "$f"
+  # Never "the latest dump" — the file is a required extra var.
+  blk=$(task_block "$f" "Require an explicit dump file")
+  [ -n "$blk" ]
+  assert_grep -qF 'n8n_dump_file is defined' <<<"$blk"
+  # All-or-nothing restore.
+  assert_grep -qF -- '-v ON_ERROR_STOP=1 --single-transaction' "$f"
+  # A destructive play addresses exactly ONE stack: the Postgres target is a
+  # literal here, not an override (that flexibility lives in the backup).
+  refute_grep -qF 'n8n_pg_container' "$f"
+  # App containers stop before the restore, and the start lives in always: —
+  # a failed restore must leave the DB rolled back AND the service running.
+  local s r a t h
+  s=$(grep -n 'Stop the n8n app containers' "$f" | head -1 | cut -d: -f1)
+  r=$(grep -n 'Restore the dump' "$f" | head -1 | cut -d: -f1)
+  a=$(grep -n '      always:' "$f" | head -1 | cut -d: -f1)
+  t=$(grep -n 'Start the n8n app containers' "$f" | head -1 | cut -d: -f1)
+  h=$(grep -n 'Wait for n8n health' "$f" | head -1 | cut -d: -f1)
+  [ -n "$s" ] && [ -n "$r" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
+  [ "$s" -lt "$r" ] && [ "$r" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+}
+
+@test "n8n: cutover guard BEHAVES — alias match, mismatch refusal, ambiguity refusal" {
+  # Behavioural, not structural (the test_apply_firewall.bats precedent): run
+  # the real shared task against fixture env files. String-asserting the
+  # guard's Jinja source proves nothing about the one value that matters most.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local shared="$PB_DIR/tasks/guard-stateful-cutover.yml"
+
+  cat > "$BATS_TEST_TMPDIR/play.yml" <<YAML
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: $shared
+      vars:
+        _gsc_live_env: "$BATS_TEST_TMPDIR/live.env"
+        _gsc_rendered_env: "$BATS_TEST_TMPDIR/new.env"
+        _gsc_keys:
+          - {name: N8N_ENCRYPTION_KEY, live_names: [N8N_ENCRYPTION_KEY, ENCRYPTION_KEY]}
+          - POSTGRES_PASSWORD
+YAML
+  printf 'N8N_ENCRYPTION_KEY=sek\nPOSTGRES_PASSWORD=pw\n' > "$BATS_TEST_TMPDIR/new.env"
+  guard() { ansible-playbook "$BATS_TEST_TMPDIR/play.yml" >/dev/null 2>&1; }
+
+  # PASSES: the live file uses the legacy spelling; the alias verifies it.
+  printf 'ENCRYPTION_KEY=sek\nPOSTGRES_PASSWORD=pw\n' > "$BATS_TEST_TMPDIR/live.env"
+  guard
+  # PASSES: same-name spelling still verifies (plain-string key included).
+  printf 'N8N_ENCRYPTION_KEY=sek\nPOSTGRES_PASSWORD=pw\n' > "$BATS_TEST_TMPDIR/live.env"
+  guard
+  # REFUSED: the aliased value differs — the one failure this guard exists
+  # to catch. `run` + [ ] because a bang-inverted command mid-body cannot
+  # fail under set -e (docs/MISTAKES.md §2.9).
+  printf 'ENCRYPTION_KEY=DIFFERENT\nPOSTGRES_PASSWORD=pw\n' > "$BATS_TEST_TMPDIR/live.env"
+  run guard
+  [ "$status" -ne 0 ]
+  # REFUSED: both spellings present is ambiguous even when the values agree.
+  printf 'ENCRYPTION_KEY=sek\nN8N_ENCRYPTION_KEY=sek\nPOSTGRES_PASSWORD=pw\n' > "$BATS_TEST_TMPDIR/live.env"
+  run guard
+  [ "$status" -ne 0 ]
+  # REFUSED: a plain-string key mismatch still fires.
+  printf 'ENCRYPTION_KEY=sek\nPOSTGRES_PASSWORD=WRONG\n' > "$BATS_TEST_TMPDIR/live.env"
+  run guard
+  [ "$status" -ne 0 ]
+}
+
 @test "n8n: every lifecycle concern is a declared Semaphore template, destructive one marked" {
   local t="${BATS_TEST_DIRNAME}/../semaphore/templates.yml"
   local n
-  for n in "Deploy n8n" "Seed n8n Secrets" "Clean Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Update n8n"; do
+  for n in "Deploy n8n" "Seed n8n Secrets" "Clean Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Update n8n" "Back Up n8n DB" "Restore n8n DB"; do
     assert_grep -qE "^  - name: $n\$" "$t"
   done
-  # The destructive one says so, right in its declaration.
-  local blk
-  blk=$(awk '/^  - name: Clean Deploy n8n$/{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
-  [ -n "$blk" ]
-  assert_grep -q 'DESTRUCTIVE' <<<"$blk"
-  # The local (Dev) flow exists for the chain phase 5 exercises.
-  for n in "Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Clean Deploy n8n"; do
+  # The destructive ones say so, right in their declarations.
+  local blk n
+  for n in "Clean Deploy n8n" "Restore n8n DB"; do
+    blk=$(awk -v name="$n" '$0=="  - name: "name{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
+    [ -n "$blk" ]
+    assert_grep -q 'DESTRUCTIVE' <<<"$blk"
+  done
+  # The local (Dev) flow exists for the chain phase 5 exercises, and the
+  # upgrade pair is proven locally before it carries the prod cutover.
+  for n in "Deploy n8n" "Store n8n API Key" "Provision n8n Postiz Credential" "Clean Deploy n8n" "Back Up n8n DB" "Restore n8n DB"; do
     blk=$(awk -v name="$n" '$0=="  - name: "name{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
     [ -n "$blk" ]
     assert_grep -q 'dev_variant: true' <<<"$blk"
   done
+  # The worktree-bound (Local) variants exist too.
+  local tl="${BATS_TEST_DIRNAME}/../semaphore/templates-local.yml"
+  for n in "Back Up n8n DB (Local)" "Restore n8n DB (Local)"; do
+    assert_grep -qF "  - name: \"$n\"" "$tl"
+  done
+  # Restore hard-requires n8n_dump_file, so without a survey var every UI
+  # launch fails on task 1; the backup's cutover retarget needs one too.
+  blk=$(awk '$0=="  - name: Restore n8n DB"{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
+  assert_grep -qF 'name: n8n_dump_file' <<<"$blk"
+  assert_grep -qF 'required: true' <<<"$blk"
+  blk=$(awk '$0=="  - name: Back Up n8n DB"{f=1;next} f&&/^  - name:/{exit} f{print}' "$t")
+  assert_grep -qF 'name: n8n_pg_container' <<<"$blk"
+  # The LOCAL restore variant needs the same required survey var — the play
+  # hard-requires n8n_dump_file regardless of which instance launches it.
+  blk=$(awk '$0=="  - name: \"Restore n8n DB (Local)\""{f=1;next} f&&/^  - name:/{exit} f{print}' "$tl")
+  assert_grep -qF 'name: n8n_dump_file' <<<"$blk"
+  assert_grep -qF 'required: true' <<<"$blk"
 }

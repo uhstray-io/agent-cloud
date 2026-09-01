@@ -79,11 +79,14 @@ everything it contained; it needs a recorded disposition.
 - **Before the cutover deploy**: nothing has touched the running service —
   `seed-n8n-secrets.yml` only reads the host env file and writes OpenBao; abort
   freely.
-- **Cutover deploy fails**: the legacy path remains intact until the cleanup phase
-  (`generate_n8n_env()` is only removed after validation); re-run the legacy
-  `deploy.sh` flow with the on-VM `config/n8n.env`, which the seed playbook never
-  modifies. The compose image tag is pinned, so no silent version jump compounds
-  a rollback.
+- **Cutover deploy fails**: the legacy deployment remains intact until close-out.
+  (Amended 2026-09-01 after the layout probe, design D6: prod's legacy is NOT the
+  monorepo `deploy.sh` path but a standalone compose project at
+  `/home/<ansible_user>/n8n` whose `.env` the seed playbook never modifies.) Rollback =
+  stop the composable stack and start the legacy project back up in place — its
+  containers and volumes are stopped, never destroyed, until validation passes.
+  The pre-cutover `pg_dump` (design D7) is the belt-and-suspenders copy. The
+  composable image tag is pinned, so no silent version jump compounds a rollback.
 - **Community node misbehaves**: remove the package entry from
   `N8N_COMMUNITY_PACKAGES` and redeploy — `MANAGED_BY_ENV` reconciliation
   uninstalls it; credentials created in n8n are inert without the node.

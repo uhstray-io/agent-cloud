@@ -625,13 +625,50 @@ templates:
 
   - name: Seed n8n Secrets
     playbook: platform/playbooks/seed-n8n-secrets.yml
-    # Migration Task 0 for the EXISTING prod n8n: reads the live config/n8n.env
-    # on the host and pre-seeds the STATEFUL secrets (encryption_key + both
-    # Postgres passwords) into secret/services/n8n, so the first composable
-    # Deploy n8n FETCHES them instead of generating — re-keying
-    # N8N_ENCRYPTION_KEY makes every stored workflow credential permanently
-    # undecryptable. Non-destructive: never touches the running service. Skip
-    # for greenfield hosts (nothing to preserve).
+    # Migration Task 0 for the EXISTING prod n8n: reads the live env file on
+    # the host (default config/n8n.env; the standalone prod layout passes
+    # -e live_n8n_env=/home/<user>/n8n/.env) and pre-seeds the STATEFUL
+    # secrets (encryption_key + both Postgres passwords) into
+    # secret/services/n8n, so the first composable Deploy n8n FETCHES them
+    # instead of generating — re-keying N8N_ENCRYPTION_KEY makes every stored
+    # workflow credential permanently undecryptable. Accepts the legacy
+    # ENCRYPTION_KEY spelling; refuses a file carrying both. Non-destructive:
+    # never touches the running service. Skip for greenfield hosts (nothing
+    # to preserve).
+
+  - name: Back Up n8n DB
+    playbook: platform/playbooks/backup-n8n-db.yml
+    # Timestamped pg_dump of an n8n Postgres container into an owner-only
+    # backup dir on the VM — the rollback artifact for n8n's one-way startup
+    # schema migrations. Run before EVERY n8n version bump; the cutover points
+    # it at the legacy project's container via the survey var. Read-only
+    # against the database; each run writes a NEW file, never overwrites.
+    # Neither value is secret, so the "survey values persist" prohibition
+    # does not apply.
+    dev_variant: true
+    survey_vars:
+      - name: n8n_pg_container
+        title: "Postgres container"
+        description: "Container to dump (default workflow-n8n-postgres; the cutover uses the legacy project's n8n_postgres_1)"
+        type: string
+        required: false
+
+  - name: Restore n8n DB
+    playbook: platform/playbooks/restore-n8n-db.yml
+    # DESTRUCTIVE: overwrites the composable stack's n8n database with a named
+    # dump. The play hard-requires n8n_dump_file, so without this survey var
+    # every UI launch would fail on task 1. Restores under --single-transaction
+    # with ON_ERROR_STOP (a failed restore rolls back); the app containers are
+    # restarted in an always: block, so a failed restore never also leaves the
+    # service down. n8n re-runs migrations at boot. The cutover's import step
+    # AND the standing upgrade rollback tool. The path is not a secret.
+    dev_variant: true
+    survey_vars:
+      - name: n8n_dump_file
+        title: "Dump file path"
+        description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
+        type: string
+        required: true
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml

@@ -72,15 +72,30 @@
       three stateful values in the newly rendered env against the live
       `config/n8n.env` and fail before any container restart on mismatch, printing
       key names only
-- [ ] 6.2 Run `Seed n8n Secrets` against the live host; verify with `Check Secrets`
-      that `encryption_key`, `db_admin_password`, `db_user_password` all resolve as
+- [x] 6.2 Alias-aware extraction (design D4 amendment, D6 context): teach
+      `seed-n8n-secrets.yml` and the shared `tasks/guard-stateful-cutover.yml` a
+      per-key live-name alias (live `ENCRYPTION_KEY` ↔ rendered
+      `N8N_ENCRYPTION_KEY`, default = same name), preserving fail-closed,
+      names-only, and all-occurrences semantics; BATS coverage for both
+- [x] 6.3 Standing upgrade tooling (design D7): write `backup-n8n-db.yml`
+      (timestamped `pg_dump` from a parameterized Postgres container, owner-only
+      0700 dump dir, report names the artifact) and `restore-n8n-db.yml` (stop app
+      containers → restore named dump → start; n8n re-runs migrations at boot);
+      Semaphore templates for both; BATS coverage (no_log scoping, destructive
+      labeling on restore)
+- [ ] 6.4 Run `Seed n8n Secrets` against the live host with
+      `-e live_n8n_env=/home/<ansible_user>/n8n/.env`; verify with `Check Secrets` that
+      `encryption_key`, `db_admin_password`, `db_user_password` all resolve as
       pre-existing
-- [ ] 6.3 Run the guarded `Deploy n8n` cutover; operator confirms existing workflows
-      execute and stored credentials decrypt
-- [ ] 6.4 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy),
+- [ ] 6.5 Cutover, each step independently retryable: `Back Up n8n DB` (legacy
+      `n8n_postgres_1`) → GATE: operator go → stop the legacy `/home/<ansible_user>/n8n`
+      project (stopped, not destroyed) → guarded `Deploy n8n` → `Restore n8n DB`
+      → operator confirms existing workflows execute and stored credentials
+      decrypt (2.8.3→2.25.7 migrations watched, not assumed)
+- [ ] 6.6 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy),
       then `Store n8n API Key` (mints via the owner session AND captures — no
       manual step; D2), then `Provision n8n Postiz Credential`
-- [ ] 6.5 Validation gate: scenarios "Pre-seed makes the first composable deploy a
+- [ ] 6.7 Validation gate: scenarios "Pre-seed makes the first composable deploy a
       fetch", "Cutover refuses to proceed on a stateful mismatch" (proven by the
       guard's test, not by breaking prod), and "Idempotent redeploy after cutover"
       hold on the production host
@@ -88,13 +103,22 @@
 ## 7. Cleanup and close-out
 
 - [ ] 7.1 Remove `generate_n8n_env()` from `platform/lib/common.sh` (leave
-      `generate_nocodb_env()` — NocoDB is paused); fix any callers/tests
+      `generate_nocodb_env()` for now — NocoDB is RETIRED, replaced by tududi,
+      and that helper's removal belongs to the separate NocoDB decommission
+      change alongside its playbooks and templates); fix any callers/tests;
+      remove the cutover dump from the VM (named in the backup report) and
+      record the operator decision on when the stopped legacy
+      `/home/<ansible_user>/n8n` project gets deleted
 - [ ] 7.2 Update docs: CLAUDE.md workflow table rows for the new playbooks, lift the
       n8n half of the HOLD in `plan/development/09-service-migrations-tooling.md`
-      (NocoDB half stays held), n8n deployment README/context notes
-- [ ] 7.3 Close PR #15 as superseded (USER-GATED — ask before closing), with a comment
-      recording what superseded each part and that the NocoDB half is paused, not
-      discarded
+      (the NocoDB half is superseded by the retirement decision — the separate
+      decommission change rewrites that section rather than executing it), n8n
+      deployment README/context notes
+- [x] 7.3 Close PR #15 as superseded (USER-GATED — closed 2026-09-01 on the
+      operator's explicit instruction, ahead of prod validation), with a comment
+      recording what superseded each n8n part. Scope change recorded in the same
+      comment: the NocoDB half is RETIRED, not paused — NocoDB is being removed
+      from the platform, replaced by tududi; its decommission gets its own change
 - [ ] 7.4 Retain one outcome memory into the repo's experience bank: whether the
       cutover preserved live state, labelled worked / dead end / corrected, with the
       root cause of anything that failed
