@@ -279,7 +279,13 @@ setup() {
   [ -n "$blk" ]
   assert_grep -qF 'stdin: "{{ _totp_seed }}"' <<<"$blk"
   refute_grep -qF 'totp.py", "{{' <<<"$blk"
-  assert_grep -qF '_totp is skipped' "$pb"
+  # Scoped to the login task's LIVE body: the task's own comment also says
+  # "is skipped", so a file-wide (or even block-wide) grep would keep passing
+  # after the actual condition was deleted from the payload.
+  local login_blk
+  login_blk=$(task_block "$pb" "Log in to n8n as the owner")
+  [ -n "$login_blk" ]
+  assert_grep -qF 'combine({} if (_totp is skipped)' <<<"$(grep -vE '^[[:space:]]*#' <<<"$login_blk")"
 }
 
 @test "n8n: pre-seed reads spellings from the SAME manifest the guard compares" {
