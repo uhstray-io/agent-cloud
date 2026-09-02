@@ -293,16 +293,29 @@ setup() {
   # A destructive play addresses exactly ONE stack: the Postgres target is a
   # literal here, not an override (that flexibility lives in the backup).
   refute_grep -qF 'n8n_pg_container' "$f"
-  # App containers stop before the restore, and the start lives in always: —
-  # a failed restore must leave the DB rolled back AND the service running.
-  local s r a t h
+  # App containers stop, the dump loads into a STAGING database (a --clean
+  # dump cannot cross n8n schema generations — proven live: a 2.8.3 dump
+  # against a 2.25.7-migrated DB fails on FK-dependent drops), and only a
+  # fully loaded dump is swapped into place; the prior live DB is retained.
+  # The start lives in always: — a failed restore must leave the data intact
+  # AND the service running.
+  local s c r w a t h
   s=$(grep -n 'Stop the n8n app containers' "$f" | head -1 | cut -d: -f1)
-  r=$(grep -n 'Restore the dump' "$f" | head -1 | cut -d: -f1)
+  c=$(grep -n 'Recreate the staging database' "$f" | head -1 | cut -d: -f1)
+  r=$(grep -n 'Restore the dump into staging' "$f" | head -1 | cut -d: -f1)
+  w=$(grep -n 'Swap staging into place' "$f" | head -1 | cut -d: -f1)
   a=$(grep -n '      always:' "$f" | head -1 | cut -d: -f1)
   t=$(grep -n 'Start the n8n app containers' "$f" | head -1 | cut -d: -f1)
   h=$(grep -n 'Wait for n8n health' "$f" | head -1 | cut -d: -f1)
-  [ -n "$s" ] && [ -n "$r" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
-  [ "$s" -lt "$r" ] && [ "$r" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+  [ -n "$s" ] && [ -n "$c" ] && [ -n "$r" ] && [ -n "$w" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
+  [ "$s" -lt "$c" ] && [ "$c" -lt "$r" ] && [ "$r" -lt "$w" ] && [ "$w" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+  # The LIVE database is never dropped; only staging and the retained _prev
+  # copy are. The swap renames live aside before promoting staging.
+  refute_grep -qF 'DROP DATABASE IF EXISTS {{ _db_name }}' "$f"
+  assert_grep -qF 'DROP DATABASE IF EXISTS {{ _staging_db }} WITH (FORCE);' "$f"
+  assert_grep -qF 'CREATE DATABASE {{ _staging_db }} OWNER {{ _db_app_user }};' "$f"
+  assert_grep -qF 'ALTER DATABASE {{ _db_name }} RENAME TO {{ _prev_db }};' "$f"
+  assert_grep -qF 'ALTER DATABASE {{ _staging_db }} RENAME TO {{ _db_name }};' "$f"
 }
 
 @test "n8n: cutover guard BEHAVES — alias match, mismatch refusal, ambiguity refusal" {
