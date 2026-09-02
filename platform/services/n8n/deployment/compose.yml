@@ -62,6 +62,16 @@ services:
         condition: service_healthy
       n8n-postgres:
         condition: service_healthy
+    healthcheck:
+      # /healthz/readiness, NOT /healthz: the plain endpoint answers 200 while
+      # boot migrations are still running (seen live, prod cutover 2026-09-01);
+      # readiness turns 200 only once the DB is migrated and reachable — the
+      # exact gate the worker must wait behind.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5678/healthz/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   n8n-worker:
     container_name: workflow-n8n-worker
@@ -74,7 +84,14 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
-      - n8n
+      # service_healthy, not bare start-order: two n8n processes racing one
+      # boot-migration chain half-apply it (a crashed run left a column added
+      # but unrecorded — every later boot failed on "already exists"). The
+      # worker starts only after the app's readiness gate. Engines that skip
+      # depends_on conditions are covered by the same serialization in
+      # deploy.sh and restore-n8n-db.yml.
+      n8n:
+        condition: service_healthy
 
 volumes:
   n8n_db_data:

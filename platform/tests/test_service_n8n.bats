@@ -22,6 +22,31 @@ setup() {
   ! grep -qF 'env_file: ./config/n8n.env' "$f"
 }
 
+@test "n8n: the worker is gated behind the app's READINESS at every start path" {
+  # Two n8n processes racing one boot-migration chain half-apply it (proven
+  # live in the prod cutover). Three layers enforce app-then-worker:
+  # compose declares it, deploy.sh serializes it (depends_on conditions
+  # cannot be relied on across engines), restore-n8n-db.yml's always: does
+  # the same — that path is asserted in the restore test.
+  local c="$DEPLOY_DIR/compose.yml" d="$DEPLOY_DIR/deploy.sh"
+  # compose: app healthcheck probes READINESS (plain /healthz answers 200
+  # during migrations), worker waits for service_healthy.
+  assert_grep -qF 'http://127.0.0.1:5678/healthz/readiness' "$c"
+  blk=$(awk '/^  n8n-worker:/{f=1} f&&/^volumes:/{exit} f{print}' "$c")
+  [ -n "$blk" ]
+  assert_grep -qF 'condition: service_healthy' <<<"$blk"
+  # deploy.sh: infra+app up -> gate on the app healthcheck -> worker up.
+  local u1 wp wa u2
+  u1=$(grep -n 'compose up -d n8n-postgres n8n-redis n8n$' "$d" | head -1 | cut -d: -f1)
+  wp=$(grep -n 'wait_for_healthy workflow-n8n-postgres' "$d" | head -1 | cut -d: -f1)
+  wa=$(grep -n 'wait_for_healthy workflow-n8n 300' "$d" | head -1 | cut -d: -f1)
+  u2=$(grep -n 'compose up -d n8n-worker' "$d" | head -1 | cut -d: -f1)
+  [ -n "$u1" ] && [ -n "$wp" ] && [ -n "$wa" ] && [ -n "$u2" ]
+  [ "$u1" -lt "$wp" ] && [ "$wp" -lt "$wa" ] && [ "$wa" -lt "$u2" ]
+  # No unserialized full-stack up remains.
+  refute_grep -qE '^  compose up -d$' "$d"
+}
+
 @test "n8n: deploy.sh is container-only — no secret gen / owner setup / API key" {
   local f="$DEPLOY_DIR/deploy.sh"
   [ -f "$f" ] && [ -x "$f" ]
@@ -297,18 +322,21 @@ setup() {
   # dump cannot cross n8n schema generations — proven live: a 2.8.3 dump
   # against a 2.25.7-migrated DB fails on FK-dependent drops), and only a
   # fully loaded dump is swapped into place; the prior live DB is retained.
-  # The start lives in always: — a failed restore must leave the data intact
-  # AND the service running.
-  local s c r w a t h
+  # The restart lives in always: — app ALONE, then the readiness gate
+  # (migrations complete; plain /healthz answers during them), then the
+  # worker: two n8n processes racing one migration chain half-apply it.
+  local s c r w a t1 rd t2
   s=$(grep -n 'Stop the n8n app containers' "$f" | head -1 | cut -d: -f1)
   c=$(grep -n 'Recreate the staging database' "$f" | head -1 | cut -d: -f1)
   r=$(grep -n 'Restore the dump into staging' "$f" | head -1 | cut -d: -f1)
   w=$(grep -n 'Swap staging into place' "$f" | head -1 | cut -d: -f1)
   a=$(grep -n '      always:' "$f" | head -1 | cut -d: -f1)
-  t=$(grep -n 'Start the n8n app containers' "$f" | head -1 | cut -d: -f1)
-  h=$(grep -n 'Wait for n8n health' "$f" | head -1 | cut -d: -f1)
-  [ -n "$s" ] && [ -n "$c" ] && [ -n "$r" ] && [ -n "$w" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
-  [ "$s" -lt "$c" ] && [ "$c" -lt "$r" ] && [ "$r" -lt "$w" ] && [ "$w" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+  t1=$(grep -n 'Start the n8n app container alone' "$f" | head -1 | cut -d: -f1)
+  rd=$(grep -n 'Wait for readiness (migrations complete)' "$f" | head -1 | cut -d: -f1)
+  t2=$(grep -n 'Start the n8n worker' "$f" | head -1 | cut -d: -f1)
+  [ -n "$s" ] && [ -n "$c" ] && [ -n "$r" ] && [ -n "$w" ] && [ -n "$a" ] && [ -n "$t1" ] && [ -n "$rd" ] && [ -n "$t2" ]
+  [ "$s" -lt "$c" ] && [ "$c" -lt "$r" ] && [ "$r" -lt "$w" ] && [ "$w" -lt "$a" ] && [ "$a" -lt "$t1" ] && [ "$t1" -lt "$rd" ] && [ "$rd" -lt "$t2" ]
+  assert_grep -qF '{{ _n8n_base }}/healthz/readiness' "$f"
   # The LIVE database is never dropped; only staging and the retained _prev
   # copy are. The swap renames live aside before promoting staging.
   refute_grep -qF 'DROP DATABASE IF EXISTS {{ _db_name }}' "$f"

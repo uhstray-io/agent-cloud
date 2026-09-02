@@ -16,10 +16,12 @@
 # Sequence: stop the n8n app containers (Postgres itself stays up) -> load the
 # dump into a fresh STAGING database (--single-transaction, ON_ERROR_STOP) ->
 # only on success, swap staging into place, keeping the prior live database
-# as <name>_prev until the NEXT restore -> start the app containers. The
-# start lives in an `always:` block, and the live database is never dropped
-# before the dump has provably loaded — a failed restore must leave the data
-# intact AND the service running, never either gone.
+# as <name>_prev until the NEXT restore -> start the APP alone, gate on
+# /healthz/readiness (migrations complete; plain /healthz answers during
+# them), then start the worker. The restart lives in an `always:` block, and
+# the live database is never dropped before the dump has provably loaded — a
+# failed restore must leave the data intact AND the service running, never
+# either gone.
 # n8n re-runs its schema migrations at boot, so restoring an older version's
 # dump under a newer image is the UPGRADE path, not an error — watch the app
 # container's logs on a major jump.
@@ -151,19 +153,30 @@
           changed_when: true
 
       always:
-        - name: "Start the n8n app containers (n8n re-runs migrations at boot)"
+        # The app starts ALONE and the worker only after readiness: two n8n
+        # processes racing one boot-migration chain half-apply it (seen live,
+        # prod cutover 2026-09-01 — a crash mid-chain left a column added but
+        # unrecorded, and every later boot failed on "already exists").
+        # /healthz answers 200 DURING migrations, so the gate is
+        # /healthz/readiness, which turns 200 only once the DB is migrated.
+        - name: "Start the n8n app container alone (it runs the boot migrations)"
           ansible.builtin.command:
-            argv: "{{ [_engine, 'start'] + _app_containers }}"
+            argv: ["{{ _engine }}", "start", "workflow-n8n"]
           changed_when: true
 
-    - name: "Wait for n8n health (/healthz -> 200; migrations may take a while)"
-      ansible.builtin.uri:
-        url: "{{ _n8n_base }}/healthz"
-        status_code: [200]
-      register: _n8n
-      retries: 24
-      delay: 5
-      until: _n8n.status == 200
+        - name: "Wait for readiness (migrations complete) before the worker starts"
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/healthz/readiness"
+            status_code: [200]
+          register: _n8n_ready
+          retries: 60
+          delay: 5
+          until: _n8n_ready.status == 200
+
+        - name: "Start the n8n worker (migration chain already settled)"
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", "start", "workflow-n8n-worker"]
+          changed_when: true
 
     - name: "Report"
       ansible.builtin.debug:
