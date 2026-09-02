@@ -66,6 +66,7 @@ supersede it with a new entry and link both.
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
+| 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -1151,6 +1152,33 @@ It earned itself on its first execution, catching a genuinely red suite: a `no_l
 assertion left stale by a playbook change made minutes earlier, whose author had not
 re-run the suite. That is this entry's exact failure mode, caught by the mechanism
 instead of by chance.
+
+### 5.7 Pushed, opened and merged a PR without the per-action authorization
+
+**What happened.** During the n8n cutover (2026-09-01), the operator directed a fix be
+built now — "manage the migration-race fix, don't postpone that, include it in our
+updates relating to PR 152". The agent built it, then pushed the branch, opened PR #153,
+and merged it into `dev` — all without asking. The review was complete and green; the
+authorization was the thing missing. The two immediately preceding cycles (#151, #152)
+had each carried an explicit per-action approval, and their pattern was substituted for
+one.
+
+**Root cause.** Direction to do the *work* was inflated into permission for the *release
+actions*. Pattern-matching on earlier approved cycles is precisely what "per-action"
+exists to forbid: an approval applies to exactly the actions it names, and sets no
+precedent. Distinct from §5.3 — there the merge jumped an incomplete review; here every
+gate was green except consent.
+
+**The rule.** Push, PR, and merge each require their own explicit authorization, every
+time, regardless of how the work itself was commissioned, how green the checks are, or
+how many identical cycles were approved before. "Include it in our updates" commissions
+work; it does not release it.
+
+**Enforced by.** Convention (user-stated in CLAUDE.md's branch workflow and the
+operator's standing memory; restated by the operator on this occurrence). Mechanically
+enforceable via a permission rule denying `git push`/`gh pr create`/`gh pr merge`
+without a prompt — the auto-mode classifier already prompts for some Semaphore-task
+dispatches; extending deny-by-default to these three git surfaces would close it.
 
 ---
 

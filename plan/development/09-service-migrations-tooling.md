@@ -14,7 +14,7 @@
 title: NocoDB & n8n Composable Deployment Migration
 authors: ["@jestyr27"]
 date: 2026-05-10
-status: Draft — EXECUTION HELD (see "Migration Safety" below)
+status: n8n half EXECUTED 2026-09-02 (see the completion note below); NocoDB half RETIRED — superseded by the tududi replacement decision, its decommission is a separate change
 tags: [nocodb, n8n, composable-deployment, ansible, openbao]
 ---
 
@@ -39,6 +39,21 @@ NocoDB and n8n currently use legacy deploy scripts that generate secrets in bash
 > The task plan below uses `_secret_definitions: type: random`, which `manage-secrets.yml` only generates **when the key is absent** at its OpenBao path. That is correct for a clean deploy, but on an in-place migration it will regenerate every secret that isn't already present *at the exact path/key-name `manage-secrets.yml` reads* (`secret/services/<svc>`, keyed by the `_secret_definitions` `name`). The legacy `deploy.sh` stored these under a VM-local `secrets/` dir and under different OpenBao keys — so a naive first run **would** regenerate them.
 >
 > **Therefore execution is held until we can read the live OpenBao + VM secret state** and complete the prerequisite below. Do NOT run Task 1+ against a live nocodb/n8n host before that.
+>
+> **Completion note (2026-09-02).** The **n8n half executed** through the
+> `complete-n8n-composable-deployment` OpenSpec change: the live layout turned
+> out to be a standalone compose project (not this plan's assumed monorepo
+> `config/n8n.env`), so the cutover grew a live-name alias for the legacy
+> `ENCRYPTION_KEY` spelling, a pg_dump/restore data path (`backup-n8n-db.yml` /
+> `restore-n8n-db.yml` — the standing upgrade tooling), and readiness-gated
+> app-before-worker startup. Prod n8n now runs the composable stack on 2.25.7
+> with all stateful secrets OpenBao-sourced; `generate_n8n_env()` is deleted
+> from `platform/lib/common.sh`. The **NocoDB half is RETIRED, not executed**:
+> NocoDB is being removed from the platform (replaced by tududi — decision
+> 2026-09-01, recorded on PR #15's close-out). Its rows below stay as the
+> historical record; the decommission (containers, volumes, DNS route,
+> `generate_nocodb_env()`, this plan's NocoDB tasks) is scoped as its own
+> change and must not be executed from here.
 
 ### Task 0 (prerequisite, on the live cluster): capture and pre-seed existing secrets
 

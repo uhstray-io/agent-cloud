@@ -16,6 +16,12 @@ See `proposal.md — Why`. Current state, verified on `main`:
   key captured at `secret/services/postiz:postiz_api_key`, contract in
   `platform/services/postiz/context/use-cases.md` (90/hour creation ceiling,
   public-host path is deliberate, shared-read only).
+  **Falsified in prod (2026-09-02):** that statement described the LOCAL
+  validation. Prod Postiz was never rolled out — `secret/services/postiz` is
+  empty and postiz.uhstray.io unreachable — so the prod credential
+  provisioning (task 6.6's last step) is blocked on the deploy-postiz change's
+  own prod gate, not on anything here. `provision-n8n-postiz-credential.yml`
+  runs unchanged the moment that rollout captures its API key.
 - `n8n-nodes-postiz` v0.2.17 (npm, published 2025-10-07) is a verified community
   node; its `PostizApi` credential carries an `apiKey` plus a `Host` field
   (default `https://api.postiz.com`), and its connection test calls

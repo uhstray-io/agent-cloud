@@ -87,6 +87,14 @@ setup() {
   ! grep -qE '^[[:space:]]*ports:' "$f"
 }
 
+@test "n8n: the legacy env generator stays deleted from the shared lib" {
+  # generate_n8n_env() was the bash-generated-secrets path the composable
+  # cutover replaced (OpenBao-sourced via manage-secrets + n8n.env.j2). The
+  # lib keeps a comment naming it for history, so the guard forbids the
+  # DEFINITION and any CALL (line-leading token), not the mention.
+  refute_grep -qE '^\s*generate_n8n_env\b' "${BATS_TEST_DIRNAME}/../lib/common.sh"
+}
+
 @test "n8n: deploy playbook is composable (place-monorepo + manage-secrets), not the legacy wrapper" {
   local f="$PB_DIR/deploy-n8n.yml"
   grep -q 'tasks/place-monorepo.yml' "$f"
