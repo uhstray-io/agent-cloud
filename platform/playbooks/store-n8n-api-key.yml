@@ -174,17 +174,43 @@
           delegate_to: localhost
           no_log: true
 
-        - name: "Log in to n8n as the seeded owner"
-          # 401 here has one usual cause on a migrated instance: the live owner
-          # is not the OpenBao-seeded account. Align n8n_owner_email (inventory)
-          # + secret/services/n8n:owner_password with a real owner first.
+        - name: "Compute the owner's TOTP code (only when 2FA is enrolled)"
+          # /rest/login accepts an optional mfaCode (verified at n8n@2.25.7,
+          # login-request.dto.ts + auth.controller.ts validateMfa), so an
+          # MFA-enabled owner still mints without a human: the base32 seed
+          # lives beside owner_password at
+          # secret/services/n8n:owner_totp_secret, and files/totp.py (RFC
+          # 6238, stdlib only) turns it into the current code on the RUNNER.
+          # Seed travels via stdin, never argv — argv is world-readable in ps.
+          # Field absent = no MFA on the account = task skips.
+          when: _totp_seed | length > 0
+          ansible.builtin.command:
+            argv: ["python3", "{{ playbook_dir }}/files/totp.py"]
+            stdin: "{{ _totp_seed }}"
+          vars:
+            _totp_seed: "{{ _n8n_secret.json.data.data.owner_totp_secret | default('') }}"
+          register: _totp
+          delegate_to: localhost
+          changed_when: false
+          no_log: true
+
+        - name: "Log in to n8n as the owner"
+          # 401 here has two usual causes on a migrated instance: the live
+          # owner is not the OpenBao-seeded account (align n8n_owner_email +
+          # secret/services/n8n:owner_password with a real owner), or the
+          # account has 2FA and owner_totp_secret is absent/stale. The mfaCode
+          # is attached only when the TOTP task ran — a register on a SKIPPED
+          # task holds the skip result (docs/MISTAKES.md 10.10), so the test
+          # is `is skipped`, never a value probe.
           ansible.builtin.uri:
             url: "{{ _n8n_base }}/rest/login"
             method: POST
             body_format: json
-            body:
-              emailOrLdapLoginId: "{{ _owner_email }}"
-              password: "{{ _n8n_secret.json.data.data.owner_password }}"
+            body: >-
+              {{ {'emailOrLdapLoginId': _owner_email,
+                  'password': _n8n_secret.json.data.data.owner_password}
+                 | combine({} if (_totp is skipped)
+                           else {'mfaCode': _totp.stdout | trim}) }}
             status_code: [200]
           register: _login
           no_log: true

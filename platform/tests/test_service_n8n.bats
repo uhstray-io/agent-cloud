@@ -126,7 +126,8 @@ setup() {
     "Look for the automation key" \
     "Parse what the database answered" \
     "Read the n8n owner password" \
-    "Log in to n8n as the seeded owner" \
+    "Compute the owner's TOTP code" \
+    "Log in to n8n as the owner" \
     "Fetch the valid API-key scopes" \
     "Create the API key" \
     "Take the raw key" \
@@ -259,6 +260,32 @@ setup() {
   assert_grep -qF "regex_findall('(?m)^(?:' ~ (_gsc_live_names | join('|')) ~ ')=(.*)$')" "$shared"
   # The rendered side still matches the canonical name only.
   assert_grep -qF "regex_findall('(?m)^' ~ _gsc_name ~ '=(.*)$')" "$shared"
+}
+
+@test "n8n: totp.py BEHAVES — RFC 6238 vectors, and the seed travels via stdin" {
+  # Behavioural: the exact script the mint runs, against the RFC's own SHA-1
+  # Appendix B vectors (truncated to n8n's 6 digits). TOTP_TIME pins the clock.
+  local py="$PB_DIR/files/totp.py"
+  [ -f "$py" ]
+  [ "$(printf 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' | TOTP_TIME=59 python3 "$py")" = "287082" ]
+  [ "$(printf 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' | TOTP_TIME=1111111109 python3 "$py")" = "081804" ]
+  # Normalization: lowercase, stray spaces, missing padding must not matter.
+  [ "$(printf ' gezd gnbv gy3t qojq gezd gnbv gy3t qojq ' | TOTP_TIME=59 python3 "$py")" = "287082" ]
+  # The playbook hands the seed over stdin, never argv (argv is world-readable),
+  # and attaches mfaCode with an `is skipped` test — a register on a SKIPPED
+  # task holds the skip result (docs/MISTAKES.md 10.10), so a value probe lies.
+  local pb="$PB_DIR/store-n8n-api-key.yml"
+  blk=$(task_block "$pb" "Compute the owner's TOTP code")
+  [ -n "$blk" ]
+  assert_grep -qF 'stdin: "{{ _totp_seed }}"' <<<"$blk"
+  refute_grep -qF 'totp.py", "{{' <<<"$blk"
+  # Scoped to the login task's LIVE body: the task's own comment also says
+  # "is skipped", so a file-wide (or even block-wide) grep would keep passing
+  # after the actual condition was deleted from the payload.
+  local login_blk
+  login_blk=$(task_block "$pb" "Log in to n8n as the owner")
+  [ -n "$login_blk" ]
+  assert_grep -qF 'combine({} if (_totp is skipped)' <<<"$(grep -vE '^[[:space:]]*#' <<<"$login_blk")"
 }
 
 @test "n8n: pre-seed reads spellings from the SAME manifest the guard compares" {
