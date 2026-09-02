@@ -225,6 +225,16 @@ tool and this platform treats that as a defect.
 - **[Dump file retention on the VM]** → owner-only `0700` directory owned by the
   rootless deployment account, named in the run
   report; removed at close-out once prod validation passes, never silently.
+- **[Two n8n processes race the boot-migration chain]** (found live in the
+  cutover: app and worker started together, a crash mid-chain left a column
+  added but unrecorded, and every later boot failed on "already exists") →
+  the worker is gated behind the app's READINESS at every layer that starts
+  them: compose declares `depends_on: n8n: condition: service_healthy` over a
+  new `/healthz/readiness` healthcheck, deploy.sh serializes app-then-worker
+  itself (depends_on conditions cannot be relied on across engines), and the
+  restore's `always:` starts the app alone, waits for readiness, then the
+  worker. Plain `/healthz` answers 200 while migrations run, so it is never
+  the gate.
 
 ## Migration Plan
 
