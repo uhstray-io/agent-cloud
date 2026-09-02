@@ -13,4 +13,4 @@
 
 # RS256 signing for the GitHub App credential chain (platform/lib/github_app_token.py).
 # Any 3.x release provides the primitives used (load_pem_private_key, PKCS1v15, SHA256).
-cryptography>=3.4
+cryptography>=50.0.1
