@@ -293,16 +293,23 @@ setup() {
   # A destructive play addresses exactly ONE stack: the Postgres target is a
   # literal here, not an override (that flexibility lives in the backup).
   refute_grep -qF 'n8n_pg_container' "$f"
-  # App containers stop before the restore, and the start lives in always: —
-  # a failed restore must leave the DB rolled back AND the service running.
-  local s r a t h
+  # App containers stop, then the database is DROPPED AND RECREATED before the
+  # dump feeds in — a --clean dump cannot cross n8n schema generations (proven
+  # live: a 2.8.3 dump against a 2.25.7-migrated DB fails on FK-dependent
+  # drops). The start lives in always: — a failed restore must leave the DB
+  # rolled back AND the service running.
+  local s d c r a t h
   s=$(grep -n 'Stop the n8n app containers' "$f" | head -1 | cut -d: -f1)
+  d=$(grep -n 'Drop the database' "$f" | head -1 | cut -d: -f1)
+  c=$(grep -n 'Recreate the empty database' "$f" | head -1 | cut -d: -f1)
   r=$(grep -n 'Restore the dump' "$f" | head -1 | cut -d: -f1)
   a=$(grep -n '      always:' "$f" | head -1 | cut -d: -f1)
   t=$(grep -n 'Start the n8n app containers' "$f" | head -1 | cut -d: -f1)
   h=$(grep -n 'Wait for n8n health' "$f" | head -1 | cut -d: -f1)
-  [ -n "$s" ] && [ -n "$r" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
-  [ "$s" -lt "$r" ] && [ "$r" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+  [ -n "$s" ] && [ -n "$d" ] && [ -n "$c" ] && [ -n "$r" ] && [ -n "$a" ] && [ -n "$t" ] && [ -n "$h" ]
+  [ "$s" -lt "$d" ] && [ "$d" -lt "$c" ] && [ "$c" -lt "$r" ] && [ "$r" -lt "$a" ] && [ "$a" -lt "$t" ] && [ "$t" -lt "$h" ]
+  assert_grep -qF 'DROP DATABASE IF EXISTS {{ _db_name }} WITH (FORCE);' "$f"
+  assert_grep -qF 'CREATE DATABASE {{ _db_name }} OWNER {{ _db_app_user }};' "$f"
 }
 
 @test "n8n: cutover guard BEHAVES — alias match, mismatch refusal, ambiguity refusal" {

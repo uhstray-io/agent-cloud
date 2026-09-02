@@ -41,6 +41,9 @@
     _pg_container: workflow-n8n-postgres
     _db_user: "{{ n8n_db_user | default('n8n_admin') }}"
     _db_name: "{{ n8n_db_name | default('n8n') }}"
+    # The role n8n connects as (compose DB_POSTGRESDB_USER); the recreated
+    # database is owned by it so boot migrations have schema rights.
+    _db_app_user: "{{ n8n_db_app_user | default('n8n_user') }}"
     _app_containers: [workflow-n8n, workflow-n8n-worker]
     # Same default + override as deploy-n8n.yml Phase 3, so whatever hostname
     # works for the deploy's verify works here.
@@ -74,6 +77,26 @@
         - name: "Stop the n8n app containers (one call — Postgres stays up)"
           ansible.builtin.command:
             argv: "{{ [_engine, 'stop'] + _app_containers }}"
+          changed_when: true
+
+        - name: "Drop the database (a --clean dump cannot cross schema generations)"
+          # The dump's --clean statements drop objects one by one, which fails
+          # the moment the TARGET schema is a different n8n generation — its
+          # migrations add tables holding FK constraints onto objects the dump
+          # wants to drop (seen live in prod: a 2.8.3 dump against a
+          # 2.25.7-migrated database). Recreating the database restores into a
+          # guaranteed-empty schema instead: cluster-level roles survive the
+          # drop, table ownership comes from the dump's own statements, and
+          # n8n's boot migrations lift the restored data to the running
+          # version. WITH (FORCE) severs any straggler connection; the app
+          # containers are already stopped.
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", "exec", "{{ _pg_container }}", "psql", "-U", "{{ _db_user }}", "-d", "postgres", "-c", "DROP DATABASE IF EXISTS {{ _db_name }} WITH (FORCE);"]
+          changed_when: true
+
+        - name: "Recreate the empty database owned by the app user"
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", "exec", "{{ _pg_container }}", "psql", "-U", "{{ _db_user }}", "-d", "postgres", "-c", "CREATE DATABASE {{ _db_name }} OWNER {{ _db_app_user }};"]
           changed_when: true
 
         - name: "Restore the dump (single transaction, stop on first error)"
