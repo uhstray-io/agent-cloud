@@ -12,14 +12,14 @@
 #
 # The dump file is REQUIRED and EXPLICIT (-e n8n_dump_file=<path>) — never
 # "the latest one", which two runs a minute apart would resolve differently.
-# The dump was taken with --clean --if-exists, and the restore runs it under
-# --single-transaction with ON_ERROR_STOP, so a failed restore rolls back to
-# the pre-restore state instead of leaving a half-written schema.
 #
-# Sequence: stop the n8n app containers (open connections would corrupt a
-# drop-and-recreate restore; Postgres itself stays up) -> restore -> start the
-# app containers. The start lives in an `always:` block — a failed restore
-# must leave the DB rolled back AND the service running, never both down.
+# Sequence: stop the n8n app containers (Postgres itself stays up) -> load the
+# dump into a fresh STAGING database (--single-transaction, ON_ERROR_STOP) ->
+# only on success, swap staging into place, keeping the prior live database
+# as <name>_prev until the NEXT restore -> start the app containers. The
+# start lives in an `always:` block, and the live database is never dropped
+# before the dump has provably loaded — a failed restore must leave the data
+# intact AND the service running, never either gone.
 # n8n re-runs its schema migrations at boot, so restoring an older version's
 # dump under a newer image is the UPGRADE path, not an error — watch the app
 # container's logs on a major jump.
@@ -44,6 +44,12 @@
     # The role n8n connects as (compose DB_POSTGRESDB_USER); the recreated
     # database is owned by it so boot migrations have schema rights.
     _db_app_user: "{{ n8n_db_app_user | default('n8n_user') }}"
+    # The dump restores into STAGING first; the live database is replaced only
+    # after the whole dump has loaded, and the prior live database survives as
+    # _prev_db until the NEXT restore — so a bad dump can never destroy the
+    # only copy of the data.
+    _staging_db: "{{ _db_name }}_restore_staging"
+    _prev_db: "{{ _db_name }}_prev"
     _app_containers: [workflow-n8n, workflow-n8n-worker]
     # Same default + override as deploy-n8n.yml Phase 3, so whatever hostname
     # works for the deploy's verify works here.
@@ -79,36 +85,69 @@
             argv: "{{ [_engine, 'stop'] + _app_containers }}"
           changed_when: true
 
-        - name: "Drop the database (a --clean dump cannot cross schema generations)"
+        - name: "Recreate the staging database (a --clean dump cannot cross schema generations)"
           # The dump's --clean statements drop objects one by one, which fails
           # the moment the TARGET schema is a different n8n generation — its
           # migrations add tables holding FK constraints onto objects the dump
           # wants to drop (seen live in prod: a 2.8.3 dump against a
-          # 2.25.7-migrated database). Recreating the database restores into a
-          # guaranteed-empty schema instead: cluster-level roles survive the
-          # drop, table ownership comes from the dump's own statements, and
-          # n8n's boot migrations lift the restored data to the running
-          # version. WITH (FORCE) severs any straggler connection; the app
-          # containers are already stopped.
+          # 2.25.7-migrated database). So the dump loads into a fresh, empty
+          # STAGING database, and the live one is not touched until the whole
+          # dump has provably loaded. Cluster-level roles survive; table
+          # ownership comes from the dump's own statements; n8n's boot
+          # migrations lift the restored data to the running version.
           ansible.builtin.command:
-            argv: ["{{ _engine }}", "exec", "{{ _pg_container }}", "psql", "-U", "{{ _db_user }}", "-d", "postgres", "-c", "DROP DATABASE IF EXISTS {{ _db_name }} WITH (FORCE);"]
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "{{ _pg_container }}"
+              - psql
+              - "-U"
+              - "{{ _db_user }}"
+              - "-d"
+              - postgres
+              - "-c"
+              - "DROP DATABASE IF EXISTS {{ _staging_db }} WITH (FORCE);"
+              - "-c"
+              - "CREATE DATABASE {{ _staging_db }} OWNER {{ _db_app_user }};"
           changed_when: true
 
-        - name: "Recreate the empty database owned by the app user"
-          ansible.builtin.command:
-            argv: ["{{ _engine }}", "exec", "{{ _pg_container }}", "psql", "-U", "{{ _db_user }}", "-d", "postgres", "-c", "CREATE DATABASE {{ _db_name }} OWNER {{ _db_app_user }};"]
-          changed_when: true
-
-        - name: "Restore the dump (single transaction, stop on first error)"
+        - name: "Restore the dump into staging (single transaction, stop on first error)"
           # stdin comes from the host file; the dump's content never enters the
-          # run record. --single-transaction makes the --clean drop-and-recreate
-          # all-or-nothing. Every interpolation is shell-quoted — the dump path
-          # arrives as a survey string.
+          # run record. A failure here leaves the LIVE database untouched —
+          # the always: block below restarts the app on exactly the data it
+          # had. Every interpolation is shell-quoted — the dump path arrives
+          # as a survey string.
           ansible.builtin.shell: >-
             {{ _engine | quote }} exec -i {{ _pg_container | quote }}
-            psql -U {{ _db_user | quote }} -d {{ _db_name | quote }}
+            psql -U {{ _db_user | quote }} -d {{ _staging_db | quote }}
             -v ON_ERROR_STOP=1 --single-transaction
             < {{ n8n_dump_file | quote }} > /dev/null
+          changed_when: true
+
+        - name: "Swap staging into place (prior live database kept as {{ _prev_db }})"
+          # Only reached when the dump fully loaded. Renames are catalog
+          # operations; the app containers are stopped, so nothing is
+          # connected to the live database. Each statement runs as its own
+          # psql command (DROP/ALTER DATABASE refuse transaction blocks). The
+          # prior live database is RETAINED under _prev_db until the next
+          # restore drops it — a restore that health-checks green tonight can
+          # still be second-guessed tomorrow.
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "{{ _pg_container }}"
+              - psql
+              - "-U"
+              - "{{ _db_user }}"
+              - "-d"
+              - postgres
+              - "-c"
+              - "DROP DATABASE IF EXISTS {{ _prev_db }} WITH (FORCE);"
+              - "-c"
+              - "ALTER DATABASE {{ _db_name }} RENAME TO {{ _prev_db }};"
+              - "-c"
+              - "ALTER DATABASE {{ _staging_db }} RENAME TO {{ _db_name }};"
           changed_when: true
 
       always:
@@ -130,6 +169,8 @@
       ansible.builtin.debug:
         msg: >-
           Restored {{ _db_name }} in {{ _pg_container }} from {{ n8n_dump_file }}
-          and n8n answered /healthz. On a version jump, confirm workflows execute
-          and stored credentials decrypt before calling the restore validated —
-          the schema migrations n8n ran at boot are one-way.
+          and n8n answered /healthz. The pre-restore database is retained as
+          {{ _prev_db }} until the next restore drops it. On a version jump,
+          confirm workflows execute and stored credentials decrypt before
+          calling the restore validated — the schema migrations n8n ran at
+          boot are one-way.
