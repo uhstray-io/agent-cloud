@@ -1,0 +1,89 @@
+---
+# verify-tududi-sync-pair.yml — one pair's gate run (included per enabled pair
+# by verify-tududi-github-sync.yml; task 5.1). Read-only. The caller supplies
+# `_pair` plus the play-scope facts (_mt_token, _tasks, _executions, engine
+# names, tag/login/cap, _declared_projects). The verdict is rendered by
+# verify-pair.js inside the tududi container with the exact embedded engine.
+
+- name: "Fetch the paired repo's issues ({{ _pair.github_repo }})"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ _pair.github_repo }}/issues?state=all&per_page=100"
+    headers:
+      Authorization: "Bearer {{ _mt_token }}"
+      Accept: "application/vnd.github+json"
+    status_code: [200]
+  register: _vp_issues
+  delegate_to: localhost
+  no_log: true
+
+- name: "Assemble the verdict payload ({{ _pair.github_repo }})"
+  # Engine shapes, mirroring the workflow's own fan-out/fan-in projections;
+  # tasks in UNDECLARED projects contribute only their marker traces.
+  ansible.builtin.set_fact:
+    _vp_payload:
+      pair: "{{ _pair }}"
+      syncTag: "{{ _sync_tag }}"
+      syncLogin: "{{ _sync_login }}"
+      writeCap: "{{ _write_cap | int }}"
+      lastExecution: >-
+        {{ ({'status': (_executions.json.data | first).status})
+           if ((_executions.json.data | default([])) | length > 0) else None }}
+      tasks: "{{ _vp_tasks }}"
+      issues: "{{ _vp_issues_shaped }}"
+      undeclaredMarkers: "{{ _vp_undeclared }}"
+  vars:
+    _all: "{{ (_tasks.json.tasks | default(_tasks.json.data | default([]))) if (_tasks.json is mapping) else _tasks.json }}"
+    _vp_tasks: >-
+      {%- set out = [] -%}
+      {%- for t in _all if (t.Project is defined and t.Project and (t.Project.name | default('')) == _pair.tududi_project) -%}
+        {%- set names = [] -%}
+        {%- for x in (t.tags | default(t.Tags | default([]))) -%}
+          {%- if names.append(x.name | default(x)) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if out.append({'uid': t.uid, 'title': t.name, 'note': t.note | default(''),
+                           'status': t.status, 'tags': names,
+                           'updated_at': t.updated_at | default(t.updatedAt | default('')),
+                           'tagged': ((_sync_tag | lower) in (names | map('lower') | list))}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    _vp_issues_shaped: >-
+      {%- set out = [] -%}
+      {%- for i in _vp_issues.json if i.pull_request is not defined -%}
+        {%- set lnames = [] -%}
+        {%- for l in i.labels | default([]) -%}
+          {%- if lnames.append(l.name | default(l)) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if out.append({'number': i.number, 'title': i.title, 'body': i.body | default(''),
+                           'state': i.state, 'state_reason': i.state_reason | default(None),
+                           'labels': lnames, 'updated_at': i.updated_at,
+                           'user_login': i.user.login | default(''), 'comments': []}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    _vp_undeclared: >-
+      {%- set out = [] -%}
+      {%- for t in _all if (t.Project is defined and t.Project and (t.Project.name | default('')) not in _declared_projects) -%}
+        {%- if (t.note | default('')) is search('<!-- tududi-sync') -%}
+          {%- if out.append(t.uid) -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  no_log: true
+
+- name: "Render the verdict ({{ _pair.github_repo }})"
+  ansible.builtin.command:
+    argv: ["{{ _engine }}", "exec", "-i", "{{ _container }}", "node", "/tmp/verify-pair.js"]
+    stdin: "{{ _vp_payload | to_json }}"
+  register: _vp_verdict
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: "Require the pair to PASS ({{ _pair.github_repo }})"
+  # The verdict is names/counts only (the verifier never prints a token or a
+  # body), so the failure surface stays diagnosable.
+  ansible.builtin.assert:
+    that:
+      - _vp_verdict.rc == 0
+    fail_msg: >-
+      Pair {{ _pair.github_repo }} FAILED the verification gate:
+      {{ (_vp_verdict.stdout | from_json).failures | join(' | ') }}

@@ -22,6 +22,12 @@ services:
     mem_limit: 512m
     security_opt:
       - label=disable
+    # In queue mode the WORKER executes every scheduled workflow — any network
+    # the app joins for workflow traffic (tududi, postiz, ...) the worker
+    # needs too, or scheduled cycles fail on DNS while manual runs pass.
+    networks:
+      - default
+      - local-dev
   n8n-postgres:
     mem_limit: 256m
     security_opt:

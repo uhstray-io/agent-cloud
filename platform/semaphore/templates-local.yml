@@ -62,6 +62,8 @@ templates:
     playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
   - name: "Provision tududi-github Sync (Local)"
     playbook: platform/playbooks/provision-tududi-github-sync.yml
+  - name: "Verify tududi-github Sync (Local)"
+    playbook: platform/playbooks/verify-tududi-github-sync.yml
 
   # n8n upgrade tooling (design D7): timestamped pg_dump + named-dump restore.
   # Local is where the pair is proven before it carries the prod cutover.

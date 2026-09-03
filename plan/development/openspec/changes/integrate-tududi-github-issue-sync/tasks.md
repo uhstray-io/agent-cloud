@@ -135,7 +135,16 @@
 
 ## 5. Validation against a scratch pair
 
-- [ ] 5.1 Write the per-pair verification check (playbook or workflow step,
+- [x] 5.1 (DONE 2026-09-03: verify-tududi-github-sync.yml + lib/verify-pair.js —
+      the verdict is rendered by the EXACT embedded engine inside the tududi
+      container; read-only; per enabled pair. Proven live: its first run
+      CAUGHT a real defect — scheduled cycles were failing because the local
+      overlay gave the app the shared network but not the WORKER, which is
+      what executes scheduled workflows in queue mode; overlay fixed, the
+      next scheduled cycle ran green against local tududi + real GitHub
+      read-only, and the gate PASSED — task 122. Behavioural BATS fixtures
+      cover pass/converged, failed-cycle, divergence, undeclared-trace)
+      Write the per-pair verification check (playbook or workflow step,
       exit pass/fail): last cycle for the pair completed without error, write
       cap not hit, linked pairs' per-field baselines match both sides
       (convergence), zero sync activity on undeclared projects/repos — the

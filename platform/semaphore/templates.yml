@@ -245,6 +245,14 @@ templates:
         type: string
         required: false
 
+  - name: Verify tududi-github Sync
+    playbook: platform/playbooks/verify-tududi-github-sync.yml
+    # The per-pair promotion gate (read-only, exit pass/fail per enabled
+    # pair): last cycle green + the exact embedded engine reports convergence
+    # + zero sync trace outside the declaration. A pair is enabled or kept
+    # enabled only while this passes.
+    dev_variant: true
+
   - name: Provision n8n Postiz Credential
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
     # Upserts the ONE postizApi credential in n8n: authenticates with

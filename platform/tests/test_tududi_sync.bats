@@ -22,8 +22,7 @@ setup() {
   # The enabled flag is a real boolean, never a string an implementer must parse.
   refute_grep -qE 'enabled: "(true|false)"' "$f"
   # Every repo lives in the org; a bare or foreign repo name is a typo.
-  refute_grep -qE 'github_repo: (?!uhstray-io/)' "$f" 2>/dev/null || \
-    [ "$(grep -c '    github_repo: ' "$f")" -eq "$(grep -c '    github_repo: uhstray-io/' "$f")" ]
+  [ "$(grep -c '    github_repo: ' "$f")" -eq "$(grep -c '    github_repo: uhstray-io/' "$f")" ]
 }
 
 @test "tududi-sync: the sync core BEHAVES — creation gates, LWW, audit keys, write cap" {
@@ -38,7 +37,7 @@ setup() {
   command -v node >/dev/null 2>&1 || skip "node not available"
   run node "$SYNC_DIR/tests/core-scenarios.js"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ALL CORE SCENARIOS PASS"* ]]
+  grep -qF "ALL CORE SCENARIOS PASS" <<<"$output"
 }
 
 @test "tududi-sync: the workflow template RENDERS — full eight-pair and enabled-subset, schema-checked" {
@@ -49,7 +48,7 @@ setup() {
   python3 -c 'import jinja2, yaml' 2>/dev/null || skip "jinja2/pyyaml not available"
   run python3 "$SYNC_DIR/tests/render-check.py"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"RENDER CHECK PASS"* ]]
+  grep -qF "RENDER CHECK PASS" <<<"$output"
 }
 
 @test "tududi-sync: token mint playbook — DB-side, non-destructive, no_log scoped" {
@@ -173,6 +172,53 @@ setup() {
     [ -n "$blk" ]
     refute_grep -q 'no_log: true' <<<"$blk"
   done
+}
+
+@test "tududi-sync: the verification gate BEHAVES — pass on converged, fail on drift" {
+  # verify-pair.js is the promotion gate (task 5.1); drive the real file with
+  # fixtures: a converged linked pair passes; a diverged one, a failed cycle,
+  # and an undeclared-project trace each fail with a named reason.
+  command -v node >/dev/null 2>&1 || skip "node not available"
+  local lib="$SYNC_DIR/lib"
+  base='{"pair":{"tududi_project":"huhhb","github_repo":"uhstray-io/huhhb"},"syncTag":"gh-sync","syncLogin":"bot","writeCap":10,"tasks":[],"issues":[],"undeclaredMarkers":[]}'
+  # PASS: successful cycle, empty converged snapshot.
+  run bash -c "python3 - <<PYEOF | node '$lib/verify-pair.js'
+import json
+d = json.loads('''$base''')
+d['lastExecution'] = {'status': 'success'}
+print(json.dumps(d))
+PYEOF"
+  [ "$status" -eq 0 ]
+  grep -qF '"pass":true' <<<"$output"
+  # FAIL: last cycle errored.
+  run bash -c "python3 - <<PYEOF | node '$lib/verify-pair.js'
+import json
+d = json.loads('''$base''')
+d['lastExecution'] = {'status': 'error'}
+print(json.dumps(d))
+PYEOF"
+  [ "$status" -eq 1 ]
+  grep -qF 'not success' <<<"$output"
+  # FAIL: divergence — a tagged task with no issue means a pending create op.
+  run bash -c "python3 - <<PYEOF | node '$lib/verify-pair.js'
+import json
+d = json.loads('''$base''')
+d['lastExecution'] = {'status': 'success'}
+d['tasks'] = [{'uid': 'u1', 'title': 'T', 'note': '', 'status': 0, 'tags': ['gh-sync'], 'updated_at': '1', 'tagged': True}]
+print(json.dumps(d))
+PYEOF"
+  [ "$status" -eq 1 ]
+  grep -qF 'not converged' <<<"$output"
+  # FAIL: sync trace outside the declaration.
+  run bash -c "python3 - <<PYEOF | node '$lib/verify-pair.js'
+import json
+d = json.loads('''$base''')
+d['lastExecution'] = {'status': 'success'}
+d['undeclaredMarkers'] = ['u9']
+print(json.dumps(d))
+PYEOF"
+  [ "$status" -eq 1 ]
+  grep -qF 'UNDECLARED' <<<"$output"
 }
 
 @test "tududi-sync: no credential, token, or address in any committed sync artifact" {
