@@ -19,9 +19,14 @@
 - [ ] 1.3 Write the sync contract doc (beside the Postiz automation contract):
       status↔state mapping table from the real enum, tag↔label rules (sync tag
       never propagates; case-insensitive name match), marker-block format
-      (uid + last-synced hash + both timestamps), poll cadence with GitHub
-      rate-limit arithmetic, and the full-list-diff fallback decision if
-      changed-since filtering is absent (design D6, risk 2)
+      (uid + PER-FIELD baselines + both timestamps — one baseline hash per
+      synced field, matching design D4/D5), the canonical projection each field
+      is hashed FROM (title/description as normalized text, status as the
+      MAPPED value from the status table, tags/labels as the case-folded
+      sorted name set — so both systems hash the same representation), the
+      audit-event key format (design D6), poll cadence with GitHub rate-limit
+      arithmetic, and the full-list-diff fallback decision if changed-since
+      filtering is absent (design D6, risk 2)
 - [ ] 1.4 Validation gate: contract doc committed with every table sourced from a
       named spec/endpoint (no guessed enum values); the fields it documents are
       the ones scenarios "GitHub edit reaches tududi" and "tududi edit reaches
@@ -34,11 +39,15 @@
       addresses in the file
 - [ ] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
       JSON consuming the mapping: tag-gated crossing, marker-block linkage with
-      per-field baselines, pre-create search by task `uid` (no duplicate after
-      an interrupted creation), per-field LWW using both systems' own
-      timestamps, losing-value audit comment, un-tag → close-as-not-planned
-      with surviving linkage, per-cycle write cap that fails loudly, and no
-      delete operation anywhere (design D4/D5/D6, spec)
+      per-field baselines, pre-create search by task `uid` PLUS the
+      sync-identity/canonical-title second gate (a suspect match blocks
+      creation and records a recovery error — no duplicate even after a fully
+      lost linkage), per-field LWW using both systems' own timestamps,
+      audit comments carrying the stable audit-event key checked before
+      posting (a comment-then-marker-write-failure retry is a no-op),
+      losing-value audit comment, un-tag → close-as-not-planned with surviving
+      linkage, per-cycle write cap that fails loudly, and no delete operation
+      anywhere (design D4/D5/D6, spec)
 - [ ] 2.3 BATS: rendered workflows reference credentials only by n8n credential
       name — no token value, no secret-store value, in any rendered artifact
 - [ ] 2.4 Validation gate: rendering the six-pair mapping produces valid workflow
@@ -49,13 +58,23 @@
 
 - [ ] 3.1 Create the dedicated tududi sync user and its personal API token —
       via the API if the 1.1 spike found a mint route, else the UI as a
-      labelled operator step — store at `secret/services/tududi:api_token` via
-      `Seed OpenBao Key` (value as env secret, never a task parameter); document
-      the revocation step beside the seeding step
+      labelled operator step **gated by a machine check** (a preflight assert
+      that the seeded token authenticates against the live tududi API, failing
+      with a named error when absent or dead — the operator step is verified,
+      never trusted) — store at `secret/services/tududi:api_token` via
+      `Seed OpenBao Key` (value as env secret, never a task parameter).
+      Rotation is encoded as re-seed + re-provision (idempotent, same
+      playbooks); revocation is encoded per the rollback plan: the step
+      verifies the old token is refused by the provider and treats
+      already-revoked as success
 - [ ] 3.2 Create the fine-grained GitHub PAT (six repos, Issues read/write) under
-      the sync's GitHub identity — provider-side creation, a labelled operator
-      step; seed into `secret/services/github:tududi_sync_pat`; document the
-      revocation step beside the seeding step
+      the sync's GitHub identity — provider-side creation (no public creation
+      API for fine-grained PATs), a labelled operator step **gated by the same
+      machine check** (preflight assert: the seeded PAT authenticates and sees
+      exactly the declared repos, named failure otherwise); seed into
+      `secret/services/github:tududi_sync_pat`. Rotation = re-seed +
+      re-provision; revocation encoded as verify-refused, already-revoked =
+      success (rollback plan)
 - [ ] 3.3 Extend the n8n credential-provisioning playbook (or add a sibling) to
       upsert the tududi and GitHub credentials into n8n from those paths —
       idempotent, `no_log` on secret-bearing steps, names-and-counts output —
@@ -74,17 +93,26 @@
       workflows by name via the n8n API → activate → **prune owned objects the
       declaration no longer implies** (name-prefix-scoped, never touching
       anything else — design D1); the rollback path (`-e sync_enabled=false`)
-      deactivates the existing workflows WITHOUT rendering or validating the
-      mapping, so rollback works with a broken mapping file; add the Semaphore
-      template (`dev_variant: true`)
+      branches BEFORE credential and mapping validation and deactivates the
+      owned workflows using only the n8n API key — so rollback works with a
+      broken mapping file AND dead/revoked provider credentials (it is the
+      one-run kill switch; a validation gate in front of it would defeat it);
+      add the Semaphore template (`dev_variant: true`)
 - [ ] 4.2 BATS: provisioning refuses an empty or unparseable mapping;
       `sync_enabled=false` still deactivates both workflows under that same
-      broken mapping; re-run with unchanged inputs reports no change; prune
-      only ever names prefix-owned objects
+      broken mapping AND with deliberately dead provider credentials (only the
+      n8n API key is exercised on that path); re-run with unchanged inputs
+      reports no change; prune only ever names prefix-owned objects
 - [ ] 4.3 Validation gate: provisioning runs green on local-dev n8n; workflows
-      visible, active, re-provisioning is a no-op; scenario "Removal from the
-      declaration removes the engine objects" holds — dropping a pair and
-      re-running removes its owned objects and nothing else
+      visible, active, re-provisioning is a no-op. Ownership scope is explicit:
+      the two workflows and both credentials are SHARED by all pairs (design
+      D1/D2/D7) — dropping one pair re-renders the shared workflows with the
+      remaining pairs and touches nothing else; the shared objects are pruned
+      only when the declaration implies NO pairs at all. Scenario "Removal from
+      the declaration removes the engine objects" is proven at both scopes:
+      dropping one pair leaves the shared objects present and the remaining
+      pairs syncing unchanged; emptying the declaration removes every owned
+      object
 
 ## 5. Validation against a scratch pair
 
@@ -93,14 +121,23 @@
       cap not hit, linked pairs' per-field baselines match both sides
       (convergence), zero sync activity on undeclared projects/repos — the
       executable gate both this phase and the prod rollout (6.x) run
-- [ ] 5.2 Add a temporary seventh pair (scratch tududi project ↔ a private
-      scratch repo) to the mapping on the feature branch; run several cycles
+- [ ] 5.2 Validate against a scratch pair WITHOUT touching the canonical scope:
+      a temporary mapping OVERLAY file (the canonical six-pair declaration is
+      never edited) declaring one scratch tududi project ↔ a private scratch
+      repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
+      PAT limited to the scratch repo, seeded at a scratch OpenBao key) — the
+      production PAT's six-repo scope stays exactly as declared in design D7
+      and cannot see the scratch repo by design. Run several cycles
       exercising: tag→issue creation, an interrupted-creation recovery (delete
       the task-side link, confirm the next cycle relinks instead of
-      duplicating), edits in both directions on different fields (clean
-      per-field merge), tag/label reconciliation, same-field both-sides
-      conflict, un-tag→close→re-tag→reopen, archive→close-as-not-planned,
-      untagged task untouched, quiet cycle
+      duplicating), the audit-comment retry (comment posted, marker write
+      failed — no duplicate comment on the next cycle), edits in both
+      directions on different fields (clean per-field merge), tag/label
+      reconciliation, same-field both-sides conflict,
+      un-tag→close→re-tag→reopen, archive→close-as-not-planned, untagged task
+      untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
+      prune the scratch credential, re-provision, and assert the canonical
+      mapping still declares exactly six pairs and the scratch objects are gone
 - [ ] 5.3 Validation gate: scenarios "Tagging a task creates its issue exactly
       once", "Interrupted creation recovers without a duplicate", "Removing the
       sync tag closes the issue, destroys nothing", "Linked pairs converge

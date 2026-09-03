@@ -81,8 +81,15 @@ engine this bridge needs; this change is its first real workflow consumer.
   visible in GitHub history and tududi's audit trail; conflicts preserve losing
   values in comments. No destructive operation exists in the sync at all — it
   never deletes issues or tasks.
-- **Credentials**: revoke the tududi token in its UI and the GitHub credential at
-  the provider (both revocation steps documented beside the seeding steps);
-  re-running provisioning against an empty declaration removes the workflows and
-  credentials it owns from n8n — provisioning prunes its own objects by design
-  (design D1), so this is specified behavior, not a hope.
+- **Credentials**: revocation is an encoded, re-runnable rollback step, not a
+  documentation pointer. Where a provider exposes revocation to the API it is
+  executed by the playbook; where it does not (a fine-grained PAT's deletion is
+  a provider-settings action), the operator step is gated by a machine check:
+  the rollback step **verifies revocation by authenticating with the stored
+  token and requiring the provider to refuse it**, fails loudly while the token
+  still works, and treats an already-revoked credential as success — so a
+  rollback interrupted after n8n deactivation converges on re-run instead of
+  leaving a live token unnoticed. Re-running provisioning against an empty
+  declaration removes the workflows and credentials it owns from n8n —
+  provisioning prunes its own objects by design (design D1), so this is
+  specified behavior, not a hope.

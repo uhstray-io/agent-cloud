@@ -109,6 +109,18 @@ re-creating. The same search is the recovery path for a corrupted marker whose
 `uid` line survives; a marker damaged beyond that is logged for a human, never
 guessed at.
 
+The `uid` search has a blind spot the design does not paper over: an issue
+whose marker was destroyed AND whose task-side link is gone is invisible to
+it. So creation carries a second, deterministic gate — before creating, the
+cycle also searches the paired repository's open issues **authored by the sync
+identity** for a canonical-title match. A hit there **blocks creation and
+records a recovery error naming both artifacts** (task `uid`, issue number)
+for a human to re-link or rename; creation never proceeds past a suspect
+match. Only when both searches come back empty is an issue created. The
+residual duplicate window is therefore a doubly-destroyed linkage AND a
+retitled issue — at which point the two artifacts share nothing machine-readable
+and re-linking is genuinely a human judgment.
+
 - *External mapping store* (n8n static data, a DB) rejected: invisible state
   that can drift from both systems and dies with the engine; the artifacts are
   the durable record.
@@ -150,6 +162,15 @@ the marker linkage survives — re-adding the tag reopens the same issue rather
 than creating a duplicate. Un-tagging expresses "stop tracking this in GitHub",
 and a closed issue with an audit trail says that; a silently stale open issue
 does not.
+
+**Audit comments are idempotent, not just informative.** Every audit comment
+(losing-value preservation, un-tag, archive) embeds a stable audit-event key —
+derived from the task `uid`, the event type, and the triggering side's
+`updated_at` — and a cycle checks the issue's existing comments for that key
+before posting. So the comment-posted-but-marker-rewrite-failed crash window
+retries into a no-op instead of a duplicate comment; the retry completes the
+marker write and moves on. The comment-then-marker ordering is fixed (comment
+first, marker second) precisely so the key check is the only dedupe needed.
 
 ### D7 — GitHub credential: fine-grained PAT scoped to the six repos, in OpenBao
 
@@ -194,8 +215,10 @@ never an unstated assumption.
 - **[Marker block corrupted or hand-edited in an issue body]** → recovery is
   the D4 `uid` search: if the marker's `uid` line survives, the cycle re-links
   and rewrites a clean marker; damaged beyond that, it logs for a human and
-  never guesses — and the pre-create `uid` search means even a fully lost
-  marker cannot cause a duplicate issue, only a stalled pair.
+  never guesses. A fully lost linkage (marker AND task-side link both gone) is
+  caught by D4's second gate — the sync-identity/canonical-title search blocks
+  creation and records a recovery error rather than duplicating; the pair
+  stalls loudly until a human re-links.
 - **[n8n substrate slips]** → this change is sequenced strictly after
   `complete-n8n-composable-deployment`; nothing here can start until that
   change's credential-provisioning pattern exists in prod.
