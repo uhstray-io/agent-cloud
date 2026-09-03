@@ -6,17 +6,17 @@
 
 ## 1. Spike: ground both API surfaces (gate for everything after)
 
-- [ ] 1.1 Pull the deployed tududi 1.1.1 OpenAPI spec and verify: personal-token
+- [x] 1.1 Pull the deployed tududi 1.1.1 OpenAPI spec and verify: personal-token
       auth coverage on `/api/v1` task/project/tag routes, the exact task status
       enum, tag read/write shapes, `updated_at` exposure, any changed-since
       filtering, which field can carry the linked issue reference (design D4
       open question), and whether personal API tokens can be minted through the
       API — if they can, token seeding is automated on the n8n key-mint model
       instead of the UI step in 3.1 (design D7)
-- [ ] 1.2 Verify the n8n public-API workflow surface at the pinned n8n version:
+- [x] 1.2 Verify the n8n public-API workflow surface at the pinned n8n version:
       list/create/update/activate endpoints the provisioning playbook will call
       (design D1)
-- [ ] 1.3 Write the sync contract doc (beside the Postiz automation contract):
+- [x] 1.3 Write the sync contract doc (beside the Postiz automation contract):
       status↔state mapping table from the real enum, tag↔label rules (sync tag
       never propagates; case-insensitive name match), marker-block format
       (uid + PER-FIELD baselines + both timestamps — one baseline hash per
@@ -27,7 +27,7 @@
       audit-event key format (design D6), poll cadence with GitHub rate-limit
       arithmetic, and the full-list-diff fallback decision if changed-since
       filtering is absent (design D6, risk 2)
-- [ ] 1.4 Validation gate: contract doc committed with every table sourced from a
+- [x] 1.4 Validation gate: contract doc committed with every table sourced from a
       named spec/endpoint (no guessed enum values); the fields it documents are
       the ones scenarios "GitHub edit reaches tududi" and "tududi edit reaches
       GitHub" will be proven against
