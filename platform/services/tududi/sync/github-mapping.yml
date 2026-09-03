@@ -1,0 +1,42 @@
+---
+# github-mapping.yml — THE declaration of tududi-project ↔ GitHub-repo sync
+# pairs (integrate-tududi-github-issue-sync, design D3).
+#
+# Provisioning (provision-tududi-github-sync.yml) renders this file into the
+# two n8n workflow definitions — the running system's mapping is exactly what
+# review approved here. Repo names are already public in this repository's
+# plan documents; nothing here is a credential or an address.
+#
+# Fields per entry:
+#   tududi_project  the tududi project NAME the sync watches (resolved to its
+#                   uid at runtime via /api/v1/projects — names survive
+#                   re-creations; uids do not belong in a committed file)
+#   github_repo     owner/name of the paired repository
+#   enabled         pairs are promoted one at a time (design Migration Plan
+#                   step 4 / task 6.1): huhhb first, the rest only after the
+#                   per-pair verification check (task 5.1) passes against it
+#
+# The sync control tag (the tududi tag that marks a task for syncing) and the
+# poll cadence live in inventory, not here — they are deployment tuning, not
+# pair declarations. The contract doc is
+# platform/services/tududi/context/github-sync-contract.md.
+
+sync_pairs:
+  - tududi_project: huhhb
+    github_repo: uhstray-io/huhhb
+    enabled: true
+  - tududi_project: zerds
+    github_repo: uhstray-io/zerds
+    enabled: false
+  - tududi_project: atlas
+    github_repo: uhstray-io/atlas
+    enabled: false
+  - tududi_project: zerds-website
+    github_repo: uhstray-io/zerds-website
+    enabled: false
+  - tududi_project: weft
+    github_repo: uhstray-io/weft
+    enabled: false
+  - tududi_project: scientific-business
+    github_repo: uhstray-io/scientific-business
+    enabled: false

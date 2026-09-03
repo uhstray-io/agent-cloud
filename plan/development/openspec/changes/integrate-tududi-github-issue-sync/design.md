@@ -67,7 +67,18 @@ provisioning run.
 
 One scheduled workflow per direction (cadence an inventory var; default decided
 at implementation against GitHub rate-limit arithmetic). tududi has no webhooks,
-so its side is polling regardless. GitHub *could* push, but that requires
+so its side is polling regardless.
+
+**Amended at implementation (2026-09-02): one scheduled CYCLE workflow, not
+two.** The per-field merge engine (D5) necessarily reads BOTH sides' state
+into one snapshot before it can decide any field's winner — so "one workflow
+per direction" would run the same bidirectional diff twice, double every
+fetch, and open a window where the two runs disagree about the same pair. The
+implemented shape is a single scheduled workflow per cycle: fetch both sides
+once, compute the converged op set once (`sync/lib/sync-core.js`), execute
+tududi-writes and GitHub-writes from that one decision. Direction still
+exists — in the ops, not in the schedulers. The kill switch deactivates one
+workflow instead of two, which also simplifies the rollback path. GitHub *could* push, but that requires
 excluding n8n's `/webhook/*` from forward_auth at Caddy — an edge-surface change
 with its own security review (webhook-secret validation as the compensating
 control, the same edge-vs-app-gate reasoning Postiz's `/api/public/v1` went

@@ -1,0 +1,226 @@
+{# tududi-github-sync.workflow.json.j2 — THE sync cycle workflow
+   (integrate-tududi-github-issue-sync, design D1 + D2-as-amended).
+
+   Rendered by provision-tududi-github-sync.yml and imported through n8n's
+   public API (POST /api/v1/workflows, verified at n8n@2.25.7). One scheduled
+   cycle: fetch both sides once, compute the converged op set once
+   (lib/sync-core.js embedded below), execute GitHub-writes and tududi-writes
+   from that single decision. Node typeVersions verified at the pinned tag:
+   scheduleTrigger 1.3, code 2, httpRequest 4.4.
+
+   Jinja inputs (all supplied by the provisioning playbook — no secret value
+   ever appears here; credentials are referenced by NAME/ID only):
+     workflow_name           owned-object name (carries the sync prefix D1 prunes by)
+     cadence_minutes         poll cadence (contract default: 5)
+     tududi_base_url         e.g. the internal Caddy origin (contract transport note)
+     sync_tag / sync_login / write_cap
+     sync_pairs              enabled entries of github-mapping.yml
+     sync_core_js / cycle_glue_js   file contents, JSON-encoded via to_json
+     tududi_credential_id/name, github_credential_id/name
+#}
+{
+  "name": {{ workflow_name | to_json }},
+  "settings": { "executionOrder": "v1", "timezone": "UTC" },
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every {{ cadence_minutes }} minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": {{ cadence_minutes | int }} }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-tasks",
+      "name": "Fetch tududi tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [200, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "{{ tududi_base_url }}/api/v1/tasks",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "fullResponse": false } } }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": {{ tududi_credential_id | to_json }},
+          "name": {{ tududi_credential_name | to_json }}
+        }
+      }
+    },
+    {
+      "id": "fan-out",
+      "name": "Bucket tasks per declared pair",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 0],
+      "parameters": {
+        "jsCode": {{ (
+          "// Rendered from github-mapping.yml — the reviewed declaration (D3).\n"
+          ~ "const PAIRS = " ~ (sync_pairs | to_json) ~ ";\n"
+          ~ "const SYNC_TAG = " ~ (sync_tag | to_json) ~ ";\n"
+          ~ "const payload = $input.first().json;\n"
+          ~ "const all = Array.isArray(payload) ? payload : (payload.tasks || payload.data || []);\n"
+          ~ "// Full-list diff is the contract's decided mechanism (no changed-since\n"
+          ~ "// filter at tududi 1.1.1); bucket by project name, keep tag state.\n"
+          ~ "return PAIRS.map((p) => ({ json: { pair: p, tasks: all\n"
+          ~ "  .filter((t) => (t.Project && t.Project.name) === p.tududi_project)\n"
+          ~ "  .map((t) => ({ uid: t.uid, title: t.name, note: t.note || '',\n"
+          ~ "    status: t.status, tags: (t.tags || t.Tags || []).map((x) => x.name || x),\n"
+          ~ "    updated_at: t.updated_at || t.updatedAt,\n"
+          ~ "    tagged: (t.tags || t.Tags || []).some((x) => ((x.name || x).toLowerCase()) === SYNC_TAG.toLowerCase()) })) } }));\n"
+        ) | to_json }}
+      }
+    },
+    {
+      "id": "fetch-issues",
+      "name": "Fetch repo issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [600, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{% raw %}{{ $json.pair.github_repo }}{% endraw %}/issues?state=all&per_page=100",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": {{ github_credential_id | to_json }},
+          "name": {{ github_credential_name | to_json }}
+        }
+      }
+    },
+    {
+      "id": "compute",
+      "name": "Compute converged ops",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0],
+      "parameters": {
+        "jsCode": {{ (
+          "const SYNC_CONFIG = { sync_tag: " ~ (sync_tag | to_json)
+          ~ ", sync_login: " ~ (sync_login | to_json)
+          ~ ", write_cap: " ~ (write_cap | int | string) ~ " };\n"
+          ~ "// PRs ride the issues API; the sync never touches them.\n"
+          ~ "const pairItems = $('Bucket tasks per declared pair').all();\n"
+          ~ "const issueItems = $input.all();\n"
+          ~ "const merged = pairItems.map((pi, i) => ({ json: { pair: pi.json.pair, tasks: pi.json.tasks,\n"
+          ~ "  issues: (Array.isArray(issueItems[i].json) ? issueItems[i].json : [issueItems[i].json])\n"
+          ~ "    .filter((it) => it && !('pull_request' in it))\n"
+          ~ "    .map((it) => ({ number: it.number, title: it.title, body: it.body || '',\n"
+          ~ "      state: it.state, state_reason: it.state_reason || null,\n"
+          ~ "      labels: (it.labels || []).map((l) => l.name || l), updated_at: it.updated_at,\n"
+          ~ "      user_login: it.user && it.user.login, comments: [] })) } }));\n"
+          ~ sync_core_js ~ "\n"
+          ~ "const $inputOriginal = $input;\n"
+          ~ "const $input2 = { all: () => merged };\n"
+          ~ "{ const $input = $input2;\n"
+          ~ cycle_glue_js ~ "\n}"
+        ) | to_json }}
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route by executor",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1000, 0],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "github",
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [ { "leftValue": "={% raw %}{{ $json.exec }}{% endraw %}", "rightValue": "github", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+              "renameOutput": true
+            },
+            {
+              "outputKey": "tududi",
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [ { "leftValue": "={% raw %}{{ $json.exec }}{% endraw %}", "rightValue": "tududi", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+              "renameOutput": true
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-github",
+      "name": "Execute GitHub op",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1200, -100],
+      "parameters": {
+        "method": "={% raw %}{{ $json.op.type === 'create_issue' || $json.op.type === 'comment_issue' ? 'POST' : 'PATCH' }}{% endraw %}",
+        "url": "=https://api.github.com/repos/{% raw %}{{ $json.op.repo }}{% endraw %}/issues{% raw %}{{ $json.op.type === 'create_issue' ? '' : '/' + $json.op.number }}{{ $json.op.type === 'comment_issue' ? '/comments' : '' }}{% endraw %}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.type === 'create_issue' ? { title: $json.op.title, body: $json.op.body, labels: $json.op.labels } : $json.op.type === 'comment_issue' ? { body: $json.op.body } : $json.op.patch) }}{% endraw %}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": {{ github_credential_id | to_json }},
+          "name": {{ github_credential_name | to_json }}
+        }
+      }
+    },
+    {
+      "id": "exec-tududi",
+      "name": "Execute tududi op",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1200, 100],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ tududi_base_url }}/api/v1/tasks/{% raw %}{{ $json.op.task_uid }}{% endraw %}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.patch) }}{% endraw %}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": {{ tududi_credential_id | to_json }},
+          "name": {{ tududi_credential_name | to_json }}
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every {{ cadence_minutes }} minutes": {
+      "main": [[{ "node": "Fetch tududi tasks", "type": "main", "index": 0 }]]
+    },
+    "Fetch tududi tasks": {
+      "main": [[{ "node": "Bucket tasks per declared pair", "type": "main", "index": 0 }]]
+    },
+    "Bucket tasks per declared pair": {
+      "main": [[{ "node": "Fetch repo issues", "type": "main", "index": 0 }]]
+    },
+    "Fetch repo issues": {
+      "main": [[{ "node": "Compute converged ops", "type": "main", "index": 0 }]]
+    },
+    "Compute converged ops": {
+      "main": [[{ "node": "Route by executor", "type": "main", "index": 0 }]]
+    },
+    "Route by executor": {
+      "main": [
+        [{ "node": "Execute GitHub op", "type": "main", "index": 0 }],
+        [{ "node": "Execute tududi op", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

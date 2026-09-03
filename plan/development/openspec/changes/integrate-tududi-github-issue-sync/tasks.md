@@ -34,10 +34,10 @@
 
 ## 2. Mapping and workflow definitions as code
 
-- [ ] 2.1 Add the mapping declaration (six pairs, `enabled` flag) at the path
+- [x] 2.1 Add the mapping declaration (six pairs, `enabled` flag) at the path
       settled in design D3; BATS: exactly the declared six, no credentials or
       addresses in the file
-- [ ] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
+- [x] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
       JSON consuming the mapping: tag-gated crossing, marker-block linkage with
       per-field baselines, pre-create search by task `uid` PLUS the
       sync-identity/canonical-title second gate (a suspect match blocks
@@ -48,9 +48,9 @@
       losing-value audit comment, un-tag → close-as-not-planned with surviving
       linkage, per-cycle write cap that fails loudly, and no delete operation
       anywhere (design D4/D5/D6, spec)
-- [ ] 2.3 BATS: rendered workflows reference credentials only by n8n credential
+- [x] 2.3 BATS: rendered workflows reference credentials only by n8n credential
       name — no token value, no secret-store value, in any rendered artifact
-- [ ] 2.4 Validation gate: rendering the six-pair mapping produces valid workflow
+- [x] 2.4 Validation gate: rendering the six-pair mapping produces valid workflow
       JSON (schema-checked); scenario "No credential in any committed or logged
       artifact" holds for the repo tree
 
