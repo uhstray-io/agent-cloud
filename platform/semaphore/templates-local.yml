@@ -54,6 +54,13 @@ templates:
   - name: "Provision n8n Postiz Credential (Local)"
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
 
+  # tududi↔GitHub sync substrate: mint+capture the tududi token; refresh the
+  # App installation token (fails NAMED until the App key is seeded — correct).
+  - name: "Store tududi API Token (Local)"
+    playbook: platform/playbooks/store-tududi-api-token.yml
+  - name: "Refresh tududi-sync GitHub Token (Local)"
+    playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
+
   # n8n upgrade tooling (design D7): timestamped pg_dump + named-dump restore.
   # Local is where the pair is proven before it carries the prod cutover.
   # The restore hard-requires n8n_dump_file, so the survey var is declared

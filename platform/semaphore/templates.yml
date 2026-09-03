@@ -209,6 +209,25 @@ templates:
     # Never printed; all key-bearing steps no_log.
     dev_variant: true
 
+  - name: Store tududi API Token
+    playbook: platform/playbooks/store-tududi-api-token.yml
+    # Mints (break-glass session: /api/login + csrf-token) AND captures
+    # tududi's sync API token into secret/services/tududi:api_token.
+    # List-first idempotency; an orphaned labelled key (value unrecoverable by
+    # design) is revoked and re-minted. Token-bearing steps no_log.
+    dev_variant: true
+
+  - name: Refresh tududi-sync GitHub Token
+    playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
+    # GitHub App installation tokens live ONE HOUR: this mints a fresh one on
+    # the controller (App key from OpenBao via stdin, scope preflight against
+    # github-mapping.yml) and PATCHes the n8n github-sync-api credential in
+    # place. Update-only: creation belongs to the sync provisioning. The
+    # 45-minute cadence below is the reviewed cadence — schedules are code.
+    dev_variant: true
+    schedule:
+      cron: "*/45 * * * *"
+
   - name: Provision n8n Postiz Credential
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
     # Upserts the ONE postizApi credential in n8n: authenticates with

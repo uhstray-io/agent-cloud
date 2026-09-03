@@ -1,0 +1,122 @@
+---
+# refresh-tududi-sync-github-token.yml — keep the sync's GitHub credential
+# alive (integrate-tududi-github-issue-sync task 3.2, design D7 as amended).
+#
+# GitHub App installation tokens expire after ONE HOUR, so the n8n
+# `github-sync-api` credential cannot hold a static value. This playbook mints
+# a fresh installation token on the controller (shared task — key via stdin,
+# scope preflight against the mapping) and updates the credential IN PLACE
+# through n8n's public API (PATCH /api/v1/credentials/{id} with partial
+# {data}, verified at n8n@2.25.7). It runs on a 45-minute Semaphore SCHEDULE
+# declared as code in templates.yml — the cadence is reviewed, not clicked.
+#
+# UPDATE-ONLY by design: when the credential does not exist yet this fails
+# with a named error instead of creating it — the sync provisioning playbook
+# owns creation (and prune bookkeeping); a refresher that quietly creates
+# would leave an orphan the prune never learns about.
+#
+# Failure is loud twice: the scheduled task goes red here, and the sync's own
+# cycles start answering 401 until the next successful refresh.
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    preflight_group_expected: n8n_svc
+
+- name: "Refresh the tududi-sync GitHub credential in n8n"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Fixed name — the provisioning playbook creates it and the workflow
+    # references it; a free name here would let a refresh retarget any
+    # credential in the engine.
+    _credential_name: "github-sync-api"
+    _n8n_base: "{{ n8n_base_url | default('http://127.0.0.1:5678') }}"
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Require a non-cleartext transport to n8n"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _n8n_base }}"
+        _assert_url_label: "n8n"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the n8n API key (the engine's own credential path)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/n8n"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _n8n_secret
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Mint the installation token (shared task: stdin key, scope preflight)"
+      ansible.builtin.include_tasks: tasks/mint-tududi-sync-github-token.yml
+      vars:
+        _mt_bao_url: "{{ _bao_url }}"
+        _mt_bao_token: "{{ _bao_auth.json.auth.client_token }}"
+
+    - name: "Find the github-sync-api credential"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/credentials?limit=250"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      register: _creds
+      no_log: true
+
+    - name: "Require the credential to exist (provisioning owns creation)"
+      ansible.builtin.assert:
+        that:
+          - _matched | length == 1
+        fail_msg: >-
+          n8n holds {{ _matched | length }} credential(s) named
+          '{{ _credential_name }}' — expected exactly one. Run the sync
+          provisioning playbook first (it creates and owns the credential);
+          this refresher only updates in place.
+      vars:
+        _matched: "{{ _creds.json.data | selectattr('name', 'equalto', _credential_name) | list }}"
+
+    - name: "Update the credential value in place (Bearer <installation token>)"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/credentials/{{ (_creds.json.data | selectattr('name', 'equalto', _credential_name) | list | first).id }}"
+        method: PATCH
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        body_format: json
+        body:
+          data:
+            name: "Authorization"
+            value: "Bearer {{ _mt_token }}"
+        status_code: [200]
+      no_log: true
+
+    - name: "Report (names only — the token expires within the hour anyway)"
+      ansible.builtin.debug:
+        msg: >-
+          n8n credential '{{ _credential_name }}' refreshed with a new
+          installation token (scope preflight passed against the declared
+          mapping). Next refresh: the 45-minute schedule.

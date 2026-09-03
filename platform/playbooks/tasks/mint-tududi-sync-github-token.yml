@@ -1,0 +1,99 @@
+---
+# mint-tududi-sync-github-token.yml — mint ONE GitHub App installation token
+# for the tududi sync (design D7 as amended) and prove its scope.
+#
+# Shared by refresh-tududi-sync-github-token.yml (the 45-minute schedule) and
+# the sync provisioning playbook — the mint's properties are gotten right once:
+# the App private key never touches disk or argv (OpenBao -> Ansible memory ->
+# the signer's stdin), the signer is the platform's existing App-chain lib
+# (platform/lib/github_app_token.py, token to stdout), and the minted token is
+# immediately preflight-checked: the installation must cover EXACTLY the six
+# repos github-mapping.yml declares — a wider installation is a scope drift
+# and a narrower one is a sync that will 404 mid-cycle; both fail here with
+# names, before any credential is updated.
+#
+# Caller passes:
+#   _mt_bao_url    transport-guarded OpenBao base URL
+#   _mt_bao_token  an authenticated OpenBao token
+# Returns:
+#   _mt_token      the installation token (~1h lifetime) — handle under no_log
+#
+# The key/client-id fields live at secret/services/github
+# (tududi_sync_app_key / tududi_sync_app_client_id), seeded once via
+# Seed OpenBao Key from the operator's copy after the App is created.
+
+- name: "Read the tududi-sync GitHub App credentials"
+  # 404 is tolerated HERE so the refusal below can speak with a NAME — a
+  # status assert inside a no_log task fails censored and undiagnosable.
+  ansible.builtin.uri:
+    url: "{{ _mt_bao_url }}/v1/secret/data/services/github"
+    headers:
+      X-Vault-Token: "{{ _mt_bao_token }}"
+    status_code: [200, 404]
+  register: _mt_github_secret
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: "Require the App key and client id (seeded once, after App creation)"
+  ansible.builtin.assert:
+    that:
+      - (_mt_github_secret.json.data.data.tududi_sync_app_key | default('')) | length > 0
+      - (_mt_github_secret.json.data.data.tududi_sync_app_client_id | default('')) | length > 0
+    fail_msg: >-
+      secret/services/github is missing tududi_sync_app_key and/or
+      tududi_sync_app_client_id. Create the "tududi sync" GitHub App (Issues
+      read/write, installed on the six mapped repos) and seed both via
+      Seed OpenBao Key, then re-run.
+
+- name: "Mint the installation token (key via stdin, never argv or disk)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../lib/github_app_token.py"
+      - installation-token
+      - "--issuer"
+      - "{{ _mt_github_secret.json.data.data.tududi_sync_app_client_id }}"
+      - "--org"
+      - "{{ _mt_github_org | default('uhstray-io') }}"
+      - "--key"
+      - "-"
+    stdin: "{{ _mt_github_secret.json.data.data.tududi_sync_app_key }}"
+  register: _mt_mint
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  no_log: true
+
+- name: "Take the token"
+  ansible.builtin.set_fact:
+    _mt_token: "{{ _mt_mint.stdout | trim }}"
+  no_log: true
+
+- name: "Read the installation's repository coverage"
+  ansible.builtin.uri:
+    url: "https://api.github.com/installation/repositories?per_page=100"
+    headers:
+      Authorization: "Bearer {{ _mt_token }}"
+      Accept: "application/vnd.github+json"
+    status_code: [200]
+  register: _mt_repos
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: "Require the installation to cover exactly the declared mapping"
+  # Names only in the failure — the DECLARED set is public, the token is not.
+  ansible.builtin.assert:
+    that:
+      - (_mt_covered | symmetric_difference(_mt_declared)) | length == 0
+    fail_msg: >-
+      The tududi-sync App installation does not match the declaration:
+      installation covers {{ _mt_covered | sort | join(', ') }};
+      github-mapping.yml declares {{ _mt_declared | sort | join(', ') }}.
+      Fix the App's repository access (or the mapping) and re-run.
+  vars:
+    _mt_covered: "{{ _mt_repos.json.repositories | map(attribute='full_name') | list }}"
+    _mt_declared: >-
+      {{ (lookup('file', playbook_dir ~ '/../services/tududi/sync/github-mapping.yml')
+          | from_yaml).sync_pairs | map(attribute='github_repo') | list }}

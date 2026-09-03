@@ -56,25 +56,35 @@
 
 ## 3. Sync identities and credentials
 
-- [ ] 3.1 Create the dedicated tududi sync user and its personal API token —
-      via the API if the 1.1 spike found a mint route, else the UI as a
-      labelled operator step **gated by a machine check** (a preflight assert
-      that the seeded token authenticates against the live tududi API, failing
-      with a named error when absent or dead — the operator step is verified,
-      never trusted) — store at `secret/services/tududi:api_token` via
-      `Seed OpenBao Key` (value as env secret, never a task parameter).
-      Rotation is encoded as re-seed + re-provision (idempotent, same
-      playbooks); revocation is encoded per the rollback plan: the step
-      verifies the old token is refused by the provider and treats
-      already-revoked as success
-- [ ] 3.2 Create the fine-grained GitHub PAT (six repos, Issues read/write) under
-      the sync's GitHub identity — provider-side creation (no public creation
-      API for fine-grained PATs), a labelled operator step **gated by the same
-      machine check** (preflight assert: the seeded PAT authenticates and sees
-      exactly the declared repos, named failure otherwise); seed into
-      `secret/services/github:tududi_sync_pat`. Rotation = re-seed +
-      re-provision; revocation encoded as verify-refused, already-revoked =
-      success (rollback plan)
+- [x] 3.1 Automate the tududi API token (D7 as amended). IMPLEMENTED DB-SIDE
+      (2026-09-03): the deploy is SSO-only by design (PASSWORD_AUTH_ENABLED
+      false — the session route answers 403), so `store-tududi-api-token.yml`
+      mints through the app's OWN stack instead: `files/tududi-db-mint.js`
+      runs inside the container with the app's sequelize models and bcrypt
+      (cost 12 + 12-char prefix, matching v1.1.1's createApiToken exactly),
+      raw token generated on the runner and passed via stdin, then PROVEN
+      end-to-end by a live Bearer call before capture into
+      `secret/services/tududi:api_token` via the shared KV-v2 merge.
+      NON-DESTRUCTIVE contract per the operator: one INSERT plus the app's
+      own reversible revoked_at on our-label rows; no flag flips, no
+      restarts. Every token-bearing step `no_log`.
+      Idempotent: list-by-label first; an existing label with the OpenBao
+      field present is a no-op, an existing label with the field ABSENT is
+      revoked and re-minted (the raw value is unrecoverable by design).
+      Rotation = revoke + re-run; revocation verified as refused-by-provider,
+      already-revoked = success
+- [ ] 3.2 (code DONE 2026-09-03: refresher + shared mint task + scheduled template land with phase 3; the App creation + Seed OpenBao Key runs are the remaining operator step) Create the dedicated GitHub App ("tududi sync": Issues read/write
+      ONLY, installed on exactly the six repos) — a labelled operator step
+      (GitHub has no App-creation API) **gated by machine checks**; seed the
+      private key into `secret/services/github:tududi_sync_app_key` and the
+      client id into `:tududi_sync_app_client_id` via `Seed OpenBao Key`.
+      Write `refresh-tududi-sync-github-token.yml`: mint an installation
+      token on the controller (`platform/lib/github_app_token.py`, key via
+      stdin), preflight-assert the installation covers exactly the declared
+      repos (named failure otherwise), and update the n8n `github-sync-api`
+      credential in place (`PATCH /api/v1/credentials/{id}`); declare its
+      45-minute Semaphore SCHEDULE as code (`templates.yml` gains a
+      `schedule:` field; `setup-templates.yml` learns to upsert schedules)
 - [ ] 3.3 Extend the n8n credential-provisioning playbook (or add a sibling) to
       upsert the tududi and GitHub credentials into n8n from those paths —
       idempotent, `no_log` on secret-bearing steps, names-and-counts output —

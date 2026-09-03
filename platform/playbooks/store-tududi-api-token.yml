@@ -1,0 +1,204 @@
+---
+# store-tududi-api-token.yml — mint AND capture tududi's sync API token
+# (integrate-tududi-github-issue-sync task 3.1, design D7 as amended).
+#
+# The deploy is SSO-only BY DESIGN (PASSWORD_AUTH_ENABLED=false), so the
+# session mint route is deliberately unreachable — probing it answers 403
+# "Password login is disabled". The mint therefore happens DB-side, through
+# the app's own stack: files/tududi-db-mint.js runs inside the container with
+# the app's sequelize models and its bcrypt, inserting exactly the row the
+# API's own createApiToken would have (verified against v1.1.1 source:
+# bcrypt cost 12, 12-char prefix, prefix+compare validation). The minted
+# token is then proven END-TO-END: a Bearer call to the live API must answer
+# 200 before the play reports success.
+#
+# NON-DESTRUCTIVE (operator requirement): one INSERT, plus revoked_at (the
+# app's own reversible revoke) on rows carrying OUR label under OUR account —
+# nothing else is written, nothing is deleted, no auth posture changes, no
+# restarts. Idempotency is LIST-FIRST: an active labelled row with the
+# OpenBao field present is a no-op; an active labelled row with the field
+# ABSENT is revoked and re-minted (the raw value is unrecoverable by design).
+#
+# Every token-bearing step is no_log; output is names and counts.
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: tududi_svc
+    preflight_group_expected: tududi_svc
+
+- name: "Mint and store the tududi sync API token"
+  hosts: tududi_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ tududi_container | default('tududi') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Fixed path, key and label — tududi owns its token. Not caller-supplied:
+    # a free path would let one invocation write a live credential anywhere.
+    _bao_path: "services/tududi"
+    _bao_key: "api_token"
+    _token_label: "agent-cloud-sync"
+    # The sync identity: the deploy's local service account (TUDUDI_USER_EMAIL).
+    _login_email: "{{ tududi_admin_email | default('admin@agent-cloud.test') }}"
+    # The end-to-end verification target; local-dev reaches the container by
+    # name, prod by the published loopback port.
+    _tududi_base: "{{ tududi_base_url | default('http://127.0.0.1:3002') }}"
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Require a non-cleartext transport to tududi"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _tududi_base }}"
+        _assert_url_label: "tududi"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the tududi secrets (existing token presence check)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ _bao_path }}"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _tududi_secret
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Place the mint script beside the container and copy it in"
+      # The script is a committed, reviewed file — not a secret. It carries the
+      # non-destructive contract (INSERT + own-label revoked_at only).
+      ansible.builtin.copy:
+        src: files/tududi-db-mint.js
+        dest: /tmp/tududi-db-mint.js
+        mode: "0644"
+
+    - name: "Copy the mint script into the container"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", "cp", "/tmp/tududi-db-mint.js", "{{ _container }}:/tmp/tududi-db-mint.js"]
+      changed_when: true
+
+    - name: "Read the current state (user + active labelled rows; names only)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - "-e"
+          - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
+          - "-e"
+          - "TUDUDI_SYNC_LABEL={{ _token_label }}"
+          - "{{ _container }}"
+          - node
+          - /tmp/tududi-db-mint.js
+          - status
+      register: _status
+      changed_when: false
+
+    - name: "Parse the state"
+      ansible.builtin.set_fact:
+        _active_rows: "{{ (_status.stdout_lines | last | from_json).active_label_rows | int }}"
+        _bao_has_token: "{{ (_tududi_secret.json.data.data[_bao_key] | default('')) | length > 0 }}"
+
+    - name: "Report a converged state (label active, value captured)"
+      when: (_active_rows | int > 0) and _bao_has_token
+      ansible.builtin.debug:
+        msg: >-
+          secret/{{ _bao_path }}:{{ _bao_key }} already holds the
+          '{{ _token_label }}' token ({{ _active_rows }} active row) —
+          nothing to do.
+
+    - name: "Mint (and capture) — only when the pair is not converged"
+      when: not ((_active_rows | int > 0) and _bao_has_token)
+      block:
+        - name: "Revoke orphaned labelled rows (the app's own reversible revoke)"
+          when: _active_rows | int > 0
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "-e"
+              - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
+              - "-e"
+              - "TUDUDI_SYNC_LABEL={{ _token_label }}"
+              - "{{ _container }}"
+              - node
+              - /tmp/tududi-db-mint.js
+              - revoke-label
+          changed_when: true
+
+        - name: "Generate the raw token on the runner"
+          ansible.builtin.command:
+            argv: ["python3", "-c", "import secrets; print('tt_' + secrets.token_hex(32))"]
+          register: _raw
+          delegate_to: localhost
+          changed_when: false
+          no_log: true
+
+        - name: "Insert the token row through the app's own models (stdin, never argv)"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "-i"
+              - "-e"
+              - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
+              - "-e"
+              - "TUDUDI_SYNC_LABEL={{ _token_label }}"
+              - "{{ _container }}"
+              - node
+              - /tmp/tududi-db-mint.js
+              - insert
+            stdin: "{{ _raw.stdout | trim }}"
+          register: _insert
+          changed_when: true
+          no_log: true
+
+        - name: "Prove the token end-to-end (the live API must accept it)"
+          ansible.builtin.uri:
+            url: "{{ _tududi_base }}/api/profile/api-keys"
+            headers:
+              Authorization: "Bearer {{ _raw.stdout | trim }}"
+            status_code: [200]
+          no_log: true
+
+        - name: "Merge the token into the store (siblings preserved)"
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: "{{ _bao_path }}"
+            _bm_data: "{{ {_bao_key: (_raw.stdout | trim)} }}"
+            # This caller REFUSES to create the path — deploy-tududi's
+            # manage-secrets owns it; an absent path means the service was
+            # never deployed and a token would be an orphan.
+            _bm_on_missing: fail
+            _bm_missing_msg: >-
+              secret/{{ _bao_path }} does not exist — run Deploy tududi first;
+              manage-secrets creates and owns that path.
+
+    - name: "Report (names and counts only, never the value)"
+      ansible.builtin.debug:
+        msg: >-
+          secret/{{ _bao_path }}:{{ _bao_key }} holds the
+          '{{ _token_label }}' token, proven live against
+          {{ _tududi_base }}/api/profile/api-keys. Rotation: delete the OpenBao
+          field (or revoke the labelled key) and re-run — the mint path revokes
+          the orphan and re-mints.

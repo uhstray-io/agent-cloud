@@ -183,31 +183,56 @@ retries into a no-op instead of a duplicate comment; the retry completes the
 marker write and moves on. The comment-then-marker ordering is fixed (comment
 first, marker second) precisely so the key check is the only dedupe needed.
 
-### D7 — GitHub credential: fine-grained PAT scoped to the six repos, in OpenBao
+### D7 — GitHub credential: a dedicated GitHub App, not a PAT (operator decision 2026-09-03)
 
-A fine-grained personal access token restricted to the six repositories with
-Issues read/write, stored at **`secret/services/github:tududi_sync_pat`**
-(seeded via the existing `Seed OpenBao Key` mechanism), provisioned into n8n by
-playbook.
+**Superseding the original PAT choice on the operator's direction.** A
+dedicated GitHub App ("tududi sync"), Issues read/write only, installed on
+exactly the six repositories. Its private key lives at
+`secret/services/github:tududi_sync_app_key` (client id beside it as
+`tududi_sync_app_client_id` — the JWT issuer, not a secret), seeded via the
+existing `Seed OpenBao Key` mechanism. The platform already owns the App
+credential machinery: `platform/lib/github_app_token.py` (the runner-automation
+chain) signs the JWT and mints installation tokens, key via stdin.
 
-Credential lifecycle honesty: creating a fine-grained PAT is an operation on
-GitHub's own settings surface, and the tududi token mint is UI-side unless the
-spike finds a token-mint route in the 1.1.1 API (spike task — if one exists,
-the mint is automated on the n8n `store-n8n-api-key.yml` model). What IS
-encoded either way: the provisioning playbook **precondition-validates both
-credentials against their live APIs before touching n8n** and fails with a
-named error when one is absent or dead, re-validation is a standing check
-(`Validate Secrets` pattern), and the revocation steps for both providers are
-documented next to the seeding steps. Provider-side creation that cannot be
-API-driven is a labelled operator step with a deterministic gate behind it —
-never an unstated assumption.
+**The 1-hour token problem, solved as code.** Installation access tokens
+expire after one hour, so the n8n credential cannot be a static value. A
+refresher playbook (`refresh-tududi-sync-github-token.yml`) mints a fresh
+installation token on the controller and updates the n8n `github-sync-api`
+credential in place through the public API (`PATCH /api/v1/credentials/{id}`,
+verified at the pinned n8n version) — run on a **Semaphore schedule** (45-minute
+cron, declared as code in `templates.yml`; `setup-templates.yml` gains schedule
+support so the cadence is reviewed, not clicked). A refresh failure surfaces as
+a failed scheduled task AND as the sync's own 401s — loud twice.
 
-- *Reusing the existing platform PAT* (`secret/services/github`) rejected:
-  over-scoped for a standing automation that writes to repos on a timer.
-- *A GitHub App* deferred: better token hygiene at meaningful scale, but its
-  minting machinery (the runner-automation App chain) is heavier than six repos
-  of issue sync justifies today. Recorded as the upgrade path if repo count
-  grows.
+**What the App buys over the PAT** (beyond the operator's call): issue writes
+are authored by `<app-slug>[bot]` — a crisp, unforgeable sync identity for D5's
+authorship filtering; per-installation scoping is enforced by GitHub rather
+than by a token's good behaviour; and revocation is instant App-side.
+
+Credential lifecycle honesty, unchanged in spirit: **creating and installing
+the App is a GitHub-settings operation** (no public creation API) — a labelled
+operator step gated by machine checks (the refresher fails with a named error
+when the key is absent/dead, and preflight-validates the installation covers
+exactly the declared repos). The tududi token mint IS automated: the spike
+found the full lifecycle API (`POST /api/profile/api-keys`, session+CSRF), so
+`store-tududi-api-token.yml` mints and captures it on the
+`store-n8n-api-key.yml` model — the session login uses the deploy's
+break-glass local account, whose password is already OpenBao-held.
+Provisioning still precondition-validates both credentials against their live
+APIs before touching n8n; both are wired into the `Validate Secrets` standing
+check.
+
+- *Fine-grained PAT* (the original decision) superseded: token hygiene
+  favoured the App once the operator weighed it, and the App's bot identity
+  strengthens echo suppression.
+- *Reusing the runner-automation App* rejected: it would couple CI-runner
+  administration to a standing issue-writing automation and widen that App's
+  permissions; two Apps, two blast radii.
+- *tududi sync identity*: v1 mints the token under the existing break-glass
+  service account (tududi 1.1.1 exposes no user-creation API — the profile
+  surface is self-service only). GitHub-side authorship is the App bot; the
+  per-field baselines (D5) remain the primary echo suppression on the tududi
+  side. A dedicated tududi user is a follow-up if its API grows creation.
 
 ## Risks / Trade-offs
 
