@@ -36,7 +36,10 @@
     # references it; a free name here would let a refresh retarget any
     # credential in the engine.
     _credential_name: "github-sync-api"
-    _n8n_base: "{{ n8n_base_url | default('http://127.0.0.1:5678') }}"
+    # Same default + override as deploy-n8n.yml Phase 3 and the other n8n
+    # operational playbooks: container DNS serves local-dev, prod inventory
+    # overrides with its loopback binding.
+    _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
 
   tasks:
     - name: "Refuse a cleartext secret-store endpoint"

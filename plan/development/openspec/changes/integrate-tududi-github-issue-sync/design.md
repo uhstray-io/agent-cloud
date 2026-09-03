@@ -15,7 +15,7 @@ See `proposal.md — Why`. Grounding, verified this session:
   minted in the tududi UI post-deploy, stored at
   `secret/services/tududi:api_token`
   (`plan/development/11-tududi-honcho-deployment.md:78`).
-- The six repo names in the mapping already appear committed in this public repo
+- The repo names in the mapping already appear committed in this public repo
   (`add-github-actions-runners/design.md`, plan docs), so the mapping file can
   live here.
 - n8n substrate (pending `complete-n8n-composable-deployment`): composable
@@ -35,7 +35,7 @@ See `proposal.md — Why`. Grounding, verified this session:
 **Non-Goals**
 - No webhook transport in v1 (see D2 — deferred, not rejected).
 - No comment/attachment/subtask sync; no Projects v2.
-- No generalized "sync framework" — six pairs, one workflow shape. Generalize
+- No generalized "sync framework" — eight pairs, one workflow shape. Generalize
   when a second integration actually exists.
 
 ## Decisions
@@ -85,14 +85,20 @@ control, the same edge-vs-app-gate reasoning Postiz's `/api/public/v1` went
 through). v1 keeps the edge closed and accepts poll latency; the webhook upgrade
 is recorded as a follow-up, not smuggled in.
 
-- GitHub REST quota: a fine-grained-PAT poll across six repos on a
+- GitHub REST quota: an authenticated poll across the mapped repos on a
   minutes-scale cadence is orders of magnitude inside the documented per-hour
   ceiling; the spike states the arithmetic with the chosen cadence.
 
 ### D3 — Mapping is a committed YAML, rendered into the workflows
 
-`platform/services/tududi/sync/github-mapping.yml` (exact path settled at
-implementation): six entries of `{ tududi_project, github_repo, enabled }`.
+`platform/services/tududi/sync/github-mapping.yml`: eight entries of
+`{ tududi_project, github_repo, enabled }` (grown from six on the operator's
+2026-09-03 direction: `Uhstray.io Website ↔ uhstray-io/www` and
+`agent-cloud ↔ uhstray-io/agent-cloud` joined). **agent-cloud is PUBLIC** —
+enabling its pair publishes the paired tududi project's task titles,
+descriptions and audit comments as world-readable issues; the entry ships
+disabled and its flip is a publication decision, recorded in the mapping
+itself.
 Provisioning renders it into the workflow definitions — the running system's
 mapping is exactly what review approved. Repo names are already public in this
 repo; no credential or address appears in the mapping.
@@ -187,7 +193,7 @@ first, marker second) precisely so the key check is the only dedupe needed.
 
 **Superseding the original PAT choice on the operator's direction.** A
 dedicated GitHub App ("tududi sync"), Issues read/write only, installed on
-exactly the six repositories. Its private key lives at
+exactly the mapped repositories. Its private key lives at
 `secret/services/github:tududi_sync_app_key` (client id beside it as
 `tududi_sync_app_client_id` — the JWT issuer, not a secret), seeded via the
 existing `Seed OpenBao Key` mechanism. The platform already owns the App
@@ -244,7 +250,7 @@ check.
   version can't answer "what changed since T" efficiently, the workflow falls
   back to full-list diffing against marker hashes (viable at personal-tracker
   scale), and that decision is recorded in the contract doc.
-- **[A rogue or buggy cycle mass-edits six repos]** → dedicated identity makes
+- **[A rogue or buggy cycle mass-edits the mapped repos]** → dedicated identity makes
   every write attributable and filterable; the sync has no delete operation by
   design; per-cycle write caps in the workflow fail the run loudly rather than
   fan out damage.

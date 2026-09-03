@@ -73,8 +73,17 @@
       revoked and re-minted (the raw value is unrecoverable by design).
       Rotation = revoke + re-run; revocation verified as refused-by-provider,
       already-revoked = success
-- [ ] 3.2 (code DONE 2026-09-03: refresher + shared mint task + scheduled template land with phase 3; the App creation + Seed OpenBao Key runs are the remaining operator step) Create the dedicated GitHub App ("tududi sync": Issues read/write
-      ONLY, installed on exactly the six repos) — a labelled operator step
+- [x] 3.2 DONE 2026-09-03 — the App exists: `todo-sync-agent` (App ID 4820206),
+      Issues read/write + auto Metadata read, webhook inactive (poll-only D2),
+      installed on exactly the eight mapped repos; private key + client id
+      seeded to prod OpenBao (tasks 367/368) and local (103/104) via the
+      env-secret chain, cleaned after each run. The refresher chain is proven
+      live end-to-end on local-dev: named refusal without the key (96), scope
+      preflight REFUSING a 2-repo over-scope with names (105 — the guard's
+      first catch was real), scope pass at 8==8 and the designed named stop at
+      the not-yet-provisioned n8n credential (107). Original scope text
+      follows. Create the dedicated GitHub App ("tududi sync": Issues read/write
+      ONLY, installed on exactly the mapped repos) — a labelled operator step
       (GitHub has no App-creation API) **gated by machine checks**; seed the
       private key into `secret/services/github:tududi_sync_app_key` and the
       client id into `:tududi_sync_app_client_id` via `Seed OpenBao Key`.
@@ -132,7 +141,7 @@
       (convergence), zero sync activity on undeclared projects/repos — the
       executable gate both this phase and the prod rollout (6.x) run
 - [ ] 5.2 Validate against a scratch pair WITHOUT touching the canonical scope:
-      a temporary mapping OVERLAY file (the canonical six-pair declaration is
+      a temporary mapping OVERLAY file (the canonical eight-pair declaration is
       never edited) declaring one scratch tududi project ↔ a private scratch
       repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
       PAT limited to the scratch repo, seeded at a scratch OpenBao key) — the
@@ -147,7 +156,7 @@
       un-tag→close→re-tag→reopen, archive→close-as-not-planned, untagged task
       untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
       prune the scratch credential, re-provision, and assert the canonical
-      mapping still declares exactly six pairs and the scratch objects are gone
+      mapping still declares exactly eight pairs and the scratch objects are gone
 - [ ] 5.3 Validation gate: scenarios "Tagging a task creates its issue exactly
       once", "Interrupted creation recovers without a duplicate", "Removing the
       sync tag closes the issue, destroys nothing", "Linked pairs converge
@@ -162,7 +171,7 @@
 - [ ] 6.1 Enable pairs incrementally: `huhhb` first; a pair is promoted only
       when the 5.1 per-pair verification check passes against it, and a failing
       check triggers the rollback path (`sync_enabled=false`) rather than a
-      judgment call — then the remaining five, same gate each (design Migration
+      judgment call — then the remaining pairs, same gate each — the PUBLIC agent-cloud pair last, as an explicit publication decision (design Migration
       Plan step 4)
 - [ ] 6.2 Docs: CLAUDE.md workflow-table row for the provisioning playbook,
       tududi service context updated with the sync contract pointer, follow-up
@@ -172,7 +181,7 @@
       poll-based bidirectional sync held up (worked / dead end / corrected),
       any tududi API constraint discovered the hard way, and the conflict-rate
       reality vs the LWW assumption
-- [ ] 6.4 Validation gate: the 5.1 verification check passes for all six pairs
+- [ ] 6.4 Validation gate: the 5.1 verification check passes for all eight pairs
       (which includes zero sync activity on undeclared projects — scenario
       "Undeclared project is untouched" — and per-pair convergence); BATS +
       pytest suites green; change validated and ready to archive

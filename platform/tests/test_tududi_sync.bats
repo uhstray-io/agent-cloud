@@ -12,13 +12,13 @@ setup() {
   load assert_helpers
 }
 
-@test "tududi-sync: the mapping declares exactly the six reviewed pairs" {
+@test "tududi-sync: the mapping declares exactly the eight reviewed pairs" {
   local f="$SYNC_DIR/github-mapping.yml"
   [ -f "$f" ]
-  # Exactly six entries, each carrying all three fields.
-  [ "$(grep -c '  - tududi_project:' "$f")" -eq 6 ]
-  [ "$(grep -c '    github_repo: uhstray-io/' "$f")" -eq 6 ]
-  [ "$(grep -c '    enabled: ' "$f")" -eq 6 ]
+  # Exactly eight entries, each carrying all three fields.
+  [ "$(grep -c '  - tududi_project:' "$f")" -eq 8 ]
+  [ "$(grep -c '    github_repo: uhstray-io/' "$f")" -eq 8 ]
+  [ "$(grep -c '    enabled: ' "$f")" -eq 8 ]
   # The enabled flag is a real boolean, never a string an implementer must parse.
   refute_grep -qE 'enabled: "(true|false)"' "$f"
   # Every repo lives in the org; a bare or foreign repo name is a typo.
@@ -41,7 +41,7 @@ setup() {
   [[ "$output" == *"ALL CORE SCENARIOS PASS"* ]]
 }
 
-@test "tududi-sync: the workflow template RENDERS — full six-pair and enabled-subset, schema-checked" {
+@test "tududi-sync: the workflow template RENDERS — full eight-pair and enabled-subset, schema-checked" {
   # Task 2.4's gate, behavioural: the exact render the provisioning playbook
   # performs (Jinja2 + the committed mapping + the embedded JS), asserted as
   # valid JSON with the reviewed node graph, credentials by name/id only, the

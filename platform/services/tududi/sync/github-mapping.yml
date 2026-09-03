@@ -40,3 +40,13 @@ sync_pairs:
   - tududi_project: scientific-business
     github_repo: uhstray-io/scientific-business
     enabled: false
+  - tududi_project: Uhstray.io Website
+    github_repo: uhstray-io/www
+    enabled: false
+  # agent-cloud is PUBLIC: anything the sync writes there is public issues.
+  # Enabling this pair is a publication decision, not just a rollout step —
+  # task titles, descriptions and audit comments from the paired tududi
+  # project become world-readable the cycle after it flips.
+  - tududi_project: agent-cloud
+    github_repo: uhstray-io/agent-cloud
+    enabled: false

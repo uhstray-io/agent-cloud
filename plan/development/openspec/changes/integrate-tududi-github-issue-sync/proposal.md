@@ -11,7 +11,7 @@ engine this bridge needs; this change is its first real workflow consumer.
 
 ## What Changes
 
-- **Six tududi-project ↔ GitHub-repo relationships**, declared as config-as-code
+- **Eight tududi-project ↔ GitHub-repo relationships** (grown from six on the operator's 2026-09-03 direction — including the PUBLIC `agent-cloud` repo, whose pair ships disabled because enabling it is a publication decision), declared as config-as-code
   in this repo (the repo names already appear committed here):
   `Zerds - Development ↔ zerds`, `Zerds - Website ↔ zerds-website`,
   `agent-cloud ↔ agent-cloud`, `Weft - Development ↔ weft`, `huhhb ↔ huhhb`,
@@ -32,10 +32,10 @@ engine this bridge needs; this change is its first real workflow consumer.
   playbook — no hand-built workflows in the n8n UI.
 - **Credentials from OpenBao**: the tududi personal API token at
   `secret/services/tududi:api_token` (the path already planned for weft) and a
-  new GitHub credential scoped to the six repos, provisioned into n8n by the
+  new GitHub credential scoped to the mapped repos, provisioned into n8n by the
   same pattern as the Postiz credential.
 - **NOT in scope**: GitHub Projects v2 boards, comment sync, attachment/media
-  sync, subtask↔sub-issue mapping, syncing repos outside the declared six, and
+  sync, subtask↔sub-issue mapping, syncing repos outside the declaration, and
   real-time (webhook) transport — each a possible later layer.
 
 ## Capabilities

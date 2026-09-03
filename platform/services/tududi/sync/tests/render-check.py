@@ -23,13 +23,13 @@ SYNC = Path(__file__).resolve().parent.parent
 def main() -> int:
     mapping = yaml.safe_load((SYNC / "github-mapping.yml").read_text())
     all_pairs = mapping["sync_pairs"]
-    assert len(all_pairs) == 6, "the reviewed declaration is six pairs"
+    assert len(all_pairs) == 8, "the reviewed declaration is eight pairs"
     enabled = [p for p in all_pairs if p["enabled"]]
-    # Task 2.4's gate: the FULL six-pair declaration renders to valid JSON,
+    # Task 2.4's gate: the FULL eight-pair declaration renders to valid JSON,
     # and so does the enabled subset the provisioning actually deploys.
     for pairs in (all_pairs, enabled):
         run_render(pairs)
-    print(f"RENDER CHECK PASS — 8 nodes; full six-pair AND enabled-subset renders valid; no credential values")
+    print(f"RENDER CHECK PASS — 8 nodes; full eight-pair AND enabled-subset renders valid; no credential values")
     return 0
 
 
