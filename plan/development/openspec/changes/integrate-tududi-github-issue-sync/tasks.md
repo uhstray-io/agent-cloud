@@ -94,13 +94,13 @@
       credential in place (`PATCH /api/v1/credentials/{id}`); declare its
       45-minute Semaphore SCHEDULE as code (`templates.yml` gains a
       `schedule:` field; `setup-templates.yml` learns to upsert schedules)
-- [ ] 3.3 Extend the n8n credential-provisioning playbook (or add a sibling) to
+- [x] 3.3 (DONE 2026-09-03 inside provision-tududi-github-sync.yml — both providers live-validated with named refusals BEFORE any engine write; Validate Secrets wiring rides 6.2's docs pass) Extend the n8n credential-provisioning playbook (or add a sibling) to
       upsert the tududi and GitHub credentials into n8n from those paths —
       idempotent, `no_log` on secret-bearing steps, names-and-counts output —
       and to **precondition-validate both credentials against their live APIs
       first**, failing with a named error before touching n8n when either is
       absent or dead; wire both into the `Validate Secrets` standing check
-- [ ] 3.4 Validation gate: scenarios "Credentials provisioned as code" and
+- [x] 3.4 (DONE 2026-09-03, proven live on local-dev: both credentials exist after one run — task 111; re-run duplicates nothing — 113; a REAL dead token, revoked via the app's own semantic, failed the run BY NAME before any engine change — 115; the mint self-healed and provisioning passed again — 116/117) Validation gate: scenarios "Credentials provisioned as code" and
       "Provisioning refuses dead credentials" hold on local-dev — both
       credentials exist after one run, re-run creates no duplicates, a
       deliberately broken token fails the run with its name before any engine
@@ -108,7 +108,7 @@
 
 ## 4. Workflow provisioning playbook + Semaphore template
 
-- [ ] 4.1 Write `provision-tududi-github-sync.yml`: render mapping → upsert both
+- [x] 4.1 (DONE 2026-09-03; two implementation findings recorded: the public API's credential schema requires the domain-restriction mode stated — both credentials are pinned to their one legitimate host, same finding the Postiz provisioning hit; and ansible-core 2.16 native-evaluates the rendered JSON, so the parse is version-proofed) Write `provision-tududi-github-sync.yml`: render mapping → upsert both
       workflows by name via the n8n API → activate → **prune owned objects the
       declaration no longer implies** (name-prefix-scoped, never touching
       anything else — design D1); the rollback path (`-e sync_enabled=false`)
@@ -117,12 +117,12 @@
       broken mapping file AND dead/revoked provider credentials (it is the
       one-run kill switch; a validation gate in front of it would defeat it);
       add the Semaphore template (`dev_variant: true`)
-- [ ] 4.2 BATS: provisioning refuses an empty or unparseable mapping;
+- [ ] 4.2 (PARTIAL: ordering/scoping/no_log BATS in place; kill switch proven LIVE with valid inputs — 114; the broken-mapping + dead-credential kill-switch variant remains for the 5.x phase) BATS: provisioning refuses an empty or unparseable mapping;
       `sync_enabled=false` still deactivates both workflows under that same
       broken mapping AND with deliberately dead provider credentials (only the
       n8n API key is exercised on that path); re-run with unchanged inputs
       reports no change; prune only ever names prefix-owned objects
-- [ ] 4.3 Validation gate: provisioning runs green on local-dev n8n; workflows
+- [x] 4.3 (DONE 2026-09-03: provision green — 111; refresher completed its first full cycle against the provisioned credential — 112; re-provision no-op — 113/117; EMPTY declaration pruned every owned object while the unrelated Postiz credential survived — 118, verified via the API; restore + re-provision — 119) Validation gate: provisioning runs green on local-dev n8n; workflows
       visible, active, re-provisioning is a no-op. Ownership scope is explicit:
       the two workflows and both credentials are SHARED by all pairs (design
       D1/D2/D7) — dropping one pair re-renders the shared workflows with the

@@ -228,6 +228,23 @@ templates:
     schedule:
       cron: "*/45 * * * *"
 
+  - name: Provision tududi-github Sync
+    playbook: platform/playbooks/provision-tududi-github-sync.yml
+    # Places the whole sync: live-validates BOTH provider credentials (named
+    # failure before the engine changes), upserts the two named credentials,
+    # renders the cycle workflow from the committed eight-pair mapping
+    # (enabled entries), upserts + activates it, prunes owned objects the
+    # declaration no longer implies. The kill switch (-e sync_enabled=false)
+    # deactivates owned workflows BEFORE any validation — it works with a
+    # broken mapping and dead credentials by design.
+    dev_variant: true
+    survey_vars:
+      - name: sync_enabled
+        title: "Sync enabled"
+        description: "false = kill switch: deactivate the sync's workflows and stop (no validation, no render)"
+        type: string
+        required: false
+
   - name: Provision n8n Postiz Credential
     playbook: platform/playbooks/provision-n8n-postiz-credential.yml
     # Upserts the ONE postizApi credential in n8n: authenticates with

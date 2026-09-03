@@ -131,6 +131,50 @@ setup() {
   assert_grep -qF "rejectattr('_generated', 'defined')" "$REPO_ROOT/platform/semaphore/setup-templates.yml"
 }
 
+@test "tududi-sync: provisioning — kill switch first, named refusals, prefix-scoped prune" {
+  local pb="$REPO_ROOT/platform/playbooks/provision-tududi-github-sync.yml"
+  [ -f "$pb" ]
+  assert_grep -qF 'import_playbook: preflight-target-group.yml' "$pb"
+  # Ownership names are fixed, never caller-supplied.
+  assert_grep -qE '^    _prefix: "tududi-github-sync"$' "$pb"
+  assert_grep -qE '^    _workflow_name: "tududi-github-sync: cycle"$' "$pb"
+  refute_grep -qE '^    (_prefix|_workflow_name|_tududi_cred_name|_github_cred_name): "\{\{' "$pb"
+  # THE kill-switch ordering (task 4.1): the sync_enabled branch sits BEFORE
+  # the mapping read and both credential validations, and uses only the n8n
+  # API key. Line order is the invariant.
+  local k m t g
+  k=$(grep -n 'Deactivate the owned workflows and stop' "$pb" | head -1 | cut -d: -f1)
+  m=$(grep -n 'Read the committed mapping' "$pb" | head -1 | cut -d: -f1)
+  t=$(grep -n 'Validate the tududi token against the live API' "$pb" | head -1 | cut -d: -f1)
+  g=$(grep -n 'Mint + scope-validate the GitHub App token' "$pb" | head -1 | cut -d: -f1)
+  [ -n "$k" ] && [ -n "$m" ] && [ -n "$t" ] && [ -n "$g" ]
+  [ "$k" -lt "$m" ] && [ "$k" -lt "$t" ] && [ "$k" -lt "$g" ]
+  # Both credential validations precede every engine write (task 3.3): the
+  # first upsert comes after both probes.
+  local u
+  u=$(grep -n 'Upsert the tududi credential' "$pb" | head -1 | cut -d: -f1)
+  [ "$t" -lt "$u" ] && [ "$g" -lt "$u" ]
+  # Refusals are named: malformed mapping, absent token, dead token.
+  assert_grep -qF 'Refuse an unparseable or shapeless mapping (named)' "$pb"
+  assert_grep -qF 'Refuse a dead tududi token (named)' "$pb"
+  # Prune only ever addresses prefix-owned names.
+  assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" "$pb"
+  # Secret-bearing steps are no_log; the reports are not.
+  local blk n
+  for n in "Authenticate to OpenBao" "Read the n8n API key" \
+           "Upsert the tududi credential" "Upsert the GitHub credential" \
+           "Render the cycle workflow"; do
+    blk=$(task_block "$pb" "$n")
+    [ -n "$blk" ]
+    assert_grep -q 'no_log: true' <<<"$blk"
+  done
+  for n in "Report (names and counts only" "Report the kill switch"; do
+    blk=$(task_block "$pb" "$n")
+    [ -n "$blk" ]
+    refute_grep -q 'no_log: true' <<<"$blk"
+  done
+}
+
 @test "tududi-sync: no credential, token, or address in any committed sync artifact" {
   # The mapping (and later the workflow templates) hold names only — secrets
   # live in OpenBao, endpoints in inventory (design D3/D7, contract doc).

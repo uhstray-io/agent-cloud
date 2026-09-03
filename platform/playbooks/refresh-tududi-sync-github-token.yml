@@ -111,9 +111,13 @@
           X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
         body_format: json
         body:
+          # The full pinned blob, matching provisioning — a partial data PATCH
+          # would drop the domain restriction the create established.
           data:
             name: "Authorization"
             value: "Bearer {{ _mt_token }}"
+            allowedHttpRequestDomains: domains
+            allowedDomains: api.github.com
         status_code: [200]
       no_log: true
 
