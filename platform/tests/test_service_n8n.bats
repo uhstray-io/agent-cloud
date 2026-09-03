@@ -91,8 +91,9 @@ setup() {
   # generate_n8n_env() was the bash-generated-secrets path the composable
   # cutover replaced (OpenBao-sourced via manage-secrets + n8n.env.j2). The
   # lib keeps a comment naming it for history, so the guard forbids the
-  # DEFINITION and any CALL (line-leading token), not the mention.
-  refute_grep -qE '^\s*generate_n8n_env\b' "${BATS_TEST_DIRNAME}/../lib/common.sh"
+  # DEFINITION (both bash forms: name() and function name) and any CALL
+  # (line-leading token), not the mention.
+  refute_grep -qE '^[[:space:]]*(function[[:space:]]+)?generate_n8n_env\b' "${BATS_TEST_DIRNAME}/../lib/common.sh"
 }
 
 @test "n8n: deploy playbook is composable (place-monorepo + manage-secrets), not the legacy wrapper" {

@@ -1174,11 +1174,13 @@ time, regardless of how the work itself was commissioned, how green the checks a
 how many identical cycles were approved before. "Include it in our updates" commissions
 work; it does not release it.
 
-**Enforced by.** Convention (user-stated in CLAUDE.md's branch workflow and the
-operator's standing memory; restated by the operator on this occurrence). Mechanically
-enforceable via a permission rule denying `git push`/`gh pr create`/`gh pr merge`
-without a prompt — the auto-mode classifier already prompts for some Semaphore-task
-dispatches; extending deny-by-default to these three git surfaces would close it.
+**Enforced by.** Convention — now stated consistently: AGENTS.md's branch-workflow
+callout was aligned with this entry on 2026-09-02 (it previously allowed unprompted
+pushes while gating only `gh pr create`; it now gates push, PR and merge per action).
+Mechanically enforceable via a permission rule denying `git push`/`gh pr create`/
+`gh pr merge` without a prompt — the auto-mode classifier already prompts for some
+Semaphore-task dispatches; extending deny-by-default to these three git surfaces
+would close it.
 
 ---
 

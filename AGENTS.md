@@ -368,9 +368,9 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 - **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
 - **tududi + honcho deployed (prod)** — to-do app at `todo.uhstray.io` (native Authentik OIDC) and memory API at `memory.uhstray.io` (JWT `/v3` + Authentik-gated `/docs`), both composable rootless-podman deploys
 - **Cloudflare edge as code** — WAF rulesets + platform DNS adopted into OpenTofu (R2 state backend), applied via `apply-cloudflare-tofu.yml`; API-first is now the standard for edge changes
-- **Postiz deployed (prod)** — social publishing at `postiz.uhstray.io` (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres), native Authentik OIDC, API-key automation endpoint for n8n
+- **Postiz validated (local) — prod rollout PENDING** — social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres), native Authentik OIDC, API-key automation endpoint for n8n. The full chain is proven on local-dev only; verified 2026-09-02: `secret/services/postiz` is empty on prod OpenBao and postiz.uhstray.io unanswering — the prod deploy, sign-in and key capture are still ahead (they also unblock the n8n→Postiz credential provisioning)
 - **Self-hosted GitHub Actions runners (prod)** — `gh-runner-01` + `gh-runner-02`, one interchangeable pool, org-scoped to the FIVE PRIVATE repos via the `uhstray-selfhosted` group; `agent-cloud` deliberately excluded because it is public. Workflows opt in with `runs-on: [self-hosted, linux, x64, uhstray-lan]`. Enforced isolation is workspace destruction between jobs, no host administration from a job, and network-level egress denial — **per-job containerisation and process reaping are NOT enforced**, so nothing may sit on a runner host that all five repos are not entitled to read (see `platform/services/github-runner/CLAUDE.md`)
-- **n8n composable cutover (prod, 2026-09-02)** — prod n8n migrated in place from the standalone legacy compose project to the composable stack on the pinned 2.25.7: stateful secrets pre-seeded from the live `.env` (alias-aware — the legacy file spells the key `ENCRYPTION_KEY`), data moved by `backup-n8n-db.yml` → `restore-n8n-db.yml` (staging-database restore; the standing upgrade/rollback tooling), worker readiness-gated behind the app's boot migrations, all 4 workflows + members preserved, API key minted through the owner's TOTP-MFA login and captured to OpenBao. The legacy project and the cutover dump remain on the VM as rollback until their retirement is decided; the n8n→Postiz credential provisioning waits on the Postiz prod rollout
+- **n8n composable cutover (prod, 2026-09-02)** — prod n8n migrated in place from the standalone legacy compose project to the composable stack on the pinned 2.25.7: stateful secrets pre-seeded from the live `.env` (alias-aware — the legacy file spells the key `ENCRYPTION_KEY`), data moved by `backup-n8n-db.yml` → `restore-n8n-db.yml` (staging-database restore; the standing upgrade/rollback tooling), worker readiness-gated behind the app's boot migrations, all 4 workflows + members preserved, API key minted through the owner's TOTP-MFA login and captured to OpenBao. Retirement executed the same day on the operator's call: the legacy project (containers, volumes, directory) and the cutover dump are DELETED — superseded by a fresh composable-stack dump and an 11-field credential backup to site-config (`backup/n8n-20260902T135450Z-eff2ab`). The n8n→Postiz credential provisioning waits on the Postiz prod rollout
 
 ### In Progress
 - NocoDB decommission — NocoDB is **RETIRED** (replaced by tududi; decision 2026-09-01, recorded on PR #15's close-out and in `plan/development/09-service-migrations-tooling.md`). It still runs via the legacy `deploy.sh` path; taking it down (containers, volumes, route, `generate_nocodb_env()`) is scoped as its own change — do NOT execute the old migration plan against it. (The n8n half of that plan **executed 2026-09-02**: see "Completed" below.)
@@ -391,12 +391,14 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 ### Branch Workflow
 
-> **NEVER open a pull request unless the user explicitly requests it — every PR, every time.**
-> Agents may create a branch, commit, and push it, but **opening the PR is a user-gated action**:
-> stop at the branch and ask ("branch ready — want me to open the PR?"). Do not run
-> `gh pr create` (or equivalent) on your own initiative. This applies to feature→`dev` PRs and
-> `dev`→`main` promotion PRs alike. (Likewise, do not push to a PR already under review without
-> asking.)
+> **NEVER push, open a pull request, or merge one unless the user explicitly authorizes that
+> specific action — every push, every PR, every merge, every time.**
+> Agents may create a branch and commit locally, but **push, `gh pr create`, and `gh pr merge`
+> are each user-gated actions**: stop and ask ("branch ready — push it? open the PR?"). An
+> approval covers exactly the actions it names, on the branch/PR it names — a previously
+> approved sibling cycle authorizes nothing (`docs/MISTAKES.md` §5.7). This applies to
+> feature→`dev` PRs and `dev`→`main` promotion PRs alike, and to pushing follow-up commits
+> to a PR already under review.
 
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
