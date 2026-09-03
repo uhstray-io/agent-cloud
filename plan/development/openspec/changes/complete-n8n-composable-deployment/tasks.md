@@ -83,45 +83,60 @@
       containers → restore named dump → start; n8n re-runs migrations at boot);
       Semaphore templates for both; BATS coverage (no_log scoping, destructive
       labeling on restore)
-- [ ] 6.4 Run `Seed n8n Secrets` against the live host with
+- [x] 6.4 Run `Seed n8n Secrets` against the live host with
       `-e live_n8n_env=/home/<ansible_user>/n8n/.env`; verify with `Check Secrets` that
       `encryption_key`, `db_admin_password`, `db_user_password` all resolve as
       pre-existing
-- [ ] 6.5 Cutover, each step independently retryable: `Back Up n8n DB` (legacy
+- [x] 6.5 Cutover, each step independently retryable: `Back Up n8n DB` (legacy
       `n8n_postgres_1`) → GATE: operator go → stop the legacy `/home/<ansible_user>/n8n`
       project (stopped, not destroyed) → guarded `Deploy n8n` → `Restore n8n DB`
       → operator confirms existing workflows execute and stored credentials
-      decrypt (2.8.3→2.25.7 migrations watched, not assumed)
-- [ ] 6.6 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy),
-      then `Store n8n API Key` (mints via the owner session AND captures — no
-      manual step; D2), then `Provision n8n Postiz Credential`
-- [ ] 6.7 Validation gate: scenarios "Pre-seed makes the first composable deploy a
-      fetch", "Cutover refuses to proceed on a stateful mismatch" (proven by the
-      guard's test, not by breaking prod), and "Idempotent redeploy after cutover"
-      hold on the production host
+      decrypt (2.8.3→2.25.7 migrations watched, not assumed). Executed
+      2026-09-01/02: two live findings fixed en route (cross-schema restore →
+      staging swap; app/worker migration race → readiness gating), operator
+      verified login + all 4 workflows on 2.25.7
+- [ ] 6.6 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy —
+      DONE, n8n-nodes-postiz@0.2.17 installed from env), then `Store n8n API Key`
+      (DONE 2026-09-02, task 360: minted via the owner's MFA login — TOTP computed
+      from OpenBao — and captured), then `Provision n8n Postiz Credential`
+      (BLOCKED: prod Postiz is not deployed — secret/services/postiz is empty and
+      postiz.uhstray.io unreachable; the provisioning runs as soon as the
+      deploy-postiz change's prod rollout lands its API key)
+- [x] 6.7 Validation gate: scenarios "Pre-seed makes the first composable deploy a
+      fetch" (tasks 344/352: encryption key fetched, owner + credential survived),
+      "Cutover refuses to proceed on a stateful mismatch" (proven by the
+      guard's behavioural test, not by breaking prod), and "Idempotent redeploy
+      after cutover" (task 355: re-run converged, zero container churn) hold on
+      the production host
 
 ## 7. Cleanup and close-out
 
-- [ ] 7.1 Remove `generate_n8n_env()` from `platform/lib/common.sh` (leave
-      `generate_nocodb_env()` for now — NocoDB is RETIRED, replaced by tududi,
-      and that helper's removal belongs to the separate NocoDB decommission
-      change alongside its playbooks and templates); fix any callers/tests;
-      remove the cutover dump from the VM (named in the backup report) and
-      record the operator decision on when the stopped legacy
-      `/home/<ansible_user>/n8n` project gets deleted
-- [ ] 7.2 Update docs: CLAUDE.md workflow table rows for the new playbooks, lift the
-      n8n half of the HOLD in `plan/development/09-service-migrations-tooling.md`
-      (the NocoDB half is superseded by the retirement decision — the separate
-      decommission change rewrites that section rather than executing it), n8n
-      deployment README/context notes
+- [x] 7.1 Remove `generate_n8n_env()` from `platform/lib/common.sh` (DONE — with a
+      BATS guard that it stays deleted; `generate_nocodb_env()` left for the
+      separate NocoDB decommission change). Retirement executed 2026-09-02 on
+      the operator's call: legacy project deleted (containers, volumes, dir),
+      cutover dump deleted — superseded by a fresh composable-stack dump
+      (task 363) and a full credential backup to site-config
+      (branch backup/n8n-20260902T135450Z-eff2ab, 11 fields incl. the
+      encryption key, owner login and TOTP seed)
+- [x] 7.2 Update docs: CLAUDE.md workflow table rows + Completed/In-Progress status,
+      the n8n half of `plan/development/09-service-migrations-tooling.md` marked
+      EXECUTED with a completion note (NocoDB half marked RETIRED — the separate
+      decommission change owns that section now), and a deployment README
+      (`platform/services/n8n/deployment/README.md`: stateful secrets, startup
+      ordering, upgrade runbook)
 - [x] 7.3 Close PR #15 as superseded (USER-GATED — closed 2026-09-01 on the
       operator's explicit instruction, ahead of prod validation), with a comment
       recording what superseded each n8n part. Scope change recorded in the same
       comment: the NocoDB half is RETIRED, not paused — NocoDB is being removed
       from the platform, replaced by tududi; its decommission gets its own change
-- [ ] 7.4 Retain one outcome memory into the repo's experience bank: whether the
+- [x] 7.4 Retain one outcome memory into the repo's experience bank: whether the
       cutover preserved live state, labelled worked / dead end / corrected, with the
-      root cause of anything that failed
-- [ ] 7.5 Validation gate: scenario "Re-running a completed sequence changes nothing"
-      holds — `Deploy n8n` re-run against finished prod reports no change; BATS +
-      pytest suites green; change validated and ready to archive
+      root cause of anything that failed (retained 2026-09-02: WORKED — all state
+      preserved; three premises corrected live, each into a durable mechanism)
+- [x] 7.5 Validation gate: scenario "Re-running a completed sequence changes nothing"
+      holds — `Deploy n8n` re-run against finished prod reports no change (task
+      355: zero container churn); 540 BATS + 100 pytest green; change validates.
+      READY TO ARCHIVE once the close-out PR lands — with 6.6's last step
+      (Postiz credential provisioning) carried by the deploy-postiz change's
+      prod rollout, where the blocker lives

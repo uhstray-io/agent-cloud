@@ -205,36 +205,12 @@ EOF
   chmod 600 "$env_file"
 }
 
-# ── n8n Env Generation ────────────────────────────────────────────────────────
-
-generate_n8n_env() {
-  local env_file="$1" secrets_dir="$2"
-  if [ -f "$env_file" ]; then
-    info "$(basename "$env_file") already exists — skipping."
-    return 0
-  fi
-  info "Generating $(basename "$env_file")..."
-  local admin_pass user_pass enc_key
-  admin_pass=$(get_secret "$secrets_dir" n8n_admin_password)
-  needs_gen "$admin_pass" && admin_pass=$(gen_secret 24 48)
-  user_pass=$(get_secret "$secrets_dir" n8n_user_password)
-  needs_gen "$user_pass" && user_pass=$(gen_secret 24 48)
-  enc_key=$(get_secret "$secrets_dir" n8n_encryption_key)
-  needs_gen "$enc_key" && enc_key=$(gen_secret 32 64)
-  put_secret "$secrets_dir" n8n_admin_password "$admin_pass"
-  put_secret "$secrets_dir" n8n_user_password "$user_pass"
-  put_secret "$secrets_dir" n8n_encryption_key "$enc_key"
-  cat > "$env_file" << EOF
-POSTGRES_USER=n8n_admin
-POSTGRES_PASSWORD=${admin_pass}
-POSTGRES_DB=n8n
-POSTGRES_NON_ROOT_USER=n8n_user
-POSTGRES_NON_ROOT_PASSWORD=${user_pass}
-DB_POSTGRESDB_PASSWORD=${user_pass}
-N8N_ENCRYPTION_KEY=${enc_key}
-EOF
-  chmod 600 "$env_file"
-}
+# n8n's env generation used to live here (generate_n8n_env). Removed after the
+# composable cutover (2026-09-02): n8n's secrets are OpenBao-sourced via
+# manage-secrets + n8n.env.j2, and its stateful values were pre-seeded from the
+# live instance (seed-n8n-secrets.yml). generate_nocodb_env above stays only
+# until the NocoDB decommission change retires that service (replaced by
+# tududi); nothing new may call it.
 
 # ── Semaphore Env Generation ──────────────────────────────────────────────────
 
