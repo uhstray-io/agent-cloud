@@ -113,9 +113,24 @@
           ~ ", write_cap: " ~ (write_cap | int | string) ~ " };\n"
           ~ "// PRs ride the issues API; the sync never touches them.\n"
           ~ "const pairItems = $('Bucket tasks per declared pair').all();\n"
-          ~ "const issueItems = $input.all();\n"
-          ~ "const merged = pairItems.map((pi, i) => ({ json: { pair: pi.json.pair, tasks: pi.json.tasks,\n"
-          ~ "  issues: (Array.isArray(issueItems[i].json) ? issueItems[i].json : [issueItems[i].json])\n"
+          ~ "// n8n's HTTP Request node SPLITS a JSON-array response into one\n"
+          ~ "// item per element, so $input is a FLAT list of issue objects\n"
+          ~ "// across every pair — index-aligning it to pairItems creates a\n"
+          ~ "// duplicate issue every cycle (found live, dev-test #2-#6). Group\n"
+          ~ "// by each issue's repository_url instead: robust to the split, to\n"
+          ~ "// empty repos, and to pair count.\n"
+          ~ "const byRepo = {};\n"
+          ~ "for (const it of $input.all()) {\n"
+          ~ "  const iss = it.json;\n"
+          ~ "  const each = Array.isArray(iss) ? iss : [iss];\n"
+          ~ "  for (const is of each) {\n"
+          ~ "    if (!is || !is.repository_url) continue;\n"
+          ~ "    const full = is.repository_url.replace('https://api.github.com/repos/', '');\n"
+          ~ "    (byRepo[full] = byRepo[full] || []).push(is);\n"
+          ~ "  }\n"
+          ~ "}\n"
+          ~ "const merged = pairItems.map((pi) => ({ json: { pair: pi.json.pair, tasks: pi.json.tasks,\n"
+          ~ "  issues: (byRepo[pi.json.pair.github_repo] || [])\n"
           ~ "    .filter((it) => it && !('pull_request' in it))\n"
           ~ "    .map((it) => ({ number: it.number, title: it.title, body: it.body || '',\n"
           ~ "      state: it.state, state_reason: it.state_reason || null,\n"
@@ -184,7 +199,7 @@
       "position": [1200, 100],
       "parameters": {
         "method": "PATCH",
-        "url": "={{ tududi_base_url }}/api/v1/tasks/{% raw %}{{ $json.op.task_uid }}{% endraw %}",
+        "url": "={{ tududi_base_url }}/api/task/{% raw %}{{ $json.op.task_uid }}{% endraw %}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,

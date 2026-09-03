@@ -301,9 +301,15 @@ function computeOps(input) {
       continue;
     }
 
-    // Re-tagged after un-tag: reopen the same issue (D6).
+    // Re-tagged after un-tag: reopen the same issue (D6). The reopen is
+    // this cycle's DECISION about the status field, so the GitHub side is
+    // projected as already open below — otherwise the field loop reads the
+    // stale closed state as a GitHub change and cancels the task (found live
+    // on dev-test #2: status bounced 0 -> 5 -> 1 across two cycles).
+    let reopening = false;
     if (task.tagged && issue.state === 'closed' && issue.state_reason === 'not_planned'
         && mapTududiStatus(task.status) === 'open') {
+      reopening = true;
       ops.push({
         type: 'update_issue',
         repo: pair.github_repo,
@@ -328,7 +334,7 @@ function computeOps(input) {
       {
         title: issue.title,
         description: issue.body,
-        statusMapped: mapIssueState(issue),
+        statusMapped: reopening ? 'open' : mapIssueState(issue),
         labelNames: issue.labels,
       },
       syncTag
@@ -451,7 +457,15 @@ function computeOps(input) {
   function applyToTask(patch, f, value, task) {
     if (f === 'title') patch.name = value;
     else if (f === 'description') patch.note = value;
-    else if (f === 'labels') patch.tags = value ? value.split(',') : [];
+    // tududi's updateTaskTags reads tag.name (v1.1.1), so update_task ops
+    // carry tag OBJECTS, not the bare strings a bare split would give — and
+    // the sync control tag is re-attached so a labels merge never strips it
+    // off the task (it is excluded from the projection, never from the task).
+    else if (f === 'labels') {
+      patch.tags = (value ? value.split(',') : [])
+        .concat(syncTag)
+        .map((n) => ({ name: n }));
+    }
     else if (f === 'status') {
       const next = issueStateToTududiStatus(value, task.status);
       if (next !== null) patch.status = next;

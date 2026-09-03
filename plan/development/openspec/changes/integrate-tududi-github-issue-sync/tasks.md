@@ -149,7 +149,27 @@
       cap not hit, linked pairs' per-field baselines match both sides
       (convergence), zero sync activity on undeclared projects/repos — the
       executable gate both this phase and the prod rollout (6.x) run
-- [ ] 5.2 Validate against a scratch pair WITHOUT touching the canonical scope:
+- [ ] 5.2 (PARTIAL 2026-09-03 — REDESIGNED: `uhstray-io/dev-test` ↔ tududi
+      `dev-test` is a STANDING enabled pair in the canonical mapping, covered by
+      the App's own installation — no overlay file and no scratch PAT, because
+      the App IS the identity and its installation list is the scope (the
+      refresher's preflight requires installation == mapping, so a pair outside
+      the declaration cannot exist). Run live against real GitHub, local
+      tududi+n8n at 1-min cadence, all with the 5.1 gate green afterwards:
+      tag→creation by `todo-sync-agent[bot]` with marker+labels; quiet cycle;
+      GitHub label → tududi tag (sync tag preserved, tududi-shaped `{name}`
+      objects); same-field title conflict → newer side won, loser preserved in
+      ONE keyed comment, no repeat next cycle; un-tag→closed not_planned→re-tag→
+      reopened with the task's status UNTOUCHED; archive→close, unarchive→
+      reopen; untagged task never produced an issue. Four engine bugs found and
+      fixed by this run (index-aligned merge duplicating issues; wrong tududi
+      write route; tags sent as strings; reopen bouncing status 0→5→1), each
+      with a red-then-green scenario in core-scenarios.js. NOT run live:
+      interrupted-creation recovery, and the audit-comment retry — the compute
+      node passes `comments: []`, so keyed comment idempotency is INERT live
+      (success-path idempotency is state-driven and held; the gap bites only
+      on a partial-failure retry). Fix path: fetch comments for LINKED issues
+      only, or move the key into the marker.) Validate against a scratch pair WITHOUT touching the canonical scope:
       a temporary mapping OVERLAY file (the canonical eight-pair declaration is
       never edited) declaring one scratch tududi project ↔ a private scratch
       repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
@@ -166,7 +186,13 @@
       untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
       prune the scratch credential, re-provision, and assert the canonical
       mapping still declares exactly eight pairs and the scratch objects are gone
-- [ ] 5.3 Validation gate: scenarios "Tagging a task creates its issue exactly
+- [ ] 5.3 (PARTIAL 2026-09-03: every listed scenario EXCEPT "Interrupted
+      creation recovers without a duplicate" passed live on dev-test; the 5.1
+      gate PASSED for both enabled pairs after the whole battery — task 135 —
+      once its tududi transport was corrected to the SAME inventory variable
+      the cycle workflow uses (it had borrowed `tududi_base_url`, the app's
+      public edge URL, unreachable from inside the orchestrator; MISTAKES
+      1.x). "Unmapping is non-destructive" was proven in 4.3 — 118.) Validation gate: scenarios "Tagging a task creates its issue exactly
       once", "Interrupted creation recovers without a duplicate", "Removing the
       sync tag closes the issue, destroys nothing", "Linked pairs converge
       bidirectionally" (all three sub-scenarios), "Both sides edited between

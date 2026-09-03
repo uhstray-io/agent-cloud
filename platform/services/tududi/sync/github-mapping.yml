@@ -43,6 +43,14 @@ sync_pairs:
   - tududi_project: Uhstray.io Website
     github_repo: uhstray-io/www
     enabled: false
+  # The STANDING validation pair: dev-test is the platform's sanctioned
+  # test landing zone, so the scenario battery (task 5.2) and any future
+  # regression validation write their test issues here — never into a real
+  # tracker. Enabled by design; its tududi project must exist under the
+  # same name on every instance the sync runs against.
+  - tududi_project: dev-test
+    github_repo: uhstray-io/dev-test
+    enabled: true
   # agent-cloud is PUBLIC: anything the sync writes there is public issues.
   # Enabling this pair is a publication decision, not just a rollout step —
   # task titles, descriptions and audit comments from the paired tududi

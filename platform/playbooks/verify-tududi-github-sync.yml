@@ -31,7 +31,11 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _n8n_base: "{{ n8n_verify_base_url | default(n8n_url | default('http://workflow-n8n:5678')) }}"
     _workflow_name: "tududi-github-sync: cycle"
-    _tududi_base: "{{ tududi_base_url | default('http://127.0.0.1:3002') }}"
+    # The SAME transport the cycle workflow uses (provision-tududi-github-sync
+    # reads this name) — not tududi_base_url, which is the app's PUBLIC
+    # BASE_URL behind Caddy and resolves to a host-only edge from inside the
+    # orchestrator (found live: the gate failed on the fetch, censored).
+    _tududi_base: "{{ tududi_sync_tududi_url | default('http://tududi:3002') }}"
     _sync_tag: "{{ tududi_sync_tag | default('gh-sync') }}"
     _sync_login: "{{ tududi_sync_github_login | default('todo-sync-agent[bot]') }}"
     _write_cap: "{{ tududi_sync_write_cap | default(20) }}"
@@ -109,7 +113,18 @@
           Authorization: "Bearer {{ _tududi_token }}"
         status_code: [200]
       register: _tasks
+      failed_when: false
       no_log: true
+
+    - name: "Refuse an unreadable tududi (named — the fetch above is censored)"
+      ansible.builtin.assert:
+        that:
+          - _tasks.status == 200
+        fail_msg: >-
+          {{ _tududi_base }}/api/v1/tasks answered HTTP {{ _tasks.status }}
+          ({{ _tasks.msg | default('no detail') }}). Same transport the cycle
+          workflow uses — if the cycle succeeds, check tududi_sync_tududi_url
+          on THIS host's inventory.
 
     - name: "Place the verifier and the engine beside it in the container"
       ansible.builtin.copy:

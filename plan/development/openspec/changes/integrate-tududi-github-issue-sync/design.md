@@ -35,7 +35,7 @@ See `proposal.md — Why`. Grounding, verified this session:
 **Non-Goals**
 - No webhook transport in v1 (see D2 — deferred, not rejected).
 - No comment/attachment/subtask sync; no Projects v2.
-- No generalized "sync framework" — eight pairs, one workflow shape. Generalize
+- No generalized "sync framework" — nine pairs, one workflow shape. Generalize
   when a second integration actually exists.
 
 ## Decisions
@@ -91,10 +91,15 @@ is recorded as a follow-up, not smuggled in.
 
 ### D3 — Mapping is a committed YAML, rendered into the workflows
 
-`platform/services/tududi/sync/github-mapping.yml`: eight entries of
+`platform/services/tududi/sync/github-mapping.yml`: nine entries of
 `{ tududi_project, github_repo, enabled }` (grown from six on the operator's
 2026-09-03 direction: `Uhstray.io Website ↔ uhstray-io/www` and
-`agent-cloud ↔ uhstray-io/agent-cloud` joined). **agent-cloud is PUBLIC** —
+`agent-cloud ↔ uhstray-io/agent-cloud` joined; then
+`dev-test ↔ uhstray-io/dev-test` as the STANDING validation pair — the
+operator provided the repo and its tududi project, the App already covers
+it, and a permanent test landing zone replaces the earlier scratch-overlay
+plus scratch-credential design entirely: validation writes land in dev-test,
+never in a real tracker, using the production credential chain). **agent-cloud is PUBLIC** —
 enabling its pair publishes the paired tududi project's task titles,
 descriptions and audit comments as world-readable issues; the entry ships
 disabled and its flip is a publication decision, recorded in the mapping

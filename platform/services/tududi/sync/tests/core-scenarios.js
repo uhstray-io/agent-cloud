@@ -63,3 +63,37 @@ const src = require('fs').readFileSync(CORE, 'utf8');
 assert.ok(!/delete_issue|delete_task/.test(src));
 
 console.log('ALL CORE SCENARIOS PASS');
+
+// 9) label added on GitHub -> update_task carries tududi-shaped tag OBJECTS,
+//    with the sync control tag re-attached (never stripped off the task).
+{
+  const proj = core.projections({ title: 'T', description: 'D', statusMapped: 'open', labelNames: ['backend'] }, 'gh-sync');
+  const marker = { uid: 'uL', baselines: core.baselinesOf(proj), tududi_updated_at: '1', github_updated_at: '1' };
+  const body = core.withMarker('D', marker);
+  const r = core.computeOps({ pair, syncTag: 'gh-sync', syncLogin: 'a', writeCap: 10,
+    tasks: [{ uid: 'uL', title: 'T', note: 'D', status: 0, tags: ['backend','gh-sync'], updated_at: '1', tagged: true }],
+    issues: [{ number: 1, title: 'T', body, state: 'open', labels: ['backend','urgent'], updated_at: '2', user_login: 'human', comments: [] }] });
+  const tp = r.ops.find(o => o.type === 'update_task');
+  assert.ok(tp, 'expected an update_task op');
+  assert.ok(Array.isArray(tp.patch.tags) && tp.patch.tags.every(t => typeof t === 'object' && 'name' in t), 'tags must be {name} objects');
+  const names = tp.patch.tags.map(t => t.name).sort();
+  assert.deepStrictEqual(names, ['backend','gh-sync','urgent'], 'urgent added, sync tag preserved');
+  console.log('SCENARIO 9 (tududi-shaped tag back-prop) PASS');
+}
+
+// 10) re-tag after un-tag: the reopen is the ONLY status decision. The stale
+//     closed:not_planned on GitHub must not read as a GitHub-side change and
+//     write CANCELLED to the task (live bounce 0 -> 5 -> 1 on dev-test #2).
+{
+  const proj = core.projections({ title: 'T', description: 'D', statusMapped: 'open', labelNames: ['backend'] }, 'gh-sync');
+  const marker = { uid: 'uR', baselines: core.baselinesOf(proj), tududi_updated_at: '1', github_updated_at: '1' };
+  const body = core.withMarker('D', marker);
+  const r = core.computeOps({ pair, syncTag: 'gh-sync', syncLogin: 'a', writeCap: 10,
+    tasks: [{ uid: 'uR', title: 'T', note: 'D', status: 0, tags: ['backend','gh-sync'], updated_at: '3', tagged: true }],
+    issues: [{ number: 1, title: 'T', body, state: 'closed', state_reason: 'not_planned', labels: ['backend'], updated_at: '2', user_login: 'a', comments: [] }] });
+  const reopen = r.ops.find(o => o.type === 'update_issue' && o.patch.state === 'open');
+  assert.ok(reopen, 'expected the reopen op');
+  const tp = r.ops.find(o => o.type === 'update_task' && 'status' in o.patch);
+  assert.strictEqual(tp, undefined, 'reopen must not rewrite the tududi status');
+  console.log('SCENARIO 10 (retag reopens without touching tududi status) PASS');
+}

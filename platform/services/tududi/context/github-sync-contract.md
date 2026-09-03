@@ -15,6 +15,7 @@ Postiz contract (`platform/services/postiz/context/use-cases.md`) is the model.
 | Token lifecycle API | `GET/POST /api/profile/api-keys`, `POST /api/profile/api-keys/{id}/revoke`, `DELETE /api/profile/api-keys/{id}` — NOTE the `/api/` prefix, not `/api/v1/` (`getApiPath` prefixes bare `api/`); session+CSRF authenticated (login `POST /api/login`, CSRF `GET /api/csrf-token` → `{csrfToken}` sent as `x-csrf-token`); `createApiToken` accepts `expiresAt` and `abilities` | `frontend/config/paths.ts:82-90`; `frontend/utils/apiKeysService.ts`; `frontend/utils/csrfService.ts`; `backend/modules/users/apiTokenService.js` |
 | **Token mint is automatable** | Yes — session login (the deploy retains break-glass local login beside OIDC) → CSRF token → `POST /api/profile/api-keys`, implemented by `store-tududi-api-token.yml` on the `store-n8n-api-key.yml` model. Design D7's open question: answered | above + `secret/services/tududi` break-glass entry (AGENTS.md secrets table) |
 | GitHub credential | A dedicated GitHub App (Issues read/write, the mapped repos), NOT a PAT — operator decision 2026-09-03. Installation tokens live 1 hour, so `refresh-tududi-sync-github-token.yml` re-mints on a 45-minute Semaphore schedule and PATCHes the n8n credential in place; issue writes are authored by the App's `[bot]` login (the D5 authorship identity) | design D7 (amended); `platform/lib/github_app_token.py` |
+| Task WRITE route | `PATCH /api/task/{uid}` — NOTE the SINGULAR `/api/task/` (like `POST /api/task` create), distinct from the PLURAL `GET /api/v1/tasks` list. The write node PATCHes `/api/task/{uid}`; the list node GETs `/api/v1/tasks` | `backend/modules/tasks/routes.js:539` (patch), `:405` (create) |
 | Task identity | `uid` (model default via `backend/utils/uid`), exposed by the serializer | `backend/models/task.js:13-17`; `backend/modules/tasks/core/serializers.js:84` |
 | Issue-reference carrier | the task `note` field (TEXT) — no dedicated external-link field exists at 1.1.1. Design D4's open question: answered (marker suffix in `note`) | `backend/models/task.js:53` |
 | Changed-since filtering | **ABSENT** — `GET /api/v1/tasks` accepts `type, groupBy, maxDays, order_by, include_lists, limit, offset` only. The full-list-diff fallback (design risk 2) is therefore the v1 reality, not a contingency | `backend/modules/tasks/routes.js:209-222` |
@@ -72,8 +73,8 @@ a cycle checks existing comments for the key before posting (retry-safe).
 
 GitHub authenticated REST core limit: **5,000 req/h** (measured live on this
 installation's token class via `gh api rate_limit`, 2026-09-02). Worst-case
-cycle: 8 repos × (1 issue-list page + ~1 op per changed pair) ≈ 16–26 calls;
-at a 5-minute cadence that is ≈ 200–320 calls/h — under 7% of the ceiling.
+cycle: 9 repos × (1 issue-list page + ~1 op per changed pair) ≈ 18–29 calls;
+at a 5-minute cadence that is ≈ 220–350 calls/h — still under 7% of the ceiling.
 tududi side has no rate limit concern at personal-tracker scale, but the
 absent changed-since filter means each cycle lists tasks per synced project
 (full-list diff against marker baselines — viable at this scale by design).
