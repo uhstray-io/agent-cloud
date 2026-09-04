@@ -119,6 +119,13 @@ def run_render(pairs):
     assert "priority_field_id: 22329653" in code
     assert "issue_field_values" in code and "single_select_option" in code
     assert "priority: t.priority" in fan["parameters"]["jsCode"]
+
+    # Audit-comment idempotency (D6) is only real if the engine SEES the
+    # issue's comments — it rides the same GraphQL query as the parents, so
+    # it costs no extra call, and `comments: []` must never be hardcoded.
+    assert "comments(last:20)" in parents["parameters"]["jsonBody"]
+    assert "commentsByRepo" in code
+    assert "comments: []" not in code, "a hardcoded empty comment list makes key suppression inert"
     assert wf["connections"]["Bucket tasks per declared pair"]["main"][0][0]["node"] == parents["name"]
     assert wf["connections"][parents["name"]]["main"][0][0]["node"] == "Fetch repo issues"
     exec_g = next(n for n in wf["nodes"] if n["id"] == "exec-github")

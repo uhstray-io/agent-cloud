@@ -260,6 +260,12 @@ PYEOF"
   grep -qF 'shape(s, t.uid)' "$tpl"
   grep -qF 'https://api.github.com/graphql' "$tpl"
   grep -qF 'parent{ number }' "$tpl"
+  # The audit-key suppression (D6) is inert unless the engine sees comments.
+  # They ride the SAME per-pair query as the parents — no per-issue call —
+  # and the gate reads them too, or it renders a different verdict.
+  grep -qF 'comments(last:20)' "$tpl"
+  grep -qF 'comments(last:20)' "$REPO_ROOT/platform/playbooks/tasks/verify-tududi-sync-pair.yml"
+  refute_grep -qF 'comments: []' "$tpl"
   refute_grep -qF 'parent_issue_url ?' "$tpl"
   # Write side: the one hierarchy op is an attach, POSTed to the parent's
   # sub_issues collection with the child's issue id.
@@ -316,4 +322,46 @@ PYEOF"
   grep -qF 'status: TUDUDI_STATUS.PLANNED' "$core"
   # A subtask inherits its parent's tag (tududi's UI cannot tag one).
   grep -qF 'const effTagged' "$core"
+}
+
+@test "tududi-sync: the kill switch works under a broken mapping and dead credentials (task 4.2)" {
+  local pb="$REPO_ROOT/platform/playbooks/provision-tududi-github-sync.yml"
+  # The kill-switch path must be able to run when EVERY other input is
+  # unusable — a broken mapping or a dead provider credential is exactly when
+  # an operator reaches for it. Structurally that means it terminates the host
+  # BEFORE the mapping is read and before either provider is contacted.
+  local stop map tval gval
+  stop=$(grep -n 'ansible.builtin.meta: end_host' "$pb" | head -1 | cut -d: -f1)
+  map=$(grep -n 'Read the committed mapping' "$pb" | head -1 | cut -d: -f1)
+  tval=$(grep -n 'Validate the tududi token against the live API' "$pb" | head -1 | cut -d: -f1)
+  gval=$(grep -n 'Mint + scope-validate the GitHub App token' "$pb" | head -1 | cut -d: -f1)
+  [ -n "$stop" ] && [ -n "$map" ] && [ -n "$tval" ] && [ -n "$gval" ]
+  [ "$stop" -lt "$map" ]
+  [ "$stop" -lt "$tval" ]
+  [ "$stop" -lt "$gval" ]
+  # The only credential on that path is the n8n API key: the deactivate loop
+  # authenticates with it and nothing else.
+  local blk
+  blk=$(task_block "$pb" "Deactivate every owned workflow")
+  [ -n "$blk" ]
+  assert_grep -qF 'X-N8N-API-KEY' <<<"$blk"
+  refute_grep -qE 'tududi|github|api\.github\.com' <<<"$blk"
+  # ...and it only ever addresses prefix-owned workflows, kill switch included.
+  assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" <<<"$blk"
+  # A malformed mapping is refused by ASSERTION on the parsed shape, not by a
+  # bare lookup that would traceback; the refusal names what it wanted.
+  blk=$(task_block "$pb" "Refuse an unparseable or shapeless mapping (named)")
+  [ -n "$blk" ]
+  assert_grep -qF '_mapping is mapping' <<<"$blk"
+  assert_grep -qF '_mapping.sync_pairs is defined' <<<"$blk"
+  assert_grep -qF 'fail_msg' <<<"$blk"
+  # "No pairs" has exactly one legitimate spelling: an all-DISABLED mapping,
+  # which renders an empty enabled set and prunes everything owned (the
+  # specified rollback). A MISSING or empty sync_pairs list is a malformed
+  # file, not a rollback, and is refused — otherwise a truncated mapping
+  # would silently read as "tear the sync down".
+  assert_grep -qF '_mapping.sync_pairs | length > 0' <<<"$blk"
+  assert_grep -qF 'all-DISABLED mapping' <<<"$blk"
+  # The prune itself works off the ENABLED subset, so all-disabled is empty.
+  assert_grep -qF "selectattr('enabled')" "$pb"
 }

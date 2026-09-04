@@ -130,7 +130,19 @@
       broken mapping file AND dead/revoked provider credentials (it is the
       one-run kill switch; a validation gate in front of it would defeat it);
       add the Semaphore template (`dev_variant: true`)
-- [ ] 4.2 (PARTIAL: ordering/scoping/no_log BATS in place; kill switch proven LIVE with valid inputs — 114; the broken-mapping + dead-credential kill-switch variant remains for the 5.x phase) BATS: provisioning refuses an empty or unparseable mapping;
+- [x] 4.2 (DONE 2026-09-04 — BATS test 11 pins the kill switch's independence
+      STRUCTURALLY, which is what "works under a broken mapping and dead
+      credentials" actually means: `meta: end_host` precedes the mapping read
+      and BOTH provider validations by line order, the deactivate loop carries
+      only `X-N8N-API-KEY` and never contacts tududi or GitHub, and it is
+      prefix-scoped. Mutation-tested: replacing the terminator with a debug
+      task turns the test red. The refusal assertions pin the empty-vs-disabled
+      distinction that a reader gets wrong — an all-DISABLED mapping is the
+      legitimate rollback and prunes everything owned, while a MISSING or empty
+      `sync_pairs` list is a malformed file and is refused, so a truncated
+      mapping can never read as "tear the sync down". Re-run-no-change and
+      prefix-scoped prune were already proven live at 4.3, tasks 113/117/118)
+      BATS: provisioning refuses an empty or unparseable mapping;
       `sync_enabled=false` still deactivates both workflows under that same
       broken mapping AND with deliberately dead provider credentials (only the
       n8n API key is exercised on that path); re-run with unchanged inputs
@@ -162,7 +174,7 @@
       cap not hit, linked pairs' per-field baselines match both sides
       (convergence), zero sync activity on undeclared projects/repos — the
       executable gate both this phase and the prod rollout (6.x) run
-- [ ] 5.2 (PARTIAL 2026-09-03 — REDESIGNED: `uhstray-io/dev-test` ↔ tududi
+- [x] 5.2 (DONE 2026-09-04; redesigned 2026-09-03 — `uhstray-io/dev-test` ↔ tududi
       `dev-test` is a STANDING enabled pair in the canonical mapping, covered by
       the App's own installation — no overlay file and no scratch PAT, because
       the App IS the identity and its installation list is the scope (the
@@ -177,12 +189,24 @@
       reopen; untagged task never produced an issue. Four engine bugs found and
       fixed by this run (index-aligned merge duplicating issues; wrong tududi
       write route; tags sent as strings; reopen bouncing status 0→5→1), each
-      with a red-then-green scenario in core-scenarios.js. NOT run live:
-      interrupted-creation recovery, and the audit-comment retry — the compute
-      node passes `comments: []`, so keyed comment idempotency is INERT live
-      (success-path idempotency is state-driven and held; the gap bites only
-      on a partial-failure retry). Fix path: fetch comments for LINKED issues
-      only, or move the key into the marker.) Validate against a scratch pair WITHOUT touching the canonical scope:
+      with a red-then-green scenario in core-scenarios.js. BOTH remaining gaps CLOSED 2026-09-04:
+      (a) audit-comment idempotency is no longer inert — the issue projection
+      carries real comments, fetched on the SAME per-pair GraphQL query that
+      already reads sub-issue parents, so it costs no extra call (`comments(
+      last:20)`; the window is deliberate — a key carries its trigger's
+      updated_at, so only a recent retry needs suppressing). Verified live at
+      exec 268: 8 real `tududi-sync-event:` keys reached the engine where it
+      previously saw `[]`. NOTE the rejected alternative and WHY: "move the key
+      into the marker" cannot work — the failure it must survive is *comment
+      posted, marker write failed*, and in that state the marker carries
+      nothing new, so it can never suppress the retry.
+      (b) interrupted-creation recovery PROVEN live (exec 269): #8's marker was
+      stripped to simulate a create that never linked; the next cycle reported
+      `adopted: 1, created: 0`, re-linking by canonical title, and the repo
+      still holds exactly ONE issue with that title. The three children of #8
+      correctly reported `hierarchy drift` and wrote nothing while their parent
+      was momentarily unlinked, then cleared on the following cycle (exec 270,
+      10 matched / 0 ops) with the 5.1 gate green.) Validate against a scratch pair WITHOUT touching the canonical scope:
       a temporary mapping OVERLAY file (the canonical eight-pair declaration is
       never edited) declaring one scratch tududi project ↔ a private scratch
       repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
@@ -352,15 +376,46 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
 
 ## 6. Production enablement, docs, close-out
 
+- [ ] 6.0 PREREQUISITE — settle the prod sync identity's VISIBILITY topology
+      (operator preference 2026-09-04: a service account, not the operator's
+      own user; `admin@agent-cloud.test` already holds rw on the mapped prod
+      projects). Measured against the running 1.1.1 with the app's own query
+      builder: a project GRANTEE sees every task in it, while the project
+      OWNER sees only tasks they created themselves — `ownershipOrPermissionWhere`
+      has `user_id = me OR uid IN tasksSharedToMe OR project_id IN
+      projectsSharedToMe` and no "tasks in projects I own" arm
+      (`permissionsService.js:126-152`). With the operator owning the projects
+      and the sync a grantee, export and field updates both work, but a task
+      the sync CREATES from a new GitHub issue is invisible to the operator.
+      Three escape hatches are closed at 1.1.1: a created task's `user_id` is
+      forced to the caller (`core/builders.js:170`), task-level shares 403 for
+      everyone because `execAction` resolves an owner only for projects
+      (`execAction.js:25-45`, "basic impl for projects; extend later"), and
+      project ownership is not in the update whitelist
+      (`projects/service.js:309-350`). The one working topology is therefore
+      BOTH parties as grantees: a dedicated owner-of-record account holds the
+      mapped projects and shares them rw to the operator AND to the sync
+      account. Implement as an idempotent playbook running inside the
+      container through the app's own models (precedent:
+      `files/tududi-db-mint.js`): flip `project.user_id` to the owner of
+      record, upsert the two `Permission` rows (`granted_by_user_id` and
+      `propagation` are NOT NULL). Existing tasks keep `user_id`, so no
+      operator data moves. Raise the two upstream gaps as a tududi issue
 - [ ] 6.1 Enable pairs incrementally: `huhhb` first; a pair is promoted only
       when the 5.1 per-pair verification check passes against it, and a failing
       check triggers the rollback path (`sync_enabled=false`) rather than a
       judgment call — then the remaining pairs, same gate each — the PUBLIC agent-cloud pair last, as an explicit publication decision (design Migration
       Plan step 4)
-- [ ] 6.2 Docs: CLAUDE.md workflow-table row for the provisioning playbook,
-      tududi service context updated with the sync contract pointer, follow-up
-      recorded for the webhook transport upgrade (design D2) and the GitHub App
-      upgrade path (design D7)
+- [x] 6.2 (DONE 2026-09-04) Docs: AGENTS.md (=CLAUDE.md) carries rows for the
+      provisioning, verification, token-mint and App-refresh playbooks — the
+      verify row states the invariant that cost a false failure, that the
+      gate's projection must mirror the workflow's or the two render different
+      verdicts from the same engine; the provisioning row now names hierarchy,
+      the inherited subtask gate, priority and the PLANNED base status.
+      `platform/services/tududi/deployment/CLAUDE.md` points at the sync
+      contract and states the per-user visibility rules a reader must know
+      before touching tasks, tags or projects. The webhook transport (D2) and
+      the App's already-taken upgrade path (D7) are recorded in design.md
 - [ ] 6.3 Retain one outcome memory into the repo's experience bank: whether
       poll-based bidirectional sync held up (worked / dead end / corrected),
       any tududi API constraint discovered the hard way, and the conflict-rate

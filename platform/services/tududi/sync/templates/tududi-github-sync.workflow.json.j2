@@ -133,7 +133,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={% raw %}{{ JSON.stringify({ query: 'query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ nameWithOwner issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ number parent{ number } } } } }', variables: { owner: $json.pair.github_repo.split('/')[0], name: $json.pair.github_repo.split('/')[1] } }) }}{% endraw %}",
+        "jsonBody": "={% raw %}{{ JSON.stringify({ query: 'query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ nameWithOwner issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ number parent{ number } comments(last:20){ nodes{ body } } } } } }', variables: { owner: $json.pair.github_repo.split('/')[0], name: $json.pair.github_repo.split('/')[1] } }) }}{% endraw %}",
         "options": {}
       },
       "credentials": {
@@ -198,11 +198,21 @@
           ~ "// dev-test #12), so parents come from one GraphQL query per pair, keyed\n"
           ~ "// by nameWithOwner: { repo: { child_number: parent_number } }.\n"
           ~ "const parentByRepo = {};\n"
+          ~ "const commentsByRepo = {};\n"
           ~ "for (const it of $('Fetch sub-issue parents').all()) {\n"
           ~ "  const repo = it.json && it.json.data && it.json.data.repository;\n"
           ~ "  if (!repo) throw new Error('sub-issue parent query returned no repository: ' + JSON.stringify(it.json && it.json.errors));\n"
           ~ "  const m = (parentByRepo[repo.nameWithOwner] = {});\n"
-          ~ "  for (const n of repo.issues.nodes) if (n.parent) m[n.number] = n.parent.number;\n"
+          ~ "  const c = (commentsByRepo[repo.nameWithOwner] = {});\n"
+          ~ "  for (const n of repo.issues.nodes) {\n"
+          ~ "    if (n.parent) m[n.number] = n.parent.number;\n"
+          ~ "    // Audit-event keys (D6) are suppressed by looking for the key in\n"
+          ~ "    // the issue's OWN comments. The last 20 is deliberate: the key\n"
+          ~ "    // carries the trigger's updated_at, so only a RECENT retry needs\n"
+          ~ "    // suppressing, and a full comment history would cost a call per\n"
+          ~ "    // issue instead of riding this one query.\n"
+          ~ "    c[n.number] = ((n.comments || {}).nodes || []).map((x) => ({ body: x.body }));\n"
+          ~ "  }\n"
           ~ "}\n"
           ~ "const merged = pairItems.map((pi) => ({ json: { pair: pi.json.pair, tasks: pi.json.tasks,\n"
           ~ "  issues: (byRepo[pi.json.pair.github_repo] || [])\n"
@@ -210,7 +220,8 @@
           ~ "    .map((it) => ({ number: it.number, id: it.id, title: it.title, body: it.body || '',\n"
           ~ "      state: it.state, state_reason: it.state_reason || null,\n"
           ~ "      labels: (it.labels || []).map((l) => l.name || l), updated_at: it.updated_at,\n"
-          ~ "      user_login: it.user && it.user.login, comments: [],\n"
+          ~ "      user_login: it.user && it.user.login,\n"
+          ~ "      comments: (commentsByRepo[pi.json.pair.github_repo] || {})[it.number] || [],\n"
           ~ "      parent_number: (parentByRepo[pi.json.pair.github_repo] || {})[it.number] || null,\n"
           ~ "      // Priority rides GitHub's native issue fields. ALL of them are\n"
           ~ "      // carried, not just Priority: the PATCH replaces the set, so a\n"

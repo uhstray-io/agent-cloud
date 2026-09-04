@@ -30,7 +30,7 @@
       query: >-
         query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
         issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){
-        nodes{ number parent{ number } } } } }
+        nodes{ number parent{ number } comments(last:20){ nodes{ body } } } } } }
       variables:
         owner: "{{ _pair.github_repo.split('/')[0] }}"
         name: "{{ _pair.github_repo.split('/')[1] }}"
@@ -80,8 +80,14 @@
     _vp_issues_shaped: >-
       {%- set out = [] -%}
       {%- set pmap = {} -%}
-      {%- for n in _vp_parents.json.data.repository.issues.nodes if n.parent -%}
-        {%- if pmap.update({n.number: n.parent.number}) -%}{%- endif -%}
+      {%- set cmap = {} -%}
+      {%- for n in _vp_parents.json.data.repository.issues.nodes -%}
+        {%- if n.parent -%}{%- if pmap.update({n.number: n.parent.number}) -%}{%- endif -%}{%- endif -%}
+        {%- set cb = [] -%}
+        {%- for x in (n.comments | default({})).get('nodes', []) -%}
+          {%- if cb.append({'body': x.body}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if cmap.update({n.number: cb}) -%}{%- endif -%}
       {%- endfor -%}
       {%- for i in _vp_issues.json if i.pull_request is not defined -%}
         {%- set lnames = [] -%}
@@ -96,7 +102,8 @@
         {%- if out.append({'number': i.number, 'id': i.id, 'title': i.title, 'body': i.body | default(''),
                            'state': i.state, 'state_reason': i.state_reason | default(None),
                            'labels': lnames, 'updated_at': i.updated_at,
-                           'user_login': i.user.login | default(''), 'comments': [],
+                           'user_login': i.user.login | default(''),
+                           'comments': cmap[i.number] | default([]),
                            'parent_number': pmap[i.number] | default(None),
                            'field_values': fvals}) -%}{%- endif -%}
       {%- endfor -%}
