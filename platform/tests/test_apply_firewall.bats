@@ -205,3 +205,27 @@ YAML
   run guard '{"port":8200}'
   [ "$status" -ne 0 ]
 }
+
+@test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {
+  local pb="$PLAYBOOK"
+  # A service can have more than one legitimate upstream — a reverse proxy AND
+  # the automation host that drives its API. Widening the single value to a
+  # CIDR would have granted every host in that subnet, so the declaration takes
+  # a list instead and the rules fan out over it.
+  assert_grep -qF '_upstream_sources' "$pb"
+  # Backward compatibility is structural: a string is normalised to a
+  # one-element list, so every host declaring a single address is untouched.
+  blk=$(task_block "$pb" "Normalise the upstream source(s) to a list")
+  [ -n "$blk" ]
+  assert_grep -qF 'is not string' <<<"$blk"
+  # Both rule families (INPUT and the rootful FORWARD mirror) fan out over
+  # ports x sources, and neither reads the raw variable any more — a leftover
+  # direct reference would silently apply only the first source.
+  assert_grep -qF "product(_upstream_sources)" "$pb"
+  [ "$(grep -c 'product(_upstream_sources)' "$pb")" -eq 2 ]
+  refute_grep -qE 'ufw (route )?allow.*\{\{ firewall_upstream_source \}\}' "$pb"
+  # The guard still refuses an empty declaration rather than opening nothing
+  # quietly, and it now asserts on the normalised list.
+  blk=$(task_block "$pb" "Require an upstream source when detected ports exist")
+  assert_grep -qF '_upstream_sources | length > 0' <<<"$blk"
+}
