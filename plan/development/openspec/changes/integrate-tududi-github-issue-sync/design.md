@@ -132,16 +132,42 @@ re-creating. The same search is the recovery path for a corrupted marker whose
 guessed at.
 
 The `uid` search has a blind spot the design does not paper over: an issue
-whose marker was destroyed AND whose task-side link is gone is invisible to
-it. So creation carries a second, deterministic gate — before creating, the
-cycle also searches the paired repository's open issues **authored by the sync
-identity** for a canonical-title match. A hit there **blocks creation and
-records a recovery error naming both artifacts** (task `uid`, issue number)
-for a human to re-link or rename; creation never proceeds past a suspect
-match. Only when both searches come back empty is an issue created. The
-residual duplicate window is therefore a doubly-destroyed linkage AND a
-retitled issue — at which point the two artifacts share nothing machine-readable
-and re-linking is genuinely a human judgment.
+whose marker was destroyed is invisible to it. So creation carries a second,
+deterministic gate — before creating, the cycle also searches the paired
+repository's **unlinked open issues, whoever authored them**, for a
+canonical-title match. *As amended 2026-09-03:* exactly one hit is **adopted** —
+the marker is written onto that issue, the link is announced once with a keyed
+comment, and because the marker starts with empty baselines every differing
+field is a plain LWW conflict whose loser is preserved. More than one hit
+**blocks creation and records a recovery error naming every artifact** (task
+`uid`, every issue number); the cycle never guesses. Only when both searches
+come back empty is an issue created. (The original text blocked on *any* hit
+and searched only sync-authored issues; that made "the same item filed on both
+sides" a permanent stall and gave GitHub-origin work no path in at all.)
+
+The same gate runs in the other direction. An open, unlinked issue authored by
+anyone but the sync identity is **GitHub-origin work**: the cycle creates a
+task for it in the paired project — tagged for sync, labels as tags — and the
+executor writes the marker back onto the issue with the new task's `uid`
+(the engine emits the marker with a placeholder the executor fills, so the
+engine stays free of tududi identifiers it has not seen). Before creating, it
+looks for a same-title task in the project: an untagged twin means a person
+kept that task private, so creation is **blocked with a recovery error** naming
+both rather than publishing by accident; a tagged twin is handled by the
+adoption above. Closed unlinked issues are never backfilled. A sync-authored
+unlinked open issue is the orphan of an interrupted tududi-origin creation and
+is reported, never re-imported. Two more findings are reported instead of
+resolved: a marker naming a task the project does not hold (**dangling** —
+deleted, moved, or written by a different tududi instance, which is exactly
+what a local-dev cycle against a real repository leaves behind, so a real pair
+is only ever enabled on the instance that holds its project), and one marker
+carried by two issues (a copy-pasted body). The latter was found by the
+scenario tests: an index keyed by `uid` had been keeping only the last issue,
+which dropped the first out of the linked set and re-created it as a task.
+
+The residual duplicate window is therefore a destroyed marker AND a retitled
+issue — at which point the two artifacts share nothing machine-readable and
+re-linking is genuinely a human judgment.
 
 - *External mapping store* (n8n static data, a DB) rejected: invisible state
   that can drift from both systems and dies with the engine; the artifacts are
@@ -183,7 +209,13 @@ with an audit comment naming the un-tagging, the task itself is untouched, and
 the marker linkage survives — re-adding the tag reopens the same issue rather
 than creating a duplicate. Un-tagging expresses "stop tracking this in GitHub",
 and a closed issue with an audit trail says that; a silently stale open issue
-does not.
+does not. The close is a sync write, so it moves the marker's status baseline
+with it (amended 2026-09-03): that is what lets the ordinary per-field loop
+reopen on re-tag, and what tells the sync's close apart from a human closing
+the same issue as not-planned on GitHub — theirs leaves the baseline at open,
+reads as a GitHub-side change, and cancels the task instead of being reverted.
+The first cut carried a "task open + issue not-planned ⇒ re-tag" heuristic
+instead; live it reopened a human's close (dev-test #2, cycle 118).
 
 **Audit comments are idempotent, not just informative.** Every audit comment
 (losing-value preservation, un-tag, archive) embeds a stable audit-event key —
@@ -262,10 +294,10 @@ check.
 - **[Marker block corrupted or hand-edited in an issue body]** → recovery is
   the D4 `uid` search: if the marker's `uid` line survives, the cycle re-links
   and rewrites a clean marker; damaged beyond that, it logs for a human and
-  never guesses. A fully lost linkage (marker AND task-side link both gone) is
-  caught by D4's second gate — the sync-identity/canonical-title search blocks
-  creation and records a recovery error rather than duplicating; the pair
-  stalls loudly until a human re-links.
+  never guesses. A fully lost marker is caught by D4's second gate — the
+  canonical-title search adopts the one matching issue and re-links it; with
+  two candidates it records a recovery error rather than duplicating, and the
+  pair stalls loudly until a human re-links.
 - **[n8n substrate slips]** → this change is sequenced strictly after
   `complete-n8n-composable-deployment`; nothing here can start until that
   change's credential-provisioning pattern exists in prod.

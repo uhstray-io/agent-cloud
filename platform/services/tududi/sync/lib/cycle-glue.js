@@ -31,9 +31,24 @@ for (const item of $input.all()) {
   summary.cycles.push({ pair: pair.github_repo, ...stats, ops: ops.length });
   summary.recovery_errors.push(...recoveryErrors);
   for (const op of ops) {
+    if (op.type === 'create_task') {
+      // The engine speaks project NAMES; tududi's create wants the id the
+      // fan-out node resolved onto the pair. No id means the declared project
+      // does not exist in tududi yet — a human fact, not a cycle failure.
+      if (!pair.tududi_project_id) {
+        summary.recovery_errors.push({
+          pair: pair.github_repo,
+          task_uid: null,
+          issue_number: op.number,
+          reason: `tududi project '${pair.tududi_project}' not found — create it before issues from this repo can become tasks`,
+        });
+        continue;
+      }
+      op.task.project_id = pair.tududi_project_id;
+    }
     results.push({
       json: {
-        exec: op.type === 'update_task' ? 'tududi' : 'github',
+        exec: op.type === 'update_task' || op.type === 'create_task' ? 'tududi' : 'github',
         op,
       },
     });

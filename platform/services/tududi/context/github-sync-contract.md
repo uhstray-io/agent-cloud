@@ -14,11 +14,13 @@ Postiz contract (`platform/services/postiz/context/use-cases.md`) is the model.
 | Unauthenticated API behaviour | 401 `{"error":"Authentication required"}` | live probe of the deployed instance, 2026-09-02 |
 | Token lifecycle API | `GET/POST /api/profile/api-keys`, `POST /api/profile/api-keys/{id}/revoke`, `DELETE /api/profile/api-keys/{id}` — NOTE the `/api/` prefix, not `/api/v1/` (`getApiPath` prefixes bare `api/`); session+CSRF authenticated (login `POST /api/login`, CSRF `GET /api/csrf-token` → `{csrfToken}` sent as `x-csrf-token`); `createApiToken` accepts `expiresAt` and `abilities` | `frontend/config/paths.ts:82-90`; `frontend/utils/apiKeysService.ts`; `frontend/utils/csrfService.ts`; `backend/modules/users/apiTokenService.js` |
 | **Token mint is automatable** | Yes — session login (the deploy retains break-glass local login beside OIDC) → CSRF token → `POST /api/profile/api-keys`, implemented by `store-tududi-api-token.yml` on the `store-n8n-api-key.yml` model. Design D7's open question: answered | above + `secret/services/tududi` break-glass entry (AGENTS.md secrets table) |
+| **Whose token — the project OWNER's, not a service account's** | Every list is scoped per user: a token sees its user's own resources plus those shared TO that user (`ownershipOrPermissionWhere`; admin widens NOTHING — the comment at `:120-123` says so on purpose). A project share cascades `rw` to the tasks that exist at share time, and a grantee sees every later task in the shared project too (`project_id IN sharedProjects` arm) and may create/PATCH there (`validateProjectAccess`, `requireTaskWriteAccess` → `getAccess` inherits from the project). BUT a task the grantee creates gets `user_id` = grantee and no permission row, and the owner's list has no "tasks in projects I own" arm — so a GitHub-origin task created by a service account is INVISIBLE to the person who owns the project. Also `sharesService` hands `isAdmin` a numeric id where it expects a uid, so an admin cannot grant shares on others' projects (live: `403 Forbidden`). Hence `tududi_sync_user_email` (inventory) names the owner of the mapped projects, and provisioning refuses an enabled pair the token cannot see | `backend/services/permissionsService.js:17-96,98-170`; `modules/tasks/utils/validation.js:4-28`; `modules/tasks/middleware/access.js:12-19`; `modules/tasks/routes.js:405-450` (create writes no `Permission`; only `modules/shares` does, via `services/execAction.js`); `services/rolesService.js:3-15`; live share/403 probes 2026-09-03 |
 | GitHub credential | A dedicated GitHub App (Issues read/write, the mapped repos), NOT a PAT — operator decision 2026-09-03. Installation tokens live 1 hour, so `refresh-tududi-sync-github-token.yml` re-mints on a 45-minute Semaphore schedule and PATCHes the n8n credential in place; issue writes are authored by the App's `[bot]` login (the D5 authorship identity) | design D7 (amended); `platform/lib/github_app_token.py` |
 | Task WRITE route | `PATCH /api/task/{uid}` — NOTE the SINGULAR `/api/task/` (like `POST /api/task` create), distinct from the PLURAL `GET /api/v1/tasks` list. The write node PATCHes `/api/task/{uid}`; the list node GETs `/api/v1/tasks` | `backend/modules/tasks/routes.js:539` (patch), `:405` (create) |
 | Task identity | `uid` (model default via `backend/utils/uid`), exposed by the serializer | `backend/models/task.js:13-17`; `backend/modules/tasks/core/serializers.js:84` |
 | Issue-reference carrier | the task `note` field (TEXT) — no dedicated external-link field exists at 1.1.1. Design D4's open question: answered (marker suffix in `note`) | `backend/models/task.js:53` |
 | Changed-since filtering | **ABSENT** — `GET /api/v1/tasks` accepts `type, groupBy, maxDays, order_by, include_lists, limit, offset` only. The full-list-diff fallback (design risk 2) is therefore the v1 reality, not a contingency | `backend/modules/tasks/routes.js:209-222` |
+| **Status visibility of the list** | The bare list HIDES DONE (`status NOT IN (2)`); `?status=done` returns DONE+ARCHIVED only; `?status=all` is the ONLY query with no status filter (statuses 0–6). The cycle's fetch node uses `?status=all` — without it a completed task drops out of the diff, its issue is never closed, a reopen never reaches it, and its still-open issue reads as a dangling link (found live 2026-09-03, cycle 123) | `backend/modules/tasks/queries/query-builders.js:301-327` (default `type` branch); live probe 2026-09-03 |
 | `updated_at` exposure | model uses Sequelize default timestamps; route code exposes snake-case `updated_at` on related objects. **Verify the task-level field name live with the sync token before the workflows hash it** (phase 3 preflight) | `backend/modules/tasks/routes.js:355`; model has no explicit timestamp config |
 | Tags | `GET`/`POST /api/v1/tags` (+ tag objects nested on tasks, sorted by the serializer) | `backend/docs/swagger/tags.js`; serializer `sortTags` |
 
@@ -44,6 +46,16 @@ propagates; the fine-grained active statuses (NOT_STARTED/IN_PROGRESS/PLANNED/
 WAITING) are tududi-side detail GitHub cannot represent and are never
 overwritten by an issue remaining open.
 
+**Who closed it decides.** Task open+tagged and issue `closed/not_planned` is
+one snapshot with two histories, and the marker's status baseline tells them
+apart: a close the SYNC wrote (un-tag, archive) moves the baseline to
+`closed:not_planned`, so a later re-tag is a tududi-side change and the
+field loop reopens the issue without touching the task; a close a HUMAN made
+on GitHub leaves the baseline at `open`, so it is a GitHub-side change and
+the task goes CANCELLED — the human's close is never reverted. (Before
+2026-09-03 the engine guessed "re-tag" for both and reopened a human's close
+— dev-test #2, cycle 118.)
+
 ## Tag ↔ label rules (design D6, fixed)
 
 - The sync tag itself is a control marker — never propagated as a label.
@@ -56,9 +68,29 @@ overwritten by an issue remaining open.
 HTML comment in the issue body, one line per element:
 `uid` · one baseline hash **per synced field** (title, description/note,
 status-as-mapped-value, label-set projection) · both sides' `updated_at` as
-last synced. Audit comments (losing-value, un-tag, archive) embed a stable
-**audit-event key** = `uid` + event type + triggering side's `updated_at`;
-a cycle checks existing comments for the key before posting (retry-safe).
+last synced. Audit comments (losing-value, un-tag, archive, linked) embed a
+stable **audit-event key** = `uid` + event type + triggering side's
+`updated_at`; a cycle checks existing comments for the key before posting
+(retry-safe).
+
+## Creation from either origin, once (design D4 as amended 2026-09-03)
+
+| Situation the cycle finds | What it does |
+|---------------------------|--------------|
+| Tagged task, no marker anywhere, no same-title unlinked open issue | creates the issue (`POST /issues`), marker in the body — **only while the task is open** (0/1/4/6). A finished task (DONE/CANCELLED/ARCHIVED) is not exported, the mirror of "closed issues are not imported": a create can only OPEN an issue, and an open issue under a closed baseline would read as a GitHub reopen next cycle and drag the task back to IN_PROGRESS |
+| Tagged task, exactly ONE same-title unlinked open issue (any author) | **adopts** it: marker written onto that issue with EMPTY baselines (so every differing field is an ordinary LWW conflict, loser preserved in a comment), keyed `linked` comment posted once |
+| Tagged task, MORE THAN ONE same-title unlinked open issue | recovery error naming the task and every issue; nothing created or linked — and NONE of those issues becomes a task either (any unlinked task carrying the title, tagged or not, blocks GitHub-origin creation; a tagged one has already been reported once, so it is skipped without a second error) |
+| Open unlinked issue, human-authored, no same-title task in the project | creates the task (`POST /api/task` with `project_id`, labels as tags + the sync tag); the executor then PATCHes the issue body with the marker carrying the new `uid` (the engine emits it with the `__UID__` placeholder) |
+| Open unlinked issue, human-authored, same-title UNTAGGED task | recovery error naming both — a private task is never published by accident |
+| Open unlinked issue authored by the sync identity | orphan of an interrupted tududi-origin creation: recovery error, never re-imported |
+| Closed unlinked issue | ignored — finished work is not backfilled |
+| Paired project absent on this tududi instance | recovery error naming the project and issue; nothing written |
+| Open issue whose marker names a task the project does not hold | **dangling**: recovery error, no re-creation (deleted/moved task, or a marker written by ANOTHER tududi instance — why a real pair is enabled only on the instance holding its project) |
+| One marker `uid` on two issues | recovery error naming both; that `uid` gets no ops this cycle |
+
+Same-title means equal canonical `title` projections. Every row that says
+"recovery error" writes nothing to either side and fails the per-pair
+verification check until a person resolves it.
 
 ## Canonical projections (what gets hashed)
 

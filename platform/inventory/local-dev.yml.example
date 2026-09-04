@@ -196,6 +196,14 @@ all:
           container_engine: podman
           tududi_bind: 127.0.0.1
           tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
+          # The tududi user the GitHub sync acts AS (Store tududi API Token mints
+          # its token). It must be the user who OWNS the mapped projects: tududi
+          # scopes lists per user, and a task the token creates is invisible to
+          # a project owner who is not the token's user. Locally the mapped
+          # dev-test project belongs to the deploy's break-glass account, which
+          # is also the default — set this only if you map a project you own
+          # through your OIDC login instead.
+          tududi_sync_user_email: admin@agent-cloud.test
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs

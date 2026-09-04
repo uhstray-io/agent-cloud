@@ -40,9 +40,13 @@
 - [x] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
       JSON consuming the mapping: tag-gated crossing, marker-block linkage with
       per-field baselines, pre-create search by task `uid` PLUS the
-      sync-identity/canonical-title second gate (a suspect match blocks
-      creation and records a recovery error — no duplicate even after a fully
-      lost linkage), per-field LWW using both systems' own timestamps,
+      canonical-title second gate (AMENDED 2026-09-03: one same-title unlinked
+      open issue is ADOPTED and linked in place; two or more block with a
+      recovery error — no duplicate even after a fully lost linkage), the
+      reverse direction (an open human-filed unlinked issue becomes a tagged
+      task, marker written back with the new uid; an untagged same-title task
+      blocks it; closed issues never backfilled; dangling and duplicated
+      markers reported), per-field LWW using both systems' own timestamps,
       audit comments carrying the stable audit-event key checked before
       posting (a comment-then-marker-write-failure retry is a no-op),
       losing-value audit comment, un-tag → close-as-not-planned with surviving
@@ -68,9 +72,18 @@
       NON-DESTRUCTIVE contract per the operator: one INSERT plus the app's
       own reversible revoked_at on our-label rows; no flag flips, no
       restarts. Every token-bearing step `no_log`.
-      Idempotent: list-by-label first; an existing label with the OpenBao
-      field present is a no-op, an existing label with the field ABSENT is
-      revoked and re-minted (the raw value is unrecoverable by design).
+      Idempotent, PROOF-FIRST (amended 2026-09-03): the STORED OpenBao value
+      is fed back through `prove` — accepted live AND matching an active
+      labelled row of the configured user — and only then is the run a no-op;
+      anything else (field absent, value dead, value minted for a different
+      user) revokes our labelled rows and re-mints (the raw value is
+      unrecoverable by design). Presence was not convergence: "row active +
+      field present" reported converged while OpenBao held the previous
+      identity's token (task 160); the proof-first rule caught it (166) and
+      re-runs are no-ops (167). The proof runs INSIDE the container on
+      loopback — the public edge URL is unreachable from the orchestrator on
+      local-dev and leaves the VM on prod; every earlier green run had been
+      carrying a launch-time URL override (task history 93/94/116).
       Rotation = revoke + re-run; revocation verified as refused-by-provider,
       already-revoked = success
 - [x] 3.2 DONE 2026-09-03 — the App exists: `todo-sync-agent` (App ID 4820206),
@@ -186,7 +199,45 @@
       untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
       prune the scratch credential, re-provision, and assert the canonical
       mapping still declares exactly eight pairs and the scratch objects are gone
-- [ ] 5.3 (PARTIAL 2026-09-03: every listed scenario EXCEPT "Interrupted
+- [ ] 5.3 (PARTIAL 2026-09-03, third pass — status crossings and identity.
+      GitHub-origin status replay passed LIVE on dev-test (cycles 128–132):
+      reopen → task IN_PROGRESS, task DONE → issue closed/completed, reopen
+      again, task CANCELLED → closed/not_planned, then a quiet cycle with zero
+      writes; label removal on GitHub → tag removed (119); close → DONE (123).
+      Four engine fixes came out of it, each with a unit scenario: a human
+      close bounced back open (cycle 118 — the per-field baseline now moves
+      with the write); an AMBIGUOUS adoption then fell through to create
+      (dedup hole — ambiguity is a named recovery error, never a create);
+      tududi's default task list hides DONE rows, so a finished task was
+      invisible to convergence (`?status=all`); and, symmetric to it, finished
+      tududi work was never exported (`skipped_finished` guard).
+      IDENTITY DECISION, proven from v1.1.1 source and live: tududi scopes
+      every list per user and creation writes no permission row, so a task
+      created by a grantee in the owner's project is INVISIBLE to the owner's
+      list (owner token listed 4 of 5 dev-test tasks, missing the grantee's).
+      A service account with rw shares therefore loses; the sync identity is
+      the tududi user who OWNS the mapped projects — `tududi_sync_user_email`
+      in inventory (site-config on prod; the baked local INI in
+      `bootstrap-local-dev.yml` for the Semaphore tier, NOT
+      `platform/inventory/local-dev.yml`). Provisioning refuses an enabled
+      pair whose project the identity cannot see, by name. Re-minted as the
+      dev-test owner (166), re-provisioned (168); the first cycle under that
+      token was green (134) and a one-cycle owner smoke passed both ways (135:
+      tagged task → #11, human issue #10 → tagged task, both in the owner's
+      list). Battery lesson: a wait shorter than the cycle cadence reports a
+      false timeout — R0 of the replay was that artifact, not a defect.
+      Second pass: the amended creation scenarios
+      passed LIVE on dev-test — "Issue filed on GitHub becomes a task" (#8 →
+      tagged task, marker written back with the real uid via the executor's
+      item link, quiet for the 11 following cycles), "Same item created on both
+      sides is linked, not duplicated" (#9 adopted, `linked` + preserved-loser
+      comments, LWW by a 1-second edge), and "GitHub edit reaches tududi" for
+      title and body; the 5.1 gate PASSED afterwards — task 148. The dangling-
+      and duplicate-marker rows are unit-proven only (scenarios 15–16; 16 found
+      a real duplicate path in the uid index). Status/label crossings from
+      GitHub (close→2, reopen→1, not_planned→5, label removal) were in flight
+      when this note was written — see the next note. First pass: every listed
+      scenario EXCEPT "Interrupted
       creation recovers without a duplicate" passed live on dev-test; the 5.1
       gate PASSED for both enabled pairs after the whole battery — task 135 —
       once its tududi transport was corrected to the SAME inventory variable

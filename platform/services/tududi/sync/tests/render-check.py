@@ -29,7 +29,7 @@ def main() -> int:
     # and so does the enabled subset the provisioning actually deploys.
     for pairs in (all_pairs, enabled):
         run_render(pairs)
-    print(f"RENDER CHECK PASS — 8 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
+    print(f"RENDER CHECK PASS — 10 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
     return 0
 
 
@@ -58,7 +58,7 @@ def run_render(pairs):
     wf = json.loads(rendered)  # must be valid JSON — the schema check's floor
 
     names = [n["name"] for n in wf["nodes"]]
-    assert len(wf["nodes"]) == 8, f"expected 8 nodes, got {len(wf['nodes'])}"
+    assert len(wf["nodes"]) == 10, f"expected 10 nodes, got {len(wf['nodes'])}"
     assert wf["name"] == "tududi-github-sync: cycle"
 
     # Every node connection target exists.
@@ -89,6 +89,15 @@ def run_render(pairs):
         re.search(r"const PAIRS = (\[.*?\]);", fan["parameters"]["jsCode"], re.S).group(1)
     )
     assert embedded == pairs, "embedded pairs differ from the enabled mapping entries"
+
+    # GitHub-origin creation: the tududi executor can POST a create, and the
+    # link node hands the minted uid back to the issue through item linking.
+    exec_t = next(n for n in wf["nodes"] if n["id"] == "exec-tududi")
+    assert "create_task" in exec_t["parameters"]["method"], "tududi executor cannot create"
+    link = next(n for n in wf["nodes"] if n["id"] == "link-created")
+    assert "itemMatching" in link["parameters"]["jsCode"] and "__UID__" in link["parameters"]["jsCode"]
+    assert wf["connections"]["Execute tududi op"]["main"][0][0]["node"] == link["name"]
+    assert wf["connections"][link["name"]]["main"][0][0]["node"] == "Execute GitHub op"
 
     # No delete operation anywhere in the rendered artifact (spec invariant).
     assert "DELETE" not in rendered, "a DELETE method appeared in the rendered workflow"

@@ -17,8 +17,14 @@ engine this bridge needs; this change is its first real workflow consumer.
   `agent-cloud ↔ agent-cloud`, `Weft - Development ↔ weft`, `huhhb ↔ huhhb`,
   `Scientific-Business Website ↔ scientific-business`. A relationship must be
   explicitly declared to sync anything.
-- **Selective, opt-in item sync**: only tududi tasks carrying the designated sync
-  tag cross to GitHub as issues. Untagged tasks never leave tududi.
+- **Selective, opt-in item sync, from either origin**: a tududi task crosses to
+  GitHub only when it carries the designated sync tag; untagged tasks never leave
+  tududi. An open issue filed on GitHub in a paired repository becomes a task in
+  the paired project, tagged for sync, so work can start on either side (amended
+  2026-09-03 on the operator's direction — the original scope created from
+  tududi only). Whichever side an item started on, it exists **once**: the
+  same title already present on the other side is adopted and linked, never
+  re-created.
 - **Bidirectional field sync** for linked pairs: title, description, status
   (tududi statuses ↔ issue open/closed), and tags ↔ labels. Updates on either
   side propagate to the other on the next cycle.

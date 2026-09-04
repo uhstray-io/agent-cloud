@@ -14,7 +14,14 @@
 #   github_repo     owner/name of the paired repository
 #   enabled         pairs are promoted one at a time (design Migration Plan
 #                   step 4 / task 6.1): huhhb first, the rest only after the
-#                   per-pair verification check (task 5.1) passes against it
+#                   per-pair verification check (task 5.1) passes against it.
+#                   A real pair is enabled ONLY on the instance whose tududi
+#                   holds the paired project: since issues filed on GitHub
+#                   become tasks, a local-dev cycle against a real repo would
+#                   write markers whose uids exist only in local tududi — prod
+#                   then sees a dangling link (a recovery error) instead of
+#                   adopting the issue. dev-test is the sole pair every
+#                   instance may run.
 #
 # The sync control tag (the tududi tag that marks a task for syncing) and the
 # poll cadence live in inventory, not here — they are deployment tuning, not
@@ -22,9 +29,11 @@
 # platform/services/tududi/context/github-sync-contract.md.
 
 sync_pairs:
+  # First real pair; flips to true in task 6.1, on prod, after dev-test's
+  # battery is green there (see the `enabled` note above for why not before).
   - tududi_project: huhhb
     github_repo: uhstray-io/huhhb
-    enabled: true
+    enabled: false
   - tududi_project: zerds
     github_repo: uhstray-io/zerds
     enabled: false

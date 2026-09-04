@@ -10,14 +10,20 @@
 # API's own createApiToken would have (verified against v1.1.1 source:
 # bcrypt cost 12, 12-char prefix, prefix+compare validation). The minted
 # token is then proven END-TO-END: a Bearer call to the live API must answer
-# 200 before the play reports success.
+# 200 before the play reports success. That call is made from INSIDE the
+# container on loopback (the same vantage point as deploy-tududi's health
+# check) — never through the public edge URL, which the runner cannot reach
+# on local-dev (the dev zone resolves to 127.0.0.1 inside its container) and
+# which on prod would leave the VM through Cloudflare.
 #
 # NON-DESTRUCTIVE (operator requirement): one INSERT, plus revoked_at (the
 # app's own reversible revoke) on rows carrying OUR label under OUR account —
 # nothing else is written, nothing is deleted, no auth posture changes, no
-# restarts. Idempotency is LIST-FIRST: an active labelled row with the
-# OpenBao field present is a no-op; an active labelled row with the field
-# ABSENT is revoked and re-minted (the raw value is unrecoverable by design).
+# restarts. Idempotency is PROOF-FIRST: the stored OpenBao value is fed back
+# through `prove` — it must be accepted live AND match an active labelled row
+# of the configured user — and only then is the run a no-op. Anything else
+# (field absent, value dead, value minted for a different user) revokes our
+# labelled rows and re-mints (the raw value is unrecoverable by design).
 #
 # Every token-bearing step is no_log; output is names and counts.
 
@@ -42,23 +48,23 @@
     _bao_path: "services/tududi"
     _bao_key: "api_token"
     _token_label: "agent-cloud-sync"
-    # The sync identity: the deploy's local service account (TUDUDI_USER_EMAIL).
-    _login_email: "{{ tududi_admin_email | default('admin@agent-cloud.test') }}"
-    # The end-to-end verification target; local-dev reaches the container by
-    # name, prod by the published loopback port.
-    _tududi_base: "{{ tududi_base_url | default('http://127.0.0.1:3002') }}"
+    # The sync identity — the tududi user who OWNS the mapped projects, not a
+    # service account. tududi (v1.1.1) scopes every list per user: a token
+    # sees its own user's projects plus those shared TO that user, and a task
+    # it creates belongs to the token's user, whom the project owner cannot
+    # see (the owner's list has no "tasks in projects I own" arm and creation
+    # writes no permission row — permissionsService.ownershipOrPermissionWhere,
+    # tasks/routes.js POST /task). A service account with rw shares could
+    # therefore read the owner's tasks but every GitHub-origin task it created
+    # would be invisible to the owner. Inventory declares the owner's email
+    # (site-config); the deploy's break-glass account is only the default.
+    _login_email: "{{ tududi_sync_user_email | default(tududi_admin_email | default('admin@agent-cloud.test')) }}"
 
   tasks:
     - name: "Refuse a cleartext secret-store endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
-
-    - name: "Require a non-cleartext transport to tududi"
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
-      vars:
-        _assert_bao_url: "{{ _tududi_base }}"
-        _assert_url_label: "tududi"
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -117,16 +123,47 @@
         _active_rows: "{{ (_status.stdout_lines | last | from_json).active_label_rows | int }}"
         _bao_has_token: "{{ (_tududi_secret.json.data.data[_bao_key] | default('')) | length > 0 }}"
 
-    - name: "Report a converged state (label active, value captured)"
-      when: (_active_rows | int > 0) and _bao_has_token
+    - name: "Prove the STORED token is this identity's (presence is not convergence)"
+      # A field can be present yet belong to a different user — exactly what
+      # happened when the sync identity moved from the break-glass account to
+      # the project owner: the old token stayed live, so "row active + field
+      # present" reported converged and never re-minted. Convergence is
+      # therefore defined by this proof (live 200 AND an active labelled row
+      # of the configured user), not by presence.
+      when: _bao_has_token
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - "-i"
+          - "-e"
+          - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
+          - "-e"
+          - "TUDUDI_SYNC_LABEL={{ _token_label }}"
+          - "{{ _container }}"
+          - node
+          - /tmp/tududi-db-mint.js
+          - prove
+        stdin: "{{ _tududi_secret.json.data.data[_bao_key] }}"
+      register: _stored_proof
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: "Decide convergence"
+      ansible.builtin.set_fact:
+        _converged: "{{ _bao_has_token and (_stored_proof.rc | default(1)) == 0 }}"
+
+    - name: "Report a converged state (stored value is this identity's live token)"
+      when: _converged
       ansible.builtin.debug:
         msg: >-
-          secret/{{ _bao_path }}:{{ _bao_key }} already holds the
-          '{{ _token_label }}' token ({{ _active_rows }} active row) —
-          nothing to do.
+          secret/{{ _bao_path }}:{{ _bao_key }} already holds a live
+          '{{ _token_label }}' token for {{ _login_email }}
+          ({{ _active_rows }} active row) — nothing to do.
 
     - name: "Mint (and capture) — only when the pair is not converged"
-      when: not ((_active_rows | int > 0) and _bao_has_token)
+      when: not _converged
       block:
         - name: "Revoke orphaned labelled rows (the app's own reversible revoke)"
           when: _active_rows | int > 0
@@ -171,12 +208,24 @@
           changed_when: true
           no_log: true
 
-        - name: "Prove the token end-to-end (the live API must accept it)"
-          ansible.builtin.uri:
-            url: "{{ _tududi_base }}/api/profile/api-keys"
-            headers:
-              Authorization: "Bearer {{ _raw.stdout | trim }}"
-            status_code: [200]
+        - name: "Prove the token end-to-end (the live API must accept it; stdin, never argv)"
+          # In-container loopback Bearer call to /api/profile/api-keys — exits
+          # non-zero on anything but HTTP 200 (see files/tududi-db-mint.js).
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "-i"
+              - "-e"
+              - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
+              - "-e"
+              - "TUDUDI_SYNC_LABEL={{ _token_label }}"
+              - "{{ _container }}"
+              - node
+              - /tmp/tududi-db-mint.js
+              - prove
+            stdin: "{{ _raw.stdout | trim }}"
+          changed_when: false
           no_log: true
 
         - name: "Merge the token into the store (siblings preserved)"
@@ -198,7 +247,7 @@
       ansible.builtin.debug:
         msg: >-
           secret/{{ _bao_path }}:{{ _bao_key }} holds the
-          '{{ _token_label }}' token, proven live against
-          {{ _tududi_base }}/api/profile/api-keys. Rotation: delete the OpenBao
+          '{{ _token_label }}' token for {{ _login_email }}, proven live against
+          the container's /api/profile/api-keys. Rotation: delete the OpenBao
           field (or revoke the labelled key) and re-run — the mint path revokes
           the orphan and re-mints.

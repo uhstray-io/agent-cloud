@@ -223,7 +223,10 @@ templates:
     # the controller (App key from OpenBao via stdin, scope preflight against
     # github-mapping.yml) and PATCHes the n8n github-sync-api credential in
     # place. Update-only: creation belongs to the sync provisioning. The
-    # 45-minute cadence below is the reviewed cadence — schedules are code.
+    # The cadence below is the reviewed cadence — schedules are code. Cron has
+    # no true 45-minute period: `*/45` fires at :00 and :45, so the gaps
+    # alternate 45 and 15 minutes — both inside the token's hour, which is
+    # the property that matters.
     dev_variant: true
     schedule:
       cron: "*/45 * * * *"

@@ -79,7 +79,7 @@ setup() {
   local blk n
   for n in "Authenticate to OpenBao" "Read the tududi secrets" \
            "Generate the raw token" "Insert the token row" \
-           "Prove the token end-to-end"; do
+           "Prove the STORED token" "Prove the token end-to-end"; do
     blk=$(task_block "$pb" "$n")
     [ -n "$blk" ]
     assert_grep -q 'no_log: true' <<<"$blk"
@@ -89,11 +89,31 @@ setup() {
     [ -n "$blk" ]
     refute_grep -q 'no_log: true' <<<"$blk"
   done
-  # The mint is PROVEN live (Bearer call must answer 200) before the report.
-  assert_grep -qF '/api/profile/api-keys' "$pb"
+  # The mint is PROVEN live (Bearer call must answer 200) before the report —
+  # from INSIDE the container on loopback, the one address identical on
+  # local-dev and prod. The public edge URL (tududi_base_url) resolves to
+  # 127.0.0.1 inside the local Semaphore container and every earlier "green"
+  # run had carried a launch-time override to dodge it.
+  blk=$(task_block "$pb" "Prove the token end-to-end")
+  assert_grep -qE '^\s+- prove$' <<<"$blk"
+  assert_grep -qF 'stdin: "{{ _raw.stdout | trim }}"' <<<"$blk"
+  refute_grep -qE 'tududi_base_url|_tududi_base' <(grep -vE '^\s*#' "$pb")
+  assert_grep -qF "path: '/api/profile/api-keys'" "$js"
+  assert_grep -qF 'if (status !== 200) throw' "$js"
+  # Convergence is PROOF of the stored value (live AND owned by the configured
+  # user), never presence: a live token minted for a different user reported
+  # "converged" and the identity change silently never re-minted.
+  assert_grep -qE '^\s+_converged: "\{\{ _bao_has_token and \(_stored_proof\.rc' "$pb"
+  assert_grep -qF 'await bcrypt.compare(raw, row.token_hash)' "$js"
+  refute_grep -qE 'when: \(_active_rows \| int > 0\) and _bao_has_token' "$pb"
   # Store write rides the shared sibling-preserving merge, refuse-missing.
   blk=$(task_block "$pb" "Merge the token into the store")
   assert_grep -q '_bm_on_missing: fail' <<<"$blk"
+  # The identity is the project OWNER's user, declared by inventory
+  # (tududi_sync_user_email) — a service account cannot carry GitHub-origin
+  # tasks to an owner who is not the token's user (per-user scoping, v1.1.1).
+  assert_grep -qE '^    _login_email: "\{\{ tududi_sync_user_email \| default\(' "$pb"
+  assert_grep -qF 'tududi_sync_user_email' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
 }
 
 @test "tududi-sync: GitHub App refresher — stdin key, scope preflight, update-only" {
@@ -156,6 +176,14 @@ setup() {
   # Refusals are named: malformed mapping, absent token, dead token.
   assert_grep -qF 'Refuse an unparseable or shapeless mapping (named)' "$pb"
   assert_grep -qF 'Refuse a dead tududi token (named)' "$pb"
+  # ...and an enabled pair whose project the token's user cannot see — the
+  # project list IS the token probe, and the refusal precedes every write.
+  assert_grep -qF 'Refuse an enabled pair whose project the sync identity cannot see (named)' "$pb"
+  blk=$(task_block "$pb" "Validate the tududi token against the live API")
+  assert_grep -qF '/api/v1/projects' <<<"$blk"
+  local v
+  v=$(grep -n 'Refuse an enabled pair whose project the sync identity cannot see' "$pb" | head -1 | cut -d: -f1)
+  [ -n "$v" ] && [ "$v" -lt "$u" ]
   # Prune only ever addresses prefix-owned names.
   assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" "$pb"
   # Secret-bearing steps are no_log; the reports are not.

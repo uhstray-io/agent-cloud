@@ -1040,6 +1040,10 @@
           tududi_port=3402
           tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
           tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
+          # The GitHub sync acts as the user who OWNS the mapped projects (per-user
+          # scoping — see platform/inventory/local-dev.yml.example); locally the
+          # dev-test project belongs to the break-glass account.
+          tududi_sync_user_email=admin@agent-cloud.test
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

@@ -14,8 +14,13 @@
 //     differs from its marker baseline (echo suppression, D5)
 //   - conflicts resolve per FIELD by the two systems' own updated_at values
 //     (never a wall clock), losing value preserved via audit comment (D5)
-//   - creation is gated by the uid search AND the sync-identity/title
-//     second gate; a suspect match blocks creation with a recovery error (D4)
+//   - creation is gated by the uid search AND the canonical-title second
+//     gate: ONE unlinked open issue with the task's title is ADOPTED (linked,
+//     never re-created — this is how an interrupted creation from either
+//     side recovers); more than one is a recovery error, never a guess (D4)
+//   - an open, human-authored, unlinked issue in a paired repo creates a
+//     tagged task in the paired project (GitHub-origin creation); closed
+//     unlinked issues are history and are never backfilled
 //   - audit comments carry a stable audit-event key and are suppressed when
 //     the key already appears in the issue's comments (D6)
 //   - the per-cycle write cap fails the cycle loudly when exceeded (risk 3)
@@ -200,48 +205,125 @@ function commentHasKey(comments, key) {
 //      updated_at, user_login, comments:[{body}]}
 //
 // ops emitted (executor maps them to HTTP): create_issue, update_issue,
-// comment_issue, update_task. NO delete op exists.
+// comment_issue, update_task, create_task. NO delete op exists.
+//
+// create_task carries `link_body`: the issue body with a marker whose uid is
+// the literal LINK_UID_PLACEHOLDER — the executor substitutes the uid the
+// tududi create returns and PATCHes it onto the issue. Until that lands the
+// pair is unlinked on both sides, and the next cycle's adoption gate links
+// them by title instead of creating again.
+
+const LINK_UID_PLACEHOLDER = '__UID__';
 
 function computeOps(input) {
   const { pair, syncTag, syncLogin, writeCap, tasks, issues } = input;
   const ops = [];
   const recoveryErrors = [];
-  const stats = { pairs_seen: 1, matched: 0, created: 0, skipped_quiet: 0 };
+  const stats = { pairs_seen: 1, matched: 0, created: 0, adopted: 0, created_tasks: 0, skipped_quiet: 0, skipped_finished: 0 };
 
-  // Index issues by marker uid; collect sync-identity-authored open issues
-  // for the second creation gate.
+  // Index issues by marker uid — the linkage. EVERY marker-carrying issue is
+  // linked (never an adoption/creation candidate), even when a uid appears on
+  // two issues — a body copy-pasted marker and all. That uid is then
+  // ambiguous: it is dropped from the index (its task gets no ops) and named
+  // in a recovery error, so neither issue is ever re-created as a task.
   const byUid = new Map();
+  const linkedNumbers = new Set();
+  const dupUids = new Map();
   for (const issue of issues) {
     const marker = parseMarker(issue.body);
-    if (marker && marker.uid) {
-      byUid.set(marker.uid, { issue, marker });
+    if (!(marker && marker.uid)) continue;
+    linkedNumbers.add(issue.number);
+    if (byUid.has(marker.uid)) {
+      if (!dupUids.has(marker.uid)) dupUids.set(marker.uid, [byUid.get(marker.uid).issue.number]);
+      dupUids.get(marker.uid).push(issue.number);
+      continue;
+    }
+    byUid.set(marker.uid, { issue, marker });
+  }
+  for (const [uid, numbers] of dupUids) {
+    byUid.delete(uid);
+    recoveryErrors.push({
+      pair: pair.github_repo,
+      task_uid: uid,
+      issue_number: numbers.join(','),
+      reason: `duplicate link: issues #${numbers.join(', #')} all carry the marker for task ${uid} — remove the marker from every copy but one`,
+    });
+  }
+  // A marker whose task is not in this project is a DANGLING link: the task
+  // was deleted, moved, or the marker was written by a different tududi
+  // instance (a local-dev run against a real repo leaves exactly this). Never
+  // silently skip it — the issue would then never become a task anywhere.
+  // Closed dangling issues are finished business and stay quiet.
+  const taskUids = new Set(tasks.map((t) => t.uid));
+  for (const { issue, marker } of byUid.values()) {
+    if (issue.state === 'open' && !taskUids.has(marker.uid)) {
+      recoveryErrors.push({
+        pair: pair.github_repo,
+        task_uid: marker.uid,
+        issue_number: issue.number,
+        reason: `dangling link: the issue's marker names a task that is not in tududi project '${pair.tududi_project}' — the task was deleted or moved, or the marker came from another tududi instance; remove the marker to let the issue be re-adopted or created`,
+      });
     }
   }
+  // Open issues no marker points at — adoption candidates, then GitHub-origin
+  // creation candidates. Claimed as they are linked this cycle.
+  const orphans = issues.filter((i) => i.state === 'open' && !linkedNumbers.has(i.number));
+  const claimed = new Set();
+  const sameTitle = (a, b) => projectTitle(a) === projectTitle(b);
 
   for (const task of tasks) {
+    if (dupUids.has(task.uid)) continue; // ambiguous link reported above: no ops, no new issue
     if (!task.tagged && !byUid.has(task.uid)) continue; // untagged, never linked: untouched
 
-    const linked = byUid.get(task.uid) || null;
+    let linked = byUid.get(task.uid) || null;
 
     // ── Creation path ───────────────────────────────────────────────────
     if (!linked) {
       if (!task.tagged) continue;
-      // Second gate (D4): a sync-authored open issue with the same canonical
-      // title blocks creation and records a recovery error.
-      const suspect = issues.find(
-        (i) =>
-          i.state === 'open' &&
-          i.user_login === syncLogin &&
-          projectTitle(i.title) === projectTitle(task.title)
-      );
-      if (suspect) {
+      // Second gate (D4): an unlinked open issue with the same canonical
+      // title is the SAME item — an interrupted creation from either side,
+      // or a human filing it in both places. Exactly one is adopted below;
+      // more than one is a recovery error, because picking is guessing.
+      const matches = orphans.filter((i) => !claimed.has(i.number) && sameTitle(i.title, task.title));
+      if (matches.length > 1) {
         recoveryErrors.push({
           pair: pair.github_repo,
           task_uid: task.uid,
-          issue_number: suspect.number,
+          issue_number: matches.map((i) => i.number).join(','),
           reason:
-            'suspect duplicate: open sync-authored issue with identical canonical title but no marker linkage — re-link or rename before the sync will create',
+            'ambiguous adoption: several unlinked open issues carry this task\'s canonical title — rename all but one before the sync will link',
         });
+        continue;
+      }
+      if (matches.length === 1) {
+        claimed.add(matches[0].number);
+        stats.adopted++;
+        // Empty baselines: every field reads as changed on BOTH sides, so
+        // equal fields stay quiet and differing fields resolve as a
+        // last-writer-wins conflict with the loser preserved (D5) — no
+        // side's value is silently overwritten by an adoption.
+        linked = { issue: matches[0], marker: { uid: task.uid, baselines: {} }, adopted: true };
+        const key = auditKey(task.uid, 'linked', task.updated_at);
+        if (!commentHasKey(matches[0].comments, key)) {
+          ops.push({
+            type: 'comment_issue',
+            repo: pair.github_repo,
+            number: matches[0].number,
+            body: `Linked to the tududi task with the same title (uid ${task.uid}); no duplicate was created. Differing fields are merged last-writer-wins below.\n\n${key}`,
+          });
+        }
+      }
+    }
+    if (!linked) {
+      // Finished work is not exported — the mirror of "closed issues are not
+      // imported". A create always opens the issue (POST /issues has no
+      // state), so a DONE/CANCELLED/ARCHIVED task would land as an OPEN issue
+      // carrying a closed baseline, and the very next cycle would read that
+      // as a GitHub reopen and drag the task back to IN_PROGRESS. Adoption
+      // above still applies: a finished task with a live same-title issue is
+      // the same item, and status then converges last-writer-wins.
+      if (mapTududiStatus(task.status) !== 'open') {
+        stats.skipped_finished++;
         continue;
       }
       const proj = projections(
@@ -291,31 +373,30 @@ function computeOps(input) {
             body: `${terminalEvent === 'untagged' ? 'Sync tag removed in tududi' : 'Task archived in tududi'} — closing as not planned. The linkage survives; re-tagging reopens this issue.\n\n${key}`,
           });
         }
+        // The close is a sync write, so it moves the status BASELINE with it.
+        // That is what makes a later re-tag a plain tududi-side change the
+        // field loop reopens on its own — and what tells a human's own
+        // "close as not planned" on GitHub apart from ours: theirs leaves
+        // the baseline at open, so it reads as a GitHub change and cancels
+        // the task instead of being reverted (found live on dev-test #2,
+        // cycle 118: the sync reopened an issue a human had just closed).
         ops.push({
           type: 'update_issue',
           repo: pair.github_repo,
           number: issue.number,
-          patch: { state: 'closed', state_reason: 'not_planned' },
+          patch: {
+            state: 'closed',
+            state_reason: 'not_planned',
+            body: withMarker(issue.body, {
+              uid: task.uid,
+              baselines: { ...marker.baselines, status: hash('closed:not_planned') },
+              tududi_updated_at: task.updated_at,
+              github_updated_at: issue.updated_at,
+            }),
+          },
         });
       }
       continue;
-    }
-
-    // Re-tagged after un-tag: reopen the same issue (D6). The reopen is
-    // this cycle's DECISION about the status field, so the GitHub side is
-    // projected as already open below — otherwise the field loop reads the
-    // stale closed state as a GitHub change and cancels the task (found live
-    // on dev-test #2: status bounced 0 -> 5 -> 1 across two cycles).
-    let reopening = false;
-    if (task.tagged && issue.state === 'closed' && issue.state_reason === 'not_planned'
-        && mapTududiStatus(task.status) === 'open') {
-      reopening = true;
-      ops.push({
-        type: 'update_issue',
-        repo: pair.github_repo,
-        number: issue.number,
-        patch: { state: 'open' },
-      });
     }
 
     // Echo suppression: skip everything the sync identity itself last wrote
@@ -334,7 +415,7 @@ function computeOps(input) {
       {
         title: issue.title,
         description: issue.body,
-        statusMapped: reopening ? 'open' : mapIssueState(issue),
+        statusMapped: mapIssueState(issue),
         labelNames: issue.labels,
       },
       syncTag
@@ -383,7 +464,9 @@ function computeOps(input) {
     }
 
     const changed = Object.keys(issuePatch).length > 0 || Object.keys(taskPatch).length > 0;
-    if (!changed) {
+    // An adoption writes its marker even when every field already agrees —
+    // the marker IS the link; without it the next cycle adopts again.
+    if (!changed && !linked.adopted) {
       stats.skipped_quiet++;
       continue;
     }
@@ -423,6 +506,66 @@ function computeOps(input) {
     if (Object.keys(taskPatch).length > 0) {
       ops.push({ type: 'update_task', task_uid: task.uid, patch: taskPatch });
     }
+  }
+
+  // ── GitHub-origin creation ──────────────────────────────────────────
+  // Every open issue still unclaimed here has no task: a human filed it on
+  // GitHub. It becomes a tagged task in the paired project — unless an
+  // UNTAGGED task already carries its title, in which case creating would
+  // duplicate a task the owner chose to keep private; that is theirs to
+  // resolve (tag it to link, or rename). A sync-authored orphan is an
+  // interrupted tududi-origin creation whose task no longer qualifies —
+  // reported, never turned into a task.
+  for (const issue of orphans) {
+    if (claimed.has(issue.number)) continue;
+    if (issue.user_login === syncLogin) {
+      recoveryErrors.push({
+        pair: pair.github_repo,
+        task_uid: null,
+        issue_number: issue.number,
+        reason: 'orphan: sync-authored open issue with no marker and no tagged task carrying its title — re-tag the task, or close the issue',
+      });
+      continue;
+    }
+    // ANY unlinked task carrying the title blocks creation. A tagged one that
+    // reached here unclaimed was already reported above — ambiguous adoption
+    // or a duplicated marker — and creating would turn one reported ambiguity
+    // into N extra tasks (found by the unit suite: 1 task + 2 twin issues
+    // produced 3 tasks). An untagged one is the owner's private twin.
+    const shadow = tasks.find((t) => !byUid.has(t.uid) && sameTitle(t.title, issue.title));
+    if (shadow && shadow.tagged) continue;
+    if (shadow) {
+      recoveryErrors.push({
+        pair: pair.github_repo,
+        task_uid: shadow.uid,
+        issue_number: issue.number,
+        reason: 'untagged task carries this GitHub issue\'s canonical title — tag it to link them, or rename one; the sync will not create a second task',
+      });
+      continue;
+    }
+    const proj = projections(
+      { title: issue.title, description: issue.body, statusMapped: 'open', labelNames: issue.labels },
+      syncTag
+    );
+    ops.push({
+      type: 'create_task',
+      repo: pair.github_repo,
+      number: issue.number,
+      project: pair.tududi_project,
+      task: {
+        name: proj.title,
+        note: proj.description,
+        status: TUDUDI_STATUS.NOT_STARTED,
+        tags: (proj.labels ? proj.labels.split(',') : []).concat(syncTag).map((n) => ({ name: n })),
+      },
+      link_body: withMarker(proj.description, {
+        uid: LINK_UID_PLACEHOLDER,
+        baselines: baselinesOf(proj),
+        tududi_updated_at: '',
+        github_updated_at: issue.updated_at,
+      }),
+    });
+    stats.created_tasks++;
   }
 
   // Per-cycle write cap: exceeding it is a loud failure, not a truncation —
@@ -488,4 +631,5 @@ module.exports = {
   auditKey,
   commentHasKey,
   computeOps,
+  LINK_UID_PLACEHOLDER,
 };

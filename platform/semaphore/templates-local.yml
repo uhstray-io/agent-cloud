@@ -60,6 +60,14 @@ templates:
     playbook: platform/playbooks/store-tududi-api-token.yml
   - name: "Refresh tududi-sync GitHub Token (Local)"
     playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
+    # The base template's schedule runs `main`, where this playbook does not
+    # exist until promotion — a visible red by design (setup-templates.yml),
+    # and no refresh at all for the local instance. Without its own schedule
+    # the local sync 401s an hour after every provision, and the verify gate
+    # reports a credential failure as if the engine had drifted (found live
+    # 2026-09-03: cycle 116). Same cron as the base template.
+    schedule:
+      cron: "*/45 * * * *"
   - name: "Provision tududi-github Sync (Local)"
     playbook: platform/playbooks/provision-tududi-github-sync.yml
   - name: "Verify tududi-github Sync (Local)"
