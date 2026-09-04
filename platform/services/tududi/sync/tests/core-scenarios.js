@@ -402,6 +402,16 @@ console.log('ALL CORE SCENARIOS PASS');
     [{ field_id: 22329656, value: 'High' }, { field_id: FIELD, value: 'low' }],
     'the other field values ride along or the PATCH would wipe them');
 
+  // b2) a NON-single-select sibling (date/number/text) survives the write.
+  //     Its value lives in `value`, not `single_select_option`, so a mapping
+  //     that only reads option names would echo null and wipe it.
+  const startDate = { field_id: 22329654, field_name: 'Start date', data_type: 'date', option_name: '2026-09-04' };
+  r = core.computeOps({ ...pcfg, tasks: [task(0, '9')], issues: [issue('Urgent', '1', [startDate])] });
+  const withDate = r.ops.find((o) => o.type === 'update_issue');
+  assert.deepStrictEqual(withDate.patch.issue_field_values,
+    [{ field_id: 22329654, value: '2026-09-04' }, { field_id: FIELD, value: 'low' }],
+    'a date field rides the write with its own value, not null');
+
   // c) GitHub raises it -> tududi is written with the name (Urgent -> high)
   r = core.computeOps({ ...pcfg, tasks: [{ ...task(0, '1'), note: 'D' }], issues: [{ ...issue('Urgent', '9'), body: quiet('u1', 'low') }] });
   const tp = r.ops.find(o => o.type === 'update_task');

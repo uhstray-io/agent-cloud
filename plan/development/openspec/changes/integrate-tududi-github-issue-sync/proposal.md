@@ -96,14 +96,26 @@ engine this bridge needs; this change is its first real workflow consumer.
   values in comments. No destructive operation exists in the sync at all — it
   never deletes issues or tasks.
 - **Credentials**: revocation is an encoded, re-runnable rollback step, not a
-  documentation pointer. Where a provider exposes revocation to the API it is
-  executed by the playbook; where it does not (a fine-grained PAT's deletion is
-  a provider-settings action), the operator step is gated by a machine check:
-  the rollback step **verifies revocation by authenticating with the stored
-  token and requiring the provider to refuse it**, fails loudly while the token
-  still works, and treats an already-revoked credential as success — so a
-  rollback interrupted after n8n deactivation converges on re-run instead of
-  leaving a live token unnoticed. Re-running provisioning against an empty
+  documentation pointer. The two credentials revoke differently, and the App
+  changes what "revoke" even means (design D7, decided 2026-09-03):
+  - **tududi** — the API token is revoked through the app's own reversible
+    `revoked_at` on our-label rows, executed by the playbook.
+  - **GitHub** — there is no PAT to delete. The credential is a GitHub App, so
+    the durable authority is its **installation**, and installation tokens
+    expire on their own within the hour. Rollback therefore means removing the
+    installation from the org's mapped repositories (a provider-settings
+    action) and, if the App itself is being retired, deleting its private key
+    from `secret/services/github:tududi_sync_app_key`. Deactivating the n8n
+    workflows and pruning the `github-sync-api` credential stops the sync but
+    does NOT revoke anything at GitHub — the distinction matters, because the
+    key alone can mint a fresh token for as long as the installation stands.
+  Either operator step is gated by the same machine check: the rollback
+  **verifies revocation by authenticating with the stored credential and
+  requiring the provider to refuse it** — for the App, by attempting an
+  installation-token mint and requiring GitHub to reject it — fails loudly
+  while the credential still works, and treats an already-revoked one as
+  success, so a rollback interrupted after n8n deactivation converges on
+  re-run instead of leaving live access unnoticed. Re-running provisioning against an empty
   declaration removes the workflows and credentials it owns from n8n —
   provisioning prunes its own objects by design (design D1), so this is
   specified behavior, not a hope.

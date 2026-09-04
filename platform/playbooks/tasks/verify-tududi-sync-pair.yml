@@ -98,7 +98,10 @@
         {%- set fvals = [] -%}
         {%- for v in i.issue_field_values | default([]) -%}
           {%- if fvals.append({'field_id': v.issue_field_id, 'field_name': v.issue_field_name,
-                               'option_name': (v.single_select_option | default({})).get('name')}) -%}{%- endif -%}
+                               'data_type': v.data_type | default(''),
+                               'option_name': (v.single_select_option).name
+                                              if v.single_select_option
+                                              else (v.value | default(None))}) -%}{%- endif -%}
         {%- endfor -%}
         {%- for l in i.labels | default([]) -%}
           {%- if lnames.append(l.name | default(l)) -%}{%- endif -%}

@@ -318,6 +318,15 @@ PYEOF"
   grep -qF 'priority: t.priority' "$tpl"
   grep -qF 'priorityFieldId' "$vp"
   grep -qF "'priority': s.priority" "$vp"
+  # Every field-value TYPE survives a write. A date/number/text field carries
+  # its value in `value` with single_select_option null, so echoing back only
+  # the option name would send null and wipe it — the PATCH replaces the set.
+  grep -qF 'data_type' "$tpl"
+  grep -qF 'data_type' "$vp"
+  # The gate must run the engine over the SAME snapshot-completeness inputs as
+  # the cycle, or it PASSES a pair from a truncated read the cycle refuses.
+  grep -qF 'issuesTruncated' "$SYNC_DIR/lib/verify-pair.js"
+  grep -qF 'issuesTruncated' "$vp"
   # GitHub-origin work lands PLANNED, not NOT_STARTED.
   grep -qF 'status: TUDUDI_STATUS.PLANNED' "$core"
   # A subtask inherits its parent's tag (tududi's UI cannot tag one).

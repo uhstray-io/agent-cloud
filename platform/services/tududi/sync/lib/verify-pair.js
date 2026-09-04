@@ -10,6 +10,7 @@
 // stdin: one JSON payload —
 //   {
 //     pair, syncTag, syncLogin, writeCap, priorityFieldId,
+//     issuesTruncated, issuePageSize,
 //     tasks:   [ the paired project's tasks, engine shape ],
 //     issues:  [ the paired repo's issues, engine shape ],
 //     lastExecution: { status } | null,      // n8n's latest cycle for the workflow
@@ -57,6 +58,12 @@ async function main() {
       // Same field set as the cycle, or the gate renders a different verdict
       // from identical logic — priority would be silently unverified.
       priorityFieldId: input.priorityFieldId,
+      // Snapshot completeness travels too, or the gate PASSES a pair from a
+      // truncated read while the cycle refuses to write from it — the same
+      // "gate and cycle must see identically" invariant that priorityFieldId
+      // broke one commit ago (MISTAKES 10.12).
+      issuesTruncated: input.issuesTruncated,
+      issuePageSize: input.issuePageSize,
       tasks: input.tasks,
       issues: input.issues,
     });
