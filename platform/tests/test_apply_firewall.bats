@@ -36,8 +36,10 @@ setup() {
 }
 
 @test "firewall: DETECTED ports get a route-allow mirror, gated on _rootful" {
-  # Each auto-detected published port must also get a FORWARD rule on rootful hosts.
-  grep -qF 'ufw route allow proto {{ item.split()[1] }} from {{ firewall_upstream_source }} to any port {{ item.split()[0] }}' "$PLAYBOOK"
+  # Each auto-detected published port must also get a FORWARD rule on rootful
+  # hosts — now once per declared upstream, since the source may be a list, so
+  # the loop item is a (port-line, source) pair rather than the port line.
+  grep -qF 'ufw route allow proto {{ item.0.split()[1] }} from {{ item.1 }} to any port {{ item.0.split()[0] }}' "$PLAYBOOK"
   # The mirror task is gated so rootless hosts (host-terminating ports) skip it.
   grep -q 'Allow each DETECTED published port on the FORWARD chain' "$PLAYBOOK"
   # A `- _rootful` when-condition must exist guarding the detected-route mirror.
