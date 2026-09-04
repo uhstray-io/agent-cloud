@@ -29,7 +29,7 @@ def main() -> int:
     # and so does the enabled subset the provisioning actually deploys.
     for pairs in (all_pairs, enabled):
         run_render(pairs)
-    print(f"RENDER CHECK PASS — 11 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
+    print("RENDER CHECK PASS — 11 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
     return 0
 
 

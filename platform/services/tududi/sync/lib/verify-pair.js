@@ -9,7 +9,7 @@
 //
 // stdin: one JSON payload —
 //   {
-//     pair, syncTag, syncLogin, writeCap,
+//     pair, syncTag, syncLogin, writeCap, priorityFieldId,
 //     tasks:   [ the paired project's tasks, engine shape ],
 //     issues:  [ the paired repo's issues, engine shape ],
 //     lastExecution: { status } | null,      // n8n's latest cycle for the workflow
@@ -54,6 +54,9 @@ async function main() {
       syncTag: input.syncTag,
       syncLogin: input.syncLogin,
       writeCap: input.writeCap,
+      // Same field set as the cycle, or the gate renders a different verdict
+      // from identical logic — priority would be silently unverified.
+      priorityFieldId: input.priorityFieldId,
       tasks: input.tasks,
       issues: input.issues,
     });

@@ -206,23 +206,17 @@
       still holds exactly ONE issue with that title. The three children of #8
       correctly reported `hierarchy drift` and wrote nothing while their parent
       was momentarily unlinked, then cleared on the following cycle (exec 270,
-      10 matched / 0 ops) with the 5.1 gate green.) Validate against a scratch pair WITHOUT touching the canonical scope:
-      a temporary mapping OVERLAY file (the canonical eight-pair declaration is
-      never edited) declaring one scratch tududi project ↔ a private scratch
-      repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
-      PAT limited to the scratch repo, seeded at a scratch OpenBao key) — the
-      production PAT's six-repo scope stays exactly as declared in design D7
-      and cannot see the scratch repo by design. Run several cycles
-      exercising: tag→issue creation, an interrupted-creation recovery (delete
-      the task-side link, confirm the next cycle relinks instead of
-      duplicating), the audit-comment retry (comment posted, marker write
-      failed — no duplicate comment on the next cycle), edits in both
-      directions on different fields (clean per-field merge), tag/label
-      reconciliation, same-field both-sides conflict,
-      un-tag→close→re-tag→reopen, archive→close-as-not-planned, untagged task
-      untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
-      prune the scratch credential, re-provision, and assert the canonical
-      mapping still declares exactly eight pairs and the scratch objects are gone
+      10 matched / 0 ops) with the 5.1 gate green.)
+      SUPERSEDED PROCEDURE, kept only so the redesign is legible: this task
+      originally called for a scratch pair behind a temporary mapping OVERLAY
+      and a separately scoped fine-grained PAT. Both are obsolete. The
+      credential is a GitHub App (design D7), so the App's INSTALLATION is the
+      scope and the refresher asserts installation == mapping on every mint — a
+      pair outside the declaration cannot exist, which is a stronger guarantee
+      than a second PAT. `uhstray-io/dev-test` is therefore a STANDING enabled
+      pair in the canonical declaration rather than an overlay, and validation
+      writes land there using the production credential chain.
+
 - [ ] 5.3 (PARTIAL 2026-09-03, third pass — status crossings and identity.
       GitHub-origin status replay passed LIVE on dev-test (cycles 128–132):
       reopen → task IN_PROGRESS, task DONE → issue closed/completed, reopen

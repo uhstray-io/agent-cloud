@@ -246,6 +246,10 @@ function commentHasKey(comments, key) {
 //      field_values: [{field_id(int), field_name, option_name}]}
 //   priorityFieldId: the org's native Priority field id, or null to leave
 //     priority out of the sync entirely (see fieldsFor)
+//   issuesTruncated: true when the issue read hit its page window — the pair
+//     is refused, because a partial set cannot answer "does this already
+//     exist?" and the creation gates would duplicate
+//   issuePageSize: the window, for the refusal message (default 100)
 //
 // ops emitted (executor maps them to HTTP): create_issue, update_issue,
 // comment_issue, update_task, create_task, add_sub_issue. NO delete op exists.
@@ -260,7 +264,12 @@ const LINK_UID_PLACEHOLDER = '__UID__';
 
 function computeOps(input) {
   const { pair, syncTag, syncLogin, writeCap, tasks, issues } = input;
-  const priorityFieldId = input.priorityFieldId || null;
+  // Coerced, not trusted: the field id is compared with === against the ids
+  // GitHub returns as NUMBERS, and a caller that assembles this payload
+  // through a templating layer hands over the STRING "22329653" — which
+  // matches nothing and makes the mismatch guard fire on every issue that
+  // carries a priority. The gate did exactly that.
+  const priorityFieldId = input.priorityFieldId ? Number(input.priorityFieldId) || null : null;
   const FIELDS = fieldsFor(priorityFieldId);
   // GitHub's issue_field_values PATCH is a REPLACE, not a merge: a
   // priority-only write wipes every other field value on the issue (measured
@@ -281,6 +290,24 @@ function computeOps(input) {
     pairs_seen: 1, matched: 0, created: 0, adopted: 0, created_tasks: 0,
     skipped_quiet: 0, skipped_finished: 0, skipped_parent_unlinked: 0, attached: 0,
   };
+
+  // A TRUNCATED issue snapshot is the one read error that can cause a
+  // DUPLICATE: the same-title orphan gate and the uid search both scan the
+  // fetched set, so an issue past the page limit looks like it does not
+  // exist and the pair gets a second issue created for it. The page window
+  // is 100 (REST per_page and the GraphQL selection alike). Refuse the pair
+  // rather than write from a snapshot that cannot answer "does this already
+  // exist?". A repo sitting at exactly 100 issues trips this too — a false
+  // refusal is the safe direction, and the fix is the same either way.
+  if (input.issuesTruncated) {
+    recoveryErrors.push({
+      pair: pair.github_repo,
+      task_uid: '',
+      issue_number: 0,
+      reason: `issue snapshot truncated at the ${input.issuePageSize || 100}-issue page window — refusing to write, because an issue past the window reads as absent and would be created a second time; paginate the read before enabling this pair`,
+    });
+    return { ops: [], recoveryErrors, stats };
+  }
 
   // A declared id that does not match the org's actual Priority field would
   // read every issue as un-prioritised and write into the WRONG field. The
@@ -586,7 +613,7 @@ function computeOps(input) {
 
     const issuePatch = {};
     const taskPatch = {};
-    let losing = null;
+    const losing = [];
 
     for (const f of FIELDS) {
       const tHash = hash(tSide[f]);
@@ -600,11 +627,15 @@ function computeOps(input) {
         // Same-field conflict: the newer side's own updated_at wins (D5) —
         // never the poller's clock.
         winner = String(task.updated_at) >= String(issue.updated_at) ? 't' : 'g';
-        losing = losing || {
+        // EVERY conflicting field is preserved, not just the first: two
+        // fields can lose in one cycle (an adoption starts with empty
+        // baselines, so several fields conflict at once), and dropping the
+        // second silently destroys the value this comment exists to keep.
+        losing.push({
           field: f,
           value: winner === 't' ? gSide[f] : tSide[f],
           from: winner === 't' ? 'github' : 'tududi',
-        };
+        });
       } else if (tChanged) {
         winner = 't';
       } else {
@@ -634,15 +665,15 @@ function computeOps(input) {
       continue;
     }
 
-    if (losing) {
-      const key = auditKey(task.uid, `conflict_${losing.field}`,
-        losing.from === 'github' ? issue.updated_at : task.updated_at);
+    for (const lost of losing) {
+      const key = auditKey(task.uid, `conflict_${lost.field}`,
+        lost.from === 'github' ? issue.updated_at : task.updated_at);
       if (!commentHasKey(issue.comments, key)) {
         ops.push({
           type: 'comment_issue',
           repo: pair.github_repo,
           number: issue.number,
-          body: `Sync conflict on \`${losing.field}\`: the ${losing.from} value lost last-writer-wins and is preserved here:\n\n\`\`\`\n${losing.value}\n\`\`\`\n\n${key}`,
+          body: `Sync conflict on \`${lost.field}\`: the ${lost.from} value lost last-writer-wins and is preserved here:\n\n\`\`\`\n${lost.value}\n\`\`\`\n\n${key}`,
         });
       }
     }

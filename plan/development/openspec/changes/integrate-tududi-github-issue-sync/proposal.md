@@ -11,12 +11,15 @@ engine this bridge needs; this change is its first real workflow consumer.
 
 ## What Changes
 
-- **Eight tududi-project ↔ GitHub-repo relationships** (grown from six on the operator's 2026-09-03 direction — including the PUBLIC `agent-cloud` repo, whose pair ships disabled because enabling it is a publication decision), declared as config-as-code
-  in this repo (the repo names already appear committed here):
-  `Zerds - Development ↔ zerds`, `Zerds - Website ↔ zerds-website`,
-  `agent-cloud ↔ agent-cloud`, `Weft - Development ↔ weft`, `huhhb ↔ huhhb`,
-  `Scientific-Business Website ↔ scientific-business`. A relationship must be
-  explicitly declared to sync anything.
+- **Nine tududi-project ↔ GitHub-repo relationships** (grown from six on the
+  operator's 2026-09-03 direction — including the PUBLIC `agent-cloud` repo,
+  whose pair ships disabled because enabling it is a publication decision, and
+  `dev-test`, the standing validation pair every instance may run), declared as
+  config-as-code in this repo (the repo names already appear committed here).
+  `platform/services/tududi/sync/github-mapping.yml` is the declaration; the
+  GitHub App's installation must cover exactly those repositories, which the
+  token refresher asserts on every mint. A relationship must be explicitly
+  declared to sync anything.
 - **Selective, opt-in item sync, from either origin**: a tududi task crosses to
   GitHub only when it carries the designated sync tag; untagged tasks never leave
   tududi. An open issue filed on GitHub in a paired repository becomes a task in
@@ -67,12 +70,17 @@ engine this bridge needs; this change is its first real workflow consumer.
 - **New code**: mapping declaration file, n8n workflow definitions as code, a
   provisioning playbook for the workflows + GitHub/tududi credentials, BATS
   coverage; Semaphore template(s) for provisioning.
-- **Secrets layout**: `secret/services/tududi:api_token` gains its planned value;
-  the sync's GitHub credential lands at `secret/services/github:tududi_sync_pat`
-  (fine-grained, scoped to the six repos — design D7).
-- **External state**: issues created/updated in six GitHub repositories; tasks
-  updated in tududi. Both under a dedicated sync identity, so its writes are
-  distinguishable and echo-suppressible.
+- **Secrets layout**: `secret/services/tududi:api_token` gains its planned
+  value; the sync's GitHub credential is a dedicated GitHub **App**, not a PAT
+  (design D7 as decided 2026-09-03) — its private key at
+  `secret/services/github:tududi_sync_app_key` and its client id (the JWT
+  issuer, not a secret) at `:tududi_sync_app_client_id`. Installation tokens
+  live one hour, so a scheduled refresher re-mints and updates the n8n
+  credential in place.
+- **External state**: issues created/updated in the declared GitHub
+  repositories; tasks updated in tududi. Both under a dedicated sync identity —
+  the App's `[bot]` login — so its writes are distinguishable and
+  echo-suppressible.
 - **Docs**: CLAUDE.md workflow table, tududi service context, a sync contract
   doc alongside the Postiz automation contract.
 

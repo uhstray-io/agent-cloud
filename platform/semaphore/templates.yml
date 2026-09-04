@@ -247,6 +247,11 @@ templates:
         description: "false = kill switch: deactivate the sync's workflows and stop (no validation, no render)"
         type: string
         required: false
+        # A BLANK survey value renders as the empty string, and `'' | bool` is
+        # FALSE — without this default, leaving the field untouched would
+        # silently trip the kill switch. The playbook pairs it with
+        # default(true, true) so an empty value also falls back to enabled.
+        default_value: "true"
 
   - name: Verify tududi-github Sync
     playbook: platform/playbooks/verify-tududi-github-sync.yml

@@ -417,6 +417,13 @@ console.log('ALL CORE SCENARIOS PASS');
   r = core.computeOps({ ...cfg, tasks: [task(0, '9')], issues: [issue('Urgent', '1')] });
   assert.strictEqual(r.ops.length, 0, 'no declared field id -> priority is out of the sync');
 
+  // e2) the id survives a caller that stringifies it. Ansible templating hands
+  //     the gate "22329653", and === against GitHub's numeric ids matched
+  //     nothing, so the mismatch guard fired on every prioritised issue.
+  r = core.computeOps({ ...pcfg, priorityFieldId: String(FIELD), tasks: [task(2, '1')], issues: [issue('Urgent', '1')] });
+  assert.strictEqual(r.recoveryErrors.length, 0, 'a stringified field id must behave as the number');
+  assert.strictEqual(r.ops.length, 0);
+
   // f) a declared id that is not this org's Priority field refuses the cycle
   r = core.computeOps({ ...pcfg, tasks: [task(2, '1')],
     issues: [{ ...issue(null, '1'), field_values: [{ field_id: 999, field_name: 'Priority', option_name: 'High' }] }] });
@@ -436,4 +443,55 @@ console.log('ALL CORE SCENARIOS PASS');
   assert.strictEqual(ct.task.status, core.TUDUDI_STATUS.PLANNED);
 
   console.log('SCENARIO 19 (priority: Urgent folds to high, replace-safe writes, opt-in by field id) PASS');
+}
+
+// 20) MULTI-FIELD CONFLICT (CodeRabbit, PR #159). Two fields can lose in the
+//     same cycle — an adoption starts with empty baselines, so several fields
+//     read as changed on both sides at once. Keeping only the first losing
+//     value silently destroyed the second, which is the exact thing the audit
+//     comment exists to prevent.
+{
+  const marker = core.withMarker('gh body', {
+    uid: 'u1',
+    baselines: { title: 'aaaaaaaa', description: 'bbbbbbbb', status: 'cccccccc', labels: 'dddddddd' },
+    tududi_updated_at: '1',
+    github_updated_at: '1',
+  });
+  const r = core.computeOps({
+    ...cfg,
+    tasks: [{ uid: 'u1', id: 1, title: 'tududi title', note: 'tududi body', status: 0, tags: ['gh-sync'], updated_at: '9', tagged: true, parent_uid: null }],
+    issues: [{ number: 5, id: 500, title: 'github title', body: marker, state: 'open', state_reason: null, labels: [], updated_at: '5', user_login: 'human', comments: [], parent_number: null }],
+  });
+  const comments = r.ops.filter((o) => o.type === 'comment_issue');
+  const fields = comments.map((c) => c.body.match(/Sync conflict on `([a-z]+)`/)[1]).sort();
+  assert.deepStrictEqual(fields, ['description', 'title'], 'BOTH losing fields are preserved, not just the first');
+  assert.ok(comments.every((c) => /tududi-sync-event: u1\/conflict_/.test(c.body)), 'each carries its own audit key');
+  assert.ok(comments.some((c) => c.body.includes('github title')), "github's losing title is in the comment");
+  assert.ok(comments.some((c) => c.body.includes('gh body')), "github's losing body is in the comment");
+  console.log('SCENARIO 20 (every losing field is preserved, one keyed comment each) PASS');
+}
+
+// 21) TRUNCATED SNAPSHOT (CodeRabbit, PR #159). The page window is the one
+//     read error that can DUPLICATE: an issue past it reads as absent, and
+//     both creation gates scan the fetched set. The pair is refused, not
+//     partially written.
+{
+  const r = core.computeOps({
+    ...cfg,
+    issuesTruncated: true,
+    issuePageSize: 100,
+    tasks: [{ uid: 'u1', id: 1, title: 'would be created', note: '', status: 0, tags: ['gh-sync'], updated_at: '2', tagged: true, parent_uid: null }],
+    issues: [],
+  });
+  assert.strictEqual(r.ops.length, 0, 'a truncated snapshot writes nothing at all');
+  assert.match(r.recoveryErrors[0].reason, /truncated at the 100-issue page window/);
+  // ...and the same input without the flag DOES create, so the guard is what
+  // stopped it rather than something else about the fixture.
+  const ok = core.computeOps({
+    ...cfg,
+    tasks: [{ uid: 'u1', id: 1, title: 'would be created', note: '', status: 0, tags: ['gh-sync'], updated_at: '2', tagged: true, parent_uid: null }],
+    issues: [],
+  });
+  assert.deepStrictEqual(ok.ops.map((o) => o.type), ['create_issue']);
+  console.log('SCENARIO 21 (a truncated issue snapshot refuses the pair instead of duplicating) PASS');
 }

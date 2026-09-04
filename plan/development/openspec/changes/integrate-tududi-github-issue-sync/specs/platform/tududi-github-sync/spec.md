@@ -201,8 +201,14 @@ subtask of the task its parent issue is linked to — using each system's own
 hierarchy feature, never a checklist line or a note in the parent. A child pair
 converges under the same field, conflict and echo rules as a top-level pair.
 
-A subtask crosses only when it carries the sync tag ITSELF — the tag is not
-inherited from the parent — AND its parent is already a linked pair. A tagged
+A subtask crosses when it is tagged — by carrying the sync tag itself, OR by
+INHERITING it from a tagged parent — AND its parent is already a linked pair.
+The gate is inherited because tududi offers no way to tag a subtask at all: its
+inline subtask editor sends no tags, the backend whitelists fields that exclude
+them, and a subtask row opens the PARENT's page, so nothing links to the child's
+own view. Tagging the parent is therefore the single explicit opt-in for the
+whole item, whose issue is already public. Any subtask of an UNTAGGED parent
+SHALL NOT cross, so an un-opted item keeps its entire subtree private. A tagged
 child whose parent is not yet linked, or an unlinked sub-issue whose parent
 issue is not yet linked, SHALL be deferred to a later cycle and counted, never
 imported at the top level. Title-based adoption for children MUST look only

@@ -19,13 +19,15 @@ const results = [];
 const summary = { cycles: [], recovery_errors: [] };
 
 for (const item of $input.all()) {
-  const { pair, tasks, issues } = item.json;
+  const { pair, tasks, issues, issuesTruncated, issuePageSize } = item.json;
   const { ops, recoveryErrors, stats } = computeOps({
     pair,
     syncTag: SYNC_CONFIG.sync_tag,
     syncLogin: SYNC_CONFIG.sync_login,
     writeCap: SYNC_CONFIG.write_cap,
     priorityFieldId: SYNC_CONFIG.priority_field_id,
+    issuesTruncated,
+    issuePageSize,
     tasks,
     issues,
   });

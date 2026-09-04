@@ -100,6 +100,25 @@
       register: _workflows
       no_log: true
 
+    - name: "Require exactly one workflow by that name (named)"
+      # The execution URL below indexes `| first` on this selection. With no
+      # match it raises inside a no_log'd URL expression, which surfaces as an
+      # unexplained template error rather than "the sync was never
+      # provisioned"; with two it silently gates on whichever came back first.
+      ansible.builtin.assert:
+        that:
+          - _named_workflows | length == 1
+        fail_msg: >-
+          Expected exactly one n8n workflow named '{{ _workflow_name }}' on
+          {{ _n8n_base }}, found {{ _named_workflows | length }}.
+          {{ 'Run Provision tududi-github Sync first — the gate verifies a
+              provisioned sync, it does not provision one.'
+             if (_named_workflows | length == 0)
+             else 'Duplicate names make the gate check an arbitrary one of
+                   them; remove the extras before trusting this verdict.' }}
+      vars:
+        _named_workflows: "{{ _workflows.json.data | selectattr('name', 'equalto', _workflow_name) | list }}"
+
     - name: "Read the workflow's latest execution"
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/api/v1/executions?workflowId={{ (_workflows.json.data | selectattr('name', 'equalto', _workflow_name) | first).id }}&limit=1"

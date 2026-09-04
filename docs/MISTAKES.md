@@ -89,6 +89,7 @@ supersede it with a new entry and link both.
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
+| 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1893,6 +1894,44 @@ when it round-trips today's keys correctly.
 **Enforced by.** Test — `platform/tests/test_manage_secrets.bats` refuses any
 direct write method to `secret/data` in manage-secrets and requires the shared
 merge include.
+
+### 10.12 A numeric id crossed the Ansible→JSON boundary as a string, so an equality guard fired on everything
+
+**What happened.** The sync engine gained a guard: if an issue carries a
+`Priority` field whose numeric `field_id` differs from the one declared in the
+mapping, refuse the cycle by name rather than write into an unrelated field.
+Two callers hand the engine that id. The n8n workflow passes it through a Jinja
+`dict(...)` expression, which preserves the integer. The verification playbook
+assembles its payload as `"{{ ... | int }}"` — a quoted scalar — so Ansible
+handed over the STRING `"22329653"`. GitHub returns `issue_field_id` as a
+number, `22329653 !== "22329653"`, and the guard fired on every prioritised
+issue. The gate failed a converged pair with `task '' / issue #15` while the
+cycle reported zero ops on the same data.
+
+It was caught in the same session, by the gate's own invariant — and only
+because the gate had just been fixed to pass the id at all. Before that fix the
+gate silently verified a DIFFERENT field set than the cycle, which is the
+quieter half of the same defect.
+
+**Root cause.** `| int` inside a quoted Ansible scalar does not survive
+serialization: the filter runs, then the result is re-rendered as the string
+body of that scalar. Type only survives when the value is produced inside a
+Jinja expression that is consumed as a native object — which is why the sibling
+call site, written as `dict(github_priority_field_id=(x | int))`, was correct
+and looked identical at a glance. An `!==` comparison against externally-typed
+data then silently means "always different".
+
+**The rule.** A value that will be compared with `===`/`!==` is coerced at the
+boundary that receives it, not at the boundaries that send it. The engine now
+does `Number(input.priorityFieldId) || null` once, so every caller is safe
+regardless of how its payload was assembled. More generally: when a guard's
+failure mode is "fires on everything", assert the NEGATIVE case in a test —
+that the guard stays silent on matching input — because a guard that always
+fires passes any test that only checks it can fire.
+
+**Enforced by.** Test — `core-scenarios.js` scenario 19(e2) passes the id as a
+string and asserts zero recovery errors, and 19(f) still asserts a genuinely
+wrong id refuses. Mutation-checked: removing the coercion turns 19(e2) red.
 
 ## 11. The largest one
 

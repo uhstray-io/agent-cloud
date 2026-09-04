@@ -68,7 +68,11 @@
       value: "Bearer {{ _mt_token }}"
       allowedHttpRequestDomains: domains
       allowedDomains: api.github.com
-    _sync_enabled: "{{ sync_enabled | default(true) | bool }}"
+    # default(true, true) — the boolean form — so an EMPTY value (a survey
+    # field left blank) falls back to enabled too. Plain default() only
+    # substitutes when undefined, and `'' | bool` is false, so a blank survey
+    # would otherwise trip the kill switch.
+    _sync_enabled: "{{ sync_enabled | default(true, true) | bool }}"
 
   tasks:
     - name: "Refuse a cleartext secret-store endpoint"
@@ -128,7 +132,10 @@
           loop: "{{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list }}"
           loop_control:
             label: "{{ item.name }}"
-          no_log: false
+          # The loop label carries the workflow NAME, so the run stays
+          # diagnosable; the task itself is no_log because a failed request
+          # prints its invocation args, X-N8N-API-KEY included.
+          no_log: true
 
         - name: "Report the kill switch"
           ansible.builtin.debug:
@@ -308,6 +315,7 @@
       # the mapping test makes the parse version-proof.
       ansible.builtin.set_fact:
         _workflow_json: "{{ _rendered if _rendered is mapping else (_rendered | from_json) }}"
+      when: _pairs | length > 0
       vars:
         _rendered: >-
           {{ lookup('template', playbook_dir ~ '/../services/tududi/sync/templates/tududi-github-sync.workflow.json.j2',
@@ -329,6 +337,11 @@
       no_log: true
 
     - name: "Upsert the cycle workflow by name"
+      # An all-DISABLED mapping is the specified rollback: prune everything
+      # owned and leave nothing behind. Rendering and upserting a workflow
+      # with zero pairs would recreate the very object the prune just removed,
+      # so the declaration having no enabled pair skips both.
+      when: _pairs | length > 0
       ansible.builtin.uri:
         url: >-
           {{ _n8n_base }}/api/v1/workflows{{
