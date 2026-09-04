@@ -33,6 +33,7 @@ supersede it with a new entry and link both.
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
+| 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; nothing was stored | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -233,6 +234,41 @@ different host keys is a proof; one silent sweep is not.
 a declared address from two or more hosts and fails when the identities differ —
 worth building, since this is the second time one address answering as two
 machines has cost an investigation.
+
+### 1.7 Recorded a memory as retained on the store's own "completed", with an empty result list
+
+**What happened.** Closing the change's task 6.3 ("retain one outcome memory"),
+I called the memory store's synchronous retain twice. The first returned
+`{"status":"completed","memory_ids":[]}` and I treated that as done; the second
+never returned and was killed at a 300-second idle timeout. I then wrote a task
+closure into `tasks.md` stating that two outcome memories had been retained, and
+said the same in the summary to the operator.
+
+Neither was retrievable. Two recall queries in domain language returned only the
+memory from the previous day. The bank's `fact_count` had not moved either —
+though `last_document_at` had, which is exactly the split that makes this
+readable: a document was created, and no fact was extracted from it.
+
+**Root cause.** `completed` described the call, not the outcome. The result
+carried its own evidence — `memory_ids: []`, an empty list where an id belongs —
+and I read the status field and stopped. The store's own documented failure mode
+in `CLAUDE.md` is about the ASYNC retain returning an acceptance receipt, so I
+had treated the synchronous variant as self-verifying; it is not. This is the
+same shape as §1.3, where a pipe's exit code stood in for the command's, but the
+rule there is about pipes and does not reach an API that reports success with an
+empty payload.
+
+**The rule.** A write is not done because the writer said `completed`. Check the
+result's payload — an empty id list is a failure however the status reads — and
+for anything whose whole purpose is later retrieval, prove it by reading it back
+in the same session. A recall in the same domain terms the memory was written in
+costs nothing (zero model calls on this store) and is the only check that
+actually measures what was wanted.
+
+**Enforced by.** Convention. The mechanical form would be a wrapper that refuses
+a retain result with no `memory_ids` and re-issues it, which is worth building
+if this recurs.
+
 
 ## 2. Tests that would have passed for the wrong reason
 

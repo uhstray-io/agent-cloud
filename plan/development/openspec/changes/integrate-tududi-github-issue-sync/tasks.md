@@ -421,8 +421,16 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       contract and states the per-user visibility rules a reader must know
       before touching tasks, tags or projects. The webhook transport (D2) and
       the App's already-taken upgrade path (D7) are recorded in design.md
-- [x] 6.3 (DONE 2026-09-04, on the merge to `dev`) Two outcome memories
-      retained into the repo's experience bank. (a) The design WORKED: poll
+- [ ] 6.3 (ATTEMPTED 2026-09-04, NOT LANDED — retry pending) The two outcome
+      memories below were composed and sent, but neither is retrievable: the
+      first `sync_retain` returned `status: completed` with an EMPTY
+      `memory_ids` array — a document was created, no fact was extracted — and
+      the second timed out at 300s. Verified by two recall queries in domain
+      terms, both of which returned only the 2026-09-03 memory. The failure
+      shape is worth keeping: on this store, `completed` is NOT proof of a
+      retrievable memory; an empty `memory_ids` is the real signal, and the
+      only trustworthy check is a recall afterwards. Long multi-sentence
+      paragraphs appear to be what stalls extraction. The content to retain: (a) The design WORKED: poll
       transport with a single bidirectional cycle held up, and so did
       statelessness — an interrupted creation adopts the orphan instead of
       duplicating, proven live. The conflict-rate reality against the LWW
