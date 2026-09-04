@@ -217,7 +217,7 @@
       pair in the canonical declaration rather than an overlay, and validation
       writes land there using the production credential chain.
 
-- [ ] 5.3 (PARTIAL 2026-09-03, third pass — status crossings and identity.
+- [x] 5.3 (DONE 2026-09-04; third pass 2026-09-03 — status crossings and identity.
       GitHub-origin status replay passed LIVE on dev-test (cycles 128–132):
       reopen → task IN_PROGRESS, task DONE → issue closed/completed, reopen
       again, task CANCELLED → closed/not_planned, then a quiet cycle with zero
@@ -261,7 +261,18 @@
       once its tududi transport was corrected to the SAME inventory variable
       the cycle workflow uses (it had borrowed `tududi_base_url`, the app's
       public edge URL, unreachable from inside the orchestrator; MISTAKES
-      1.x). "Unmapping is non-destructive" was proven in 4.3 — 118.) Validation gate: scenarios "Tagging a task creates its issue exactly
+      1.x). "Unmapping is non-destructive" was proven in 4.3 — 118.
+      CLOSED 2026-09-04: the one scenario still outstanding here — "Interrupted
+      creation recovers without a duplicate" — was proven live on dev-test
+      (exec 269): #8's marker was stripped to simulate a create that never
+      linked, the next cycle reported `adopted: 1, created: 0`, and the repo
+      still holds exactly ONE issue with that title. Every other listed
+      scenario had already passed live, and the 5.1 gate is green after the
+      whole battery. The "scratch pair" wording below is superseded for the
+      same reason as 5.2: dev-test is a STANDING declared pair under the App's
+      own installation scope, not a scratch overlay, so there is nothing to
+      remove afterwards — "unmapping is non-destructive" was proven separately
+      at 4.3 by pruning an empty declaration.) Validation gate: scenarios "Tagging a task creates its issue exactly
       once", "Interrupted creation recovers without a duplicate", "Removing the
       sync tag closes the issue, destroys nothing", "Linked pairs converge
       bidirectionally" (all three sub-scenarios), "Both sides edited between
