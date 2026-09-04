@@ -252,6 +252,80 @@
       scratch pair afterwards and confirm scenario "Unmapping is
       non-destructive"
 
+## 5H. Hierarchy sync — subtasks ↔ sub-issues (design D8; operator review 2026-09-03)
+
+Scoped on local-dev against `dev-test`, BEFORE the prod rollout (operator
+ordering). The three review items resolved to: hierarchy = new build (5H.1–5H.6);
+description sync = already implemented but never proven live (5H.7); tag gate =
+already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
+
+- [x] 5H.1 Engine (`sync-core.js`): tasks carry `parent_uid`/`parent_id`, issues
+      carry `parent_number`/`id`; rule 1 — tagged child + linked parent only,
+      else `skipped_parent_unlinked`; rule 2 — `add_sub_issue` op whenever a
+      linked child issue shows no `parent_number`; rule 3 — GitHub-origin
+      sub-issue → `create_task` with `parent_task_id`, deferred while the
+      parent issue is unlinked; rule 4 — adoption/shadow gates scoped to the
+      linked parent's children, `hierarchy drift` recovery error on mismatch.
+      No new field, no new status rule (tududi's auto-completion arrives as
+      ordinary status changes)
+- [x] 5H.2 Unit scenarios (`tests/core-scenarios.js`): child create tududi→GitHub
+      (create + attach on the next cycle), child create GitHub→tududi with
+      `parent_task_id`, untagged child ignored under a linked parent, child
+      deferred while parent unlinked (both origins), detached child
+      re-attached, hierarchy drift reported with zero ops, quiet cycle with a
+      linked child pair = zero ops
+- [x] 5H.3 Workflow (`tududi-github-sync.workflow.json.j2`): fan-out flattens
+      each task's embedded `subtasks[]` into the stream with `parent_uid`,
+      `parent_id` and the child's OWN `tagged`; issue map adds `id` and
+      `parent_number`; GitHub executor gains the
+      `add_sub_issue` route (`POST /issues/{parent_number}/sub_issues`,
+      `{sub_issue_id}`); tududi executor passes `parent_task_id` through on
+      `create_task`. AMENDED 2026-09-03 after the first live cycle: the REST
+      list's `parent_issue_url` is NULL under the App installation token, so
+      `parent_number` comes from one GraphQL query per pair (`Fetch sub-issue
+      parents` node), not from parsing that field — one extra call per pair,
+      not per item; parsing `parent_issue_url` is now forbidden by render-check
+      and BATS
+- [x] 5H.4 Contract doc (`github-sync-contract.md`): hierarchy section — the
+      five D8 rules, the `skipped_parent_unlinked` counter, the `hierarchy
+      drift` error, the ≤1-cadence top-level window and its upgrade path
+- [x] 5H.5 BATS (`test_tududi_sync.bats`): the workflow template routes
+      `add_sub_issue`, flattens `subtasks`, and never sends `subtasks: []` on a
+      PATCH (tududi replaces the whole set); the executor still has no delete
+      route at any level
+- [x] 5H.6 Live proof on dev-test, both directions (DONE 2026-09-03, execs
+      154–159): (a) tagging subtask `1ezzbrhadrq5hs8` under linked parent
+      `xpugd26ef1a0wy6` created issue #14 (exec 155) and attached it under #9
+      the next cycle (exec 156, `add_sub_issue`); `GET /issues/9/sub_issues` →
+      `[14]`. (b) hand-filed sub-issue #13 under linked #8 became subtask
+      `3w04q6inh0xypib` of `scsrj80r7auindn`, tagged `gh-sync`,
+      `parent_task_id` set (exec 155). (c) untagged subtask
+      `3ef680snzmxnt6e` under the same parent produced zero ops (exec 159).
+      (d) quiet cycles after (a)+(b) = 0 ops (execs 158, 159). (e) 5.1 gate
+      PASSED — task 182. The `hierarchy drift` recovery error fired exactly as
+      designed on the pre-existing probe (#12 ↔ `f39ipt4616rycn4`, execs 154
+      and 155, naming BOTH the wrong parent and the right one), and cleared
+      once the task was moved under `scsrj80r7auindn`; the gate FAILED while it
+      stood (task 181) and passed after — the gate's own negative proof
+- [x] 5H.7 Live proof of description sync, both directions, on one linked pair
+      (DONE 2026-09-03, exec 157): tududi note on `scsrj80r7auindn` → #8's body
+      updated; #9's body edited on GitHub → `xpugd26ef1a0wy6`'s note updated;
+      both in the SAME cycle (3 ops), and the next cycle wrote nothing (exec
+      158, 0 ops) — spec scenario "Description edited on either side reaches
+      the other"
+- [x] 5H.8 Tag gate confirmed as deployed, nothing changed (2026-09-03): both
+      `provision-tududi-github-sync.yml:50` and `verify-tududi-github-sync.yml:39`
+      default `_sync_tag` to `gh-sync` with NO inventory override anywhere under
+      `platform/inventory/`; GitHub-origin tasks arrive tagged
+      (`sync-core.js:635` `.concat(syncTag)`, live: `3w04q6inh0xypib` carries
+      `gh-sync`); untagged tududi tasks never export (`q0umw8eixjx01tr` and
+      `3ef680snzmxnt6e`, zero ops across every cycle); no GitHub label is added
+      — `projectLabels()` filters the sync tag out of the label projection, and
+      issue #14, created from a tagged task, carries `labels: []`
+- [ ] 5H.9 Update the published sync report (`tududi-github-sync-report.html`,
+      same artifact URL) with the hierarchy design, the 5H.6/5H.7 evidence and
+      the prod-rollout blockers; commit + push on the feature branch
+
 ## 6. Production enablement, docs, close-out
 
 - [ ] 6.1 Enable pairs incrementally: `huhhb` first; a pair is promoted only

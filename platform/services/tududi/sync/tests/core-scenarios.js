@@ -272,3 +272,84 @@ console.log('ALL CORE SCENARIOS PASS');
   assert.ok(tp && tp.patch.status === core.TUDUDI_STATUS.IN_PROGRESS, 'reopen pulls the task to IN_PROGRESS');
   console.log('SCENARIO 17 (finished work is not exported; linked finished work converges) PASS');
 }
+
+// 18) HIERARCHY (design D8). One linked parent pair; children on both sides.
+//     Fixtures: parent task uP (id 100) <-> issue #8 (id 800), quiet.
+{
+  const quiet = (uid, title) => {
+    const p = core.projections({ title, description: 'D', statusMapped: 'open', labelNames: [] }, 'gh-sync');
+    return core.withMarker('D', { uid, baselines: core.baselinesOf(p), tududi_updated_at: '1', github_updated_at: '1' });
+  };
+  const parentTask = { uid: 'uP', id: 100, title: 'Parent', note: 'D', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: null };
+  const parentIssue = { number: 8, id: 800, title: 'Parent', body: quiet('uP', 'Parent'), state: 'open', labels: [], updated_at: '1', user_login: 'a', comments: [], parent_number: null };
+  const run = (tasks, issues) => core.computeOps({ ...cfg, tasks: [parentTask, ...tasks], issues: [parentIssue, ...issues] });
+
+  // a) tagged subtask, parent linked -> create_issue (hop 1); nothing else
+  let r = run([{ uid: 'uC', id: 101, title: 'Child', note: '', status: 0, tags: ['gh-sync'], updated_at: '2', tagged: true, parent_uid: 'uP' }], []);
+  assert.deepStrictEqual(r.ops.map(o => o.type), ['create_issue']);
+  assert.strictEqual(r.ops[0].task_uid, 'uC');
+
+  // b) next cycle: the child issue exists top-level (no parent yet) -> add_sub_issue (hop 2), fields quiet
+  const childIssue = { number: 12, id: 1200, title: 'Child', body: quiet('uC', 'Child'), state: 'open', labels: [], updated_at: '1', user_login: 'uhstray-sync', comments: [], parent_number: null };
+  r = run([{ uid: 'uC', id: 101, title: 'Child', note: 'D', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: 'uP' }], [childIssue]);
+  assert.deepStrictEqual(r.ops, [{ type: 'add_sub_issue', repo: pair.github_repo, parent_number: 8, number: 12, sub_issue_id: 1200 }]);
+  assert.strictEqual(r.stats.attached, 1);
+
+  // c) attached and quiet -> zero ops (the same rule that re-attaches a human detach is silent once attached)
+  r = run([{ uid: 'uC', id: 101, title: 'Child', note: 'D', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: 'uP' }], [{ ...childIssue, parent_number: 8 }]);
+  assert.strictEqual(r.ops.length, 0);
+  assert.strictEqual(r.recoveryErrors.length, 0);
+
+  // d) UNTAGGED subtask under a linked parent -> nothing, whatever the parent carries
+  r = run([{ uid: 'uU', id: 102, title: 'Private child', note: '', status: 0, tags: [], updated_at: '2', tagged: false, parent_uid: 'uP' }], []);
+  assert.strictEqual(r.ops.length, 0);
+
+  // e) tagged subtask whose parent is NOT linked -> deferred, counted, no issue
+  r = core.computeOps({ ...cfg,
+    tasks: [{ uid: 'uQ', id: 200, title: 'Unlinked parent', note: '', status: 0, tags: [], updated_at: '1', tagged: false, parent_uid: null },
+            { uid: 'uW', id: 201, title: 'Waiting child', note: '', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: 'uQ' }],
+    issues: [] });
+  assert.strictEqual(r.ops.length, 0);
+  assert.strictEqual(r.stats.skipped_parent_unlinked, 1);
+
+  // f) GitHub-origin sub-issue under the linked parent -> create_task with parent_task_id = parent's integer id
+  r = run([], [{ number: 13, id: 1300, title: 'Filed child', body: 'from gh', state: 'open', labels: [], updated_at: '3', user_login: 'human', comments: [], parent_number: 8 }]);
+  const ct = r.ops.filter(o => o.type === 'create_task');
+  assert.strictEqual(ct.length, 1);
+  assert.strictEqual(ct[0].task.parent_task_id, 100);
+  assert.deepStrictEqual(ct[0].task.tags.map(t => t.name), ['gh-sync']);
+
+  // g) GitHub-origin sub-issue whose parent issue is NOT linked -> deferred, never imported top-level
+  r = run([], [
+    { number: 30, id: 3000, title: 'Foreign parent', body: 'plain', state: 'open', labels: [], updated_at: '1', user_login: 'human', comments: [], parent_number: null },
+    { number: 31, id: 3100, title: 'Foreign child', body: '', state: 'open', labels: [], updated_at: '1', user_login: 'human', comments: [], parent_number: 30 },
+  ]);
+  assert.deepStrictEqual(r.ops.filter(o => o.type === 'create_task').map(o => o.number), [30], 'the parent imports; the child waits for it');
+  assert.strictEqual(r.stats.skipped_parent_unlinked, 1);
+
+  // h) adoption is scoped to the parent: a same-title top-level orphan is NOT the child's twin
+  r = run([{ uid: 'uC2', id: 103, title: 'Same name', note: '', status: 0, tags: ['gh-sync'], updated_at: '2', tagged: true, parent_uid: 'uP' }],
+          [{ number: 40, id: 4000, title: 'Same name', body: '', state: 'open', labels: [], updated_at: '1', user_login: 'human', comments: [], parent_number: null }]);
+  assert.ok(r.ops.some(o => o.type === 'create_issue' && o.task_uid === 'uC2'), 'child is created, not adopted onto the top-level twin');
+  assert.strictEqual(r.stats.adopted, 0);
+  // ...and a same-title sub-issue of the SAME parent IS adopted
+  r = run([{ uid: 'uC2', id: 103, title: 'Same name', note: '', status: 0, tags: ['gh-sync'], updated_at: '2', tagged: true, parent_uid: 'uP' }],
+          [{ number: 41, id: 4100, title: 'Same name', body: '', state: 'open', labels: [], updated_at: '1', user_login: 'human', comments: [], parent_number: 8 }]);
+  assert.strictEqual(r.stats.adopted, 1);
+  assert.ok(!r.ops.some(o => o.type === 'create_issue' || o.type === 'create_task'));
+
+  // i) hierarchy drift: linked child issue under a DIFFERENT parent than its task -> recovery error, zero ops
+  r = run([{ uid: 'uC', id: 101, title: 'Child', note: 'D', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: 'uP' }], [{ ...childIssue, parent_number: 99 }]);
+  assert.strictEqual(r.ops.length, 0);
+  assert.strictEqual(r.recoveryErrors.length, 1);
+  assert.ok(r.recoveryErrors[0].reason.startsWith('hierarchy drift'), r.recoveryErrors[0].reason);
+  // ...and a sub-issue linked to a TOP-LEVEL task is drift too (the live probe #12 <-> f39ipt4616rycn4 shape)
+  r = run([{ uid: 'uC', id: 101, title: 'Child', note: 'D', status: 0, tags: ['gh-sync'], updated_at: '1', tagged: true, parent_uid: null }], [{ ...childIssue, parent_number: 8 }]);
+  assert.strictEqual(r.ops.length, 0);
+  assert.ok(r.recoveryErrors[0].reason.includes('is top-level in tududi'));
+
+  // j) no delete at any level; add_sub_issue is the only new op type
+  const src = require('fs').readFileSync(CORE, 'utf8');
+  assert.ok(!/remove_sub_issue|delete_sub_issue/.test(src));
+  console.log('SCENARIO 18 (hierarchy: create both ways, attach, wait, scope, drift) PASS');
+}

@@ -16,6 +16,29 @@
   delegate_to: localhost
   no_log: true
 
+- name: "Fetch the paired repo's sub-issue parents ({{ _pair.github_repo }})"
+  # D8: the REST list's parent_issue_url is NULL under a GitHub App installation
+  # token (measured on dev-test #12), so the parent map comes from GraphQL —
+  # the same read the cycle workflow performs, so this gate sees what it sees.
+  ansible.builtin.uri:
+    url: "https://api.github.com/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _mt_token }}"
+    body_format: json
+    body:
+      query: >-
+        query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
+        issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){
+        nodes{ number parent{ number } } } } }
+      variables:
+        owner: "{{ _pair.github_repo.split('/')[0] }}"
+        name: "{{ _pair.github_repo.split('/')[1] }}"
+    status_code: [200]
+  register: _vp_parents
+  delegate_to: localhost
+  no_log: true
+
 - name: "Assemble the verdict payload ({{ _pair.github_repo }})"
   # Engine shapes, mirroring the workflow's own fan-out/fan-in projections;
   # tasks in UNDECLARED projects contribute only their marker traces.
@@ -33,30 +56,41 @@
       undeclaredMarkers: "{{ _vp_undeclared }}"
   vars:
     _all: "{{ (_tasks.json.tasks | default(_tasks.json.data | default([]))) if (_tasks.json is mapping) else _tasks.json }}"
+    # D8: a subtask carries project_id null and rides its parent's embedded
+    # subtasks[], so the pair's task stream is parent + children flattened with
+    # parent_uid — exactly the workflow's fan-out projection.
     _vp_tasks: >-
       {%- set out = [] -%}
       {%- for t in _all if (t.Project is defined and t.Project and (t.Project.name | default('')) == _pair.tududi_project) -%}
-        {%- set names = [] -%}
-        {%- for x in (t.tags | default(t.Tags | default([]))) -%}
-          {%- if names.append(x.name | default(x)) -%}{%- endif -%}
+        {%- for s in [t] + (t.subtasks | default([])) -%}
+          {%- set names = [] -%}
+          {%- for x in (s.tags | default(s.Tags | default([]))) -%}
+            {%- if names.append(x.name | default(x)) -%}{%- endif -%}
+          {%- endfor -%}
+          {%- if out.append({'uid': s.uid, 'id': s.id, 'title': s.name, 'note': s.note | default(''),
+                             'status': s.status, 'tags': names,
+                             'updated_at': s.updated_at | default(s.updatedAt | default('')),
+                             'parent_uid': (None if s.uid == t.uid else t.uid),
+                             'tagged': ((_sync_tag | lower) in (names | map('lower') | list))}) -%}{%- endif -%}
         {%- endfor -%}
-        {%- if out.append({'uid': t.uid, 'title': t.name, 'note': t.note | default(''),
-                           'status': t.status, 'tags': names,
-                           'updated_at': t.updated_at | default(t.updatedAt | default('')),
-                           'tagged': ((_sync_tag | lower) in (names | map('lower') | list))}) -%}{%- endif -%}
       {%- endfor -%}
       {{ out }}
     _vp_issues_shaped: >-
       {%- set out = [] -%}
+      {%- set pmap = {} -%}
+      {%- for n in _vp_parents.json.data.repository.issues.nodes if n.parent -%}
+        {%- if pmap.update({n.number: n.parent.number}) -%}{%- endif -%}
+      {%- endfor -%}
       {%- for i in _vp_issues.json if i.pull_request is not defined -%}
         {%- set lnames = [] -%}
         {%- for l in i.labels | default([]) -%}
           {%- if lnames.append(l.name | default(l)) -%}{%- endif -%}
         {%- endfor -%}
-        {%- if out.append({'number': i.number, 'title': i.title, 'body': i.body | default(''),
+        {%- if out.append({'number': i.number, 'id': i.id, 'title': i.title, 'body': i.body | default(''),
                            'state': i.state, 'state_reason': i.state_reason | default(None),
                            'labels': lnames, 'updated_at': i.updated_at,
-                           'user_login': i.user.login | default(''), 'comments': []}) -%}{%- endif -%}
+                           'user_login': i.user.login | default(''), 'comments': [],
+                           'parent_number': pmap[i.number] | default(None)}) -%}{%- endif -%}
       {%- endfor -%}
       {{ out }}
     _vp_undeclared: >-

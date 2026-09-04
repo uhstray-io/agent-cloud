@@ -178,12 +178,80 @@ propagate in either direction.
 - **THEN** the next cycle updates the issue body and reconciles the issue's
   labels to match the task's tags per the documented tag↔label rules
 
+#### Scenario: Description edited on either side reaches the other
+
+- **WHEN** a linked task's description is edited in tududi, and on a later
+  cycle the linked issue's body is edited on GitHub
+- **THEN** the first cycle carries the tududi text into the issue body and the
+  second carries the GitHub text back into the task description, each exactly
+  once, with no third cycle writing either side
+
 #### Scenario: Comments never cross
 
 - **WHEN** comments are added to a linked issue and a note is added to the
   linked tududi task
 - **THEN** subsequent cycles copy neither: the issue's comments stay only in
   GitHub and the task's notes stay only in tududi
+
+### Requirement: Hierarchy syncs natively, one level deep, in both directions
+
+A tududi subtask SHALL be represented as a GitHub sub-issue of the issue its
+parent task is linked to, and a GitHub sub-issue SHALL be represented as a
+subtask of the task its parent issue is linked to — using each system's own
+hierarchy feature, never a checklist line or a note in the parent. A child pair
+converges under the same field, conflict and echo rules as a top-level pair.
+
+A subtask crosses only when it carries the sync tag ITSELF — the tag is not
+inherited from the parent — AND its parent is already a linked pair. A tagged
+child whose parent is not yet linked, or an unlinked sub-issue whose parent
+issue is not yet linked, SHALL be deferred to a later cycle and counted, never
+imported at the top level. Title-based adoption for children MUST look only
+among the children of the linked parent. A linked child whose observed parent
+disagrees with its recorded parent SHALL be reported as a recovery error and
+left unwritten. Re-parenting, hierarchy deeper than one level, and deletion are
+outside this requirement.
+
+#### Scenario: Tagged subtask becomes a sub-issue of the parent's issue
+
+- **WHEN** a task in a declared project is a linked pair and one of its
+  subtasks carries the sync tag
+- **THEN** within two cycles one issue exists for the subtask, it is a
+  sub-issue of the parent's linked issue, the two are durably linked, and
+  further cycles update rather than re-create it
+
+#### Scenario: Sub-issue filed on GitHub becomes a subtask
+
+- **WHEN** a person adds a sub-issue under a linked issue in a paired
+  repository and a cycle runs
+- **THEN** one subtask exists under the linked parent task carrying the
+  sub-issue's title, body, labels and the sync tag, and the two are linked
+
+#### Scenario: Untagged subtask under a linked parent stays private
+
+- **WHEN** a linked task gains a subtask that does not carry the sync tag
+- **THEN** no issue is created for it and nothing about it reaches GitHub,
+  regardless of the parent's tag
+
+#### Scenario: Child waits for its parent
+
+- **WHEN** a tagged subtask's parent task is not yet linked, or an unlinked
+  sub-issue's parent issue is not yet linked
+- **THEN** the cycle creates nothing for the child, counts it as deferred, and
+  a later cycle — after the parent has linked — creates it under the parent
+
+#### Scenario: Detached sub-issue is re-attached
+
+- **WHEN** a linked child issue is found without a parent on GitHub while its
+  tududi subtask still belongs to the linked parent
+- **THEN** the next cycle re-attaches it as a sub-issue of the parent's linked
+  issue and writes nothing else for the pair
+
+#### Scenario: Moved child is reported, not guessed
+
+- **WHEN** a linked child's parent on one side no longer matches the parent
+  recorded in its linkage
+- **THEN** no write is made for that pair and a recovery error names both
+  parents
 
 ### Requirement: Conflicts resolve last-writer-wins without silent loss
 

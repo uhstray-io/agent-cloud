@@ -106,13 +106,40 @@
           ~ "const projectId = (name) => { const p = pj.find((x) => x.name === name); return p ? p.id : null; };\n"
           ~ "// Full-list diff is the contract's decided mechanism (no changed-since\n"
           ~ "// filter at tududi 1.1.1); bucket by project name, keep tag state.\n"
+          ~ "// D8: the task list hides subtask rows but EMBEDS them on the parent as\n"
+          ~ "// subtasks[] (tududi 1.1.1) — flatten one level so a child reaches the\n"
+          ~ "// engine with its parent's uid and its OWN tag state. No extra request.\n"
+          ~ "const shape = (t, parent_uid) => ({ uid: t.uid, id: t.id, title: t.name, note: t.note || '',\n"
+          ~ "  status: t.status, tags: (t.tags || t.Tags || []).map((x) => x.name || x),\n"
+          ~ "  updated_at: t.updated_at || t.updatedAt, parent_uid,\n"
+          ~ "  tagged: (t.tags || t.Tags || []).some((x) => ((x.name || x).toLowerCase()) === SYNC_TAG.toLowerCase()) });\n"
           ~ "return PAIRS.map((p) => ({ json: { pair: { ...p, tududi_project_id: projectId(p.tududi_project) }, tasks: all\n"
           ~ "  .filter((t) => (t.Project && t.Project.name) === p.tududi_project)\n"
-          ~ "  .map((t) => ({ uid: t.uid, title: t.name, note: t.note || '',\n"
-          ~ "    status: t.status, tags: (t.tags || t.Tags || []).map((x) => x.name || x),\n"
-          ~ "    updated_at: t.updated_at || t.updatedAt,\n"
-          ~ "    tagged: (t.tags || t.Tags || []).some((x) => ((x.name || x).toLowerCase()) === SYNC_TAG.toLowerCase()) })) } }));\n"
+          ~ "  .flatMap((t) => [shape(t, null), ...(t.subtasks || []).map((s) => shape(s, t.uid))]) } }));\n"
         ) | to_json }}
+      }
+    },
+    {
+      "id": "fetch-parents",
+      "name": "Fetch sub-issue parents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [500, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/graphql",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={% raw %}{{ JSON.stringify({ query: 'query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ nameWithOwner issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ number parent{ number } } } } }', variables: { owner: $json.pair.github_repo.split('/')[0], name: $json.pair.github_repo.split('/')[1] } }) }}{% endraw %}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": {{ github_credential_id | to_json }},
+          "name": {{ github_credential_name | to_json }}
+        }
       }
     },
     {
@@ -123,7 +150,7 @@
       "position": [600, 0],
       "parameters": {
         "method": "GET",
-        "url": "=https://api.github.com/repos/{% raw %}{{ $json.pair.github_repo }}{% endraw %}/issues?state=all&per_page=100",
+        "url": "=https://api.github.com/repos/{% raw %}{{ $('Bucket tasks per declared pair').item.json.pair.github_repo }}{% endraw %}/issues?state=all&per_page=100",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {}
@@ -164,13 +191,25 @@
           ~ "    (byRepo[full] = byRepo[full] || []).push(is);\n"
           ~ "  }\n"
           ~ "}\n"
+          ~ "// D8: the REST list does NOT name a sub-issue's parent under the GitHub\n"
+          ~ "// App installation token (parent_issue_url is null there — measured on\n"
+          ~ "// dev-test #12), so parents come from one GraphQL query per pair, keyed\n"
+          ~ "// by nameWithOwner: { repo: { child_number: parent_number } }.\n"
+          ~ "const parentByRepo = {};\n"
+          ~ "for (const it of $('Fetch sub-issue parents').all()) {\n"
+          ~ "  const repo = it.json && it.json.data && it.json.data.repository;\n"
+          ~ "  if (!repo) throw new Error('sub-issue parent query returned no repository: ' + JSON.stringify(it.json && it.json.errors));\n"
+          ~ "  const m = (parentByRepo[repo.nameWithOwner] = {});\n"
+          ~ "  for (const n of repo.issues.nodes) if (n.parent) m[n.number] = n.parent.number;\n"
+          ~ "}\n"
           ~ "const merged = pairItems.map((pi) => ({ json: { pair: pi.json.pair, tasks: pi.json.tasks,\n"
           ~ "  issues: (byRepo[pi.json.pair.github_repo] || [])\n"
           ~ "    .filter((it) => it && !('pull_request' in it))\n"
-          ~ "    .map((it) => ({ number: it.number, title: it.title, body: it.body || '',\n"
+          ~ "    .map((it) => ({ number: it.number, id: it.id, title: it.title, body: it.body || '',\n"
           ~ "      state: it.state, state_reason: it.state_reason || null,\n"
           ~ "      labels: (it.labels || []).map((l) => l.name || l), updated_at: it.updated_at,\n"
-          ~ "      user_login: it.user && it.user.login, comments: [] })) } }));\n"
+          ~ "      user_login: it.user && it.user.login, comments: [],\n"
+          ~ "      parent_number: (parentByRepo[pi.json.pair.github_repo] || {})[it.number] || null })) } }));\n"
           ~ sync_core_js ~ "\n"
           ~ "const $inputOriginal = $input;\n"
           ~ "const $input2 = { all: () => merged };\n"
@@ -210,13 +249,13 @@
       "typeVersion": 4.4,
       "position": [1200, -100],
       "parameters": {
-        "method": "={% raw %}{{ $json.op.type === 'create_issue' || $json.op.type === 'comment_issue' ? 'POST' : 'PATCH' }}{% endraw %}",
-        "url": "=https://api.github.com/repos/{% raw %}{{ $json.op.repo }}{% endraw %}/issues{% raw %}{{ $json.op.type === 'create_issue' ? '' : '/' + $json.op.number }}{{ $json.op.type === 'comment_issue' ? '/comments' : '' }}{% endraw %}",
+        "method": "={% raw %}{{ $json.op.type === 'update_issue' ? 'PATCH' : 'POST' }}{% endraw %}",
+        "url": "=https://api.github.com/repos/{% raw %}{{ $json.op.repo }}{% endraw %}/issues{% raw %}{{ $json.op.type === 'create_issue' ? '' : $json.op.type === 'add_sub_issue' ? '/' + $json.op.parent_number + '/sub_issues' : '/' + $json.op.number }}{{ $json.op.type === 'comment_issue' ? '/comments' : '' }}{% endraw %}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.type === 'create_issue' ? { title: $json.op.title, body: $json.op.body, labels: $json.op.labels } : $json.op.type === 'comment_issue' ? { body: $json.op.body } : $json.op.patch) }}{% endraw %}",
+        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.type === 'create_issue' ? { title: $json.op.title, body: $json.op.body, labels: $json.op.labels } : $json.op.type === 'comment_issue' ? { body: $json.op.body } : $json.op.type === 'add_sub_issue' ? { sub_issue_id: $json.op.sub_issue_id } : $json.op.patch) }}{% endraw %}",
         "options": {}
       },
       "credentials": {
@@ -288,6 +327,9 @@
       "main": [[{ "node": "Bucket tasks per declared pair", "type": "main", "index": 0 }]]
     },
     "Bucket tasks per declared pair": {
+      "main": [[{ "node": "Fetch sub-issue parents", "type": "main", "index": 0 }]]
+    },
+    "Fetch sub-issue parents": {
       "main": [[{ "node": "Fetch repo issues", "type": "main", "index": 0 }]]
     },
     "Fetch repo issues": {

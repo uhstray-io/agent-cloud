@@ -24,6 +24,10 @@
 //   - audit comments carry a stable audit-event key and are suppressed when
 //     the key already appears in the issue's comments (D6)
 //   - the per-cycle write cap fails the cycle loudly when exceeded (risk 3)
+//   - hierarchy is one level, native on both sides (D8): a subtask crosses
+//     only when it is tagged ITSELF and its parent is a linked pair; a child
+//     issue observed without a parent is re-attached from the tududi truth;
+//     a child whose two parents disagree is a recovery error, never a guess
 
 'use strict';
 
@@ -197,15 +201,17 @@ function commentHasKey(comments, key) {
 //   syncTag: control tag name
 //   syncLogin: the GitHub sync identity's login (echo/authorship filter, D5)
 //   writeCap: max writes this pair may emit per cycle
-//   tasks: tududi tasks of the project, each
-//     {uid, title, note, status(int), tags:[names], updated_at, tagged:bool,
-//      archived:bool, issue_ref: {repo, number} | null}
-//   issues: GitHub issues of the repo, each
-//     {number, title, body, state, state_reason, labels:[names],
-//      updated_at, user_login, comments:[{body}]}
+//   tasks: tududi tasks of the project — top-level AND their subtasks,
+//     flattened — each
+//     {uid, id(int), title, note, status(int), tags:[names], updated_at,
+//      tagged:bool, archived:bool, parent_uid: uid | null}
+//   issues: GitHub issues of the repo — the flat list, which already carries
+//     the hierarchy — each
+//     {number, id(int), title, body, state, state_reason, labels:[names],
+//      updated_at, user_login, comments:[{body}], parent_number: n | null}
 //
 // ops emitted (executor maps them to HTTP): create_issue, update_issue,
-// comment_issue, update_task, create_task. NO delete op exists.
+// comment_issue, update_task, create_task, add_sub_issue. NO delete op exists.
 //
 // create_task carries `link_body`: the issue body with a marker whose uid is
 // the literal LINK_UID_PLACEHOLDER — the executor substitutes the uid the
@@ -219,7 +225,10 @@ function computeOps(input) {
   const { pair, syncTag, syncLogin, writeCap, tasks, issues } = input;
   const ops = [];
   const recoveryErrors = [];
-  const stats = { pairs_seen: 1, matched: 0, created: 0, adopted: 0, created_tasks: 0, skipped_quiet: 0, skipped_finished: 0 };
+  const stats = {
+    pairs_seen: 1, matched: 0, created: 0, adopted: 0, created_tasks: 0,
+    skipped_quiet: 0, skipped_finished: 0, skipped_parent_unlinked: 0, attached: 0,
+  };
 
   // Index issues by marker uid — the linkage. EVERY marker-carrying issue is
   // linked (never an adoption/creation candidate), even when a uid appears on
@@ -271,20 +280,43 @@ function computeOps(input) {
   const claimed = new Set();
   const sameTitle = (a, b) => projectTitle(a) === projectTitle(b);
 
+  // Hierarchy (D8). The parent side of a child is resolved through the
+  // LINKAGE, never by title: a subtask's parent issue is the issue its parent
+  // task is linked to, and a sub-issue's parent task is the task its parent
+  // issue's marker names. `undefined` = parent not linked (child waits).
+  const taskByUid = new Map(tasks.map((t) => [t.uid, t]));
+  const uidByNumber = new Map([...byUid.values()].map(({ issue, marker }) => [issue.number, marker.uid]));
+  const parentIssueOf = (task) => (task.parent_uid ? (byUid.get(task.parent_uid) || {}).issue : null);
+  const parentTaskOf = (issue) => (issue.parent_number ? taskByUid.get(uidByNumber.get(issue.parent_number)) : null);
+  const parentNumOf = (issue) => issue.parent_number || null;
+
   for (const task of tasks) {
     if (dupUids.has(task.uid)) continue; // ambiguous link reported above: no ops, no new issue
     if (!task.tagged && !byUid.has(task.uid)) continue; // untagged, never linked: untouched
 
     let linked = byUid.get(task.uid) || null;
+    const parentIssue = parentIssueOf(task);
 
     // ── Creation path ───────────────────────────────────────────────────
     if (!linked) {
       if (!task.tagged) continue;
+      // A tagged subtask waits until its parent is a linked pair — its issue
+      // needs a parent issue to attach to. The parent's own creation is the
+      // ordinary path above/below, so the child lands on a later cycle.
+      if (task.parent_uid && !parentIssue) {
+        stats.skipped_parent_unlinked++;
+        continue;
+      }
       // Second gate (D4): an unlinked open issue with the same canonical
       // title is the SAME item — an interrupted creation from either side,
       // or a human filing it in both places. Exactly one is adopted below;
       // more than one is a recovery error, because picking is guessing.
-      const matches = orphans.filter((i) => !claimed.has(i.number) && sameTitle(i.title, task.title));
+      // Scoped to the same parent: a twin under a DIFFERENT parent, or a
+      // top-level twin of a child, is not the same item (D8 rule 4).
+      const scope = parentIssue ? parentIssue.number : null;
+      const matches = orphans.filter(
+        (i) => !claimed.has(i.number) && parentNumOf(i) === scope && sameTitle(i.title, task.title)
+      );
       if (matches.length > 1) {
         recoveryErrors.push({
           pair: pair.github_repo,
@@ -356,6 +388,24 @@ function computeOps(input) {
     stats.matched++;
     const { issue, marker } = linked;
 
+    // Hierarchy drift (D8 rule 4): the child's parent on GitHub disagrees
+    // with its parent in tududi — moved on one side, or a child linked to a
+    // top-level task. No re-parenting exists in v1, so nothing is written
+    // for the pair until a human resolves it.
+    const observedParent = parentNumOf(issue);
+    const expectedParent = task.parent_uid ? (parentIssue ? parentIssue.number : undefined) : null;
+    if (observedParent !== null && observedParent !== expectedParent) {
+      recoveryErrors.push({
+        pair: pair.github_repo,
+        task_uid: task.uid,
+        issue_number: issue.number,
+        reason: `hierarchy drift: issue #${issue.number} is a sub-issue of #${observedParent} but its task ${task.uid} ${
+          task.parent_uid ? `belongs to parent task ${task.parent_uid}${expectedParent ? ` (issue #${expectedParent})` : ' (not linked)'}` : 'is top-level in tududi'
+        } — move one side to match the other; the sync does not re-parent`,
+      });
+      continue;
+    }
+
     // Un-tag / archive → close-as-not-planned with keyed audit comment (D6).
     const terminalEvent = !task.tagged
       ? 'untagged'
@@ -397,6 +447,21 @@ function computeOps(input) {
         });
       }
       continue;
+    }
+
+    // Attach from observed state (D8 rule 2): a linked child issue with no
+    // parent on GitHub — freshly created, an executor that died between the
+    // two hops, or a human detach — is (re-)attached under the parent's
+    // linked issue. The tududi parent is the declared truth.
+    if (task.parent_uid && parentIssue && observedParent === null) {
+      ops.push({
+        type: 'add_sub_issue',
+        repo: pair.github_repo,
+        parent_number: parentIssue.number,
+        number: issue.number,
+        sub_issue_id: issue.id,
+      });
+      stats.attached++;
     }
 
     // Echo suppression: skip everything the sync identity itself last wrote
@@ -527,12 +592,23 @@ function computeOps(input) {
       });
       continue;
     }
+    // A sub-issue waits for its parent issue to be linked: tududi has no
+    // re-parenting here, so importing it top-level now would strand it.
+    const parentTask = parentTaskOf(issue);
+    if (issue.parent_number && !parentTask) {
+      stats.skipped_parent_unlinked++;
+      continue;
+    }
     // ANY unlinked task carrying the title blocks creation. A tagged one that
     // reached here unclaimed was already reported above — ambiguous adoption
     // or a duplicated marker — and creating would turn one reported ambiguity
     // into N extra tasks (found by the unit suite: 1 task + 2 twin issues
-    // produced 3 tasks). An untagged one is the owner's private twin.
-    const shadow = tasks.find((t) => !byUid.has(t.uid) && sameTitle(t.title, issue.title));
+    // produced 3 tasks). An untagged one is the owner's private twin. Scoped
+    // to the same parent (D8 rule 4).
+    const scopeUid = parentTask ? parentTask.uid : null;
+    const shadow = tasks.find(
+      (t) => !byUid.has(t.uid) && (t.parent_uid || null) === scopeUid && sameTitle(t.title, issue.title)
+    );
     if (shadow && shadow.tagged) continue;
     if (shadow) {
       recoveryErrors.push({
@@ -557,6 +633,9 @@ function computeOps(input) {
         note: proj.description,
         status: TUDUDI_STATUS.NOT_STARTED,
         tags: (proj.labels ? proj.labels.split(',') : []).concat(syncTag).map((n) => ({ name: n })),
+        // A sub-issue lands as a SUBTASK of the linked parent task (D8 rule
+        // 3) — tududi's own hierarchy, keyed by its integer id, not the uid.
+        ...(parentTask ? { parent_task_id: parentTask.id } : {}),
       },
       link_body: withMarker(proj.description, {
         uid: LINK_UID_PLACEHOLDER,

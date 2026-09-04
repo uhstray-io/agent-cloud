@@ -29,7 +29,7 @@ def main() -> int:
     # and so does the enabled subset the provisioning actually deploys.
     for pairs in (all_pairs, enabled):
         run_render(pairs)
-    print(f"RENDER CHECK PASS — 10 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
+    print(f"RENDER CHECK PASS — 11 nodes; full nine-pair AND enabled-subset renders valid; no credential values")
     return 0
 
 
@@ -58,7 +58,7 @@ def run_render(pairs):
     wf = json.loads(rendered)  # must be valid JSON — the schema check's floor
 
     names = [n["name"] for n in wf["nodes"]]
-    assert len(wf["nodes"]) == 10, f"expected 10 nodes, got {len(wf['nodes'])}"
+    assert len(wf["nodes"]) == 11, f"expected 11 nodes, got {len(wf['nodes'])}"
     assert wf["name"] == "tududi-github-sync: cycle"
 
     # Every node connection target exists.
@@ -98,6 +98,26 @@ def run_render(pairs):
     assert "itemMatching" in link["parameters"]["jsCode"] and "__UID__" in link["parameters"]["jsCode"]
     assert wf["connections"]["Execute tududi op"]["main"][0][0]["node"] == link["name"]
     assert wf["connections"][link["name"]]["main"][0][0]["node"] == "Execute GitHub op"
+
+    # D8 hierarchy: the fan-out flattens embedded subtasks with the parent's
+    # uid, the issue map carries the sub-issue parent, and the GitHub executor
+    # routes add_sub_issue to POST /issues/{parent}/sub_issues with the child
+    # id — and never to a removal endpoint.
+    assert "t.subtasks" in fan["parameters"]["jsCode"] and "parent_uid" in fan["parameters"]["jsCode"]
+    # Under the App installation token the REST list's parent_issue_url is
+    # null (measured), so parents come from ONE GraphQL query per pair.
+    parents = next(n for n in wf["nodes"] if n["id"] == "fetch-parents")
+    assert parents["parameters"]["url"] == "https://api.github.com/graphql"
+    assert "parent{ number }" in parents["parameters"]["jsonBody"]
+    assert "parent_issue_url ?" not in code, "parent_issue_url is null under the App token — never derive from it"
+    assert "$('Fetch sub-issue parents').all()" in code and "parent_number" in code
+    assert wf["connections"]["Bucket tasks per declared pair"]["main"][0][0]["node"] == parents["name"]
+    assert wf["connections"][parents["name"]]["main"][0][0]["node"] == "Fetch repo issues"
+    exec_g = next(n for n in wf["nodes"] if n["id"] == "exec-github")
+    assert "'/sub_issues'" in exec_g["parameters"]["url"] and "add_sub_issue" in exec_g["parameters"]["url"]
+    assert "sub_issue_id: $json.op.sub_issue_id" in exec_g["parameters"]["jsonBody"]
+    assert "'update_issue' ? 'PATCH' : 'POST'" in exec_g["parameters"]["method"]
+    assert "remove_sub_issue" not in rendered and "sub_issues/priority" not in rendered
 
     # No delete operation anywhere in the rendered artifact (spec invariant).
     assert "DELETE" not in rendered, "a DELETE method appeared in the rendered workflow"

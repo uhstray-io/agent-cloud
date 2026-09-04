@@ -34,7 +34,9 @@ See `proposal.md — Why`. Grounding, verified this session:
 
 **Non-Goals**
 - No webhook transport in v1 (see D2 — deferred, not rejected).
-- No comment/attachment/subtask sync; no Projects v2.
+- No comment/attachment sync; no Projects v2. (Subtask sync WAS a non-goal
+  here until the operator's 2026-09-03 review — it is now in scope as one level
+  of native hierarchy, see D8.)
 - No generalized "sync framework" — nine pairs, one workflow shape. Generalize
   when a second integration actually exists.
 
@@ -276,6 +278,106 @@ check.
   surface is self-service only). GitHub-side authorship is the App bot; the
   per-field baselines (D5) remain the primary echo suppression on the tududi
   side. A dedicated tududi user is a follow-up if its API grows creation.
+
+### D8 — Hierarchy: tududi subtasks ↔ GitHub sub-issues, native on both sides (operator decision 2026-09-03)
+
+**Decision.** One tududi subtask corresponds to one GitHub **sub-issue** of the
+issue its parent task is linked to — never a checklist line in the parent's
+body, never a flat issue with a "parent:" note. Both systems have a first-class
+hierarchy feature (tududi `parent_task_id`, GitHub `sub_issues`) and the sync
+uses each one natively, in both directions. A child pair carries the same marker,
+the same four fields and the same per-field baselines as a top-level pair (D4,
+D5); hierarchy is one extra edge, not a second engine.
+
+**Rules, in the order the engine applies them.**
+
+1. **A subtask crosses only when it is itself tagged AND its parent is linked.**
+   The sync tag is per item, not inherited: a subtask without `gh-sync` is never
+   exported, whatever its parent carries (operator answer 5, 2026-09-03). A
+   tagged subtask whose parent is not yet a linked pair is *deferred*, counted
+   as `skipped_parent_unlinked`, and picked up on a later cycle once the parent
+   has linked — the parent's own creation is the ordinary tagged-task path, so
+   a parent and child tagged in the same minute converge within two cycles.
+2. **tududi → GitHub creation is two hops, not one call.** The child issue is
+   created with `create_issue` exactly like a top-level issue, then attached
+   with a new op `add_sub_issue` (`POST /issues/{parent_number}/sub_issues`,
+   `sub_issue_id` = the child issue's `id`). The attach is **engine-driven from
+   observed state**: on every cycle, a linked child issue that the per-pair
+   parent map shows as top-level gets an `add_sub_issue` op. That one rule
+   covers the initial attach, an executor that died between the two hops, and
+   a human detaching the sub-issue by hand — the sync re-attaches, because the
+   tududi parent is the declared truth. The cost is a ≤1-cadence window in
+   which a freshly created child is visible top-level; the upgrade path, if
+   that window ever matters, is a same-cycle executor hop that attaches right
+   after create.
+3. **GitHub → tududi creation waits for the parent.** An unlinked open
+   sub-issue (one the parent map names a parent for) becomes a `create_task` carrying
+   `parent_task_id` = the numeric `id` of the task its parent issue is linked
+   to — the one place the engine needs tududi's integer id rather than the
+   `uid`. If the parent issue is not linked, the child waits and is counted
+   under `skipped_parent_unlinked`; it is not imported top-level and re-parented
+   later, because tududi has no re-parenting in this design (rule 5).
+4. **Adoption and shadow gates are scoped to the parent.** The canonical-title
+   adoption of D4 runs for children too, but only among the sub-issues of the
+   linked parent issue (and, mirrored, only among the subtasks of the linked
+   parent task). A same-title item under a *different* parent is not a twin. A
+   linked child whose observed parent disagrees with the marker's parent —
+   moved on GitHub, or re-parented in tududi — is reported as a recovery error
+   `hierarchy drift` naming both parents, and nothing is written for that pair
+   until a human resolves it.
+5. **Out of scope for v1, recorded, not rejected:** re-parenting (moving a
+   subtask to another parent), depth greater than one (tududi allows it, GitHub
+   allows up to eight, the sync mirrors one level), and deletes (the sync has
+   no delete operation at any level — same as D4).
+
+**Status needs no new rule.** tududi's own parent/child automation (all
+children done → parent done; parent done → children done; parent cancelled →
+open children cancelled) fires inside tududi and surfaces to the sync as
+ordinary `status` field changes with fresh `updated_at`, which D5's per-field
+baselines already propagate. GitHub's `sub_issues_summary` is derived state and
+is never written.
+
+**Read side: one extra call per pair, not per item.** tududi's task list
+already embeds each parent's `subtasks[]` with full fields, so the fan-out node
+flattens `subtasks[]` into the task stream with `parent_uid`/`parent_id` and
+each child's own `tagged` at no cost. GitHub is different from what the docs
+imply: the flat REST issue list DOES carry `parent_issue_url` — but **only under
+a user token**. Under the GitHub App installation token the sync runs with, the
+field is `null` on every sub-issue (measured 2026-09-03 on dev-test #12: REST
+list and `GET /issues/8/sub_issues` both null it, while `sub_issues_summary` on
+the parent counts it and the same query under a user token populates it). The
+first live cycle after wiring therefore saw no hierarchy at all. The parent map
+comes instead from **one GraphQL query per pair** (`repository { issues(first:
+100) { nodes { number parent { number } } } }`), which the App token does
+answer, run as its own node between the fan-out and the REST fetch and keyed by
+`nameWithOwner` so it never index-aligns with the split REST stream. The
+alternative — one `GET /issues/{parent}/sub_issues` per parent with
+`sub_issues_summary.total > 0` — costs N calls instead of one and, with zero
+parents, produces an empty item stream that stops the downstream nodes from
+running at all; it lost on both counts. Parsing `parent_issue_url` is now
+forbidden by the render check and the BATS suite.
+
+**Alternatives rejected.**
+- *Checklist lines in the parent issue body* — invisible to GitHub's own
+  hierarchy views, un-linkable per item, and a body-text merge problem every
+  cycle. Rejected outright; the operator asked for the native feature.
+- *Attach in the same executor hop as create* — fewer visible-top-level
+  seconds, but the attach can still fail after the create succeeds, so the
+  observed-state re-attach rule is needed anyway; adding the hop on top is the
+  documented upgrade, not the v1.
+- *Import an orphaned sub-issue top-level, re-parent later* — needs
+  re-parenting, which this design deliberately does not have; waiting is
+  simpler and loses nothing but a cycle.
+- *Inherit the tag from the parent* — rejected by the operator: the tag is the
+  per-item publication consent, and a private subtask under a public parent is
+  a legitimate state.
+
+**Related confirmations recorded the same day.** The sync tag stays `gh-sync`
+on every instance (the operator's "github-sync" wording named the concept; the
+existing default is kept, no rename or migration); GitHub gets no marker label
+— the body marker is the linkage; description propagation is a plain field
+under D5's last-writer-wins with the loser preserved in a comment, which the
+operator accepted for descriptions specifically.
 
 ## Risks / Trade-offs
 

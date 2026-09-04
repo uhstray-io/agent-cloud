@@ -92,6 +92,46 @@ Same-title means equal canonical `title` projections. Every row that says
 "recovery error" writes nothing to either side and fails the per-pair
 verification check until a person resolves it.
 
+## Hierarchy — subtasks ↔ sub-issues, one level, native both sides (design D8, 2026-09-03)
+
+Verified surfaces: tududi 1.1.1's task list hides subtask rows but embeds
+each parent's children as `subtasks[]` with full fields (`uid`, `id`, `name`,
+`note`, `status`, `tags`, `updated_at`, `parent_task_id`; `project_id` is
+null on a child — `operations/subtasks.js`); `POST /api/task` accepts
+`parent_task_id`. `POST /issues/{parent}/sub_issues` with
+`{sub_issue_id: <child issue id>}` attaches one on the GitHub side.
+
+**GitHub's parent field is invisible to the sync's own token.** The flat
+`GET /repos/{o}/{r}/issues` documents `parent_issue_url` on a sub-issue, and it
+is populated under a *user* token — but under the **GitHub App installation
+token** this sync authenticates with, it is `null` on every sub-issue, while
+the parent's `sub_issues_summary.total` still counts the child and
+`GET /issues/{parent}/sub_issues` still lists it (measured 2026-09-03 against
+`uhstray-io/dev-test` #12 ↔ #8; the REST docs say nothing about this). A cycle
+that trusts the field sees a repository with no hierarchy at all and writes
+nothing — which is what the first live run did. The parent map therefore comes
+from **one GraphQL query per pair** (`repository { issues(first: 100) { nodes {
+number parent { number } } } }`), which the App token answers correctly. tududi
+costs no extra read; GitHub costs one call per pair, not per item. The 5.1
+verification gate performs the same two reads, so the gate's snapshot and the
+cycle's snapshot cannot disagree.
+
+| Situation the cycle finds | What it does |
+|---------------------------|--------------|
+| Tagged subtask whose parent task is a linked pair | ordinary creation/adoption, scoped to that parent: a same-title unlinked open issue counts as a twin **only if it is a sub-issue of the parent's issue**; then `add_sub_issue` attaches the new/adopted issue to the parent's issue once the cycle observes it unattached (a fresh create is attached the NEXT cycle — the engine acts on observed state, so a top-level issue exists for at most one cadence) |
+| Tagged subtask whose parent task is NOT linked | `skipped_parent_unlinked` — nothing written; it syncs the cycle after the parent does |
+| Untagged subtask under a linked parent | private, as any untagged task — the tag is per item, never inherited |
+| Human-filed open sub-issue whose parent issue is a linked pair | creates the task with `parent_task_id` = the parent task's id and NO `project_id` (matching tududi's own subtasks); the sync tag is applied like any GitHub-origin task |
+| Human-filed open sub-issue whose parent issue is not linked | waits (`skipped_parent_unlinked`) until the parent imports |
+| Linked pair whose issue is a sub-issue of a DIFFERENT issue than its task's parent implies (or the task is top-level, or the parent is not linked) | recovery error `hierarchy drift` naming both sides; no ops for that pair until a person moves one side — the sync never re-parents |
+| Linked child whose issue was detached on GitHub | re-attached (`add_sub_issue`) — the tududi parent is the declaration |
+
+Status needs no new rule: tududi's own parent/child auto-status
+(`operations/parent-child.js`) fires on the PATCH the sync already issues, and
+the parent's resulting change is an ordinary LWW field next cycle. Out of
+scope: depth greater than one, re-parenting, and any `remove_sub_issue` /
+delete — the engine has no such op (unit-asserted).
+
 ## Canonical projections (what gets hashed)
 
 | Field | Projection |

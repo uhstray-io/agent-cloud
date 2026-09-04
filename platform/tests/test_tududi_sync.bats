@@ -249,6 +249,39 @@ PYEOF"
   grep -qF 'UNDECLARED' <<<"$output"
 }
 
+@test "tududi-sync: hierarchy (D8) — subtasks flattened, add_sub_issue routed, no subtasks[] on PATCH, no removal" {
+  local tpl="$SYNC_DIR/templates/tududi-github-sync.workflow.json.j2"
+  local core="$SYNC_DIR/lib/sync-core.js"
+  # Read side: children arrive from the parent's embedded list with the
+  # parent's uid and their OWN tag state; sub-issue parents come from one
+  # GraphQL query per pair — the REST list's parent_issue_url is null under
+  # the App installation token (measured on dev-test), so nothing may read it.
+  grep -qF 't.subtasks' "$tpl"
+  grep -qF 'shape(s, t.uid)' "$tpl"
+  grep -qF 'https://api.github.com/graphql' "$tpl"
+  grep -qF 'parent{ number }' "$tpl"
+  refute_grep -qF 'parent_issue_url ?' "$tpl"
+  # Write side: the one hierarchy op is an attach, POSTed to the parent's
+  # sub_issues collection with the child's issue id.
+  grep -qF "'add_sub_issue' ? '/' + \$json.op.parent_number + '/sub_issues'" "$tpl"
+  grep -qF 'sub_issue_id: $json.op.sub_issue_id' "$tpl"
+  # tududi replaces the WHOLE child set when a PATCH carries subtasks — the
+  # engine's patch never names that key.
+  refute_grep -qE "subtasks *:" "$core"
+  # No detach/removal at any level, in the engine or the rendered routes.
+  refute_grep -qE "type: '(remove_sub_issue|delete_[a-z_]+)'" "$core"
+  refute_grep -qF 'remove_sub_issue' "$tpl"
+  refute_grep -qF "'DELETE'" "$tpl"
+  # The 5.1 gate runs the SAME engine, so its snapshot must carry the same
+  # hierarchy — a gate blind to subtasks reports every child as a dangling
+  # marker and fails a converged pair (observed before this was wired).
+  local vp="$REPO_ROOT/platform/playbooks/tasks/verify-tududi-sync-pair.yml"
+  grep -qF 't.subtasks' "$vp"
+  grep -qF 'parent_uid' "$vp"
+  grep -qF 'https://api.github.com/graphql' "$vp"
+  grep -qF 'parent_number' "$vp"
+}
+
 @test "tududi-sync: no credential, token, or address in any committed sync artifact" {
   # The mapping (and later the workflow templates) hold names only — secrets
   # live in OpenBao, endpoints in inventory (design D3/D7, contract doc).

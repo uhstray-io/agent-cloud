@@ -31,7 +31,9 @@ for (const item of $input.all()) {
   summary.cycles.push({ pair: pair.github_repo, ...stats, ops: ops.length });
   summary.recovery_errors.push(...recoveryErrors);
   for (const op of ops) {
-    if (op.type === 'create_task') {
+    // A child (D8) hangs off parent_task_id only — tududi's own subtasks
+    // carry project_id null and inherit the project through the parent.
+    if (op.type === 'create_task' && !op.task.parent_task_id) {
       // The engine speaks project NAMES; tududi's create wants the id the
       // fan-out node resolved onto the pair. No id means the declared project
       // does not exist in tududi yet — a human fact, not a cycle failure.
