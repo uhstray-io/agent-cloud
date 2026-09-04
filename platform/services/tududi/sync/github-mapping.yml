@@ -28,6 +28,17 @@
 # pair declarations. The contract doc is
 # platform/services/tududi/context/github-sync-contract.md.
 
+# The org's native issue field carrying priority (GitHub Issues' single-select
+# "Priority": Urgent/High/Medium/Low). Declared here because WRITING a field
+# value requires its numeric id and the sync's GitHub App installation token
+# cannot enumerate field definitions to discover it — /orgs/{org}/issue-fields
+# answers 403 "Resource not accessible by integration" for an App, though the
+# values themselves read back fine on each issue. The id is org-level config,
+# not a credential. Set it to null to leave priority out of the sync entirely;
+# a wrong id is caught by a named recovery error the first time an issue in a
+# pair carries a Priority value under a different field id.
+github_priority_field_id: 22329653
+
 sync_pairs:
   # First real pair; flips to true in task 6.1, on prod, after dev-test's
   # battery is green there (see the `enabled` note above for why not before).

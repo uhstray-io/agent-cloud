@@ -48,6 +48,7 @@
       syncTag: "{{ _sync_tag }}"
       syncLogin: "{{ _sync_login }}"
       writeCap: "{{ _write_cap | int }}"
+      priorityFieldId: "{{ (_priority_field_id | int) if _priority_field_id else None }}"
       lastExecution: >-
         {{ ({'status': (_executions.json.data | first).status})
            if ((_executions.json.data | default([])) | length > 0) else None }}
@@ -68,7 +69,8 @@
             {%- if names.append(x.name | default(x)) -%}{%- endif -%}
           {%- endfor -%}
           {%- if out.append({'uid': s.uid, 'id': s.id, 'title': s.name, 'note': s.note | default(''),
-                             'status': s.status, 'tags': names,
+                             'status': s.status, 'priority': s.priority | default(None),
+                             'tags': names,
                              'updated_at': s.updated_at | default(s.updatedAt | default('')),
                              'parent_uid': (None if s.uid == t.uid else t.uid),
                              'tagged': ((_sync_tag | lower) in (names | map('lower') | list))}) -%}{%- endif -%}
@@ -83,6 +85,11 @@
       {%- endfor -%}
       {%- for i in _vp_issues.json if i.pull_request is not defined -%}
         {%- set lnames = [] -%}
+        {%- set fvals = [] -%}
+        {%- for v in i.issue_field_values | default([]) -%}
+          {%- if fvals.append({'field_id': v.issue_field_id, 'field_name': v.issue_field_name,
+                               'option_name': (v.single_select_option | default({})).get('name')}) -%}{%- endif -%}
+        {%- endfor -%}
         {%- for l in i.labels | default([]) -%}
           {%- if lnames.append(l.name | default(l)) -%}{%- endif -%}
         {%- endfor -%}
@@ -90,7 +97,8 @@
                            'state': i.state, 'state_reason': i.state_reason | default(None),
                            'labels': lnames, 'updated_at': i.updated_at,
                            'user_login': i.user.login | default(''), 'comments': [],
-                           'parent_number': pmap[i.number] | default(None)}) -%}{%- endif -%}
+                           'parent_number': pmap[i.number] | default(None),
+                           'field_values': fvals}) -%}{%- endif -%}
       {%- endfor -%}
       {{ out }}
     _vp_undeclared: >-

@@ -47,6 +47,7 @@ def run_render(pairs):
         sync_login="example-sync-login",
         write_cap=20,
         sync_pairs=pairs,
+        github_priority_field_id=22329653,
         sync_core_js=(SYNC / "lib" / "sync-core.js").read_text(),
         cycle_glue_js=(SYNC / "lib" / "cycle-glue.js").read_text(),
         tududi_credential_id="cred-t-id",
@@ -111,6 +112,13 @@ def run_render(pairs):
     assert "parent{ number }" in parents["parameters"]["jsonBody"]
     assert "parent_issue_url ?" not in code, "parent_issue_url is null under the App token — never derive from it"
     assert "$('Fetch sub-issue parents').all()" in code and "parent_number" in code
+
+    # Priority rides GitHub's native issue fields. The read carries EVERY
+    # field value (the PATCH replaces the set) and the field id is declared,
+    # because the App token cannot enumerate field definitions.
+    assert "priority_field_id: 22329653" in code
+    assert "issue_field_values" in code and "single_select_option" in code
+    assert "priority: t.priority" in fan["parameters"]["jsCode"]
     assert wf["connections"]["Bucket tasks per declared pair"]["main"][0][0]["node"] == parents["name"]
     assert wf["connections"][parents["name"]]["main"][0][0]["node"] == "Fetch repo issues"
     exec_g = next(n for n in wf["nodes"] if n["id"] == "exec-github")

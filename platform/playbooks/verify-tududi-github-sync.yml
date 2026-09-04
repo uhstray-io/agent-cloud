@@ -87,6 +87,9 @@
       ansible.builtin.set_fact:
         _pairs: "{{ (lookup('file', _mapping_path) | from_yaml).sync_pairs | selectattr('enabled') | list }}"
         _declared_projects: "{{ (lookup('file', _mapping_path) | from_yaml).sync_pairs | map(attribute='tududi_project') | list }}"
+        # The same declared Priority field the cycle uses — the gate runs the
+        # engine, so a different field set here is a different verdict.
+        _priority_field_id: "{{ (lookup('file', _mapping_path) | from_yaml).github_priority_field_id | default(None, true) }}"
 
     - name: "Find the cycle workflow"
       ansible.builtin.uri:

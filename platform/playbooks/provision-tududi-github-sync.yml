@@ -161,9 +161,13 @@
       vars:
         _mapping: "{{ _mapping_raw | from_yaml }}"
 
-    - name: "Take the enabled pairs"
+    - name: "Take the enabled pairs and the declared Priority field"
       ansible.builtin.set_fact:
         _pairs: "{{ (_mapping_raw | from_yaml).sync_pairs | selectattr('enabled') | list }}"
+        # null (or absent) leaves priority out of the sync entirely — the
+        # engine cannot discover the id, because the App token is denied the
+        # org's issue-field definitions.
+        _priority_field_id: "{{ (_mapping_raw | from_yaml).github_priority_field_id | default(None, true) }}"
 
     # ── Credential preflight: both providers, live, BEFORE the engine ───────
     - name: "Read the tududi sync token"
@@ -315,6 +319,7 @@
                       sync_login=_sync_login,
                       write_cap=_write_cap,
                       sync_pairs=_pairs,
+                      github_priority_field_id=(_priority_field_id | int if _priority_field_id else None),
                       sync_core_js=lookup('file', playbook_dir ~ '/../services/tududi/sync/lib/sync-core.js'),
                       cycle_glue_js=lookup('file', playbook_dir ~ '/../services/tududi/sync/lib/cycle-glue.js'),
                       tududi_credential_id=_tududi_cred_id,

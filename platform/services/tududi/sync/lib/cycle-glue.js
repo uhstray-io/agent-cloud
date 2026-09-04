@@ -25,6 +25,7 @@ for (const item of $input.all()) {
     syncTag: SYNC_CONFIG.sync_tag,
     syncLogin: SYNC_CONFIG.sync_login,
     writeCap: SYNC_CONFIG.write_cap,
+    priorityFieldId: SYNC_CONFIG.priority_field_id,
     tasks,
     issues,
   });

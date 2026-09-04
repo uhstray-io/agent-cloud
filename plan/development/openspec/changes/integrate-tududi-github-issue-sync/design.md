@@ -379,6 +379,52 @@ existing default is kept, no rename or migration); GitHub gets no marker label
 under D5's last-writer-wins with the loser preserved in a comment, which the
 operator accepted for descriptions specifically.
 
+### D9 — Priority is a synced field; the subtask gate is inherited; GitHub-origin work lands PLANNED (operator decisions 2026-09-04)
+
+Three operator rules from the same review pass, each resting on something
+measured rather than assumed.
+
+1. **Priority syncs, and `Urgent` folds onto `high`.** GitHub carries priority
+   as an org-level native issue field (single-select: Urgent/High/Medium/Low);
+   tududi's `Task.PRIORITY` is LOW/MEDIUM/HIGH plus `null`. tududi has no
+   Urgent, so the operator's rule is Urgent → high. Placing that fold in the
+   **canonical projection** rather than in the write path is what makes the
+   lossy pair safe both ways: an Urgent issue whose task reads `high` is a
+   *quiet* field, so a tududi `high` can never demote it back to High; lowering
+   the task to medium or low genuinely differs and does reach GitHub. Proven
+   live — a cycle with #9 at `Urgent` and its task at `high` emitted zero ops.
+
+   Two API facts forced design, and both contradict a plain docs reading:
+   - The PATCH **replaces** the whole `issue_field_values` set. A
+     priority-only write silently cleared an unrelated `Effort` value on a
+     probe issue. Every priority write therefore echoes the issue's other
+     field values back, and clearing priority means omitting only its entry —
+     the same discipline the engine already applies to tududi's `subtasks[]`.
+   - Writing needs the numeric `field_id`, and `/orgs/{org}/issue-fields`
+     answers 403 for an App installation token, so the sync cannot discover
+     it. The id is declared as `github_priority_field_id` in the mapping
+     (org-level config, not a credential); `null` leaves priority out of the
+     sync entirely rather than reading it one way and dropping it the other. A
+     declared id that does not match an issue's real Priority field is a named
+     recovery error that refuses the cycle — the alternative is writing into
+     some unrelated field.
+
+2. **A subtask inherits its parent's tag**, superseding D8's per-item gate.
+   The premise of that gate turned out to be false: tududi 1.1.1 has no UI
+   path to tag a subtask at all. The inline subtask editor sends no `tags` and
+   the backend whitelists fields that exclude them, and clicking a subtask row
+   opens the *parent's* page — nothing links to the child's own `/task/<uid>`
+   view, which is the only surface that can tag it. Keeping the per-item rule
+   would have left the tududi→GitHub direction reachable only through the API.
+   Tagging the parent is the explicit opt-in for the whole item, whose issue is
+   already public; a child of an untagged parent still exports nothing, and a
+   child may still carry the tag itself.
+
+3. **GitHub-origin work lands PLANNED (6), not NOT_STARTED (0).** It is
+   scheduled work someone else filed, not something the owner has picked up.
+   Both map to `open`, so the projection is unchanged and the pair is quiet on
+   arrival — the rule costs nothing in the merge engine.
+
 ## Risks / Trade-offs
 
 - **[Poll latency window invites concurrent edits]** → last-writer-wins with the

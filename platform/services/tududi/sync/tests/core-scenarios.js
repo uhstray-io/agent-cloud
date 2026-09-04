@@ -145,7 +145,8 @@ console.log('ALL CORE SCENARIOS PASS');
   assert.strictEqual(ct[0].project, 'huhhb');
   assert.strictEqual(ct[0].task.name, 'Filed on GitHub');
   assert.strictEqual(ct[0].task.note, 'from gh');
-  assert.strictEqual(ct[0].task.status, core.TUDUDI_STATUS.NOT_STARTED);
+  assert.strictEqual(ct[0].task.status, core.TUDUDI_STATUS.PLANNED,
+    'GitHub-origin work lands PLANNED, not NOT_STARTED (operator rule 2026-09-04)');
   assert.deepStrictEqual(ct[0].task.tags.map(t => t.name).sort(), ['bug', 'gh-sync'], 'labels become tags, sync tag attached');
   assert.ok(ct[0].link_body.includes(`uid: ${core.LINK_UID_PLACEHOLDER}`));
   assert.ok(!ct[0].link_body.includes('__UID__: '), 'placeholder only in the uid line');
@@ -300,9 +301,19 @@ console.log('ALL CORE SCENARIOS PASS');
   assert.strictEqual(r.ops.length, 0);
   assert.strictEqual(r.recoveryErrors.length, 0);
 
-  // d) UNTAGGED subtask under a linked parent -> nothing, whatever the parent carries
+  // d) UNTAGGED subtask under a TAGGED parent -> exports anyway: the gate is
+  //    inherited (2026-09-04), because tududi's UI cannot tag a subtask at all.
   r = run([{ uid: 'uU', id: 102, title: 'Private child', note: '', status: 0, tags: [], updated_at: '2', tagged: false, parent_uid: 'uP' }], []);
-  assert.strictEqual(r.ops.length, 0);
+  assert.deepStrictEqual(r.ops.map(o => o.type), ['create_issue'], 'a child inherits its parent\'s tag');
+  assert.strictEqual(r.ops[0].task_uid, 'uU');
+
+  // d2) ...but a child of an UNTAGGED parent still exports nothing: the parent
+  //     is the opt-in, so an un-opted item stays private with all its children.
+  r = core.computeOps({ ...cfg,
+    tasks: [{ uid: 'uN', id: 300, title: 'Private parent', note: '', status: 0, tags: [], updated_at: '1', tagged: false, parent_uid: null },
+            { uid: 'uNC', id: 301, title: 'Private child', note: '', status: 0, tags: [], updated_at: '1', tagged: false, parent_uid: 'uN' }],
+    issues: [] });
+  assert.strictEqual(r.ops.length, 0, 'untagged parent keeps its whole subtree private');
 
   // e) tagged subtask whose parent is NOT linked -> deferred, counted, no issue
   r = core.computeOps({ ...cfg,
@@ -352,4 +363,77 @@ console.log('ALL CORE SCENARIOS PASS');
   const src = require('fs').readFileSync(CORE, 'utf8');
   assert.ok(!/remove_sub_issue|delete_sub_issue/.test(src));
   console.log('SCENARIO 18 (hierarchy: create both ways, attach, wait, scope, drift) PASS');
+}
+
+// 19) PRIORITY (operator's rule, 2026-09-04). GitHub's native single-select
+//     field carries four options; tududi has three plus none. Urgent folds
+//     onto high AT THE PROJECTION, which is what stops a tududi 'high' from
+//     demoting an Urgent issue.
+{
+  const FIELD = 22329653;
+  const pcfg = { ...cfg, priorityFieldId: FIELD };
+  const gp = (name) => (name ? [{ field_id: FIELD, field_name: 'Priority', option_name: name }] : []);
+  const quiet = (uid, tPri, gPri) => {
+    const p = core.projections(
+      { title: 'T', description: 'D', statusMapped: 'open', labelNames: [], priorityName: tPri },
+      'gh-sync'
+    );
+    return core.withMarker('D', {
+      uid,
+      baselines: core.baselinesOf(p, core.fieldsFor(FIELD)),
+      tududi_updated_at: '1',
+      github_updated_at: '1',
+    });
+  };
+  const task = (pri, at) => ({ uid: 'u1', id: 1, title: 'T', note: 'D', status: 0, priority: pri, tags: ['gh-sync'], updated_at: at, tagged: true, parent_uid: null });
+  const issue = (name, at, extra) => ({ number: 5, id: 500, title: 'T', body: quiet('u1', 'high'), state: 'open', labels: [], updated_at: at, user_login: 'a', comments: [], parent_number: null, field_values: gp(name).concat(extra || []) });
+
+  // a) Urgent on GitHub, high in tududi -> quiet. The fold IS the guard.
+  let r = core.computeOps({ ...pcfg, tasks: [task(2, '1')], issues: [issue('Urgent', '1')] });
+  assert.strictEqual(r.ops.length, 0, 'Urgent and tududi high are the same value after folding');
+
+  // b) lower it in tududi -> GitHub is written, and the write ECHOES every
+  //    other field value back, because the PATCH replaces rather than merges.
+  const effort = { field_id: 22329656, field_name: 'Effort', option_name: 'High' };
+  r = core.computeOps({ ...pcfg, tasks: [task(0, '9')], issues: [issue('Urgent', '1', [effort])] });
+  const up = r.ops.find(o => o.type === 'update_issue');
+  assert.ok(up, 'lowering the task priority reaches GitHub');
+  assert.deepStrictEqual(up.patch.issue_field_values,
+    [{ field_id: 22329656, value: 'High' }, { field_id: FIELD, value: 'low' }],
+    'the other field values ride along or the PATCH would wipe them');
+
+  // c) GitHub raises it -> tududi is written with the name (Urgent -> high)
+  r = core.computeOps({ ...pcfg, tasks: [{ ...task(0, '1'), note: 'D' }], issues: [{ ...issue('Urgent', '9'), body: quiet('u1', 'low') }] });
+  const tp = r.ops.find(o => o.type === 'update_task');
+  assert.ok(tp && tp.patch.priority === 'high', 'Urgent lands as high in tududi');
+
+  // d) clearing it in tududi omits only the priority entry
+  r = core.computeOps({ ...pcfg, tasks: [{ ...task(null, '9') }], issues: [issue('High', '1', [effort])] });
+  const cl = r.ops.find(o => o.type === 'update_issue');
+  assert.deepStrictEqual(cl.patch.issue_field_values, [{ field_id: 22329656, value: 'High' }],
+    'clearing priority drops its entry and keeps the rest');
+
+  // e) with no field id declared, priority is not a synced field at all
+  r = core.computeOps({ ...cfg, tasks: [task(0, '9')], issues: [issue('Urgent', '1')] });
+  assert.strictEqual(r.ops.length, 0, 'no declared field id -> priority is out of the sync');
+
+  // f) a declared id that is not this org's Priority field refuses the cycle
+  r = core.computeOps({ ...pcfg, tasks: [task(2, '1')],
+    issues: [{ ...issue(null, '1'), field_values: [{ field_id: 999, field_name: 'Priority', option_name: 'High' }] }] });
+  assert.strictEqual(r.ops.length, 0);
+  assert.match(r.recoveryErrors[0].reason, /does not match this repo's Priority field/);
+
+  // g) creation carries the priority in the same call
+  r = core.computeOps({ ...pcfg, tasks: [{ ...task(2, '1'), uid: 'uNew' }], issues: [] });
+  const ci = r.ops.find(o => o.type === 'create_issue');
+  assert.deepStrictEqual(ci.issue_field_values, [{ field_id: FIELD, value: 'high' }]);
+
+  // h) GitHub-origin creation carries priority AND lands PLANNED
+  r = core.computeOps({ ...pcfg, tasks: [],
+    issues: [{ number: 7, id: 700, title: 'From GH', body: 'b', state: 'open', labels: [], updated_at: '1', user_login: 'human', comments: [], parent_number: null, field_values: gp('Urgent') }] });
+  const ct = r.ops.find(o => o.type === 'create_task');
+  assert.strictEqual(ct.task.priority, 'high');
+  assert.strictEqual(ct.task.status, core.TUDUDI_STATUS.PLANNED);
+
+  console.log('SCENARIO 19 (priority: Urgent folds to high, replace-safe writes, opt-in by field id) PASS');
 }

@@ -110,7 +110,8 @@
           ~ "// subtasks[] (tududi 1.1.1) — flatten one level so a child reaches the\n"
           ~ "// engine with its parent's uid and its OWN tag state. No extra request.\n"
           ~ "const shape = (t, parent_uid) => ({ uid: t.uid, id: t.id, title: t.name, note: t.note || '',\n"
-          ~ "  status: t.status, tags: (t.tags || t.Tags || []).map((x) => x.name || x),\n"
+          ~ "  status: t.status, priority: t.priority === undefined ? null : t.priority,\n"
+          ~ "  tags: (t.tags || t.Tags || []).map((x) => x.name || x),\n"
           ~ "  updated_at: t.updated_at || t.updatedAt, parent_uid,\n"
           ~ "  tagged: (t.tags || t.Tags || []).some((x) => ((x.name || x).toLowerCase()) === SYNC_TAG.toLowerCase()) });\n"
           ~ "return PAIRS.map((p) => ({ json: { pair: { ...p, tududi_project_id: projectId(p.tududi_project) }, tasks: all\n"
@@ -170,7 +171,8 @@
       "position": [800, 0],
       "parameters": {
         "jsCode": {{ (
-          "const SYNC_CONFIG = { sync_tag: " ~ (sync_tag | to_json)
+          "const SYNC_CONFIG = { priority_field_id: " ~ (github_priority_field_id | to_json)
+          ~ ", sync_tag: " ~ (sync_tag | to_json)
           ~ ", sync_login: " ~ (sync_login | to_json)
           ~ ", write_cap: " ~ (write_cap | int | string) ~ " };\n"
           ~ "// PRs ride the issues API; the sync never touches them.\n"
@@ -209,7 +211,13 @@
           ~ "      state: it.state, state_reason: it.state_reason || null,\n"
           ~ "      labels: (it.labels || []).map((l) => l.name || l), updated_at: it.updated_at,\n"
           ~ "      user_login: it.user && it.user.login, comments: [],\n"
-          ~ "      parent_number: (parentByRepo[pi.json.pair.github_repo] || {})[it.number] || null })) } }));\n"
+          ~ "      parent_number: (parentByRepo[pi.json.pair.github_repo] || {})[it.number] || null,\n"
+          ~ "      // Priority rides GitHub's native issue fields. ALL of them are\n"
+          ~ "      // carried, not just Priority: the PATCH replaces the set, so a\n"
+          ~ "      // write has to echo the others back or it wipes them.\n"
+          ~ "      field_values: (it.issue_field_values || []).map((v) => ({ field_id: v.issue_field_id,\n"
+          ~ "        field_name: v.issue_field_name,\n"
+          ~ "        option_name: (v.single_select_option || {}).name || null })) })) } }));\n"
           ~ sync_core_js ~ "\n"
           ~ "const $inputOriginal = $input;\n"
           ~ "const $input2 = { all: () => merged };\n"
@@ -255,7 +263,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.type === 'create_issue' ? { title: $json.op.title, body: $json.op.body, labels: $json.op.labels } : $json.op.type === 'comment_issue' ? { body: $json.op.body } : $json.op.type === 'add_sub_issue' ? { sub_issue_id: $json.op.sub_issue_id } : $json.op.patch) }}{% endraw %}",
+        "jsonBody": "={% raw %}{{ JSON.stringify($json.op.type === 'create_issue' ? { title: $json.op.title, body: $json.op.body, labels: $json.op.labels, ...($json.op.issue_field_values ? { issue_field_values: $json.op.issue_field_values } : {}) } : $json.op.type === 'comment_issue' ? { body: $json.op.body } : $json.op.type === 'add_sub_issue' ? { sub_issue_id: $json.op.sub_issue_id } : $json.op.patch) }}{% endraw %}",
         "options": {}
       },
       "credentials": {

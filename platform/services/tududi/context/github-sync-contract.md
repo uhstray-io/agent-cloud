@@ -120,8 +120,10 @@ cycle's snapshot cannot disagree.
 |---------------------------|--------------|
 | Tagged subtask whose parent task is a linked pair | ordinary creation/adoption, scoped to that parent: a same-title unlinked open issue counts as a twin **only if it is a sub-issue of the parent's issue**; then `add_sub_issue` attaches the new/adopted issue to the parent's issue once the cycle observes it unattached (a fresh create is attached the NEXT cycle — the engine acts on observed state, so a top-level issue exists for at most one cadence) |
 | Tagged subtask whose parent task is NOT linked | `skipped_parent_unlinked` — nothing written; it syncs the cycle after the parent does |
-| Untagged subtask under a linked parent | private, as any untagged task — the tag is per item, never inherited |
+| Untagged subtask under a TAGGED parent | exports anyway — the gate is INHERITED from the parent (2026-09-04, superseding the per-item rule). tududi 1.1.1 offers no way to tag a subtask: the inline subtask editor sends no `tags` and `createSubtasks`/`updateSubtasks` whitelist fields that exclude them (`operations/subtasks.js:60-78`, `:122-167`), and clicking a subtask row opens the PARENT's page, so nothing links to the child's own `/task/<uid>` view — which is the only surface that can tag it. A per-item gate would leave the tududi→GitHub direction unreachable by hand. Tagging the parent is the explicit opt-in for the whole item, whose issue is already public |
+| Any subtask under an UNTAGGED parent | private, with its whole subtree — the parent is the opt-in |
 | Human-filed open sub-issue whose parent issue is a linked pair | creates the task with `parent_task_id` = the parent task's id and NO `project_id` (matching tududi's own subtasks); the sync tag is applied like any GitHub-origin task |
+| Any GitHub-origin task, at any level | lands with status **PLANNED (6)**, not NOT_STARTED (2026-09-04): it is scheduled work someone else filed, not something the owner has picked up. Both map to `open`, so the pair is quiet on arrival |
 | Human-filed open sub-issue whose parent issue is not linked | waits (`skipped_parent_unlinked`) until the parent imports |
 | Linked pair whose issue is a sub-issue of a DIFFERENT issue than its task's parent implies (or the task is top-level, or the parent is not linked) | recovery error `hierarchy drift` naming both sides; no ops for that pair until a person moves one side — the sync never re-parents |
 | Linked child whose issue was detached on GitHub | re-attached (`add_sub_issue`) — the tududi parent is the declaration |
@@ -140,6 +142,48 @@ delete — the engine has no such op (unit-asserted).
 | description | task `note` minus the marker suffix / issue body minus the marker block, trimmed |
 | status | the MAPPED value per the table above (so both systems hash the same representation) |
 | tags/labels | case-folded, sorted, comma-joined name set (sync tag excluded) |
+| priority | `''` / `low` / `medium` / `high` — GitHub's `Urgent` folds onto `high`, tududi's `null` onto `''` |
+
+## Priority — GitHub's native issue field ↔ tududi's task priority (2026-09-04)
+
+GitHub Issues carries priority as an **org-level native issue field**, a
+single-select named `Priority` with four options (Urgent / High / Medium /
+Low); tududi's `Task.PRIORITY` has three (`LOW 0`, `MEDIUM 1`, `HIGH 2`) plus
+`null` for none. Measured against `uhstray-io/dev-test` under the sync's own
+App installation token, because a docs reading would have been wrong twice:
+
+- **Read** — the values ride on the issue payload as `issue_field_values[]`,
+  each naming its field (`issue_field_name`) and its chosen
+  `single_select_option.name`. The App token reads these fine.
+- **Write** — `PATCH /repos/{o}/{r}/issues/{n}` with
+  `issue_field_values: [{field_id, value}]`, where `value` is the option NAME
+  and the match is case-insensitive (so the canonical lowercase value writes
+  directly). A `POST` creating an issue accepts the same key, so a prioritised
+  task never spends a cycle un-prioritised on GitHub.
+- **The write REPLACES the whole set.** A Priority-only PATCH silently cleared
+  an unrelated `Effort` value on a probe issue. Every priority write therefore
+  echoes the issue's other field values back verbatim, and *clearing* priority
+  means sending the set with only its entry omitted. This is the same trap as
+  tududi's `subtasks[]` on PATCH, and it is guarded the same way — by never
+  sending a partial set.
+- **The field id must be declared.** Writing needs the numeric `field_id`, and
+  `/orgs/{org}/issue-fields` answers `403 Resource not accessible by
+  integration` for an App — the sync cannot discover it. It is declared as
+  `github_priority_field_id` in `github-mapping.yml` (org-level config, not a
+  credential). `null` there leaves priority out of the sync entirely, rather
+  than reading it one way and dropping it the other. A declared id that does
+  not match an issue's actual `Priority` field is a named recovery error that
+  refuses the whole cycle — a wrong id would otherwise write into some other
+  field.
+
+**Urgent folds onto high, at the projection.** tududi has no Urgent, so the
+fold is the operator's rule — and placing it in the canonical projection is
+what makes the lossy pair safe in both directions: an Urgent issue whose task
+reads `high` is *quiet*, because after projection both sides hold the same
+value, so a tududi `high` can never demote an Urgent issue back to High.
+Lowering the task to medium or low genuinely differs, and does reach GitHub.
+(Proven live: #9 held `Urgent` while its task held `high` across a cycle that
+emitted zero operations.)
 
 ## Poll cadence and rate arithmetic
 

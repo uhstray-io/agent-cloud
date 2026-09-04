@@ -322,6 +322,27 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       `3ef680snzmxnt6e`, zero ops across every cycle); no GitHub label is added
       — `projectLabels()` filters the sync tag out of the label projection, and
       issue #14, created from a tagged task, carries `labels: []`
+- [x] 5P.1 Priority sync (D9.1), proven live 2026-09-04 (execs 174–175, task
+      188): canonical `''`/`low`/`medium`/`high` with GitHub's `Urgent` folded
+      onto `high` AT THE PROJECTION — #9 held `Urgent` while its task held
+      `high` across a cycle that emitted ZERO ops, so the lossy pair cannot
+      demote. tududi→GitHub proven (task `scsrj80r7auindn` medium → #8
+      `Medium`), GitHub→tududi proven (#9 `Urgent` → task priority 2). Writes
+      echo the issue's other field values back, because the PATCH REPLACES the
+      set (measured: a priority-only write cleared an unrelated `Effort`).
+      Field id declared as `github_priority_field_id` (the App token is 403 on
+      `/orgs/{org}/issue-fields`); a mismatched id is a named recovery error
+      that refuses the cycle. Scenario 19 + BATS test 10; the 5.1 gate carries
+      the same field set or it renders a different verdict
+- [x] 5P.2 Subtask gate INHERITED from the parent (D9.2), superseding D8's
+      per-item rule 2026-09-04: tududi 1.1.1 has no UI path to tag a subtask
+      (inline editor sends no tags, the backend whitelists exclude them, and a
+      subtask row links to the PARENT's page). Proven live — untagged subtask
+      `3ef680snzmxnt6e` under tagged parent `scsrj80r7auindn` became issue #16
+      and was attached under #8; a child of an untagged parent still exports
+      nothing (scenario 18 d/d2)
+- [x] 5P.3 GitHub-origin work lands PLANNED (D9.3): issue #17 → task
+      `zw0rcsa5152un5x` at status 6, quiet on arrival (both map to `open`)
 - [x] 5H.9 Report republished 2026-09-04 to the same artifact URL (label
       `hierarchy-descriptions-tag-gate`): new sections for the three review
       items, the hierarchy situation table, the App-token `parent_issue_url`

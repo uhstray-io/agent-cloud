@@ -111,22 +111,52 @@ function projectLabels(names, syncTag) {
     .join(',');
 }
 
-const FIELDS = ['title', 'description', 'status', 'labels'];
+// priority: GitHub's native single-select carries four options, tududi three
+// (LOW/MEDIUM/HIGH, or null for none). Urgent folds onto high — the operator's
+// rule — and folding at the PROJECTION is what makes the lossy pair safe: a
+// tududi 'high' can never demote a GitHub 'Urgent', because after projection
+// the two sides hold the same value and the field is quiet. Lowering the task
+// to medium/low does differ, and does reach GitHub.
+const PRIORITY_FOLD = { urgent: 'high', high: 'high', medium: 'medium', low: 'low' };
+// tududi's Task.PRIORITY (models/task.js): LOW 0, MEDIUM 1, HIGH 2; null = none.
+const TUDUDI_PRIORITY_NAME = ['low', 'medium', 'high'];
+
+function projectPriority(name) {
+  return PRIORITY_FOLD[String(name == null ? '' : name).toLowerCase()] || '';
+}
+
+function tududiPriorityName(p) {
+  return p == null ? '' : TUDUDI_PRIORITY_NAME[p] || '';
+}
+
+const BASE_FIELDS = ['title', 'description', 'status', 'labels'];
+
+// Priority is synced only when the org's Priority field id is declared: the
+// WRITE requires the numeric field_id, and the App installation token cannot
+// enumerate field definitions to discover it (403 on /orgs/{org}/issue-fields,
+// measured). Without the id the field is not synced at all, rather than read
+// in one direction and silently dropped in the other.
+const ALL_FIELDS = BASE_FIELDS.concat('priority');
+
+function fieldsFor(priorityFieldId) {
+  return priorityFieldId ? BASE_FIELDS.concat('priority') : BASE_FIELDS;
+}
 
 // Build the canonical field projections for one side.
-// side: {title, description, statusMapped, labelNames}
+// side: {title, description, statusMapped, labelNames, priorityName}
 function projections(side, syncTag) {
   return {
     title: projectTitle(side.title),
     description: projectDescription(side.description),
     status: side.statusMapped,
     labels: projectLabels(side.labelNames, syncTag),
+    priority: projectPriority(side.priorityName),
   };
 }
 
-function baselinesOf(proj) {
+function baselinesOf(proj, fields) {
   const out = {};
-  for (const f of FIELDS) out[f] = hash(proj[f]);
+  for (const f of fields || BASE_FIELDS) out[f] = hash(proj[f]);
   return out;
 }
 
@@ -140,7 +170,7 @@ function renderMarker(state) {
   const lines = [
     MARKER_START,
     `uid: ${state.uid}`,
-    ...FIELDS.map((f) => `base_${f}: ${state.baselines[f]}`),
+    ...Object.keys(state.baselines).map((f) => `base_${f}: ${state.baselines[f]}`),
     `tududi_updated_at: ${state.tududi_updated_at}`,
     `github_updated_at: ${state.github_updated_at}`,
     MARKER_END,
@@ -161,7 +191,10 @@ function parseMarker(body) {
   const uid = get('uid');
   if (!uid) return null; // damaged beyond the uid line -> caller logs, never guesses
   const baselines = {};
-  for (const f of FIELDS) baselines[f] = get(`base_${f}`);
+  // ALL fields, so a marker written before priority sync was enabled parses
+  // with base_priority null — the field then reads as changed on both sides
+  // and converges by updated_at on the first cycle, instead of being invisible.
+  for (const f of ALL_FIELDS) baselines[f] = get(`base_${f}`);
   return {
     uid,
     baselines,
@@ -203,12 +236,16 @@ function commentHasKey(comments, key) {
 //   writeCap: max writes this pair may emit per cycle
 //   tasks: tududi tasks of the project — top-level AND their subtasks,
 //     flattened — each
-//     {uid, id(int), title, note, status(int), tags:[names], updated_at,
-//      tagged:bool, archived:bool, parent_uid: uid | null}
+//     {uid, id(int), title, note, status(int), priority: 0|1|2|null,
+//      tags:[names], updated_at, tagged:bool, archived:bool,
+//      parent_uid: uid | null}
 //   issues: GitHub issues of the repo — the flat list, which already carries
 //     the hierarchy — each
 //     {number, id(int), title, body, state, state_reason, labels:[names],
-//      updated_at, user_login, comments:[{body}], parent_number: n | null}
+//      updated_at, user_login, comments:[{body}], parent_number: n | null,
+//      field_values: [{field_id(int), field_name, option_name}]}
+//   priorityFieldId: the org's native Priority field id, or null to leave
+//     priority out of the sync entirely (see fieldsFor)
 //
 // ops emitted (executor maps them to HTTP): create_issue, update_issue,
 // comment_issue, update_task, create_task, add_sub_issue. NO delete op exists.
@@ -223,12 +260,49 @@ const LINK_UID_PLACEHOLDER = '__UID__';
 
 function computeOps(input) {
   const { pair, syncTag, syncLogin, writeCap, tasks, issues } = input;
+  const priorityFieldId = input.priorityFieldId || null;
+  const FIELDS = fieldsFor(priorityFieldId);
+  // GitHub's issue_field_values PATCH is a REPLACE, not a merge: a
+  // priority-only write wipes every other field value on the issue (measured
+  // — it silently cleared an 'Effort' value). So a priority write echoes the
+  // issue's other field values back verbatim, and clearing priority means
+  // omitting only its entry.
+  const priorityOf = (issue) =>
+    ((issue.field_values || []).find((v) => v.field_id === priorityFieldId) || {}).option_name || '';
+  const issueFieldWrite = (issue, name) =>
+    (issue.field_values || [])
+      .filter((v) => v.field_id !== priorityFieldId)
+      .map((v) => ({ field_id: v.field_id, value: v.option_name }))
+      .concat(name ? [{ field_id: priorityFieldId, value: name }] : []);
+
   const ops = [];
   const recoveryErrors = [];
   const stats = {
     pairs_seen: 1, matched: 0, created: 0, adopted: 0, created_tasks: 0,
     skipped_quiet: 0, skipped_finished: 0, skipped_parent_unlinked: 0, attached: 0,
   };
+
+  // A declared id that does not match the org's actual Priority field would
+  // read every issue as un-prioritised and write into the WRONG field. The
+  // engine cannot look the definition up, but the issues it already read name
+  // their fields — so a mismatch is caught here rather than silently mangling
+  // an unrelated field.
+  if (priorityFieldId) {
+    const wrong = issues.find(
+      (i) => (i.field_values || []).some(
+        (v) => String(v.field_name || '').toLowerCase() === 'priority' && v.field_id !== priorityFieldId
+      )
+    );
+    if (wrong) {
+      recoveryErrors.push({
+        pair: pair.github_repo,
+        task_uid: '',
+        issue_number: wrong.number,
+        reason: `declared Priority field id ${priorityFieldId} does not match this repo's Priority field — correct github_priority_field_id in the mapping, or set it to null to stop syncing priority`,
+      });
+      return { ops: [], recoveryErrors, stats };
+    }
+  }
 
   // Index issues by marker uid — the linkage. EVERY marker-carrying issue is
   // linked (never an adoption/creation candidate), even when a uid appears on
@@ -290,16 +364,32 @@ function computeOps(input) {
   const parentTaskOf = (issue) => (issue.parent_number ? taskByUid.get(uidByNumber.get(issue.parent_number)) : null);
   const parentNumOf = (issue) => issue.parent_number || null;
 
+  // A subtask INHERITS the gate from its parent (operator's decision,
+  // 2026-09-04). tududi 1.1.1 has no way to tag a subtask in its UI at all:
+  // the inline subtask editor sends no tags and the backend whitelists fields
+  // that exclude them, and clicking a subtask row opens the PARENT's page —
+  // so a per-item tag would make the tududi→GitHub direction unreachable by
+  // hand. Tagging the parent is the explicit opt-in for the whole item; its
+  // issue is already public. A child of an UNtagged parent still exports
+  // nothing, and a child may still carry the tag itself.
+  const effTagged = (task) => {
+    if (task.tagged) return true;
+    if (!task.parent_uid) return false;
+    const parent = taskByUid.get(task.parent_uid);
+    return !!(parent && parent.tagged);
+  };
+
   for (const task of tasks) {
     if (dupUids.has(task.uid)) continue; // ambiguous link reported above: no ops, no new issue
-    if (!task.tagged && !byUid.has(task.uid)) continue; // untagged, never linked: untouched
+    const tagged = effTagged(task);
+    if (!tagged && !byUid.has(task.uid)) continue; // untagged, never linked: untouched
 
     let linked = byUid.get(task.uid) || null;
     const parentIssue = parentIssueOf(task);
 
     // ── Creation path ───────────────────────────────────────────────────
     if (!linked) {
-      if (!task.tagged) continue;
+      if (!tagged) continue;
       // A tagged subtask waits until its parent is a linked pair — its issue
       // needs a parent issue to attach to. The parent's own creation is the
       // ordinary path above/below, so the child lands on a later cycle.
@@ -364,6 +454,7 @@ function computeOps(input) {
           description: task.note,
           statusMapped: mapTududiStatus(task.status),
           labelNames: task.tags,
+          priorityName: tududiPriorityName(task.priority),
         },
         syncTag
       );
@@ -374,11 +465,16 @@ function computeOps(input) {
         title: proj.title,
         body: withMarker(proj.description, {
           uid: task.uid,
-          baselines: baselinesOf(proj),
+          baselines: baselinesOf(proj, FIELDS),
           tududi_updated_at: task.updated_at,
           github_updated_at: '',
         }),
         labels: proj.labels ? proj.labels.split(',') : [],
+        // A create can carry field values in the same call (measured), so a
+        // prioritised task never spends a cycle at no-priority on GitHub.
+        ...(priorityFieldId && proj.priority
+          ? { issue_field_values: [{ field_id: priorityFieldId, value: proj.priority }] }
+          : {}),
       });
       stats.created++;
       continue;
@@ -407,7 +503,7 @@ function computeOps(input) {
     }
 
     // Un-tag / archive → close-as-not-planned with keyed audit comment (D6).
-    const terminalEvent = !task.tagged
+    const terminalEvent = !tagged
       ? 'untagged'
       : task.status === TUDUDI_STATUS.ARCHIVED
         ? 'archived'
@@ -473,6 +569,7 @@ function computeOps(input) {
         description: task.note,
         statusMapped: mapTududiStatus(task.status),
         labelNames: task.tags,
+        priorityName: tududiPriorityName(task.priority),
       },
       syncTag
     );
@@ -482,6 +579,7 @@ function computeOps(input) {
         description: issue.body,
         statusMapped: mapIssueState(issue),
         labelNames: issue.labels,
+        priorityName: priorityOf(issue),
       },
       syncTag
     );
@@ -512,7 +610,7 @@ function computeOps(input) {
       } else {
         winner = 'g';
       }
-      if (winner === 't' && tHash !== gHash) applyToIssue(issuePatch, f, tSide[f]);
+      if (winner === 't' && tHash !== gHash) applyToIssue(issuePatch, f, tSide[f], issue);
       if (winner === 'g' && tHash !== gHash) applyToTask(taskPatch, f, gSide[f], task);
     }
 
@@ -609,7 +707,7 @@ function computeOps(input) {
     const shadow = tasks.find(
       (t) => !byUid.has(t.uid) && (t.parent_uid || null) === scopeUid && sameTitle(t.title, issue.title)
     );
-    if (shadow && shadow.tagged) continue;
+    if (shadow && effTagged(shadow)) continue;
     if (shadow) {
       recoveryErrors.push({
         pair: pair.github_repo,
@@ -620,7 +718,13 @@ function computeOps(input) {
       continue;
     }
     const proj = projections(
-      { title: issue.title, description: issue.body, statusMapped: 'open', labelNames: issue.labels },
+      {
+        title: issue.title,
+        description: issue.body,
+        statusMapped: 'open',
+        labelNames: issue.labels,
+        priorityName: priorityOf(issue),
+      },
       syncTag
     );
     ops.push({
@@ -631,7 +735,12 @@ function computeOps(input) {
       task: {
         name: proj.title,
         note: proj.description,
-        status: TUDUDI_STATUS.NOT_STARTED,
+        // GitHub-origin work lands as PLANNED, not NOT_STARTED (operator's
+        // rule): it is scheduled work someone else filed, not something the
+        // owner has already picked up. Both map to 'open', so the projection
+        // is unchanged and the pair is quiet on arrival.
+        status: TUDUDI_STATUS.PLANNED,
+        ...(proj.priority ? { priority: proj.priority } : {}),
         tags: (proj.labels ? proj.labels.split(',') : []).concat(syncTag).map((n) => ({ name: n })),
         // A sub-issue lands as a SUBTASK of the linked parent task (D8 rule
         // 3) — tududi's own hierarchy, keyed by its integer id, not the uid.
@@ -639,7 +748,7 @@ function computeOps(input) {
       },
       link_body: withMarker(proj.description, {
         uid: LINK_UID_PLACEHOLDER,
-        baselines: baselinesOf(proj),
+        baselines: baselinesOf(proj, FIELDS),
         tududi_updated_at: '',
         github_updated_at: issue.updated_at,
       }),
@@ -659,12 +768,14 @@ function computeOps(input) {
   return { ops, recoveryErrors, stats };
 
   function fieldToIssueKey(f) {
-    return { title: 'title', description: 'body', status: 'state', labels: 'labels' }[f];
+    return { title: 'title', description: 'body', status: 'state', labels: 'labels',
+      priority: 'issue_field_values' }[f];
   }
   function fieldToTaskKey(f) {
-    return { title: 'name', description: 'note', status: 'status', labels: 'tags' }[f];
+    return { title: 'name', description: 'note', status: 'status', labels: 'tags',
+      priority: 'priority' }[f];
   }
-  function applyToIssue(patch, f, value) {
+  function applyToIssue(patch, f, value, issue) {
     if (f === 'title') patch.title = value;
     else if (f === 'description') patch.body = value;
     else if (f === 'labels') patch.labels = value ? value.split(',') : [];
@@ -675,6 +786,9 @@ function computeOps(input) {
         patch.state_reason = value === 'closed:not_planned' ? 'not_planned' : 'completed';
       }
     }
+    // The option name match is case-insensitive (measured), so the canonical
+    // lowercase value writes directly — no option-name table to drift.
+    else if (f === 'priority') patch.issue_field_values = issueFieldWrite(issue, value);
   }
   function applyToTask(patch, f, value, task) {
     if (f === 'title') patch.name = value;
@@ -692,11 +806,17 @@ function computeOps(input) {
       const next = issueStateToTududiStatus(value, task.status);
       if (next !== null) patch.status = next;
     }
+    // tududi accepts the priority name or null-for-none on PATCH (measured).
+    else if (f === 'priority') patch.priority = value || null;
   }
 }
 
 module.exports = {
   TUDUDI_STATUS,
+  PRIORITY_FOLD,
+  projectPriority,
+  tududiPriorityName,
+  fieldsFor,
   mapTududiStatus,
   mapIssueState,
   issueStateToTududiStatus,

@@ -291,3 +291,29 @@ PYEOF"
     refute_grep -qE '(10\.[0-9]+|192\.168\.|172\.(1[6-9]|2[0-9]|3[01]))\.' "$f"
   done < <(find "$SYNC_DIR" -type f \( -name '*.yml' -o -name '*.j2' -o -name '*.json' -o -name '*.js' \))
 }
+
+@test "tududi-sync: priority — declared field id, Urgent folds to high, writes never wipe sibling fields" {
+  local tpl="$SYNC_DIR/templates/tududi-github-sync.workflow.json.j2"
+  local core="$SYNC_DIR/lib/sync-core.js"
+  local map="$SYNC_DIR/github-mapping.yml"
+  local vp="$REPO_ROOT/platform/playbooks/tasks/verify-tududi-sync-pair.yml"
+  # The org's Priority field id is DECLARED, because the App installation
+  # token is denied /orgs/{org}/issue-fields and cannot discover it.
+  grep -qE '^github_priority_field_id: [0-9]+$' "$map"
+  # Urgent has no tududi equivalent: it folds onto high at the projection,
+  # which is what stops a tududi 'high' from demoting an Urgent issue.
+  grep -qF "urgent: 'high'" "$core"
+  # A priority write echoes every OTHER field value back — GitHub's
+  # issue_field_values PATCH replaces the set rather than merging it.
+  grep -qF 'v.field_id !== priorityFieldId' "$core"
+  # Both the cycle and the 5.1 gate read the same two things, or they render
+  # different verdicts from the same engine.
+  grep -qF 'issue_field_values' "$tpl"
+  grep -qF 'priority: t.priority' "$tpl"
+  grep -qF 'priorityFieldId' "$vp"
+  grep -qF "'priority': s.priority" "$vp"
+  # GitHub-origin work lands PLANNED, not NOT_STARTED.
+  grep -qF 'status: TUDUDI_STATUS.PLANNED' "$core"
+  # A subtask inherits its parent's tag (tududi's UI cannot tag one).
+  grep -qF 'const effTagged' "$core"
+}
