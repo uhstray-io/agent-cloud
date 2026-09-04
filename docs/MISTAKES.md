@@ -269,6 +269,18 @@ actually measures what was wanted.
 a retain result with no `memory_ids` and re-issues it, which is worth building
 if this recurs.
 
+**Follow-up, same session.** Chasing the stall produced a second lesson about
+claiming causes. I checked the local model endpoint, found the model named in
+`CLAUDE.md` was not among those served and that requests for it were being
+answered by a different one, and framed that substitution as the root cause.
+The operator corrected it immediately: the substitute is the deliberate choice,
+and `CLAUDE.md` is simply stale. The measurement was real; the causal story
+built on it was not, and a config file I had not verified as current was doing
+the load-bearing work. What is actually measured: a ~100-character memory
+stores and returns an id, while ~250 characters and up do not return within the
+300-second idle timeout, on a store whose recall answers instantly. That is a
+symptom, recorded as one, not a diagnosis.
+
 
 ## 2. Tests that would have passed for the wrong reason
 

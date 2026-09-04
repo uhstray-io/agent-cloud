@@ -429,8 +429,14 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       terms, both of which returned only the 2026-09-03 memory. The failure
       shape is worth keeping: on this store, `completed` is NOT proof of a
       retrievable memory; an empty `memory_ids` is the real signal, and the
-      only trustworthy check is a recall afterwards. Long multi-sentence
-      paragraphs appear to be what stalls extraction. The content to retain: (a) The design WORKED: poll
+      only trustworthy check is a recall afterwards. What IS measured about
+      the stall: a ~100-character memory stores fine and returns a real
+      `memory_ids`; ~250 characters and up did not return inside the 300s idle
+      timeout, on a store whose recall (zero model calls) answers instantly.
+      So the retain path's extraction is the slow half, and the size at which
+      it becomes unusable is far below a normal memory. Not yet diagnosed
+      further — do NOT assume it is prose length alone. The content to
+      retain: (a) The design WORKED: poll
       transport with a single bidirectional cycle held up, and so did
       statelessness — an interrupted creation adopts the orphan instead of
       duplicating, proven live. The conflict-rate reality against the LWW
