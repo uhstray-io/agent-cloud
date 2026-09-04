@@ -1,0 +1,412 @@
+---
+# provision-tududi-github-sync.yml — place the tududi↔GitHub sync into n8n
+# (integrate-tududi-github-issue-sync tasks 3.3 + 4.1; design D1, D2-as-amended,
+# D7-as-amended).
+#
+# Normal run: validate BOTH provider credentials against their live APIs
+# (named failure before anything in the engine changes) → upsert the two n8n
+# credentials by fixed name → render the cycle workflow from the committed
+# mapping (enabled pairs only) with the embedded sync core → upsert the
+# workflow by name → activate → prune owned objects the declaration no longer
+# implies. Owned = names carrying the sync prefix; nothing else is ever
+# touched. Emptying the declaration (every pair disabled) prunes everything
+# owned — that is the specified full-rollback, not an accident.
+#
+# KILL SWITCH (-e sync_enabled=false): branches BEFORE credential and mapping
+# validation and deactivates the owned workflow using only the n8n API key —
+# it must work with a broken mapping file AND dead/revoked provider
+# credentials, because it is the one-run rollback (task 4.1).
+#
+# The refusal set, all NAMED: unparseable mapping, mapping without a
+# sync_pairs list, dead tududi token, dead/mis-scoped GitHub App installation
+# (the shared mint task's symmetric-difference check).
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    preflight_group_expected: n8n_svc
+
+- name: "Provision the tududi-github sync into n8n"
+  hosts: n8n_svc
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
+    # THE ownership prefix (design D1): every engine object this playbook
+    # creates starts with it, and prune touches nothing without it.
+    _prefix: "tududi-github-sync"
+    _workflow_name: "tududi-github-sync: cycle"
+    _tududi_cred_name: "tududi-sync-api"
+    _github_cred_name: "github-sync-api"
+    # The URL the WORKFLOW calls tududi on (from inside the n8n container):
+    # local-dev reaches the container by name on the shared network; prod uses
+    # the internal Caddy origin or a firewall-admitted address (contract doc,
+    # transport note) — inventory decides, never the template.
+    _wf_tududi_url: "{{ tududi_sync_tududi_url | default('http://tududi:3002') }}"
+    _sync_tag: "{{ tududi_sync_tag | default('gh-sync') }}"
+    _sync_login: "{{ tududi_sync_github_login | default('todo-sync-agent[bot]') }}"
+    _write_cap: "{{ tududi_sync_write_cap | default(20) }}"
+    _cadence: "{{ tududi_sync_cadence_minutes | default(5) }}"
+    _mapping_path: "{{ playbook_dir }}/../services/tududi/sync/github-mapping.yml"
+    # Credential data blobs, used verbatim by create AND update. The public
+    # API's credential schema REQUIRES the domain-restriction mode to be
+    # stated (an absent mode trips its vacuous-if and 400s — the same finding
+    # the Postiz provisioning corrected); each credential is pinned to its one
+    # legitimate host, so a leaked credential cannot be pointed elsewhere by a
+    # workflow edit.
+    _tududi_cred_data:
+      name: Authorization
+      value: "Bearer {{ _tududi_secret.json.data.data.api_token }}"
+      allowedHttpRequestDomains: domains
+      allowedDomains: "{{ _wf_tududi_url | urlsplit('hostname') }}"
+    _github_cred_data:
+      name: Authorization
+      value: "Bearer {{ _mt_token }}"
+      allowedHttpRequestDomains: domains
+      allowedDomains: api.github.com
+    # default(true, true) — the boolean form — so an EMPTY value (a survey
+    # field left blank) falls back to enabled too. Plain default() only
+    # substitutes when undefined, and `'' | bool` is false, so a blank survey
+    # would otherwise trip the kill switch.
+    _sync_enabled: "{{ sync_enabled | default(true, true) | bool }}"
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Require a non-cleartext transport to n8n"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _n8n_base }}"
+        _assert_url_label: "n8n"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the n8n API key"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/n8n"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _n8n_secret
+      delegate_to: localhost
+      no_log: true
+
+    - name: "List the engine's workflows (upsert + prune read)"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/workflows?limit=250"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      register: _workflows
+      no_log: true
+
+    # ── KILL SWITCH: before any credential or mapping validation ────────────
+    - name: "Deactivate the owned workflows and stop (sync_enabled=false)"
+      when: not _sync_enabled
+      block:
+        - name: "Deactivate every owned workflow (prefix-scoped, nothing else)"
+          ansible.builtin.uri:
+            url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}/deactivate"
+            method: POST
+            headers:
+              X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+            status_code: [200]
+          loop: "{{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list }}"
+          loop_control:
+            label: "{{ item.name }}"
+          # The loop label carries the workflow NAME, so the run stays
+          # diagnosable; the task itself is no_log because a failed request
+          # prints its invocation args, X-N8N-API-KEY included.
+          no_log: true
+
+        - name: "Report the kill switch"
+          ansible.builtin.debug:
+            msg: >-
+              sync_enabled=false: deactivated
+              {{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list | length }}
+              owned workflow(s). Nothing validated, nothing rendered — this
+              path works with a broken mapping and dead provider credentials
+              by design. Re-provision with sync_enabled=true to resume.
+
+        - name: "Stop here"
+          ansible.builtin.meta: end_host
+
+    # ── Mapping: parse and refuse the malformed ──────────────────────────────
+    - name: "Read the committed mapping"
+      ansible.builtin.set_fact:
+        _mapping_raw: "{{ lookup('file', _mapping_path) }}"
+
+    - name: "Refuse an unparseable or shapeless mapping (named)"
+      ansible.builtin.assert:
+        that:
+          - _mapping is mapping
+          - _mapping.sync_pairs is defined
+          - _mapping.sync_pairs | length > 0
+        fail_msg: >-
+          {{ _mapping_path }} did not parse into a sync_pairs list — refusing
+          to provision from a malformed declaration. (An all-DISABLED mapping
+          is the legitimate way to express "no pairs"; a missing or empty
+          sync_pairs list is an error.)
+      vars:
+        _mapping: "{{ _mapping_raw | from_yaml }}"
+
+    - name: "Take the enabled pairs and the declared Priority field"
+      ansible.builtin.set_fact:
+        _pairs: "{{ (_mapping_raw | from_yaml).sync_pairs | selectattr('enabled') | list }}"
+        # null (or absent) leaves priority out of the sync entirely — the
+        # engine cannot discover the id, because the App token is denied the
+        # org's issue-field definitions.
+        _priority_field_id: "{{ (_mapping_raw | from_yaml).github_priority_field_id | default(None, true) }}"
+
+    # ── Credential preflight: both providers, live, BEFORE the engine ───────
+    - name: "Read the tududi sync token"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/tududi"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _tududi_secret
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Require the tududi token to exist (named)"
+      ansible.builtin.assert:
+        that:
+          - (_tududi_secret.json.data.data.api_token | default('')) | length > 0
+        fail_msg: >-
+          secret/services/tududi:api_token is absent — run Store tududi API
+          Token first; this playbook never mints.
+
+    - name: "Validate the tududi token against the live API (named on failure)"
+      # The project list doubles as the visibility probe below — the same
+      # surface the cycle resolves project names on.
+      ansible.builtin.uri:
+        url: "{{ _wf_tududi_url }}/api/v1/projects"
+        headers:
+          Authorization: "Bearer {{ _tududi_secret.json.data.data.api_token }}"
+        status_code: [200]
+      register: _tududi_probe
+      failed_when: false
+      no_log: true
+
+    - name: "Refuse a dead tududi token (named)"
+      ansible.builtin.assert:
+        that:
+          - _tududi_probe.status == 200
+        fail_msg: >-
+          The tududi token at secret/services/tududi:api_token was refused by
+          {{ _wf_tududi_url }} (HTTP {{ _tududi_probe.status }}). Rotate it
+          (Store tududi API Token) before provisioning — nothing in n8n was
+          changed.
+
+    - name: "Refuse an enabled pair whose project the sync identity cannot see (named)"
+      # tududi scopes everything per user: a token lists its own user's
+      # projects plus those shared TO that user, nothing else — being admin
+      # widens nothing (permissionsService.ownershipOrPermissionWhere, v1.1.1).
+      # A pair the token cannot see would fail every cycle as a recovery
+      # error; refuse here, before any engine write, naming the projects.
+      ansible.builtin.assert:
+        that:
+          - _unseen_projects | length == 0
+        fail_msg: >-
+          The sync token (secret/services/tududi:api_token) cannot see the
+          tududi project(s) {{ _unseen_projects | join(', ') }} on
+          {{ _wf_tududi_url }}; it sees only: {{ _visible_projects | join(', ') }}.
+          Either mint the token for the user who owns them (Store tududi API
+          Token with tududi_sync_user_email), or have that owner share each
+          project with the token's user at rw. Nothing in n8n was changed.
+      vars:
+        _visible_projects: "{{ _tududi_probe.json.projects | default([]) | map(attribute='name') | list }}"
+        _unseen_projects: "{{ _pairs | map(attribute='tududi_project') | reject('in', _visible_projects) | list }}"
+
+    - name: "Mint + scope-validate the GitHub App token (shared task, named failures)"
+      ansible.builtin.include_tasks: tasks/mint-tududi-sync-github-token.yml
+      vars:
+        _mt_bao_url: "{{ _bao_url }}"
+        _mt_bao_token: "{{ _bao_auth.json.auth.client_token }}"
+
+    # ── Upsert the two credentials by fixed name ─────────────────────────────
+    - name: "List the engine's credentials"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/credentials?limit=250"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      register: _creds
+      no_log: true
+
+    - name: "Upsert the tududi credential"
+      ansible.builtin.uri:
+        url: >-
+          {{ _n8n_base }}/api/v1/credentials{{
+            '/' ~ (_existing | first).id if (_existing | length > 0) else ''
+          }}
+        method: "{{ 'PATCH' if (_existing | length > 0) else 'POST' }}"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        body_format: json
+        body: >-
+          {{ ({'name': _tududi_cred_name, 'type': 'httpHeaderAuth'}
+              if (_existing | length == 0) else {})
+             | combine({'data': _tududi_cred_data}) }}
+        status_code: [200]
+      vars:
+        _existing: "{{ _creds.json.data | selectattr('name', 'equalto', _tududi_cred_name) | list }}"
+      register: _tududi_cred
+      no_log: true
+
+    - name: "Upsert the GitHub credential"
+      ansible.builtin.uri:
+        url: >-
+          {{ _n8n_base }}/api/v1/credentials{{
+            '/' ~ (_existing | first).id if (_existing | length > 0) else ''
+          }}
+        method: "{{ 'PATCH' if (_existing | length > 0) else 'POST' }}"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        body_format: json
+        body: >-
+          {{ ({'name': _github_cred_name, 'type': 'httpHeaderAuth'}
+              if (_existing | length == 0) else {})
+             | combine({'data': _github_cred_data}) }}
+        status_code: [200]
+      vars:
+        _existing: "{{ _creds.json.data | selectattr('name', 'equalto', _github_cred_name) | list }}"
+      register: _github_cred
+      no_log: true
+
+    - name: "Resolve the credential ids (fresh read — create vs update agnostic)"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/credentials?limit=250"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      register: _creds_after
+      no_log: true
+
+    - name: "Hold the ids"
+      ansible.builtin.set_fact:
+        _tududi_cred_id: "{{ (_creds_after.json.data | selectattr('name', 'equalto', _tududi_cred_name) | first).id }}"
+        _github_cred_id: "{{ (_creds_after.json.data | selectattr('name', 'equalto', _github_cred_name) | first).id }}"
+      no_log: true
+
+    # ── Render + upsert + activate the cycle workflow ────────────────────────
+    - name: "Render the cycle workflow from the committed mapping"
+      # ansible-core 2.16 (the runner image) native-evaluates the rendered
+      # JSON into a dict inside the lookup; newer cores hand back a string —
+      # the mapping test makes the parse version-proof.
+      ansible.builtin.set_fact:
+        _workflow_json: "{{ _rendered if _rendered is mapping else (_rendered | from_json) }}"
+      when: _pairs | length > 0
+      vars:
+        _rendered: >-
+          {{ lookup('template', playbook_dir ~ '/../services/tududi/sync/templates/tududi-github-sync.workflow.json.j2',
+                    template_vars=dict(
+                      workflow_name=_workflow_name,
+                      cadence_minutes=_cadence,
+                      tududi_base_url=_wf_tududi_url,
+                      sync_tag=_sync_tag,
+                      sync_login=_sync_login,
+                      write_cap=_write_cap,
+                      sync_pairs=_pairs,
+                      github_priority_field_id=(_priority_field_id | int if _priority_field_id else None),
+                      sync_core_js=lookup('file', playbook_dir ~ '/../services/tududi/sync/lib/sync-core.js'),
+                      cycle_glue_js=lookup('file', playbook_dir ~ '/../services/tududi/sync/lib/cycle-glue.js'),
+                      tududi_credential_id=_tududi_cred_id,
+                      tududi_credential_name=_tududi_cred_name,
+                      github_credential_id=_github_cred_id,
+                      github_credential_name=_github_cred_name)) }}
+      no_log: true
+
+    - name: "Upsert the cycle workflow by name"
+      # An all-DISABLED mapping is the specified rollback: prune everything
+      # owned and leave nothing behind. Rendering and upserting a workflow
+      # with zero pairs would recreate the very object the prune just removed,
+      # so the declaration having no enabled pair skips both.
+      when: _pairs | length > 0
+      ansible.builtin.uri:
+        url: >-
+          {{ _n8n_base }}/api/v1/workflows{{
+            '/' ~ (_existing | first).id if (_existing | length > 0) else ''
+          }}
+        method: "{{ 'PUT' if (_existing | length > 0) else 'POST' }}"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        body_format: json
+        body:
+          name: "{{ _workflow_json.name }}"
+          nodes: "{{ _workflow_json.nodes }}"
+          connections: "{{ _workflow_json.connections }}"
+          settings: "{{ _workflow_json.settings }}"
+        status_code: [200]
+      vars:
+        _existing: "{{ _workflows.json.data | selectattr('name', 'equalto', _workflow_name) | list }}"
+      register: _wf_upsert
+      no_log: true
+
+    - name: "Activate the workflow (part of provisioning — design D1)"
+      when: _pairs | length > 0
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/workflows/{{ _wf_upsert.json.id }}/activate"
+        method: POST
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      no_log: true
+
+    # ── Prune: owned objects the declaration no longer implies ───────────────
+    - name: "Prune owned workflows the declaration no longer implies"
+      # Prefix-scoped and name-exact: with pairs enabled, the ONE cycle
+      # workflow is implied; with none, nothing is — every owned workflow goes.
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}"
+        method: DELETE
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      loop: >-
+        {{ _workflows.json.data
+           | selectattr('name', 'search', '^' ~ _prefix)
+           | rejectattr('name', 'in', ([_workflow_name] if (_pairs | length > 0) else []))
+           | list }}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Prune the owned credentials when no pairs remain"
+      when: _pairs | length == 0
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/credentials/{{ item }}"
+        method: DELETE
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+        status_code: [200]
+      loop: ["{{ _tududi_cred_id }}", "{{ _github_cred_id }}"]
+      no_log: true
+
+    - name: "Report (names and counts only)"
+      ansible.builtin.debug:
+        msg: >-
+          Provisioned '{{ _workflow_name }}' with {{ _pairs | length }} enabled
+          pair(s) ({{ _pairs | map(attribute='github_repo') | join(', ') }});
+          credentials '{{ _tududi_cred_name }}' and '{{ _github_cred_name }}'
+          upserted (values live in the engine only). The GitHub credential
+          expires within the hour — the scheduled refresher keeps it alive.
+          Kill switch: re-run with -e sync_enabled=false.

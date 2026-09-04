@@ -11,14 +11,23 @@ engine this bridge needs; this change is its first real workflow consumer.
 
 ## What Changes
 
-- **Six tududi-project ↔ GitHub-repo relationships**, declared as config-as-code
-  in this repo (the repo names already appear committed here):
-  `Zerds - Development ↔ zerds`, `Zerds - Website ↔ zerds-website`,
-  `agent-cloud ↔ agent-cloud`, `Weft - Development ↔ weft`, `huhhb ↔ huhhb`,
-  `Scientific-Business Website ↔ scientific-business`. A relationship must be
-  explicitly declared to sync anything.
-- **Selective, opt-in item sync**: only tududi tasks carrying the designated sync
-  tag cross to GitHub as issues. Untagged tasks never leave tududi.
+- **Nine tududi-project ↔ GitHub-repo relationships** (grown from six on the
+  operator's 2026-09-03 direction — including the PUBLIC `agent-cloud` repo,
+  whose pair ships disabled because enabling it is a publication decision, and
+  `dev-test`, the standing validation pair every instance may run), declared as
+  config-as-code in this repo (the repo names already appear committed here).
+  `platform/services/tududi/sync/github-mapping.yml` is the declaration; the
+  GitHub App's installation must cover exactly those repositories, which the
+  token refresher asserts on every mint. A relationship must be explicitly
+  declared to sync anything.
+- **Selective, opt-in item sync, from either origin**: a tududi task crosses to
+  GitHub only when it carries the designated sync tag; untagged tasks never leave
+  tududi. An open issue filed on GitHub in a paired repository becomes a task in
+  the paired project, tagged for sync, so work can start on either side (amended
+  2026-09-03 on the operator's direction — the original scope created from
+  tududi only). Whichever side an item started on, it exists **once**: the
+  same title already present on the other side is adopted and linked, never
+  re-created.
 - **Bidirectional field sync** for linked pairs: title, description, status
   (tududi statuses ↔ issue open/closed), and tags ↔ labels. Updates on either
   side propagate to the other on the next cycle.
@@ -32,10 +41,10 @@ engine this bridge needs; this change is its first real workflow consumer.
   playbook — no hand-built workflows in the n8n UI.
 - **Credentials from OpenBao**: the tududi personal API token at
   `secret/services/tududi:api_token` (the path already planned for weft) and a
-  new GitHub credential scoped to the six repos, provisioned into n8n by the
+  new GitHub credential scoped to the mapped repos, provisioned into n8n by the
   same pattern as the Postiz credential.
 - **NOT in scope**: GitHub Projects v2 boards, comment sync, attachment/media
-  sync, subtask↔sub-issue mapping, syncing repos outside the declared six, and
+  sync, subtask↔sub-issue mapping, syncing repos outside the declaration, and
   real-time (webhook) transport — each a possible later layer.
 
 ## Capabilities
@@ -61,12 +70,17 @@ engine this bridge needs; this change is its first real workflow consumer.
 - **New code**: mapping declaration file, n8n workflow definitions as code, a
   provisioning playbook for the workflows + GitHub/tududi credentials, BATS
   coverage; Semaphore template(s) for provisioning.
-- **Secrets layout**: `secret/services/tududi:api_token` gains its planned value;
-  the sync's GitHub credential lands at `secret/services/github:tududi_sync_pat`
-  (fine-grained, scoped to the six repos — design D7).
-- **External state**: issues created/updated in six GitHub repositories; tasks
-  updated in tududi. Both under a dedicated sync identity, so its writes are
-  distinguishable and echo-suppressible.
+- **Secrets layout**: `secret/services/tududi:api_token` gains its planned
+  value; the sync's GitHub credential is a dedicated GitHub **App**, not a PAT
+  (design D7 as decided 2026-09-03) — its private key at
+  `secret/services/github:tududi_sync_app_key` and its client id (the JWT
+  issuer, not a secret) at `:tududi_sync_app_client_id`. Installation tokens
+  live one hour, so a scheduled refresher re-mints and updates the n8n
+  credential in place.
+- **External state**: issues created/updated in the declared GitHub
+  repositories; tasks updated in tududi. Both under a dedicated sync identity —
+  the App's `[bot]` login — so its writes are distinguishable and
+  echo-suppressible.
 - **Docs**: CLAUDE.md workflow table, tududi service context, a sync contract
   doc alongside the Postiz automation contract.
 
@@ -82,14 +96,26 @@ engine this bridge needs; this change is its first real workflow consumer.
   values in comments. No destructive operation exists in the sync at all — it
   never deletes issues or tasks.
 - **Credentials**: revocation is an encoded, re-runnable rollback step, not a
-  documentation pointer. Where a provider exposes revocation to the API it is
-  executed by the playbook; where it does not (a fine-grained PAT's deletion is
-  a provider-settings action), the operator step is gated by a machine check:
-  the rollback step **verifies revocation by authenticating with the stored
-  token and requiring the provider to refuse it**, fails loudly while the token
-  still works, and treats an already-revoked credential as success — so a
-  rollback interrupted after n8n deactivation converges on re-run instead of
-  leaving a live token unnoticed. Re-running provisioning against an empty
+  documentation pointer. The two credentials revoke differently, and the App
+  changes what "revoke" even means (design D7, decided 2026-09-03):
+  - **tududi** — the API token is revoked through the app's own reversible
+    `revoked_at` on our-label rows, executed by the playbook.
+  - **GitHub** — there is no PAT to delete. The credential is a GitHub App, so
+    the durable authority is its **installation**, and installation tokens
+    expire on their own within the hour. Rollback therefore means removing the
+    installation from the org's mapped repositories (a provider-settings
+    action) and, if the App itself is being retired, deleting its private key
+    from `secret/services/github:tududi_sync_app_key`. Deactivating the n8n
+    workflows and pruning the `github-sync-api` credential stops the sync but
+    does NOT revoke anything at GitHub — the distinction matters, because the
+    key alone can mint a fresh token for as long as the installation stands.
+  Either operator step is gated by the same machine check: the rollback
+  **verifies revocation by authenticating with the stored credential and
+  requiring the provider to refuse it** — for the App, by attempting an
+  installation-token mint and requiring GitHub to reject it — fails loudly
+  while the credential still works, and treats an already-revoked one as
+  success, so a rollback interrupted after n8n deactivation converges on
+  re-run instead of leaving live access unnoticed. Re-running provisioning against an empty
   declaration removes the workflows and credentials it owns from n8n —
   provisioning prunes its own objects by design (design D1), so this is
   specified behavior, not a hope.

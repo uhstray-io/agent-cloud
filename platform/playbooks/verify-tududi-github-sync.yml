@@ -1,0 +1,179 @@
+---
+# verify-tududi-github-sync.yml — the per-pair verification gate
+# (integrate-tududi-github-issue-sync task 5.1). Read-only against every
+# system it touches; exit pass/fail per ENABLED pair.
+#
+# For each enabled pair it gathers the three facts the gate needs — the
+# workflow's latest execution from n8n, the paired project's tasks from
+# tududi, the paired repo's issues from GitHub (App token via the shared
+# mint, scope preflight included) — and hands them to verify-pair.js, which
+# runs INSIDE the tududi container with the EXACT engine the workflow embeds
+# (the runner image has no node). PASS = last cycle succeeded AND the engine
+# says a fresh cycle would be a no-op AND no sync trace exists on tasks in
+# undeclared projects. This is the promotion gate of tasks 5.3/6.1: a pair
+# is enabled or kept enabled only while this passes.
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: tududi_svc
+    preflight_group_expected: tududi_svc
+
+- name: "Verify every enabled sync pair"
+  hosts: tududi_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ tududi_container | default('tududi') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _n8n_base: "{{ n8n_verify_base_url | default(n8n_url | default('http://workflow-n8n:5678')) }}"
+    _workflow_name: "tududi-github-sync: cycle"
+    # The SAME transport the cycle workflow uses (provision-tududi-github-sync
+    # reads this name) — not tududi_base_url, which is the app's PUBLIC
+    # BASE_URL behind Caddy and resolves to a host-only edge from inside the
+    # orchestrator (found live: the gate failed on the fetch, censored).
+    _tududi_base: "{{ tududi_sync_tududi_url | default('http://tududi:3002') }}"
+    _sync_tag: "{{ tududi_sync_tag | default('gh-sync') }}"
+    _sync_login: "{{ tududi_sync_github_login | default('todo-sync-agent[bot]') }}"
+    _write_cap: "{{ tududi_sync_write_cap | default(20) }}"
+    _mapping_path: "{{ playbook_dir }}/../services/tududi/sync/github-mapping.yml"
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the n8n and tududi secrets"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ item }}"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      loop: [n8n, tududi]
+      register: _secrets
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Hold the keys"
+      ansible.builtin.set_fact:
+        _n8n_key: "{{ _secrets.results[0].json.data.data.n8n_api_key }}"
+        _tududi_token: "{{ _secrets.results[1].json.data.data.api_token }}"
+      no_log: true
+
+    - name: "Mint the GitHub read token (shared task, scope preflight included)"
+      ansible.builtin.include_tasks: tasks/mint-tududi-sync-github-token.yml
+      vars:
+        _mt_bao_url: "{{ _bao_url }}"
+        _mt_bao_token: "{{ _bao_auth.json.auth.client_token }}"
+
+    - name: "Take the enabled pairs"
+      ansible.builtin.set_fact:
+        _pairs: "{{ (lookup('file', _mapping_path) | from_yaml).sync_pairs | selectattr('enabled') | list }}"
+        _declared_projects: "{{ (lookup('file', _mapping_path) | from_yaml).sync_pairs | map(attribute='tududi_project') | list }}"
+        # The same declared Priority field the cycle uses — the gate runs the
+        # engine, so a different field set here is a different verdict.
+        _priority_field_id: "{{ (lookup('file', _mapping_path) | from_yaml).github_priority_field_id | default(None, true) }}"
+
+    - name: "Find the cycle workflow"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/workflows?limit=250"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_key }}"
+        status_code: [200]
+      register: _workflows
+      no_log: true
+
+    - name: "Require exactly one workflow by that name (named)"
+      # The execution URL below indexes `| first` on this selection. With no
+      # match it raises inside a no_log'd URL expression, which surfaces as an
+      # unexplained template error rather than "the sync was never
+      # provisioned"; with two it silently gates on whichever came back first.
+      ansible.builtin.assert:
+        that:
+          - _named_workflows | length == 1
+        fail_msg: >-
+          Expected exactly one n8n workflow named '{{ _workflow_name }}' on
+          {{ _n8n_base }}, found {{ _named_workflows | length }}.
+          {{ 'Run Provision tududi-github Sync first — the gate verifies a
+              provisioned sync, it does not provision one.'
+             if (_named_workflows | length == 0)
+             else 'Duplicate names make the gate check an arbitrary one of
+                   them; remove the extras before trusting this verdict.' }}
+      vars:
+        _named_workflows: "{{ _workflows.json.data | selectattr('name', 'equalto', _workflow_name) | list }}"
+
+    - name: "Read the workflow's latest execution"
+      ansible.builtin.uri:
+        url: "{{ _n8n_base }}/api/v1/executions?workflowId={{ (_workflows.json.data | selectattr('name', 'equalto', _workflow_name) | first).id }}&limit=1"
+        headers:
+          X-N8N-API-KEY: "{{ _n8n_key }}"
+        status_code: [200]
+      register: _executions
+      no_log: true
+
+    - name: "Fetch every tududi task (undeclared-project sweep included)"
+      ansible.builtin.uri:
+        url: "{{ _tududi_base }}/api/v1/tasks"
+        headers:
+          Authorization: "Bearer {{ _tududi_token }}"
+        status_code: [200]
+      register: _tasks
+      failed_when: false
+      no_log: true
+
+    - name: "Refuse an unreadable tududi (named — the fetch above is censored)"
+      ansible.builtin.assert:
+        that:
+          - _tasks.status == 200
+        fail_msg: >-
+          {{ _tududi_base }}/api/v1/tasks answered HTTP {{ _tasks.status }}
+          ({{ _tasks.msg | default('no detail') }}). Same transport the cycle
+          workflow uses — if the cycle succeeds, check tududi_sync_tududi_url
+          on THIS host's inventory.
+
+    - name: "Place the verifier and the engine beside it in the container"
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/tmp/{{ item | basename }}"
+        mode: "0644"
+      loop:
+        - "{{ playbook_dir }}/../services/tududi/sync/lib/sync-core.js"
+        - "{{ playbook_dir }}/../services/tududi/sync/lib/verify-pair.js"
+
+    - name: "Copy both into the container"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", "cp", "/tmp/{{ item }}", "{{ _container }}:/tmp/{{ item }}"]
+      loop: [sync-core.js, verify-pair.js]
+      changed_when: true
+
+    - name: "Verify each enabled pair (read-only; the engine renders the verdict)"
+      ansible.builtin.include_tasks: tasks/verify-tududi-sync-pair.yml
+      loop: "{{ _pairs }}"
+      loop_control:
+        loop_var: _pair
+        label: "{{ _pair.github_repo }}"
+
+    - name: "Report the gate"
+      ansible.builtin.debug:
+        msg: >-
+          Per-pair verification PASSED for
+          {{ _pairs | map(attribute='github_repo') | join(', ') }} —
+          last cycle green, engine reports convergence, no sync trace outside
+          the declaration.

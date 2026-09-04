@@ -192,6 +192,58 @@
       loop_control:
         label: "{{ item.name }}{{ ' (Dev)' if (item._generated | default(false)) else '' }}"
 
+# ── Schedules as code ────────────────────────────────────────────────────────
+    # A template may declare `schedule: { cron: "..." }` in templates.yml; it
+    # is upserted here by NAME (one schedule per declared template, named after
+    # it) so a cadence is reviewed in the PR that sets it, never clicked into
+    # the UI. Schedules attach to the BASE template only — a (Dev) variant
+    # never inherits one, so a pre-promotion schedule failing on main's absent
+    # playbook stays a visible red rather than a silent double-run later.
+
+    - name: "Re-read templates (ids for schedule binding)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _templates_after
+
+    - name: "Get existing schedules"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _schedules
+
+    - name: "Create or update each declared schedule"
+      ansible.builtin.uri:
+        url: >-
+          {{ _semaphore_url }}/api/project/{{ _project_id }}/schedules{{
+            '/' ~ (_sched_ids | first) if (_sched_ids | length > 0) else ''
+          }}
+        method: "{{ 'PUT' if (_sched_ids | length > 0) else 'POST' }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+          Content-Type: application/json
+        body_format: json
+        body: "{{ _sched_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _sched_ids: "{{ (_schedules.json | default([])) | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
+        _tpl_id: "{{ (_templates_after.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first) }}"
+        _sched_body: >-
+          {{ {'project_id': (_project_id | int),
+              'template_id': (_tpl_id | int),
+              'name': item.name,
+              'cron_format': item.schedule.cron,
+              'active': (item.schedule.active | default(true) | bool)}
+             | combine({'id': (_sched_ids | first | int)} if (_sched_ids | length > 0) else {}) }}
+      loop: "{{ _all_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.schedule.cron }})"
+
     - name: "Report"
       ansible.builtin.debug:
-        msg: "Applied {{ _all_templates | length }} templates to Semaphore at {{ _semaphore_url }}"
+        msg: >-
+          Applied {{ _all_templates | length }} templates
+          ({{ _all_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list | length }}
+          scheduled) to Semaphore at {{ _semaphore_url }}

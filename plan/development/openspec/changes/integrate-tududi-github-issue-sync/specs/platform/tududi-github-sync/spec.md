@@ -52,12 +52,22 @@ linkage MUST survive so re-tagging reopens the same issue.
   the task's title, description, status and tags, the pair is durably linked,
   and further cycles update rather than re-create it
 
+#### Scenario: Finished work is not exported
+
+- **WHEN** a task in a declared project already holds a finished status
+  (done, cancelled or archived) when the sync tag is added, and no issue is
+  linked to it
+- **THEN** no issue is created for it — the mirror of "closed issues are not
+  imported" — while a task that finishes AFTER it was linked still closes its
+  issue with the matching reason
+
 #### Scenario: Interrupted creation recovers without a duplicate
 
-- **WHEN** a cycle created the issue but failed before recording the link on the
-  task, and a later cycle processes the same tagged task
-- **THEN** the later cycle finds the existing issue by the task identity it
-  carries, completes the linkage, and no second issue is created
+- **WHEN** a cycle created the issue but failed before recording the link, and a
+  later cycle processes the same tagged task
+- **THEN** the later cycle adopts the existing open issue carrying the task's
+  title (see "An item exists once, whichever side it started on"), completes the
+  linkage, and no second issue is created
 
 #### Scenario: Removing the sync tag closes the issue, destroys nothing
 
@@ -65,6 +75,79 @@ linkage MUST survive so re-tagging reopens the same issue.
 - **THEN** the next cycle closes the issue as not-planned with an audit note,
   the task itself is unchanged, and re-adding the tag later reopens the same
   issue rather than creating a new one
+
+### Requirement: Work can start on GitHub
+
+An open issue in a paired repository that no task is linked to, filed by anyone
+other than the sync identity, SHALL become a task in the paired tududi project on
+the next cycle, carrying the issue's title, body, labels as tags, and the sync
+tag, and the two SHALL be durably linked so the pair converges like any other.
+A closed unlinked issue MUST NOT be backfilled — finished work is not imported.
+An unlinked open issue authored by the sync identity is an orphan of an
+interrupted tududi-origin creation and MUST be reported, never re-imported as a
+new task.
+
+#### Scenario: Issue filed on GitHub becomes a task
+
+- **WHEN** a person opens an issue in a paired repository and a cycle runs
+- **THEN** one task exists in the paired project with the issue's title, body,
+  labels and the sync tag; the issue carries the linkage to that task; and the
+  next cycle updates rather than re-creates
+
+#### Scenario: Closed issues are not imported
+
+- **WHEN** a paired repository holds closed issues that were never linked
+- **THEN** no task is created for any of them
+
+#### Scenario: Missing project is a named refusal
+
+- **WHEN** the paired tududi project does not exist on the instance and a
+  creation is due
+- **THEN** the cycle records a recovery error naming the project and the issue,
+  writes nothing to either side, and succeeds otherwise
+
+### Requirement: An item exists once, whichever side it started on
+
+Creation from either origin SHALL never produce a second copy of an item that
+already exists on the other side. Before creating, the cycle MUST look for the
+same canonical title among the unlinked open issues (for a tagged task) or the
+tasks of the paired project (for an unlinked issue). Exactly one match SHALL be
+adopted and linked in place, with the linkage announced once and every
+differing field resolved last-writer-wins with the losing value preserved. More
+than one candidate, or a candidate that is not tagged for sync, SHALL block
+creation with a recovery error naming every artifact involved — the cycle never
+guesses. A linkage that names a task the project does not hold, or a linkage
+carried by more than one issue, SHALL likewise be reported rather than silently
+skipped or resolved by re-creation.
+
+#### Scenario: Same item created on both sides is linked, not duplicated
+
+- **WHEN** a tagged task and an open issue with the same title exist unlinked in
+  a pair when a cycle runs
+- **THEN** the issue is linked to the task, no new issue and no new task is
+  created, the link is announced once on the issue, and any differing field
+  resolves last-writer-wins with the losing value preserved on the issue
+
+#### Scenario: Ambiguous match refuses to guess
+
+- **WHEN** more than one unlinked open issue carries a tagged task's title
+- **THEN** nothing is created or linked — on EITHER side: no issue for the
+  task, and no task for any of the candidate issues — and a single recovery
+  error names the task and every candidate issue
+
+#### Scenario: Untagged twin blocks import
+
+- **WHEN** an unlinked open issue's title matches a task in the paired project
+  that is not tagged for sync
+- **THEN** no task is created and a recovery error names the task and the
+  issue, so a person decides whether the private task should be published
+
+#### Scenario: Dangling or duplicated linkage is reported
+
+- **WHEN** an open issue's linkage names a task the paired project does not hold,
+  or two issues carry the same linkage
+- **THEN** no task or issue is created for them and a recovery error names
+  every artifact involved
 
 ### Requirement: Linked pairs converge bidirectionally
 
@@ -80,11 +163,28 @@ propagate in either direction.
 - **THEN** the next cycle updates the linked task's title and sets its status to
   the documented closed-state equivalent
 
+#### Scenario: A human's close on GitHub is never reverted
+
+- **WHEN** a linked issue is closed as not-planned on GitHub while its tagged
+  task is still open in tududi
+- **THEN** the next cycle sets the task to the documented not-planned
+  equivalent and leaves the issue closed — it MUST NOT be mistaken for the
+  sync's own un-tag close and reopened; the two are told apart by which side
+  the marker's status baseline says wrote the closed state
+
 #### Scenario: tududi edit reaches GitHub
 
 - **WHEN** a linked task's description and tags change in tududi
 - **THEN** the next cycle updates the issue body and reconciles the issue's
   labels to match the task's tags per the documented tag↔label rules
+
+#### Scenario: Description edited on either side reaches the other
+
+- **WHEN** a linked task's description is edited in tududi, and on a later
+  cycle the linked issue's body is edited on GitHub
+- **THEN** the first cycle carries the tududi text into the issue body and the
+  second carries the GitHub text back into the task description, each exactly
+  once, with no third cycle writing either side
 
 #### Scenario: Comments never cross
 
@@ -92,6 +192,72 @@ propagate in either direction.
   linked tududi task
 - **THEN** subsequent cycles copy neither: the issue's comments stay only in
   GitHub and the task's notes stay only in tududi
+
+### Requirement: Hierarchy syncs natively, one level deep, in both directions
+
+A tududi subtask SHALL be represented as a GitHub sub-issue of the issue its
+parent task is linked to, and a GitHub sub-issue SHALL be represented as a
+subtask of the task its parent issue is linked to — using each system's own
+hierarchy feature, never a checklist line or a note in the parent. A child pair
+converges under the same field, conflict and echo rules as a top-level pair.
+
+A subtask crosses when it is tagged — by carrying the sync tag itself, OR by
+INHERITING it from a tagged parent — AND its parent is already a linked pair.
+The gate is inherited because tududi offers no way to tag a subtask at all: its
+inline subtask editor sends no tags, the backend whitelists fields that exclude
+them, and a subtask row opens the PARENT's page, so nothing links to the child's
+own view. Tagging the parent is therefore the single explicit opt-in for the
+whole item, whose issue is already public. Any subtask of an UNTAGGED parent
+SHALL NOT cross, so an un-opted item keeps its entire subtree private. A tagged
+child whose parent is not yet linked, or an unlinked sub-issue whose parent
+issue is not yet linked, SHALL be deferred to a later cycle and counted, never
+imported at the top level. Title-based adoption for children MUST look only
+among the children of the linked parent. A linked child whose observed parent
+disagrees with its recorded parent SHALL be reported as a recovery error and
+left unwritten. Re-parenting, hierarchy deeper than one level, and deletion are
+outside this requirement.
+
+#### Scenario: Tagged subtask becomes a sub-issue of the parent's issue
+
+- **WHEN** a task in a declared project is a linked pair and one of its
+  subtasks carries the sync tag
+- **THEN** within two cycles one issue exists for the subtask, it is a
+  sub-issue of the parent's linked issue, the two are durably linked, and
+  further cycles update rather than re-create it
+
+#### Scenario: Sub-issue filed on GitHub becomes a subtask
+
+- **WHEN** a person adds a sub-issue under a linked issue in a paired
+  repository and a cycle runs
+- **THEN** one subtask exists under the linked parent task carrying the
+  sub-issue's title, body, labels and the sync tag, and the two are linked
+
+#### Scenario: Untagged subtask under a linked parent stays private
+
+- **WHEN** a linked task gains a subtask that does not carry the sync tag
+- **THEN** no issue is created for it and nothing about it reaches GitHub,
+  regardless of the parent's tag
+
+#### Scenario: Child waits for its parent
+
+- **WHEN** a tagged subtask's parent task is not yet linked, or an unlinked
+  sub-issue's parent issue is not yet linked
+- **THEN** the cycle creates nothing for the child, counts it as deferred, and
+  a later cycle — after the parent has linked — creates it under the parent
+
+#### Scenario: Detached sub-issue is re-attached
+
+- **WHEN** a linked child issue is found without a parent on GitHub while its
+  tududi subtask still belongs to the linked parent
+- **THEN** the next cycle re-attaches it as a sub-issue of the parent's linked
+  issue and writes nothing else for the pair
+
+#### Scenario: Moved child is reported, not guessed
+
+- **WHEN** a linked child's parent on one side no longer matches the parent
+  recorded in its linkage
+- **THEN** no write is made for that pair and a recovery error names both
+  parents
 
 ### Requirement: Conflicts resolve last-writer-wins without silent loss
 
@@ -113,6 +279,19 @@ destroy content.
 All sync writes on both sides SHALL be made under a dedicated sync identity,
 and a cycle MUST NOT treat the sync's own writes as fresh changes to propagate
 back. Re-running a cycle with no external changes MUST make zero writes.
+
+On GitHub the identity is a dedicated App. On tududi it is a labelled API
+token belonging to the user who OWNS the mapped projects — not a separate
+service account — because tududi scopes every list per user and a task
+created by another user is invisible to the project's owner. Provisioning
+MUST refuse an enabled pair whose project the token cannot see.
+
+#### Scenario: Token that cannot see a mapped project is refused
+
+- **WHEN** provisioning runs with a tududi token whose user neither owns nor
+  is shared an enabled pair's project
+- **THEN** it fails naming that project before changing anything in the
+  workflow engine
 
 #### Scenario: Quiet cycle is a no-op
 

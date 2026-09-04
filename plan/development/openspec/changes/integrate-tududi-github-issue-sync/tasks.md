@@ -6,17 +6,17 @@
 
 ## 1. Spike: ground both API surfaces (gate for everything after)
 
-- [ ] 1.1 Pull the deployed tududi 1.1.1 OpenAPI spec and verify: personal-token
+- [x] 1.1 Pull the deployed tududi 1.1.1 OpenAPI spec and verify: personal-token
       auth coverage on `/api/v1` task/project/tag routes, the exact task status
       enum, tag read/write shapes, `updated_at` exposure, any changed-since
       filtering, which field can carry the linked issue reference (design D4
       open question), and whether personal API tokens can be minted through the
       API — if they can, token seeding is automated on the n8n key-mint model
       instead of the UI step in 3.1 (design D7)
-- [ ] 1.2 Verify the n8n public-API workflow surface at the pinned n8n version:
+- [x] 1.2 Verify the n8n public-API workflow surface at the pinned n8n version:
       list/create/update/activate endpoints the provisioning playbook will call
       (design D1)
-- [ ] 1.3 Write the sync contract doc (beside the Postiz automation contract):
+- [x] 1.3 Write the sync contract doc (beside the Postiz automation contract):
       status↔state mapping table from the real enum, tag↔label rules (sync tag
       never propagates; case-insensitive name match), marker-block format
       (uid + PER-FIELD baselines + both timestamps — one baseline hash per
@@ -27,61 +27,93 @@
       audit-event key format (design D6), poll cadence with GitHub rate-limit
       arithmetic, and the full-list-diff fallback decision if changed-since
       filtering is absent (design D6, risk 2)
-- [ ] 1.4 Validation gate: contract doc committed with every table sourced from a
+- [x] 1.4 Validation gate: contract doc committed with every table sourced from a
       named spec/endpoint (no guessed enum values); the fields it documents are
       the ones scenarios "GitHub edit reaches tududi" and "tududi edit reaches
       GitHub" will be proven against
 
 ## 2. Mapping and workflow definitions as code
 
-- [ ] 2.1 Add the mapping declaration (six pairs, `enabled` flag) at the path
+- [x] 2.1 Add the mapping declaration (six pairs, `enabled` flag) at the path
       settled in design D3; BATS: exactly the declared six, no credentials or
       addresses in the file
-- [ ] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
+- [x] 2.2 Author the workflow definitions (one per direction) as Jinja2-rendered
       JSON consuming the mapping: tag-gated crossing, marker-block linkage with
       per-field baselines, pre-create search by task `uid` PLUS the
-      sync-identity/canonical-title second gate (a suspect match blocks
-      creation and records a recovery error — no duplicate even after a fully
-      lost linkage), per-field LWW using both systems' own timestamps,
+      canonical-title second gate (AMENDED 2026-09-03: one same-title unlinked
+      open issue is ADOPTED and linked in place; two or more block with a
+      recovery error — no duplicate even after a fully lost linkage), the
+      reverse direction (an open human-filed unlinked issue becomes a tagged
+      task, marker written back with the new uid; an untagged same-title task
+      blocks it; closed issues never backfilled; dangling and duplicated
+      markers reported), per-field LWW using both systems' own timestamps,
       audit comments carrying the stable audit-event key checked before
       posting (a comment-then-marker-write-failure retry is a no-op),
       losing-value audit comment, un-tag → close-as-not-planned with surviving
       linkage, per-cycle write cap that fails loudly, and no delete operation
       anywhere (design D4/D5/D6, spec)
-- [ ] 2.3 BATS: rendered workflows reference credentials only by n8n credential
+- [x] 2.3 BATS: rendered workflows reference credentials only by n8n credential
       name — no token value, no secret-store value, in any rendered artifact
-- [ ] 2.4 Validation gate: rendering the six-pair mapping produces valid workflow
+- [x] 2.4 Validation gate: rendering the six-pair mapping produces valid workflow
       JSON (schema-checked); scenario "No credential in any committed or logged
       artifact" holds for the repo tree
 
 ## 3. Sync identities and credentials
 
-- [ ] 3.1 Create the dedicated tududi sync user and its personal API token —
-      via the API if the 1.1 spike found a mint route, else the UI as a
-      labelled operator step **gated by a machine check** (a preflight assert
-      that the seeded token authenticates against the live tududi API, failing
-      with a named error when absent or dead — the operator step is verified,
-      never trusted) — store at `secret/services/tududi:api_token` via
-      `Seed OpenBao Key` (value as env secret, never a task parameter).
-      Rotation is encoded as re-seed + re-provision (idempotent, same
-      playbooks); revocation is encoded per the rollback plan: the step
-      verifies the old token is refused by the provider and treats
-      already-revoked as success
-- [ ] 3.2 Create the fine-grained GitHub PAT (six repos, Issues read/write) under
-      the sync's GitHub identity — provider-side creation (no public creation
-      API for fine-grained PATs), a labelled operator step **gated by the same
-      machine check** (preflight assert: the seeded PAT authenticates and sees
-      exactly the declared repos, named failure otherwise); seed into
-      `secret/services/github:tududi_sync_pat`. Rotation = re-seed +
-      re-provision; revocation encoded as verify-refused, already-revoked =
-      success (rollback plan)
-- [ ] 3.3 Extend the n8n credential-provisioning playbook (or add a sibling) to
+- [x] 3.1 Automate the tududi API token (D7 as amended). IMPLEMENTED DB-SIDE
+      (2026-09-03): the deploy is SSO-only by design (PASSWORD_AUTH_ENABLED
+      false — the session route answers 403), so `store-tududi-api-token.yml`
+      mints through the app's OWN stack instead: `files/tududi-db-mint.js`
+      runs inside the container with the app's sequelize models and bcrypt
+      (cost 12 + 12-char prefix, matching v1.1.1's createApiToken exactly),
+      raw token generated on the runner and passed via stdin, then PROVEN
+      end-to-end by a live Bearer call before capture into
+      `secret/services/tududi:api_token` via the shared KV-v2 merge.
+      NON-DESTRUCTIVE contract per the operator: one INSERT plus the app's
+      own reversible revoked_at on our-label rows; no flag flips, no
+      restarts. Every token-bearing step `no_log`.
+      Idempotent, PROOF-FIRST (amended 2026-09-03): the STORED OpenBao value
+      is fed back through `prove` — accepted live AND matching an active
+      labelled row of the configured user — and only then is the run a no-op;
+      anything else (field absent, value dead, value minted for a different
+      user) revokes our labelled rows and re-mints (the raw value is
+      unrecoverable by design). Presence was not convergence: "row active +
+      field present" reported converged while OpenBao held the previous
+      identity's token (task 160); the proof-first rule caught it (166) and
+      re-runs are no-ops (167). The proof runs INSIDE the container on
+      loopback — the public edge URL is unreachable from the orchestrator on
+      local-dev and leaves the VM on prod; every earlier green run had been
+      carrying a launch-time URL override (task history 93/94/116).
+      Rotation = revoke + re-run; revocation verified as refused-by-provider,
+      already-revoked = success
+- [x] 3.2 DONE 2026-09-03 — the App exists: `todo-sync-agent` (App ID 4820206),
+      Issues read/write + auto Metadata read, webhook inactive (poll-only D2),
+      installed on exactly the eight mapped repos; private key + client id
+      seeded to prod OpenBao (tasks 367/368) and local (103/104) via the
+      env-secret chain, cleaned after each run. The refresher chain is proven
+      live end-to-end on local-dev: named refusal without the key (96), scope
+      preflight REFUSING a 2-repo over-scope with names (105 — the guard's
+      first catch was real), scope pass at 8==8 and the designed named stop at
+      the not-yet-provisioned n8n credential (107). Original scope text
+      follows. Create the dedicated GitHub App ("tududi sync": Issues read/write
+      ONLY, installed on exactly the mapped repos) — a labelled operator step
+      (GitHub has no App-creation API) **gated by machine checks**; seed the
+      private key into `secret/services/github:tududi_sync_app_key` and the
+      client id into `:tududi_sync_app_client_id` via `Seed OpenBao Key`.
+      Write `refresh-tududi-sync-github-token.yml`: mint an installation
+      token on the controller (`platform/lib/github_app_token.py`, key via
+      stdin), preflight-assert the installation covers exactly the declared
+      repos (named failure otherwise), and update the n8n `github-sync-api`
+      credential in place (`PATCH /api/v1/credentials/{id}`); declare its
+      45-minute Semaphore SCHEDULE as code (`templates.yml` gains a
+      `schedule:` field; `setup-templates.yml` learns to upsert schedules)
+- [x] 3.3 (DONE 2026-09-03 inside provision-tududi-github-sync.yml — both providers live-validated with named refusals BEFORE any engine write; Validate Secrets wiring rides 6.2's docs pass) Extend the n8n credential-provisioning playbook (or add a sibling) to
       upsert the tududi and GitHub credentials into n8n from those paths —
       idempotent, `no_log` on secret-bearing steps, names-and-counts output —
       and to **precondition-validate both credentials against their live APIs
       first**, failing with a named error before touching n8n when either is
       absent or dead; wire both into the `Validate Secrets` standing check
-- [ ] 3.4 Validation gate: scenarios "Credentials provisioned as code" and
+- [x] 3.4 (DONE 2026-09-03, proven live on local-dev: both credentials exist after one run — task 111; re-run duplicates nothing — 113; a REAL dead token, revoked via the app's own semantic, failed the run BY NAME before any engine change — 115; the mint self-healed and provisioning passed again — 116/117) Validation gate: scenarios "Credentials provisioned as code" and
       "Provisioning refuses dead credentials" hold on local-dev — both
       credentials exist after one run, re-run creates no duplicates, a
       deliberately broken token fails the run with its name before any engine
@@ -89,7 +121,7 @@
 
 ## 4. Workflow provisioning playbook + Semaphore template
 
-- [ ] 4.1 Write `provision-tududi-github-sync.yml`: render mapping → upsert both
+- [x] 4.1 (DONE 2026-09-03; two implementation findings recorded: the public API's credential schema requires the domain-restriction mode stated — both credentials are pinned to their one legitimate host, same finding the Postiz provisioning hit; and ansible-core 2.16 native-evaluates the rendered JSON, so the parse is version-proofed) Write `provision-tududi-github-sync.yml`: render mapping → upsert both
       workflows by name via the n8n API → activate → **prune owned objects the
       declaration no longer implies** (name-prefix-scoped, never touching
       anything else — design D1); the rollback path (`-e sync_enabled=false`)
@@ -98,12 +130,24 @@
       broken mapping file AND dead/revoked provider credentials (it is the
       one-run kill switch; a validation gate in front of it would defeat it);
       add the Semaphore template (`dev_variant: true`)
-- [ ] 4.2 BATS: provisioning refuses an empty or unparseable mapping;
+- [x] 4.2 (DONE 2026-09-04 — BATS test 11 pins the kill switch's independence
+      STRUCTURALLY, which is what "works under a broken mapping and dead
+      credentials" actually means: `meta: end_host` precedes the mapping read
+      and BOTH provider validations by line order, the deactivate loop carries
+      only `X-N8N-API-KEY` and never contacts tududi or GitHub, and it is
+      prefix-scoped. Mutation-tested: replacing the terminator with a debug
+      task turns the test red. The refusal assertions pin the empty-vs-disabled
+      distinction that a reader gets wrong — an all-DISABLED mapping is the
+      legitimate rollback and prunes everything owned, while a MISSING or empty
+      `sync_pairs` list is a malformed file and is refused, so a truncated
+      mapping can never read as "tear the sync down". Re-run-no-change and
+      prefix-scoped prune were already proven live at 4.3, tasks 113/117/118)
+      BATS: provisioning refuses an empty or unparseable mapping;
       `sync_enabled=false` still deactivates both workflows under that same
       broken mapping AND with deliberately dead provider credentials (only the
       n8n API key is exercised on that path); re-run with unchanged inputs
       reports no change; prune only ever names prefix-owned objects
-- [ ] 4.3 Validation gate: provisioning runs green on local-dev n8n; workflows
+- [x] 4.3 (DONE 2026-09-03: provision green — 111; refresher completed its first full cycle against the provisioned credential — 112; re-provision no-op — 113/117; EMPTY declaration pruned every owned object while the unrelated Postiz credential survived — 118, verified via the API; restore + re-provision — 119) Validation gate: provisioning runs green on local-dev n8n; workflows
       visible, active, re-provisioning is a no-op. Ownership scope is explicit:
       the two workflows and both credentials are SHARED by all pairs (design
       D1/D2/D7) — dropping one pair re-renders the shared workflows with the
@@ -116,29 +160,119 @@
 
 ## 5. Validation against a scratch pair
 
-- [ ] 5.1 Write the per-pair verification check (playbook or workflow step,
+- [x] 5.1 (DONE 2026-09-03: verify-tududi-github-sync.yml + lib/verify-pair.js —
+      the verdict is rendered by the EXACT embedded engine inside the tududi
+      container; read-only; per enabled pair. Proven live: its first run
+      CAUGHT a real defect — scheduled cycles were failing because the local
+      overlay gave the app the shared network but not the WORKER, which is
+      what executes scheduled workflows in queue mode; overlay fixed, the
+      next scheduled cycle ran green against local tududi + real GitHub
+      read-only, and the gate PASSED — task 122. Behavioural BATS fixtures
+      cover pass/converged, failed-cycle, divergence, undeclared-trace)
+      Write the per-pair verification check (playbook or workflow step,
       exit pass/fail): last cycle for the pair completed without error, write
       cap not hit, linked pairs' per-field baselines match both sides
       (convergence), zero sync activity on undeclared projects/repos — the
       executable gate both this phase and the prod rollout (6.x) run
-- [ ] 5.2 Validate against a scratch pair WITHOUT touching the canonical scope:
-      a temporary mapping OVERLAY file (the canonical six-pair declaration is
-      never edited) declaring one scratch tududi project ↔ a private scratch
-      repo, and a SEPARATELY SCOPED scratch credential (its own fine-grained
-      PAT limited to the scratch repo, seeded at a scratch OpenBao key) — the
-      production PAT's six-repo scope stays exactly as declared in design D7
-      and cannot see the scratch repo by design. Run several cycles
-      exercising: tag→issue creation, an interrupted-creation recovery (delete
-      the task-side link, confirm the next cycle relinks instead of
-      duplicating), the audit-comment retry (comment posted, marker write
-      failed — no duplicate comment on the next cycle), edits in both
-      directions on different fields (clean per-field merge), tag/label
-      reconciliation, same-field both-sides conflict,
-      un-tag→close→re-tag→reopen, archive→close-as-not-planned, untagged task
-      untouched, quiet cycle. Cleanup is encoded: remove the overlay, revoke +
-      prune the scratch credential, re-provision, and assert the canonical
-      mapping still declares exactly six pairs and the scratch objects are gone
-- [ ] 5.3 Validation gate: scenarios "Tagging a task creates its issue exactly
+- [x] 5.2 (DONE 2026-09-04; redesigned 2026-09-03 — `uhstray-io/dev-test` ↔ tududi
+      `dev-test` is a STANDING enabled pair in the canonical mapping, covered by
+      the App's own installation — no overlay file and no scratch PAT, because
+      the App IS the identity and its installation list is the scope (the
+      refresher's preflight requires installation == mapping, so a pair outside
+      the declaration cannot exist). Run live against real GitHub, local
+      tududi+n8n at 1-min cadence, all with the 5.1 gate green afterwards:
+      tag→creation by `todo-sync-agent[bot]` with marker+labels; quiet cycle;
+      GitHub label → tududi tag (sync tag preserved, tududi-shaped `{name}`
+      objects); same-field title conflict → newer side won, loser preserved in
+      ONE keyed comment, no repeat next cycle; un-tag→closed not_planned→re-tag→
+      reopened with the task's status UNTOUCHED; archive→close, unarchive→
+      reopen; untagged task never produced an issue. Four engine bugs found and
+      fixed by this run (index-aligned merge duplicating issues; wrong tududi
+      write route; tags sent as strings; reopen bouncing status 0→5→1), each
+      with a red-then-green scenario in core-scenarios.js. BOTH remaining gaps CLOSED 2026-09-04:
+      (a) audit-comment idempotency is no longer inert — the issue projection
+      carries real comments, fetched on the SAME per-pair GraphQL query that
+      already reads sub-issue parents, so it costs no extra call (`comments(
+      last:20)`; the window is deliberate — a key carries its trigger's
+      updated_at, so only a recent retry needs suppressing). Verified live at
+      exec 268: 8 real `tududi-sync-event:` keys reached the engine where it
+      previously saw `[]`. NOTE the rejected alternative and WHY: "move the key
+      into the marker" cannot work — the failure it must survive is *comment
+      posted, marker write failed*, and in that state the marker carries
+      nothing new, so it can never suppress the retry.
+      (b) interrupted-creation recovery PROVEN live (exec 269): #8's marker was
+      stripped to simulate a create that never linked; the next cycle reported
+      `adopted: 1, created: 0`, re-linking by canonical title, and the repo
+      still holds exactly ONE issue with that title. The three children of #8
+      correctly reported `hierarchy drift` and wrote nothing while their parent
+      was momentarily unlinked, then cleared on the following cycle (exec 270,
+      10 matched / 0 ops) with the 5.1 gate green.)
+      SUPERSEDED PROCEDURE, kept only so the redesign is legible: this task
+      originally called for a scratch pair behind a temporary mapping OVERLAY
+      and a separately scoped fine-grained PAT. Both are obsolete. The
+      credential is a GitHub App (design D7), so the App's INSTALLATION is the
+      scope and the refresher asserts installation == mapping on every mint — a
+      pair outside the declaration cannot exist, which is a stronger guarantee
+      than a second PAT. `uhstray-io/dev-test` is therefore a STANDING enabled
+      pair in the canonical declaration rather than an overlay, and validation
+      writes land there using the production credential chain.
+
+- [x] 5.3 (DONE 2026-09-04; third pass 2026-09-03 — status crossings and identity.
+      GitHub-origin status replay passed LIVE on dev-test (cycles 128–132):
+      reopen → task IN_PROGRESS, task DONE → issue closed/completed, reopen
+      again, task CANCELLED → closed/not_planned, then a quiet cycle with zero
+      writes; label removal on GitHub → tag removed (119); close → DONE (123).
+      Four engine fixes came out of it, each with a unit scenario: a human
+      close bounced back open (cycle 118 — the per-field baseline now moves
+      with the write); an AMBIGUOUS adoption then fell through to create
+      (dedup hole — ambiguity is a named recovery error, never a create);
+      tududi's default task list hides DONE rows, so a finished task was
+      invisible to convergence (`?status=all`); and, symmetric to it, finished
+      tududi work was never exported (`skipped_finished` guard).
+      IDENTITY DECISION, proven from v1.1.1 source and live: tududi scopes
+      every list per user and creation writes no permission row, so a task
+      created by a grantee in the owner's project is INVISIBLE to the owner's
+      list (owner token listed 4 of 5 dev-test tasks, missing the grantee's).
+      A service account with rw shares therefore loses; the sync identity is
+      the tududi user who OWNS the mapped projects — `tududi_sync_user_email`
+      in inventory (site-config on prod; the baked local INI in
+      `bootstrap-local-dev.yml` for the Semaphore tier, NOT
+      `platform/inventory/local-dev.yml`). Provisioning refuses an enabled
+      pair whose project the identity cannot see, by name. Re-minted as the
+      dev-test owner (166), re-provisioned (168); the first cycle under that
+      token was green (134) and a one-cycle owner smoke passed both ways (135:
+      tagged task → #11, human issue #10 → tagged task, both in the owner's
+      list). Battery lesson: a wait shorter than the cycle cadence reports a
+      false timeout — R0 of the replay was that artifact, not a defect.
+      Second pass: the amended creation scenarios
+      passed LIVE on dev-test — "Issue filed on GitHub becomes a task" (#8 →
+      tagged task, marker written back with the real uid via the executor's
+      item link, quiet for the 11 following cycles), "Same item created on both
+      sides is linked, not duplicated" (#9 adopted, `linked` + preserved-loser
+      comments, LWW by a 1-second edge), and "GitHub edit reaches tududi" for
+      title and body; the 5.1 gate PASSED afterwards — task 148. The dangling-
+      and duplicate-marker rows are unit-proven only (scenarios 15–16; 16 found
+      a real duplicate path in the uid index). Status/label crossings from
+      GitHub (close→2, reopen→1, not_planned→5, label removal) were in flight
+      when this note was written — see the next note. First pass: every listed
+      scenario EXCEPT "Interrupted
+      creation recovers without a duplicate" passed live on dev-test; the 5.1
+      gate PASSED for both enabled pairs after the whole battery — task 135 —
+      once its tududi transport was corrected to the SAME inventory variable
+      the cycle workflow uses (it had borrowed `tududi_base_url`, the app's
+      public edge URL, unreachable from inside the orchestrator; MISTAKES
+      1.x). "Unmapping is non-destructive" was proven in 4.3 — 118.
+      CLOSED 2026-09-04: the one scenario still outstanding here — "Interrupted
+      creation recovers without a duplicate" — was proven live on dev-test
+      (exec 269): #8's marker was stripped to simulate a create that never
+      linked, the next cycle reported `adopted: 1, created: 0`, and the repo
+      still holds exactly ONE issue with that title. Every other listed
+      scenario had already passed live, and the 5.1 gate is green after the
+      whole battery. The "scratch pair" wording below is superseded for the
+      same reason as 5.2: dev-test is a STANDING declared pair under the App's
+      own installation scope, not a scratch overlay, so there is nothing to
+      remove afterwards — "unmapping is non-destructive" was proven separately
+      at 4.3 by pruning an empty declaration.) Validation gate: scenarios "Tagging a task creates its issue exactly
       once", "Interrupted creation recovers without a duplicate", "Removing the
       sync tag closes the issue, destroys nothing", "Linked pairs converge
       bidirectionally" (all three sub-scenarios), "Both sides edited between
@@ -147,22 +281,151 @@
       scratch pair afterwards and confirm scenario "Unmapping is
       non-destructive"
 
+## 5H. Hierarchy sync — subtasks ↔ sub-issues (design D8; operator review 2026-09-03)
+
+Scoped on local-dev against `dev-test`, BEFORE the prod rollout (operator
+ordering). The three review items resolved to: hierarchy = new build (5H.1–5H.6);
+description sync = already implemented but never proven live (5H.7); tag gate =
+already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
+
+- [x] 5H.1 Engine (`sync-core.js`): tasks carry `parent_uid`/`parent_id`, issues
+      carry `parent_number`/`id`; rule 1 — tagged child + linked parent only,
+      else `skipped_parent_unlinked`; rule 2 — `add_sub_issue` op whenever a
+      linked child issue shows no `parent_number`; rule 3 — GitHub-origin
+      sub-issue → `create_task` with `parent_task_id`, deferred while the
+      parent issue is unlinked; rule 4 — adoption/shadow gates scoped to the
+      linked parent's children, `hierarchy drift` recovery error on mismatch.
+      No new field, no new status rule (tududi's auto-completion arrives as
+      ordinary status changes)
+- [x] 5H.2 Unit scenarios (`tests/core-scenarios.js`): child create tududi→GitHub
+      (create + attach on the next cycle), child create GitHub→tududi with
+      `parent_task_id`, untagged child ignored under a linked parent, child
+      deferred while parent unlinked (both origins), detached child
+      re-attached, hierarchy drift reported with zero ops, quiet cycle with a
+      linked child pair = zero ops
+- [x] 5H.3 Workflow (`tududi-github-sync.workflow.json.j2`): fan-out flattens
+      each task's embedded `subtasks[]` into the stream with `parent_uid`,
+      `parent_id` and the child's OWN `tagged`; issue map adds `id` and
+      `parent_number`; GitHub executor gains the
+      `add_sub_issue` route (`POST /issues/{parent_number}/sub_issues`,
+      `{sub_issue_id}`); tududi executor passes `parent_task_id` through on
+      `create_task`. AMENDED 2026-09-03 after the first live cycle: the REST
+      list's `parent_issue_url` is NULL under the App installation token, so
+      `parent_number` comes from one GraphQL query per pair (`Fetch sub-issue
+      parents` node), not from parsing that field — one extra call per pair,
+      not per item; parsing `parent_issue_url` is now forbidden by render-check
+      and BATS
+- [x] 5H.4 Contract doc (`github-sync-contract.md`): hierarchy section — the
+      five D8 rules, the `skipped_parent_unlinked` counter, the `hierarchy
+      drift` error, the ≤1-cadence top-level window and its upgrade path
+- [x] 5H.5 BATS (`test_tududi_sync.bats`): the workflow template routes
+      `add_sub_issue`, flattens `subtasks`, and never sends `subtasks: []` on a
+      PATCH (tududi replaces the whole set); the executor still has no delete
+      route at any level
+- [x] 5H.6 Live proof on dev-test, both directions (DONE 2026-09-03, execs
+      154–159): (a) tagging subtask `1ezzbrhadrq5hs8` under linked parent
+      `xpugd26ef1a0wy6` created issue #14 (exec 155) and attached it under #9
+      the next cycle (exec 156, `add_sub_issue`); `GET /issues/9/sub_issues` →
+      `[14]`. (b) hand-filed sub-issue #13 under linked #8 became subtask
+      `3w04q6inh0xypib` of `scsrj80r7auindn`, tagged `gh-sync`,
+      `parent_task_id` set (exec 155). (c) untagged subtask
+      `3ef680snzmxnt6e` under the same parent produced zero ops (exec 159).
+      (d) quiet cycles after (a)+(b) = 0 ops (execs 158, 159). (e) 5.1 gate
+      PASSED — task 182. The `hierarchy drift` recovery error fired exactly as
+      designed on the pre-existing probe (#12 ↔ `f39ipt4616rycn4`, execs 154
+      and 155, naming BOTH the wrong parent and the right one), and cleared
+      once the task was moved under `scsrj80r7auindn`; the gate FAILED while it
+      stood (task 181) and passed after — the gate's own negative proof
+- [x] 5H.7 Live proof of description sync, both directions, on one linked pair
+      (DONE 2026-09-03, exec 157): tududi note on `scsrj80r7auindn` → #8's body
+      updated; #9's body edited on GitHub → `xpugd26ef1a0wy6`'s note updated;
+      both in the SAME cycle (3 ops), and the next cycle wrote nothing (exec
+      158, 0 ops) — spec scenario "Description edited on either side reaches
+      the other"
+- [x] 5H.8 Tag gate confirmed as deployed, nothing changed (2026-09-03): both
+      `provision-tududi-github-sync.yml:50` and `verify-tududi-github-sync.yml:39`
+      default `_sync_tag` to `gh-sync` with NO inventory override anywhere under
+      `platform/inventory/`; GitHub-origin tasks arrive tagged
+      (`sync-core.js:635` `.concat(syncTag)`, live: `3w04q6inh0xypib` carries
+      `gh-sync`); untagged tududi tasks never export (`q0umw8eixjx01tr` and
+      `3ef680snzmxnt6e`, zero ops across every cycle); no GitHub label is added
+      — `projectLabels()` filters the sync tag out of the label projection, and
+      issue #14, created from a tagged task, carries `labels: []`
+- [x] 5P.1 Priority sync (D9.1), proven live 2026-09-04 (execs 174–175, task
+      188): canonical `''`/`low`/`medium`/`high` with GitHub's `Urgent` folded
+      onto `high` AT THE PROJECTION — #9 held `Urgent` while its task held
+      `high` across a cycle that emitted ZERO ops, so the lossy pair cannot
+      demote. tududi→GitHub proven (task `scsrj80r7auindn` medium → #8
+      `Medium`), GitHub→tududi proven (#9 `Urgent` → task priority 2). Writes
+      echo the issue's other field values back, because the PATCH REPLACES the
+      set (measured: a priority-only write cleared an unrelated `Effort`).
+      Field id declared as `github_priority_field_id` (the App token is 403 on
+      `/orgs/{org}/issue-fields`); a mismatched id is a named recovery error
+      that refuses the cycle. Scenario 19 + BATS test 10; the 5.1 gate carries
+      the same field set or it renders a different verdict
+- [x] 5P.2 Subtask gate INHERITED from the parent (D9.2), superseding D8's
+      per-item rule 2026-09-04: tududi 1.1.1 has no UI path to tag a subtask
+      (inline editor sends no tags, the backend whitelists exclude them, and a
+      subtask row links to the PARENT's page). Proven live — untagged subtask
+      `3ef680snzmxnt6e` under tagged parent `scsrj80r7auindn` became issue #16
+      and was attached under #8; a child of an untagged parent still exports
+      nothing (scenario 18 d/d2)
+- [x] 5P.3 GitHub-origin work lands PLANNED (D9.3): issue #17 → task
+      `zw0rcsa5152un5x` at status 6, quiet on arrival (both map to `open`)
+- [x] 5H.9 Report republished 2026-09-04 to the same artifact URL (label
+      `hierarchy-descriptions-tag-gate`): new sections for the three review
+      items, the hierarchy situation table, the App-token `parent_issue_url`
+      finding and the gate's matching blindness, six new evidence rows, branch
+      state at `c183e67`. Code committed as `c183e67` and pushed on
+      `feat/tududi-github-sync` (pre-push: 549 BATS + 100 pytest green)
+
 ## 6. Production enablement, docs, close-out
 
+- [ ] 6.0 PREREQUISITE — settle the prod sync identity's VISIBILITY topology
+      (operator preference 2026-09-04: a service account, not the operator's
+      own user; `admin@agent-cloud.test` already holds rw on the mapped prod
+      projects). Measured against the running 1.1.1 with the app's own query
+      builder: a project GRANTEE sees every task in it, while the project
+      OWNER sees only tasks they created themselves — `ownershipOrPermissionWhere`
+      has `user_id = me OR uid IN tasksSharedToMe OR project_id IN
+      projectsSharedToMe` and no "tasks in projects I own" arm
+      (`permissionsService.js:126-152`). With the operator owning the projects
+      and the sync a grantee, export and field updates both work, but a task
+      the sync CREATES from a new GitHub issue is invisible to the operator.
+      Three escape hatches are closed at 1.1.1: a created task's `user_id` is
+      forced to the caller (`core/builders.js:170`), task-level shares 403 for
+      everyone because `execAction` resolves an owner only for projects
+      (`execAction.js:25-45`, "basic impl for projects; extend later"), and
+      project ownership is not in the update whitelist
+      (`projects/service.js:309-350`). The one working topology is therefore
+      BOTH parties as grantees: a dedicated owner-of-record account holds the
+      mapped projects and shares them rw to the operator AND to the sync
+      account. Implement as an idempotent playbook running inside the
+      container through the app's own models (precedent:
+      `files/tududi-db-mint.js`): flip `project.user_id` to the owner of
+      record, upsert the two `Permission` rows (`granted_by_user_id` and
+      `propagation` are NOT NULL). Existing tasks keep `user_id`, so no
+      operator data moves. Raise the two upstream gaps as a tududi issue
 - [ ] 6.1 Enable pairs incrementally: `huhhb` first; a pair is promoted only
       when the 5.1 per-pair verification check passes against it, and a failing
       check triggers the rollback path (`sync_enabled=false`) rather than a
-      judgment call — then the remaining five, same gate each (design Migration
+      judgment call — then the remaining pairs, same gate each — the PUBLIC agent-cloud pair last, as an explicit publication decision (design Migration
       Plan step 4)
-- [ ] 6.2 Docs: CLAUDE.md workflow-table row for the provisioning playbook,
-      tududi service context updated with the sync contract pointer, follow-up
-      recorded for the webhook transport upgrade (design D2) and the GitHub App
-      upgrade path (design D7)
+- [x] 6.2 (DONE 2026-09-04) Docs: AGENTS.md (=CLAUDE.md) carries rows for the
+      provisioning, verification, token-mint and App-refresh playbooks — the
+      verify row states the invariant that cost a false failure, that the
+      gate's projection must mirror the workflow's or the two render different
+      verdicts from the same engine; the provisioning row now names hierarchy,
+      the inherited subtask gate, priority and the PLANNED base status.
+      `platform/services/tududi/deployment/CLAUDE.md` points at the sync
+      contract and states the per-user visibility rules a reader must know
+      before touching tasks, tags or projects. The webhook transport (D2) and
+      the App's already-taken upgrade path (D7) are recorded in design.md
 - [ ] 6.3 Retain one outcome memory into the repo's experience bank: whether
       poll-based bidirectional sync held up (worked / dead end / corrected),
       any tududi API constraint discovered the hard way, and the conflict-rate
       reality vs the LWW assumption
-- [ ] 6.4 Validation gate: the 5.1 verification check passes for all six pairs
+- [ ] 6.4 Validation gate: the 5.1 verification check passes for all eight pairs
       (which includes zero sync activity on undeclared projects — scenario
       "Undeclared project is untouched" — and per-pair convergence); BATS +
       pytest suites green; change validated and ready to archive

@@ -70,6 +70,7 @@ supersede it with a new entry and link both.
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
+| 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -88,6 +89,7 @@ supersede it with a new entry and link both.
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
+| 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1275,6 +1277,37 @@ verified on **every** environment declared to run it, and a test dependency coun
 The cheap mechanical check is to install only what the pipeline declares and run the
 suite in that environment before pushing.
 
+### 6.4 Reused an inventory variable name for a different fact
+
+**What happened.** `verify-tududi-github-sync.yml` read the tududi API base from
+`tududi_base_url | default('http://127.0.0.1:3002')`. That name already exists in
+the baked local inventory (`bootstrap-local-dev.yml`, the `tududi_base_url=https://todo.<zone>:<port>`
+extra var) and means the app's PUBLIC `BASE_URL` behind Caddy — the value
+`tududi/deployment/templates/env.j2` writes into the container. Inside the
+orchestrator that hostname resolves to `127.0.0.1` with nothing on the edge port, so
+the gate's task fetch failed on every run (Semaphore tasks 133, 134). The failing
+step carried a bearer header and was therefore `no_log`, so the run printed
+`censored` and nothing else. The provisioning playbook had already named the same
+fact `tududi_sync_tududi_url` (default `http://tududi:3002`); the cycle workflow
+it renders was using it successfully the whole time.
+
+**Root cause.** A variable name was chosen by what it *sounded like it should
+mean*, not by reading where the inventory already defines it. The `default()`
+masked the collision in the head — "if unset, fall back" — while the inventory
+had it set, to a value with a different meaning.
+
+**The rule.** Before introducing or reusing an inventory variable in a playbook,
+grep the inventories and the bootstrap for the name. If it exists, its meaning is
+already fixed — either it is the same fact (use it, with the same default) or it is
+not (pick a different name). Two playbooks that need the same fact share one name;
+one name never carries two facts. And a token-bearing `uri` step is `failed_when:
+false` + a named assert on `.status`, so its failure is diagnosable while its header
+stays censored (the pattern `provision-tududi-github-sync.yml` already used).
+
+**Enforced by.** Convention. A cheap guard would be a BATS check that every
+`*_url` default in a `verify-*` playbook matches the default in the playbook that
+provisions the thing it verifies.
+
 ---
 
 ## 7. Which of these OPA can carry
@@ -1861,6 +1894,44 @@ when it round-trips today's keys correctly.
 **Enforced by.** Test — `platform/tests/test_manage_secrets.bats` refuses any
 direct write method to `secret/data` in manage-secrets and requires the shared
 merge include.
+
+### 10.12 A numeric id crossed the Ansible→JSON boundary as a string, so an equality guard fired on everything
+
+**What happened.** The sync engine gained a guard: if an issue carries a
+`Priority` field whose numeric `field_id` differs from the one declared in the
+mapping, refuse the cycle by name rather than write into an unrelated field.
+Two callers hand the engine that id. The n8n workflow passes it through a Jinja
+`dict(...)` expression, which preserves the integer. The verification playbook
+assembles its payload as `"{{ ... | int }}"` — a quoted scalar — so Ansible
+handed over the STRING `"22329653"`. GitHub returns `issue_field_id` as a
+number, `22329653 !== "22329653"`, and the guard fired on every prioritised
+issue. The gate failed a converged pair with `task '' / issue #15` while the
+cycle reported zero ops on the same data.
+
+It was caught in the same session, by the gate's own invariant — and only
+because the gate had just been fixed to pass the id at all. Before that fix the
+gate silently verified a DIFFERENT field set than the cycle, which is the
+quieter half of the same defect.
+
+**Root cause.** `| int` inside a quoted Ansible scalar does not survive
+serialization: the filter runs, then the result is re-rendered as the string
+body of that scalar. Type only survives when the value is produced inside a
+Jinja expression that is consumed as a native object — which is why the sibling
+call site, written as `dict(github_priority_field_id=(x | int))`, was correct
+and looked identical at a glance. An `!==` comparison against externally-typed
+data then silently means "always different".
+
+**The rule.** A value that will be compared with `===`/`!==` is coerced at the
+boundary that receives it, not at the boundaries that send it. The engine now
+does `Number(input.priorityFieldId) || null` once, so every caller is safe
+regardless of how its payload was assembled. More generally: when a guard's
+failure mode is "fires on everything", assert the NEGATIVE case in a test —
+that the guard stays silent on matching input — because a guard that always
+fires passes any test that only checks it can fire.
+
+**Enforced by.** Test — `core-scenarios.js` scenario 19(e2) passes the id as a
+string and asserts zero recovery errors, and 19(f) still asserts a genuinely
+wrong id refuses. Mutation-checked: removing the coercion turns 19(e2) red.
 
 ## 11. The largest one
 

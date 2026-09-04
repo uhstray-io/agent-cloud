@@ -1,0 +1,159 @@
+---
+# verify-tududi-sync-pair.yml — one pair's gate run (included per enabled pair
+# by verify-tududi-github-sync.yml; task 5.1). Read-only. The caller supplies
+# `_pair` plus the play-scope facts (_mt_token, _tasks, _executions, engine
+# names, tag/login/cap, _declared_projects). The verdict is rendered by
+# verify-pair.js inside the tududi container with the exact embedded engine.
+
+- name: "Fetch the paired repo's issues ({{ _pair.github_repo }})"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ _pair.github_repo }}/issues?state=all&per_page=100"
+    headers:
+      Authorization: "Bearer {{ _mt_token }}"
+      Accept: "application/vnd.github+json"
+    status_code: [200]
+  register: _vp_issues
+  delegate_to: localhost
+  no_log: true
+
+- name: "Fetch the paired repo's sub-issue parents ({{ _pair.github_repo }})"
+  # D8: the REST list's parent_issue_url is NULL under a GitHub App installation
+  # token (measured on dev-test #12), so the parent map comes from GraphQL —
+  # the same read the cycle workflow performs, so this gate sees what it sees.
+  ansible.builtin.uri:
+    url: "https://api.github.com/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _mt_token }}"
+    body_format: json
+    body:
+      query: >-
+        query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
+        issues(first:100, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:DESC}){
+        nodes{ number parent{ number } comments(last:20){ nodes{ body } } } } } }
+      variables:
+        owner: "{{ _pair.github_repo.split('/')[0] }}"
+        name: "{{ _pair.github_repo.split('/')[1] }}"
+    status_code: [200]
+  register: _vp_parents
+  delegate_to: localhost
+  no_log: true
+
+- name: "Assemble the verdict payload ({{ _pair.github_repo }})"
+  # Engine shapes, mirroring the workflow's own fan-out/fan-in projections;
+  # tasks in UNDECLARED projects contribute only their marker traces.
+  ansible.builtin.set_fact:
+    _vp_payload:
+      pair: "{{ _pair }}"
+      syncTag: "{{ _sync_tag }}"
+      syncLogin: "{{ _sync_login }}"
+      writeCap: "{{ _write_cap | int }}"
+      priorityFieldId: "{{ (_priority_field_id | int) if _priority_field_id else None }}"
+      lastExecution: >-
+        {{ ({'status': (_executions.json.data | first).status})
+           if ((_executions.json.data | default([])) | length > 0) else None }}
+      tasks: "{{ _vp_tasks }}"
+      issues: "{{ _vp_issues_shaped }}"
+      # Same page window as the cycle, same refusal — a gate that verified a
+      # truncated snapshot would pass a pair the cycle refuses to write.
+      issuesTruncated: "{{ (_vp_issues.json | length) >= 100 }}"
+      issuePageSize: 100
+      undeclaredMarkers: "{{ _vp_undeclared }}"
+  vars:
+    _all: "{{ (_tasks.json.tasks | default(_tasks.json.data | default([]))) if (_tasks.json is mapping) else _tasks.json }}"
+    # D8: a subtask carries project_id null and rides its parent's embedded
+    # subtasks[], so the pair's task stream is parent + children flattened with
+    # parent_uid — exactly the workflow's fan-out projection.
+    _vp_tasks: >-
+      {%- set out = [] -%}
+      {%- for t in _all if (t.Project is defined and t.Project and (t.Project.name | default('')) == _pair.tududi_project) -%}
+        {%- for s in [t] + (t.subtasks | default([])) -%}
+          {%- set names = [] -%}
+          {%- for x in (s.tags | default(s.Tags | default([]))) -%}
+            {%- if names.append(x.name | default(x)) -%}{%- endif -%}
+          {%- endfor -%}
+          {%- if out.append({'uid': s.uid, 'id': s.id, 'title': s.name, 'note': s.note | default(''),
+                             'status': s.status, 'priority': s.priority | default(None),
+                             'tags': names,
+                             'updated_at': s.updated_at | default(s.updatedAt | default('')),
+                             'parent_uid': (None if s.uid == t.uid else t.uid),
+                             'tagged': ((_sync_tag | lower) in (names | map('lower') | list))}) -%}{%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    _vp_issues_shaped: >-
+      {%- set out = [] -%}
+      {%- set pmap = {} -%}
+      {%- set cmap = {} -%}
+      {%- for n in _vp_parents.json.data.repository.issues.nodes -%}
+        {%- if n.parent -%}{%- if pmap.update({n.number: n.parent.number}) -%}{%- endif -%}{%- endif -%}
+        {%- set cb = [] -%}
+        {%- for x in (n.comments | default({})).get('nodes', []) -%}
+          {%- if cb.append({'body': x.body}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if cmap.update({n.number: cb}) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- for i in _vp_issues.json if i.pull_request is not defined -%}
+        {%- set lnames = [] -%}
+        {%- set fvals = [] -%}
+        {%- for v in i.issue_field_values | default([]) -%}
+          {%- if fvals.append({'field_id': v.issue_field_id, 'field_name': v.issue_field_name,
+                               'data_type': v.data_type | default(''),
+                               'option_name': (v.single_select_option).name
+                                              if v.single_select_option
+                                              else (v.value | default(None))}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- for l in i.labels | default([]) -%}
+          {%- if lnames.append(l.name | default(l)) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if out.append({'number': i.number, 'id': i.id, 'title': i.title, 'body': i.body | default(''),
+                           'state': i.state, 'state_reason': i.state_reason | default(None),
+                           'labels': lnames, 'updated_at': i.updated_at,
+                           'user_login': i.user.login | default(''),
+                           'comments': cmap[i.number] | default([]),
+                           'parent_number': pmap[i.number] | default(None),
+                           'field_values': fvals}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    # A subtask carries no Project of its own (project_id is null on a child),
+    # so filtering the top level alone never inspects one — a sync marker on a
+    # child in an UNDECLARED project would go unreported, which is the single
+    # thing this check exists to catch. Parent and children are both examined;
+    # a declared parent's children are in scope by definition and excluded.
+    _vp_undeclared: >-
+      {%- set out = [] -%}
+      {%- for t in _all if not (t.Project is defined and t.Project and (t.Project.name | default('')) in _declared_projects) -%}
+        {%- for s in [t] + (t.subtasks | default([])) -%}
+          {%- if (s.note | default('')) is search('<!-- tududi-sync') -%}
+            {%- if out.append(s.uid) -%}{%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+  no_log: true
+
+- name: "Render the verdict ({{ _pair.github_repo }})"
+  ansible.builtin.command:
+    argv: ["{{ _engine }}", "exec", "-i", "{{ _container }}", "node", "/tmp/verify-pair.js"]
+    stdin: "{{ _vp_payload | to_json }}"
+  register: _vp_verdict
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: "Require the pair to PASS ({{ _pair.github_repo }})"
+  # The verdict is names/counts only (the verifier never prints a token or a
+  # body), so the failure surface stays diagnosable.
+  ansible.builtin.assert:
+    that:
+      - _vp_verdict.rc == 0
+    # The verifier prints one JSON verdict line — but if it never ran (a
+    # missing container, a node crash) stdout is EMPTY, and from_json on that
+    # raises inside the fail_msg, replacing the real cause with a template
+    # error. Report rc + stderr in that case instead.
+    fail_msg: >-
+      Pair {{ _pair.github_repo }} FAILED the verification gate:
+      {{ (_vp_verdict.stdout | from_json).failures | join(' | ')
+         if (_vp_verdict.stdout | default('') | trim | length > 0)
+         else 'the verifier produced no verdict (rc=' ~ _vp_verdict.rc ~ '): '
+              ~ (_vp_verdict.stderr | default('no stderr') | trim) }}
