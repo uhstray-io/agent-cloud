@@ -322,9 +322,12 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       `3ef680snzmxnt6e`, zero ops across every cycle); no GitHub label is added
       — `projectLabels()` filters the sync tag out of the label projection, and
       issue #14, created from a tagged task, carries `labels: []`
-- [ ] 5H.9 Update the published sync report (`tududi-github-sync-report.html`,
-      same artifact URL) with the hierarchy design, the 5H.6/5H.7 evidence and
-      the prod-rollout blockers; commit + push on the feature branch
+- [x] 5H.9 Report republished 2026-09-04 to the same artifact URL (label
+      `hierarchy-descriptions-tag-gate`): new sections for the three review
+      items, the hierarchy situation table, the App-token `parent_issue_url`
+      finding and the gate's matching blindness, six new evidence rows, branch
+      state at `c183e67`. Code committed as `c183e67` and pushed on
+      `feat/tududi-github-sync` (pre-push: 549 BATS + 100 pytest green)
 
 ## 6. Production enablement, docs, close-out
 
