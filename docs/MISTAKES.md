@@ -276,10 +276,18 @@ answered by a different one, and framed that substitution as the root cause.
 The operator corrected it immediately: the substitute is the deliberate choice,
 and `CLAUDE.md` is simply stale. The measurement was real; the causal story
 built on it was not, and a config file I had not verified as current was doing
-the load-bearing work. What is actually measured: a ~100-character memory
-stores and returns an id, while ~250 characters and up do not return within the
-300-second idle timeout, on a store whose recall answers instantly. That is a
-symptom, recorded as one, not a diagnosis.
+the load-bearing work. Then I did it again, smaller: I published a
+table of size thresholds — ~100 characters works, ~250 and up hang — and the
+very next attempt hung at ~103 characters, shorter than the one that had
+worked. Two data points had been enough for me to state a rule; the third
+falsified it. What survives as measurement: of five attempts, one succeeded
+and four hung past the 300-second idle timeout, with no size ordering between
+them; recall answered instantly throughout; and a much longer memory had
+stored fine the day before. That is a symptom with an unknown cause, and it is
+recorded as exactly that. The wider rule this earns: when a first explanation
+is falsified, the next confident-sounding pattern from the same thin evidence
+deserves more suspicion, not less — reaching for a second story is the same
+move as the first.
 
 
 ## 2. Tests that would have passed for the wrong reason

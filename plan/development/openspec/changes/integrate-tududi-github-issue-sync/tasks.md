@@ -430,13 +430,17 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       shape is worth keeping: on this store, `completed` is NOT proof of a
       retrievable memory; an empty `memory_ids` is the real signal, and the
       only trustworthy check is a recall afterwards. What IS measured about
-      the stall: a ~100-character memory stores fine and returns a real
-      `memory_ids`; ~250 characters and up did not return inside the 300s idle
-      timeout, on a store whose recall (zero model calls) answers instantly.
-      So the retain path's extraction is the slow half, and the size at which
-      it becomes unusable is far below a normal memory. Not yet diagnosed
-      further — do NOT assume it is prose length alone. The content to
-      retain: (a) The design WORKED: poll
+      the stall, and nothing beyond it: of five attempts on 2026-09-04, ONE
+      succeeded (a ~100-character memory, verified by recall at score 1.08)
+      and four hung past the 300s idle timeout — including a ~103-character
+      one, i.e. shorter than the attempt that worked. So size is NOT the
+      variable, and an earlier note in this file claiming it was has been
+      corrected twice. Recall (zero model calls) answers instantly throughout,
+      and yesterday's ~1600-character memory landed without trouble, so
+      whatever this is, it is new and it is on the retain path. Left
+      undiagnosed on purpose: the local model stack is the operator's, and
+      guessing at its cause once already produced a wrong story. The content
+      to retain, whenever the store is healthy: (a) The design WORKED: poll
       transport with a single bidirectional cycle held up, and so did
       statelessness — an interrupted creation adopts the orphan instead of
       duplicating, proven live. The conflict-rate reality against the LWW
