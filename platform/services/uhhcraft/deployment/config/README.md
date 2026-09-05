@@ -16,8 +16,8 @@ Secrets (API keys, passwords) live in environment variables — never in these f
 
 ```env
 # Stripe
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_SECRET_KEY=<from-openbao>
+STRIPE_WEBHOOK_SECRET=<from-openbao>
 STRIPE_TAX_ENABLED=true
 
 # Resend (email)

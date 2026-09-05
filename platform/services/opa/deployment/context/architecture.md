@@ -47,4 +47,4 @@ supplied per-query in `input` — never stored in OPA.
   destructive Semaphore templates without `human_approved`) takes precedence
   over `allow`.
 
-Full design + phased rollout: `plan/development/OPA-INTEGRATION-PLAN.md`.
+Full design + phased rollout: `plan/development/03-guardrails-governance.md`.

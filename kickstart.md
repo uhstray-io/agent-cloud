@@ -31,7 +31,7 @@ Guardrail Layer   OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scopin
 Automation Layer  Ansible playbooks, Semaphore orchestration, n8n workflows
                   Deterministic, idempotent, auditable
 
-Platform Layer    Docker (NetBox), Podman (other services),
+Platform Layer    Podman by default; Docker for the declared NetBox/NemoClaw/OpenHands paths,
                   Compose/Podman (single-site) <-> Kubernetes/k0s (multi-site),
                   Proxmox VMs for all hosting
 ```
@@ -208,7 +208,7 @@ These come straight from `CLAUDE.md` and they govern every change in this repo:
 1. **All deployments go through Semaphore.** Never SSH to a VM and run `deploy.sh` by hand — Semaphore is what injects OpenBao credentials into the environment.
 2. **`deploy.sh` handles containers only.** No secret generation, no OpenBao calls. Ansible owns the full credential lifecycle.
 3. **Each workflow is independent.** Don't bundle optional pieces (orb-agent, pfsense-sync) into a service deploy. Make a separate playbook.
-4. **No intermediary secret files.** Secrets flow `OpenBao -> Ansible memory -> Jinja2 templates -> .env on the VM (gitignored)`. There is no `secrets/` directory anywhere on a VM.
+4. **No intermediary secret files.** Secrets flow `OpenBao -> Ansible memory -> Jinja2 templates -> .env on the VM (gitignored)`. Do not create independent on-host secret stores. The current NetBox playbook still writes a Diode bind-mount secret under `secrets/`; this is an OpenBao-derived runtime bridge with a lifecycle gap, not a second authority.
 5. **Verify before hardening.** Never disable an auth method (SSH password, old credentials) without first confirming the replacement works.
 
 ---
@@ -297,7 +297,9 @@ ansible-lint platform/playbooks/
 bats platform/tests/
 ```
 
-NetBox is the **reference implementation** for the composable pattern. When in doubt, read its files; everything new should look like NetBox, not like the legacy services.
+NetBox demonstrates the multi-phase pattern, with documented legacy edges.
+For new services, use the shared task library and current service onboarding
+reference; do not copy a service-specific exception or legacy credential helper.
 
 ---
 
@@ -307,7 +309,7 @@ There are two patterns currently in use — same shape, different mechanics:
 
 ### Composable pattern (preferred, all new services)
 
-Used by NetBox today. Multi-phase playbook:
+Used by NetBox, Authentik, n8n, tududi, honcho, Postiz and other migrated services. Multi-phase playbook:
 
 1. **Phase 1 — Secrets.** `tasks/manage-secrets.yml` fetches existing or generates new secrets in OpenBao, then renders Jinja2 templates into `.env` and config files on the target VM.
 2. **Phase 2 — Containers.** `deploy.sh` runs on the VM and only touches Docker/Podman Compose lifecycle (pull, build, up).
@@ -315,9 +317,9 @@ Used by NetBox today. Multi-phase playbook:
 4. **Phase 4 — Runtime credential sync.** Tasks like `manage-diode-credentials.yml` capture any credentials the service generated at runtime and push them back to OpenBao.
 5. **Phase 5 — Health check.** HTTP-level verification that the service is alive.
 
-### Legacy pattern (most other services, for now)
+### Legacy pattern (remaining wrappers)
 
-A thin wrapper playbook imports `deploy-service.yml` with a `target_service` variable. `deploy-service.yml` clones the monorepo to the VM, runs `deploy.sh`, and health-checks. Migration to the composable pattern is planned for each.
+A thin wrapper playbook imports `deploy-service.yml` with a `target_service` variable. `deploy-service.yml` clones the monorepo to the VM, runs `deploy.sh`, and health-checks. Check the service-specific status before using a legacy wrapper; NocoDB is retired, while n8n already has a composable deploy.
 
 ### Triggering a deploy
 
@@ -331,7 +333,9 @@ You:
 2. Open a PR; CI runs the lint + security + test jobs.
 3. After merge (or for branch-testing), the Semaphore task template for that service is what actually pulls the repo and runs the playbook.
 
-The local `bash deploy.sh` invocation shown in the README is correct, but **only Semaphore has the OpenBao AppRole credentials it needs**. Outside Semaphore, expect missing secrets.
+Invoke the declared Semaphore deployment template. `deploy.sh` is an internal
+container-lifecycle step consuming rendered files; it does not fetch OpenBao
+credentials or replace the orchestration playbook.
 
 ---
 
@@ -411,7 +415,7 @@ Model everything on `platform/services/netbox/deployment/` + `platform/playbooks
 | **WebSmith** | Website builder | `agents/websmith/` | Prompt-only — walks users through a 5-phase workflow producing a signed `SPEC.md` for a new website service |
 | **WisBot** | Community interface | [separate repo](https://github.com/uhstray-io/WisBot) | Discord voice/chat bot |
 
-All four reach inference through **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI dirs (`platform/services/inference-ollama/` + `inference-webui/`) are **legacy, superseded by skynet**; `inference-vllm/` (reserved) is a candidate skynet backend.
+The intended inference backbone is **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI dirs (`platform/services/inference-ollama/` + `inference-webui/`) are **legacy, superseded by skynet**; `inference-vllm/` (reserved) is a candidate skynet backend.
 
 Each agent's `context/` directory follows the same shape:
 - `architecture/` — system docs the agent grounds itself in
@@ -440,7 +444,7 @@ Agents *propose*; the guardrail layer *validates*; the automation layer *execute
 | Find Claude Code skills worth installing | `plan/architecture/skills-recommendation.md` |
 | Build a new website inside agent-cloud | `agents/websmith/README.md` (human start) + `agents/websmith/context/AGENTS.md` (agent start) |
 | Integrate a WebSmith spec into a service | `plan/development/07-websmith-uhhcraft.md` |
-| Browse what's planned next | `plan/archive/development/IMPLEMENTATION_PLAN.md` and siblings |
+| Browse current plans | `plan/development/README.md`; `plan/archive/` is historical |
 
 ---
 

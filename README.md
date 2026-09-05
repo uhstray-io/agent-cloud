@@ -26,7 +26,7 @@ Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                  AI proposes -> guardrails validate -> automation runs
 Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
                  Deterministic, idempotent, auditable
-Platform Layer   Docker/Podman (dev), Kubernetes/k0s (prod), Proxmox VMs
+Platform Layer   Docker/Podman on Proxmox VMs; Kubernetes/k0s is the planned multi-site path
 ```
 
 ## Getting Started
@@ -37,18 +37,21 @@ is to run the whole platform locally first, then promote changes upstream.
 
 ### Quick start — run it locally
 
-A local control plane (OpenBao + Semaphore) deploys every service with the same
-playbooks as prod, behind real DNS + TLS and Authentik SSO. On macOS:
+A local control plane (OpenBao + Semaphore) deploys supported service profiles
+behind DNS, TLS and Authentik. Start with the foundation on macOS:
 
 ```bash
 # prerequisites (one time)
 brew bundle                          # toolchain: ansible, podman, podman-compose, jq, gh, ...
 podman machine init && podman machine start
 
-# stand up the whole stack + macOS DNS/TLS wiring (idempotent; asks for sudo once)
-make local-all
+# stand up the secure foundation, then wire macOS DNS/TLS
+make local-bootstrap
+make local-dns-resolver
+make local-tls-trust
 
-# `make local-all` prints your SSO login at the end (re-show with `make local-creds`):
+# show the local SSO login (this prints local credentials):
+make local-creds
 #   agent-cloud-admin  ->  full access to every app
 # then open any app in the browser, e.g.:
 #   https://semaphore.agent-cloud.test:8443
@@ -77,7 +80,7 @@ make local-validate                  # health-check everything deployed
 **Every service deploys the same way — through Semaphore:**
 
 1. Push changes to this repo
-2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
+2. Run the corresponding task template in Semaphore (e.g., "Deploy tududi")
 3. Semaphore injects OpenBao credentials, SSHes to the target VM, and runs the composable playbook (`manage-secrets` → `deploy.sh` → verify)
 
 Production deploys always go through Semaphore so OpenBao credentials are injected and the run is auditable — never SSH into a VM and run `deploy.sh` directly.
@@ -106,10 +109,13 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 
 ## Platform Services
 
+This catalog describes integrations and recorded milestones, not current live
+health. Verify the selected environment before relying on a service.
+
 | Service | Purpose |
 |---------|---------|
 | **OpenBao** | Secrets management -- KV v2, AppRole auth, database engine |
-| **NocoDB** | Shared data layer -- structured tables, REST API, task queue |
+| **NocoDB** | Retired integration retained for decommissioning; tududi replaces its task-management role |
 | **n8n** | Workflow automation -- event-driven scheduling, webhooks, LLM nodes |
 | **Semaphore** | Deployment orchestration -- Ansible playbook execution |
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
@@ -123,7 +129,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
 | **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
 | **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
-| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (code-complete, first bring-up pending) |
+| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
 | **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the five PRIVATE repos (`agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
 
 ## Repository Structure
@@ -174,7 +180,10 @@ Each service directory uses the **deployment/ + context/** split:
 
 ## Credential Flow
 
-All secrets are managed by **OpenBao**. Services authenticate via AppRole at runtime -- no credentials are stored in environment files or committed to this repository:
+All secrets are managed by **OpenBao**. Ansible authenticates with AppRole at
+deploy time and renders credential-bearing env/config files for services. These
+generated, gitignored files are a runtime bridge, not the source of truth. Only
+specific consumers, such as Orb Agent, use scoped runtime OpenBao access:
 
 ```
 Semaphore environment (AppRole role-id + secret-id only)
@@ -220,7 +229,7 @@ Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIP
 | `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
 | `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/` | Numbered `00–13` roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC |
+| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC, Postiz |
 | `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
@@ -228,7 +237,7 @@ For new services, start with `plan/architecture/02-service-onboarding.md`. For n
 ## CI/CD and Testing
 
 Every pull request runs these automated checks. The three below are the gates; a PR also
-runs change detection, CodeQL analysis per language, conditional Go jobs for uhhcraft, a
+runs change detection, conditional Go jobs for uhhcraft, a
 CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
@@ -252,17 +261,17 @@ fails closed because a leaked secret is irreversible and a skipped test is not.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) See `plan/development/03-guardrails-governance.md`.
 
 For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack
 
-```
-INFRASTRUCTURE        Docker, Podman, Kubernetes (k0s), Proxmox
+```text
+INFRASTRUCTURE        Docker, Podman, Proxmox; Kubernetes (k0s) planned
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
-DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
+DATA                  PostgreSQL, SQLite, MinIO, DuckDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
 INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)

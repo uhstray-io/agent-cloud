@@ -10,15 +10,15 @@ In-process diffusers pipeline behind a FastAPI HTTP API. Receives `POST /generat
 
 ### Weights live on the host
 
-Model weights are ~5GB and slow to download. The container mounts them **read-only** from `HUNYUAN3D_WEIGHTS_DIR` (default `/srv/hunyuan3d/weights`). Initial download is a one-time playbook task (`tasks/ensure-weights.yml`); never bake weights into the image.
+Model weights are ~5GB and slow to download. The container mounts them **read-only** from `HUNYUAN3D_WEIGHTS_DIR` (default `/srv/hunyuan3d/weights`). The deploy playbook checks the directory and fails if absent; no `tasks/ensure-weights.yml` exists. Initial provisioning needs a reviewed Semaphore mechanism. Never bake weights into the image.
 
 ### In-process model, not a separate daemon
 
 Unlike `inference-comfyui` (where ComfyUI is a separate host process), Hunyuan3D runs inside this container. The container therefore needs the full torch + CUDA stack.
 
 This has two implications:
-- Cold start is slow (~60-90s to load weights into VRAM). `compose.yml` healthcheck uses a 120s `start_period`.
-- The wrapper is **not stateless** — a restart reloads weights. Don't restart casually.
+- Weights load lazily on the first generation; liveness does not prove model readiness. `compose.yml` healthcheck uses a 120s `start_period`.
+- The wrapper is **not stateless** — a restart discards loaded weights; the next generation loads them again. Don't restart casually.
 
 ### Two outputs per generation
 
@@ -54,7 +54,7 @@ Per Phase 2 decision — own MinIO instance, served through central Caddy at `/g
 - Don't bake model weights into the image — they're host state, mounted at runtime.
 - Don't share MinIO with another service. Per Phase 2 isolation.
 - Don't add a queue inside this service. Queuing is UhhCraft's job (via River).
-- Don't reduce the `start_period` below 120s — first-token latency includes weight load.
+- Don't reduce the `start_period` below 120s — keep startup allowance separate from first-generation model readiness.
 - Don't restart the container in a hot path; treat it as expensive.
 
 ## Related
@@ -62,5 +62,5 @@ Per Phase 2 decision — own MinIO instance, served through central Caddy at `/g
 - Sibling sidecar: [`../inference-comfyui/CLAUDE.md`](../inference-comfyui/CLAUDE.md)
 - Consumer: [`../uhhcraft/CLAUDE.md`](../uhhcraft/CLAUDE.md)
 - HTTP contract: [`context/architecture/contract.md`](context/architecture/contract.md)
-- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md)
+- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/07-websmith-uhhcraft.md)
 - Root conventions: [`../../../CLAUDE.md`](../../../CLAUDE.md)
