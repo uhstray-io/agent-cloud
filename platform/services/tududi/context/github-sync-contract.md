@@ -14,7 +14,7 @@ Postiz contract (`platform/services/postiz/context/use-cases.md`) is the model.
 | Unauthenticated API behaviour | 401 `{"error":"Authentication required"}` | live probe of the deployed instance, 2026-09-02 |
 | Token lifecycle API | `GET/POST /api/profile/api-keys`, `POST /api/profile/api-keys/{id}/revoke`, `DELETE /api/profile/api-keys/{id}` — NOTE the `/api/` prefix, not `/api/v1/` (`getApiPath` prefixes bare `api/`); session+CSRF authenticated (login `POST /api/login`, CSRF `GET /api/csrf-token` → `{csrfToken}` sent as `x-csrf-token`); `createApiToken` accepts `expiresAt` and `abilities` | `frontend/config/paths.ts:82-90`; `frontend/utils/apiKeysService.ts`; `frontend/utils/csrfService.ts`; `backend/modules/users/apiTokenService.js` |
 | **Token mint is automatable — DB-SIDE, not through the session API** | The session→CSRF→`POST /api/profile/api-keys` route above is UNREACHABLE on this deploy: `PASSWORD_AUTH_ENABLED=false` makes login SSO-only and the session route answers 403, so the documented API path cannot mint a token here. `store-tududi-api-token.yml` therefore mints through the app's OWN stack instead — `files/tududi-db-mint.js` runs inside the container against its sequelize models and bcrypt (matching v1.1.1's `createApiToken` exactly: cost 12, 12-char prefix), the raw token is generated on the runner and passed via stdin, PROVEN by a live Bearer call, and stored at `secret/services/tududi:api_token`. Design D7's open question: answered | above + `secret/services/tududi` break-glass entry (AGENTS.md secrets table) |
-| **Whose token — the project OWNER's, not a service account's** | Every list is scoped per user: a token sees its user's own resources plus those shared TO that user (`ownershipOrPermissionWhere`; admin widens NOTHING — the comment at `:120-123` says so on purpose). A project share cascades `rw` to the tasks that exist at share time, and a grantee sees every later task in the shared project too (`project_id IN sharedProjects` arm) and may create/PATCH there (`validateProjectAccess`, `requireTaskWriteAccess` → `getAccess` inherits from the project). BUT a task the grantee creates gets `user_id` = grantee and no permission row, and the owner's list has no "tasks in projects I own" arm — so a GitHub-origin task created by a service account is INVISIBLE to the person who owns the project. Also `sharesService` hands `isAdmin` a numeric id where it expects a uid, so an admin cannot grant shares on others' projects (live: `403 Forbidden`). Hence `tududi_sync_user_email` (inventory) names the owner of the mapped projects, and provisioning refuses an enabled pair the token cannot see | `backend/services/permissionsService.js:17-96,98-170`; `modules/tasks/utils/validation.js:4-28`; `modules/tasks/middleware/access.js:12-19`; `modules/tasks/routes.js:405-450` (create writes no `Permission`; only `modules/shares` does, via `services/execAction.js`); `services/rolesService.js:3-15`; live share/403 probes 2026-09-03 |
+| **Whose token — configured service account; operator visibility is a separate gate** | Every list is scoped per user: a token sees its user's own resources plus those shared TO that user (`ownershipOrPermissionWhere`; admin widens NOTHING — the comment at `:120-123` says so on purpose). A project share cascades `rw` to the tasks that exist at share time, and a grantee sees every later task in the shared project too (`project_id IN sharedProjects` arm) and may create/PATCH there (`validateProjectAccess`, `requireTaskWriteAccess` → `getAccess` inherits from the project). BUT a task the grantee creates gets `user_id` = grantee and no permission row, and the owner's list has no "tasks in projects I own" arm — so a GitHub-origin task created by a service account is INVISIBLE to the person who owns the project. Also `sharesService` hands `isAdmin` a numeric id where it expects a uid, so an admin cannot grant shares on others' projects (live: `403 Forbidden`). The operator subsequently chose a service account (task 6.0); `tududi_sync_user_email` names that account. Provisioning refuses an invisible project, but this alone does not prove the operator can see GitHub-created work. Both identities' visibility is a production prerequisite; ownership transfer remains undecided | `backend/services/permissionsService.js:17-96,98-170`; `modules/tasks/utils/validation.js:4-28`; `modules/tasks/middleware/access.js:12-19`; `modules/tasks/routes.js:405-450` (create writes no `Permission`; only `modules/shares` does, via `services/execAction.js`); `services/rolesService.js:3-15`; live share/403 probes 2026-09-03 |
 | GitHub credential | A dedicated GitHub App (Issues read/write, the mapped repos), NOT a PAT — operator decision 2026-09-03. Installation tokens live 1 hour, so `refresh-tududi-sync-github-token.yml` re-mints on a 45-minute Semaphore schedule and PATCHes the n8n credential in place; issue writes are authored by the App's `[bot]` login (the D5 authorship identity) | design D7 (amended); `platform/lib/github_app_token.py` |
 | Task WRITE route | `PATCH /api/task/{uid}` — NOTE the SINGULAR `/api/task/` (like `POST /api/task` create), distinct from the PLURAL `GET /api/v1/tasks` list. The write node PATCHes `/api/task/{uid}`; the list node GETs `/api/v1/tasks` | `backend/modules/tasks/routes.js:539` (patch), `:405` (create) |
 | Task identity | `uid` (model default via `backend/utils/uid`), exposed by the serializer | `backend/models/task.js:13-17`; `backend/modules/tasks/core/serializers.js:84` |
@@ -218,3 +218,31 @@ Caddy host's LAN address — TLS name intact, WAF not in the path), OR the
 tududi firewall declaration gains the n8n host for `:3002`. Decide at
 workflow-authoring time; the mapping/inventory carries the chosen base URL —
 never hardcoded in the workflow JSON.
+
+## Non-destructive provisioning and token validation (D10)
+
+Provisioning preserves workflow and credential objects. Obsolete owned workflows
+are deactivated and read back inactive before the current cycle is enabled.
+Duplicate upsert names or truncated engine listings refuse rather than selecting
+an arbitrary object. Ownership remains prefix-scoped for workflows and exact-name
+scoped for credentials; unrelated objects are untouched.
+
+`sync_enabled=false` (boolean or survey string) deactivates the owned workflows
+before reading the mapping or provider credentials. An all-disabled mapping uses
+the same verified deactivation and stops before provider validation/upsert. Neither
+path removes credentials or changes App permissions. Deactivation prevents future
+scheduled runs; wait for in-flight executions before declaring writes stopped.
+
+Run Store tududi API Token with `tududi_token_validate_only=true` to prove the
+stored value belongs to the configured account and is accepted by the live app.
+This mode places the helper files but never inserts/revokes a token or writes
+OpenBao. Failure stops for reconciliation. Normal minting is initial-only: a
+stored value or active labelled row after failed proof refuses automatic
+replacement. The container helper supports status, prove and initial insert;
+there is no revocation action.
+
+Production requires the exact scoped release, reviewed private inventory published
+to Semaphore's static copy, proven transport and visibility for both identities,
+and an isolated dev-test pair. Existing local markers must not be deleted to make
+production converge. Public agent-cloud remains disabled. See the active change's
+`release-preparation.md`; none of these production gates is claimed by unit tests.

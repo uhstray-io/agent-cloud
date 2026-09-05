@@ -16,14 +16,11 @@
 # on local-dev (the dev zone resolves to 127.0.0.1 inside its container) and
 # which on prod would leave the VM through Cloudflare.
 #
-# NON-DESTRUCTIVE (operator requirement): one INSERT, plus revoked_at (the
-# app's own reversible revoke) on rows carrying OUR label under OUR account —
-# nothing else is written, nothing is deleted, no auth posture changes, no
-# restarts. Idempotency is PROOF-FIRST: the stored OpenBao value is fed back
-# through `prove` — it must be accepted live AND match an active labelled row
-# of the configured user — and only then is the run a no-op. Anything else
-# (field absent, value dead, value minted for a different user) revokes our
-# labelled rows and re-mints (the raw value is unrecoverable by design).
+# Preserve existing access: a stored token or active labelled row whose proof
+# fails stops for reconciliation. No automatic revocation or replacement.
+# Initial mint is allowed only when both are absent. For diagnosis, set
+# tududi_token_validate_only=true: prove the stored value and stop without
+# minting or writing OpenBao. Helper placement does not change business data.
 #
 # Every token-bearing step is no_log; output is names and counts.
 
@@ -48,19 +45,27 @@
     _bao_path: "services/tududi"
     _bao_key: "api_token"
     _token_label: "agent-cloud-sync"
-    # The sync identity — the tududi user who OWNS the mapped projects, not a
-    # service account. tududi (v1.1.1) scopes every list per user: a token
-    # sees its own user's projects plus those shared TO that user, and a task
-    # it creates belongs to the token's user, whom the project owner cannot
-    # see (the owner's list has no "tasks in projects I own" arm and creation
-    # writes no permission row — permissionsService.ownershipOrPermissionWhere,
-    # tasks/routes.js POST /task). A service account with rw shares could
-    # therefore read the owner's tasks but every GitHub-origin task it created
-    # would be invisible to the owner. Inventory declares the owner's email
-    # (site-config); the deploy's break-glass account is only the default.
-    _login_email: "{{ tududi_sync_user_email | default(tududi_admin_email | default('admin@agent-cloud.test')) }}"
+    # The configured service account; task 6.0 separately gates visibility
+    # for both this identity and the human operator. Do not change ownership
+    # or substitute the operator's token as a side effect of validation.
+    _validate_only: "{{ (tududi_token_validate_only | default(false) | string | lower) in ['true', ''] }}"
+    _login_email: "{{ tududi_sync_user_email }}"
 
   tasks:
+    - name: "Require an unambiguous token validation mode"
+      ansible.builtin.assert:
+        that:
+          - (tududi_token_validate_only | default(false) | string | lower) in ['true', 'false', '']
+        fail_msg: "tududi_token_validate_only must be true, false, or blank."
+
+    - name: "Require the explicitly configured sync account"
+      ansible.builtin.assert:
+        that:
+          - tududi_sync_user_email is defined
+          - tududi_sync_user_email is string
+          - tududi_sync_user_email | trim | length > 0
+        fail_msg: "Set tududi_sync_user_email explicitly; no administrator fallback is permitted."
+
     - name: "Refuse a cleartext secret-store endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
@@ -91,7 +96,7 @@
 
     - name: "Place the mint script beside the container and copy it in"
       # The script is a committed, reviewed file — not a secret. It carries the
-      # non-destructive contract (INSERT + own-label revoked_at only).
+      # non-destructive contract (initial INSERT only; no revocation).
       ansible.builtin.copy:
         src: files/tududi-db-mint.js
         dest: /tmp/tududi-db-mint.js
@@ -162,25 +167,34 @@
           '{{ _token_label }}' token for {{ _login_email }}
           ({{ _active_rows }} active row) — nothing to do.
 
+    - name: "Require a proven stored token in validation-only mode"
+      when: _validate_only
+      ansible.builtin.assert:
+        that:
+          - _converged
+        fail_msg: >-
+          The stored tududi token is absent or could not be proven for the
+          configured account. No token was minted, replaced or revoked and
+          OpenBao was not changed. Check transport, identity and existing rows.
+
+    - name: "Stop after proof-only validation"
+      when: _validate_only
+      ansible.builtin.meta: end_host
+
+    - name: "Refuse to replace existing access after an unsuccessful proof"
+      when: not _converged
+      ansible.builtin.assert:
+        that:
+          - not _bao_has_token
+          - _active_rows | int == 0
+        fail_msg: >-
+          Existing tududi token state could not be proven. Refusing automatic
+          replacement or revocation; reconcile the stored value, account and
+          labelled rows without invalidating access. OpenBao was not changed.
+
     - name: "Mint (and capture) — only when the pair is not converged"
       when: not _converged
       block:
-        - name: "Revoke orphaned labelled rows (the app's own reversible revoke)"
-          when: _active_rows | int > 0
-          ansible.builtin.command:
-            argv:
-              - "{{ _engine }}"
-              - exec
-              - "-e"
-              - "TUDUDI_SYNC_EMAIL={{ _login_email }}"
-              - "-e"
-              - "TUDUDI_SYNC_LABEL={{ _token_label }}"
-              - "{{ _container }}"
-              - node
-              - /tmp/tududi-db-mint.js
-              - revoke-label
-          changed_when: true
-
         - name: "Generate the raw token on the runner"
           ansible.builtin.command:
             argv: ["python3", "-c", "import secrets; print('tt_' + secrets.token_hex(32))"]
@@ -243,11 +257,21 @@
               secret/{{ _bao_path }} does not exist — run Deploy tududi first;
               manage-secrets creates and owns that path.
 
+      rescue:
+        - name: "Report interrupted initial provisioning without disclosing credentials"
+          ansible.builtin.fail:
+            msg: >-
+              Initial token provisioning did not complete. A '{{ _token_label }}'
+              row may now exist for {{ _login_email }}; the OpenBao write is not
+              confirmed. Existing access has not been revoked. Inspect the
+              labelled row and stored value before retrying; automatic replacement
+              remains refused. Do not delete or revoke access to clear this gate.
+
     - name: "Report (names and counts only, never the value)"
       ansible.builtin.debug:
         msg: >-
           secret/{{ _bao_path }}:{{ _bao_key }} holds the
           '{{ _token_label }}' token for {{ _login_email }}, proven live against
-          the container's /api/profile/api-keys. Rotation: delete the OpenBao
-          field (or revoke the labelled key) and re-run — the mint path revokes
-          the orphan and re-mints.
+          the container's /api/profile/api-keys. Existing access is never
+          revoked or replaced automatically. Diagnose with
+          tududi_token_validate_only=true.

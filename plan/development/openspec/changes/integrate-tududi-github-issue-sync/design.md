@@ -425,6 +425,36 @@ measured rather than assumed.
    Both map to `open`, so the projection is unchanged and the pair is quiet on
    arrival — the rule costs nothing in the merge engine.
 
+### D10 — Preserve data and access during rollout (operator constraint, 2026-09-05)
+
+Supersedes D1 pruning, D7 automatic token replacement, and the old revocation
+rollback. Provisioning never deletes workflows or credentials. It deactivates
+obsolete owned workflows and verifies they are inactive; an all-disabled mapping
+uses the same deactivation path as the kill switch and stops before provider
+validation or credential upserts. Missing/malformed mappings still refuse.
+Names must be unambiguous and engine list responses complete before an upsert;
+otherwise stop without guessing which object to overwrite. The kill switch
+accepts both a boolean false and the Semaphore survey string "false".
+
+Token validation is a separate `tududi_token_validate_only=true` mode of the
+existing Store Token playbook: prove the stored token through the app and stop,
+without minting, revoking or writing OpenBao. Normal initial mint is permitted
+only when the store has no token and the configured account has no active
+labelled rows. A failed proof with existing state requires reconciliation, not
+automatic rotation. The helper no longer exposes a revocation action.
+
+Task 6.0's service-account choice stands; the owner-of-record identity and live
+ownership transition remain undecided. This safety work changes neither.
+Production rollout remains blocked until an exact scoped release, private
+inventory, visibility topology and dev-test isolation have been reviewed.
+
+Implementation plan: add one shared deactivation include; replace provisioning
+prune paths; add proof-only/token-preservation guards; exercise the actual
+Ansible tasks against a disposable local HTTP service and the token helper
+against stubbed app models; update the operational contract and release gates.
+No production calls, shared environment restart or ownership migration is
+required to implement or test this change.
+
 ## Risks / Trade-offs
 
 - **[Poll latency window invites concurrent edits]** → last-writer-wins with the

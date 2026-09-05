@@ -1,0 +1,32 @@
+---
+# Shared by kill switch, all-disabled mapping and obsolete-workflow retirement.
+# Caller supplies only the owned workflow subset; credentials remain untouched.
+- name: "Deactivate the selected active workflows"
+  ansible.builtin.uri:
+    url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}/deactivate"
+    method: POST
+    headers:
+      X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+    status_code: [200]
+  loop: "{{ _deactivate_workflows | selectattr('active') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: "Read back each selected workflow"
+  ansible.builtin.uri:
+    url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}"
+    headers:
+      X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
+    status_code: [200]
+  loop: "{{ _deactivate_workflows }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _deactivated
+  no_log: true
+
+- name: "Require every selected workflow to be inactive"
+  ansible.builtin.assert:
+    that:
+      - (_deactivated.results | map(attribute='json.active') | select('equalto', false) | list | length) == (_deactivate_workflows | length)
+    fail_msg: "An owned workflow remains active after deactivation; stop rollout and reconcile."

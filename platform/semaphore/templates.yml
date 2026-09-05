@@ -211,11 +211,16 @@ templates:
 
   - name: Store tududi API Token
     playbook: platform/playbooks/store-tududi-api-token.yml
-    # Mints (break-glass session: /api/login + csrf-token) AND captures
-    # tududi's sync API token into secret/services/tududi:api_token.
-    # List-first idempotency; an orphaned labelled key (value unrecoverable by
-    # design) is revoked and re-minted. Token-bearing steps no_log.
+    # DB-side initial mint only; existing access is never revoked/replaced.
+    # Validation-only proves the stored identity/token without writing OpenBao.
     dev_variant: true
+    survey_vars:
+      - name: tududi_token_validate_only
+        title: "Validate existing token only"
+        description: "true = prove stored token and stop; never mint, replace or revoke"
+        type: string
+        required: false
+        default_value: "true"
 
   - name: Refresh tududi-sync GitHub Token
     playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
@@ -235,9 +240,9 @@ templates:
     playbook: platform/playbooks/provision-tududi-github-sync.yml
     # Places the whole sync: live-validates BOTH provider credentials (named
     # failure before the engine changes), upserts the two named credentials,
-    # renders the cycle workflow from the committed eight-pair mapping
-    # (enabled entries), upserts + activates it, prunes owned objects the
-    # declaration no longer implies. The kill switch (-e sync_enabled=false)
+    # renders the cycle workflow from the committed nine-pair mapping
+    # (enabled entries), upserts + activates it, deactivates obsolete owned
+    # workflows and preserves every workflow and credential. The kill switch (-e sync_enabled=false)
     # deactivates owned workflows BEFORE any validation — it works with a
     # broken mapping and dead credentials by design.
     dev_variant: true
@@ -249,8 +254,8 @@ templates:
         required: false
         # A BLANK survey value renders as the empty string, and `'' | bool` is
         # FALSE — without this default, leaving the field untouched would
-        # silently trip the kill switch. The playbook pairs it with
-        # default(true, true) so an empty value also falls back to enabled.
+        # silently trip the kill switch. The playbook preserves blank-as-default
+        # while also accepting an actual boolean false as a kill switch.
         default_value: "true"
 
   - name: Verify tududi-github Sync

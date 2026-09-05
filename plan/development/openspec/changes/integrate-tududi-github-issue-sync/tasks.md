@@ -60,6 +60,9 @@
 
 ## 3. Sync identities and credentials
 
+Historical completion evidence below predates D10. Automatic revocation and
+replacement are superseded by tasks 6S.1–6S.3; they are not rollout instructions.
+
 - [x] 3.1 Automate the tududi API token (D7 as amended). IMPLEMENTED DB-SIDE
       (2026-09-03): the deploy is SSO-only by design (PASSWORD_AUTH_ENABLED
       false — the session route answers 403), so `store-tududi-api-token.yml`
@@ -120,6 +123,10 @@
       change, task output carries no value
 
 ## 4. Workflow provisioning playbook + Semaphore template
+
+Historical pruning proofs below describe the old implementation. D10 supersedes
+that behavior with preservation and verified deactivation; no destructive replay
+is permitted to re-prove these historical checks.
 
 - [x] 4.1 (DONE 2026-09-03; two implementation findings recorded: the public API's credential schema requires the domain-restriction mode stated — both credentials are pinned to their one legitimate host, same finding the Postiz provisioning hit; and ansible-core 2.16 native-evaluates the rendered JSON, so the parse is version-proofed) Write `provision-tududi-github-sync.yml`: render mapping → upsert both
       workflows by name via the n8n API → activate → **prune owned objects the
@@ -379,6 +386,23 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       state at `c183e67`. Code committed as `c183e67` and pushed on
       `feat/tududi-github-sync` (pre-push: 549 BATS + 100 pytest green)
 
+## 6S. Non-destructive rollout prerequisite (design D10)
+
+- [x] 6S.1 Replace engine pruning with verified deactivation; preserve every
+      workflow and credential, refuse incomplete/ambiguous upsert reads, and
+      support both boolean and survey-string kill switches
+- [x] 6S.2 Add proof-only tududi token validation and refuse automatic
+      replacement/revocation of existing access, including helper-level guards
+- [x] 6S.3 Prove preservation and refusal paths with runnable local checks;
+      update the specification, operator contract and exact release preparation
+      without claiming production, ownership or retention gates complete
+
+Validation for 6S (2026-09-05): 555 BATS and 100 pytest passed locally;
+Ansible lint and strict OpenSpec validation passed. The new fixture also rejects
+the original boolean-false regression. Independent Opus review identified the CI
+Ansible dependency and steady-state test gaps; both corrected. Production API
+compatibility and visibility remain unproven; see `release-preparation.md`.
+
 ## 6. Production enablement, docs, close-out
 
 - [ ] 6.0 PREREQUISITE — settle the prod sync identity's VISIBILITY topology
@@ -406,11 +430,12 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       record, upsert the two `Permission` rows (`granted_by_user_id` and
       `propagation` are NOT NULL). Existing tasks keep `user_id`, so no
       operator data moves. Raise the two upstream gaps as a tududi issue
-- [ ] 6.1 Enable pairs incrementally: `huhhb` first; a pair is promoted only
+- [ ] 6.1 Prove `dev-test` on prod with isolated markers and no competing
+      local cycle first; enable private pairs incrementally, `huhhb` first; a pair is promoted only
       when the 5.1 per-pair verification check passes against it, and a failing
       check triggers the rollback path (`sync_enabled=false`) rather than a
-      judgment call — then the remaining pairs, same gate each — the PUBLIC agent-cloud pair last, as an explicit publication decision (design Migration
-      Plan step 4)
+      judgment call — then the remaining private pairs, same gate each. The PUBLIC agent-cloud
+      pair stays disabled unless separately authorized as a publication decision
 - [x] 6.2 (DONE 2026-09-04) Docs: AGENTS.md (=CLAUDE.md) carries rows for the
       provisioning, verification, token-mint and App-refresh playbooks — the
       verify row states the invariant that cost a false failure, that the
@@ -460,7 +485,9 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       does tududi's subtask array); writing a field value needs an id the App
       is denied the endpoint to discover; and tududi cannot tag a subtask at
       all through its own UI, which invalidated an already-confirmed rule
-- [ ] 6.4 Validation gate: the 5.1 verification check passes for all eight pairs
-      (which includes zero sync activity on undeclared projects — scenario
-      "Undeclared project is untouched" — and per-pair convergence); BATS +
+- [ ] 6.4 Validation gate: the 5.1 verification check passes for dev-test and all seven
+      approved private pairs, including zero sync activity on undeclared
+      projects — scenario
+      "Undeclared project is untouched" — and per-pair convergence. Public
+      agent-cloud remains disabled; BATS +
       pytest suites green; change validated and ready to archive
