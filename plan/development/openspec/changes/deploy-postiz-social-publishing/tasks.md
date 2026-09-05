@@ -88,30 +88,47 @@ protects 1.7, which is the only irreversible step in the change.
       and it also closes the end-to-end proof MISTAKES 2.13 had been carrying as
       outstanding, because the orchestrator only ever runs playbooks from the integration
       or production branch.
-- [ ] 1.7 Harden authentication: disable password and interactive authentication, disable
+- [x] 1.7 Harden authentication: disable password and interactive authentication, disable
       direct administrative login, configure validated passwordless escalation for the
       service account; confirm the step's own verification passed and re-confirm 1.5's
       workstation check afterwards
-      BLOCKED ON REVALIDATION 2026-09-05 UTC: Semaphore task #389
-      (Verify Host Access (Dev), target_service=postiz_svc, dev 108c090)
-      proved key-only authentication with the host key pinned, working escalation,
-      and the required secret-store credentials present. Effective sshd still has
-      passwordauthentication=yes and permitrootlogin=without-password; this is
-      not the hardened state. The separate workstation probe, using the private
-      inventory's resolved connection fields, BatchMode=yes, publickey-only auth,
-      password/keyboard-interactive disabled, and StrictHostKeyChecking=yes,
-      exited 255: Permission denied (publickey,password). The historical 1.5
-      proof does not satisfy this failed current check. Restore the workstation's
-      authorized key access and repeat both proofs before hardening. No host
-      settings were changed; task #389's four changes were runner-side temporary
-      probe-key/known_hosts creation and cleanup, not host convergence.
-- [ ] 1.8 Apply the host firewall in its administrative-access-only form (no service is
+      DONE 2026-09-05 UTC through Semaphore. Pre-hardening gate #392
+      (dev 2077363, target_service=postiz_svc) proved pinned-host key-only access
+      and working escalation. The independent workstation proof also passed
+      using the existing per-service key read from OpenBao, with
+      IdentitiesOnly=yes, BatchMode=yes, StrictHostKeyChecking=yes, and both
+      password methods disabled. Harden SSH (Dev) #393 then succeeded, including
+      its own verification. Post-hardening gate #394 confirmed effective
+      passwordauthentication=no, kbdinteractiveauthentication=no,
+      permitrootlogin=no, key-only access PROVEN, and working escalation.
+      The separate workstation key-only check passed again after hardening.
+      CORRECTION to the earlier blocker: workstation-default keys were refused;
+      the authoritative OpenBao key worked. Backed-up AppRole credentials were
+      rejected, so the operator connection used Semaphore's current OpenBao
+      configuration instead. No credential values were logged; the temporary
+      0600 workstation key was removed after each proof. The access gates'
+      changed=4 counts describe runner-side probe-file creation and cleanup.
+- [x] 1.8 Apply the host firewall in its administrative-access-only form (no service is
       running yet, so no service port is detected); re-verify administrative access from
       the workstation
-- [ ] 1.9 Validation gate: scenario "Both proofs succeed, so hardening may proceed" and
+      DONE 2026-09-05 UTC: Apply Firewall (Dev) #395 at dev 2077363,
+      target_service=postiz_svc, succeeded (ok=19 changed=4 failed=0).
+      No published container ports were detected; the active firewall allows
+      only SSH from the three declared administrative ranges, with default-deny
+      inbound and allow-outbound policy. Semaphore forced a fresh connection
+      successfully after enforcement. The independent workstation key-only
+      connection passed afterwards with the same strict options as 1.7.
+- [x] 1.9 Validation gate: scenario "Both proofs succeed, so hardening may proceed" and
       scenario "Enforcement does not lock out the orchestrator" both hold — key-only
       access is confirmed from both directions, password authentication is refused, and
       administrative access survived firewall enforcement
+      VERIFIED 2026-09-05 UTC: final Verify Host Access (Dev) #396 at
+      dev 2077363 succeeded after firewall enforcement. Effective sshd settings
+      remain passwordauthentication=no, kbdinteractiveauthentication=no,
+      permitrootlogin=no; key-only access is PROVEN and escalation works.
+      The independent workstation proof also passed after enforcement. The
+      two pre-hardening proofs, hardening verification, and two post-firewall
+      proofs are recorded above; phase 1 is complete.
 
 ## 2. Service definition
 
@@ -233,6 +250,12 @@ protects 1.7, which is the only irreversible step in the change.
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
+      NOT REVALIDATED 2026-09-05 UTC: the local HTTPS URL timed out from the
+      workstation, and the local Semaphore endpoint from the existing local
+      control-plane configuration was unavailable. The Podman machine is
+      running, but its default rootful connection shows the existing foundation
+      and Postiz containers stopped. No shared local bootstrap, repository
+      binding, or service state was changed to work around this.
 - [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
       DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
@@ -345,6 +368,12 @@ protects 1.7, which is the only irreversible step in the change.
 
 - [ ] 7.1 Seed the social-platform credentials into the production secret store; verify
       with the read-only inventory playbook
+      PREREQUISITE CHECK 2026-09-05 UTC: Semaphore Check Secrets #391,
+      target_service=postiz_svc, completed with changed=0 and explicitly reported
+      NO SECRETS FOUND at secret/services/postiz. The successful inventory run
+      is evidence of the missing record, not evidence that seeding is complete.
+      The operator connection used the existing site-config Semaphore credential;
+      no credential values were printed or copied into this repository.
 - [ ] 7.2 Deploy the identity provider so the client blueprint is applied with production
       URLs
 - [ ] 7.3 Deploy the service; confirm all five containers reach health
