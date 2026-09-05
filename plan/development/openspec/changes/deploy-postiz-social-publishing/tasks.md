@@ -248,9 +248,11 @@ protects 1.7, which is the only irreversible step in the change.
       the backend binds, and /api/ answers 200 under a probe that would notice.
 - [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
-- [x] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
+- [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
-      VERIFIED 2026-09-05 UTC after an authorized non-destructive restart.
+      SESSION HALF VERIFIED 2026-09-05 UTC after an authorized non-destructive
+      restart. First-account creation remains unverified: the browser reused
+      an existing account, so this proof does not close the full criterion.
       The existing local bootstrap restored the stopped foundation, retaining
       its vault, volumes, and saved-checkout binding (ok=61 failed=0).
       Deploy Postiz (Local) #288 then succeeded (ok=38 changed=4 failed=0)
@@ -263,6 +265,26 @@ protects 1.7, which is the only irreversible step in the change.
       The retained automation key also still returns 200, while absent/wrong
       keys return 401 without browser cookies. No social account was connected
       and no post was created or published.
+
+      Repeatable existing-account browser check (local environment only):
+      1. After a successful Deploy Postiz (Local) run with
+         postiz_disable_registration=true, open the configured local public URL.
+         If already signed in, use Settings > Logout from Postiz > Yes logout;
+         if already signed out, proceed without changing state.
+      2. Require the signed-out page to show Registration is disabled and
+         Sign in with Authentik. Stop on a browser security warning or an
+         unexpected destination; never weaken browser or TLS protections.
+      3. Select Sign in with Authentik. Use the existing local IdP session or
+         the existing authorized account; do not create an identity, rotate a
+         credential, or change registration settings for this check.
+      4. Require the authorization-code return to the configured Postiz host
+         and the authenticated Calendar page at /launches. Do not copy the
+         code, tokens, or cookies into evidence.
+      5. Reload and require Calendar again. Record the deployment run and
+         pass/fail result. Re-running this check leaves the same account
+         signed in and registration closed; it never connects a social
+         account or creates a post. Account-creation evidence is a separate
+         prerequisite for completing 5.5.
 - [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
       DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
@@ -383,7 +405,10 @@ protects 1.7, which is the only irreversible step in the change.
       no credential values were printed or copied into this repository.
 - [ ] 7.2 Deploy the identity provider so the client blueprint is applied with production
       URLs
-- [ ] 7.3 Deploy the service; confirm all five containers reach health
+- [ ] 7.3 After the preceding gates pass, deploy the service; confirm all six
+      containers reach health, including backend /api/ answering below HTTP 500,
+      the workflow engine reporting SERVING, and the required search overlay's
+      cluster-health check passing
       NOT VERIFIED 2026-09-05 UTC: current Semaphore Deploy Postiz and
       Deploy Postiz (Dev) templates show no task history. From this workstation,
       the public HTTPS URL refused the connection in both browser and curl.
