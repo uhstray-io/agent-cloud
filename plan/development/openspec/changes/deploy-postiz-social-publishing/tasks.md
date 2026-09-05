@@ -92,6 +92,19 @@ protects 1.7, which is the only irreversible step in the change.
       direct administrative login, configure validated passwordless escalation for the
       service account; confirm the step's own verification passed and re-confirm 1.5's
       workstation check afterwards
+      BLOCKED ON REVALIDATION 2026-09-05 UTC: Semaphore task #389
+      (Verify Host Access (Dev), target_service=postiz_svc, dev 108c090)
+      proved key-only authentication with the host key pinned, working escalation,
+      and the required secret-store credentials present. Effective sshd still has
+      passwordauthentication=yes and permitrootlogin=without-password; this is
+      not the hardened state. The separate workstation probe, using the private
+      inventory's resolved connection fields, BatchMode=yes, publickey-only auth,
+      password/keyboard-interactive disabled, and StrictHostKeyChecking=yes,
+      exited 255: Permission denied (publickey,password). The historical 1.5
+      proof does not satisfy this failed current check. Restore the workstation's
+      authorized key access and repeat both proofs before hardening. No host
+      settings were changed; task #389's four changes were runner-side temporary
+      probe-key/known_hosts creation and cleanup, not host convergence.
 - [ ] 1.8 Apply the host firewall in its administrative-access-only form (no service is
       running yet, so no service port is detected); re-verify administrative access from
       the workstation
@@ -296,13 +309,14 @@ protects 1.7, which is the only irreversible step in the change.
       MEDIUM (label=disable riding into prod via the search overlay) was fixed
       anyway by moving the local-only knobs to compose.local.yml — live-verified,
       ES confined on the prod path and still capped locally. 523 BATS green.
-- [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
+- [x] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit
-      SPLIT STATUS (the box stays unchecked until the MERGE lands — the task's own
-      text includes it): opened 2026-08-30 on the operator's explicit ask as PR
-      #145 (with #146 alongside); CodeRabbit findings addressed 2026-08-31;
-      checks + merge (operator's step, merge commit) still pending.
+      VERIFIED 2026-09-05 against GitHub: PR #145 merged into dev on
+      2026-08-31 at 14:24:55 UTC, merge commit df13a089bc88c7ba22d3ce61933ba1e744c61dd6.
+      Static Analysis, Security Scan, Unit Tests, and CodeRabbit all passed;
+      the unrelated Go jobs were skipped. The companion PR #146 also merged
+      into dev, at 14:32:37 UTC. This closes integration, not production promotion.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
@@ -316,6 +330,12 @@ protects 1.7, which is the only irreversible step in the change.
       Authentik OIDC sign-in callback, NOT the social-connect one.
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly
       asked** and merge it with a merge commit, so the orchestrator deploys from there
+      STILL OPEN 2026-09-05 UTC: GitHub main is
+      11792d2604acb7745d9e2ad7c4eb209e5bf4ce4c. Earlier promotion PR #132
+      predates PR #145; the latter's search-node, backend-health, and API-key
+      fixes are in dev but not main. Do not treat the earlier promotion as
+      completion or deploy the older production definition to satisfy this task.
+      No promotion PR was opened during this Apply pass.
 - [ ] 6.7 Validation gate: scenario "Interface and automation share one hostname" is
       satisfiable in production — the DNS record resolves and the redirect destinations
       registered at the identity provider and the four social platforms all name that same
@@ -328,6 +348,13 @@ protects 1.7, which is the only irreversible step in the change.
 - [ ] 7.2 Deploy the identity provider so the client blueprint is applied with production
       URLs
 - [ ] 7.3 Deploy the service; confirm all five containers reach health
+      NOT VERIFIED 2026-09-05 UTC: current Semaphore Deploy Postiz and
+      Deploy Postiz (Dev) templates show no task history. From this workstation,
+      the public HTTPS URL refused the connection in both browser and curl.
+      These observations do not establish the host's container state or exclude
+      older runs under other templates. Keep this box open until an orchestrated
+      deployment verifies the backend and the required search overlay (six
+      containers, as corrected at 2.2/5.3), after the preceding gates pass.
 - [ ] 7.4 Publish the production reverse-proxy site block; confirm the public URL serves
       over TLS and that the proxy's own validation passed
 - [ ] 7.5 Re-apply the host firewall so it detects and permits the now-published service
