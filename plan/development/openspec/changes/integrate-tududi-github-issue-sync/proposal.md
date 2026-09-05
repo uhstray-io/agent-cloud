@@ -86,36 +86,24 @@ engine this bridge needs; this change is its first real workflow consumer.
 
 ## Rollback Plan
 
-- **Disable**: deactivate the n8n workflows (one playbook run) — both sides stop
-  changing immediately; nothing else in either system depends on the sync.
-- **Partial retreat**: remove a project↔repo pair from the declared mapping and
-  re-provision — that pair stops syncing, existing issues/tasks stay as they are
-  (the sync never mass-deletes on unmapping).
-- **Data**: every write is an ordinary issue/task edit under the sync identity,
-  visible in GitHub history and tududi's audit trail; conflicts preserve losing
-  values in comments. No destructive operation exists in the sync at all — it
-  never deletes issues or tasks.
-- **Credentials**: revocation is an encoded, re-runnable rollback step, not a
-  documentation pointer. The two credentials revoke differently, and the App
-  changes what "revoke" even means (design D7, decided 2026-09-03):
-  - **tududi** — the API token is revoked through the app's own reversible
-    `revoked_at` on our-label rows, executed by the playbook.
-  - **GitHub** — there is no PAT to delete. The credential is a GitHub App, so
-    the durable authority is its **installation**, and installation tokens
-    expire on their own within the hour. Rollback therefore means removing the
-    installation from the org's mapped repositories (a provider-settings
-    action) and, if the App itself is being retired, deleting its private key
-    from `secret/services/github:tududi_sync_app_key`. Deactivating the n8n
-    workflows and pruning the `github-sync-api` credential stops the sync but
-    does NOT revoke anything at GitHub — the distinction matters, because the
-    key alone can mint a fresh token for as long as the installation stands.
-  Either operator step is gated by the same machine check: the rollback
-  **verifies revocation by authenticating with the stored credential and
-  requiring the provider to refuse it** — for the App, by attempting an
-  installation-token mint and requiring GitHub to reject it — fails loudly
-  while the credential still works, and treats an already-revoked one as
-  success, so a rollback interrupted after n8n deactivation converges on
-  re-run instead of leaving live access unnoticed. Re-running provisioning against an empty
-  declaration removes the workflows and credentials it owns from n8n —
-  provisioning prunes its own objects by design (design D1), so this is
-  specified behavior, not a hope.
+**Preservation-only, superseding the earlier prune/revoke plan (2026-09-05).**
+Run the provisioning playbook with `sync_enabled=false`: deactivate every owned
+workflow and verify each is inactive, without deleting workflows, credentials,
+tasks, issues or markers. Wait for any already-running execution to finish
+before declaring writes stopped; deactivation does not undo propagated edits.
+
+For partial retreat, disable the pair in the committed mapping and re-provision.
+For a fully disabled declaration, the playbook deactivates and stops before
+provider validation or credential writes, using only the engine's API key.
+A malformed/missing declaration still refuses; it is not an empty deployment.
+
+Preserve existing credential access. Token proof failure stops for reconciliation,
+not revocation or automatic replacement. `tududi_token_validate_only=true` on
+Store tududi API Token proves the stored value and stops without mint/store
+writes. App installation access, private keys and existing tokens are not removed
+as part of rollback. Credential retirement requires a separate scoped decision.
+
+Task/issue edits remain visible in their histories and conflicts preserve losing
+values in keyed comments. No cleanup, database restore or ownership migration is
+part of this rollback. Task 6.0's visibility decision and the final production
+release gates remain open.

@@ -232,11 +232,11 @@ outside this requirement.
 - **THEN** one subtask exists under the linked parent task carrying the
   sub-issue's title, body, labels and the sync tag, and the two are linked
 
-#### Scenario: Untagged subtask under a linked parent stays private
+#### Scenario: A subtask inherits its tagged parent's consent
 
-- **WHEN** a linked task gains a subtask that does not carry the sync tag
-- **THEN** no issue is created for it and nothing about it reaches GitHub,
-  regardless of the parent's tag
+- **WHEN** a tagged, linked task gains a subtask without its own sync tag
+- **THEN** that subtask crosses under the linked parent; when neither parent
+  nor subtask carries the tag, no issue is created for the child
 
 #### Scenario: Child waits for its parent
 
@@ -281,10 +281,12 @@ and a cycle MUST NOT treat the sync's own writes as fresh changes to propagate
 back. Re-running a cycle with no external changes MUST make zero writes.
 
 On GitHub the identity is a dedicated App. On tududi it is a labelled API
-token belonging to the user who OWNS the mapped projects — not a separate
-service account — because tududi scopes every list per user and a task
-created by another user is invisible to the project's owner. Provisioning
-MUST refuse an enabled pair whose project the token cannot see.
+token for the configured service account. Provisioning MUST refuse an enabled
+pair whose project the token cannot see. Before production enablement, the
+visibility gate MUST prove that both the operator and service account can see
+work created by either identity. Project ownership alone does not establish
+that property in tududi 1.1.1. Task 6.0 decides and validates the topology;
+validation MUST NOT substitute an operator token or transfer ownership.
 
 #### Scenario: Token that cannot see a mapped project is refused
 
@@ -310,9 +312,12 @@ The tududi token and the GitHub credential the sync uses SHALL be stored in the
 secret store and provisioned into the workflow engine by automation. The GitHub
 credential MUST be scoped to no more than the declared repositories, and no
 credential value may appear in workflow definitions, task output, or logs.
-Provisioning MUST validate both credentials against their live services before
-changing the engine, and MUST remove engine objects it owns that the current
-declaration no longer implies.
+Enabled provisioning MUST validate both credentials against their live services
+before changing the engine. It MUST preserve every workflow and credential,
+deactivate owned workflows no longer implied by the declaration, and verify
+they are inactive. A kill switch or all-disabled mapping MUST stop before
+provider validation and credential writes. Incomplete engine listings or
+ambiguous upsert names MUST refuse instead of guessing.
 
 #### Scenario: Credentials provisioned as code
 
@@ -327,12 +332,30 @@ declaration no longer implies.
   provisioning run's output are inspected
 - **THEN** none contains a credential value — only secret-store path references
 
-#### Scenario: Removal from the declaration removes the engine objects
+#### Scenario: Removal from the declaration preserves the engine objects
 
-- **WHEN** a workflow or credential the provisioning previously created is no
-  longer implied by the declaration and provisioning re-runs
-- **THEN** that object is removed from the workflow engine, while objects the
-  provisioning did not create are left untouched
+- **WHEN** an owned workflow is no longer implied by the declaration and
+  provisioning re-runs
+- **THEN** it remains present but inactive, credentials are preserved, and
+  unrelated objects are untouched
+
+#### Scenario: All pairs disabled with unavailable provider credentials
+
+- **WHEN** the mapping has no enabled pairs and provider credentials are absent
+  or invalid
+- **THEN** owned workflows are deactivated and verified inactive using only the
+  engine credential, with no provider calls, credential writes or deletions
+
+#### Scenario: Boolean and survey-string kill switches agree
+
+- **WHEN** `sync_enabled` is either boolean false or string "false", even with
+  a broken mapping and unavailable provider credentials
+- **THEN** owned workflows become inactive and all objects and access survive
+
+#### Scenario: Ambiguous or truncated engine inventory is refused
+
+- **WHEN** an engine list is truncated or multiple objects share an upsert name
+- **THEN** provisioning refuses before selecting an arbitrary object to update
 
 #### Scenario: Provisioning refuses dead credentials
 
@@ -340,3 +363,22 @@ declaration no longer implies.
   longer accepted by its service
 - **THEN** it fails with an error naming which credential failed, before
   changing anything in the workflow engine
+
+### Requirement: Token diagnosis preserves existing access
+
+The token helper and Store Token playbook MUST NOT revoke existing access.
+Proof-only mode MUST prove the stored token's identity and live acceptance and
+stop without minting or writing the secret store. A failed proof MUST stop for
+reconciliation when a stored value or active labelled row exists. Initial mint
+is allowed only when both are absent.
+
+#### Scenario: Failed token proof never triggers automatic rotation
+
+- **WHEN** proof fails with a stored value or an active labelled row
+- **THEN** the playbook fails with a named reconciliation error and preserves
+  existing rows and the secret-store value
+
+#### Scenario: Validation-only with no stored token
+
+- **WHEN** proof-only mode runs without a stored token
+- **THEN** it fails without inserting a token or writing the secret store

@@ -62,11 +62,11 @@ setup() {
   assert_grep -qE '^    _token_label: "agent-cloud-sync"$' "$pb"
   refute_grep -qE '^    (_bao_(path|key)|_token_label): "\{\{' "$pb"
   # NON-DESTRUCTIVE contract (operator requirement): the mint script never
-  # deletes, and its only update is the app's own reversible revoked_at,
-  # scoped to our label and user. The playbook flips no auth flag and
+  # deletes or revokes. Existing access survives every proof failure.
+  # The playbook flips no auth flag and
   # restarts nothing.
   refute_grep -qiE 'destroy|\.drop|DELETE FROM' "$js"
-  assert_grep -qF 'revoked_at = new Date()' "$js"
+  refute_grep -qE 'revoked_at =|revoke-label|row.save' "$js"
   assert_grep -qF 'where: { user_id: user.id, name: LABEL, revoked_at: null }' "$js"
   # Scoped to LIVE lines — the header comment legitimately names the flag
   # while explaining why the mint is DB-side.
@@ -109,9 +109,8 @@ setup() {
   # Store write rides the shared sibling-preserving merge, refuse-missing.
   blk=$(task_block "$pb" "Merge the token into the store")
   assert_grep -q '_bm_on_missing: fail' <<<"$blk"
-  # The identity is the project OWNER's user, declared by inventory
-  # (tududi_sync_user_email) — a service account cannot carry GitHub-origin
-  # tasks to an owner who is not the token's user (per-user scoping, v1.1.1).
+  # Inventory names the sync identity; task 6.0 gates operator visibility
+  # separately. Validation must not replace it with the operator's identity.
   assert_grep -qE '^    _login_email: "\{\{ tududi_sync_user_email \| default\(' "$pb"
   assert_grep -qF 'tududi_sync_user_email' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
 }
@@ -150,12 +149,12 @@ setup() {
   assert_grep -qF "rejectattr('_generated', 'defined')" "$REPO_ROOT/platform/semaphore/setup-templates.yml"
 }
 
-@test "tududi-sync: provisioning — kill switch first, named refusals, prefix-scoped prune" {
+@test "tududi-sync: provisioning — kill switch first, named refusals, preservation" {
   local pb="$REPO_ROOT/platform/playbooks/provision-tududi-github-sync.yml"
   [ -f "$pb" ]
   assert_grep -qF 'import_playbook: preflight-target-group.yml' "$pb"
   # Ownership names are fixed, never caller-supplied.
-  assert_grep -qE '^    _prefix: "tududi-github-sync"$' "$pb"
+  assert_grep -qE '^    _prefix: "tududi-github-sync:"$' "$pb"
   assert_grep -qE '^    _workflow_name: "tududi-github-sync: cycle"$' "$pb"
   refute_grep -qE '^    (_prefix|_workflow_name|_tududi_cred_name|_github_cred_name): "\{\{' "$pb"
   # THE kill-switch ordering (task 4.1): the sync_enabled branch sits BEFORE
@@ -175,7 +174,7 @@ setup() {
   [ "$t" -lt "$u" ] && [ "$g" -lt "$u" ]
   # Refusals are named: malformed mapping, absent token, dead token.
   assert_grep -qF 'Refuse an unparseable or shapeless mapping (named)' "$pb"
-  assert_grep -qF 'Refuse a dead tududi token (named)' "$pb"
+  assert_grep -qF 'Refuse an unsuccessful tududi probe (named)' "$pb"
   # ...and an enabled pair whose project the token's user cannot see — the
   # project list IS the token probe, and the refusal precedes every write.
   assert_grep -qF 'Refuse an enabled pair whose project the sync identity cannot see (named)' "$pb"
@@ -184,7 +183,8 @@ setup() {
   local v
   v=$(grep -n 'Refuse an enabled pair whose project the sync identity cannot see' "$pb" | head -1 | cut -d: -f1)
   [ -n "$v" ] && [ "$v" -lt "$u" ]
-  # Prune only ever addresses prefix-owned names.
+  # Deactivation only addresses prefix-owned names; deletion is unsupported.
+  refute_grep -qF 'method: DELETE' "$pb"
   assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" "$pb"
   # Secret-bearing steps are no_log; the reports are not.
   local blk n
@@ -293,7 +293,7 @@ PYEOF"
   # live in OpenBao, endpoints in inventory (design D3/D7, contract doc).
   local f
   while IFS= read -r f; do
-    refute_grep -qiE 'tt_[0-9a-f]{8}|ghp_|github_pat_|api[_-]?key:|token:|password' "$f"
+    refute_grep -qiE 'tt_[0-9a-f]{8}|ghp_|github_pat_|(^|[^A-Za-z0-9_])(api[_-]?key|token):|password' "$f"
     refute_grep -qE '(10\.[0-9]+|192\.168\.|172\.(1[6-9]|2[0-9]|3[01]))\.' "$f"
   done < <(find "$SYNC_DIR" -type f \( -name '*.yml' -o -name '*.j2' -o -name '*.json' -o -name '*.js' \))
 }
@@ -353,8 +353,10 @@ PYEOF"
   local blk
   blk=$(task_block "$pb" "Deactivate every owned workflow")
   [ -n "$blk" ]
-  assert_grep -qF 'X-N8N-API-KEY' <<<"$blk"
-  refute_grep -qE 'tududi|github|api\.github\.com' <<<"$blk"
+  assert_grep -qF 'include_tasks: tasks/deactivate-tududi-sync-workflows.yml' <<<"$blk"
+  local deactivate="$REPO_ROOT/platform/playbooks/tasks/deactivate-tududi-sync-workflows.yml"
+  assert_grep -qF 'X-N8N-API-KEY' "$deactivate"
+  refute_grep -qE 'Authorization:|api\.github\.com|method: DELETE' "$deactivate"
   # ...and it only ever addresses prefix-owned workflows, kill switch included.
   assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" <<<"$blk"
   # A malformed mapping is refused by ASSERTION on the parsed shape, not by a
@@ -365,12 +367,27 @@ PYEOF"
   assert_grep -qF '_mapping.sync_pairs is defined' <<<"$blk"
   assert_grep -qF 'fail_msg' <<<"$blk"
   # "No pairs" has exactly one legitimate spelling: an all-DISABLED mapping,
-  # which renders an empty enabled set and prunes everything owned (the
+  # which renders an empty enabled set and preserves all objects (the
   # specified rollback). A MISSING or empty sync_pairs list is a malformed
   # file, not a rollback, and is refused — otherwise a truncated mapping
   # would silently read as "tear the sync down".
   assert_grep -qF '_mapping.sync_pairs | length > 0' <<<"$blk"
   assert_grep -qF 'all-DISABLED mapping' <<<"$blk"
-  # The prune itself works off the ENABLED subset, so all-disabled is empty.
+  # The disable branch works off the ENABLED subset, so all-disabled is empty.
   assert_grep -qF "selectattr('enabled')" "$pb"
+}
+
+@test "tududi-sync: provisioning preserves objects and token guards refuse unsafe writes" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  python3 -c 'import yaml' 2>/dev/null || skip "pyyaml not available"
+  run python3 "$SYNC_DIR/tests/provisioning-safety.py"
+  [ "$status" -eq 0 ]
+  grep -qF "PROVISIONING SAFETY PASS" <<<"$output"
+}
+
+@test "tududi-sync: container token helper cannot revoke existing access" {
+  command -v node >/dev/null 2>&1 || skip "node not available"
+  run node "$SYNC_DIR/tests/token-safety.js"
+  [ "$status" -eq 0 ]
+  grep -qF "TOKEN SAFETY PASS" <<<"$output"
 }
