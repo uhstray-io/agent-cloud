@@ -421,10 +421,45 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       contract and states the per-user visibility rules a reader must know
       before touching tasks, tags or projects. The webhook transport (D2) and
       the App's already-taken upgrade path (D7) are recorded in design.md
-- [ ] 6.3 Retain one outcome memory into the repo's experience bank: whether
-      poll-based bidirectional sync held up (worked / dead end / corrected),
-      any tududi API constraint discovered the hard way, and the conflict-rate
-      reality vs the LWW assumption
+- [ ] 6.3 (ATTEMPTED 2026-09-04, NOT LANDED — retry pending) The two outcome
+      memories below were composed and sent, but neither is retrievable: the
+      first `sync_retain` returned `status: completed` with an EMPTY
+      `memory_ids` array — a document was created, no fact was extracted — and
+      the second timed out at 300s. Verified by two recall queries in domain
+      terms, both of which returned only the 2026-09-03 memory. The failure
+      shape is worth keeping: on this store, `completed` is NOT proof of a
+      retrievable memory; an empty `memory_ids` means this task stays open.
+      Completion requires same-session read-back matching every returned
+      `memory_id` AND its intended content. If retrieval omits ids, include a
+      unique marker in the content before retaining and require that marker
+      and the intended content in the same recalled item; the older
+      2026-09-03 memory cannot satisfy this check. An empty result or timeout
+      stops for reconciliation, with zero automatic retries (MISTAKES 1.7).
+      What IS measured about the stall, and nothing beyond it: of five
+      attempts on 2026-09-04, ONE
+      succeeded (a ~100-character memory, verified by recall at score 1.08)
+      and four hung past the 300s idle timeout — including a ~103-character
+      one, i.e. shorter than the attempt that worked. So size is NOT the
+      variable, and an earlier note in this file claiming it was has been
+      corrected twice. Recall (zero model calls) answers instantly throughout,
+      and yesterday's ~1600-character memory landed without trouble, so
+      whatever this is, it is new and it is on the retain path. Left
+      undiagnosed on purpose: the local model stack is the operator's, and
+      guessing at its cause once already produced a wrong story. The content
+      to retain, whenever the store is healthy: (a) The design WORKED: poll
+      transport with a single bidirectional cycle held up, and so did
+      statelessness — an interrupted creation adopts the orphan instead of
+      duplicating, proven live. The conflict-rate reality against the LWW
+      assumption is the useful part: genuine same-field conflicts were rare,
+      and that rarity HID a real defect — only the first conflicting field per
+      cycle was preserved and the rest were dropped, which is reachable on any
+      adoption (empty baselines conflict on several fields at once). (b) Four
+      API constraints found the hard way, each contradicting a plain docs
+      reading: the App token nulls the sub-issue parent field a user token
+      populates; GitHub's issue-field PATCH replaces rather than merges (as
+      does tududi's subtask array); writing a field value needs an id the App
+      is denied the endpoint to discover; and tududi cannot tag a subtask at
+      all through its own UI, which invalidated an already-confirmed rule
 - [ ] 6.4 Validation gate: the 5.1 verification check passes for all eight pairs
       (which includes zero sync activity on undeclared projects — scenario
       "Undeclared project is untouched" — and per-pair convergence); BATS +

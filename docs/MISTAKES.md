@@ -33,6 +33,7 @@ supersede it with a new entry and link both.
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
+| 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -233,6 +234,67 @@ different host keys is a proof; one silent sweep is not.
 a declared address from two or more hosts and fails when the identities differ —
 worth building, since this is the second time one address answering as two
 machines has cost an investigation.
+
+### 1.7 Recorded a memory as retained on the store's own "completed", with an empty result list
+
+**What happened.** Closing the change's task 6.3 ("retain one outcome memory"),
+I called the memory store's synchronous retain twice. The first returned
+`{"status":"completed","memory_ids":[]}` and I treated that as done; the second
+never returned and was killed at a 300-second idle timeout. I then wrote a task
+closure into `tasks.md` stating that two outcome memories had been retained, and
+said the same in the summary to the operator.
+
+Neither was retrievable. Two recall queries in domain language returned only the
+memory from the previous day. The bank's `fact_count` had not moved either —
+though `last_document_at` had, which is exactly the split that makes this
+readable: a document was created, and no fact was extracted from it.
+
+**Root cause.** `completed` described the call, not the outcome. The result
+carried its own evidence — `memory_ids: []`, an empty list where an id belongs —
+and I read the status field and stopped. The store's own documented failure mode
+in `CLAUDE.md` is about the ASYNC retain returning an acceptance receipt, so I
+had treated the synchronous variant as self-verifying; it is not. This is the
+same shape as §1.3, where a pipe's exit code stood in for the command's, but the
+rule there is about pipes and does not reach an API that reports success with an
+empty payload.
+
+**The rule.** A write is not done because the writer said `completed`. Check the
+result's payload — an empty id list is a failure however the status reads — and
+for anything whose whole purpose is later retrieval, read it back in the same
+session and check its identity AND content. Confirm every returned `memory_id`
+is present in the retrieved results with the intended content. If retrieval does
+not expose ids, include a unique marker in the content before the retain and
+require that marker and the intended content in the same recalled item. A
+same-topic memory from an earlier write is not proof; domain terms help find
+candidates, but only the identity-bound check can verify this write.
+
+**Enforced by.** Convention. A future wrapper should reject empty `memory_ids`
+and stop for reconciliation, with zero automatic retries: an empty result or a
+timeout does not prove that no document was created. Any future automatic retry
+must first have a verified provider idempotency guarantee using the same stable
+key for the same logical write, or an equivalent duplicate-prevention mechanism,
+and a finite attempt limit. Without that protection, do not retry the write.
+
+**Follow-up, same session.** Chasing the stall produced a second lesson about
+claiming causes. I checked the local model endpoint, found the model named in
+`CLAUDE.md` was not among those served and that requests for it were being
+answered by a different one, and framed that substitution as the root cause.
+The operator corrected it immediately: the substitute is the deliberate choice,
+and `CLAUDE.md` is simply stale. The measurement was real; the causal story
+built on it was not, and a config file I had not verified as current was doing
+the load-bearing work. Then I did it again, smaller: I published a
+table of size thresholds — ~100 characters works, ~250 and up hang — and the
+very next attempt hung at ~103 characters, shorter than the one that had
+worked. Two data points had been enough for me to state a rule; the third
+falsified it. What survives as measurement: of five attempts, one succeeded
+and four hung past the 300-second idle timeout, with no size ordering between
+them; recall answered instantly throughout; and a much longer memory had
+stored fine the day before. That is a symptom with an unknown cause, and it is
+recorded as exactly that. The wider rule this earns: when a first explanation
+is falsified, the next confident-sounding pattern from the same thin evidence
+deserves more suspicion, not less — reaching for a second story is the same
+move as the first.
+
 
 ## 2. Tests that would have passed for the wrong reason
 
