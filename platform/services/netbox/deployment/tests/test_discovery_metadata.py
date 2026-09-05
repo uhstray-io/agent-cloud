@@ -99,7 +99,7 @@ def test_redirects_and_exception_payloads_never_escape(capsys):
     (b"synthetic-secret", "metadata_read_failed"),
     (b"x" * (MODULE["LIMIT"] + 1), "response_too_large"),
     (b'{"secret":"synthetic-secret"}', "invalid_record_list"),
-])
+], ids=["malformed", "oversized", "wrong-shape"])
 def test_bad_responses_are_bounded_and_redacted(body, reason, capsys):
     class BadResponseClient:
         def open(self, request, timeout):
