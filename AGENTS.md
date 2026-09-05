@@ -6,6 +6,22 @@ human contributor MUST conform to the standards below. **`CLAUDE.md` is a symlin
 this file** — there is exactly one source of truth (per the "one codebase, no forks"
 principle); edit this file, never fork it.
 
+## Instruction files and architecture references
+
+Before editing a directory, read its applicable `AGENTS.md` files, including nested
+ones when working from the repo root. Agent/service directories with existing
+`CLAUDE.md` guidance expose it through a relative `AGENTS.md` symlink; edit the
+existing source, not a second copy. `agents/websmith/context/AGENTS.md` remains
+WebSmith's separate operating manual.
+
+Read [`PRINCIPLES.md`](PRINCIPLES.md), then [`ARCHITECTURE.md`](ARCHITECTURE.md)
+and the relevant numbered docs under [`plan/architecture/`](plan/architecture/).
+`PRINCIPLES.md` is the architectural tiebreaker; where it is silent, defer to
+`plan/architecture/`. Service notes supplement these platform rules: legacy
+standalone commands do not authorize bypassing Semaphore or making local secret
+files authoritative instead of OpenBao. Keep environment configuration and private
+values in `site-config`, as required below.
+
 ## Conform to the platform — do not work around it
 
 agent-cloud is **Semaphore-orchestrated, OpenBao-sourced, composable, and
