@@ -226,10 +226,13 @@
       ansible.builtin.assert:
         that:
           - _upstream_sources | length > 0
+          # Reject malformed entries instead of silently omitting an intended upstream.
+          - >-
+            (_upstream_sources | select('string') | map('trim')
+             | reject('equalto', '') | list | length) == (_upstream_sources | length)
         fail_msg: >-
-          Set firewall_upstream_source (the Caddy host IP, or a list when a
-          service has more than one legitimate upstream) to allow the detected
-          service ports.
+          Set firewall_upstream_source to a nonblank address/CIDR or a list of
+          nonblank addresses/CIDRs to allow the detected service ports.
       when:
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0

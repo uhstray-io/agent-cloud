@@ -209,7 +209,7 @@ YAML
 }
 
 @test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {
-  local pb="$PLAYBOOK"
+  local pb="$PLAYBOOK" blk task
   # A service can have more than one legitimate upstream — a reverse proxy AND
   # the automation host that drives its API. Widening the single value to a
   # CIDR would have granted every host in that subnet, so the declaration takes
@@ -223,11 +223,63 @@ YAML
   # Both rule families (INPUT and the rootful FORWARD mirror) fan out over
   # ports x sources, and neither reads the raw variable any more — a leftover
   # direct reference would silently apply only the first source.
-  assert_grep -qF "product(_upstream_sources)" "$pb"
-  [ "$(grep -c 'product(_upstream_sources)' "$pb")" -eq 2 ]
+  for task in \
+    "Allow each DETECTED published port from the upstream (e.g. Caddy)" \
+    "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)"; do
+    blk=$(task_block "$pb" "$task")
+    assert_grep -qF 'loop: "{{ (_detected.stdout_lines | default([])) | product(_upstream_sources) | list }}"' <<<"$blk"
+  done
   refute_grep -qE 'ufw (route )?allow.*\{\{ firewall_upstream_source \}\}' "$pb"
   # The guard still refuses an empty declaration rather than opening nothing
   # quietly, and it now asserts on the normalised list.
   blk=$(task_block "$pb" "Require an upstream source when detected ports exist")
   assert_grep -qF '_upstream_sources | length > 0' <<<"$blk"
+}
+
+@test "apply-firewall: blank upstream sources stop before either detected-port rule" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  # Execute the real normalization, guard and rule tasks in their original order.
+  # Replace only the firewall command with debug so no host firewall is touched.
+  python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR/upstream.yml" <<'PYTHON'
+import json
+import sys
+import yaml
+
+names = {
+    "Normalise the upstream source(s) to a list",
+    "Require an upstream source when detected ports exist",
+    "Allow each DETECTED published port from the upstream (e.g. Caddy)",
+    "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)",
+}
+with open(sys.argv[1]) as source:
+    tasks = [task for task in yaml.safe_load(source)[0]["tasks"] if task["name"] in names]
+assert len(tasks) == len(names)
+for task in tasks:
+    if "ansible.builtin.command" in task:
+        task["ansible.builtin.debug"] = {"msg": task.pop("ansible.builtin.command")}
+        task.pop("changed_when")
+play = {"hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_rootful": True, "_detected": {"stdout_lines": ["443 tcp", "53 udp"]}},
+        "tasks": tasks}
+with open(sys.argv[2], "w") as target:
+    json.dump([play], target)
+PYTHON
+
+  local values
+  for values in '"192.0.2.10"' '["192.0.2.10","198.51.100.10"]'; do
+    run ansible-playbook "$BATS_TEST_TMPDIR/upstream.yml" -e "{\"firewall_upstream_source\":$values}"
+    [ "$status" -eq 0 ]
+    assert_contains "$output" 'ufw allow from 192.0.2.10 to any port 443 proto tcp'
+    assert_contains "$output" 'ufw route allow proto udp from 192.0.2.10 to any port 53'
+    if [[ "$values" == *198.51.100.10* ]]; then
+      assert_contains "$output" 'ufw allow from 198.51.100.10 to any port 443 proto tcp'
+      assert_contains "$output" 'ufw route allow proto udp from 198.51.100.10 to any port 53'
+    fi
+  done
+  for values in '["192.0.2.10",""]' '["192.0.2.10","  "]' '["192.0.2.10",null]' '""' '"  "' '[]'; do
+    run ansible-playbook "$BATS_TEST_TMPDIR/upstream.yml" -e "{\"firewall_upstream_source\":$values}"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" 'Set firewall_upstream_source'
+    refute_contains "$output" 'TASK [Allow each DETECTED published port'
+  done
 }
