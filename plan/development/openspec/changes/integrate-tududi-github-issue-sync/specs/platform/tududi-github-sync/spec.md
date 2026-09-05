@@ -228,9 +228,10 @@ outside this requirement.
 #### Scenario: Sub-issue filed on GitHub becomes a subtask
 
 - **WHEN** a person adds a sub-issue under a linked issue in a paired
-  repository and a cycle runs
-- **THEN** one subtask exists under the linked parent task carrying the
-  sub-issue's title, body, labels and the sync tag, and the two are linked
+  repository, its linked parent task is tagged, and a cycle runs
+- **THEN** one subtask exists under that parent carrying the sub-issue's title,
+  body and labels; it inherits sync consent from the tagged parent, and the two
+  are linked
 
 #### Scenario: A subtask inherits its tagged parent's consent
 

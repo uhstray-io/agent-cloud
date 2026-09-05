@@ -173,7 +173,7 @@ def provision_case(server, directory, mode, fault=None):
         if mode != "initial":
             assert not next(w for w in state["workflows"] if w["id"] == "old")["active"]
         if mode in (False, "false", "disabled"):
-            assert not state["workflows"][0]["active"]
+            assert not next(w for w in state["workflows"] if w["id"] == "cycle")["active"]
             assert not any(path == "/api/v1/projects" for path in state["reads"])
             assert not any("credentials" in path for _, path in state["writes"])
             # A repeated stop is a read-back-only no-op for inactive workflows.
@@ -191,6 +191,14 @@ def provision_case(server, directory, mode, fault=None):
 
 
 def token_guards(directory):
+    for identity in [{}, {"tududi_sync_user_email": ""}, {"tududi_sync_user_email": None},
+                     {"tududi_sync_user_email": "   "}, {"tududi_sync_user_email": "fixture"}]:
+        play = {"name": "Require explicit identity", "hosts": "localhost", "gather_facts": False,
+                "vars": identity, "tasks": TOKEN["tasks"][:2]}
+        result = run_play(play, directory)
+        assert (result.returncode == 0) == (identity.get("tududi_sync_user_email") == "fixture"), result.stdout
+        if result.returncode:
+            assert "Set tududi_sync_user_email explicitly" in result.stdout, result.stdout
     start = next(i for i, task in enumerate(TOKEN["tasks"]) if task["name"] == "Decide convergence")
     end = next(i for i, task in enumerate(TOKEN["tasks"]) if task["name"].startswith("Mint (and capture)"))
     tasks = TOKEN["tasks"][start:end] + [

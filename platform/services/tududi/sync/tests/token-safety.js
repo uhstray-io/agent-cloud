@@ -8,7 +8,7 @@ const { EventEmitter } = require('node:events');
 const source = fs.readFileSync(`${__dirname}/../../../../playbooks/files/tududi-db-mint.js`, 'utf8');
 const raw = 'tt_' + 'a'.repeat(64);
 
-async function run(action, rows, status = 200) {
+async function run(action, rows, status = 200, matches = true) {
   const writes = [];
   const output = [];
   let finish;
@@ -23,7 +23,7 @@ async function run(action, rows, status = 200) {
         User: { findOne: async () => ({ id: 1 }) },
         ApiToken: { findAll: async () => rows, create: async value => { writes.push(value); return { id: 2 }; } },
       };
-      if (name.endsWith('/bcrypt')) return { hash: async () => 'fixture-hash', compare: async () => true };
+      if (name.endsWith('/bcrypt')) return { hash: async () => 'fixture-hash', compare: async () => matches };
       if (name === 'http') return { get: (_, callback) => {
         callback({ resume() {}, statusCode: status });
         return new EventEmitter();
@@ -52,6 +52,9 @@ async function run(action, rows, status = 200) {
     assert.equal(result.writes.length, 0);
     if (action === 'revoke-label') assert(result.output.join(' ').includes('unknown action'));
   }
+  const mismatch = await run('prove', rows, 200, false);
+  assert.equal(mismatch.code, 1);
+  assert.equal(mismatch.writes.length, 0);
   const initial = await run('insert', []);
   assert.equal(initial.code, 0);
   assert.equal(initial.writes.length, 1);

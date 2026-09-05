@@ -21,8 +21,9 @@ engine this bridge needs; this change is its first real workflow consumer.
   token refresher asserts on every mint. A relationship must be explicitly
   declared to sync anything.
 - **Selective, opt-in item sync, from either origin**: a tududi task crosses to
-  GitHub only when it carries the designated sync tag; untagged tasks never leave
-  tududi. An open issue filed on GitHub in a paired repository becomes a task in
+  GitHub only when it carries the designated sync tag; subtasks inherit consent
+  from a tagged parent. Untagged top-level tasks never leave tududi. An open
+  issue filed on GitHub in a paired repository becomes a task in
   the paired project, tagged for sync, so work can start on either side (amended
   2026-09-03 on the operator's direction — the original scope created from
   tududi only). Whichever side an item started on, it exists **once**: the
@@ -31,6 +32,8 @@ engine this bridge needs; this change is its first real workflow consumer.
 - **Bidirectional field sync** for linked pairs: title, description, status
   (tududi statuses ↔ issue open/closed), and tags ↔ labels. Updates on either
   side propagate to the other on the next cycle.
+- **One level of native hierarchy**: tududi subtasks synchronize with GitHub
+  sub-issues beneath linked parents; re-parenting and deeper nesting are excluded.
 - **Comments are GitHub-only**: issue comments are never copied into tududi, and
   nothing in tududi produces issue comments (except the conflict audit note below).
 - **Last-writer-wins conflict resolution** on update timestamps, with the losing
@@ -44,7 +47,7 @@ engine this bridge needs; this change is its first real workflow consumer.
   new GitHub credential scoped to the mapped repos, provisioned into n8n by the
   same pattern as the Postiz credential.
 - **NOT in scope**: GitHub Projects v2 boards, comment sync, attachment/media
-  sync, subtask↔sub-issue mapping, syncing repos outside the declaration, and
+  sync, deeper hierarchy, syncing repos outside the declaration, and
   real-time (webhook) transport — each a possible later layer.
 
 ## Capabilities

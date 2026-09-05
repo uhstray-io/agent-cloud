@@ -111,7 +111,7 @@ setup() {
   assert_grep -q '_bm_on_missing: fail' <<<"$blk"
   # Inventory names the sync identity; task 6.0 gates operator visibility
   # separately. Validation must not replace it with the operator's identity.
-  assert_grep -qE '^    _login_email: "\{\{ tududi_sync_user_email \| default\(' "$pb"
+  assert_grep -qF '_login_email: "{{ tududi_sync_user_email }}"' "$pb"
   assert_grep -qF 'tududi_sync_user_email' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
 }
 
@@ -184,7 +184,7 @@ setup() {
   v=$(grep -n 'Refuse an enabled pair whose project the sync identity cannot see' "$pb" | head -1 | cut -d: -f1)
   [ -n "$v" ] && [ "$v" -lt "$u" ]
   # Deactivation only addresses prefix-owned names; deletion is unsupported.
-  refute_grep -qF 'method: DELETE' "$pb"
+  refute_grep -qiE 'method[[:space:]]*:.*DELETE' "$pb"
   assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" "$pb"
   # Secret-bearing steps are no_log; the reports are not.
   local blk n
@@ -356,7 +356,7 @@ PYEOF"
   assert_grep -qF 'include_tasks: tasks/deactivate-tududi-sync-workflows.yml' <<<"$blk"
   local deactivate="$REPO_ROOT/platform/playbooks/tasks/deactivate-tududi-sync-workflows.yml"
   assert_grep -qF 'X-N8N-API-KEY' "$deactivate"
-  refute_grep -qE 'Authorization:|api\.github\.com|method: DELETE' "$deactivate"
+  refute_grep -qiE 'Authorization:|api\.github\.com|method[[:space:]]*:.*DELETE' "$deactivate"
   # ...and it only ever addresses prefix-owned workflows, kill switch included.
   assert_grep -qF "selectattr('name', 'search', '^' ~ _prefix)" <<<"$blk"
   # A malformed mapping is refused by ASSERTION on the parsed shape, not by a
@@ -374,7 +374,10 @@ PYEOF"
   assert_grep -qF '_mapping.sync_pairs | length > 0' <<<"$blk"
   assert_grep -qF 'all-DISABLED mapping' <<<"$blk"
   # The disable branch works off the ENABLED subset, so all-disabled is empty.
-  assert_grep -qF "selectattr('enabled')" "$pb"
+  blk=$(task_block "$pb" "Take the enabled pairs and the declared Priority field")
+  assert_grep -qF "selectattr('enabled')" <<<"$blk"
+  blk=$(task_block "$pb" "Deactivate and preserve the sync when all pairs are disabled")
+  assert_grep -qF 'when: _pairs | length == 0' <<<"$blk"
 }
 
 @test "tududi-sync: provisioning preserves objects and token guards refuse unsafe writes" {
