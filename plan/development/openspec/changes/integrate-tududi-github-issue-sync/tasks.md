@@ -428,9 +428,15 @@ already implemented, tag stays `gh-sync`, no GitHub label (5H.8, confirm only).
       the second timed out at 300s. Verified by two recall queries in domain
       terms, both of which returned only the 2026-09-03 memory. The failure
       shape is worth keeping: on this store, `completed` is NOT proof of a
-      retrievable memory; an empty `memory_ids` is the real signal, and the
-      only trustworthy check is a recall afterwards. What IS measured about
-      the stall, and nothing beyond it: of five attempts on 2026-09-04, ONE
+      retrievable memory; an empty `memory_ids` means this task stays open.
+      Completion requires same-session read-back matching every returned
+      `memory_id` AND its intended content. If retrieval omits ids, include a
+      unique marker in the content before retaining and require that marker
+      and the intended content in the same recalled item; the older
+      2026-09-03 memory cannot satisfy this check. An empty result or timeout
+      stops for reconciliation, with zero automatic retries (MISTAKES 1.7).
+      What IS measured about the stall, and nothing beyond it: of five
+      attempts on 2026-09-04, ONE
       succeeded (a ~100-character memory, verified by recall at score 1.08)
       and four hung past the 300s idle timeout — including a ~103-character
       one, i.e. shorter than the attempt that worked. So size is NOT the

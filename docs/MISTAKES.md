@@ -33,7 +33,7 @@ supersede it with a new entry and link both.
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
-| 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; nothing was stored | Unverified claim | Convention |
+| 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -260,14 +260,20 @@ empty payload.
 
 **The rule.** A write is not done because the writer said `completed`. Check the
 result's payload — an empty id list is a failure however the status reads — and
-for anything whose whole purpose is later retrieval, prove it by reading it back
-in the same session. A recall in the same domain terms the memory was written in
-costs nothing (zero model calls on this store) and is the only check that
-actually measures what was wanted.
+for anything whose whole purpose is later retrieval, read it back in the same
+session and check its identity AND content. Confirm every returned `memory_id`
+is present in the retrieved results with the intended content. If retrieval does
+not expose ids, include a unique marker in the content before the retain and
+require that marker and the intended content in the same recalled item. A
+same-topic memory from an earlier write is not proof; domain terms help find
+candidates, but only the identity-bound check can verify this write.
 
-**Enforced by.** Convention. The mechanical form would be a wrapper that refuses
-a retain result with no `memory_ids` and re-issues it, which is worth building
-if this recurs.
+**Enforced by.** Convention. A future wrapper should reject empty `memory_ids`
+and stop for reconciliation, with zero automatic retries: an empty result or a
+timeout does not prove that no document was created. Any future automatic retry
+must first have a verified provider idempotency guarantee using the same stable
+key for the same logical write, or an equivalent duplicate-prevention mechanism,
+and a finite attempt limit. Without that protection, do not re-issue the write.
 
 **Follow-up, same session.** Chasing the stall produced a second lesson about
 claiming causes. I checked the local model endpoint, found the model named in
