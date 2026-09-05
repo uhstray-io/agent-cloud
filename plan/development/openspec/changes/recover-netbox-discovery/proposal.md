@@ -4,7 +4,7 @@
 
 **Status:** PROPOSED
 
-**Context:** Evidence-first recovery of the existing discovery pipeline; planning only.
+**Context:** Evidence-first recovery contract plus a bounded metadata inspector; live recovery remains unimplemented.
 
 ## Why
 
@@ -31,6 +31,8 @@ None. The current main spec inventory contains `platform/n8n-automation`; no exi
 ## Impact
 
 Expected implementation touchpoints are the existing NetBox discovery workers and agent template, discovery checker and deployment tasks, discovery credential seeding helper, scoped OpenBao policy, and Semaphore declarations. A dedicated read-only NetBox observation path may be added or reused; repair of the broader device-creation token provisioner is conditional on proving it is needed for this recovery and does not expand into Build #1 delivery.
+
+The bounded operator-side Request A metadata inspector and offline tests are included in this change. They do not execute a live diagnosis or close task 1.1; the remaining recovery behavior is proposed.
 
 Dependencies: reachable Semaphore/OpenBao, the current NetBox/Diode stack, source endpoints and authorized credential material, a representative Linux validation host for real network/SNMP scans, and private site-config declarations for enabled sources and expected objects. Public artifacts contain no live addresses, credentials, or topology. See [design](design.md) for source evidence and [tasks](tasks.md) for ordered implementation and validation gates.
 

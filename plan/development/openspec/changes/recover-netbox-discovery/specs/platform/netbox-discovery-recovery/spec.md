@@ -26,7 +26,7 @@ Diagnostic and acceptance runs SHALL be read-only against NetBox, source devices
 
 ### Requirement: Source selection is explicit and fail closed
 
-The enabled-source set, allowed targets, schedule, runtime bound, ingestion deadline, freshness threshold, and expected-object declarations SHALL be validated configuration. Proxmox, pfSense, network, and SNMP SHALL retain their current enabled status unless explicitly changed through reviewed configuration. Missing or invalid configuration, an empty enabled set, and missing credentials MUST NOT produce an overall recovered verdict. An explicitly disabled source SHALL appear as disabled with its recorded reason, never as successfully recovered. Missing credentials MUST NOT silently disable SNMP.
+The enabled-source set, allowed targets, schedule, runtime bound, ingestion deadline, credential-consumption deadline, freshness threshold, and expected-object declarations SHALL be validated configuration. Proxmox, pfSense, network, and SNMP SHALL retain their current enabled status unless explicitly changed through reviewed configuration. Missing or invalid configuration, an empty enabled set, and missing credentials MUST NOT produce an overall recovered verdict. An explicitly disabled source SHALL appear as disabled with its recorded reason, never as successfully recovered. Missing credentials MUST NOT silently disable SNMP.
 
 #### Scenario: Enabled SNMP has no usable credential
 - **WHEN** SNMP remains enabled and its credential is absent or denied
@@ -55,6 +55,12 @@ Recovery SHALL validate required nonempty fields, a matching identity-and-secret
 #### Scenario: Interrupted rotation can resume safely
 - **WHEN** recovery stops after candidate creation or verification and is retried
 - **THEN** it reuses and revalidates the recorded candidate or safely reports the unresolved state, does not mint a duplicate, and does not retire the last working credential before successful selection
+
+First recovery after credential selection SHALL independently prove consumption of the selected version by the running agent, followed by successful source authentication and the accepted cycle, within a positive finite configured consumption deadline. Non-secret evidence SHALL record selected KV version, selection time and consumption time; when native consumption evidence is unavailable, an explicitly authorized recorded reload of that version followed by authentication from the agent is required. Missing evidence or a cycle using an older version MUST NOT pass. Retries MUST reuse the original selection/deadline. First-recovery freshness SHALL include this consumption allowance in addition to the cycle budget; steady-state freshness MUST NOT repeatedly extend itself by that allowance.
+
+#### Scenario: Old or unobserved credential consumption cannot pass
+- **WHEN** a credential was selected but a cycle uses an older version, consumption cannot be proved, or the consumption deadline expires, including after retry
+- **THEN** first recovery remains non-healthy without automatic reload or deadline reset, and acceptance requires timely consumption evidence and successful agent source authentication for the selected version
 
 ### Requirement: Secrets stay within the credential boundary
 
