@@ -58,7 +58,7 @@ flowchart TB
 |---|---|---|
 | Secrets | OpenBao (persistent file backend; generated locally, seed fixtures carry `LOCAL_FAKE_`; survives restart) | OpenBao (real, source of truth) |
 | Orchestration | Semaphore (1 container, SQLite) | Semaphore (full) |
-| **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy `forward_auth` (NetBox/OpenBao/n8n)** | **same Authentik + blueprints; real OIDC clients** |
+| **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext/OpenBao) + Caddy `forward_auth` (NetBox/OpenBao/n8n); n8n also keeps its own owner login** | **same Authentik + blueprints; real OIDC clients** |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
 | Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
 | Engine | local Semaphore controls the VM's rootful Podman socket | rootless Podman default; declared Docker exceptions |
@@ -75,7 +75,7 @@ podman machine init         # if you don't already have a machine
 podman machine start
 ```
 
-**Stand it up — one command:**
+**Start the foundation and host wiring:**
 
 ```bash
 make local-bootstrap        # secure foundation + OIDC Semaphore
@@ -273,7 +273,7 @@ Other services need their own declared deployment and validation.
 | n8n | Tier-3 | implemented | workflow automation; `forward_auth` + seeded owner account |
 | NetBox | Tier-3 | legacy app-only helper | Podman app-tier script exists; local Docker setup is not established. Production is the current discovery-validation target; do not use the direct container-to-IPAM helper as a sanctioned discovery path |
 | UhhCraft | Tier-3 | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
-| Postiz | Tier-3 | local bring-up recorded | Separate `make local-deploy-postiz`; five-container base plus required search overlay. Sign-in and scheduled-publish verification remain open |
+| Postiz | Tier-3 | local bring-up recorded | Separate `make local-deploy-postiz`; five-container base plus required search overlay. Local sign-in and API-key checks passed on 2026-09-05; scheduled publishing remains open (see the Postiz README) |
 | NocoDB | Tier-3 | retired | Kept for decommissioning; do not start a new migration/deployment from the old plan |
 
 ---
