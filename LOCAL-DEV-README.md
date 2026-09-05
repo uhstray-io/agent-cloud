@@ -1,25 +1,27 @@
 # agent-cloud — Local Dev
 
-Run the whole agent-cloud platform on your laptop the same way production runs:
+Run the supported agent-cloud profiles on your laptop using the production
+automation model:
 a local **Semaphore** control plane executes the **same Ansible playbooks** that
 deploy prod, with credentials injected the same way. You develop and test
 against a real control plane, then promote validated changes upstream.
 
 > **Paradigm: "make bootstraps, Semaphore operates."** The `Makefile` only
 > provisions the secure foundation (engine, OpenBao, DNS, internal CA, ingress,
-> the Authentik IdP, and Semaphore). Everything after that — every Tier-3 service
-> deploy — runs *through* local Semaphore, exactly like prod. No **production**
-> credentials touch your laptop: every secret is generated locally into OpenBao
-> (seed/fixture values carry a `LOCAL_FAKE_` prefix so they can never pass as real).
+> Authentik, and Semaphore). Supported service deploys use local Semaphore.
+> The existing `local-netbox` helper is a legacy direct app-tier exception, not
+> production discovery validation. Keep production service credentials out of
+> local configuration. Fixture seeds use `LOCAL_FAKE_`; generated local login
+> credentials are real secrets for the local environment.
 
 - **Operate / triage reference:** [`docs/LOCAL-DEV.md`](docs/LOCAL-DEV.md)
-- **Full design + rationale:** [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](plan/development/LOCAL-DEV-DEPLOYMENT.md)
+- **Full design + rationale:** [`plan/development/00-foundation-local-dev.md`](plan/development/00-foundation-local-dev.md)
 
 ---
 
 ## High-level architecture
 
-Everything runs inside one podman-machine VM on your Mac. `make` stands up the
+The default local control plane runs inside one podman-machine VM on your Mac. `make` stands up the
 control plane once; from then on you drive local Semaphore, which runs the
 composable playbooks against the VM's container engine. DNS + Caddy give every
 app a real hostname with TLS.
@@ -59,7 +61,7 @@ flowchart TB
 | **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy `forward_auth` (NetBox/OpenBao/n8n)** | **same Authentik + blueprints; real OIDC clients** |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
 | Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
-| Engine | podman (Docker only where root is required) | same split |
+| Engine | local Semaphore controls the VM's rootful Podman socket | rootless Podman default; declared Docker exceptions |
 
 ---
 
@@ -76,22 +78,23 @@ podman machine start
 **Stand it up — one command:**
 
 ```bash
-make local-all              # EVERYTHING in dependency order: full stack +
-                            # macOS DNS resolver + internal-CA trust (asks for sudo)
+make local-bootstrap        # secure foundation + OIDC Semaphore
+make local-dns-resolver     # macOS name resolution (sudo)
+make local-tls-trust        # trust the local CA (sudo)
 ```
 
-`make local-all` runs the whole sequence so `*.agent-cloud.test` works in your
-browser: genesis (OpenBao + the secure foundation dns/step-ca/caddy/authentik +
-OIDC-secured Semaphore, §12A) → Tier-3 services → the macOS host wiring (DNS
-resolver + CA trust). Order matters and it handles it. The host steps ask for
-sudo once; everything is idempotent (safe to re-run — and re-running re-trusts
-the current CA root after a `local-clean` rebuild minted a new one).
+`make local-all` remains a convenience target for a fixed subset: foundation,
+o11y, OPA, ERPNext, the legacy NetBox app-tier helper, and best-effort n8n,
+followed by host DNS/TLS wiring. It does not deploy every service in the catalog;
+an n8n failure does not fail that target. Validate the required services explicitly.
+The NetBox helper is not a Semaphore-driven full-stack deployment and does not
+establish production discovery health.
 
 Prefer the steps à la carte? They all still exist:
 
 ```bash
 make local-bootstrap        # genesis only (foundation + OIDC Semaphore), no sudo
-make local-up               # bootstrap + Tier-3 (o11y/opa/erpnext/netbox/n8n), no sudo
+make local-up               # fixed subset above; includes legacy NetBox helper
 make local-dns-resolver     # point macOS at local DNS (sudo)
 make local-tls-trust        # trust the internal CA root (sudo)
 ```
@@ -111,7 +114,10 @@ make local-deploy-<name>    # e.g. make local-deploy-uhhcraft
 make local-validate         # health-check everything deployed
 ```
 
-To reset: `make local-clean` then `make local-bootstrap`.
+**Destructive reset:** `make local-clean` deletes the local OpenBao/Semaphore
+containers, their data volumes and tool-owned state. It leaves other service
+volumes behind; new secrets may then disagree with those volumes. Back up state
+and plan the matching service recovery before resetting.
 
 ---
 
@@ -152,9 +158,8 @@ Two things worth knowing up front:
   the default URL is `https://app.agent-cloud.test:8443`. For **clean, port-free**
   `https://app.agent-cloud.test`, run `make local-https` once: it installs a persistent,
   idempotent root LaunchDaemon (`socat`) that forwards `443→8443` and `80→8088`
-  and survives reboots (`make local-https-down` removes it). This is the only
-  way to get `:443` on macOS without running everything as root, and it's built
-  into the tooling rather than a manual hack.
+  and survives reboots (`make local-https-down` removes it). This is the supported
+  privileged-port path supplied by the local tooling.
 - **Browser TLS warning → one command.** Caddy serves a wildcard cert issued by
   the platform's internal CA, **step-ca** (a stable root that survives
   redeploys). Browsers warn (`NET::ERR_CERT_AUTHORITY_INVALID`) until you trust
@@ -213,14 +218,11 @@ to Authentik and back.
 
 ## Why some steps ask for `sudo`
 
-**Deploying a service never needs sudo.** Every service deploy runs through
-local Semaphore, and the control plane and all containers run *unprivileged*
-inside the podman VM. Sudo is requested only by a few **host-setup** `make`
-targets — and only because they change files on **macOS itself** that live
-*outside* the podman VM. That's also *why* they can't run through Semaphore
-(the control plane can't reach your Mac's system dirs or trust store): they're a
-one-time host bootstrap that `make` does for you. Each is **idempotent**
-(re-running is a safe no-op) and **reversible**.
+Mac host setup and VM/container privileges are separate. Resolver, trust-store
+and privileged-port wiring need Mac administrator access. Local Semaphore uses
+the **rootful Podman socket inside the VM**, so “no Mac sudo prompt” does not
+mean rootless containers. Service playbooks may also use Ansible `become` for
+their declared host setup; inspect the playbook rather than assuming no privilege.
 
 | Step | What it changes on your Mac | Why it needs root | Required? |
 |---|---|---|---|
@@ -238,8 +240,8 @@ In practice:
   (pass `--yes` / `ASSUME_YES=1` to skip the prompt in scripts).
 - **Undo any of them:** `make local-tls-untrust`, `make local-https-down`, or
   delete `/etc/resolver/<zone>`.
-- **Nothing else uses sudo.** If a *deploy* ever prompts for root, that's a bug —
-  deploys are unprivileged by design.
+- **VM privilege is separate.** A service task may require declared `become`;
+  keep credentials in the existing OpenBao-backed resolver, not ad-hoc prompts.
 
 > **Zone note:** the local zone is `agent-cloud.test` — under the RFC 6761
 > reserved `.test` TLD (never publicly resolvable; no mDNS clash like `.local`;
@@ -251,27 +253,28 @@ In practice:
 
 ---
 
-## What you can run locally today
+## Available local profiles
 
-`make local-all` brings up the whole table below (foundation via genesis, Tier-3
-through Semaphore), all behind Caddy TLS + Authentik SSO.
+This table describes checked-in profiles and recorded validation, not a live
+health snapshot. `make local-all` covers only the fixed subset described above.
+Other services need their own declared deployment and validation.
 
-| Service | Tier | Status | Notes |
+| Service | Tier | Profile | Notes |
 |---|---|---|---|
-| OpenBao | genesis | ✅ | persistent secrets backend + AppRole injection |
-| hickory-dns | genesis | ✅ | authoritative for `*.agent-cloud.test`, forwards the rest |
-| step-ca | genesis | ✅ | internal CA; stable root issues the wildcard Caddy serves (`make local-tls-trust` to trust it) |
-| Caddy | genesis | ✅ | reverse proxy + internal-CA TLS + the SSO gates |
-| Authentik | genesis | ✅ | central IdP/SSO — OIDC + `forward_auth` live; `agent-cloud-admin` seeded into `platform-admins` |
-| Semaphore | genesis | ✅ | control plane; boots OIDC-secured; `agent-cloud-admin` is a global admin |
-| o11y (Grafana/Prometheus/Loki/Alloy) | Tier-3 | ✅ | observability; Grafana login via Authentik OIDC |
-| OPA | Tier-3 | ✅ | Guardrail-layer agent-action policy engine (`opa test` in the deploy) |
-| ERPNext | Tier-3 | ✅ | slim local tier; login via Authentik OIDC |
-| n8n | Tier-3 | ✅ | workflow automation; `forward_auth` + seeded owner account |
-| NetBox | Tier-3 | ✅ | app tier **under podman** (no Docker — see `plan/development/NETBOX-LOCAL-ENGINE.md`); `forward_auth` + header `REMOTE_AUTH`. `make local-netbox` → `make local-netbox-discover` |
+| OpenBao | genesis | implemented | persistent secrets backend + AppRole injection |
+| hickory-dns | genesis | implemented | authoritative for `*.agent-cloud.test`, forwards the rest |
+| step-ca | genesis | implemented | internal CA; stable root issues the wildcard Caddy serves (`make local-tls-trust` to trust it) |
+| Caddy | genesis | implemented | reverse proxy + internal-CA TLS + the SSO gates |
+| Authentik | genesis | implemented | central IdP/SSO — OIDC + `forward_auth` live; `agent-cloud-admin` seeded into `platform-admins` |
+| Semaphore | genesis | implemented | control plane; boots OIDC-secured; `agent-cloud-admin` is a global admin |
+| o11y (Grafana/Prometheus/Loki/Alloy) | Tier-3 | implemented | observability; Grafana login via Authentik OIDC |
+| OPA | Tier-3 | implemented | Guardrail-layer agent-action policy engine (`opa test` in the deploy) |
+| ERPNext | Tier-3 | implemented | slim local tier; login via Authentik OIDC |
+| n8n | Tier-3 | implemented | workflow automation; `forward_auth` + seeded owner account |
+| NetBox | Tier-3 | legacy app-only helper | Podman app-tier script exists; local Docker setup is not established. Production is the current discovery-validation target; do not use the direct container-to-IPAM helper as a sanctioned discovery path |
 | UhhCraft | Tier-3 | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
-| Postiz | Tier-3 | 🧪 code-complete | `make local-deploy-postiz`; 5 containers, native Authentik OIDC at `postiz.agent-cloud.test`; pending first local bring-up |
-| NocoDB | Tier-3 | 📋 planned | composable local profile not yet added |
+| Postiz | Tier-3 | local bring-up recorded | Separate `make local-deploy-postiz`; five-container base plus required search overlay. Sign-in and scheduled-publish verification remain open |
+| NocoDB | Tier-3 | retired | Kept for decommissioning; do not start a new migration/deployment from the old plan |
 
 ---
 
@@ -298,7 +301,7 @@ the secret flow (OpenBao → AppRole → `.env`), Semaphore template wiring, com
 validity, healthchecks. What it **can't** prove (and the branch-deploy gate
 covers): real credential values, multi-VM networking, public TLS/DNS, production
 data shapes. Full contract + the risk-class table are in the
-[plan](plan/development/LOCAL-DEV-DEPLOYMENT.md) (§7–§8).
+[plan](plan/development/00-foundation-local-dev.md) (§7–§8).
 
 ---
 
@@ -308,9 +311,9 @@ data shapes. Full contract + the risk-class table are in the
 |---|---|
 | `make local-preflight` | verify toolchain + podman machine |
 | `make local-init` | create the gitignored working inventory (`REFRESH=1` to regenerate) |
-| `make local-all` | **EVERYTHING in dependency order**: genesis + Tier-3 + macOS DNS resolver + CA trust (sudo); prints the SSO login at the end |
+| `make local-all` | Fixed subset described above, then Mac DNS/TLS wiring and local credentials; n8n is best-effort |
 | `make local-bootstrap` | Genesis: OpenBao + secure foundation (dns, step-ca, caddy, authentik) + OIDC-secured Semaphore (no sudo) |
-| `make local-up` | genesis (bootstrap) **+ Tier-3** services through Semaphore (no sudo) |
+| `make local-up` | Foundation plus o11y/OPA/ERPNext, legacy NetBox helper and best-effort n8n |
 | `make local-creds` | show the Authentik SSO logins (`agent-cloud-admin` + `akadmin`) for browser testing |
 | `make local-deploy-<svc>` | deploy a single service through local Semaphore |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |
@@ -322,6 +325,6 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-validate` | health-check all deployed services |
 | `make local-smoke` | smoke-test the live stack (control plane, DNS, Caddy/TLS, NetBox); `ARGS=--full` adds lint+BATS |
 | `make local-netbox` | bring up the NetBox app tier under podman |
-| `make local-netbox-discover` | discover the running containers into NetBox as VMs (interim; slated to become a Diode-based read-only reflection — see [`SOURCE-OF-TRUTH.md`](plan/development/SOURCE-OF-TRUTH.md) D5) |
-| `make local-clean` | tear down the control plane |
+| `make local-netbox-discover` | Legacy direct ORM writer: records running containers as VMs. Conflicts with the IPAM authority model; not the supported discovery path |
+| `make local-clean` | **Destructive:** deletes local control-plane data and secrets; other service volumes remain |
 | `make promote` | fast checks → push feature branch → PR into `dev` |

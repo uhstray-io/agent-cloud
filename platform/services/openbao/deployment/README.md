@@ -4,9 +4,9 @@ Secrets management backbone for the agent-cloud platform. Provides KV v2 secrets
 
 ## Deploy
 
-```bash
-bash deploy.sh
-```
+Use the Semaphore **Deploy OpenBao** template for an existing platform. Fresh local
+genesis uses `make local-bootstrap` from the repository root. `deploy.sh` is the
+internal bootstrap implementation, not a workstation deployment entrypoint.
 
 The script is idempotent (safe to re-run) and performs 7 steps:
 1. Start OpenBao container
@@ -21,7 +21,7 @@ The script is idempotent (safe to re-run) and performs 7 steps:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OPENBAO_LISTEN` | `0.0.0.0` | Bind address for port 8200 |
+| `OPENBAO_LISTEN` | `127.0.0.1` | Bind address for port 8200 |
 | `NOCODB_URL` | placeholder | NocoDB service URL for seed secrets |
 | `N8N_URL` | placeholder | n8n service URL for seed secrets |
 | `SEMAPHORE_URL` | placeholder | Semaphore service URL for seed secrets |
@@ -37,13 +37,6 @@ Generated files in `secrets/` are gitignored. Back them up to `site-config/secre
 
 ## Policies
 
-All policy files in `config/policies/` define least-privilege access:
-
-| Policy | Scope | Used By |
-|--------|-------|---------|
-| `nemoclaw-read` | Read `secret/services/*` | NemoClaw agent |
-| `nemoclaw-rotate` | Read `database/creds/nemoclaw-role` | NemoClaw (dynamic DB) |
-| `nocodb-write` | CRUD `secret/services/nocodb` | NocoDB deploy |
-| `n8n-write` | CRUD `secret/services/n8n` | n8n deploy |
-| `semaphore-write` | CRUD `secret/services/semaphore` | Semaphore deploy |
-| `semaphore-read` | Read `secret/services/*` | Semaphore playbooks |
+Policy scopes are documented in [config/policies/README.md](config/policies/README.md).
+Use the declared policy files and policy-application playbooks; do not maintain a
+second policy inventory here or edit live policies through ad-hoc API calls.

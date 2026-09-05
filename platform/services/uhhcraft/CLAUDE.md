@@ -89,6 +89,6 @@ If a value is sensitive (key, password, token), it goes in `.env` (and `template
 
 - Spec + alignment: [`context/spec/SPEC.md`](context/spec/SPEC.md)
 - AI sidecar contract: [`context/architecture/ai-sidecar-contract.md`](context/architecture/ai-sidecar-contract.md)
-- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md)
+- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/07-websmith-uhhcraft.md)
 - Root conventions: [`../../../CLAUDE.md`](../../../CLAUDE.md)
 - Reference deploy (NetBox): [`../netbox/deployment/CLAUDE.md`](../netbox/deployment/CLAUDE.md)

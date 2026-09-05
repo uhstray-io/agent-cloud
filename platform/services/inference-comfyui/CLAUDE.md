@@ -64,5 +64,5 @@ upstream/MinIO failures to `503 {error, detail}` and returns a Caddy-routed
 - Sibling sidecar: [`../inference-hunyuan3d/CLAUDE.md`](../inference-hunyuan3d/CLAUDE.md)
 - Consumer (UhhCraft): [`../uhhcraft/CLAUDE.md`](../uhhcraft/CLAUDE.md)
 - HTTP contract: [`context/architecture/contract.md`](context/architecture/contract.md)
-- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md)
+- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/07-websmith-uhhcraft.md)
 - Root conventions: [`../../../CLAUDE.md`](../../../CLAUDE.md)

@@ -1,8 +1,8 @@
 # authentik service — architecture (context for agents)
 
 Authentik as the platform's central **IdP / SSO**. Read with the root
-[`CLAUDE.md`](../../../../CLAUDE.md) and the plan it implements:
-[`plan/development/AUTH-SSO-DEPLOYMENT.md`](../../../../plan/development/AUTH-SSO-DEPLOYMENT.md).
+[`CLAUDE.md`](../../../../../AGENTS.md) and the plan it implements:
+[`plan/development/02-sso-auth.md`](../../../../../plan/development/02-sso-auth.md).
 
 ## What it is
 

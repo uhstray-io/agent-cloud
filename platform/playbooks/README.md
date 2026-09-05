@@ -24,8 +24,9 @@ There are two deployment patterns in use:
 # deploy-netbox.yml (composable pattern — abbreviated)
 # Phase 1: Clone repo, manage-secrets.yml (OpenBao fetch/generate, Jinja2 templates)
 # Phase 2: Run deploy.sh (container lifecycle only)
-# Phase 3: Application bootstrap + Diode credential sync
-# Phase 4: Health verification
+# Phase 3: Application bootstrap
+# Phase 4: Diode credential sync
+# Phase 5: Login endpoint verification
 ```
 
 See `plan/architecture/01-automation-model.md` for the full composable pattern specification.
@@ -34,7 +35,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 
 | Variable | Source | Notes |
 |----------|--------|-------|
-| `ansible_user` | Inventory (private) | No defaults in playbooks — must be set in inventory |
+| `ansible_user` | Inventory (private) | Declare explicitly; individual playbooks may supply fallback values |
 | `service_name` | Inventory per-host | e.g., `nocodb`, `openbao` |
 | `monorepo_deploy_path` | Inventory per-host | Path within monorepo to deploy.sh |
 | `monorepo_repo` | Inventory global | Git SSH URL |
@@ -50,7 +51,10 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 - `deploy-service.yml` — `become: false` (runs deploy.sh as the service user)
 - `provision-vm.yml` — runs against Proxmox API, no SSH become
 
-When a playbook needs become, pass `ansible_become_password` via a Semaphore environment if NOPASSWD sudo is not configured.
+Before privileged tasks, use `tasks/resolve-become-password.yml` to read the
+bootstrap sudo password from OpenBao. Disable automatic fact gathering when it
+would escalate before this resolver. Do not introduce a second password copy in
+Semaphore environment variables.
 
 ### Delegate Tasks
 
@@ -95,10 +99,10 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Pattern | Purpose |
 |----------|---------|---------|
 | `deploy-service.yml` | Legacy | Generic deploy: clone monorepo, run deploy.sh, health check |
-| `deploy-all.yml` | Mixed | Deploy all services in dependency order (4 phases) |
+| `deploy-all.yml` | Legacy aggregate | Covers OpenBao, NocoDB, n8n, NetBox and NemoClaw through the legacy clone task; not a complete current-platform deployment or recovery path |
 | `deploy-openbao.yml` | Legacy | Deploy OpenBao (self-bootstrapping, special case) |
-| `deploy-nocodb.yml` | Legacy | Deploy NocoDB (migration to composable planned) |
-| `deploy-n8n.yml` | Legacy | Deploy n8n (migration to composable planned) |
+| `deploy-nocodb.yml` | Legacy | Retained for retired NocoDB; decommissioning is separate, not a new composable migration |
+| `deploy-n8n.yml` | Composable | Stateful-secret cutover guard, readiness-gated app/worker, verification and owner setup; use the service README for upgrades |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
 | `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
@@ -116,9 +120,9 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 |----------|---------|
 | `update-service.yml` | Generic update: pull images, restart compose, health check |
 | `update-nocodb.yml` | Update NocoDB |
-| `update-n8n.yml` | Update n8n |
+| `update-n8n.yml` | Legacy generic update wrapper; use the composable `deploy-n8n.yml` and backup/restore runbook for current n8n |
 | `update-semaphore.yml` | Update Semaphore |
-| `update-netbox.yml` | Update NetBox |
+| `update-netbox.yml` | Legacy generic update wrapper; current full service configuration uses `deploy-netbox.yml`, with Orb Agent deployed separately |
 | `update-uhhcraft.yml` | Update UhhCraft |
 | `update-inference-comfyui.yml` | Update ComfyUI sidecar |
 | `update-inference-hunyuan3d.yml` | Update Hunyuan3D sidecar |
@@ -157,7 +161,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Purpose |
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
-| `check-discovery.yml` | Validate NetBox Diode discovery pipeline health |
+| `check-discovery.yml` | Mixed diagnostic/mutation workflow: queries logs/records, tolerates query errors and writes site coordinates. Not read-only or a full recovery gate |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
@@ -183,10 +187,11 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 `bootstrap-local-dev.yml` (run with `--tags bootstrap`; the only playbook
 permitted to run unorchestrated — Critical Rule #1 bootstrap exemption via
 `_bootstrap_play: true` + the tag) provisions the local control plane:
-dev-mode OpenBao + local AppRole + `LOCAL_FAKE_` seeds, a pinned single-container
+persistent-file OpenBao + local AppRole + `LOCAL_FAKE_` fixture seeds, a pinned single-container
 Semaphore (SQLite), an automatically-created API token, project resources, and
 the full template catalog (`templates.yml` + `templates-local.yml`).
-State: `~/.agent-cloud-local/credentials.env`. See `docs/LOCAL-DEV.md`.
+State is under `~/.agent-cloud-local/` (including `credentials.env` and local
+OpenBao initialization material). See [`docs/LOCAL-DEV.md`](../../docs/LOCAL-DEV.md).
 
 ### Composable Task Library
 
@@ -219,6 +224,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/mint-internal-cert.yml` | Implemented | Mint a certificate from the internal step-ca |
 | `tasks/manage-cloudflare-record.yml` | Implemented | Create/update one Cloudflare DNS record |
 | `tasks/registry-login.yml` | Implemented | Authenticate the container engine to a registry |
+| `tasks/resolve-become-password.yml` | Implemented | Resolve the bootstrap sudo password from OpenBao before privileged tasks; leave sanitized status visible |
 | `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`LOCAL-DEV-DEPLOYMENT.md` §11) |
 
 Planned tasks (not yet implemented):
@@ -235,7 +241,7 @@ Planned tasks (not yet implemented):
 
 ## Adding a New Service
 
-For the complete onboarding checklist (7 phases, all tiers), see `plan/architecture/SERVICE-INTEGRATION-PLAN.md`.
+For the complete onboarding checklist (7 phases, all tiers), see `plan/architecture/02-service-onboarding.md`.
 
 **Quick reference for the composable pattern (preferred for all new services):**
 

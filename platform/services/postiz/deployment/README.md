@@ -1,5 +1,15 @@
 # postiz — social-media scheduling and publishing
 
+> **Validation status — 2026-09-05:** local Semaphore task 288 restored all six containers.
+> Fresh logout → Authentik → calendar sign-in passed; backend TLS returned 200,
+> the retained API key returned 200, and absent/wrong keys returned 401.
+> Scheduled-publish verification remains open. The production
+> host's SSH hardening/firewall checks passed (Semaphore tasks 393/395/396),
+> which does not establish application deployment. The production secret check
+> reported no Postiz record (task 391); production deploy, sign-in, API-key
+> capture and publishing verification remain pending. Recheck current state
+> before operations; this is a dated result, not continuous monitoring.
+
 Self-hosted [Postiz](https://postiz.com). Composes and schedules social posts through
 an Authentik-authenticated web interface, and exposes an API-key endpoint that n8n
 drives to automate post creation, media upload, and scheduling.

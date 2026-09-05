@@ -79,6 +79,6 @@ Per root [`CLAUDE.md`](../../../../../../CLAUDE.md), this is the **only** way to
 ## Related
 
 - Root [`CLAUDE.md`](../../../../../../CLAUDE.md) — "Policy and Configuration Changes — Code Only" rule.
-- [`plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md`](../../../../../../plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) — secret generation, rotation, retirement.
+- [`plan/architecture/04-credentials-access.md`](../../../../../../plan/architecture/04-credentials-access.md) — secret generation, rotation, retirement.
 - [`platform/playbooks/tasks/apply-openbao-policy.yml`](../../../../../playbooks/tasks/apply-openbao-policy.yml) — the API-side mechanics.
 - [`platform/playbooks/tasks/manage-approle.yml`](../../../../../playbooks/tasks/manage-approle.yml) — provision an AppRole bound to a policy (what activating a Reserved policy looks like).

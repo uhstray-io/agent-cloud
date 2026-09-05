@@ -1,37 +1,29 @@
 # Local Development
 
-Laptop-resident agent-cloud per `plan/development/LOCAL-DEV-DEPLOYMENT.md`:
+Laptop-resident agent-cloud per `plan/development/00-foundation-local-dev.md`:
 **make bootstraps, Semaphore operates.** The bootstrap stands up a local
-control plane; everything after runs through local Semaphore templates using
-the unchanged composable playbooks, with AppRole credential injection exactly
-as in production. No real credentials ever exist on the machine — every
-generated value carries the `LOCAL_FAKE_` prefix.
+control plane; supported service profiles use local Semaphore templates and
+OpenBao AppRole injection. Fixture seeds use `LOCAL_FAKE_`, while generated local
+credentials are real local secrets. Do not import production service credentials.
+The legacy NetBox app-only helper bypasses Semaphore and is not proof of the full
+production discovery path.
 
-## Quickstart (current state — Phase 1)
+## Quickstart
 
 ```bash
 brew bundle                                  # toolchain (Brewfile; podman-compose + jq required)
 podman machine start                         # if not already running
-make local-all                               # EVERYTHING in dependency order:
-                                             # full stack + macOS DNS resolver +
-                                             # internal-CA trust (asks for sudo)
+make local-bootstrap                         # secure foundation + local Semaphore
+make local-dns-resolver                      # Mac resolver (sudo)
+make local-tls-trust                         # local CA trust (sudo)
 ```
 
-`make local-all` chains, in dependency order: **genesis** (`local-bootstrap` —
-OpenBao + the secure foundation dns/step-ca/caddy/authentik + OIDC-secured
-Semaphore, Mac-direct, §12A) → **Tier-3** (`local-up` — o11y/opa/erpnext/netbox/n8n
-through Semaphore) → **host wiring** (`local-dns-resolver` + `local-tls-trust`,
-sudo). It's idempotent; re-running also re-trusts the current step-ca root after a
-`local-clean` rebuild minted a new one. À la carte targets still exist:
-
-```bash
-make local-bootstrap                         # genesis only (no sudo)
-make local-up                                # bootstrap + Tier-3 (no sudo)
-make local-dns-resolver                      # macOS /etc/resolver (sudo)
-make local-tls-trust                         # trust internal CA root (sudo)
-make local-deploy-<service>                  # one service, e.g. local-deploy-uhhcraft
-make local-validate
-```
+`make local-all` attempts a fixed subset after bootstrap: o11y, OPA, ERPNext,
+the legacy direct NetBox app helper, and best-effort n8n, then Mac DNS/TLS wiring.
+It does not deploy the full service catalog or fail when n8n alone fails. Use
+`make local-deploy-<service>` for supported Semaphore profiles and
+`make local-validate` for current checks. NetBox production discovery is the
+current validation target; local Docker setup for NetBox is not established.
 
 dns/step-ca/caddy/authentik are no longer separate bring-up steps — genesis owns them.
 
@@ -93,25 +85,27 @@ State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 
 ## Driving the local Semaphore
 
+Use the existing worktree-bound dispatcher instead of hand-building task requests:
+
 ```bash
-set -a; source ~/.agent-cloud-local/credentials.env; set +a
-
-# list templates
-curl -s -H "Authorization: Bearer $SEMAPHORE_TOKEN" \
-  "$SEMAPHORE_URL/api/project/$SEMAPHORE_PROJECT_ID/templates" | jq '.[].name'
-
-# run one (example: Check Secrets against the uhhcraft_svc group)
-curl -s -X POST -H "Authorization: Bearer $SEMAPHORE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"template_id": <id>, "project_id": 1, "environment": "{\"target_service\": \"uhhcraft_svc\"}"}' \
-  "$SEMAPHORE_URL/api/project/$SEMAPHORE_PROJECT_ID/tasks"
+./scripts/local-dev.sh run check-secrets '{"target_service":"uhhcraft_svc"}'
+make local-deploy-n8n
+make local-validate
 ```
+
+It resolves the registered template by playbook name, passes explicit extra vars,
+waits for completion and returns the task result. Operator state lives outside
+the repository; do not print or copy its credential file into documentation.
 
 The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
 `local-validate`, `local-clean`, `promote`) wrap this flow via
 `scripts/local-dev.sh`, which also enforces the local-only guard (refuses
 non-local inventories and non-local `openbao_addr`).
 
-## Port map (registry of record)
+## Local port reference
+
+Inventory and compose declarations own these values; this table is not a live
+health inventory. Check the rendered configuration for the selected environment.
 
 | Service | Local port | Notes |
 |---|---|---|
@@ -120,22 +114,23 @@ non-local inventories and non-local `openbao_addr`).
 | UhhCraft | 127.0.0.1:3001 | shifted from 3000 via `${UHHCRAFT_PORT:-3001}` |
 | n8n (P2) | 127.0.0.1:5678 | |
 | NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
-| NetBox | 127.0.0.1:8000 | **deployed + working under podman** (not Docker — see NETBOX-LOCAL-ENGINE.md §4b); app tier only. `make local-netbox` then `make local-netbox-discover` (feeds running containers in as VMs). admin / LOCAL_FAKE_admin |
+| NetBox | 127.0.0.1:8000 | App-only Podman helper exists; no current local Docker validation. Do not feed containers directly into IPAM as VMs |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
-| hickory-dns | 127.0.0.1:5300 | **deployed + working**; authoritative for `*.agent-cloud.test`; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
-| step-ca | 127.0.0.1:9000 | **deployed + working**; internal CA (stable root in `step-ca-data`); Caddy reaches `step-ca:9000` on `local-dev`; issues the `*.agent-cloud.test` wildcard. `make local-deploy-step-ca` |
-| Caddy | 127.0.0.1:8088 / 8443 | **deployed + working**; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
-| Authentik | 127.0.0.1:9300 | **deployed + working + gating**; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`. Gates Grafana (OIDC) + NetBox (forward_auth) — see SSO section below |
+| hickory-dns | 127.0.0.1:5300 | declared profile; authoritative for `*.agent-cloud.test`; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
+| step-ca | 127.0.0.1:9000 | declared profile; internal CA (stable root in `step-ca-data`); Caddy reaches `step-ca:9000` on `local-dev`; issues the `*.agent-cloud.test` wildcard. `make local-deploy-step-ca` |
+| Caddy | 127.0.0.1:8088 / 8443 | declared profile; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
+| Authentik | 127.0.0.1:9300 | declared profile; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`. Gates Grafana (OIDC) + NetBox (forward_auth) — see SSO section below |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
-| OPA | 127.0.0.1:8281 | **deployed + working**; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281 (8181 is NocoDB's bind). Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
-| o11y | 3002 / 9090 / 3100 | **deployed + working**; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
+| OPA | 127.0.0.1:8281 | declared profile; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281 (8181 is NocoDB's bind). Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
+| o11y | 3002 / 9090 / 3100 | declared profile; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
 
 ## Engine split
 
-podman machine is the default engine (prod's default); Docker Desktop is used
-**only** for root-requiring services (today: the NetBox app profile). Both VMs
-should not run heavy workloads simultaneously on small machines — see the
-reference-machine allocations in the plan (§5).
+The local control plane uses Podman, with the VM's **rootful** engine socket
+mounted into Semaphore. Production defaults to rootless Podman for most services;
+NetBox's full-stack path defaults to Docker, while a separate local app-only
+Podman script exists. Neither app-only success nor the engine override validates
+the production privileged-discovery path.
 
 ## Known facts & decisions discovered in bootstrap bring-up
 
@@ -148,8 +143,8 @@ reference-machine allocations in the plan (§5).
   `community.hashi_vault` in the container for `hashi_vault` lookups.
 - Templates API (≥ v2.18) requires integer ids — `setup-templates.yml`
   serializes its body inside Jinja (`to_json`) to keep native types.
-- `check-secrets.yml` still carries `no_log: true` (predates the no-`no_log`
-  standard) — cleanup candidate when next touched.
+- `no_log: true` belongs on credential-bearing steps. It is appropriate for
+  secret fetches; health checks and sanitized result summaries should stay visible.
 - **Working-tree repository:** the Semaphore repository's `git_url` is the
   absolute path `/workspace/agent-cloud` (the bind-mounted working tree) — a
   URL would make every task silently test GitHub `main` instead of your
@@ -201,10 +196,10 @@ reference-machine allocations in the plan (§5).
 
 ## SSO (Authentik)
 
-Authentik is the central IdP. Two integration styles are live locally:
+Authentik is the central IdP. The local configuration declares these integrations:
 
 - **Grafana — OIDC.** Grafana's `generic_oauth` redirects to Authentik; the login page shows an **Authentik** button.
-- **NetBox + OpenBao — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers. NetBox trusts them via `REMOTE_AUTH_*`; for OpenBao it's a network gate on the UI (OpenBao's own token auth still applies, root token retained). These services make no outbound calls to the IdP, which is why forward_auth — not OIDC — is the local mechanism. The internal control-plane path to OpenBao (`local-openbao:8200`) is **ungated**, so Semaphore/Ansible are unaffected.
+- **NetBox + OpenBao — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers. NetBox trusts them via `REMOTE_AUTH_*`; for OpenBao it is an edge gate in addition to OpenBao's native OIDC login. Do not equate reaching the UI with authenticating to the vault. The internal control-plane path to OpenBao (`local-openbao:8200`) is **ungated**, so Semaphore/Ansible are unaffected.
 
 **Access tiers** are Authentik **groups** (`platform-groups.yaml`) — the names are the contract every service maps against:
 
@@ -214,11 +209,11 @@ Authentik is the central IdP. Two integration styles are live locally:
 | `platform-developers` | read-only | Viewer | view-only | reach UI |
 | `platform-user` | none | denied | denied | denied |
 
-Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.yaml`) / Grafana `ALLOWED_GROUPS` decides *who reaches the service* (business is denied; superusers always pass for break-glass), then each service maps the group to a role. Assign membership in the Authentik UI.
+Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.yaml`) / Grafana `ALLOWED_GROUPS` decides *who reaches the service* (business is denied; superusers always pass for break-glass), then each service maps the group to a role. Declare users and group membership in private inventory and apply the Authentik blueprints through the deployment workflow.
 
-**Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders forward_auth routes) → `local-deploy-o11y` (Grafana OIDC) → `make local-netbox` (REMOTE_AUTH overlay + seeds the developer read-only permission). `make local-smoke` §7 checks all gates headlessly.
+**Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders forward_auth routes) → `local-deploy-o11y` (Grafana OIDC). `make local-smoke` checks the configured gates. The separate `make local-netbox` helper is a legacy direct app-tier path, not a Semaphore-orchestrated production-discovery validation.
 
-**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`). Create three users in Authentik (`https://auth.agent-cloud.test`, admin `akadmin`), one per group, then:
+**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`). Declare three local test users in the Authentik inventory/blueprints, one per group, deploy that declaration, then test:
 1. **admin** → `grafana`/`netbox`/`openbao` all reachable; Grafana **Admin**, NetBox **superuser** (full CRUD).
 2. **developer** → all reachable; Grafana **Viewer**, NetBox **read-only** (can view, cannot add/edit/delete).
 3. **business** → **denied** at every service (Authentik shows "not authorized" / Grafana refuses login).
@@ -233,4 +228,4 @@ Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |
-| Full reset | `podman rm -f local-openbao local-semaphore && podman volume rm local-semaphore-data` then re-bootstrap |
+| Control-plane reset | `make local-clean` is destructive: it removes vault/orchestrator data and tool state while other service volumes remain. Back up and plan matching service recovery before use |

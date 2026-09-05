@@ -1,5 +1,13 @@
 # NemoClaw Deployment
 
+> **Legacy standalone reference:** the scripts and examples below predate the
+> platform credential/orchestration boundary. They describe that interface, not
+> an authorized deployment procedure. Use the declared Semaphore **Deploy NemoClaw**
+> workflow; verify its inventory and legacy wrapper wiring before rollout. Any
+> missing integration must be fixed in code. Do not copy secret files or run a
+> server-local deploy as a workaround for Semaphore.
+
+
 Deploy [NemoClaw](https://github.com/uhstray-io/NemoClaw) — an AI agent sandbox powered by [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) and [OpenClaw](https://docs.openclaw.ai). This directory manages deployment scripts and general config for running NemoClaw locally (macOS via Colima) or on a remote server.
 
 ## Prerequisites
@@ -113,7 +121,7 @@ deploy.sh adds on top:
 | Environment | Runtime | Notes |
 |---|---|---|
 | **Local (macOS)** | Colima + Docker CLI | Working |
-| **Remote server** | Native Docker (Ubuntu) | Gateway crash on image push — use `--local` on server |
+| **Remote server** | Native Docker (Ubuntu) | Historical gateway crash on image push; resolve through the declared deployment mechanism |
 
 ## Validation
 

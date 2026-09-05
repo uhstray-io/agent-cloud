@@ -59,5 +59,5 @@ API). The LLM integration (read-only MCP profile, the llm-gate redaction
 service, the k-threshold rule) is layered on in later phases and is NOT part of
 this deployment.
 
-Full design + phased rollout: `plan/development/ERPNEXT-DEPLOYMENT.md`;
-local tier: `plan/development/LOCAL-DEV-DEPLOYMENT.md` (Phase 4).
+Full design + phased rollout: `plan/development/08-erpnext.md`;
+local tier: `plan/development/00-foundation-local-dev.md` (Phase 4).

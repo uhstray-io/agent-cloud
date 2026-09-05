@@ -121,7 +121,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/services/authentik/deployment/context/architecture.md` — Authentik central IdP/SSO (server+worker+Postgres+Redis; blueprints config-as-code; local-dev live)
 - `platform/services/opa/deployment/context/architecture.md` — OPA policy engine (Guardrail-layer agent-action authorization; Rego policy-as-code under `policies/`; local-dev live, Phase 1 unauthenticated)
 - `platform/services/erpnext/deployment/context/architecture.md` — ERPNext ERP (composable slim local tier: db+redis+backend+frontend+worker+scheduler+websocket; MinIO/backup prod-only; local-dev code-complete, deploy pending image pull)
-- `platform/services/n8n/deployment/` — n8n workflow automation (composable; stateful `N8N_ENCRYPTION_KEY`; prod migration HELD — see `plan/development/09-service-migrations-tooling.md` + `seed-n8n-secrets.yml`)
+- `platform/services/n8n/deployment/README.md` — composable n8n; stateful encryption key, migration guard, backup/restore and API-key operations. The recorded production cutover is complete; NocoDB retirement is separate
 - `platform/playbooks/README.md` — Playbook conventions and reference
 - `docs/MISTAKES.md` — Recorded mistakes and the rules they earned; each entry names where it is enforced (test, hook, CI, OPA). Read §3 before acting on live state and §1 before calling something verified
 - `plan/architecture/01-automation-model.md` — Composable deployment architecture
@@ -266,7 +266,7 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
-`platform/playbooks/tasks/` holds 26 tasks in total; the table above is the curated set
+`platform/playbooks/tasks/` contains the shared tasks; the table above is the curated set
 most services compose. `platform/playbooks/README.md` is the fuller reference.
 
 ## Independent Workflows
@@ -368,32 +368,35 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 ## Container Runtime
 
-- **Docker**: Required for NetBox (privileged orb-agent, bind-mount secrets, compose health dependencies). NetBox's `lib/common.sh` is hardcoded to Docker.
-- **Podman**: All other services (rootless, security-focused)
+- **Docker**: Default production NetBox path; also used by NemoClaw/OpenShell and OpenHands. NetBox accepts an explicit engine override, but its naming, bind mounts and privileged discovery path require validation; this is not universal Podman incompatibility.
+- **Podman**: Default for other service deployments. Local Semaphore drives a rootful Podman socket inside its VM; do not describe every local container as rootless
 - Set `container_engine` in the site-config inventory per host
 
 ## Deployment Status
+
+These are recorded milestones, not a live health inventory. Recheck the selected
+environment before operations; a checked-in deploy path is not proof it is running.
 
 ### Completed
 - **Phase 0-0.5**: Foundation + per-VM deployment
 - **Monorepo consolidation** — two repos: agent-cloud (public) + site-config (private)
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
 - **Semaphore pipeline** — 78 declared task templates (plus generated `(Dev)` variants), SSH key auth
-- **NetBox deployed** — full stack with Diode discovery pipeline, orb-agent with OpenBao vault integration, 32 IPs + pfSense device discovered
+- **NetBox deployment recorded; discovery recovery unverified** — the full-stack and Orb Agent mechanisms exist, but historical discovered-record counts do not establish freshness. Production is the current validation target; local Docker setup for NetBox is not established
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy
 - **Caddy (flat-Caddyfile site)** — `auth`/`canvas` routes managed via `manage-caddy-sites.yml` (tls internal); composable Phase-4 fragment distribution gated behind `caddy_composable`
 - **Caddy routes are readable** — `platform/services/caddy/deployment/lib/caddyfile_sites.py` parses the live Caddyfile so routes can be compared against the inventory declaration. Routes that arrived by hand are migrated into `caddy_managed_sites` by listing them in `caddy_retire_sites`; Caddy rejects a hostname defined twice, so the old block must go in the same pass. Six routes (`nocodb`, `n8n`, `pve`, `netbox`, `devlog`, `semaphore`) were hand-maintained when this landed — `devlog` was the first adopted, after it was found pointing at an address declared for a different host
 - **Composable automation** — manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent all working
-- **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/lib/pfsense-sync.py`
+- **pfSense sync** — runs as an orb-agent worker on a 15-minute cadence (no separate playbook); `platform/services/netbox/deployment/workers/pfsense_sync/`
 - **tududi + honcho deployed (prod)** — to-do app at `todo.uhstray.io` (native Authentik OIDC) and memory API at `memory.uhstray.io` (JWT `/v3` + Authentik-gated `/docs`), both composable rootless-podman deploys
 - **Cloudflare edge as code** — WAF rulesets + platform DNS adopted into OpenTofu (R2 state backend), applied via `apply-cloudflare-tofu.yml`; API-first is now the standard for edge changes
-- **Postiz validated (local) — prod rollout PENDING** — social publishing (5 containers: app + its Postgres/Redis + Temporal workflow engine + that engine's Postgres), native Authentik OIDC, API-key automation endpoint for n8n. The full chain is proven on local-dev only; verified 2026-09-02: `secret/services/postiz` is empty on prod OpenBao and postiz.uhstray.io unanswering — the prod deploy, sign-in and key capture are still ahead (they also unblock the n8n→Postiz credential provisioning)
+- **Postiz local bring-up recorded; production application rollout pending** — production host hardening is verified, but application deployment, sign-in, API-key capture and scheduled publishing are not complete. The base has five containers; the declared search overlay adds the sixth required by the pinned Postiz version. See the service README for dated evidence
 - **Self-hosted GitHub Actions runners (prod)** — `gh-runner-01` + `gh-runner-02`, one interchangeable pool, org-scoped to the FIVE PRIVATE repos via the `uhstray-selfhosted` group; `agent-cloud` deliberately excluded because it is public. Workflows opt in with `runs-on: [self-hosted, linux, x64, uhstray-lan]`. Enforced isolation is workspace destruction between jobs, no host administration from a job, and network-level egress denial — **per-job containerisation and process reaping are NOT enforced**, so nothing may sit on a runner host that all five repos are not entitled to read (see `platform/services/github-runner/CLAUDE.md`)
 - **n8n composable cutover (prod, 2026-09-02)** — prod n8n migrated in place from the standalone legacy compose project to the composable stack on the pinned 2.25.7: stateful secrets pre-seeded from the live `.env` (alias-aware — the legacy file spells the key `ENCRYPTION_KEY`), data moved by `backup-n8n-db.yml` → `restore-n8n-db.yml` (staging-database restore; the standing upgrade/rollback tooling), worker readiness-gated behind the app's boot migrations, all 4 workflows + members preserved, API key minted through the owner's TOTP-MFA login and captured to OpenBao. Retirement executed the same day on the operator's call: the legacy project (containers, volumes, directory) and the cutover dump are DELETED — superseded by a fresh composable-stack dump and an 11-field credential backup to site-config (`backup/n8n-20260902T135450Z-eff2ab`). The n8n→Postiz credential provisioning waits on the Postiz prod rollout
 
 ### In Progress
-- NocoDB decommission — NocoDB is **RETIRED** (replaced by tududi; decision 2026-09-01, recorded on PR #15's close-out and in `plan/development/09-service-migrations-tooling.md`). It still runs via the legacy `deploy.sh` path; taking it down (containers, volumes, route, `generate_nocodb_env()`) is scoped as its own change — do NOT execute the old migration plan against it. (The n8n half of that plan **executed 2026-09-02**: see "Completed" below.)
+- NocoDB decommission — NocoDB is **RETIRED** (replaced by tududi; decision 2026-09-01, recorded on PR #15's close-out and in `plan/development/09-service-migrations-tooling.md`). It still runs via the legacy `deploy.sh` path; taking it down (containers, volumes, route, `generate_nocodb_env()`) is scoped as its own change — do NOT execute the old migration plan against it. (The n8n half of that plan **executed 2026-09-02**: see "Completed" above.)
 - Dedicated orb-agent AppRole — provisioning is now code-managed via `provision-orb-agent-approle.yml` (creates the scoped policy + AppRole from `orb-agent.hcl`, stores creds at `secret/services/approles/orb-agent`); pending a run against live OpenBao to replace the manually-created credentials
 - **Build #1 (netbox-device-add)** — skynet-requested, OPA-gated NetBox device create landed on `dev` (`create-netbox-device.yml` executor + verify, `provision-netbox-automation-token.yml`, `skynet` OPA catalog entry); deferred fast-follows: `primary_ip` assignment, automation-token view/add least-privilege split
 
@@ -444,7 +447,7 @@ shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_UR
 
 **Why the auto-sync (`main` → `dev`).** Merge-commit promotions keep `dev`↔`main` ancestry intact, so promotions no longer diverge (this is what historically forced a manual back-merge: a *squashed* `dev` → `main` writes dev's content onto `main` as a new commit with no ancestry into `dev`, freezing the merge-base and conflicting the next promotion on files like `templates.yml`). The sync workflow still earns its keep: it carries `main`-only changes — e.g. dependabot bumps that land directly on `main` — back into `dev`, and is the safety net if a promotion ever lands as a squash (the sensitive-content case), which *would* reintroduce the divergence. On every push to `main` it merges `main` into `dev` favoring `dev` (`-X ours`, so dev's content is unchanged; non-conflicting `main`-only changes propagate) and pushes `dev`.
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The ruleset currently runs in `evaluate`/dry-run — it logs would-be violations rather than blocking — and flips to `active` after Insights verification; see `.github/rulesets/README.md`.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Test check on push (`.githooks/pre-push`)
 

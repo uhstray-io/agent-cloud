@@ -88,8 +88,7 @@ deployment/
 ├── db/
 │   ├── migrations/      goose SQL migrations
 │   └── queries/         sqlc query files
-├── config/              Non-secret TOML (materials, fulfillment routing, USPS, Printify)
-└── sites/               (reserved)
+└── config/              Non-secret TOML (materials, fulfillment routing, USPS, Printify)
 ```
 
 ## Common tasks
@@ -121,7 +120,7 @@ No DB migration, no Go change.
 
 ## Outstanding integration items
 
-Tracked in [`../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
+Tracked in [`../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/07-websmith-uhhcraft.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
 
 The remaining item is **Phase 10 — validation** (hardware-gated):
 

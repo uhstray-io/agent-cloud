@@ -1,10 +1,18 @@
 # NemoClaw Deployment — Claude Guidance
 
+> **Legacy standalone reference:** the scripts and examples below predate the
+> platform credential/orchestration boundary. They describe that interface, not
+> an authorized deployment procedure. Use the declared Semaphore **Deploy NemoClaw**
+> workflow; verify its inventory and legacy wrapper wiring before rollout. Any
+> missing integration must be fixed in code. Do not copy secret files or run a
+> server-local deploy as a workaround for Semaphore.
+
+
 Deployment configuration for [NemoClaw](https://github.com/uhstray-io/NemoClaw) (our fork) — an AI agent sandbox powered by NVIDIA OpenShell and OpenClaw.
 
 ## Rules
 
-- **NemoClaw uses Docker, not Podman** — OpenShell requires Docker. All other agent-cloud services use Podman.
+- **NemoClaw uses Docker, not Podman** — OpenShell requires Docker. NetBox and OpenHands also have Docker deployment paths.
 - **Never hardcode IPs or credentials** — deploy.sh reads from environment variables. Site-specific values live in `site-config`, secrets in OpenBao.
 - **Default to update, not reinstall** — `./deploy.sh` preserves sandbox state. Only `--onboard` is destructive.
 - **Fork is the source** — always use `uhstray-io/NemoClaw`, not upstream NVIDIA.
@@ -56,7 +64,7 @@ NEMOCLAW_HOST=<ip> NEMOCLAW_USER=<user> ./deploy.sh --onboard
 
 ## Known Issues
 
-- **Gateway crash on image push** — Colima (macOS) has intermittent gateway crashes during Docker image builds. Workaround: deploy locally on the server with `--local`.
+- **Gateway crash on image push** — Colima (macOS) has intermittent gateway crashes during Docker image builds. Historical workaround used server-local `--local`; this bypasses current orchestration rules and is not an approved platform fix.
 - **DNS proxy required** — sandbox DNS resolution requires the DNS proxy script after onboard.
 - **OpenShell sandbox ssh** — uses `openshell ssh-proxy` ProxyCommand, not standard SSH.
 

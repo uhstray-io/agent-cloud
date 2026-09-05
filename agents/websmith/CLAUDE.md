@@ -36,9 +36,9 @@ When a WebSmith session reaches Phase 3 (Tooling), surface these defaults derive
 
 | Concern | agent-cloud default | Source |
 |---------|--------------------|--------|
-| Database | PostgreSQL | Used by NetBox, NocoDB, UhhCraft; no Postgres-incompatible service in production |
-| Container runtime | Podman | Per root `CLAUDE.md` — NetBox is the only Docker exception |
-| Reverse proxy | Central Caddy with CloudFlare DNS-01 | `plan/architecture/CADDY-REVERSE-PROXY.md` |
+| Database | PostgreSQL | Used by NetBox, Authentik and UhhCraft; other platform services may use SQLite |
+| Container runtime | Podman | Per root `CLAUDE.md` — NetBox, NemoClaw and OpenHands are named Docker exceptions |
+| Reverse proxy | Central Caddy with CloudFlare DNS-01 | `plan/architecture/05-platform-infra.md` |
 | Secrets management | OpenBao + Ansible templating | Root `CLAUDE.md` "Secrets Management" |
 | CI/CD | Unified `lint-and-test.yml` with path filters | `.github/workflows/lint-and-test.yml` |
 | Deployment orchestration | Semaphore running composable playbooks | `platform/playbooks/README.md` |
@@ -56,6 +56,6 @@ Any deviation a user requests from this preset must be captured in the site's `S
 ## Related documentation
 
 - Root [`CLAUDE.md`](../../CLAUDE.md) — repo-wide conventions and the four-layer model.
-- [`plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../plan/development/WEBSMITH-INTEGRATION-PLAN.md) — full integration plan.
+- [`plan/development/07-websmith-uhhcraft.md`](../../plan/development/07-websmith-uhhcraft.md) — full integration plan.
 - [`plan/architecture/01-automation-model.md`](../../plan/architecture/01-automation-model.md) — how the implementation half works once the spec is signed.
 - [`platform/services/uhhcraft/`](../../platform/services/uhhcraft/) — first concrete site built with WebSmith (added in Phase 2).
