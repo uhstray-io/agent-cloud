@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { format } = require('node:util');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const source = fs.readFileSync(`${__dirname}/../../../../playbooks/files/tududi-db-mint.js`, 'utf8');
@@ -17,7 +18,8 @@ async function run(action, rows, status = 200, matches = true) {
     Buffer,
     process: { env: { TUDUDI_SYNC_EMAIL: 'fixture', TUDUDI_SYNC_LABEL: 'fixture' },
       argv: ['node', 'helper', action], stdin: Readable.from([Buffer.from(raw)]), exit: finish },
-    console: { log: text => output.push(text), error: text => output.push(text) },
+    console: { log: (...args) => output.push(format(...args)),
+      error: (...args) => output.push(format(...args)) },
     require: name => {
       if (name === '/app/backend/models') return {
         User: { findOne: async () => ({ id: 1 }) },
