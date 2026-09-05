@@ -273,7 +273,7 @@ and stop for reconciliation, with zero automatic retries: an empty result or a
 timeout does not prove that no document was created. Any future automatic retry
 must first have a verified provider idempotency guarantee using the same stable
 key for the same logical write, or an equivalent duplicate-prevention mechanism,
-and a finite attempt limit. Without that protection, do not re-issue the write.
+and a finite attempt limit. Without that protection, do not retry the write.
 
 **Follow-up, same session.** Chasing the stall produced a second lesson about
 claiming causes. I checked the local model endpoint, found the model named in
