@@ -201,22 +201,57 @@ Authentik is the central IdP. The local configuration declares these integration
 - **Grafana — OIDC.** Grafana's `generic_oauth` redirects to Authentik; the login page shows an **Authentik** button.
 - **NetBox + OpenBao — forward_auth.** Caddy authenticates each request against Authentik's embedded outpost and injects `X-authentik-*` identity headers. NetBox trusts them via `REMOTE_AUTH_*`; for OpenBao it is an edge gate in addition to OpenBao's native OIDC login. Do not equate reaching the UI with authenticating to the vault. The internal control-plane path to OpenBao (`local-openbao:8200`) is **ungated**, so Semaphore/Ansible are unaffected.
 
-**Access tiers** are Authentik **groups** (`platform-groups.yaml`) — the names are the contract every service maps against:
+**Admission and application authorization are separate.** The rendered
+`zz-sso-bindings.yaml.j2` policy admits Authentik superusers and members of
+`platform-admins`, `platform-developers`, or `platform-business` to **member-tier**
+apps. `platform-user` alone is denied. The `openbao-oidc` app is **admin-tier**:
+only Authentik superusers or `platform-admins` pass its native-login gate.
 
-| Group | Access | Grafana | NetBox | OpenBao UI |
-|---|---|---|---|---|
-| `platform-admins` | full | Admin | superuser | reach UI |
-| `platform-developers` | read-only | Viewer | view-only | reach UI |
-| `platform-user` | none | denied | denied | denied |
+The following expectations describe the checked-in local integrations, assuming
+fresh accounts with no additional group memberships or application grants. They
+are not live validation results:
 
-Enforcement is two-tier: a `platform-member` Authentik policy (`zz-sso-bindings.yaml`) / Grafana `ALLOWED_GROUPS` decides *who reaches the service* (business is denied; superusers always pass for break-glass), then each service maps the group to a role. Declare users and group membership in private inventory and apply the Authentik blueprints through the deployment workflow.
+| Identity | Grafana OIDC | NetBox local header auth | OpenBao UI / native OIDC |
+|---|---|---|---|
+| `platform-admins` | Org Admin | superuser + staff | reach UI / `platform-admin` policy |
+| `platform-developers` | Editor | view-only via the helper's declared ObjectPermission | reach UI / native login denied |
+| `platform-business` | Viewer | passes edge gate; no object permissions granted by this helper | reach UI / native login denied |
+| `platform-user` only | denied at IdP | denied at edge | denied at edge / native login denied |
+| Authentik superuser `akadmin`, without an allowed group | passes IdP, rejected by Grafana's allowed-groups check | passes edge; no NetBox superuser/staff or object grants from these declarations | reach UI / `platform-admin` policy |
+
+Grafana independently checks its `groups` claim against `ALLOWED_GROUPS` and maps
+admins/developers/business to Admin/Editor/Viewer. Authentik superuser status is
+not a substitute for that claim. NetBox's local overlay maps only
+`platform-admins` to superuser/staff; the legacy helper grants view permissions to
+`platform-developers`. Existing NetBox permissions may change observed access.
+OpenBao's local OIDC role grants `platform-admin` to every successful native
+login, making the separate admin-tier IdP gate essential.
+
+Sources: [SSO policy template](../platform/services/authentik/deployment/templates/zz-sso-bindings.yaml.j2),
+[app catalog](../platform/services/authentik/deployment/app-catalog.yml),
+[Grafana env template](../platform/services/o11y/deployment/templates/env.j2),
+[NetBox auth overlay](../platform/services/netbox/deployment/docker-compose.local-auth.yml),
+[legacy permission helper](../scripts/local-netbox-up.sh), and
+[OpenBao genesis configuration](../platform/playbooks/bootstrap-local-dev.yml).
+Declare users and memberships in inventory and apply the Authentik blueprints
+through the deployment workflow.
 
 **Deploy order** (each idempotent, through local Semaphore): `make local-deploy-authentik` → `local-deploy-caddy` (renders forward_auth routes) → `local-deploy-o11y` (Grafana OIDC). `make local-smoke` checks the configured gates. The separate `make local-netbox` helper is a legacy direct app-tier path, not a Semaphore-orchestrated production-discovery validation.
 
-**Browser test** (final confirmation; needs `make local-https` + `make local-tls-trust`). Declare three local test users in the Authentik inventory/blueprints, one per group, deploy that declaration, then test:
-1. **admin** → `grafana`/`netbox`/`openbao` all reachable; Grafana **Admin**, NetBox **superuser** (full CRUD).
-2. **developer** → all reachable; Grafana **Viewer**, NetBox **read-only** (can view, cannot add/edit/delete).
-3. **business** → **denied** at every service (Authentik shows "not authorized" / Grafana refuses login).
+**Browser verification** (for configured integrations, after DNS/TLS wiring):
+
+1. Declare test identities for the four groups above through inventory/blueprints;
+   use isolated browser sessions to prevent an existing login masking admission.
+2. Check both admission and effective application permissions against the table,
+   including business access to Grafana and denial of business/developer native
+   OpenBao login. Record any pre-existing application grants separately.
+3. Test `akadmin` separately against each of these integrations. Expect Grafana's
+   group rejection, no group-derived NetBox elevation, and OpenBao native admin
+   access under the current local declaration. Do not infer access to other apps
+   from these results; consult each enabled app's policy and role mapping.
+
+NetBox checks apply only if that legacy local app profile is configured; they do
+not establish production discovery readiness.
 
 ## Triage
 

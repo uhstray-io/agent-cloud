@@ -34,7 +34,7 @@ pattern (OpenBao → manage-secrets → `.env` → deploy.sh).
 
 ## Local-dev specifics (slim tier)
 
-This service ships **slim-first** (LOCAL-DEV-DEPLOYMENT.md P4, ratified
+This service ships **slim-first** (`plan/development/00-foundation-local-dev.md` Phase 4, ratified
 2026-06-12): the base compose is already the laptop shape and `compose.local.yml`
 adds only memory caps + the `local-dev` network. Deltas vs the prod plan (§7):
 

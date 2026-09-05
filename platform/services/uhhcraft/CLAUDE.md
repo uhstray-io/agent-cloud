@@ -39,7 +39,7 @@ Do not call River's migration tool directly from `make` recipes — it diverges 
 
 ### Secrets
 
-UhhCraft reads secrets from the `.env` file at boot. The `.env` is templated by Ansible's `tasks/manage-secrets.yml` from OpenBao. **Never** read directly from OpenBao at runtime in Go code — go through `.env`. (A future enhancement might add AppRole + token rotation; that's tracked as an open question in `WEBSMITH-INTEGRATION-PLAN.md` §4.)
+UhhCraft reads secrets from the `.env` file at boot. The `.env` is templated by Ansible's `tasks/manage-secrets.yml` from OpenBao. **Never** read directly from OpenBao at runtime in Go code — go through `.env`. (A future enhancement might add AppRole + token rotation; that's tracked as an open question in `07-websmith-uhhcraft.md` §4.)
 
 OpenBao paths owned by UhhCraft:
 
@@ -89,6 +89,6 @@ If a value is sensitive (key, password, token), it goes in `.env` (and `template
 
 - Spec + alignment: [`context/spec/SPEC.md`](context/spec/SPEC.md)
 - AI sidecar contract: [`context/architecture/ai-sidecar-contract.md`](context/architecture/ai-sidecar-contract.md)
-- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/07-websmith-uhhcraft.md)
+- Integration plan: [`../../../plan/development/07-websmith-uhhcraft.md`](../../../plan/development/07-websmith-uhhcraft.md)
 - Root conventions: [`../../../CLAUDE.md`](../../../CLAUDE.md)
 - Reference deploy (NetBox): [`../netbox/deployment/CLAUDE.md`](../netbox/deployment/CLAUDE.md)

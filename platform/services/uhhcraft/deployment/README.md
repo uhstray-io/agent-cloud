@@ -14,7 +14,7 @@ Production deploys go through **Semaphore → Ansible → Podman**. Never run `d
 
 ```text
 Semaphore "Deploy UhhCraft" template
-  └─ platform/playbooks/deploy-uhhcraft.yml (Phase 4 of WEBSMITH-INTEGRATION-PLAN.md)
+  └─ platform/playbooks/deploy-uhhcraft.yml (Phase 4 of 07-websmith-uhhcraft.md)
      ├─ tasks/manage-secrets.yml   # fetch from OpenBao, render templates/env.j2 → .env
      ├─ deploy.sh                  # podman compose pull + up + wait healthy
      ├─ post-deploy.sh             # goose migrate, river migrate, healthcheck
@@ -120,7 +120,7 @@ No DB migration, no Go change.
 
 ## Outstanding integration items
 
-Tracked in [`../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/07-websmith-uhhcraft.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
+Tracked in [`../../../../plan/development/07-websmith-uhhcraft.md`](../../../../plan/development/07-websmith-uhhcraft.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
 
 The remaining item is **Phase 10 — validation** (hardware-gated):
 

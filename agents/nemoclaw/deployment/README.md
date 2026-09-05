@@ -21,50 +21,22 @@ Deploy [NemoClaw](https://github.com/uhstray-io/NemoClaw) — an AI agent sandbo
 
 > **macOS note**: Podman is not yet supported by OpenShell. Use Colima as the container runtime.
 
-## Quick Start
+## Platform deployment
 
-```bash
-# 1. Clone the agent-cloud monorepo
-git clone https://github.com/uhstray-io/agent-cloud.git
-cd agent-cloud/agents/nemoclaw/deployment
+Use Semaphore **Deploy NemoClaw**, backed by
+[`deploy-nemoclaw.yml`](../../../platform/playbooks/deploy-nemoclaw.yml).
+Declare the target and non-secret configuration in private inventory; credentials
+remain owned by OpenBao. Verify the legacy wrapper's inventory and credential
+wiring before rollout. Missing integration must be fixed in the playbook/task
+path before deployment.
 
-# 2. Copy site-specific config from site-config (private repo)
-#    - config/credentials.json, sandboxes.json, discord.json
-#    - secrets/*.txt (NVIDIA, Gemini, Discord API keys)
-
-# 3. Set environment variables (or create .env from .env.example)
-export NEMOCLAW_HOST=<target-vm-ip>
-export NEMOCLAW_USER=<ssh-user>
-
-# 4. Start Colima (macOS only)
-colima start --cpu 6 --memory 12 --disk 40
-
-# 5. Deploy
-./deploy.sh --local --onboard
-```
-
-Once complete:
-
-```bash
-nemoclaw <sandbox-name> connect    # SSH into the sandbox
-openclaw tui                       # Start the chat interface
-```
-
-## Deploying
-
-| Command | What it does |
-|---|---|
-| `./deploy.sh --local --onboard` | Fresh install — builds everything from scratch (destructive) |
-| `./deploy.sh --local` | Update — syncs config, injects env vars, preserves sandbox state |
-| `./deploy.sh --onboard` | Fresh install on remote server (rsyncs config, SSHs once) |
-| `./deploy.sh` | Update remote server |
-| `./update.sh` | Check if fork is behind upstream + update |
-
-**Default is update/migrate** — preserves conversations, paired devices, and agent history. Use `--onboard` only for fresh installs or when the Dockerfile changes.
+Routine updates must preserve conversations, paired devices and agent history.
+The legacy `--onboard` mode rebuilds the sandbox and requires explicit destructive
+operation authorization through the platform workflow.
 
 ## Configuration
 
-### Config Files
+### Historical standalone file layout
 
 ```
 config/
@@ -75,11 +47,13 @@ config/
     google.yaml          # Custom network policy presets (public)
 ```
 
-Files marked **(site-config)** are not in this repo — copy them from the private `site-config` repository.
+This table records inputs expected by the legacy wrapper. It is not an instruction
+to copy credential files; the supported credential boundary is OpenBao → Ansible
+rendering. Non-secret site configuration belongs in private inventory.
 
-### Secrets
+### Historical secret-file interface
 
-deploy.sh loads secrets from `$NEMOCLAW_SECRETS_DIR` (default: `./secrets/`) as environment variables:
+The legacy deploy.sh loads secrets from `$NEMOCLAW_SECRETS_DIR` (default: `./secrets/`) as environment variables:
 
 | File | Env Var | Purpose |
 |---|---|---|
@@ -87,20 +61,19 @@ deploy.sh loads secrets from `$NEMOCLAW_SECRETS_DIR` (default: `./secrets/`) as 
 | `gemini-api-key.txt` | `GEMINI_API_KEY` | Google Search grounding for web_search |
 | `discord-bot-token.txt` | `DISCORD_BOT_TOKEN` | Discord bot integration |
 
-Secrets are stored in OpenBao at `secret/services/nemoclaw` and backed up in the private `site-config` repo.
+OpenBao at `secret/services/nemoclaw` remains authoritative. The legacy local-file
+interface above is an integration gap, not an approved credential distribution path.
 
 ### Adding Integrations
 
-To add a new channel (e.g., Slack, Telegram):
-1. Create a secret file in site-config: `nemoclaw/secrets/slack-bot-token.txt`
-2. Add the env var to `deploy.sh`'s `build_env_file()` function
-3. Add a channel config: `config/slack.json`
-4. Add the policy preset to `sandboxes.json`
-5. Run `./deploy.sh --local --onboard` (Dockerfile change requires rebuild)
+Declare the channel's non-secret configuration and policy preset, extend the
+OpenBao-backed Ansible credential/rendering path, and deploy through Semaphore.
+Do not add another local secret-file loader or use direct onboard commands to
+bypass that integration work.
 
 Channel configs are baked into `openclaw.json` at build time. Tokens activate via env vars at runtime — never stored in the image.
 
-## Architecture
+## Legacy wrapper architecture
 
 deploy.sh is a thin wrapper. For `--onboard`, it delegates to NemoClaw's own [`install.sh`](https://github.com/uhstray-io/NemoClaw/blob/main/install.sh) which handles:
 - Node.js installation (via nvm)
@@ -125,11 +98,9 @@ deploy.sh adds on top:
 
 ## Validation
 
-deploy.sh runs `validate.sh` automatically after every deploy:
-
-```bash
-./validate.sh --local
-```
+The legacy wrapper invokes `validate.sh` after deployment. Its checks belong in
+the declared Semaphore workflow; do not use a workstation invocation as proof of
+a successful platform deploy.
 
 Checks 14 conditions: Docker running, gateway healthy, sandbox ready, DNS resolution, inference provider, agent responds, web search works, API keys present, policies enabled.
 

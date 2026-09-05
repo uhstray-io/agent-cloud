@@ -31,15 +31,17 @@ agents/nemoclaw/deployment/
 └── README.md               # Full deployment guide
 ```
 
-Site-specific files (NOT in this repo — stored in site-config):
+Historical standalone inputs (not instructions to copy credentials):
 - `config/credentials.json` — NVIDIA API key for inference
 - `config/sandboxes.json` — Sandbox name and policy assignments
 - `config/discord.json` — Discord guild and user IDs
 - `secrets/*.txt` — API keys and tokens (NVIDIA, Gemini, Discord, Google Search)
 
-## Environment Variables
+## Historical wrapper interface
 
-deploy.sh requires these (set via `.env` or export):
+The legacy script reads these inputs. Supply platform configuration through
+Semaphore/private inventory and credentials through OpenBao-backed Ansible tasks;
+do not create a local credential source to satisfy this legacy interface:
 
 | Variable | Purpose |
 |----------|---------|
@@ -49,18 +51,14 @@ deploy.sh requires these (set via `.env` or export):
 | `NEMOCLAW_SECRETS_DIR` | Path to secrets directory (default: `./secrets`) |
 | `NEMOCLAW_REPO` | Fork URL (default: `https://github.com/uhstray-io/NemoClaw`) |
 
-## Deploy Modes
+## Platform deployment
 
-```bash
-# Update existing deployment (preserves sandbox)
-NEMOCLAW_HOST=<ip> NEMOCLAW_USER=<user> ./deploy.sh
-
-# Fresh install (destructive — rebuilds sandbox)
-NEMOCLAW_HOST=<ip> NEMOCLAW_USER=<user> ./deploy.sh --onboard
-
-# Already on the target machine
-./deploy.sh --local
-```
+Use Semaphore **Deploy NemoClaw** via
+[`deploy-nemoclaw.yml`](../../../platform/playbooks/deploy-nemoclaw.yml).
+Verify the legacy wrapper wiring before rollout; fix missing integration in the
+shared playbook/task path. Direct remote or server-local script commands are not
+platform entrypoints. The legacy `--onboard` mode is destructive; routine updates
+must preserve sandbox state.
 
 ## Known Issues
 

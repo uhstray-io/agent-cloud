@@ -1,7 +1,7 @@
 # o11y service — architecture (context for agents)
 
 The platform's **observability stack** — metrics, logs, dashboards. Read with
-the root [`CLAUDE.md`](../../../../../AGENTS.md) and the plan it implements:
+the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 [`plan/development/05-observability.md`](../../../../../plan/development/05-observability.md).
 
 ## What it is

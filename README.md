@@ -267,7 +267,7 @@ For local setup and the full pre-PR checklist, see `plan/architecture/03-testing
 
 ## Technology Stack
 
-```
+```text
 INFRASTRUCTURE        Docker, Podman, Proxmox; Kubernetes (k0s) planned
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)

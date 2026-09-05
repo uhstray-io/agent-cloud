@@ -21,12 +21,19 @@ The script is idempotent (safe to re-run) and performs 7 steps:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OPENBAO_LISTEN` | `127.0.0.1` | Bind address for port 8200 |
+| `OPENBAO_LISTEN` | `0.0.0.0` through `deploy.sh`; `127.0.0.1` in Compose alone | Host bind address for port 8200 |
 | `NOCODB_URL` | placeholder | NocoDB service URL for seed secrets |
 | `N8N_URL` | placeholder | n8n service URL for seed secrets |
 | `SEMAPHORE_URL` | placeholder | Semaphore service URL for seed secrets |
 | `PROXMOX_URL` | placeholder | Proxmox API URL for seed secrets |
 | `PROXMOX_TOKEN_ID` | placeholder | Proxmox API token ID for seed secrets |
+
+`deploy.sh` exports the all-interface default before starting Compose. Without
+that export, Compose publishes only on loopback, so remote clients cannot reach
+port 8200. Declare an explicit reachable bind address through the Semaphore
+configuration when remote access is required (`0.0.0.0` binds all interfaces),
+with the platform firewall and transport rules applied. This distinction does
+not authorize a direct Compose deployment.
 
 ## Secrets
 
