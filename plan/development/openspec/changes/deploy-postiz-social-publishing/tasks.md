@@ -248,14 +248,21 @@ protects 1.7, which is the only irreversible step in the change.
       the backend binds, and /api/ answers 200 under a probe that would notice.
 - [x] 5.4 Load the interface over TLS at its local hostname; confirm it renders and offers
       the identity-provider sign-in path
-- [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
+- [x] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
-      NOT REVALIDATED 2026-09-05 UTC: the local HTTPS URL timed out from the
-      workstation, and the local Semaphore endpoint from the existing local
-      control-plane configuration was unavailable. The Podman machine is
-      running, but its default rootful connection shows the existing foundation
-      and Postiz containers stopped. No shared local bootstrap, repository
-      binding, or service state was changed to work around this.
+      VERIFIED 2026-09-05 UTC after an authorized non-destructive restart.
+      The existing local bootstrap restored the stopped foundation, retaining
+      its vault, volumes, and saved-checkout binding (ok=61 failed=0).
+      Deploy Postiz (Local) #288 then succeeded (ok=38 changed=4 failed=0)
+      with postiz_disable_registration=true; all six containers are healthy
+      and the backend answers HTTP 200 over the configured TLS hostname.
+      Browser proof: explicitly logged out, observed registration disabled,
+      selected Sign in with Authentik, and followed the authorization-code
+      return into the authenticated calendar. The existing account and session
+      capability survived restart; no new identity or credentials were needed.
+      The retained automation key also still returns 200, while absent/wrong
+      keys return 401 without browser cookies. No social account was connected
+      and no post was created or published.
 - [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
       DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
