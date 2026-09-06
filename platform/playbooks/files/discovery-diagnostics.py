@@ -183,13 +183,18 @@ def config_summary(raw):
     }
 
 
+def validate_window(options):
+    since, until = timestamp(options["since"]), timestamp(options["until"])
+    if datetime.fromisoformat(since.replace("Z", "+00:00")) >= datetime.fromisoformat(until.replace("Z", "+00:00")):
+        raise ValueError("invalid_window")
+    return since, until
+
+
 def collect(options):
     runtime = options["runtime"]
     if runtime != "docker":
         raise ReadFailure("docker_target_required")
-    since, until = timestamp(options["since"]), timestamp(options["until"])
-    if datetime.fromisoformat(since.replace("Z", "+00:00")) >= datetime.fromisoformat(until.replace("Z", "+00:00")):
-        raise ValueError("invalid_window")
+    since, until = validate_window(options)
     report = {
         "observed_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 -- support target Python 3.10
         "window": {"since": since, "until": until},

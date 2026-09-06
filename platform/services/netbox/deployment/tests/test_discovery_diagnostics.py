@@ -223,7 +223,8 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
     repo = tmp_path / "repo"
     repo.mkdir()
     query = yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text())[0]
-    commands = [task["ansible.builtin.command"] for task in query["tasks"] if "ansible.builtin.command" in task]
+    commands = [task["ansible.builtin.command"] for task in query["tasks"]
+                if task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "git"]
     assert commands[0]["argv"] == ["git", "rev-parse", "HEAD"]
     assert commands[1]["argv"][:4] == ["git", "status", "--porcelain", "--"]
     paths = commands[1]["argv"][4:]
@@ -246,19 +247,31 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
         command["chdir"] = str(repo)
     play = tmp_path / "preflight.yml"
     play.write_text(yaml.safe_dump([query]))
+    (tmp_path / "files").mkdir()
+    shutil.copy(PLATFORM / "playbooks/files/discovery-diagnostics.py", tmp_path / "files/discovery-diagnostics.py")
     inventory = tmp_path / "inventory.yml"
     inventory.write_text("netbox_svc:\n  hosts:\n    fixture: {}\n")
     extra = {"discovery_log_since": WINDOW["since"], "discovery_log_until": WINDOW["until"]}
 
-    def preflight(expected):
+    def preflight(expected, window=None):
         return subprocess.run(
             [ansible, "-i", str(inventory), str(play), "-e",
-             json.dumps(extra | {"discovery_expected_revision": expected})],
+             json.dumps(extra | (window or {}) | {"discovery_expected_revision": expected})],
             capture_output=True, text=True, timeout=30,
             env=fixture_env | {"ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible")},
         )
 
     assert preflight(revision).returncode == 0
+    assert preflight(revision, {"discovery_log_since": "2026-04-23T03:00:00-04:00"}).returncode == 0
+    for window in (
+        {"discovery_log_since": "2026-04-23T00:00:00"},
+        {"discovery_log_until": "2026-04-24T00:00:00"},
+        {"discovery_log_since": "2026-02-30T00:00:00Z"},
+        {"discovery_log_since": WINDOW["until"]},
+        {"discovery_log_since": "2026-04-24T00:00:00-04:00"},
+    ):
+        refused = preflight(revision, window)
+        assert refused.returncode != 0 and "discovery_window_invalid" in refused.stdout
     refused = preflight("a" * 40)
     assert refused.returncode != 0 and "discovery_revision_mismatch" in refused.stdout
     (repo / paths[1]).write_text("changed\n")

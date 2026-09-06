@@ -45,6 +45,22 @@
           - _discovery_dirty.stdout | length == 0
         fail_msg: "discovery_revision_mismatch: reviewed committed diagnostic source is required."
 
+    - name: "Validate the zoned log window locally before target access"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - |
+            import json, runpy, sys
+            try:
+                module = runpy.run_path(sys.argv[1])
+                module['validate_window'](json.load(sys.stdin))
+            except Exception:
+                sys.exit('discovery_window_invalid: require zoned ISO timestamps with since before until.')
+          - "{{ playbook_dir }}/files/discovery-diagnostics.py"
+        stdin: "{{ {'since': discovery_log_since, 'until': discovery_log_until} | to_json }}"
+      changed_when: false
+
 - name: "Read NetBox discovery incident evidence"
   hosts: netbox_svc
   gather_facts: false
