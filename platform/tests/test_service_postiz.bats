@@ -306,8 +306,8 @@ setup() {
   local f="$DEPLOY_DIR/templates/postiz.env.j2"
   # Every slot rendering (empty when unseeded) is what makes enabling a new
   # platform a seed + redeploy with no code change.
-  grep -qE "^X_API_KEY=\{\{ secrets\.postiz_x_api_key \| default\(''\) \}\}" "$f"
-  grep -qE "^REDDIT_CLIENT_ID=\{\{ secrets\.postiz_reddit_client_id \| default\(''\) \}\}" "$f"
+  grep -qE "^X_API_KEY=\{\{ secrets\.postiz_x_api_key \| default\(''\) \| quote \}\}" "$f"
+  grep -qE "^REDDIT_CLIENT_ID=\{\{ secrets\.postiz_reddit_client_id \| default\(''\) \| quote \}\}" "$f"
 }
 
 @test "postiz: local overlay adds the CA trust the OIDC flow needs" {
