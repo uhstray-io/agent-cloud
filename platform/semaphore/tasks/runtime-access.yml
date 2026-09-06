@@ -1,0 +1,68 @@
+---
+# Reuse an injected runtime token or the controller's existing OpenBao AppRole.
+# Never extract browser credentials or read a workstation cache/backup file.
+- name: "Require a non-cleartext transport to Semaphore"
+  ansible.builtin.assert:
+    that:
+      - _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
+      - (_semaphore_url | urlsplit('username')) is none
+      - (_semaphore_url | urlsplit('password')) is none
+    fail_msg: "Set semaphore_url or SEMAPHORE_URL to HTTPS or loopback HTTP without URL credentials."
+
+- name: "Take an already injected Semaphore runtime token"
+  ansible.builtin.set_fact:
+    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _runtime_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
+  no_log: true
+
+- name: "Check the controller OpenBao endpoint"
+  ansible.builtin.include_tasks: ../../playbooks/tasks/assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _runtime_bao_url }}"
+  when: _token | length == 0
+
+- name: "Resolve missing Semaphore runtime access through the controller AppRole"
+  when: _token | length == 0
+  block:
+    - name: "Authenticate with the existing controller AppRole"
+      ansible.builtin.uri:
+        url: "{{ _runtime_bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        follow_redirects: none
+        status_code: [200]
+      register: _runtime_login
+      no_log: true
+
+    - name: "Read only the Semaphore runtime secret"
+      ansible.builtin.uri:
+        url: "{{ _runtime_bao_url }}/v1/secret/data/services/semaphore"
+        headers:
+          X-Vault-Token: "{{ _runtime_login.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        status_code: [200]
+      register: _runtime_secret
+      no_log: true
+
+    - name: "Hold the runtime token in Ansible memory"
+      ansible.builtin.set_fact:
+        _token: "{{ _runtime_secret.json.data.data.api_token | default('') }}"
+      no_log: true
+  rescue:
+    - name: "Explain the required controller access without exposing the response"
+      ansible.builtin.fail:
+        msg: >-
+          Runtime Semaphore access is unavailable in this executor. Use the
+          declared controller publisher with its existing OpenBao AppRole, or
+          an already approved injected runtime token. Verify read permission for
+          secret/data/services/semaphore. Do not export AppRole or backup credentials.
+
+- name: "Require a nonempty runtime token"
+  ansible.builtin.assert:
+    that: _token is string and _token | length > 0
+    fail_msg: "The runtime Semaphore API token is empty."
+    quiet: true

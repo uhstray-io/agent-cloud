@@ -327,6 +327,17 @@ Each deployment concern is its own playbook — independently runnable and retry
 
 Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
+**Runtime access follows the executor:** authenticated operator → reviewed
+Semaphore template → controller AppRole → OpenBao → target credentials. Use an
+existing supported template before diagnosing workstation credentials. A cached
+workstation OpenBao login returning 403 does **not** diagnose the controller
+AppRole and must not become a blanket prerequisite for Semaphore-executable work.
+Never export the controller AppRole or read backup tokens to bridge this gap.
+The canonical [Semaphore operating guide](platform/semaphore/README.md) records
+verified evidence, exact scoped publication/bootstrap entry points, their live
+availability limits, and troubleshooting boundaries. Follow it before requesting
+another operator login or mutating shared orchestration configuration.
+
 ### Cloudflare edge as code (OpenTofu)
 
 The Cloudflare zone (WAF rulesets + platform DNS records) is **config-as-code via
@@ -340,9 +351,11 @@ dropped. The `tofu` binary ships in the Semaphore image.
 
 ### Operator-side tools (run from a workstation, NOT a Semaphore job)
 
-A few tools must run outside Semaphore because they act *on* it or need creds Semaphore
-shouldn't self-inject. They live in `platform/playbooks/` but take `SEMAPHORE_URL` /
-`SEMAPHORE_TOKEN` from the operator's environment:
+Repository/inventory bootstrap and full-catalog publication remain explicit
+operator-side configuration operations. They accept an approved injected runtime
+token or the existing executor AppRole. The narrowly scoped controller survey
+publisher is the documented exception; its one-time installation is a separate
+bootstrap step. See the [operating guide](platform/semaphore/README.md).
 
 - `platform/semaphore/bootstrap-semaphore-repositories.yml` — apply `repositories.yml`, which
   declares one Semaphore repository record per branch (`agent-cloud` = `main`, `agent-cloud dev`
@@ -521,11 +534,12 @@ Follow `plan/architecture/01-automation-model.md`:
 
 ## Operational Access
 
-When a task requires credentials (Semaphore API, NetBox API, OpenBao tokens, etc.), check `site-config/secrets/` first and ask the user if you can use those credentials rather than telling the user to do it manually. Production credentials for all services are backed up in the private **site-config** repository (clone it next to this repo); use its documented `secrets/` paths.
-
-Key paths:
-- `site-config/secrets/semaphore/semaphore_api_token.txt` — Semaphore API token
-- `site-config/inventory/production.yml` — service URLs, host IPs, inventory vars
+Use the [canonical Semaphore access flow](platform/semaphore/README.md) first.
+Runtime secrets come from OpenBao through the executor that will perform the
+operation. `site-config/inventory/production.yml` supplies private target
+configuration; `site-config/secrets/` is backup/recovery material, not the default
+runtime credential source. Recovery access needs its own explicit authorization;
+never use it to bypass a failed login, policy denial or approval rejection.
 
 ## Testing and Linting
 

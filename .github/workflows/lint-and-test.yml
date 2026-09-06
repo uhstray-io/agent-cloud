@@ -57,7 +57,7 @@ jobs:
           ignore_paths: netbox-docker
 
       - name: Ansible lint
-        run: pip install ansible-lint && ansible-lint platform/playbooks/
+        run: pip install ansible-lint && ansible-lint platform/playbooks/ platform/semaphore/
 
       - name: YAML lint
         run: pip install yamllint && yamllint -c .yamllint.yml .
