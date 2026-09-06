@@ -17,7 +17,9 @@
 # Semaphore's own configuration from inside a Semaphore job is avoided by
 # convention, same as setup-templates.yml and bootstrap-semaphore-repositories.yml.
 #
-#   SEMAPHORE_URL=https://semaphore.uhstray.io SEMAPHORE_TOKEN=<token> \
+# Supply SEMAPHORE_TOKEN through the approved executor, or use its existing
+# OpenBao controller AppRole (see README.md); do not copy credentials into argv.
+#   SEMAPHORE_URL=https://semaphore.uhstray.io \
 #     ansible-playbook platform/semaphore/sync-inventory.yml \
 #       -e inventory_source=../site-config/inventory/production.yml \
 #       -e inventory_name=production

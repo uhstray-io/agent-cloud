@@ -48,7 +48,7 @@ class ScopedPublicationTests(unittest.TestCase):
             def do_GET(self):  # noqa: N802
                 cls.requests.append(("GET", self.path))
                 if self.path == "/v1/secret/data/services/semaphore":
-                    if cls.deny_secret:
+                    if cls.deny_secret or self.headers.get("X-Vault-Token") != cls.login_value:
                         return self.reply({"errors": [cls.login_value]}, 403)
                     return self.reply({"data": {"data": {"api_token": cls.access_value}}})
                 if self.headers.get("Authorization") != f"Bearer {cls.access_value}":
@@ -63,7 +63,7 @@ class ScopedPublicationTests(unittest.TestCase):
                     if self.path == f"/api/project/1/templates/{row['id']}":
                         return self.reply(row)
                 if self.path.endswith("/schedules"):
-                    return self.reply([])
+                    return self.reply(cls.schedules)
                 return self.reply({}, 404)
 
             def do_POST(self):  # noqa: N802
@@ -71,6 +71,10 @@ class ScopedPublicationTests(unittest.TestCase):
                 if self.path == "/v1/auth/approle/login":
                     return self.reply({"auth": {"client_token": cls.login_value}})
                 cls.writes.append(("POST", self.path))
+                if self.path == "/api/project/1/schedules":
+                    value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    cls.schedules.append(value | {"id": 400})
+                    return self.reply({}, 201)
                 if self.path == "/api/project/1/templates":
                     value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     value["id"] = 300
@@ -82,6 +86,9 @@ class ScopedPublicationTests(unittest.TestCase):
                 cls.requests.append(("PUT", self.path))
                 cls.writes.append(("PUT", self.path))
                 value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/project/1/schedules/400":
+                    cls.schedules[0] = value
+                    return self.reply({})
                 if self.path != "/api/project/1/templates/206":
                     return self.reply({}, 400)
                 if not cls.ignore_write:
@@ -118,17 +125,20 @@ class ScopedPublicationTests(unittest.TestCase):
         ]
         cls.requests = []
         cls.writes = []
+        cls.schedules = []
         cls.ignore_write = False
         cls.drop_setting = False
         cls.deny_secret = False
 
-    def run_play(self, selection=None, bootstrap=False, controller_wrapper=False, **overrides):
+    def run_play(self, selection=None, bootstrap=False, controller_wrapper=False, full_catalog=False, **overrides):
         extra = {
             "_semaphore_url": self.endpoint,
             "semaphore_template_names_json": json.dumps([NAME] if selection is None else selection),
             "semaphore_template_names": [NAME] if selection is None else selection,
             "openbao_addr": self.endpoint,
         } | overrides
+        if full_catalog:
+            extra.pop("semaphore_template_names")
         env = os.environ.copy()
         env.update(
             SEMAPHORE_TOKEN="",
@@ -154,6 +164,23 @@ class ScopedPublicationTests(unittest.TestCase):
         for secret in (self.access_value, self.login_value, env["BAO_SECRET_ID"]):
             self.assertNotIn(secret, output)
         return result.returncode, output
+
+    def test_full_catalog_always_publishes_templates_and_upserts_schedules(self):
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "survey_vars": [], "schedule": {"cron": "*/45 * * * *"}}
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [("PUT", "/api/project/1/templates/206"),
+                                       ("POST", "/api/project/1/schedules")])
+        self.assertEqual(self.schedules[0]["template_id"], 206)
+        self.assertEqual(self.schedules[0]["cron_format"], "*/45 * * * *")
+        declaration["schedule"]["cron"] = "*/30 * * * *"
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes[2:], [("PUT", "/api/project/1/templates/206"),
+                                         ("PUT", "/api/project/1/schedules/400")])
+        self.assertEqual(len(self.schedules), 1)
+        self.assertEqual(self.schedules[0]["cron_format"], "*/30 * * * *")
 
     def test_bootstrap_installs_only_publisher_with_explicit_bindings(self):
         original = copy.deepcopy(self.records)
