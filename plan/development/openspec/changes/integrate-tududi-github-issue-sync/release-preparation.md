@@ -93,6 +93,29 @@ These prove control flow, not deployed API compatibility or production readiness
    explicitly authorized non-destructive live testing in this order; preserve
    existing records, owners, credentials and markers throughout.
 
+### Persisted canary gate prerequisite (not yet implemented)
+
+Before expanding beyond dev-test, implement and review a fail-closed gate in
+`provision-tududi-github-sync.yml`. Persist a separate result for dev-test and
+agent-cloud in the committed rollout evidence, referencing retained Semaphore
+verification, refresh and subsequent cycle task IDs plus the actual provider
+comparison evidence. Each result must identify the production instance, pair,
+public/private revisions, mapping and credential identity (never secret values),
+time and pass/fail outcome. An enabled flag or successful provisioning task is
+not a passed canary. Invalidate evidence when its relevant source, mapping,
+instance or identity changes; unrelated mapping additions must not invalidate
+unchanged canaries.
+
+Provisioning must reject agent-cloud without a valid dev-test pass, and reject
+any later pair without valid passes for both canaries, before credential or
+workflow writes. Missing, failed, mismatched or invalidated evidence must refuse
+activation; the preservation-only kill switch must remain available. Verify these
+refusals with disposable fixtures before rollout. The current verifier does not
+persist this gate and the current provisioner does not enforce it: this is an
+open implementation prerequisite, not a capability delivered by the token-default
+fix. Keep all pairs other than dev-test disabled until it is implemented and
+reviewed. No canary pass is claimed by this document.
+
 The verifier preserves provider business data but places helper scripts and mints
 an ephemeral GitHub token. Include those effects in the approved operation scope.
 No whole-service redeploy, n8n migration, seed, clean or restore is implied.

@@ -54,7 +54,15 @@ run the reviewed proof without requiring publisher installation first. Test the
 actual Ansible mode expression and guards with omitted, blank, true and explicit
 false inputs; only explicit false may reach initial mint. After identity and
 visibility proof, validate dev-test and then agent-cloud with actual provider
-records before enabling any remaining intended pair.
+records before enabling any remaining intended pair. Persist separate dev-test
+and agent-cloud results with retained Semaphore task IDs, provider comparisons,
+instance/pair identity and exact relevant revisions, as specified in the
+[release gate prerequisite](openspec/changes/integrate-tududi-github-issue-sync/release-preparation.md#persisted-canary-gate-prerequisite-not-yet-implemented).
+Before expanding beyond dev-test, implement and review provisioning refusal:
+agent-cloud requires a valid dev-test pass; every later pair requires both passes.
+Missing, failed or stale evidence must reject activation before engine writes,
+while preserving the kill switch. This enforcement is not implemented by the
+token-default fix; other pairs remain disabled until that prerequisite is met.
 
 ## Validation Criteria
 
