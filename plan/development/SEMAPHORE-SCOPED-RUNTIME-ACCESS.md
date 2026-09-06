@@ -46,6 +46,16 @@ flowchart LR
    Production token proof, identity/project visibility, existing marker recovery,
    dev-test record comparisons and broader rollout remain separate gates.
 
+### Follow-up: safe token proof before survey publication
+
+Default the token playbook itself to validation-only when its survey input is
+absent, matching the declared survey default. This lets an existing Dev template
+run the reviewed proof without requiring publisher installation first. Test the
+actual Ansible mode expression and guards with omitted, blank, true and explicit
+false inputs; only explicit false may reach initial mint. After identity and
+visibility proof, validate dev-test and then agent-cloud with actual provider
+records before enabling any remaining intended pair.
+
 ## Validation Criteria
 
 | Check | Pass condition |
