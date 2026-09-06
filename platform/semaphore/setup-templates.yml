@@ -117,7 +117,7 @@
         that:
           - _semaphore_url | length > 0
           - _token | length > 0
-        fail_msg: "Set SEMAPHORE_URL and SEMAPHORE_TOKEN environment variables"
+        fail_msg: "Semaphore endpoint or resolved runtime token is missing; see platform/semaphore/README.md."
 
     - name: "Get agent-cloud repository ID"
       ansible.builtin.uri:
@@ -228,6 +228,25 @@
         label: "{{ item._publish_name }}"
       when: _scoped
 
+    - name: "Read complete selected records before changing their surveys"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ _match.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      vars:
+        _match: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | first }}"
+      register: _selected_records
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _scoped
+
+    - name: "Choose complete records as the scoped merge source"
+      ansible.builtin.set_fact:
+        _merge_records: "{{ (_selected_records.results | map(attribute='json') | list) if _scoped else _existing.json }}"
+
     - name: "Create or update each template"
       ansible.builtin.uri:
         url: >-
@@ -254,9 +273,11 @@
         status_code: [200, 201, 204]
       register: _published
       changed_when: true
-      when: _tpl_body.items() | reject('in', _existing_template.items()) | list | length > 0
+      when: >-
+        (not _scoped and not (_bootstrap_survey_publisher | default(false)))
+        or (not (_tpl_body | publication_matches(_existing_template)))
       vars:
-        _existing_template: "{{ (_existing.json | selectattr('name', 'equalto', _tpl_name) | list | first) | default({}) }}"
+        _existing_template: "{{ (_merge_records | selectattr('name', 'equalto', _tpl_name) | list | first) | default({}) }}"
         _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
         # A variant is the base plus " (Dev)" — derived, never hand-written, so a
         # renamed base cannot leave an orphaned variant behind.
@@ -276,7 +297,7 @@
         # Scoped publication updates declared survey fields only. The binding
         # gate above proves the execution path; all other live settings survive.
         _tpl_body: >-
-          {{ (_existing_template | dict2items | rejectattr('key', 'equalto', 'last_task') | items2dict
+          {{ (_existing_template | publication_settings
               | combine({'survey_vars': item.survey_vars | default([])}))
              if _scoped else _default_body }}
       loop: "{{ _selected_templates }}"
@@ -308,7 +329,7 @@
           - (_matches | first).environment_id | int == semaphore_environment_id | int
           - (_matches | first).repository_id | int == _repo_ids[item.repository] | int
           - (_matches | first).playbook == item.playbook
-          - (_matches | first).survey_vars == item.survey_vars
+          - item.survey_vars | publication_matches((_matches | first).survey_vars | default([]))
         fail_msg: "Bootstrap publisher readback failed."
       vars:
         _matches: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | list }}"
@@ -317,25 +338,30 @@
         label: "{{ item._publish_name }}"
       when: _bootstrap_survey_publisher | default(false)
 
-    - name: "Verify scoped survey publication and preserved execution settings"
+    - name: "Read complete selected records after publication"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _selected_after
+      loop: "{{ _merge_records if _scoped else [] }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: _scoped
+
+    - name: "Verify scoped surveys and every preserved record setting"
       ansible.builtin.assert:
         that:
-          - _matches | length == 1
-          - (_matches | first).survey_vars | default([]) == item.survey_vars | default([])
-          - (_matches | first).inventory_id == _before.inventory_id
-          - (_matches | first).environment_id == _before.environment_id
-          - (_matches | first).repository_id == _before.repository_id
-          - (_matches | first).playbook == _before.playbook
-          - (_matches | first).arguments | default(None) == _before.arguments | default(None)
-          - (_matches | first).autorun | default(None) == _before.autorun | default(None)
-          - (_matches | first).view_id | default(None) == _before.view_id | default(None)
-          - (_matches | first).app | default(None) == _before.app | default(None)
-          - (_matches | first).allow_override_args_in_task | default(None) == _before.allow_override_args_in_task | default(None)
-          - (_matches | first).suppress_success_alerts | default(None) == _before.suppress_success_alerts | default(None)
+          - _after.name == item._publish_name
+          - item.survey_vars | default([]) | publication_matches(_after.survey_vars | default([]))
+          - (_before | publication_settings) | publication_matches(_after | publication_settings)
+          - (_after | publication_settings) | publication_matches(_before | publication_settings)
         fail_msg: "Scoped publication readback failed for '{{ item._publish_name }}'."
       vars:
-        _matches: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | list }}"
-        _before: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | first }}"
+        _after: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | first }}"
+        _before: "{{ _merge_records | selectattr('name', 'equalto', item._publish_name) | first }}"
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"

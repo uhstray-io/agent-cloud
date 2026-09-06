@@ -6,6 +6,11 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: "Refuse a controller token destination override before authentication"
+      ansible.builtin.assert:
+        that: (_semaphore_url | default('http://127.0.0.1:3000')) == 'http://127.0.0.1:3000'
+        fail_msg: "The controller publisher may only use its fixed loopback API destination."
+
     - name: "Require the exact template-name list"
       ansible.builtin.assert:
         that:

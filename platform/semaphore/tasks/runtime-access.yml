@@ -12,18 +12,18 @@
 - name: "Take an already injected Semaphore runtime token"
   ansible.builtin.set_fact:
     _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _runtime_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
   no_log: true
+
+- name: "Check the controller OpenBao endpoint"
+  ansible.builtin.include_tasks: ../../playbooks/tasks/assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _runtime_bao_url }}"
+  when: _token | length == 0
 
 - name: "Resolve missing Semaphore runtime access through the controller AppRole"
   when: _token | length == 0
-  vars:
-    _runtime_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
   block:
-    - name: "Check the controller OpenBao endpoint"
-      ansible.builtin.include_tasks: ../../playbooks/tasks/assert-bao-transport.yml
-      vars:
-        _assert_bao_url: "{{ _runtime_bao_url }}"
-
     - name: "Authenticate with the existing controller AppRole"
       ansible.builtin.uri:
         url: "{{ _runtime_bao_url }}/v1/auth/approle/login"

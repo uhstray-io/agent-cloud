@@ -54,6 +54,10 @@ service jobs, repository records, inventory records or credentials are changed.
 tested against disposable providers. It is not yet installed or verified in
 production. Do not describe its existence in Git as live availability.
 
+A later full-catalog publication also creates the main-bound base template.
+Do not run that base until the publisher code has been selectively promoted to
+`main`; the scoped bootstrap installs the Dev variant only.
+
 ## Bootstrap the missing entry point once
 
 [`bootstrap-survey-publisher.yml`](bootstrap-survey-publisher.yml) installs only

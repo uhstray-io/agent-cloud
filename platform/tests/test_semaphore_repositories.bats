@@ -184,7 +184,7 @@ print('\n'.join(bad) if bad else 'OK')
   local f="$REPO_ROOT/platform/semaphore/sync-inventory.yml"
   [ -f "$f" ]
   # The Bearer token crosses the wire on every request.
-  grep -qE 'Require a non-cleartext transport to Semaphore' "$f"
+  assert_grep -qF 'ansible.builtin.include_tasks: tasks/runtime-access.yml' "$f"
   # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
   # while still being hostless — a push would blank the orchestrator.
   grep -qE 'Refuse a hostless inventory' "$f"

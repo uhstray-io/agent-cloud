@@ -44,7 +44,7 @@
         that:
           - _semaphore_url | length > 0
           - _token | length > 0
-        fail_msg: "Set SEMAPHORE_URL and SEMAPHORE_TOKEN environment variables"
+        fail_msg: "Semaphore endpoint or resolved runtime token is missing; see platform/semaphore/README.md."
 
     - name: "Refuse an SSH clone URL with no key attached"
       # An ssh:// or git@ URL paired with the `none` key cannot authenticate, so

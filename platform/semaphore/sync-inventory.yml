@@ -56,20 +56,6 @@
           -e inventory_source=<path to the inventory file>
           (optionally -e inventory_name=<record name>, default 'production').
 
-    # SEMAPHORE_TOKEN is sent as a Bearer credential on every request below, so
-    # the transport matters. https always; http ONLY to loopback, which is the
-    # normal operator path (an SSH-local tunnel to the Semaphore host). Same
-    # shape as the OpenBao guards in the seed-* playbooks.
-    - name: "Require a non-cleartext transport to Semaphore"
-      ansible.builtin.assert:
-        that:
-          - >-
-            _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
-        fail_msg: >-
-          Refusing to send SEMAPHORE_TOKEN over cleartext. Use an https:// URL,
-          or http://localhost:<port> via an SSH-local tunnel to the Semaphore
-          host. Got a non-loopback http:// endpoint.
-
     - name: "Read the source inventory"
       ansible.builtin.slurp:
         src: "{{ inventory_source }}"

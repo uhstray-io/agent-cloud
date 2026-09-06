@@ -56,7 +56,10 @@ class ScopedPublicationTests(unittest.TestCase):
                 if self.path.endswith("/repositories"):
                     return self.reply(cls.repositories)
                 if self.path.endswith("/templates"):
-                    return self.reply(cls.records)
+                    # List projections need not contain the complete writable record.
+                    return self.reply([{k: v for k, v in row.items() if k != "description"} for row in cls.records])
+                if self.path == "/api/project/1/templates/206":
+                    return self.reply(cls.records[0])
                 if self.path.endswith("/schedules"):
                     return self.reply([])
                 return self.reply({}, 404)
@@ -80,6 +83,13 @@ class ScopedPublicationTests(unittest.TestCase):
                 if self.path != "/api/project/1/templates/206":
                     return self.reply({}, 400)
                 if not cls.ignore_write:
+                    # Match SurveyVar's documented Go omitempty serialization.
+                    value["survey_vars"] = [
+                        {k: v for k, v in survey.items() if v is not False and v != ""} | {"values": None}
+                        for survey in value["survey_vars"]
+                    ]
+                    if cls.drop_setting:
+                        value.pop("description", None)
                     cls.records[0] = value
                 return self.reply({})
 
@@ -107,12 +117,14 @@ class ScopedPublicationTests(unittest.TestCase):
         cls.requests = []
         cls.writes = []
         cls.ignore_write = False
+        cls.drop_setting = False
         cls.deny_secret = False
 
-    def run_play(self, selection=None, bootstrap=False, **overrides):
+    def run_play(self, selection=None, bootstrap=False, controller_wrapper=False, **overrides):
         extra = {
             "_semaphore_url": self.endpoint,
             "semaphore_template_names_json": json.dumps([NAME] if selection is None else selection),
+            "semaphore_template_names": [NAME] if selection is None else selection,
             "openbao_addr": self.endpoint,
         } | overrides
         env = os.environ.copy()
@@ -128,7 +140,9 @@ class ScopedPublicationTests(unittest.TestCase):
             ANSIBLE_NOCOLOR="1",
         )
         playbook = ("platform/semaphore/bootstrap-survey-publisher.yml" if bootstrap
-                    else "platform/playbooks/publish-semaphore-templates.yml")
+                    else "platform/semaphore/setup-templates.yml")
+        if controller_wrapper:
+            playbook = "platform/playbooks/publish-semaphore-templates.yml"
         result = subprocess.run(
             ["ansible-playbook", "-i", "localhost,", playbook,
              "-e", json.dumps(extra)],
@@ -160,6 +174,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.requests, [])
 
     def test_controller_publishes_one_survey_and_rerun_is_noop(self):
+        self.records[0]["description"] = "preserve detail-only setting"
         original = copy.deepcopy(self.records)
         code, output = self.run_play()
         self.assertEqual(code, 0, output)
@@ -209,6 +224,19 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play()
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped publication readback failed", output)
+
+    def test_lost_detail_only_setting_fails_readback(self):
+        self.records[0]["description"] = "preserve this setting"
+        type(self).drop_setting = True
+        code, output = self.run_play()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Scoped publication readback failed", output)
+
+    def test_controller_rejects_https_destination_override_before_network(self):
+        code, output = self.run_play(controller_wrapper=True, _semaphore_url="https://collector.example.test")
+        self.assertNotEqual(code, 0)
+        self.assertIn("fixed loopback API destination", output)
+        self.assertEqual(self.requests, [])
 
     def test_denied_runtime_read_is_named_and_secret_free(self):
         type(self).deny_secret = True
