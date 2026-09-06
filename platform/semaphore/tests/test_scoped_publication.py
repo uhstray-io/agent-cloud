@@ -57,9 +57,11 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply(cls.repositories)
                 if self.path.endswith("/templates"):
                     # List projections need not contain the complete writable record.
-                    return self.reply([{k: v for k, v in row.items() if k != "description"} for row in cls.records])
-                if self.path == "/api/project/1/templates/206":
-                    return self.reply(cls.records[0])
+                    return self.reply([{k: v for k, v in row.items() if k not in {"description", "survey_vars"}}
+                                       for row in cls.records])
+                for row in cls.records:
+                    if self.path == f"/api/project/1/templates/{row['id']}":
+                        return self.reply(row)
                 if self.path.endswith("/schedules"):
                     return self.reply([])
                 return self.reply({}, 404)

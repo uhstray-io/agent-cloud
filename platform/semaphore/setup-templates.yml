@@ -228,7 +228,7 @@
         label: "{{ item._publish_name }}"
       when: _scoped
 
-    - name: "Read complete selected records before changing their surveys"
+    - name: "Read complete existing selected records before publication"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ _match.id }}"
         headers:
@@ -241,11 +241,15 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _scoped
+      when:
+        - _scoped or (_bootstrap_survey_publisher | default(false))
+        - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length > 0
 
     - name: "Choose complete records as the scoped merge source"
       ansible.builtin.set_fact:
-        _merge_records: "{{ (_selected_records.results | map(attribute='json') | list) if _scoped else _existing.json }}"
+        _merge_records: >-
+          {{ (_selected_records.results | selectattr('json', 'defined') | map(attribute='json') | list)
+             if (_scoped or (_bootstrap_survey_publisher | default(false))) else _existing.json }}
 
     - name: "Create or update each template"
       ansible.builtin.uri:
@@ -321,6 +325,21 @@
         follow_redirects: none
       register: _templates_after
 
+    - name: "Read complete selected records after publication"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _selected_after
+      loop: >-
+        {{ _templates_after.json
+           | selectattr('name', 'in', _selected_templates | map(attribute='_publish_name') | list) | list }}
+      loop_control:
+        label: "{{ item.name }}"
+      when: _scoped or (_bootstrap_survey_publisher | default(false))
+
     - name: "Verify the bootstrap publisher was saved with the reviewed bindings"
       ansible.builtin.assert:
         that:
@@ -332,24 +351,11 @@
           - item.survey_vars | publication_matches((_matches | first).survey_vars | default([]))
         fail_msg: "Bootstrap publisher readback failed."
       vars:
-        _matches: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | list }}"
+        _matches: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | list }}"
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
       when: _bootstrap_survey_publisher | default(false)
-
-    - name: "Read complete selected records after publication"
-      ansible.builtin.uri:
-        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item.id }}"
-        headers:
-          Authorization: "Bearer {{ _token }}"
-        unredirected_headers: [Authorization]
-        follow_redirects: none
-      register: _selected_after
-      loop: "{{ _merge_records if _scoped else [] }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: _scoped
 
     - name: "Verify scoped surveys and every preserved record setting"
       ansible.builtin.assert:

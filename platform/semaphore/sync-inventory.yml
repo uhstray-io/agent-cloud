@@ -52,7 +52,7 @@
           - inventory_source is defined
           - inventory_source | length > 0
         fail_msg: >-
-          Set SEMAPHORE_URL and SEMAPHORE_TOKEN, and pass
+          Configure approved runtime access (platform/semaphore/README.md) and pass
           -e inventory_source=<path to the inventory file>
           (optionally -e inventory_name=<record name>, default 'production').
 
