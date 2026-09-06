@@ -213,10 +213,13 @@ def test_config_dependency_failure_is_named_and_does_not_hide_logs(tmp_path):
     assert result["baseline_complete"] is False
 
 
-def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_source(tmp_path):
+def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_source(tmp_path, monkeypatch):
     """Execute only the controller preflight, with a disposable local Git fixture."""
     ansible = shutil.which("ansible-playbook")
     assert ansible, "ansible-core is a required CI test dependency"
+    # A hook's inherited selectors must never reach fixture Git commands.
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.setenv(name, str(tmp_path / "unrelated" / name))
     repo = tmp_path / "repo"
     repo.mkdir()
     query = yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text())[0]
@@ -232,11 +235,13 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
         target = repo / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("fixture\n")
+    # Git hooks export repository selectors; never let them target the owning checkout.
+    fixture_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     for argv in (["git", "init"], ["git", "add", "."],
                  ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c",
                   "user.email=test@example.com", "commit", "-m", "fixture"]):
-        subprocess.run(argv, cwd=repo, check=True, capture_output=True)
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+        subprocess.run(argv, cwd=repo, env=fixture_env, check=True, capture_output=True)
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, env=fixture_env, text=True).strip()
     for command in commands:
         command["chdir"] = str(repo)
     play = tmp_path / "preflight.yml"
@@ -250,7 +255,7 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
             [ansible, "-i", str(inventory), str(play), "-e",
              json.dumps(extra | {"discovery_expected_revision": expected})],
             capture_output=True, text=True, timeout=30,
-            env=os.environ | {"ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible")},
+            env=fixture_env | {"ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible")},
         )
 
     assert preflight(revision).returncode == 0
