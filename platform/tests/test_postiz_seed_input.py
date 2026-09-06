@@ -2,11 +2,14 @@
 
 import copy
 import importlib.util
+import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from jinja2 import Environment
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/postiz-seed-input.py"
@@ -124,15 +127,28 @@ def test_declaration_excludes_stateful_fields():
     assert "POSTIZ_OAUTH_CLIENT_SECRET" not in fields
 
 
-@pytest.mark.parametrize("value", ["", "a$(printf unintended) b#'\"$HOME"])
-def test_provider_config_survives_shell_loading_literally(value):
+@pytest.mark.parametrize("value", [None, "", "a$(printf unintended) b#'\"$HOME"])
+@pytest.mark.parametrize("newline", ["", "\n"])
+def test_provider_config_survives_actual_loader(tmp_path, value, newline):
     text = (seed.ROOT / "platform/services/postiz/deployment/templates/postiz.env.j2").read_text()
     env = Environment()
     env.filters["quote"] = shlex.quote
-    for name in seed.provider_fields():
+    fields = seed.provider_fields()
+    lines = []
+    for name in fields:
         line = next(line for line in text.splitlines() if line.startswith(name + "="))
         key = line.split("secrets.", 1)[1].split()[0]
-        rendered = env.from_string(line).render(secrets={key: value})
-        result = subprocess.run(["bash"], input=rendered + f'\nprintf "%s" "${name}"\n',
-                                text=True, capture_output=True, check=True)
-        assert result.stdout == value
+        lines.append(env.from_string(line).render(secrets={} if value is None else {key: value}))
+    config = tmp_path / "postiz.env"
+    config.write_text("# synthetic configuration\n\n" + "\n".join(lines) + newline)
+    compose = yaml.safe_load((seed.ROOT / "platform/services/postiz/deployment/compose.yml").read_text())
+    command = compose["services"]["postiz"]["command"]
+    assert command[:2] == ["sh", "-c"]
+    loader, suffix = command[2].rsplit("nginx && pnpm run pm2", 1)
+    assert not suffix.strip()
+    child = "import json, os; print(json.dumps(dict(os.environ)))"
+    script = loader.replace("$$", "$").replace("/config/postiz.env", shlex.quote(str(config)))
+    script += shlex.join([sys.executable, "-c", child])
+    result = subprocess.run([*command[:2], script], text=True, capture_output=True, check=True)
+    actual = json.loads(result.stdout)
+    assert {name: actual[name] for name in fields} == dict.fromkeys(fields, value or "")

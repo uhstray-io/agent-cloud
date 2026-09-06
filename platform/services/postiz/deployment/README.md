@@ -93,9 +93,9 @@ the named seed task and encrypted input metadata first; inputs remain encrypted
 until the outcome is resolved. Semaphore's environment API has no compare-and-swap,
 so an external reservation remains required. No template bindings are changed.
 
-Provider values are shell-quoted in the mounted app configuration. This is separate
-from avoiding compose interpolation: the container still sources that file, so
-shell punctuation must remain literal too.
+Provider values remain unquoted in the mounted app configuration. The container
+reads each line with literal assignment (`export "$l"`); it does not evaluate
+values as shell code. Adding shell quotes would change the credentials.
 
 ## Auth
 
