@@ -2,7 +2,7 @@
 
 Smallstep `step-ca` as the platform's **internal** CA. Read with the root
 [`CLAUDE.md`](../../../../CLAUDE.md) and the plan it implements:
-[`plan/development/INTERNAL-CA-DEPLOYMENT.md`](../../../../plan/development/INTERNAL-CA-DEPLOYMENT.md).
+[`plan/development/00-foundation-local-dev.md`](../../../../plan/development/00-foundation-local-dev.md).
 
 ## What it is — and is NOT
 
@@ -11,7 +11,7 @@ Smallstep `step-ca` as the platform's **internal** CA. Read with the root
   `step-ca-data` volume (the win over Caddy's ephemeral `local_certs` root —
   this root survives Caddy redeploys and is shareable across hosts/devs).
 - **IS NOT:** the public CA. Public/customer TLS is Caddy automatic-HTTPS +
-  Let's Encrypt (`plan/architecture/CADDY-REVERSE-PROXY.md` → TLS strategy).
+  Let's Encrypt (`plan/architecture/05-platform-infra.md` → TLS strategy).
   Operating a public CA is out of scope — a separate trust domain entirely.
 
 ## Trust model (the unavoidable client step)

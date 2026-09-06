@@ -3,19 +3,17 @@
 # (integrate-tududi-github-issue-sync tasks 3.3 + 4.1; design D1, D2-as-amended,
 # D7-as-amended).
 #
-# Normal run: validate BOTH provider credentials against their live APIs
-# (named failure before anything in the engine changes) → upsert the two n8n
-# credentials by fixed name → render the cycle workflow from the committed
-# mapping (enabled pairs only) with the embedded sync core → upsert the
-# workflow by name → activate → prune owned objects the declaration no longer
-# implies. Owned = names carrying the sync prefix; nothing else is ever
-# touched. Emptying the declaration (every pair disabled) prunes everything
-# owned — that is the specified full-rollback, not an accident.
+# Validate providers, upsert credentials + cycle workflow, deactivate obsolete
+# owned workflows and activate the cycle. Never delete workflows or credentials.
+# An all-disabled mapping deactivates owned workflows and stops before provider
+# validation or credential writes. See design D10: rollback preserves access.
 #
 # KILL SWITCH (-e sync_enabled=false): branches BEFORE credential and mapping
 # validation and deactivates the owned workflow using only the n8n API key —
 # it must work with a broken mapping file AND dead/revoked provider
-# credentials, because it is the one-run rollback (task 4.1).
+# credentials, because it is the one-run rollback (task 4.1). A complete
+# n8n workflow listing is required: a truncated list refuses without claiming
+# rollback succeeded. Pagination support is a prerequisite above 250 workflows.
 #
 # The refusal set, all NAMED: unparseable mapping, mapping without a
 # sync_pairs list, dead tududi token, dead/mis-scoped GitHub App installation
@@ -37,8 +35,8 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _n8n_base: "{{ n8n_base_url | default('http://workflow-n8n:5678') }}"
     # THE ownership prefix (design D1): every engine object this playbook
-    # creates starts with it, and prune touches nothing without it.
-    _prefix: "tududi-github-sync"
+    # creates starts with it; deactivation touches nothing without it.
+    _prefix: "tududi-github-sync:"
     _workflow_name: "tududi-github-sync: cycle"
     _tududi_cred_name: "tududi-sync-api"
     _github_cred_name: "github-sync-api"
@@ -68,13 +66,16 @@
       value: "Bearer {{ _mt_token }}"
       allowedHttpRequestDomains: domains
       allowedDomains: api.github.com
-    # default(true, true) — the boolean form — so an EMPTY value (a survey
-    # field left blank) falls back to enabled too. Plain default() only
-    # substitutes when undefined, and `'' | bool` is false, so a blank survey
-    # would otherwise trip the kill switch.
-    _sync_enabled: "{{ sync_enabled | default(true, true) | bool }}"
+    # Blank surveys retain the default, but an actual boolean false MUST survive.
+    _sync_enabled: "{{ (sync_enabled | default('true') | string | lower) in ['true', ''] }}"
 
   tasks:
+    - name: "Require an explicit boolean or blank sync switch"
+      ansible.builtin.assert:
+        that:
+          - (sync_enabled | default('true') | string | lower) in ['true', 'false', '']
+        fail_msg: "sync_enabled must be true, false, or blank; refusing an ambiguous switch."
+
     - name: "Refuse a cleartext secret-store endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
@@ -109,7 +110,7 @@
       delegate_to: localhost
       no_log: true
 
-    - name: "List the engine's workflows (upsert + prune read)"
+    - name: "List the engine's workflows (upsert + deactivation read)"
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/api/v1/workflows?limit=250"
         headers:
@@ -118,31 +119,27 @@
       register: _workflows
       no_log: true
 
+    - name: "Require the complete workflow list before touching the engine"
+      ansible.builtin.assert:
+        that:
+          - not (_workflows.json.nextCursor | default(''))
+        fail_msg: "n8n workflow list is truncated; refusing partial upsert or deactivation."
+
     # ── KILL SWITCH: before any credential or mapping validation ────────────
     - name: "Deactivate the owned workflows and stop (sync_enabled=false)"
       when: not _sync_enabled
       block:
         - name: "Deactivate every owned workflow (prefix-scoped, nothing else)"
-          ansible.builtin.uri:
-            url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}/deactivate"
-            method: POST
-            headers:
-              X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
-            status_code: [200]
-          loop: "{{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list }}"
-          loop_control:
-            label: "{{ item.name }}"
-          # The loop label carries the workflow NAME, so the run stays
-          # diagnosable; the task itself is no_log because a failed request
-          # prints its invocation args, X-N8N-API-KEY included.
-          no_log: true
+          ansible.builtin.include_tasks: tasks/deactivate-tududi-sync-workflows.yml
+          vars:
+            _deactivate_workflows: "{{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list }}"
 
         - name: "Report the kill switch"
           ansible.builtin.debug:
             msg: >-
               sync_enabled=false: deactivated
               {{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list | length }}
-              owned workflow(s). Nothing validated, nothing rendered — this
+              owned workflow(s). Objects and credentials preserved; nothing rendered — this
               path works with a broken mapping and dead provider credentials
               by design. Re-provision with sync_enabled=true to resume.
 
@@ -159,7 +156,10 @@
         that:
           - _mapping is mapping
           - _mapping.sync_pairs is defined
+          - _mapping.sync_pairs is sequence
+          - _mapping.sync_pairs is not string
           - _mapping.sync_pairs | length > 0
+          - (_mapping.sync_pairs | selectattr('enabled', 'defined') | list | length) == (_mapping.sync_pairs | length)
         fail_msg: >-
           {{ _mapping_path }} did not parse into a sync_pairs list — refusing
           to provision from a malformed declaration. (An all-DISABLED mapping
@@ -175,6 +175,27 @@
         # engine cannot discover the id, because the App token is denied the
         # org's issue-field definitions.
         _priority_field_id: "{{ (_mapping_raw | from_yaml).github_priority_field_id | default(None, true) }}"
+
+    - name: "Deactivate and preserve the sync when all pairs are disabled"
+      when: _pairs | length == 0
+      block:
+        - name: "Deactivate the owned workflows without provider credentials"
+          ansible.builtin.include_tasks: tasks/deactivate-tududi-sync-workflows.yml
+          vars:
+            _deactivate_workflows: "{{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix) | list }}"
+
+        - name: "Report the disabled declaration"
+          ansible.builtin.debug:
+            msg: "No enabled pairs: owned workflows inactive; all objects and credentials preserved."
+
+        - name: "Stop before provider validation or credential writes"
+          ansible.builtin.meta: end_host
+
+    - name: "Refuse ambiguous cycle workflow names before provisioning"
+      ansible.builtin.assert:
+        that:
+          - (_workflows.json.data | selectattr('name', 'equalto', _workflow_name) | list | length) <= 1
+        fail_msg: "Multiple cycle workflows have the same name; reconcile without deleting data before provisioning."
 
     # ── Credential preflight: both providers, live, BEFORE the engine ───────
     - name: "Read the tududi sync token"
@@ -207,15 +228,15 @@
       failed_when: false
       no_log: true
 
-    - name: "Refuse a dead tududi token (named)"
+    - name: "Refuse an unsuccessful tududi probe (named)"
       ansible.builtin.assert:
         that:
           - _tududi_probe.status == 200
         fail_msg: >-
-          The tududi token at secret/services/tududi:api_token was refused by
-          {{ _wf_tududi_url }} (HTTP {{ _tududi_probe.status }}). Rotate it
-          (Store tududi API Token) before provisioning — nothing in n8n was
-          changed.
+          The tududi probe using secret/services/tududi:api_token failed at
+          {{ _wf_tududi_url }} (HTTP {{ _tududi_probe.status }}). Verify transport and run Store
+          tududi API Token with tududi_token_validate_only=true. A transport
+          failure does not prove an invalid token; nothing in n8n was changed.
 
     - name: "Refuse an enabled pair whose project the sync identity cannot see (named)"
       # tududi scopes everything per user: a token lists its own user's
@@ -230,9 +251,9 @@
           The sync token (secret/services/tududi:api_token) cannot see the
           tududi project(s) {{ _unseen_projects | join(', ') }} on
           {{ _wf_tududi_url }}; it sees only: {{ _visible_projects | join(', ') }}.
-          Either mint the token for the user who owns them (Store tududi API
-          Token with tududi_sync_user_email), or have that owner share each
-          project with the token's user at rw. Nothing in n8n was changed.
+          Reconcile project visibility for the configured service account and
+          prove operator visibility too (design D10, task 6.0). Do not replace
+          a credential merely to pass this check. Nothing in n8n was changed.
       vars:
         _visible_projects: "{{ _tududi_probe.json.projects | default([]) | map(attribute='name') | list }}"
         _unseen_projects: "{{ _pairs | map(attribute='tududi_project') | reject('in', _visible_projects) | list }}"
@@ -252,6 +273,21 @@
         status_code: [200]
       register: _creds
       no_log: true
+
+    - name: "Refuse incomplete or ambiguous credential reads before upserting"
+      ansible.builtin.assert:
+        that:
+          - not (_creds.json.nextCursor | default(''))
+          - (_creds.json.data | selectattr('name', 'equalto', _tududi_cred_name) | list | length) <= 1
+          - (_creds.json.data | selectattr('name', 'equalto', _github_cred_name) | list | length) <= 1
+        fail_msg: "n8n credential list is truncated or sync names are duplicated; no engine objects changed."
+
+    - name: "Deactivate obsolete owned workflows before enabling the cycle"
+      ansible.builtin.include_tasks: tasks/deactivate-tududi-sync-workflows.yml
+      vars:
+        _deactivate_workflows: >-
+          {{ _workflows.json.data | selectattr('name', 'search', '^' ~ _prefix)
+             | rejectattr('name', 'equalto', _workflow_name) | list }}
 
     - name: "Upsert the tududi credential"
       ansible.builtin.uri:
@@ -302,6 +338,14 @@
       register: _creds_after
       no_log: true
 
+    - name: "Require complete and unambiguous credential read-back"
+      ansible.builtin.assert:
+        that:
+          - not (_creds_after.json.nextCursor | default(''))
+          - (_creds_after.json.data | selectattr('name', 'equalto', _tududi_cred_name) | list | length) == 1
+          - (_creds_after.json.data | selectattr('name', 'equalto', _github_cred_name) | list | length) == 1
+        fail_msg: "Credential read-back is incomplete or ambiguous; refusing workflow activation."
+
     - name: "Hold the ids"
       ansible.builtin.set_fact:
         _tududi_cred_id: "{{ (_creds_after.json.data | selectattr('name', 'equalto', _tududi_cred_name) | first).id }}"
@@ -315,7 +359,6 @@
       # the mapping test makes the parse version-proof.
       ansible.builtin.set_fact:
         _workflow_json: "{{ _rendered if _rendered is mapping else (_rendered | from_json) }}"
-      when: _pairs | length > 0
       vars:
         _rendered: >-
           {{ lookup('template', playbook_dir ~ '/../services/tududi/sync/templates/tududi-github-sync.workflow.json.j2',
@@ -337,11 +380,6 @@
       no_log: true
 
     - name: "Upsert the cycle workflow by name"
-      # An all-DISABLED mapping is the specified rollback: prune everything
-      # owned and leave nothing behind. Rendering and upserting a workflow
-      # with zero pairs would recreate the very object the prune just removed,
-      # so the declaration having no enabled pair skips both.
-      when: _pairs | length > 0
       ansible.builtin.uri:
         url: >-
           {{ _n8n_base }}/api/v1/workflows{{
@@ -363,42 +401,12 @@
       no_log: true
 
     - name: "Activate the workflow (part of provisioning — design D1)"
-      when: _pairs | length > 0
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/api/v1/workflows/{{ _wf_upsert.json.id }}/activate"
         method: POST
         headers:
           X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
         status_code: [200]
-      no_log: true
-
-    # ── Prune: owned objects the declaration no longer implies ───────────────
-    - name: "Prune owned workflows the declaration no longer implies"
-      # Prefix-scoped and name-exact: with pairs enabled, the ONE cycle
-      # workflow is implied; with none, nothing is — every owned workflow goes.
-      ansible.builtin.uri:
-        url: "{{ _n8n_base }}/api/v1/workflows/{{ item.id }}"
-        method: DELETE
-        headers:
-          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
-        status_code: [200]
-      loop: >-
-        {{ _workflows.json.data
-           | selectattr('name', 'search', '^' ~ _prefix)
-           | rejectattr('name', 'in', ([_workflow_name] if (_pairs | length > 0) else []))
-           | list }}
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: "Prune the owned credentials when no pairs remain"
-      when: _pairs | length == 0
-      ansible.builtin.uri:
-        url: "{{ _n8n_base }}/api/v1/credentials/{{ item }}"
-        method: DELETE
-        headers:
-          X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
-        status_code: [200]
-      loop: ["{{ _tududi_cred_id }}", "{{ _github_cred_id }}"]
       no_log: true
 
     - name: "Report (names and counts only)"

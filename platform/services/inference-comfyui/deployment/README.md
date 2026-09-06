@@ -21,7 +21,7 @@ Same composable pattern as UhhCraft:
 
 ```text
 Semaphore "Deploy inference-comfyui"
-  └─ platform/playbooks/deploy-inference-comfyui.yml (Phase 4)
+  └─ platform/playbooks/deploy-inference-comfyui.yml
      ├─ tasks/install-nvidia-toolkit.yml   # GPU host prereq
      ├─ tasks/manage-secrets.yml           # OpenBao → templates/env.j2 → .env
      ├─ deploy.sh                          # podman compose up
@@ -52,8 +52,8 @@ See [`../context/architecture/contract.md`](../context/architecture/contract.md)
 |--------|------|---------|
 | `GET` | `/health` | Wrapper liveness (200 OK + JSON) |
 | `GET` | `/health/comfyui` | Verifies ComfyUI is reachable |
-| `GET` | `/health/models` | Verifies Flux.1 weights are loaded |
-| `POST` | `/generate` | `{ prompt, seed?, width?, height? }` → `{ url, key, seed }` |
+| `GET` | `/health/models` | Checks required Flux.1 weight filename is advertised by ComfyUI; does not prove VRAM load |
+| `POST` | `/generate` | `{ generation_id, prompt, width?, height?, steps?, guidance? }` → `{ generation_id, url, status }` |
 
 Responses include a URL routed through central Caddy under `/generated/img/*`. UhhCraft stores the URL, not the bytes.
 
@@ -71,14 +71,12 @@ deployment/
     └── requirements.txt
 ```
 
-## Outstanding integration items
+## Integration status
 
-- **Phase 3:** OpenBao policy + AppRole for `inference-comfyui`.
-- **Phase 4:** `platform/playbooks/deploy-inference-comfyui.yml` + `tasks/install-nvidia-toolkit.yml`.
-- **Phase 6:** GPU VM with PCIe passthrough on Proxmox (see `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`).
-- **Phase 7:** Semaphore template.
-- **Phase 8:** CI extensions (Python lint + import-time checks on `main.py`).
-- **Wrapper additions** the deploy scripts assume but may need to be added to `main.py`: `GET /health/comfyui` and `GET /health/models` endpoints.
+The deploy playbook, GPU prerequisite task, OpenBao policy/AppRole wiring,
+Semaphore template, and wrapper health endpoints are checked in. Their presence
+is not proof of a successful GPU deployment or end-to-end generation. Production
+GPU readiness and generated-artifact delivery require separate runtime validation.
 
 ## Related
 

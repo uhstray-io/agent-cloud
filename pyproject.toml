@@ -19,6 +19,7 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = [
+    "platform/tests",
     "platform/services/netbox/deployment/tests",
     "platform/services/caddy/deployment/tests",
 ]

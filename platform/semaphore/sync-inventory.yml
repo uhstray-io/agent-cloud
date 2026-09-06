@@ -17,7 +17,9 @@
 # Semaphore's own configuration from inside a Semaphore job is avoided by
 # convention, same as setup-templates.yml and bootstrap-semaphore-repositories.yml.
 #
-#   SEMAPHORE_URL=https://semaphore.uhstray.io SEMAPHORE_TOKEN=<token> \
+# Supply SEMAPHORE_TOKEN through the approved executor, or use its existing
+# OpenBao controller AppRole (see README.md); do not copy credentials into argv.
+#   SEMAPHORE_URL=https://semaphore.uhstray.io \
 #     ansible-playbook platform/semaphore/sync-inventory.yml \
 #       -e inventory_source=../site-config/inventory/production.yml \
 #       -e inventory_name=production
@@ -35,13 +37,15 @@
   connection: local
   gather_facts: false
   vars:
-    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
-    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _name: "{{ inventory_name | default('production') }}"
     _ssh_key_id: "{{ semaphore_inventory_ssh_key_id | default(0) | int }}"
 
   tasks:
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
     - name: "Validate inputs"
       ansible.builtin.assert:
         that:
@@ -50,23 +54,9 @@
           - inventory_source is defined
           - inventory_source | length > 0
         fail_msg: >-
-          Set SEMAPHORE_URL and SEMAPHORE_TOKEN, and pass
+          Configure approved runtime access (platform/semaphore/README.md) and pass
           -e inventory_source=<path to the inventory file>
           (optionally -e inventory_name=<record name>, default 'production').
-
-    # SEMAPHORE_TOKEN is sent as a Bearer credential on every request below, so
-    # the transport matters. https always; http ONLY to loopback, which is the
-    # normal operator path (an SSH-local tunnel to the Semaphore host). Same
-    # shape as the OpenBao guards in the seed-* playbooks.
-    - name: "Require a non-cleartext transport to Semaphore"
-      ansible.builtin.assert:
-        that:
-          - >-
-            _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
-        fail_msg: >-
-          Refusing to send SEMAPHORE_TOKEN over cleartext. Use an https:// URL,
-          or http://localhost:<port> via an SSH-local tunnel to the Semaphore
-          host. Got a non-loopback http:// endpoint.
 
     - name: "Read the source inventory"
       ansible.builtin.slurp:
@@ -129,6 +119,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/inventory"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _invs
 
     - name: "Locate the target record"
@@ -160,6 +152,8 @@
         method: PUT
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           id: "{{ _match.id | int }}"
@@ -178,6 +172,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/inventory/{{ _match.id }}"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _after
       changed_when: false
 

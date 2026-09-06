@@ -11,7 +11,7 @@ and its deployment README, then defined as skynet catalog entries (e.g. the seed
 `netclaw-network-reasoning`).
 
 > Scope: this pointer records **where the use-cases live**. NetClaw's *runtime
-> model* is reframed separately in `plan/development/SKYNET-REPLACEMENT-PLAN.md`
+> model* is reframed separately in `plan/development/06-inference-skynet.md`
 > (Part 2), which is gated on the netclaw↔Semaphore decision and not yet applied.
 
-See `plan/development/SKYNET-REPLACEMENT-PLAN.md` (Part 3 — use-case harvest).
+See `plan/development/06-inference-skynet.md` (Part 3 — use-case harvest).

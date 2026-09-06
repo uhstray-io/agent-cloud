@@ -4,8 +4,8 @@ hickory-dns (Rust; formerly trust-dns) serving the platform's **internal** name
 resolution. Read with the root [`CLAUDE.md`](../../../../CLAUDE.md) and the
 plans it implements:
 
-- Production: [`plan/development/DNS-SERVER-DEPLOYMENT.md`](../../../../plan/development/DNS-SERVER-DEPLOYMENT.md)
-- Local-dev: [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](../../../../plan/development/LOCAL-DEV-DEPLOYMENT.md) §5.1
+- Production: [`plan/development/00-foundation-local-dev.md`](../../../../plan/development/00-foundation-local-dev.md)
+- Local-dev: [`plan/development/00-foundation-local-dev.md`](../../../../plan/development/00-foundation-local-dev.md) §5.1
 
 ## What it is
 

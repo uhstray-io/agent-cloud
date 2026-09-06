@@ -9,14 +9,12 @@
 // bcrypt cost 12 and stores a 12-char prefix; findValidTokenByValue matches
 // by prefix + bcrypt.compare).
 //
-// NON-DESTRUCTIVE CONTRACT (operator requirement): the only writes are one
-// INSERT into api_tokens, and setting revoked_at (the app's own revoke
-// semantic, reversible) on rows that carry OUR label under OUR user. No
-// DELETE exists in this file; no other table is touched; every action prints
-// one JSON line of names and counts, never a token value.
+// NON-DESTRUCTIVE CONTRACT: only an initial INSERT is supported. Existing
+// active labelled rows cause insertion to refuse; no revoke action exists.
+// Every action prints one JSON line of names/counts, never a token value.
 //
 // Usage (podman exec, stdin carries the raw token for `insert` and `prove`):
-//   node tududi-db-mint.js status|revoke-label|insert|prove
+//   node tududi-db-mint.js status|insert|prove
 //   env: TUDUDI_SYNC_EMAIL (account), TUDUDI_SYNC_LABEL (token name)
 //
 // `prove` calls the LIVE API from inside the container, on loopback — the one
@@ -68,14 +66,8 @@ async function main() {
 
   if (ACTION === 'status') {
     console.log(JSON.stringify({ user_found: true, active_label_rows: labelled.length }));
-  } else if (ACTION === 'revoke-label') {
-    // The app's own revoke semantic, scoped to OUR label under OUR user.
-    for (const row of labelled) {
-      row.revoked_at = new Date();
-      await row.save();
-    }
-    console.log(JSON.stringify({ revoked: labelled.length }));
   } else if (ACTION === 'insert') {
+    if (labelled.length) throw new Error('active labelled rows exist; refusing to replace access');
     const raw = await readStdin();
     if (!/^tt_[0-9a-f]{64}$/.test(raw)) throw new Error('stdin is not a tt_<64 hex> token');
     const row = await ApiToken.create({

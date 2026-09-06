@@ -19,6 +19,11 @@ setup() {
   OLD="$REPO_ROOT/platform/playbooks/set-semaphore-branch.yml"
 }
 
+@test "scoped controller publication: real playbook preserves scope, credentials and bindings" {
+  run python3 "$REPO_ROOT/platform/semaphore/tests/test_scoped_publication.py"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "repositories: both main and dev records are declared" {
   [ -f "$DECL" ]
   grep -qE '^\s+- name: agent-cloud$' "$DECL"
@@ -179,7 +184,7 @@ print('\n'.join(bad) if bad else 'OK')
   local f="$REPO_ROOT/platform/semaphore/sync-inventory.yml"
   [ -f "$f" ]
   # The Bearer token crosses the wire on every request.
-  grep -qE 'Require a non-cleartext transport to Semaphore' "$f"
+  assert_grep -qF 'ansible.builtin.include_tasks: tasks/runtime-access.yml' "$f"
   # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
   # while still being hostless — a push would blank the orchestrator.
   grep -qE 'Refuse a hostless inventory' "$f"

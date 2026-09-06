@@ -88,17 +88,47 @@ protects 1.7, which is the only irreversible step in the change.
       and it also closes the end-to-end proof MISTAKES 2.13 had been carrying as
       outstanding, because the orchestrator only ever runs playbooks from the integration
       or production branch.
-- [ ] 1.7 Harden authentication: disable password and interactive authentication, disable
+- [x] 1.7 Harden authentication: disable password and interactive authentication, disable
       direct administrative login, configure validated passwordless escalation for the
       service account; confirm the step's own verification passed and re-confirm 1.5's
       workstation check afterwards
-- [ ] 1.8 Apply the host firewall in its administrative-access-only form (no service is
+      DONE 2026-09-05 UTC through Semaphore. Pre-hardening gate #392
+      (dev 2077363, target_service=postiz_svc) proved pinned-host key-only access
+      and working escalation. The independent workstation proof also passed
+      using the existing per-service key read from OpenBao, with
+      IdentitiesOnly=yes, BatchMode=yes, StrictHostKeyChecking=yes, and both
+      password methods disabled. Harden SSH (Dev) #393 then succeeded, including
+      its own verification. Post-hardening gate #394 confirmed effective
+      passwordauthentication=no, kbdinteractiveauthentication=no,
+      permitrootlogin=no, key-only access PROVEN, and working escalation.
+      The separate workstation key-only check passed again after hardening.
+      CORRECTION to the earlier blocker: workstation-default keys were refused;
+      the authoritative OpenBao key worked. Backed-up AppRole credentials were
+      rejected, so the operator connection used Semaphore's current OpenBao
+      configuration instead. No credential values were logged; the temporary
+      0600 workstation key was removed after each proof. The access gates'
+      changed=4 counts describe runner-side probe-file creation and cleanup.
+- [x] 1.8 Apply the host firewall in its administrative-access-only form (no service is
       running yet, so no service port is detected); re-verify administrative access from
       the workstation
-- [ ] 1.9 Validation gate: scenario "Both proofs succeed, so hardening may proceed" and
+      DONE 2026-09-05 UTC: Apply Firewall (Dev) #395 at dev 2077363,
+      target_service=postiz_svc, succeeded (ok=19 changed=4 failed=0).
+      No published container ports were detected; the active firewall allows
+      only SSH from the three declared administrative ranges, with default-deny
+      inbound and allow-outbound policy. Semaphore forced a fresh connection
+      successfully after enforcement. The independent workstation key-only
+      connection passed afterwards with the same strict options as 1.7.
+- [x] 1.9 Validation gate: scenario "Both proofs succeed, so hardening may proceed" and
       scenario "Enforcement does not lock out the orchestrator" both hold — key-only
       access is confirmed from both directions, password authentication is refused, and
       administrative access survived firewall enforcement
+      VERIFIED 2026-09-05 UTC: final Verify Host Access (Dev) #396 at
+      dev 2077363 succeeded after firewall enforcement. Effective sshd settings
+      remain passwordauthentication=no, kbdinteractiveauthentication=no,
+      permitrootlogin=no; key-only access is PROVEN and escalation works.
+      The independent workstation proof also passed after enforcement. The
+      two pre-hardening proofs, hardening verification, and two post-firewall
+      proofs are recorded above; phase 1 is complete.
 
 ## 2. Service definition
 
@@ -220,6 +250,41 @@ protects 1.7, which is the only irreversible step in the change.
       the identity-provider sign-in path
 - [ ] 5.5 Complete a sign-in round trip through the identity provider; confirm a session
       is established and the account created
+      SESSION HALF VERIFIED 2026-09-05 UTC after an authorized non-destructive
+      restart. First-account creation remains unverified: the browser reused
+      an existing account, so this proof does not close the full criterion.
+      The existing local bootstrap restored the stopped foundation, retaining
+      its vault, volumes, and saved-checkout binding (ok=61 failed=0).
+      Deploy Postiz (Local) #288 then succeeded (ok=38 changed=4 failed=0)
+      with postiz_disable_registration=true; all six containers are healthy
+      and the backend answers HTTP 200 over the configured TLS hostname.
+      Browser proof: explicitly logged out, observed registration disabled,
+      selected Sign in with Authentik, and followed the authorization-code
+      return into the authenticated calendar. The existing account and session
+      capability survived restart; no new identity or credentials were needed.
+      The retained automation key also still returns 200, while absent/wrong
+      keys return 401 without browser cookies. No social account was connected
+      and no post was created or published.
+
+      Repeatable existing-account browser check (local environment only):
+      1. After a successful Deploy Postiz (Local) run with
+         postiz_disable_registration=true, open the configured local public URL.
+         If already signed in, use Settings > Logout from Postiz > Yes logout;
+         if already signed out, proceed without changing state.
+      2. Require the signed-out page to show Registration is disabled and
+         Sign in with Authentik. Stop on a browser security warning or an
+         unexpected destination; never weaken browser or TLS protections.
+      3. Select Sign in with Authentik. Use the existing local IdP session or
+         the existing authorized account; do not create an identity, rotate a
+         credential, or change registration settings for this check.
+      4. Require the authorization-code return to the configured Postiz host
+         and the authenticated Calendar page at /launches. Do not copy the
+         code, tokens, or cookies into evidence.
+      5. Reload and require Calendar again. Record the deployment run and
+         pass/fail result. Re-running this check leaves the same account
+         signed in and registration closed; it never connects a social
+         account or creates a post. Account-creation evidence is a separate
+         prerequisite for completing 5.5.
 - [x] 5.6 Flip the registration variable to closed and redeploy; confirm a second identity
       cannot register and the closed state held without a manual step on the host
       DONE 2026-08-30 as a LAUNCH-TIME extra var on Deploy Postiz (Local), not a
@@ -296,13 +361,14 @@ protects 1.7, which is the only irreversible step in the change.
       MEDIUM (label=disable riding into prod via the search overlay) was fixed
       anyway by moving the local-only knobs to compose.local.yml — live-verified,
       ES confined on the prod path and still capped locally. 523 BATS green.
-- [ ] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
+- [x] 6.3 Open a pull request into the integration branch **only when explicitly asked**;
       wait for every check to pass, address findings, confirm green, then merge with a
       merge commit
-      SPLIT STATUS (the box stays unchecked until the MERGE lands — the task's own
-      text includes it): opened 2026-08-30 on the operator's explicit ask as PR
-      #145 (with #146 alongside); CodeRabbit findings addressed 2026-08-31;
-      checks + merge (operator's step, merge commit) still pending.
+      VERIFIED 2026-09-05 against GitHub: PR #145 merged into dev on
+      2026-08-31 at 14:24:55 UTC, merge commit df13a089bc88c7ba22d3ce61933ba1e744c61dd6.
+      Static Analysis, Security Scan, Unit Tests, and CodeRabbit all passed;
+      the unrelated Go jobs were skipped. The companion PR #146 also merged
+      into dev, at 14:32:37 UTC. This closes integration, not production promotion.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
@@ -316,6 +382,12 @@ protects 1.7, which is the only irreversible step in the change.
       Authentik OIDC sign-in callback, NOT the social-connect one.
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly
       asked** and merge it with a merge commit, so the orchestrator deploys from there
+      STILL OPEN 2026-09-05 UTC: GitHub main is
+      11792d2604acb7745d9e2ad7c4eb209e5bf4ce4c. Earlier promotion PR #132
+      predates PR #145; the latter's search-node, backend-health, and API-key
+      fixes are in dev but not main. Do not treat the earlier promotion as
+      completion or deploy the older production definition to satisfy this task.
+      No promotion PR was opened during this Apply pass.
 - [ ] 6.7 Validation gate: scenario "Interface and automation share one hostname" is
       satisfiable in production — the DNS record resolves and the redirect destinations
       registered at the identity provider and the four social platforms all name that same
@@ -325,9 +397,25 @@ protects 1.7, which is the only irreversible step in the change.
 
 - [ ] 7.1 Seed the social-platform credentials into the production secret store; verify
       with the read-only inventory playbook
+      PREREQUISITE CHECK 2026-09-05 UTC: Semaphore Check Secrets #391,
+      target_service=postiz_svc, completed with changed=0 and explicitly reported
+      NO SECRETS FOUND at secret/services/postiz. The successful inventory run
+      is evidence of the missing record, not evidence that seeding is complete.
+      The operator connection used the existing site-config Semaphore credential;
+      no credential values were printed or copied into this repository.
 - [ ] 7.2 Deploy the identity provider so the client blueprint is applied with production
       URLs
-- [ ] 7.3 Deploy the service; confirm all five containers reach health
+- [ ] 7.3 After the preceding gates pass, deploy the service; confirm all six
+      containers reach health, including backend /api/ answering below HTTP 500,
+      the workflow engine reporting SERVING, and the required search overlay's
+      cluster-health check passing
+      NOT VERIFIED 2026-09-05 UTC: current Semaphore Deploy Postiz and
+      Deploy Postiz (Dev) templates show no task history. From this workstation,
+      the public HTTPS URL refused the connection in both browser and curl.
+      These observations do not establish the host's container state or exclude
+      older runs under other templates. Keep this box open until an orchestrated
+      deployment verifies the backend and the required search overlay (six
+      containers, as corrected at 2.2/5.3), after the preceding gates pass.
 - [ ] 7.4 Publish the production reverse-proxy site block; confirm the public URL serves
       over TLS and that the proxy's own validation passed
 - [ ] 7.5 Re-apply the host firewall so it detects and permits the now-published service

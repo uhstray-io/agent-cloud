@@ -34,7 +34,7 @@ pattern (OpenBao → manage-secrets → `.env` → deploy.sh).
 
 ## Local-dev specifics (slim tier)
 
-This service ships **slim-first** (LOCAL-DEV-DEPLOYMENT.md P4, ratified
+This service ships **slim-first** (`plan/development/00-foundation-local-dev.md` Phase 4, ratified
 2026-06-12): the base compose is already the laptop shape and `compose.local.yml`
 adds only memory caps + the `local-dev` network. Deltas vs the prod plan (§7):
 
@@ -59,5 +59,5 @@ API). The LLM integration (read-only MCP profile, the llm-gate redaction
 service, the k-threshold rule) is layered on in later phases and is NOT part of
 this deployment.
 
-Full design + phased rollout: `plan/development/ERPNEXT-DEPLOYMENT.md`;
-local tier: `plan/development/LOCAL-DEV-DEPLOYMENT.md` (Phase 4).
+Full design + phased rollout: `plan/development/08-erpnext.md`;
+local tier: `plan/development/00-foundation-local-dev.md` (Phase 4).

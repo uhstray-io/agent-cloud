@@ -18,15 +18,15 @@ Unlike `inference-comfyui` (which proxies to a separate ComfyUI process), Hunyua
 
 ```text
 Semaphore "Deploy inference-hunyuan3d"
-  └─ platform/playbooks/deploy-inference-hunyuan3d.yml (Phase 4)
+  └─ platform/playbooks/deploy-inference-hunyuan3d.yml
      ├─ tasks/install-nvidia-toolkit.yml
-     ├─ tasks/ensure-weights.yml             # one-time: download Hunyuan3D-2-mini to /srv/hunyuan3d/weights
+     ├─ weights directory check             # fail if pre-provisioned host weights are absent
      ├─ tasks/manage-secrets.yml             # OpenBao → templates/env.j2 → .env
      ├─ deploy.sh                            # podman compose up
-     └─ post-deploy.sh                       # /health, weights loaded, GPU visible
+     └─ post-deploy.sh                       # /health, weights present, GPU visible
 ```
 
-**Model weights are host state.** They are large (~5GB for the -mini variant) and slow to download. The deploy expects them already on disk at `HUNYUAN3D_WEIGHTS_DIR` (default `/srv/hunyuan3d/weights`); the compose mounts them read-only. A separate playbook task handles initial download.
+**Model weights are host state.** They are large (~5GB for the -mini variant) and slow to download. The deploy expects them already on disk at `HUNYUAN3D_WEIGHTS_DIR` (default `/srv/hunyuan3d/weights`); the compose mounts them read-only. No initial-download task is implemented. Provisioning weights requires a reviewed Semaphore mechanism before this prerequisite can be satisfied through platform automation.
 
 ## Local development
 
@@ -57,9 +57,9 @@ See [`../context/architecture/contract.md`](../context/architecture/contract.md)
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Wrapper liveness |
-| `GET` | `/health/weights` | Verifies model is loaded into GPU memory |
+| `GET` | `/health/weights` | Checks MODEL_PATH exists and reports lazy-load state; does not load the model |
 | `GET` | `/health/gpu` | Verifies CUDA visibility + free VRAM |
-| `POST` | `/generate` | `{ prompt, seed?, resolution? }` → `{ glb_url, stl_url, seed }` |
+| `POST` | `/generate` | `{ generation_id, prompt, steps?, guidance?, octree_resolution? }` → `{ generation_id, glb_url, stl_url, status }` |
 
 Responses include URLs routed through central Caddy at `/generated/3d/*`. The caller stores the URLs, not the bytes.
 
@@ -68,7 +68,7 @@ Responses include URLs routed through central Caddy at `/generated/3d/*`. The ca
 ```text
 deployment/
 ├── deploy.sh                Container lifecycle (+ verifies weights mount)
-├── post-deploy.sh           Health + GPU + weight-load checks
+├── post-deploy.sh           Health + GPU + weight-presence checks
 ├── Dockerfile               nvidia/cuda:12.4.1-cudnn + Python 3.11 + torch + Hunyuan3D from source
 ├── compose.yml              FastAPI wrapper + independent MinIO + weights host mount
 ├── templates/env.j2         Jinja2 — production .env templated from OpenBao
@@ -77,14 +77,12 @@ deployment/
     └── requirements.txt
 ```
 
-## Outstanding integration items
+## Integration status
 
-- **Phase 3:** OpenBao policy + AppRole for `inference-hunyuan3d`.
-- **Phase 4:** `platform/playbooks/deploy-inference-hunyuan3d.yml` + `tasks/ensure-weights.yml`.
-- **Phase 6:** GPU VM provisioning (see `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`).
-- **Phase 7:** Semaphore template.
-- **Phase 8:** CI extensions (Python lint + import-time check; do **not** run the model in CI).
-- **Wrapper additions** the deploy scripts assume but may need to be added to `main.py`: `GET /health/weights`, `GET /health/gpu` endpoints; both should be cheap (don't run the model).
+The deploy playbook, GPU prerequisite task, OpenBao policy/AppRole wiring,
+Semaphore template, and wrapper health endpoints are checked in. Their presence
+is not proof of a successful GPU deployment or end-to-end generation. Production
+GPU readiness and generated-artifact delivery require separate runtime validation.
 
 ## Related
 

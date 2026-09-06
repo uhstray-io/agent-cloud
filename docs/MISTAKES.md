@@ -28,7 +28,7 @@ supersede it with a new entry and link both.
 | # | Mistake | Class | Enforced by |
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file | Unverified claim | Convention |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
@@ -55,6 +55,7 @@ supersede it with a new entry and link both.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
+| 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -140,6 +141,21 @@ confirmed you searched the right artifact. When two files could plausibly be
 "the" config, establish which one the runtime loads before drawing a conclusion.
 
 **Enforced by.** Convention.
+
+**Occurrences: 2.**
+
+**Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
+configuration. Without checking the actual compose command, a change added shell
+quoting and a test that reproduced that assumed loader. The real loader already
+used literal `export "$l"`, so the change would add quote characters to credentials
+and turn empty defaults into nonempty values. Review caught it before deployment.
+The quoting was removed and the stale notes corrected. The regression now executes
+the actual compose loader with synthetic provider values, substituting only the
+config path and final application command. All six cases failed with the incorrect
+quoting and pass without it, including an unterminated final line.
+
+**Additional enforcement.** `test_provider_config_survives_actual_loader` in
+`platform/tests/test_postiz_seed_input.py`.
 
 ### 1.3 A masked exit code reported as success
 
@@ -939,6 +955,33 @@ it config-as-code, or ask.
 
 **Enforced by.** Sandbox classifier (fired correctly).
 **OPA-shaped — see §7, rule `no-undeclared-shared-mutation`.**
+
+---
+
+### 3.3 Treated failed workstation login as a controller access prerequisite
+
+**What happened.** During production sync testing, the workstation had no injected
+Semaphore token. Its cached OpenBao CLI session returned 403, and an operator
+login was presented as the prerequisite for publication. Production task 411
+had already authenticated through Semaphore's controller AppRole and read the
+runtime secrets successfully. The user corrected the executor distinction.
+
+**Root cause.** Two different authentication contexts were conflated. The missing
+piece was a published controller entry point for scoped configuration, not proof
+that the controller needed replacement credentials.
+
+**The rule.** Check the supported Semaphore entry point and its controller-side
+evidence before requesting workstation authentication. A missing bootstrap entry
+point, an operator UI session, controller AppRole authentication and target
+credential validity are separate gates. Never export the controller AppRole or
+read backups as a shortcut between them.
+
+**Enforced by.** The controller publisher's executable fixture test succeeds
+using AppRole authentication without a workstation Semaphore token and asserts
+secret-free failure output. Exact selection, unchanged bindings and readback are
+also tested. Identifying the actual executor and distinguishing deployed code
+from live availability remain convention, documented in the canonical
+[Semaphore operating guide](../platform/semaphore/README.md).
 
 ---
 

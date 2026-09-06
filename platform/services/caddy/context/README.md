@@ -43,51 +43,13 @@ xcaddy build latest --with https://github.com/caddy-dns/cloudflare
 
 ## Automated Setup Script
 
-Use `start-caddy.sh` to automatically configure and start Caddy with your applications using environment variables:
+`start-caddy.sh` is a legacy helper, not the platform deployment entrypoint.
+Run Caddy changes through Semaphore with OpenBao-sourced environment templates.
+Use composable site fragments where enabled, or `manage-caddy-sites.yml` for the
+flat-Caddyfile deployment. Never pass a Cloudflare credential on the command line.
 
-```bash
-./start-caddy.sh -k <cloudflare_api_key> [application_options]
-```
-
-**Available Applications:**
-- `-n` - NocoDB (ip:domain[:port])
-- `-w` - N8N workflow (ip:domain[:port])  
-- `-p` - Postiz (ip:domain[:port])
-- `-s` - Superset (ip:domain[:port])
-- `-o` - O11Y observability (ip:domain[:port])
-- `-m` - Mixpost (ip:domain[:port])
-- `-b` - Wisbot (ip:domain[:port])
-- `-c` - Cloud/Collabora (ip:domain[:port])
-
-**Default Ports** (used if not specified):
-- NocoDB: 8080
-- N8N: 5678
-- Postiz: 5000
-- Superset: 8088
-- O11Y: 3000
-- Mixpost: 9095
-- Wisbot: 8080
-- Cloud: 11000 (main), 3002 (websocket), 9980 (collabora)
-
-**Examples:**
-
-Using default ports:
-```bash
-./start-caddy.sh -k your_cf_api_key \
-  -n 192.168.1.100:nocodb.example.com \
-  -w 192.168.1.101:n8n.example.com \
-  -p 192.168.1.102:postiz.example.com
-```
-
-Using custom ports:
-```bash
-./start-caddy.sh -k your_cf_api_key \
-  -n 192.168.1.100:nocodb.example.com:8081 \
-  -w 192.168.1.101:n8n.example.com:5679 \
-  -p 192.168.1.102:postiz.example.com:5001
-```
-
-The script sets environment variables for the existing Caddyfile and starts the service automatically.
+See [site fragments](../deployment/sites/README.md) and the
+[platform infrastructure overview](../../../../plan/architecture/05-platform-infra.md).
 
 ## NextCloud Configuration
 
