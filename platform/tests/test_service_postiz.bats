@@ -134,8 +134,7 @@ setup() {
   refute_contains "$cmd" ". /config/postiz.env"
   assert_contains "$cmd" 'export "$$l"'
 
-  # `set -a` still matters: without it the values are shell-local and the app's
-  # child processes never see them.
+  # Retain the declared startup sequence; explicit export assigns child-process env.
   assert_contains "$cmd" "set -a"
 
   # `read` returns false on a final line with no trailing newline and would drop

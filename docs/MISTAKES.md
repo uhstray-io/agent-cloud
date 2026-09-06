@@ -28,7 +28,7 @@ supersede it with a new entry and link both.
 | # | Mistake | Class | Enforced by |
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file | Unverified claim | Convention |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
@@ -140,6 +140,21 @@ confirmed you searched the right artifact. When two files could plausibly be
 "the" config, establish which one the runtime loads before drawing a conclusion.
 
 **Enforced by.** Convention.
+
+**Occurrences: 2.**
+
+**Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
+configuration. Without checking the actual compose command, a change added shell
+quoting and a test that reproduced that assumed loader. The real loader already
+used literal `export "$l"`, so the change would add quote characters to credentials
+and turn empty defaults into nonempty values. Review caught it before deployment.
+The quoting was removed and the stale notes corrected. The regression now executes
+the actual compose loader with synthetic provider values, substituting only the
+config path and final application command. All six cases failed with the incorrect
+quoting and pass without it, including an unterminated final line.
+
+**Additional enforcement.** `test_provider_config_survives_actual_loader` in
+`platform/tests/test_postiz_seed_input.py`.
 
 ### 1.3 A masked exit code reported as success
 

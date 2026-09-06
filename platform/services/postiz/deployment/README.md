@@ -72,6 +72,31 @@ secrets and talks to no vault. It refuses to start if either rendered file is mi
 deliberately: a missing bind source would otherwise be created as a *directory* and the
 app would boot with no configuration at all.
 
+## Importing existing provider credentials
+
+Use `scripts/postiz-seed-input.py --env-file <private-file>` for a presence-only
+check. It reads the file as data and selects provider fields from the committed
+seed declaration. It never imports signing, database, OIDC or deployment settings.
+
+For seeding, provision a dedicated environment through code, bind only the seed
+template to it, reserve it against other work, verify its
+current IDs, and add `--apply --url <https-origin> --project <id> --template <id>
+--environment <id>`. Supply the existing authorized operator API token on stdin;
+never put a token in an argument. The helper uses the existing Seed Postiz Secrets
+template and controller AppRole. It stages encrypted `SEED_` inputs, waits for
+the seed task, and removes only its inputs after a terminal result. The seed
+playbook reads OpenBao back and compares every supplied value without logging it.
+
+A shared environment, existing seed inputs, changed bindings or concurrent users cause a
+refusal. A request timeout is an uncertain result: do not rerun blindly. Inspect
+the named seed task and encrypted input metadata first; inputs remain encrypted
+until the outcome is resolved. Semaphore's environment API has no compare-and-swap,
+so an external reservation remains required. No template bindings are changed.
+
+Provider values remain unquoted in the mounted app configuration. The container
+reads each line with literal assignment (`export "$l"`); it does not evaluate
+values as shell code. Adding shell quotes would change the credentials.
+
 ## Auth
 
 Authentik OIDC **in the app**, not a Caddy `forward_auth` gate. That choice is what

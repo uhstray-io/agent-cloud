@@ -70,9 +70,8 @@ services:
     #
     # This does mean upstream's CMD is copied below, so it can drift. The image's
     # CMD is `sh -c "nginx && pnpm run pm2"` for postiz-app v2.23.0; a test pins
-    # this copy so a change is visible rather than silent. `set -a` is what makes
-    # sourcing EXPORT the values — without it they are shell-local and the app's
-    # child processes never see them.
+    # this copy so a change is visible rather than silent. Explicit export below
+    # makes literal values available to the app's child processes.
     command:
       - sh
       - -c
