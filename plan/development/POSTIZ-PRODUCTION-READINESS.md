@@ -2,11 +2,11 @@
 
 **Date:** 2026-09-05
 **Status:** ACTIVE
-**Context:** Production deployment is authorized; social publishing is not. The private operator configuration contains complete application-credential fields for X, LinkedIn, YouTube, and Discord. Presence does not establish credential validity or a connected account.
+**Context:** Prepare a scoped Postiz release and a reproducible provider-credential input workflow. Deployment, credential validity, account connection and social publishing are separate acceptance gates.
 
 ## Problem
 
-Production main `11792d2` lacks the tested search overlay, backend-health check and API-key capture. Integration `c1009b7` also contains unrelated n8n and tududi work, so promoting the entire branch would exceed the release scope. Semaphore Check Secrets run 440 succeeded with zero changes and found no `secret/services/postiz` record. That does not prove the VM has no retained data.
+The selective release needs the tested search overlay, backend-health check and API-key capture without including unrelated service changes. A secret-inventory check alone cannot establish whether retained application data exists; the release must verify both before generating stateful credentials.
 
 The seed playbook safely merge-patches provider credentials, but the documented encrypted Semaphore input channel requires manual configuration. Task extra variables are persisted in plaintext and must never carry credentials.
 
@@ -61,7 +61,7 @@ is a preparation manifest, not a claim that a production release is merged.
 | Secret preservation | `tasks/bao-merge-keys.yml` at `df13a08`, `tasks/manage-secrets.yml` at `81575e9` | Preserve undeclared sibling keys on every deploy |
 | Transport and escalation | Guard fixes from PR #139 and current include dependencies | Prevent invalid task attributes or unavailable sudo credentials before deploy |
 | IdP | URL resolution and live verification fixes at `9584441` and `61dcede` | Review existing production account state before selecting any user-blueprint delta |
-| Proxy | Route adoption, grammar and rollback fixes through `d0f1ab7` | Existing main failed; recorded successful production task 342 used `79544ae` |
+| Proxy | Route adoption, grammar and rollback fixes through `d0f1ab7` | Carry the reviewed parser and rollback behavior used by the route manager |
 | Host firewall | Current reviewed `apply-firewall.yml` and its include dependencies | Scope the run to `postiz_svc`; existing admin-access proof remains a prerequisite |
 | New credential boundary | This prerequisite change after dev review/merge | Literal provider values, encrypted input lifecycle and read-back proof |
 
@@ -85,4 +85,4 @@ Only HTTPS with verified TLS and no redirects is accepted for the operator API. 
 
 | Date | Change |
 |---|---|
-| 2026-09-05 | Verified provider presence and production secret absence; scoped release and encrypted input work |
+| 2026-09-05 | Scoped release manifest and encrypted input work |
