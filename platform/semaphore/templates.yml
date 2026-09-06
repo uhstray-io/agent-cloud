@@ -794,11 +794,25 @@ templates:
         required: false
         default_value: "plan"
 
+  - name: Publish Semaphore Template Surveys
+    playbook: platform/playbooks/publish-semaphore-templates.yml
+    dev_variant: true
+    survey_vars:
+      - name: semaphore_template_names_json
+        title: "Exact existing template names (JSON list)"
+        description: "Publishes selected declared surveys only; preserves target bindings and unrelated templates."
+        type: string
+        required: true
+
+  # Initial installation remains an operator bootstrap. Once installed, the
+  # publisher above uses the controller AppRole without exporting credentials.
+  # Repository/inventory management remains operator-side; it is not exposed
+  # by this narrowly scoped survey publisher.
   # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
   # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
   # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
-  # Deliberately NOT Semaphore templates: managing Semaphore's own config from
-  # inside a Semaphore job is avoided by convention.
+  # These broader tools are NOT exposed as Semaphore templates. The survey-only
+  # controller publisher above is the bounded exception; see README.md.
   #
   # To run a template against `dev` instead of `main`, give it
   # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.

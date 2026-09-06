@@ -1,0 +1,23 @@
+---
+# The controller may publish survey fields for explicit existing templates only.
+# No service deploy, repository rebind, inventory update or credential export.
+- name: "Require explicit controller publication scope"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require the exact template-name list"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json is defined
+          - semaphore_template_names_json is string
+          - semaphore_template_names_json | length > 0
+        fail_msg: "Supply a JSON list of exact existing template names. Full-catalog publication is unavailable here."
+
+- name: "Publish the selected declared surveys using controller runtime access"
+  ansible.builtin.import_playbook: ../semaphore/setup-templates.yml
+  vars:
+    # The controller API listens here in the declared Semaphore container.
+    # No survey-controlled destination may receive the OpenBao-sourced token.
+    _semaphore_url: "http://127.0.0.1:3000"
+    semaphore_template_names: "{{ semaphore_template_names_json | from_json }}"

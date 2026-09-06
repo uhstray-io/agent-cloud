@@ -16,7 +16,7 @@
 #     ansible-playbook platform/semaphore/bootstrap-semaphore-repositories.yml
 #
 # (SEMAPHORE_URL via an SSH-local tunnel to the Semaphore host; token from
-# site-config/secrets/semaphore/semaphore_api_token.txt.)
+# an already injected runtime token or the existing controller AppRole; see README.md.)
 #
 # Idempotent: a declared record is created when missing, corrected when it
 # drifted from the declaration, and left untouched when it already matches.
@@ -31,12 +31,14 @@
   connection: local
   gather_facts: false
   vars:
-    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
-    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _declared: "{{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories }}"
 
   tasks:
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
     - name: "Validate environment"
       ansible.builtin.assert:
         that:
@@ -64,6 +66,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/keys"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _keys
 
     - name: "Read existing repository records"
@@ -71,6 +75,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _repos
 
     # The "no key attached" entry is named differently per instance: this
@@ -123,6 +129,8 @@
         method: POST
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           name: "{{ item.name }}"
@@ -142,6 +150,8 @@
         method: PUT
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           id: "{{ _existing.id | int }}"
@@ -176,6 +186,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _repos_after
       changed_when: false
 

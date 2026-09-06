@@ -19,6 +19,11 @@ setup() {
   OLD="$REPO_ROOT/platform/playbooks/set-semaphore-branch.yml"
 }
 
+@test "scoped controller publication: real playbook preserves scope, credentials and bindings" {
+  run python3 "$REPO_ROOT/platform/semaphore/tests/test_scoped_publication.py"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "repositories: both main and dev records are declared" {
   [ -f "$DECL" ]
   grep -qE '^\s+- name: agent-cloud$' "$DECL"

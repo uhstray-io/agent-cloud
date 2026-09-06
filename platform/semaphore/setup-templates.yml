@@ -31,8 +31,7 @@
   connection: local
   gather_facts: false
   vars:
-    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
-    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     # Defaults match the production instance; the local-dev bootstrap overrides
     # them for the fresh local Semaphore (LOCAL-DEV-DEPLOYMENT.md Phase 0B).
     _project_id: "{{ semaphore_project_id | default(1) }}"
@@ -79,8 +78,40 @@
          | list }}
     _dev_repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') }}"
     _all_templates: "{{ _base_templates + (_dev_variants | map('combine', {}) | list) }}"
+    _scoped: "{{ semaphore_template_names is defined }}"
+    _catalog_json: >-
+      {% set result = [] %}
+      {% for template in _all_templates %}
+      {% set _ = result.append(template | combine({'_publish_name': template.name ~
+          (' (Dev)' if template._generated | default(false) else '')})) %}
+      {% endfor %}
+      {{ result | to_json }}
+    _catalog: "{{ _catalog_json | from_json }}"
+    _selected_templates: >-
+      {{ (_catalog | selectattr('_publish_name', 'in', semaphore_template_names) | list)
+         if _scoped else _catalog }}
+
 
   tasks:
+    - name: "Require exactly one declared bootstrap publisher"
+      ansible.builtin.assert:
+        that: _selected_templates | length == 1
+        fail_msg: "The generated Dev publisher is missing or ambiguous in the declaration."
+      when: _bootstrap_survey_publisher | default(false)
+
+    - name: "Require a nonempty exact-name selection when scope is supplied"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names | type_debug == 'list'
+          - semaphore_template_names | length > 0
+          - semaphore_template_names | unique | length == semaphore_template_names | length
+          - semaphore_template_names | difference(_catalog | map(attribute='_publish_name') | list) | length == 0
+        fail_msg: "Supply a nonempty list of unique, exact declared template names, including any (Dev) suffix."
+      when: _scoped
+
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
     - name: "Validate environment"
       ansible.builtin.assert:
         that:
@@ -93,6 +124,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _repos
 
     # Map every repository record name -> id, so a template can NAME the record
@@ -137,7 +170,7 @@
           '{{ item.repository | default('agent-cloud') }}', which has no record in
           Semaphore. Add it to repositories.yml and run
           bootstrap-semaphore-repositories.yml.
-      loop: "{{ _all_templates }}"
+      loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item.name }} -> {{ item.repository | default('agent-cloud') }}"
 
@@ -146,7 +179,54 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _existing
+
+    - name: "Refuse ambiguous bootstrap records"
+      ansible.builtin.assert:
+        that: _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length <= 1
+        fail_msg: "Multiple existing publisher records have the same name."
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _bootstrap_survey_publisher | default(false)
+
+    - name: "Require the selected repository records to match their declaration"
+      ansible.builtin.assert:
+        that:
+          - _live_repos | length == 1
+          - _declared_repos | length == 1
+          - (_live_repos | first).git_url == (_declared_repos | first).git_url
+          - (_live_repos | first).git_branch == (_declared_repos | first).git_branch
+        fail_msg: "Repository binding for '{{ item._publish_name }}' is ambiguous or differs from repositories.yml."
+      vars:
+        _repo_name: "{{ item.repository | default('agent-cloud') }}"
+        _live_repos: "{{ _repos.json | selectattr('name', 'equalto', _repo_name) | list }}"
+        _declared_repos: >-
+          {{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories
+             | selectattr('name', 'equalto', _repo_name) | list }}
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _scoped or (_bootstrap_survey_publisher | default(false))
+
+    - name: "Require unambiguous existing bindings before scoped publication"
+      ansible.builtin.assert:
+        that:
+          - _matches | length == 1
+          - (_matches | first).repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
+          - (_matches | first).playbook == item.playbook
+        fail_msg: >-
+          Scoped publication requires exactly one existing '{{ item._publish_name }}'
+          with the declared repository and playbook. Bootstrap or binding changes
+          require a separately reviewed configuration operation.
+      vars:
+        _matches: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | list }}"
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _scoped
 
     - name: "Create or update each template"
       ansible.builtin.uri:
@@ -164,19 +244,24 @@
           {{ 'PUT' if (_existing_ids | length > 0) else 'POST' }}
         headers:
           Authorization: "Bearer {{ _token }}"
-          Content-Type: application/json
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         # Body is serialized inside Jinja (to_json) so the id fields stay JSON
         # integers — Ansible's non-native templating would otherwise stringify
         # them, which Semaphore >= v2.18 rejects with a 400.
         body: "{{ _tpl_body | to_json }}"
         status_code: [200, 201, 204]
+      register: _published
+      changed_when: true
+      when: _tpl_body.items() | reject('in', _existing_template.items()) | list | length > 0
       vars:
+        _existing_template: "{{ (_existing.json | selectattr('name', 'equalto', _tpl_name) | list | first) | default({}) }}"
         _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
         # A variant is the base plus " (Dev)" — derived, never hand-written, so a
         # renamed base cannot leave an orphaned variant behind.
         _tpl_name: "{{ item.name ~ (' (Dev)' if (item._generated | default(false)) else '') }}"
-        _tpl_body: >-
+        _default_body: >-
           {{ {'name': _tpl_name,
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2) | int),
@@ -188,7 +273,13 @@
               'suppress_success_alerts': true}
              | combine({'id': (_existing_ids | first | int)} if (_existing_ids | length > 0) else {})
              | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
-      loop: "{{ _all_templates }}"
+        # Scoped publication updates declared survey fields only. The binding
+        # gate above proves the execution path; all other live settings survive.
+        _tpl_body: >-
+          {{ (_existing_template | dict2items | rejectattr('key', 'equalto', 'last_task') | items2dict
+              | combine({'survey_vars': item.survey_vars | default([])}))
+             if _scoped else _default_body }}
+      loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item.name }}{{ ' (Dev)' if (item._generated | default(false)) else '' }}"
 
@@ -205,14 +296,60 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _templates_after
+
+    - name: "Verify the bootstrap publisher was saved with the reviewed bindings"
+      ansible.builtin.assert:
+        that:
+          - _matches | length == 1
+          - (_matches | first).inventory_id | int == semaphore_inventory_id | int
+          - (_matches | first).environment_id | int == semaphore_environment_id | int
+          - (_matches | first).repository_id | int == _repo_ids[item.repository] | int
+          - (_matches | first).playbook == item.playbook
+          - (_matches | first).survey_vars == item.survey_vars
+        fail_msg: "Bootstrap publisher readback failed."
+      vars:
+        _matches: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | list }}"
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _bootstrap_survey_publisher | default(false)
+
+    - name: "Verify scoped survey publication and preserved execution settings"
+      ansible.builtin.assert:
+        that:
+          - _matches | length == 1
+          - (_matches | first).survey_vars | default([]) == item.survey_vars | default([])
+          - (_matches | first).inventory_id == _before.inventory_id
+          - (_matches | first).environment_id == _before.environment_id
+          - (_matches | first).repository_id == _before.repository_id
+          - (_matches | first).playbook == _before.playbook
+          - (_matches | first).arguments | default(None) == _before.arguments | default(None)
+          - (_matches | first).autorun | default(None) == _before.autorun | default(None)
+          - (_matches | first).view_id | default(None) == _before.view_id | default(None)
+          - (_matches | first).app | default(None) == _before.app | default(None)
+          - (_matches | first).allow_override_args_in_task | default(None) == _before.allow_override_args_in_task | default(None)
+          - (_matches | first).suppress_success_alerts | default(None) == _before.suppress_success_alerts | default(None)
+        fail_msg: "Scoped publication readback failed for '{{ item._publish_name }}'."
+      vars:
+        _matches: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | list }}"
+        _before: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | first }}"
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _scoped
 
     - name: "Get existing schedules"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _schedules
+      when: not _scoped
 
     - name: "Create or update each declared schedule"
       ansible.builtin.uri:
@@ -223,10 +360,12 @@
         method: "{{ 'PUT' if (_sched_ids | length > 0) else 'POST' }}"
         headers:
           Authorization: "Bearer {{ _token }}"
-          Content-Type: application/json
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body: "{{ _sched_body | to_json }}"
         status_code: [200, 201, 204]
+      when: not _scoped
       vars:
         _sched_ids: "{{ (_schedules.json | default([])) | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
         _tpl_id: "{{ (_templates_after.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first) }}"
@@ -237,13 +376,14 @@
               'cron_format': item.schedule.cron,
               'active': (item.schedule.active | default(true) | bool)}
              | combine({'id': (_sched_ids | first | int)} if (_sched_ids | length > 0) else {}) }}
-      loop: "{{ _all_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
+      loop: "{{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
       loop_control:
         label: "{{ item.name }} ({{ item.schedule.cron }})"
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          Applied {{ _all_templates | length }} templates
-          ({{ _all_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list | length }}
-          scheduled) to Semaphore at {{ _semaphore_url }}
+          Applied {{ _selected_templates | length }} templates
+          ({{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list | length }}
+          declared schedules; schedule publication {{ 'skipped' if _scoped else 'enabled' }})
+          to Semaphore at {{ _semaphore_url }}

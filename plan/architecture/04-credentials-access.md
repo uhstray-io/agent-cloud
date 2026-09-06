@@ -465,6 +465,11 @@ flowchart TD
 
 ### Emergency Access Procedure
 
+This is an explicitly authorized recovery procedure when normal Semaphore access
+is unavailable, not the routine runtime credential path. For existing automation
+and scoped publication, follow the [Semaphore operating guide](../../platform/semaphore/README.md).
+A failed workstation login alone does not establish a controller outage.
+
 1. **Attempt Semaphore UI** -- check task history for recent failures, re-run the template
 2. **Attempt Semaphore API** -- `curl -X POST` with API token from `site-config/secrets/semaphore/`
 3. **SSH with backup keys** -- use keys from `site-config/secrets/` (never the local operator key)

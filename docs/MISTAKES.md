@@ -55,6 +55,7 @@ supersede it with a new entry and link both.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
+| 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -939,6 +940,33 @@ it config-as-code, or ask.
 
 **Enforced by.** Sandbox classifier (fired correctly).
 **OPA-shaped — see §7, rule `no-undeclared-shared-mutation`.**
+
+---
+
+### 3.3 Treated failed workstation login as a controller access prerequisite
+
+**What happened.** During production sync testing, the workstation had no injected
+Semaphore token. Its cached OpenBao CLI session returned 403, and an operator
+login was presented as the prerequisite for publication. Production task 411
+had already authenticated through Semaphore's controller AppRole and read the
+runtime secrets successfully. The user corrected the executor distinction.
+
+**Root cause.** Two different authentication contexts were conflated. The missing
+piece was a published controller entry point for scoped configuration, not proof
+that the controller needed replacement credentials.
+
+**The rule.** Check the supported Semaphore entry point and its controller-side
+evidence before requesting workstation authentication. A missing bootstrap entry
+point, an operator UI session, controller AppRole authentication and target
+credential validity are separate gates. Never export the controller AppRole or
+read backups as a shortcut between them.
+
+**Enforced by.** The controller publisher's executable fixture test succeeds
+using AppRole authentication without a workstation Semaphore token and asserts
+secret-free failure output. Exact selection, unchanged bindings and readback are
+also tested. Identifying the actual executor and distinguishing deployed code
+from live availability remain convention, documented in the canonical
+[Semaphore operating guide](../platform/semaphore/README.md).
 
 ---
 

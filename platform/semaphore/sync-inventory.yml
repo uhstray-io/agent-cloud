@@ -35,13 +35,15 @@
   connection: local
   gather_facts: false
   vars:
-    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
-    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _name: "{{ inventory_name | default('production') }}"
     _ssh_key_id: "{{ semaphore_inventory_ssh_key_id | default(0) | int }}"
 
   tasks:
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
     - name: "Validate inputs"
       ansible.builtin.assert:
         that:
@@ -129,6 +131,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/inventory"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _invs
 
     - name: "Locate the target record"
@@ -160,6 +164,8 @@
         method: PUT
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           id: "{{ _match.id | int }}"
@@ -178,6 +184,8 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/inventory/{{ _match.id }}"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _after
       changed_when: false
 
