@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Read Request A metadata only; obtain authorization separately before live use.
 
+Usable by the declared controller wrapper or an authorized operator environment.
 Uses existing SEMAPHORE_URL, SEMAPHORE_TOKEN and SEMAPHORE_PROJECT_ID environment
-values. Never loads credentials, launches tasks, follows redirects or accesses VMs.
-Like the adjacent Semaphore configuration tools, this is operator-side tooling.
+values. A controller-only mode permits exactly http://127.0.0.1:3000.
+Never loads credentials, launches tasks, follows redirects or accesses VMs.
+The controller wrapper resolves existing runtime access; this script never does.
 """
 
 import json
@@ -12,8 +14,6 @@ import sys
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
-
-import yaml
 
 LIMIT = 2 * 1024 * 1024
 ENDPOINTS = ("templates", "repositories", "inventory", "keys")
@@ -43,6 +43,11 @@ def unique(rows, field, value):
 
 
 def group_present(inventory):
+    try:
+        import yaml
+    except ImportError as error:
+        raise Refusal("yaml_dependency_unavailable") from error
+
     if inventory.get("type") != "static-yaml":
         raise Refusal("unsupported_inventory_type")
     data = yaml.safe_load(inventory.get("inventory", ""))
@@ -58,7 +63,7 @@ def group_present(inventory):
         seen.add(id(groups))
         if len(seen) > 1000:
             raise Refusal("inventory_too_complex")
-        if "netbox_svc" in groups and isinstance(groups["netbox_svc"], dict):
+        if "netbox_svc" in groups and (groups["netbox_svc"] is None or isinstance(groups["netbox_svc"], dict)):
             return True
         for group in groups.values():
             if isinstance(group, dict) and "children" in group:
@@ -73,7 +78,10 @@ def inspect(env):
     if not url or not token or not project:
         raise Refusal("missing_existing_auth_or_project")
     parts = urlsplit(url)
-    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+    controller = env.get("SEMAPHORE_CONTROLLER_LOCAL", "")
+    if controller and (controller != "1" or url != "http://127.0.0.1:3000"):
+        raise Refusal("fixed_controller_origin_required")
+    if (not controller and parts.scheme != "https" or not parts.hostname or parts.username is not None
             or parts.password is not None or parts.query or parts.fragment or parts.path):
         raise Refusal("https_origin_required")
     if not project.isascii() or not project.isdecimal() or len(project) > 10:

@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 
-**Status:** PROPOSED
+**Status:** APPLY IN PROGRESS — production recovery unverified
 
 ## Context
 
@@ -35,7 +35,7 @@ Private `site-config` supplies environment inventory, source targets, expected o
 
 The private repository's guidance was read during planning; its inventory is configuration authority and its credential files are backup/reference material, not the runtime source. Preserve its existing branch and uncommitted files. Do not repeat the historical claim that no pfSense source exists until current documented references and OpenBao have been checked; do not assume a backed-up token identity still matches its live secret. New acceptance selectors/timing fields are proposed additions, not a claim that current private inventory already defines them.
 
-The operator-side Request A metadata inspector is [version-controlled](../../../../../platform/semaphore/inspect-discovery-metadata.py), accepts only existing environment authentication and an explicit project, and emits bounded allowlisted evidence. Its offline tests cover GET-only access and disclosure/refusal boundaries. Live authorization is separate; it must not bypass the unresolved browser-client block.
+The Request A metadata inspector, reusable from an authorized operator environment or its declared controller-only wrapper, is [version-controlled](../../../../../platform/semaphore/inspect-discovery-metadata.py), accepts only existing environment authentication and an explicit project, and emits bounded allowlisted evidence. Its offline tests cover GET-only access and disclosure/refusal boundaries. Live authorization is separate; it must not bypass the unresolved browser-client block.
 
 Separate three operations: diagnosis (read-only), repair (explicit bounded mutations), and acceptance (read-only). Authentication may establish transient sessions needed for reads but must not provision or rotate long-lived credentials during diagnosis. Reuse `check-discovery.yml` as the operator entry point; remove its GPS setter rather than automatically relocating that unrelated repair into the recovery path.
 
@@ -128,7 +128,7 @@ This is a bounded addition to existing observability provisioning, not delivery 
 1. Establish private site-config inputs and authorized Semaphore access, capture a redacted baseline and prove diagnostic reads are side-effect free. Do not run today's mutating checker as a baseline.
 2. Implement and test classification, source declarations, credential preflight, and only demonstrated recovery fixes. Use isolated fixtures/services for negative cases and branch-specific Semaphore declarations; never alter shared bindings.
 3. Add cycle correlation, read-back acceptance and o11y alert provisioning. Prove failed/empty/partial/unchanged cycles and missed-monitor behavior in isolation.
-4. Validate on `dev` against a representative Linux target using the exact branch revision; record source coverage and remaining blockers. Production operations require the normal authorized promotion/deployment step, not this proposal.
+4. Validate reviewed code/config revisions through the authorized production Semaphore path on the actual Linux target, after preserving configuration and historical logs. No separate NetBox dev instance is required. Keep failure injection in isolated fixtures; a successful local test is not production evidence.
 5. During authorized production qualification, observe two consecutive scheduled successful cycles for every enabled source plus delivered alert/recovery tests on an isolated route. Re-run recovery to prove no-op credentials and no duplicate objects. Record code/config IDs, source periods, private task/evidence references and rollback result; do not copy private payloads into the public repository.
 
 Rollback follows [proposal.md](proposal.md#rollback-plan): restore owned prior code/config and verified credential selection through Semaphore, keep data and sibling fields, and report the resulting state honestly. Rolling back monitoring removes visibility; it does not establish health. No destructive data rollback is part of this change.
@@ -167,3 +167,33 @@ These are implementation-discovery inputs; none changes the contract or silently
 - [Automation model](../../../../architecture/01-automation-model.md); [credential/access boundaries](../../../../architecture/04-credentials-access.md); [code-managed inventory sync](../../../../../platform/semaphore/sync-inventory.yml).
 
 The later plan-04 update must preserve historical evidence, add plan-03 dependency, correct source cadences, replace manual inventory PUT advice with the existing sync mechanism, and label local proof as incomplete Semaphore integration. Do not add duplicate env example files: the current NetBox playbook already declares the Jinja env templates. SNMPv3/LLDP remain deferred; no unrelated plan checkbox is closed by this recovery.
+
+## Architecture alignment and incident preservation (2026-09-05)
+
+The automation model was read in full before this implementation revision. Its
+**Subsequent Deploys** secret lifecycle requires reuse; the current shared Diode
+credential task instead calls `create_client` on every invocation. Deployment must
+not use that path unchanged. The independent audit workflow and guarded CLI read
+pattern support bounded Docker inspection without a checkout update, restart or
+scan. Templates remain declarations applied by the existing code-managed installer;
+there is no manual bootstrap exception.
+
+The credentials/access design requires create → verify → retire, consumer ownership
+and preserved audit/recovery evidence. Task 2.6 records the operator's accumulated
+credential concern as future individual reconciliation/retirement; no live count or
+compromise is inferred and no credential is retired during diagnosis. The infra
+runtime design distinguishes rootless Podman storage from privileged Orb storage;
+this initial collector explicitly supports the production Docker layout only.
+Testing guidance requires executable refusal/redaction checks. Canonical AGENTS.md's
+scoped credential `no_log` requirement takes precedence over the older testing
+chapter's blanket prohibition. Governance keeps Git desired state, runtime identity,
+NetBox inventory and telemetry distinct; no inventory writes manufacture evidence.
+
+Before repair, preserve April last-working and August outage leads separately,
+including effective mounted configuration, retained agent/Diode logs and historical
+Semaphore tasks. A mounted file does not prove the running process loaded it, and a
+submission success message does not prove complete collection or reconciliation.
+Explicitly record rotation gaps, unavailable history and recorded time zones.
+The initial collector bounds each read to 45 seconds/16 MiB, emits fixed-schema
+summaries only, and always refuses recovery acceptance. Missing host PyYAML leaves
+configuration inspection incomplete without installing anything during diagnosis.

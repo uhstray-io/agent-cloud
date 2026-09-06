@@ -1,65 +1,129 @@
-# Production Diagnosis Approval Scope
+# Production discovery diagnosis and execution evidence
 
-**Date:** 2026-09-05
+**Updated:** 2026-09-05 session (continued across UTC midnight)
 
-**Status:** Request A approved by the user; metadata inspection partially completed and then blocked by the browser client. Task 1.1 remains incomplete. Request B and production repairs are not approved.
+**Current authorization:** The user authorized non-destructive production diagnosis
+and discovery-agent deployment through production Semaphore. Production deployment
+is not waiting for a generic permission request. Configuration must be applied as
+code; no manual template bootstrap, workstation SSH, backup credential export,
+blind rotation or credential retirement is authorized. Preserve effective agent
+configuration and historical logs before any restart/redeploy.
 
-## Verified local preparation
+## Current implementation and execution boundary
 
-The owning checkout is `feat/netbox-discovery-recovery`. Initial source evidence was inspected at `108c09009c8d04d56cf855deba12b3b0ca09c87e`; the planning-only commit was subsequently rebased onto integration revision `2077363e93d45c1b8e9984b7d12cfcc7eb32d981` for publication. OpenSpec context and actionContext resolve within this worktree's `plan/development`; the shared registered store was not selected. All four apply context artifacts were read. Implementation remains **0/25 tasks complete**; no checkbox is changed by this preparation.
+PR #162, branch `feat/netbox-discovery-recovery`, carries the read-only diagnostic
+replacement and controller metadata wrapper. The owner merged integration revision
+`89274ba792fa91955dbd39a53dcd201692b11263` before this implementation. This is source
+state, not an installed production revision. The original planning-only reference
+was `108c09009c8d04d56cf855deba12b3b0ca09c87e`.
 
-Private site-config was inspected read-only. Its canonical inventory contains the NetBox service group and service/runtime declarations; its guidance identifies OpenBao as runtime credential authority and private credential files as backup/reference only. Existing private and public checkout changes were preserved. No private values or credentials are reproduced here.
+`check-discovery.yml` removes GPS mutation and requires a nonempty `netbox_svc`
+group, explicit zoned log window, and a matching committed controller revision.
+It collects Docker container identity/status, a sanitized projection of the actual
+mounted agent configuration, bounded retained log signals, and fixed aggregate ORM
+reads inside an explicitly read-only transaction. It neither updates the checkout
+nor restarts containers. Each command is bounded to 45 seconds/16 MiB; configuration
+is bounded to 256 KiB. A missing host PyYAML dependency is a visible configuration
+read failure, not permission to install during diagnosis. Docker-only scope avoids
+confusing rootless Podman application storage with privileged Orb storage.
 
-The public [template declaration](../../../../../platform/semaphore/templates.yml) lines 550–551 binds `Check Discovery Pipeline` to `platform/playbooks/check-discovery.yml` without a repository override. The [repository declarations](../../../../../platform/semaphore/repositories.yml) lines 31–48 define separate main and dev records. [Inventory synchronization](../../../../../platform/semaphore/sync-inventory.yml) lines 129–178 preserves the live inventory record's key binding. These files establish intended configuration, not the current live template, inventory, key source, or executed revision.
+The collector always ends with `discovery_acceptance_unverified`, including when
+all baseline reads succeed. Text signals, submission messages and aggregate counts
+do not prove complete collection, reconciliation or expected-object coverage.
+Timeout units, installed package versions, loaded configuration identity and
+historical completeness remain unverified unless separate evidence establishes them.
 
-The current checker is not suitable for a read-only request: [check-discovery.yml](../../../../../platform/playbooks/check-discovery.yml) lines 89–109 contain a Site GPS write. Do not run it as-is, including under an assumed safe label or generic check mode.
+`inspect-discovery-metadata.yml` reuses the shared controller `runtime-access.yml`
+helper: existing injected token or the controller's existing OpenBao AppRole, with
+an exact fixed `http://127.0.0.1:3000` destination. Its inspector performs four
+allowlisted GETs (templates, repositories, inventory, keys), refuses redirects,
+bounds responses, and emits IDs/booleans/fixed labels only. No raw inventory,
+credential payload or environment is printed. The original operator HTTPS mode
+remains available for an already authorized injected environment.
 
-## Request A — approved metadata inspection, partial result
+Both entry points are declared in `templates.yml`. The shared scoped publisher
+updates surveys on existing records only; it cannot create the new inspector
+record. A verified code-managed first executor and the NetBox VM key provenance
+remain unresolved. No API or VM credential is present in this task's shell.
+The already-running Semaphore UI can be read normally; no browser credential is
+extracted. No production job or configuration change has been performed by this task.
 
-The approved scope is read-only inspection of the production Semaphore project's existing **Check Discovery Pipeline** template and its linked repository, inventory and access-key metadata, solely to resolve task 1.1. Use existing authorized Semaphore authentication; if obtaining a new credential is necessary, stop and request that exact read separately.
+## Retained historical evidence inspected through ordinary Semaphore UI
 
-Allowed reads are the existing project endpoints used by the repository's configuration tooling: `GET /api/project/<project_id>/templates`, `/repositories`, `/inventory` and `/keys`, narrowing to the matching records and linked IDs. Resolve the project from the configured environment; do not assume the example/default numeric ID identifies production. Responses stay in memory and are reduced to record IDs, fixed branch/type labels, a checker-playbook match boolean, inventory group presence and key-reference metadata. Free-form labels are not echoed. Do not emit raw inventories, environments, key payloads, task extra-vars, private addresses or credentials.
+All UI dates below have **unspecified UI timezone**. Embedded agent timestamps
+retain their explicit `Z` or recorded offset. Do not equate these time domains.
+No raw logs, private topology or credential values are copied into this document.
 
-Expected evidence: actual template ID and checker-playbook match, linked main/dev repository and branch, production inventory reference and target-group match, environment ID reference, key-reference type and whether metadata establishes the declared OpenBao-backed access mechanism. Metadata alone does not establish key validity or origin when those are not exposed; report that as unknown. Compare with the local declarations without changing either side.
+| Evidence | Observation | Limit |
+|---|---|---|
+| Check Discovery Pipeline, template 56, task 181 | UI start `04/23/2026 06:37`; exact task revision `907085ae9b0b457f390118373ea561fc813c1889`; log checkout branch `feat/semaphore-branch-testing-and-cleanup` | Historical executed checker revision, not current deployed agent/config revision |
+| Task 181 retained last-100 agent lines | Proxmox reported submission of 18 entities/1 chunk at `2026-04-23T07:45:00.446051412Z`; pfSense reported 16/1 chunk at `2026-04-23T07:45:01.123680757Z` | Submission messages are not reconciliation proof; these are latest inspected messages, not a proven last successful cycle |
+| Same Proxmox cycle | Eleven offline-node VM/LXC skips preceded the submission report | Partial collection was compatible with a green historical checker |
+| Earlier retained cycle | Ingestion `UNAUTHENTICATED` retry at `2026-04-23T07:30:00.430316078Z`, followed by submission messages | A transient retry does not establish persistent credential failure or the August root cause |
+| Deploy Orb Agent, template 47, task 167 | Latest listed run `04/22/2026 13:04`; exact task revision `d96fe694167cd9fe9c419d5a85e799b66f659248`; retained task sequence includes fresh credential creation, OpenBao capture, template and agent stop/start | Establishes that the historical workflow invoked creation; not a live credential inventory or compromise finding |
+| Update NetBox, template 20 | History displayed no data | No retained update-run evidence available from this template |
+| Deploy NetBox, template 18 | Latest listed run 89, `04/04/2026 09:24` | No August deployment in this template's displayed newest history; absence here is not proof no deployment occurred elsewhere |
 
-Explicitly excluded: task launch, VM connection, OpenBao reads/writes or rotation, inventory/template/repository updates, access-key export, branch repointing, deploy, scans, publishing and source-device changes. Do not run `setup-templates.yml`, `sync-inventory.yml` or any bootstrap merely to inspect their state.
+The April last-working and August outage dates remain separate operator-reported
+leads. The inspected historical pages do not yet establish an August first failure,
+current effective configuration, complete retained container history or current
+collection/reconciliation health. Existing template labels showed production
+inventory and a variable group labeled local-dev; labels alone cannot establish
+actual values or runtime access. Repository clone key `local-none` says nothing
+about the VM inventory key.
 
-### Repeatable execution mechanism
+## Credential reuse and future retirement
 
-[inspect-discovery-metadata.py](../../../../../platform/semaphore/inspect-discovery-metadata.py) now encodes Request A as an operator-side tool, following the adjacent Semaphore configuration tools. It requires existing `SEMAPHORE_URL`, `SEMAPHORE_TOKEN` and explicit `SEMAPHORE_PROJECT_ID` environment values; there is no default project or credential lookup. Dependencies are Python and the existing PyYAML dependency. After the live access restriction is resolved through the normal approval mechanism, run `python3 platform/semaphore/inspect-discovery-metadata.py` from the reviewed checkout with those values already supplied through the authorized environment. Never pass the token in command arguments or copy it from a backup.
+Current source `tasks/manage-diode-credentials.yml` unconditionally invokes
+`create_client` before every deployment. Its task labeled “Delete existing” merely
+lists clients, and the creation command lacks scoped `no_log`. The standalone
+agent deploy calls it before updating the target checkout. Do not launch this
+unchanged path: it violates the user's no-mint-on-redeploy instruction and the
+architecture's Subsequent Deploys secret-reuse contract.
 
-The tool performs only the four listed GETs, requires an HTTPS origin, refuses redirects, bounds each response to 2 MiB and uses a 10-second socket timeout. It uniquely resolves the checker and linked records, safely parses static YAML without executing inventory plugins, and prints a bounded JSON evidence record. Unsupported inventory forms or failed reads produce a fixed failure code; unknown key provenance/validity and execution revision remain unverified. A mismatched playbook or missing group is reported explicitly, never as healthy. Retain only this sanitized output in the approved operator evidence location, not raw API responses. The offline test is `python3 -m pytest -q platform/services/netbox/deployment/tests/test_discovery_metadata.py` and uses no network.
+Task 2.6 durably tracks consumer/ownership inventory and individual safe retirement
+as future work. No bulk deletion or revocation is part of this incident. Preserve
+non-secret audit/recovery references, identify selected credentials and all known
+consumers, prove current/replacement consumers healthy, and review each retirement
+candidate individually. Age or a matching name alone does not authorize retirement.
+Fix routine credential reuse before agent redeployment; do not guess a replacement
+API or rotate merely because a historical retry exists.
 
-The script is implemented and offline-tested within task 1.1; the task remains unchecked because live bindings and revision are not yet proven. The historical browser read below is not the repeatable execution path. This code addition does not authorize using a different route around the client block: live execution still requires resolving the existing restriction through the normal approval/access mechanism. Obtaining any missing authentication credential is outside Request A and requires its own approved read scope.
+## Historical access restriction and superseding scope
 
-### Execution evidence, 2026-09-05
+The initial broad delegation was rejected by automatic approval review. The user
+then approved a narrow metadata request; a direct browser navigation to the template
+API returned `ERR_BLOCKED_BY_CLIENT`. That direct route was not retried or bypassed.
+The user later explicitly authorized ordinary authenticated UI reads, continued
+repository implementation, non-destructive diagnosis and Semaphore agent deployment.
+Those later instructions supersede the old “Request B not approved” status. The
+remaining blockers are executable binding/provenance and the unsafe deploy mechanism,
+not missing broad permission. The controller wrapper is a declared platform workflow,
+not a workstation alternate route around the browser-client restriction.
 
-The user approved the defined metadata-only request in the coordinating task. The current shell had neither Semaphore URL nor token configured. An existing authenticated browser session allowed the production project's repository page to be read without fetching or exporting credentials. The page confirmed separate `agent-cloud` / `main` and `agent-cloud dev` / `dev` repository records, both displaying the `local-none` repository-key reference. This is repository clone metadata; it does not prove the inventory's VM access mechanism.
+## Next execution gate
 
-The next approved request, `GET /api/project/<resolved_project_id>/templates`, failed with the browser-client result `net::ERR_BLOCKED_BY_CLIENT`. No template API payload was returned. The live phase stopped without retrying through a different route. The tool did not explain whether this was an approval restriction or another browser-client policy, so no cause is asserted.
+Establish the code-managed controller executor and exact reviewed diagnostic
+revision, verify target inventory/VM key provenance, then collect historical windows
+and current mounted configuration before any deployment. Preserve missing/rotated
+history as unknown. Use that evidence to select the smallest demonstrated repair.
+Acceptance still requires two scheduled complete collection → reconciliation →
+expected-object cycles for every enabled source and tested monitoring delivery.
+No local NetBox instance or synthetic success substitutes for this production gate.
 
-Template, inventory and VM access-key bindings, key provenance/validity, and the executed revision remain unverified. No task was launched, no VM connected, no secret retrieved/exported, and no production configuration changed. Resolve the browser-client block through the normal approval/access mechanism before completing Request A; this partial result does not unlock Request B.
+## Local validation and limits
 
-## Request B — production read-only diagnostic, conditional and not yet runnable
+Task 1.2 is implemented; task 1.1 remains incomplete and the production baseline
+(task 1.3) is not captured. The checklist now has 26 tasks, including the durable
+credential reconciliation follow-up. Tests execute the collector with synthetic
+container responses, real bounded subprocesses, and a disposable local Git/Ansible
+preflight. The fixed ORM call/SQL surface is checked statically; these are not a live
+PostgreSQL transaction test or production-side write audit. Historical UI reads do
+not close any production acceptance gate.
 
-After request A and the local task-1.2 checker patch/offline tests, present a second concrete approval tied to the exact reviewed diff and execution revision. The eventual target is **production NetBox**, selected from private site-config through Semaphore. The user reports local Podman versus production Docker/low-level discovery requirements; verify the actual production runtime and capabilities rather than asserting that NetBox universally requires Docker. Do not build or deploy a local NetBox substitute for this gate.
-
-The future workflow is the corrected `platform/playbooks/check-discovery.yml`, executed only through a verified Semaphore binding to its reviewed revision. If no such binding exists, request the exact code-managed binding/publishing operation separately; never repoint the shared template as a shortcut.
-
-The bounded read set will be: deployed checkout revision; container image IDs/digests and running status without environment dumps; installed Orb/Diode/SDK version metadata; sanitized terminal events from existing scheduled cycles; read-only NetBox counts, timestamps and expected-object projections under a read-only database transaction. Read non-secret source schedule/configuration fields through a parser that excludes credential-bearing fields. Report missing evidence rather than forcing a cycle.
-
-Credential diagnosis, if separately included in the final request, is limited to authentication and reads of enumerated existing credential paths/capabilities using the approved identities. It produces missing/denied/auth/transport verdicts and field-presence booleans, never values. A read-only source-authentication probe may be included only with its precise endpoint and scope specified at that time. No new credential mint, refresh, seed, policy update, or privilege expansion is implied.
-
-The output must separate measured live evidence from the April–August operator report and distinguish vault access, source authentication, collection, reconciliation and expected-object failures. Unobserved stages remain unknown. Running containers or old objects never establish recovery.
-
-Excluded mutations: GPS repair; NetBox create/update/delete; scans or forced worker runs; container restart/deploy; secret/policy/AppRole/key change; inventory/route/firewall change; source-device configuration; SNMP disablement; notifications to third parties; test/canary creation. Bounded normal task output is the only expected persisted result. Any additional operation requires a separately reviewed request.
-
-## Conditional repair and validation after evidence
-
-Classify faults before preparing a repair: missing fields require a verified authoritative source or approved operator provisioning; ACL failures require a scoped policy diff; rejected source auth requires identity/secret validation; collection errors require version-grounded worker/config fixes; reconciliation failures require ingestion evidence. Prepare and offline-test only the demonstrated repair, with exact owned fields/configuration, expected effects and rollback. Request that specific mutation separately. No unspecified production repair is approved by either diagnosis request.
-
-Production acceptance remains the spec's per-source collection → completed reconciliation → expected-object read-back gates, with two scheduled cycles for every enabled source and tested monitoring delivery. Offline tests cannot close that gate. SNMP remains enabled unless the operator separately approves a reviewed disablement with a reason.
-
-## Why execution stopped
-
-The original approval-review outcome rejected broad delegation that could include VM/production operations. The user subsequently approved Request A only; its template metadata request was then blocked by the browser client as recorded above. Task 1.1 explicitly requires confirming the live access/binding/revision; task 1.3 requires a live baseline before later adapters and repairs. No task was skipped, redefined as offline-complete, or marked complete. Native Apply's pause rule also says: "Pause if you hit blockers or need clarification." Independent contract correction, metadata-inspector implementation/offline testing and publication are authorized; they do not satisfy implementation or production acceptance gates.
+An independent read-only Claude Opus 5 review completed; dependency failure reporting,
+exit-code validation and revision/read-only test coverage were tightened afterward.
+A missing configuration read still makes the overall baseline incomplete, while its
+separate error leaves container/log evidence visible. No unconditional multi-host
+abort was added to baseline collection: each target must preserve its own evidence,
+and the final explicit refusal already prevents recovery acceptance.

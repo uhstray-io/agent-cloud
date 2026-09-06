@@ -115,3 +115,18 @@ def test_bad_responses_are_bounded_and_redacted(body, reason, capsys):
     ):
         assert main() == 1
     assert json.loads(capsys.readouterr().out) == {"status": "blocked", "reason": reason}
+
+
+def test_controller_mode_permits_only_fixed_loopback():
+    client = Client(RECORDS)
+    controller = ENV | {"SEMAPHORE_CONTROLLER_LOCAL": "1", "SEMAPHORE_URL": "http://127.0.0.1:3000"}
+    with patch.dict(INSPECT.__globals__, build_opener=lambda *args: client):
+        assert INSPECT(controller)["template_id"] == 11
+    assert client.requests == [f"http://127.0.0.1:3000/api/project/7/{name}" for name in RECORDS]
+    for url in ("http://localhost:3000", "http://127.0.0.1:3001", "https://semaphore.example.com",
+                "http://127.0.0.1:3000/extra", "http://127.0.0.1:3000?query=1"):
+        with (
+            patch.dict(INSPECT.__globals__, build_opener=lambda *args: pytest.fail("network attempted")),
+            pytest.raises(MODULE["Refusal"], match="fixed_controller_origin_required"),
+        ):
+            INSPECT(controller | {"SEMAPHORE_URL": url})
