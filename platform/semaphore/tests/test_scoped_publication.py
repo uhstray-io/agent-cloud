@@ -102,6 +102,8 @@ class ScopedPublicationTests(unittest.TestCase):
                     if self.path == f"/api/project/1/environment/{row['id']}":
                         if cls.ignore_write:
                             return self.reply({})
+                        # Semaphore v2.17.31 api/projects/environment.go:
+                        # updateEnvironmentSecrets applies explicit operations; [] does nothing.
                         existing = copy.deepcopy(row.get("secrets", []))
                         for operation in value["secrets"]:
                             if operation["operation"] != "create":
@@ -109,6 +111,8 @@ class ScopedPublicationTests(unittest.TestCase):
                             cls.auth_values[operation["name"]] = operation["secret"]
                             existing.append({"id": 700 + len(existing), "name": operation["name"], "type": "env"})
                         cls.environments[index] = value | {"secrets": existing}
+                        if cls.template_drift:
+                            cls.records[0]["description"] = "fixture-sensitive-description"
                         return self.reply({})
                 if self.path == "/api/project/1/schedules/400":
                     cls.schedules[0] = value
@@ -153,6 +157,7 @@ class ScopedPublicationTests(unittest.TestCase):
         cls.schedules = []
         cls.ignore_write = False
         cls.drop_setting = False
+        cls.template_drift = False
         cls.deny_secret = False
         cls.environments = []
         cls.active_tasks = []
@@ -249,8 +254,7 @@ class ScopedPublicationTests(unittest.TestCase):
     def test_isolated_environment_refuses_other_owner_and_active_work_before_writes(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
                        "isolated_environment": "Isolated inputs"}
-        self.environments = [{"id": 500, "name": "Isolated inputs"}]
-        type(self).environments = self.environments
+        type(self).environments = [{"id": 500, "name": "Isolated inputs"}]
         self.records[1]["environment_id"] = 500
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)
@@ -309,6 +313,51 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, writes)
+
+    def test_provisioner_preserves_auth_when_filling_missing_endpoint(self):
+        self.prepare_seed_template()
+        secrets = [{"id": 700 + i, "name": name, "type": "env"}
+                   for i, name in enumerate(["BAO_ROLE_ID", "BAO_SECRET_ID"])]
+        self.environments.append({"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
+                                  "json": "{}", "env": "{}", "secrets": copy.deepcopy(secrets)})
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.environments[1]["secrets"], secrets)
+        self.assertEqual(self.auth_values, {})
+        self.assertEqual(json.loads(self.environments[1]["json"]), {"openbao_addr": self.endpoint})
+        self.assertIn(("PUT", "/api/project/1/environment/501"), self.writes)
+
+    def test_provisioner_refuses_changed_endpoint_before_writes(self):
+        self.prepare_seed_template()
+        target = {"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
+                  "json": '{"openbao_addr":"https://different.example.com"}', "env": "{}",
+                  "secrets": [{"id": 700 + i, "name": name, "type": "env"}
+                              for i, name in enumerate(["BAO_ROLE_ID", "BAO_SECRET_ID"])]}
+        self.environments.append(copy.deepcopy(target))
+        code, output = self.run_play(provision=True)
+        self.assertNotEqual(code, 0)
+        self.assertIn("Validate the dedicated credential boundary", output)
+        self.assertEqual(self.environments[1], target)
+        self.assertEqual(self.writes, [])
+
+    def test_provisioner_reports_template_drift_without_sensitive_values(self):
+        for before_binding in [True, False]:
+            with self.subTest(before_binding=before_binding):
+                self.setUp()
+                self.prepare_seed_template()
+                self.records[0]["description"] = "fixture-original-description"
+                type(self).template_drift = before_binding
+                type(self).drop_setting = not before_binding
+                code, output = self.run_play(provision=True)
+                self.assertNotEqual(code, 0)
+                message = ("Seed template changed; binding refused." if before_binding
+                           else "Seed binding readback differs; reconcile before any credential import.")
+                failure = output.split("fatal: [localhost]: FAILED! => ", 1)[1]
+                result, _ = json.JSONDecoder().raw_decode(failure)
+                self.assertEqual(result.get("msg"), message)
+                self.assertNotIn("fixture-sensitive-description", output)
+                self.assertNotIn("fixture-original-description", output)
+                self.assertEqual(("PUT", "/api/project/1/templates/206") in self.writes, not before_binding)
 
     def test_provisioner_requires_credential_readback_before_rebinding(self):
         self.prepare_seed_template()

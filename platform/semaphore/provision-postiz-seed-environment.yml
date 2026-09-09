@@ -194,6 +194,8 @@
         fail_msg: "Dedicated environment changed during preparation; no automatic retry."
       no_log: true
 
+    # Semaphore v2.17.31 applies secrets as explicit create/update/delete operations;
+    # an empty list preserves every existing secret (api/projects/environment.go).
     - name: "Store only missing encrypted authentication and endpoint configuration"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
@@ -256,7 +258,6 @@
           - _template_fresh.json.survey_vars | default([]) == _template.json.survey_vars | default([])
         quiet: true
         fail_msg: "Seed template changed; binding refused."
-      no_log: true
 
     - name: "Bind only the seed template to its declared environment"
       ansible.builtin.uri:
@@ -292,7 +293,6 @@
           - _template.json.survey_vars | default([]) | publication_matches(_bound.json.survey_vars | default([]))
         quiet: true
         fail_msg: "Seed binding readback differs; reconcile before any credential import."
-      no_log: true
 
     - name: "Report the next read-only verification step"
       ansible.builtin.debug:
