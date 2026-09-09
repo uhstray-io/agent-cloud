@@ -209,7 +209,7 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _scoped or (_bootstrap_survey_publisher | default(false))
+      when: _scoped or (_bootstrap_survey_publisher | default(false)) or item.isolated_environment is defined
 
     - name: "Require unambiguous existing bindings before scoped publication"
       ansible.builtin.assert:
@@ -251,6 +251,12 @@
           {{ (_selected_records.results | selectattr('json', 'defined') | map(attribute='json') | list)
              if (_scoped or (_bootstrap_survey_publisher | default(false))) else _existing.json }}
 
+    - name: "Ensure declared isolated environments before full publication"
+      ansible.builtin.include_tasks: tasks/isolated-environments.yml
+      when:
+        - not _scoped
+        - _selected_templates | selectattr('isolated_environment', 'defined') | list | length > 0
+
     - name: "Create or update each template"
       ansible.builtin.uri:
         url: >-
@@ -291,7 +297,8 @@
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2) | int),
               'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
-              'environment_id': (semaphore_environment_id | default(2) | int),
+              'environment_id': ((_isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
+                                 if item.isolated_environment is defined else semaphore_environment_id | default(2)) | int),
               'playbook': item.playbook,
               'app': 'ansible',
               'autorun': false,
