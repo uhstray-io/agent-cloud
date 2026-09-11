@@ -48,7 +48,10 @@
 	# would never run for /v1/* requests.
 	@api path /v1/*
 	handle @api {
-		@noauth not header Authorization Bearer*
+		# header_regexp, not `header ... Bearer*`: the trailing * is a PREFIX match,
+		# so `Bearer` alone or `BearerX` would pass the edge gate. Require the
+		# scheme, one space, and a non-empty credential.
+		@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"
 		respond @noauth 401
 		reverse_proxy {{ r.upstream }} {
 			# SSE token stream: flush every write; no read/write timeouts for

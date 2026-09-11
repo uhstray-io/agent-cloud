@@ -85,7 +85,10 @@ setup() {
   # turn the refute below into one that can never match.
   assert_grep -qE '^[[:space:]]*@api path /v1/\*$' "$b"
   assert_grep -qE '^[[:space:]]*handle @api \{' "$b"
-  assert_grep -qE '^[[:space:]]*@noauth not header Authorization Bearer\*$' "$b"
+  # A regexp, not `header Authorization Bearer*`: the trailing * is a prefix
+  # match, so `BearerX` would pass. The scheme, one space, a non-empty credential.
+  assert_grep -qF '@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"' "$b"
+  refute_grep -qE 'header Authorization Bearer\*' "$b"
   assert_grep -qE '^[[:space:]]*respond @noauth 401$' "$b"
   # ...and NOT at site level (exactly one leading tab in this template).
   refute_grep -qE $'^\trespond @noauth' "$b"

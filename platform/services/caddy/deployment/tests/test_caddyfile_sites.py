@@ -244,7 +244,7 @@ def test_allowlist_site_with_nested_handle_blocks_reports_both_upstreams():
         "\ttls {\n\t\tdns cloudflare {$CLOUDFLARE_API_KEY}\n\t}\n"
         "\t@api path /v1/*\n"
         "\thandle @api {\n"
-        "\t\t@noauth not header Authorization Bearer*\n"
+        '\t\t@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"\n'
         "\t\trespond @noauth 401\n"
         "\t\treverse_proxy 192.0.2.7:8000 {\n\t\t\tflush_interval -1\n\t\t}\n"
         "\t}\n"
