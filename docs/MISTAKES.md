@@ -54,6 +54,7 @@ supersede it with a new entry and link both.
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
+| 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -940,6 +941,43 @@ and a 502 proves it did not.
 
 **Enforced by.** Test — `platform/tests/test_service_postiz.bats` pins the probe
 to `/api/` and refutes the bare-`/` form (mutation-proven).
+
+### 2.20 Idempotency proven on the wrong steady state, and the failure that revealed it was censored by its own `changed_when`
+
+**What happened.** The first production run of the read/retire/rescue version
+of the managed-sites playbook — landing the inference route — failed at the
+retire step and rolled back. The inventory declared `devlog` in
+`caddy_retire_sites`, as the adoption three weeks earlier required, and the
+route report two tasks up had just shown `devlog [managed by inventory]`. The
+tool refused: an address inside the managed region raised, by design, "refusing
+to retire … Remove it from caddy_managed_sites instead." The inventory comment
+beside the declaration promised the opposite: "Removing a name from here after
+its block is gone is a no-op — the retirement is idempotent." The run's only
+diagnostic was `Expecting value: line 1 column 1 (char 0)`.
+
+**Root cause.** Two, stacked. The tool's idempotency test removed a hand block
+twice and confirmed the second pass changed nothing — the steady state of a
+route that was *never* adopted. The steady state that every real declaration
+reaches — block inside the managed region, name still in the retire list — was
+the case the tool treated as caller error, so the declaration converged exactly
+once and refused forever after. Then `changed_when: (_retired.stdout |
+from_json).changed` parsed an empty stdout (the refusal went to stderr) and
+raised inside the conditional, and Ansible reported *that* exception instead of
+the tool's message. The playbook's own header had cited the postiz precedent —
+"A conditional cleanup gated on a later step's result is not a rollback" — and
+this is the diagnostic form of the same error: a conditional that assumes the
+success shape of the thing it inspects.
+
+**The rule.** An idempotency test must exercise the state a *successful* first
+run leaves behind, with the *same* declaration, and assert convergence — not the
+state of a run that never happened. And a `changed_when`/`failed_when` that
+parses a module's output must be guarded on the module's success (`rc == 0 and
+…`), or the parse error replaces the real one.
+
+**Enforced by.** Test — `test_caddyfile_sites.py` covers the adopted-into-managed
+case (`already_managed` reported, text unchanged) and the mixed case;
+`test_manage_caddy_sites_playbook.py` asserts the retire step's `changed_when`
+begins with the rc guard (mutation-proven: dropping the guard fails it).
 
 ## 3. Acting on live state
 

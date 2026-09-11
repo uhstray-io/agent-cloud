@@ -99,8 +99,15 @@
     - name: "Edit the Caddyfile — any failure restores the pre-edit copy"
       block:
         # Deleting the hand-maintained block so caddy_managed_sites can define the
-        # same hostname. Refuses on its own if the block is already managed, or if it
-        # serves other hostnames too — see the tool's docstring.
+        # same hostname. A name whose block already sits INSIDE the managed region
+        # is the steady state after an adoption and is left alone (reported as
+        # already_managed) — the same declaration must converge on every run. The
+        # tool still refuses a block that serves other hostnames too.
+        #
+        # changed_when is guarded on rc: the tool reports a refusal on stderr with
+        # an EMPTY stdout, and parsing that as JSON raised inside changed_when,
+        # which replaced the tool's own message with "Expecting value: line 1
+        # column 1" (seen on the first production re-run after an adoption).
         - name: "Retire hand-maintained blocks that inventory now owns"
           ansible.builtin.script:
             cmd: >-
@@ -108,7 +115,7 @@
               {{ caddy_retire_sites | map('regex_replace', '^', '--address ') | join(' ') }}
             executable: python3
           register: _retired
-          changed_when: (_retired.stdout | from_json).changed | default(false)
+          changed_when: _retired.rc == 0 and ((_retired.stdout | from_json).changed | default(false))
           when: caddy_retire_sites | default([]) | length > 0
 
         - name: "Insert/update the managed site block in the Caddyfile"
