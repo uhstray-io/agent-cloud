@@ -5,6 +5,8 @@
 #
 # Run: bats platform/tests/test_service_caddy.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/caddy/deployment"
@@ -67,6 +69,36 @@ setup() {
   # request first (anti-spoofing) — both must be present.
   grep -qE 'copy_headers .*X-authentik-username' "$f"
   grep -qE 'request_header -X-authentik-username' "$f"
+}
+
+@test "caddy: inference_api route allowlists /v1 (Bearer required) + /health, 404s the rest, streams" {
+  local f="$DEPLOY_DIR/templates/Caddyfile.local.j2"
+  # Scope every assertion to the inference_api branch of the template, not the
+  # whole file: the forward_auth branch also carries matchers and a reverse_proxy.
+  sed -n '/r.inference_api/,/{% elif r.forward_auth/p' "$f" > "$BATS_TEST_TMPDIR/inference.j2"
+  local b="$BATS_TEST_TMPDIR/inference.j2"
+  [ -s "$b" ]
+  # The API allowlist is a named matcher on /v1/* consumed by a handle block —
+  # the 401 must sit INSIDE it (Caddy orders `handle` before a top-level `respond`).
+  # [[:space:]] rather than \s, and $'\t' rather than '\t': neither escape is
+  # portable ERE, and BSD grep on macOS reads '\t' as a literal t — which would
+  # turn the refute below into one that can never match.
+  assert_grep -qE '^[[:space:]]*@api path /v1/\*$' "$b"
+  assert_grep -qE '^[[:space:]]*handle @api \{' "$b"
+  assert_grep -qE '^[[:space:]]*@noauth not header Authorization Bearer\*$' "$b"
+  assert_grep -qE '^[[:space:]]*respond @noauth 401$' "$b"
+  # ...and NOT at site level (exactly one leading tab in this template).
+  refute_grep -qE $'^\trespond @noauth' "$b"
+  # Liveness passes through; everything else is a 404 from the bare handle.
+  assert_grep -qE '^[[:space:]]*handle /health \{' "$b"
+  assert_grep -qE '^[[:space:]]*handle \{$' "$b"
+  assert_grep -qE '^[[:space:]]*respond 404$' "$b"
+  # Token streaming and the prompt-size cap.
+  assert_grep -qE '^[[:space:]]*flush_interval -1$' "$b"
+  assert_grep -qE '^[[:space:]]*max_size 16MB$' "$b"
+  # The upstream comes from the route, never a literal.
+  assert_grep -qF 'reverse_proxy {{ r.upstream }}' "$b"
+  refute_grep -qE 'reverse_proxy [0-9]' "$b"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {

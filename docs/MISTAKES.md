@@ -34,6 +34,7 @@ supersede it with a new entry and link both.
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
+| 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -310,6 +311,38 @@ recorded as exactly that. The wider rule this earns: when a first explanation
 is falsified, the next confident-sounding pattern from the same thin evidence
 deserves more suspicion, not less — reaching for a second story is the same
 move as the first.
+
+### 1.8 Documented an inventory encoding as "verified" from a sample that lacked the value class that breaks it
+
+**What happened.** The local bootstrap emits the Caddy route table into
+Semaphore's static INI inventory with `| to_json`, above a comment stating that
+"ansible's ini inventory parses a JSON list value into a real list (verified
+against ansible-inventory)". Every route at the time held only strings and
+integers. The first route to carry a boolean (`inference_api: true`) rendered as
+JSON `true`; the local Semaphore deploy of Caddy then failed with
+`'str object' has no attribute 'host'` — the whole `caddy_routes` value had
+arrived as one string, and the template was iterating its characters.
+
+**Root cause.** The INI plugin does not parse JSON. It hands each value to
+Python's `ast.literal_eval` and keeps the raw string when that raises. JSON is
+accepted only for as long as it is also valid Python — `true`, `false` and
+`null` are not — so the "verification" had confirmed a coincidence over the
+sample at hand, not the mechanism. Reproduced on ansible-core 2.16.18 in the
+Semaphore image and on the host: `[{"flag": true}]` → `str`,
+`[{"flag": True}]` → `list`. Same shape as PR 136's parser lesson: a claim
+checked against a convenient sample instead of the authority (here, the
+plugin's own parsing rule) is wrong precisely where the sample is silent.
+
+**The rule.** When a comment asserts *how* another system parses a value, the
+assertion must name the mechanism (the function, the documented rule), and the
+check must cover every value class the type admits — a boolean, a null, a
+nested list — not only the classes present today. "Verified" over one sample
+earns the words "works for the current values", nothing stronger.
+
+**Enforced by.** Test — `platform/tests/test_local_dev_inventory.bats`
+("bootstrap: the INI route table is emitted as a Python literal, not JSON")
+pins the `| string` emission and refuses `| to_json` on that line. Mutation-
+proven by the failure itself: the `to_json` form is what broke.
 
 
 ## 2. Tests that would have passed for the wrong reason

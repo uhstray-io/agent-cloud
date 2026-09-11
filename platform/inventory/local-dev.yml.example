@@ -119,6 +119,13 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
+            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
+            # prod). inference_api renders the /v1 + /health allowlist with an edge
+            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
+            # host (scripts/fake-inference-upstream.py) so the edge rules can be
+            # exercised without a GPU box. Prod points the same shape at spark-1 via
+            # site-config's caddy_managed_sites.
+            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The

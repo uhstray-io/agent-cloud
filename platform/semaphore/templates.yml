@@ -887,6 +887,10 @@ templates:
 
   - name: Manage Caddy Sites
     playbook: platform/playbooks/manage-caddy-sites.yml
+    # The read-report + retire + rescue version of this playbook lives on dev; main
+    # still carries the insert-only one. The (Dev) variant is how a prod route lands
+    # through the current code before promotion (same pattern as Seed n8n Secrets).
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Caddy group"
