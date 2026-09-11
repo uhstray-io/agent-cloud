@@ -231,3 +231,29 @@ def test_hash_inside_a_quoted_token_is_literal():
 def test_a_real_trailing_comment_is_still_removed():
     assert _strip_comment("\treverse_proxy 192.0.2.1:80 # note") == "\treverse_proxy 192.0.2.1:80 "
     assert _strip_comment("# whole line") == ""
+
+
+def test_allowlist_site_with_nested_handle_blocks_reports_both_upstreams():
+    # The inference edge (vLLM security-guide shape): a named matcher, nested
+    # `handle` blocks each carrying a reverse_proxy — one with a sub-block — and
+    # a bare `handle { respond 404 }`. The `list` report the managed-sites
+    # playbook prints must attribute both upstreams to the ONE site, with the
+    # matcher tokens and braces skipped, or the drift report lies about it.
+    text = (
+        "inference.example.io {\n"
+        "\ttls {\n\t\tdns cloudflare {$CLOUDFLARE_API_KEY}\n\t}\n"
+        "\t@api path /v1/*\n"
+        "\thandle @api {\n"
+        '\t\t@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"\n'
+        "\t\trespond @noauth 401\n"
+        "\t\treverse_proxy 192.0.2.7:8000 {\n\t\t\tflush_interval -1\n\t\t}\n"
+        "\t}\n"
+        "\thandle /health {\n\t\treverse_proxy 192.0.2.7:8000\n\t}\n"
+        "\thandle {\n\t\trespond 404\n\t}\n"
+        "}\n"
+        "b.example.io {\n\treverse_proxy 192.0.2.2:80\n}\n"
+    )
+    sites = parse_sites(text)
+    assert [s["addresses"] for s in sites] == [["inference.example.io"], ["b.example.io"]]
+    assert sites[0]["upstreams"] == ["192.0.2.7:8000", "192.0.2.7:8000"]
+    assert sites[1]["upstreams"] == ["192.0.2.2:80"]
