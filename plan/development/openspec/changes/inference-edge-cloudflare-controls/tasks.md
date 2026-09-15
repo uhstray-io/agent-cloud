@@ -65,7 +65,20 @@
       preserves the source IP on port forwarding; which backend the host runs is unverified) —
       otherwise the route fails CLOSED for everyone. Then redeploy Caddy through the Semaphore playbook; from a host that can reach the origin
       address, `curl -H 'Host: inference.uhstray.io'` to `/health` returns 404; through
-      Cloudflare `/health` returns 200 and `/v1/models` with the key returns the list
+      Cloudflare `/health` returns 200 and `/v1/models` with the key returns the list.
+      ATTEMPTED 2026-09-15 03:53 UTC — DEAD END as deployed: site-config #13 merged, inventory
+      synced, `Manage Caddy Sites` task 888 succeeded (Caddyfile validated, Caddy restarted),
+      and the route FAILED CLOSED: proxied `/health` 404, `/v1/models` with key 404, direct
+      404. The Caddy container does not see a Cloudflare address as its peer (the pre-check
+      could not be run: no Semaphore-executable read of the container's network backend
+      exists and workstation SSH is not a sanctioned path). Rolled back through the same
+      path: site-config #14 reverts the two lockdown commits → sync → `Manage Caddy Sites`.
+      Other hostnames on the host were unaffected throughout (matcher scoped to one block).
+      REOPENED as: (a) make the peer address observable through Semaphore BEFORE any
+      source-address control (a read-only task that prints the container's network mode and
+      one access-log line), then (b) either give the prod Caddy container the real peer
+      (host networking / source-preserving rootless backend) or move the control to the host
+      firewall (5.1), which sees the real source regardless of the container's port publish
 - [ ] 2.6 Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
       scenario "Proxied request is served"; 2.4 and a rendered diff prove scenario "Template
       and production block agree"

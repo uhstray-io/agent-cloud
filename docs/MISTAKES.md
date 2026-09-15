@@ -96,6 +96,7 @@ supersede it with a new entry and link both.
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
 | 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
 | 10.13 | `tofu validate` + `plan` passed a ruleset attribute the Cloudflare API rejects on create | Schema ≠ API acceptance | Convention |
+| 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -2158,6 +2159,32 @@ actions, check the API reference for that attribute's action restriction first.
 
 **Enforced by.** Convention. The apply path already fails loudly and leaves no partial
 state, so the cost of this class is one failed task, not damage.
+
+### 10.14 A source-address allowlist was proven only where it could not fail
+
+**What happened.** The inference route's `remote_ip` allowlist (Cloudflare's published
+ranges) was rendered, `caddy validate`d, BATS-tested and exercised locally — where the
+variable is `private_ranges` and the only peer is the podman gateway, so the matcher could
+not fail. The risk that the production container sees a rewritten peer address was named
+in the PR and the task list as a pre-check, but no sanctioned way to perform the check
+existed (no Semaphore task reads the container's network mode; workstation SSH is not a
+platform path), so the deploy went ahead as the test. `Manage Caddy Sites` (task 888)
+succeeded and the route answered 404 to everyone through Cloudflare until the revert
+(site-config #14) landed.
+
+**Root cause.** A control whose correctness depends on a runtime observable (the peer
+address the process sees) was validated only against configuration and against an
+environment where the observable had a different value. "Fails closed" was accepted as a
+safe property; it is safe for the origin and an outage for the users.
+
+**The rule.** Before deploying a control keyed on a runtime observable, make that
+observable readable through the sanctioned executor and read it — here, a read-only
+Semaphore task printing the container's network mode and one access-log peer address.
+If the read cannot be built in time, the deploy is a scheduled test with an announced
+outage window, not a landing.
+
+**Enforced by.** Convention. The mechanical form is the read-only task itself, added as a
+precondition to the deploy playbook when the route carries a source-address matcher.
 
 ## 11. The largest one
 
