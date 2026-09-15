@@ -264,7 +264,7 @@ consequences are settled and are not to be re-investigated on the next load test
    and vLLM's own `--api-key`; that is the accepted control.
 
 Deliberation and measurements: OpenSpec change
-`plan/development/openspec/changes/inference-edge-cloudflare-controls`.
+`plan/development/openspec/changes/archive/2026-09-15-inference-edge-cloudflare-controls`.
 
 ## Adding a New Service to the Proxy
 

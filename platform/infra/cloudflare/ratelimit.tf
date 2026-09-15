@@ -14,7 +14,7 @@
 # request per turn, so ten arrivals from one address in ten seconds is a
 # fan-out, not a conversation; a 10 s mitigation lets a tripped client recover
 # within a turn. Deliberation + measurements: plan/development/openspec/
-# changes/inference-edge-cloudflare-controls.
+# changes/archive/2026-09-15-inference-edge-cloudflare-controls.
 #
 # Scope of the counter: Cloudflare keeps rate-limit counters PER DATA CENTER
 # (cf.colo.id is mandatory for exactly that reason; only data centers sharing
