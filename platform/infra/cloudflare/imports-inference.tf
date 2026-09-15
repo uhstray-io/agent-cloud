@@ -12,8 +12,10 @@
 # opaque handle, not a credential or an address; the zone id stays a variable.
 # Read from the API 2026-09-15 (GET /zones/{zone}/dns_records?name=inference…).
 #
-# DELETE THIS FILE once the import has applied and a follow-up plan is
-# "No changes" — it is a one-shot, exactly like the Phase 1-2 bootstrap blocks.
+# Retained after the import on purpose: per the OpenTofu import docs, a block
+# is active only while nothing is tracked at `to`, and "after importing is
+# successful, an import block becomes inert" — so no cleanup step exists, and
+# the file stays as the record of where the resource came from.
 
 import {
   to = cloudflare_dns_record.platform["inference"]
