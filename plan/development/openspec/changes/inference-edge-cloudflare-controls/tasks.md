@@ -56,7 +56,12 @@
       That run itself FAILED 0/12 for an unrelated reason: vLLM on spark-1 was stopped at
       04:28:11 UTC (`[shutdown] API server: stopping engine client mode=abort`) and started
       again at 04:30 — a deliberate restart by the dgx-spark session, not a crash (NRestarts=0)
-- [ ] 1.7 Brought forward from 2026-09-28 on the operator's call after 1.7a: reviewed PR sets
+- [x] 1.7 DONE 2026-09-15 11:25 UTC (PR #177; Semaphore 905 plan `1 to change`, 906 apply): burst of
+      15 from one address → ten 401 from Caddy, five 429 from Cloudflare (no `cf-mitigated`
+      header on a 429), a single request 15 s later served again. Security Events for that
+      second recorded 1 `ratelimit/block` + 1 `ratelimit/log` (the events feed under-reports;
+      the HTTP responses are the proof). Proves scenario "Burst from one address is blocked".
+      Original text: brought forward from 2026-09-28 on the operator's call after 1.7a: reviewed PR sets
       `inference_block_enabled = true`; `plan` shows exactly one rule attribute change;
       `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
       one address is blocked". Then remove the `log` twin (5.3)
@@ -139,5 +144,6 @@
 - [ ] 5.2 Bring the `inference` A-record under `dns.tf` (add to `platform_subdomains`, import
       at zero-diff): the whole control stack assumes `proxied = true` and nothing in code
       enforces it today
-- [ ] 5.3 Remove the `log` twin in `ratelimit.tf` when its review period ends (target
+- [x] 5.3 DONE (this PR) — block proven, twin removed, single rule; frees the second Pro slot.
+      Original: remove the `log` twin in `ratelimit.tf` when its review period ends (target
       2026-09-28); it holds the zone's second and last Pro rule slot
