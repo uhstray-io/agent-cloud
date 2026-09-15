@@ -43,7 +43,20 @@
       threshold itself is NOT proven by 1.5 — 15 requests produced 3 log events, 12 concurrent
       streams produced none — so the paced 11 / 15 / 20-request measurements in 1.7 are
       pending before `block` is enabled
-- [ ] 1.7 After the review period (target 2026-09-28): reviewed PR sets
+- [x] 1.7a MEASURED 2026-09-15 04:21–04:23 UTC (paced, one address, colo EWR, 45 s apart, all
+      requests 401 at Caddy): 11 sequential requests → 1 rate-limit `log` event; 15 → 5; 20 → 9
+      (19 skip events recorded for 20 requests, so one event of the twenty is missing from the
+      feed). Sequential arrivals are counted as exact arithmetic (excess = n − 10). Still
+      unexplained: the verify play's 12 concurrent streamed POSTs (03:28 UTC) produced ZERO
+      rate-limit events. Before the flip, run that queue probe once more while watching
+      Security Events; if it still records nothing, `block` will not trip it either; if it
+      records 2, the probe must be paced or run from two addresses.
+      RE-RUN 04:26–04:29 UTC: again ZERO rate-limit events for 12 concurrent streamed POSTs
+      (12 skip events recorded), so the block rule will not trip the verify probe either.
+      That run itself FAILED 0/12 for an unrelated reason: vLLM on spark-1 was stopped at
+      04:28:11 UTC (`[shutdown] API server: stopping engine client mode=abort`) and started
+      again at 04:30 — a deliberate restart by the dgx-spark session, not a crash (NRestarts=0)
+- [ ] 1.7 Brought forward from 2026-09-28 on the operator's call after 1.7a: reviewed PR sets
       `inference_block_enabled = true`; `plan` shows exactly one rule attribute change;
       `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
       one address is blocked". Then remove the `log` twin (5.3)
