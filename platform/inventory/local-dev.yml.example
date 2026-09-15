@@ -94,11 +94,9 @@ all:
           # answers only traffic that crossed the WAF, the challenge bypass and
           # the rate limit. Local-dev has no Cloudflare in front — the peer is
           # the podman gateway — so the local value is Caddy's private_ranges
-          # keyword. REFRESH (prod): re-fetch https://www.cloudflare.com/ips-v4
-          # and https://www.cloudflare.com/ips-v6, replace the list and its
-          # fetch date in site-config, redeploy Caddy through Semaphore. A stale
-          # list fails closed (a new Cloudflare edge address is 404'd), which the
-          # dgx-spark public-path verify play surfaces.
+          # keyword. The prod list and its refresh procedure live next to the
+          # prod value in site-config. Required (no template default): the
+          # deploy asserts it is a non-empty list.
           caddy_cloudflare_ranges: ["private_ranges"]
           # Each entry is {host, upstream}. Most upstreams are local-dev
           # container names; NetBox is the exception — it runs in its own compose

@@ -72,3 +72,15 @@
 - [ ] 4.4 Validation gate: the architecture record exists and names both rejected alternatives,
       proving scenario "Decision is findable"; on archive, retain the outcome (worked / dead
       end / corrected) into bank `agent-cloud-750a33b9`
+
+## 5. Deferred follow-ups (surfaced by the 2026-09-14 simplify pass; out of this change's scope)
+- [ ] 5.1 "Only Cloudflare reaches this origin" is a property of the Caddy HOST, not one
+      route: every platform hostname is proxied, so the general mechanism is a host firewall
+      rule (`apply-firewall.yml` already models port-from-source) for 443 from the Cloudflare
+      ranges, covering every vhost. The per-route matcher is the correct first landing; do
+      not build a per-route `allow_from` flag in its place
+- [ ] 5.2 Bring the `inference` A-record under `dns.tf` (add to `platform_subdomains`, import
+      at zero-diff): the whole control stack assumes `proxied = true` and nothing in code
+      enforces it today
+- [ ] 5.3 Remove the `log` twin in `ratelimit.tf` when its review period ends (target
+      2026-09-28); it holds the zone's second and last Pro rule slot

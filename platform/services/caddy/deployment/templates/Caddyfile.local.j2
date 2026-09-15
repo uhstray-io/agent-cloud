@@ -51,9 +51,10 @@
 	# never literals here) reach the handlers below. remote_ip, not client_ip:
 	# no trusted_proxies is set, so both mean the immediate peer today, and
 	# remote_ip keeps meaning "the peer is Cloudflare" if one is added later.
-	# Local-dev has no Cloudflare in front, so the default is the peer range
-	# the local edge is exercised from.
-	@cf remote_ip {{ caddy_cloudflare_ranges | default(['private_ranges']) | join(' ') }}
+	# No default here on purpose: deploy-caddy.yml asserts the list is declared
+	# and non-empty, so a missing declaration fails the deploy instead of
+	# silently rendering a matcher that 404s every peer.
+	@cf remote_ip {{ caddy_cloudflare_ranges | join(' ') }}
 	handle @cf {
 		# Only the OpenAI-compatible API. The 401 must live INSIDE the handle
 		# block: Caddy orders `handle` before a top-level `respond`, so a

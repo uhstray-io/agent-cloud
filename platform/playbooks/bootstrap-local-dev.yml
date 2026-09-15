@@ -937,6 +937,7 @@
           caddy_tls_cert=/etc/caddy/certs/wildcard.crt
           caddy_tls_key=/etc/caddy/certs/wildcard.key
           caddy_routes={{ _caddy_routes | string }}
+          caddy_cloudflare_ranges={{ _caddy_decl.caddy_cloudflare_ranges | default(['private_ranges'], true) | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

@@ -211,6 +211,15 @@ setup() {
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
 }
 
+@test "inventory example + bootstrap INI both declare caddy_cloudflare_ranges (the inference origin allowlist)" {
+  # The template has NO default for this list on purpose; the two inventories
+  # the local Caddy can be deployed from must each declare it, or the deploy
+  # assert fires. Drift here = a 404 on every inference request after genesis.
+  grep -qE '^[[:space:]]*caddy_cloudflare_ranges:' "$INVENTORY"
+  grep -qE '^[[:space:]]*caddy_cloudflare_ranges=\{\{ _caddy_decl\.caddy_cloudflare_ranges' \
+    "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {
   # ansible's ini plugin reads a value with ast.literal_eval; JSON parses only
   # while it contains no boolean/null. The first `true` left caddy_routes a

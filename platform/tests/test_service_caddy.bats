@@ -109,11 +109,11 @@ setup() {
   assert_grep -qE '^[[:space:]]*handle @cf \{' "$b"
   refute_grep -qE 'remote_ip [0-9]' "$b"
   refute_grep -qE '^[[:space:]]*@cf client_ip' "$b"
-  [ "$(grep -nE '@cf remote_ip' "$b" | cut -d: -f1 | head -1)" -lt \
-    "$(grep -nE 'reverse_proxy \{\{ r.upstream \}\}' "$b" | cut -d: -f1 | head -1)" ]
-  # ...and every rendering of the variable gets a default, so the genesis
-  # INI inventory (which does not declare it) still renders a valid matcher.
-  assert_grep -qF "caddy_cloudflare_ranges | default(['private_ranges'])" "$b"
+  assert_precedes "$b" '@cf remote_ip' 'reverse_proxy \{\{ r.upstream \}\}'
+  # No in-template default: a missing declaration must fail the deploy (the
+  # assert in deploy-caddy.yml), not silently narrow the allowlist.
+  refute_grep -qF 'caddy_cloudflare_ranges | default(' "$b"
+  assert_grep -qE 'caddy_cloudflare_ranges is defined' "$DEPLOY_DIR/../../../playbooks/deploy-caddy.yml"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {
