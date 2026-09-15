@@ -16,13 +16,27 @@
 # within a turn. Deliberation + measurements: plan/development/openspec/
 # changes/inference-edge-cloudflare-controls.
 #
-# Rule order is significant and the two rules share one definition so they
-# cannot drift apart: the `log` twin runs first so Security Events keeps every
-# excess request during the review period even while the block rule's
-# mitigation window is open. Remove the twin when the review period ends
-# (target 2026-09-28) — it holds the zone's second and last Pro rule slot.
+# Scope of the counter: Cloudflare keeps rate-limit counters PER DATA CENTER
+# (cf.colo.id is mandatory for exactly that reason; only data centers sharing
+# one geographic location share a counter — developers.cloudflare.com/waf/
+# rate-limiting-rules/request-rate). So the ceiling is "10 per 10 s per source
+# address per data center". One client's requests land at its nearest data
+# center, which is the case this rule is for; a source spraying several
+# regions would get several counters, and that is accepted — no
+# provider-supported configuration gives a Pro zone a network-wide counter.
+#
+# STAGED ROLLOUT (design risk 1: log-first for one review period). Both rules
+# share one definition so they cannot drift apart, but only `log` is enabled
+# at first apply; the `block` rule is declared and DISABLED. After the review
+# period (target 2026-09-28), a reviewed PR flips inference_block_enabled to
+# true and, once block is proven, removes the log twin — it holds the zone's
+# second and last Pro rule slot. Rule order (log first) is kept so the twin's
+# Security Events entries survive the block rule's mitigation window later.
 
 locals {
+  # Flip to true in its own reviewed PR once the log-only review period is over.
+  inference_block_enabled = false
+
   inference_host = "inference.${var.zone_name}"
   inference_v1   = "(http.host eq \"${local.inference_host}\" and starts_with(http.request.uri.path, \"/v1/\"))"
   inference_bucket = {
@@ -44,7 +58,7 @@ resource "cloudflare_ruleset" "ratelimit" {
   rules = [for a in ["log", "block"] : {
     ref         = "inference-api-ratelimit-${a}"
     action      = a
-    enabled     = true
+    enabled     = a == "log" || local.inference_block_enabled
     description = "Inference API - ${a} a source exceeding 10 req / 10 s (10 s mitigation)"
     expression  = local.inference_v1
     ratelimit   = local.inference_bucket

@@ -19,15 +19,24 @@
       count and `mitigation_timeout` per design decision 2, each with a comment deriving it
       from the tier and the measured ceiling; `logging.enabled = true`
 - [x] 1.2 If the tier permits a second rule, add a `log` twin first and keep it for one review
-      period; otherwise skip and note why in the file
+      period; otherwise skip and note why in the file. STAGED: the tier (Pro) permits two rules,
+      so the first apply enables ONLY `log`; the `block` rule is declared with
+      `enabled = false` behind `local.inference_block_enabled`. Rule order alone does not
+      defer a block action — both rules would fire on the first apply otherwise
 - [x] 1.3 Update the pointer comment on the inference skip rule in `waf.tf` to name
       `ratelimit.tf`
 - [ ] 1.4 **Apply Cloudflare Tofu** with `tofu_action=plan`: exactly one ruleset added, no
       other change; then `tofu_action=apply`
 - [ ] 1.5 From a single source address, send more requests than the count inside one period;
-      confirm the block response and the Security Events entry
-- [ ] 1.6 Validation gate: 1.5 proves scenario "Burst from one address is blocked"; a second
-      `plan` reporting no changes proves scenario "Rule is code"
+      during the log-only phase confirm the Security Events entry from the `log` rule and NO
+      block response (every request still reaches Caddy)
+- [ ] 1.6 Validation gate: a second `plan` reporting no changes proves scenario "Rule is code";
+      1.5 proves the counter fires at the declared threshold for one source through one data
+      center (counters are per data center — `cf.colo.id` is a mandatory characteristic)
+- [ ] 1.7 After the review period (target 2026-09-28): reviewed PR sets
+      `inference_block_enabled = true`; `plan` shows exactly one rule attribute change;
+      `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
+      one address is blocked". Then remove the `log` twin (5.3)
 
 ## 2. Origin lockdown at Caddy
 - [x] 2.1 Inventory variable `caddy_cloudflare_ranges` (list of CIDRs) with the fetch date and

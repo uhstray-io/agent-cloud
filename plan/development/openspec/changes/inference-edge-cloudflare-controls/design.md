@@ -116,7 +116,17 @@ on the vLLM host.
   measured ceiling with headroom and starts with `action = "log"` for one review period
   if the plan permits a second rule, otherwise `block` with a short `mitigation_timeout`
   (10 s) so a tripped client recovers within one turn. Matches are logged to Security
-  Events for review.
+  Events for review. How "log first" is enforced in code: the `block` rule is declared
+  alongside the `log` rule but `enabled = false` behind a single local; rule order does
+  not defer a block action, so an enabled block rule would fire on the first apply. The
+  flip to `true` is its own reviewed PR (task 1.7).
+- [Counters are per data center] → Cloudflare scopes every rate-limit counter to the
+  data center (`cf.colo.id` is mandatory; only co-located data centers share a counter),
+  so the ceiling is per source address PER data center. A single client reaches one
+  data center, which is the case this control is for; a source spraying regions gets one
+  counter each. Accepted: no Pro-plan configuration gives a network-wide counter, and
+  the failure mode is a higher effective ceiling for a deliberately distributed client,
+  not a false block.
 - [Cloudflare ranges change] → the ranges are an inventory variable with the fetch date
   in a comment; a stale list fails closed (a new Cloudflare edge address gets a 404),
   which is visible immediately in the companion change's public-path verify play.

@@ -22,14 +22,16 @@ level for requests to `inference.uhstray.io` whose path starts with `/v1/` or eq
 
 ### Requirement: One source address cannot consume the endpoint
 Cloudflare SHALL enforce a rate limiting rule in the `http_ratelimit` phase on
-`inference.uhstray.io` for paths under `/v1/`, keyed on the client source address, with a
+`inference.uhstray.io` for paths under `/v1/`, keyed on the client source address (counted
+per Cloudflare data center, the provider's mandatory counter scope), with a
 period, request count and mitigation timeout that the zone's plan tier permits and that
 are derived from the measured concurrency ceiling of the endpoint, and the rule MUST be
 declared in the OpenTofu root and applied through Semaphore.
 
 #### Scenario: Burst from one address is blocked
-- WHEN one source address sends more requests to `/v1/chat/completions` within the
-  configured period than the configured count
+- WHEN one source address sends more requests to `/v1/chat/completions` through one
+  Cloudflare data center within the configured period than the configured count, and the
+  block rule is enabled (after the log-only review period)
 - THEN the excess requests receive a Cloudflare block response for the mitigation
   timeout and the match is visible in Security Events
 

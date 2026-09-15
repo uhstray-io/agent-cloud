@@ -113,7 +113,16 @@ setup() {
   # No in-template default: a missing declaration must fail the deploy (the
   # assert in deploy-caddy.yml), not silently narrow the allowlist.
   refute_grep -qF 'caddy_cloudflare_ranges | default(' "$b"
-  assert_grep -qE 'caddy_cloudflare_ranges is defined' "$DEPLOY_DIR/../../../playbooks/deploy-caddy.yml"
+  # ...and that assert is a named task whose own `that` AND `when` carry the
+  # checks — scoped with task_block, so the expression cannot drift into some
+  # other task and keep this green.
+  task_block "$DEPLOY_DIR/../../../playbooks/deploy-caddy.yml" \
+    'Assert caddy_cloudflare_ranges is a non-empty list' > "$BATS_TEST_TMPDIR/assert.yml"
+  [ -s "$BATS_TEST_TMPDIR/assert.yml" ]
+  assert_grep -qE '^[[:space:]]*- caddy_cloudflare_ranges is defined$' "$BATS_TEST_TMPDIR/assert.yml"
+  assert_grep -qE '^[[:space:]]*- caddy_cloudflare_ranges \| length > 0$' "$BATS_TEST_TMPDIR/assert.yml"
+  assert_grep -qE "selectattr\('inference_api'\)" "$BATS_TEST_TMPDIR/assert.yml"
+  assert_grep -qE '^[[:space:]]*- local_mode \| default\(false\) \| bool$' "$BATS_TEST_TMPDIR/assert.yml"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {
