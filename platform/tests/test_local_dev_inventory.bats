@@ -211,26 +211,6 @@ setup() {
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
 }
 
-@test "inventory example + bootstrap INI both declare caddy_cloudflare_ranges (the inference origin allowlist)" {
-  # The template has NO default for this list on purpose; the two inventories
-  # the local Caddy can be deployed from must each declare it, or the deploy
-  # assert fires. Drift here = a 404 on every inference request after genesis.
-  # Scoped to the constructs that own the value, not the whole file: the
-  # caddy-local host block in the example, and the [caddy_svc:vars] INI section
-  # the bootstrap emits — a same-named key under another host or group must
-  # not satisfy either check.
-  awk '/^        caddy-local:$/{f=1;next} f&&/^    [a-z_]+:$/{exit} f' "$INVENTORY" \
-    > "$BATS_TEST_TMPDIR/caddy-local.yml"
-  [ -s "$BATS_TEST_TMPDIR/caddy-local.yml" ]
-  grep -qE '^[[:space:]]*caddy_cloudflare_ranges:' "$BATS_TEST_TMPDIR/caddy-local.yml"
-  awk '/^          \[caddy_svc:vars\]$/{f=1;next} f&&/^          \[/{exit} f' \
-    "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml" \
-    > "$BATS_TEST_TMPDIR/caddy_svc_vars.ini"
-  [ -s "$BATS_TEST_TMPDIR/caddy_svc_vars.ini" ]
-  grep -qE '^[[:space:]]*caddy_cloudflare_ranges=\{\{ _caddy_decl\.caddy_cloudflare_ranges' \
-    "$BATS_TEST_TMPDIR/caddy_svc_vars.ini"
-}
-
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {
   # ansible's ini plugin reads a value with ast.literal_eval; JSON parses only
   # while it contains no boolean/null. The first `true` left caddy_routes a

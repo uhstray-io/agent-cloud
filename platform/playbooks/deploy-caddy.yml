@@ -32,20 +32,6 @@
         dest: "{{ _deploy_dir }}/.env"
         mode: "0600"
 
-    - name: "Assert caddy_cloudflare_ranges is a non-empty list when a route opts into inference_api"
-      ansible.builtin.assert:
-        that:
-          - caddy_cloudflare_ranges is defined
-          - caddy_cloudflare_ranges | length > 0
-        fail_msg: >-
-          An inference_api route renders `remote_ip {{ '{{ caddy_cloudflare_ranges }}' }}`;
-          an undefined or empty list would 404 every peer (or fail Caddy's parse).
-          Declare it in inventory: private_ranges locally, Cloudflare's published
-          ranges in prod.
-      when:
-        - local_mode | default(false) | bool
-        - caddy_routes | default([]) | selectattr('inference_api', 'defined') | selectattr('inference_api') | list | length > 0
-
     - name: "Render local Caddyfile (local mode only)"
       ansible.builtin.template:
         src: "{{ _templates }}/Caddyfile.local.j2"

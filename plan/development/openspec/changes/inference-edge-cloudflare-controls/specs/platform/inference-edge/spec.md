@@ -2,7 +2,7 @@
 
 The Cloudflare and Caddy controls in front of the DGX Spark inference API at
 `inference.uhstray.io`: challenge bypass for machine clients, per-source rate limiting,
-origin lockdown, and the recorded position on the proxy read timeout.
+the recorded position on the proxy read timeout, and the withdrawn origin lockdown.
 
 ## ADDED Requirements
 
@@ -44,10 +44,18 @@ declared in the OpenTofu root and applied through Semaphore.
 - WHEN `tofu plan` runs in `platform/infra/cloudflare/` after apply
 - THEN it reports no changes, and the rate limiting ruleset appears in state
 
-### Requirement: The origin answers only Cloudflare
-The Caddy route for `inference.uhstray.io` SHALL serve `/v1/*` and `/health` only to
-requests whose immediate peer address is within Cloudflare's published IPv4 or IPv6
-ranges, MUST answer every other source with the route's existing 404, and the ranges
+### Requirement: The origin answers only Cloudflare — WITHDRAWN 2026-09-15
+Withdrawn by operator decision after the first production landing failed closed (the
+Caddy container does not see a Cloudflare peer address for proxied traffic, so a range
+allowlist rejected every request until it was reverted). The platform SHALL NOT restrict
+the Caddy origin to Cloudflare's address ranges, per route or at the host firewall;
+authentication at Caddy (Bearer required on `/v1/*`) and at vLLM (`--api-key`) is the
+accepted control for a caller that reaches the origin directly. The scenarios below are
+kept as the record of what was specified and disproven; none is a requirement.
+
+Former text: the Caddy route for `inference.uhstray.io` SHALL serve `/v1/*` and `/health`
+only to requests whose immediate peer address is within Cloudflare's published IPv4 or
+IPv6 ranges, MUST answer every other source with the route's existing 404, and the ranges
 MUST be supplied as an inventory variable shared by the local template and the
 production block.
 

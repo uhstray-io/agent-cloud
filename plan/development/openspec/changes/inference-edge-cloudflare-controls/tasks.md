@@ -47,7 +47,7 @@
       `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
       one address is blocked". Then remove the `log` twin (5.3)
 
-## 2. Origin lockdown at Caddy
+## 2. Origin lockdown at Caddy — WITHDRAWN 2026-09-15 (operator decision after 2.5 failed closed; code removed from the template, inventory, deploy assert, genesis INI and tests; site-config reverted via #14)
 - [x] 2.1 Inventory variable `caddy_cloudflare_ranges` (list of CIDRs) with the fetch date and
       source URLs in a comment: default in `platform/inventory/local-dev.yml.example` and
       `local-dev.yml`; production value in site-config `inventory/production.yml`
@@ -79,7 +79,7 @@
       one access-log line), then (b) either give the prod Caddy container the real peer
       (host networking / source-preserving rootless backend) or move the control to the host
       firewall (5.1), which sees the real source regardless of the container's port publish
-- [ ] 2.6 Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
+- [ ] 2.6 (withdrawn with the requirement) Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
       scenario "Proxied request is served"; 2.4 and a rendered diff prove scenario "Template
       and production block agree"
 
@@ -117,7 +117,8 @@
       end / corrected) into bank `agent-cloud-750a33b9`
 
 ## 5. Deferred follow-ups (surfaced by the 2026-09-14 simplify pass; out of this change's scope)
-- [ ] 5.1 "Only Cloudflare reaches this origin" is a property of the Caddy HOST, not one
+- [ ] 5.1 DROPPED 2026-09-15 by the same operator decision (no Cloudflare-range lockdown of the
+      origin in any form). Original: "Only Cloudflare reaches this origin" is a property of the Caddy HOST, not one
       route: every platform hostname is proxied, so the general mechanism is a host firewall
       rule (`apply-firewall.yml` already models port-from-source) for 443 from the Cloudflare
       ranges, covering every vhost. The per-route matcher is the correct first landing; do

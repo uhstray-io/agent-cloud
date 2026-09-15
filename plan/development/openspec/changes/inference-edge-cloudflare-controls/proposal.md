@@ -42,7 +42,10 @@ the companion change defeats it; nothing at the edge can.
   zone's plan tier is read from the API (the tier bounds every parameter; see design) and
   from the concurrency ceiling the companion change measures. Applied through the
   existing Semaphore **Apply Cloudflare Tofu** template, plan first.
-- **Origin lockdown on the inference route.** The Caddy `inference_api` route gains a
+- **Origin lockdown on the inference route — WITHDRAWN 2026-09-15** (landed via site-config
+  #13, failed closed in production, reverted via #14; operator decision: no Cloudflare-range
+  lockdown of the origin in future, per route or host firewall). Original text follows.
+  The Caddy `inference_api` route gains a
   source-address allowlist of Cloudflare's published IPv4 and IPv6 ranges, so a request
   that did not traverse Cloudflare receives no `/v1` or `/health` response from the
   origin. The template branch in `Caddyfile.local.j2` and its BATS test change in this

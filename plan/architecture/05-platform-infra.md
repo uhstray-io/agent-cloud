@@ -255,13 +255,13 @@ consequences are settled and are not to be re-investigated on the next load test
 2. **Rate limiting is Cloudflare's, keyed on source address, action block.** One shared
    bearer key means the key cannot be the bucket; `ip.src` is the one characteristic
    every plan offers. Caddy has no rate limiter without a third-party module.
-3. **The origin answers only Cloudflare.** The Caddy route wraps its handlers in a
-   `remote_ip` matcher over `caddy_cloudflare_ranges` (inventory variable; Cloudflare's
-   published ranges in site-config, `private_ranges` locally), so a request that did not
-   traverse Cloudflare gets the route's 404. A host firewall on 80/443 was rejected
-   because the Caddy host serves other hostnames whose reachability must not change.
-   The list is refreshed by hand from `https://www.cloudflare.com/ips-v4` and `ips-v6`
-   (procedure in the variable's comment); a stale list fails closed.
+3. **The origin is NOT locked to Cloudflare's ranges (decided 2026-09-15).** A `remote_ip`
+   allowlist over Cloudflare's published ranges was landed once and failed closed: the
+   production Caddy container does not see a Cloudflare peer address for proxied traffic,
+   so every request answered 404 until the revert. The operator's decision is that no
+   Cloudflare-range lockdown of the origin is pursued in any form, per route or at the host
+   firewall. A caller that reaches the origin directly meets the same Bearer check at Caddy
+   and vLLM's own `--api-key`; that is the accepted control.
 
 Deliberation and measurements: OpenSpec change
 `plan/development/openspec/changes/inference-edge-cloudflare-controls`.

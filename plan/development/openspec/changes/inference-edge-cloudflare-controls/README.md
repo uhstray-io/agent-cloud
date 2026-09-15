@@ -1,3 +1,3 @@
 # inference-edge-cloudflare-controls
 
-Rate limiting and origin lockdown for inference.uhstray.io
+Rate limiting for inference.uhstray.io (origin lockdown withdrawn 2026-09-15)

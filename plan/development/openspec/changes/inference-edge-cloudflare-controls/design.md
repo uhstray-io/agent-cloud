@@ -84,7 +84,12 @@ on the vLLM host.
    the plan does not permit fails at apply, and a value not tied to the measurement is a
    guess.
 
-3. **Origin lockdown as a Caddy source-address matcher, not a host firewall rule.** The
+3. **SUPERSEDED 2026-09-15 — no origin lockdown at all.** Landed once, failed closed: the
+   production Caddy container does not see a Cloudflare peer address, so the matcher 404'd
+   every request until reverted. The operator's decision is that neither this matcher nor
+   the host-firewall alternative is pursued; the shared-key authentication at Caddy and
+   vLLM is the control for direct callers. Original decision kept for the record:
+   **Origin lockdown as a Caddy source-address matcher, not a host firewall rule.** The
    Caddy host serves other hostnames whose reachability this change must not alter, and
    the matcher is scoped to the one site block, rendered from the same template and test
    that already govern the route. The ranges are an inventory variable
@@ -96,7 +101,7 @@ on the vLLM host.
    ranges are consumed by Caddy through Ansible, not by tofu, and a second path for the
    same list is a second source of truth.
 
-4. **`remote_ip`, not `client_ip`.** The template does not set `trusted_proxies`, so the
+4. **SUPERSEDED with 3.** Original: **`remote_ip`, not `client_ip`.** The template does not set `trusted_proxies`, so the
    two matchers behave identically today; `remote_ip` says what is meant (the peer is
    Cloudflare) and does not change meaning if `trusted_proxies` is added later for
    logging. Requests failing the matcher fall through to the bare `handle` and receive

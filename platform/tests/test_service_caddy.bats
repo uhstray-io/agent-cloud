@@ -102,27 +102,6 @@ setup() {
   # The upstream comes from the route, never a literal.
   assert_grep -qF 'reverse_proxy {{ r.upstream }}' "$b"
   refute_grep -qE 'reverse_proxy [0-9]' "$b"
-  # Origin lockdown: a remote_ip matcher over the inventory variable (never a
-  # literal range) gates the handlers, so it must precede the reverse_proxy.
-  # remote_ip, not client_ip — the peer is what is meant (design decision 4).
-  assert_grep -qE '^[[:space:]]*@cf remote_ip \{\{ caddy_cloudflare_ranges' "$b"
-  assert_grep -qE '^[[:space:]]*handle @cf \{' "$b"
-  refute_grep -qE 'remote_ip [0-9]' "$b"
-  refute_grep -qE '^[[:space:]]*@cf client_ip' "$b"
-  assert_precedes "$b" '@cf remote_ip' 'reverse_proxy \{\{ r.upstream \}\}'
-  # No in-template default: a missing declaration must fail the deploy (the
-  # assert in deploy-caddy.yml), not silently narrow the allowlist.
-  refute_grep -qF 'caddy_cloudflare_ranges | default(' "$b"
-  # ...and that assert is a named task whose own `that` AND `when` carry the
-  # checks — scoped with task_block, so the expression cannot drift into some
-  # other task and keep this green.
-  task_block "$DEPLOY_DIR/../../../playbooks/deploy-caddy.yml" \
-    'Assert caddy_cloudflare_ranges is a non-empty list' > "$BATS_TEST_TMPDIR/assert.yml"
-  [ -s "$BATS_TEST_TMPDIR/assert.yml" ]
-  assert_grep -qE '^[[:space:]]*- caddy_cloudflare_ranges is defined$' "$BATS_TEST_TMPDIR/assert.yml"
-  assert_grep -qE '^[[:space:]]*- caddy_cloudflare_ranges \| length > 0$' "$BATS_TEST_TMPDIR/assert.yml"
-  assert_grep -qE "selectattr\('inference_api'\)" "$BATS_TEST_TMPDIR/assert.yml"
-  assert_grep -qE '^[[:space:]]*- local_mode \| default\(false\) \| bool$' "$BATS_TEST_TMPDIR/assert.yml"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {
