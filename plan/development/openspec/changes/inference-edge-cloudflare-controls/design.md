@@ -49,10 +49,11 @@ depends on it, so reading it is the first task.
 
 ## Goals / Non-Goals
 
-Goals: one client cannot consume the whole endpoint; a request that did not pass through
-Cloudflare gets nothing from the origin; both controls are code in this repo, applied
-through Semaphore, with a plan visible before apply; the timeout decision is written down
-so it is not re-investigated.
+Goals (as amended 2026-09-15): one client cannot consume the whole endpoint; the control is
+code in this repo, applied through Semaphore, with a plan visible before apply; the timeout
+decision is written down so it is not re-investigated. WITHDRAWN goal: "a request that did
+not pass through Cloudflare gets nothing from the origin" — see decision 3; direct callers
+meet the Bearer check at Caddy and vLLM's own `--api-key`, and that is the accepted control.
 
 Non-Goals: per-user keys or authentication changes (the shared key is an accepted
 ADR-0004 tradeoff in dgx-spark); bringing the `inference` DNS record under `dns.tf`
@@ -84,7 +85,12 @@ on the vLLM host.
    the plan does not permit fails at apply, and a value not tied to the measurement is a
    guess.
 
-3. **Origin lockdown as a Caddy source-address matcher, not a host firewall rule.** The
+3. **SUPERSEDED 2026-09-15 — no origin lockdown at all.** Landed once, failed closed: the
+   production Caddy container does not see a Cloudflare peer address, so the matcher 404'd
+   every request until reverted. The operator's decision is that neither this matcher nor
+   the host-firewall alternative is pursued; the shared-key authentication at Caddy and
+   vLLM is the control for direct callers. Original decision kept for the record:
+   **Origin lockdown as a Caddy source-address matcher, not a host firewall rule.** The
    Caddy host serves other hostnames whose reachability this change must not alter, and
    the matcher is scoped to the one site block, rendered from the same template and test
    that already govern the route. The ranges are an inventory variable
@@ -96,7 +102,7 @@ on the vLLM host.
    ranges are consumed by Caddy through Ansible, not by tofu, and a second path for the
    same list is a second source of truth.
 
-4. **`remote_ip`, not `client_ip`.** The template does not set `trusted_proxies`, so the
+4. **SUPERSEDED with 3.** Original: **`remote_ip`, not `client_ip`.** The template does not set `trusted_proxies`, so the
    two matchers behave identically today; `remote_ip` says what is meant (the peer is
    Cloudflare) and does not change meaning if `trusted_proxies` is added later for
    logging. Requests failing the matcher fall through to the bare `handle` and receive
@@ -127,14 +133,11 @@ on the vLLM host.
   counter each. Accepted: no Pro-plan configuration gives a network-wide counter, and
   the failure mode is a higher effective ceiling for a deliberately distributed client,
   not a false block.
-- [Cloudflare ranges change] → the ranges are an inventory variable with the fetch date
-  in a comment; a stale list fails closed (a new Cloudflare edge address gets a 404),
-  which is visible immediately in the companion change's public-path verify play.
-  Refresh procedure is a task in this change's docs.
-- [Lockdown breaks ACME] → the production block uses `tls { dns cloudflare ... }`
-  (DNS-01), which never needs an inbound HTTP request; the matcher affects only the
-  routed handlers. The local template uses `local_certs` or a supplied certificate, so
-  no ACME path exists there either.
+- [HISTORICAL — origin lockdown withdrawn 2026-09-15] The two risks recorded for the
+  matcher (Cloudflare ranges change → stale list fails closed; lockdown breaks ACME → no,
+  DNS-01 never needs an inbound request) no longer apply: the control was landed once,
+  failed closed because the production Caddy container does not see a Cloudflare peer
+  address, and was withdrawn by operator decision rather than repaired.
 - [Plan tier forbids the second rule or the chosen period] → decision 2 makes the tier
   the first read; if only one rule is possible and one exists, the choice between them
   is escalated, not made silently.
@@ -148,9 +151,9 @@ on the vLLM host.
    the Semaphore environment (read-only); record both in `ratelimit.tf`'s header.
 2. Land `ratelimit.tf`; **Apply Cloudflare Tofu** `plan`; confirm it adds one ruleset and
    changes nothing else; `apply`.
-3. Land the template, variable and BATS change; add the variable and matcher to the
-   site-config production block; redeploy Caddy through Semaphore; confirm a direct
-   request to the origin address gets 404 on `/health` and a proxied one gets 200.
+3. HISTORICAL (withdrawn 2026-09-15): the template, variable, BATS and site-config matcher
+   landed, failed closed in production (`Manage Caddy Sites` task 888: proxied `/health`
+   404), and were reverted (site-config #14, task 890) and removed from this repo.
 4. Run the companion change's public-path verify play from dgx-spark to confirm normal
    traffic is unaffected.
 5. Update `plan/development/13-cloudflare-iac.md` status and `waf.tf`'s pointer comment;
