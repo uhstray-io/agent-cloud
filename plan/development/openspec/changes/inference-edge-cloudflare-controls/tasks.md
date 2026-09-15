@@ -17,7 +17,9 @@
       `http.host eq "inference.uhstray.io" and starts_with(http.request.uri.path, "/v1/")`,
       `ratelimit.characteristics = ["cf.colo.id", "ip.src"]`, `action = "block"`, period,
       count and `mitigation_timeout` per design decision 2, each with a comment deriving it
-      from the tier and the measured ceiling; `logging.enabled = true`
+      from the tier and the measured ceiling. NO `logging` block: the API rejects
+      `logging.enabled` on any non-skip rule (error 20018; first apply = Semaphore task 882),
+      and `tofu validate` / `plan` do not catch it
 - [x] 1.2 If the tier permits a second rule, add a `log` twin first and keep it for one review
       period; otherwise skip and note why in the file. STAGED: the tier (Pro) permits two rules,
       so the first apply enables ONLY `log`; the `block` rule is declared with

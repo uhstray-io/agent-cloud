@@ -95,6 +95,7 @@ supersede it with a new entry and link both.
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
 | 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
+| 10.13 | `tofu validate` + `plan` passed a ruleset attribute the Cloudflare API rejects on create | Schema ≠ API acceptance | Convention |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -2134,6 +2135,29 @@ fires passes any test that only checks it can fire.
 **Enforced by.** Test — `core-scenarios.js` scenario 19(e2) passes the id as a
 string and asserts zero recovery errors, and 19(f) still asserts a genuinely
 wrong id refuses. Mutation-checked: removing the coercion turns 19(e2) red.
+
+### 10.13 `tofu validate` and `plan` passed an attribute the API rejects on create
+
+**What happened.** The first `http_ratelimit` ruleset copied `logging = { enabled = true }`
+from the adopted `http_request_firewall_custom` skip rules. `tofu fmt`, `tofu validate`
+against provider 5.x and a Semaphore `plan` (task 881: "1 to add") all passed. The `apply`
+(task 882) failed inside `Creating...` with HTTP 400, code 20018, "it can only be used with
+the skip action", pointer `/rules/0/logging/enabled`. Nothing was created; the phase
+entrypoint was still absent afterwards, so state stayed clean.
+
+**Root cause.** The provider schema declares `logging` on every rule because SOME actions
+accept it; which actions do is an API-side rule the schema does not encode. `validate`
+proves schema conformance and `plan` never calls the create endpoint for a new resource,
+so neither could see it. The attribute was copied from rules of a different action without
+checking its per-action validity.
+
+**The rule.** For a resource type's FIRST use in a new phase or with a new action, the
+apply IS the validation: expect and read the API error, and do not present a green `plan`
+as proof the create will succeed. When copying attributes between rules of different
+actions, check the API reference for that attribute's action restriction first.
+
+**Enforced by.** Convention. The apply path already fails loudly and leaves no partial
+state, so the cost of this class is one failed task, not damage.
 
 ## 11. The largest one
 
