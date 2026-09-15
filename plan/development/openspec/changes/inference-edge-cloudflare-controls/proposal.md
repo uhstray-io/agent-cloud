@@ -1,5 +1,10 @@
 # Cloudflare controls for the inference edge: rate limiting and origin lockdown
 
+> **Amended 2026-09-15.** The origin lockdown half of this proposal was landed, failed closed
+> in production and was withdrawn by operator decision (no Cloudflare-range lockdown of the
+> origin in any form). Passages marked HISTORICAL below are kept as the record; the rate
+> limit half is live and remains the active scope.
+
 Author: Joseph A. Wisneski IV <stray@uhstray.io>. Explored 2026-09-14.
 
 Companion change in dgx-spark: `inference-endpoint-reliability` (SSE keep-alive, effort
@@ -56,14 +61,15 @@ the companion change defeats it; nothing at the edge can.
   origin heartbeat is the fix.
 
 No **BREAKING** changes for clients that already use the hostname through Cloudflare.
-Direct-to-origin access, which was never a documented path, stops working by design.
+HISTORICAL: "direct-to-origin access stops working by design" — withdrawn; the origin
+stays reachable and authenticated by the Bearer check at Caddy and vLLM's `--api-key`.
 
 ## Capabilities
 
 ### New Capabilities
 - `platform/inference-edge`: the Cloudflare and Caddy controls that stand in front of the
   DGX Spark inference API: challenge bypass for machine clients, per-source rate
-  limiting, origin lockdown.
+  limiting. (Origin lockdown: HISTORICAL, withdrawn 2026-09-15.)
 
 ### Modified Capabilities
 - none (no existing spec in the store covers the Cloudflare WAF or the Caddy routes).
@@ -74,7 +80,7 @@ Direct-to-origin access, which was never a documented path, stops working by des
   rule updated to point at it; `platform/services/caddy/deployment/templates/Caddyfile.local.j2`
   (`inference_api` branch); `platform/tests/test_service_caddy.bats`;
   `plan/development/13-cloudflare-iac.md` status; `plan/architecture/` record.
-- site-config: the `inference.uhstray.io` block in `inventory/production.yml` gains the
+- HISTORICAL (withdrawn): site-config: the `inference.uhstray.io` block in `inventory/production.yml` gains the
   same allowlist; the Cloudflare ranges are supplied as an inventory variable so the
   public template and the private block render the same matcher.
 - Live: one tofu apply (new ruleset, no change to existing rules); one Caddy redeploy via
@@ -88,7 +94,8 @@ Direct-to-origin access, which was never a documented path, stops working by des
 - Rate limit: remove `ratelimit.tf`, run **Apply Cloudflare Tofu** with `tofu_action=plan`
   to confirm the plan deletes only the new ruleset, then `apply`. Alternatively set the
   rule `enabled = false` and apply, which keeps the resource and stops enforcement.
-- Origin lockdown: revert the template and inventory commits and redeploy Caddy through
+- HISTORICAL (this rollback was executed 2026-09-15 via site-config #14 and `Manage Caddy Sites`
+  task 890): revert the template and inventory commits and redeploy Caddy through
   Semaphore; the route returns to accepting any source. The Cloudflare skip rule and the
   vLLM key are untouched by either direction.
 - Nothing here changes DNS, the skip rules or the origin IP, so a rollback never

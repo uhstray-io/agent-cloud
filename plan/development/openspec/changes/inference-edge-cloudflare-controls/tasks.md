@@ -39,9 +39,10 @@
       shows 11 `skip` events from the bypass rule and 3 `log` events from the new ruleset on
       that host in the same second
 - [x] 1.6 Validation gate: a second `plan` reporting no changes proves scenario "Rule is code"
-      (DONE: task 886 `No changes. Your infrastructure matches the configuration.`);
-      1.5 proves the counter fires at the declared threshold for one source through one data
-      center (counters are per data center — `cf.colo.id` is a mandatory characteristic)
+      (DONE: task 886 `No changes. Your infrastructure matches the configuration.`). The
+      threshold itself is NOT proven by 1.5 — 15 requests produced 3 log events, 12 concurrent
+      streams produced none — so the paced 11 / 15 / 20-request measurements in 1.7 are
+      pending before `block` is enabled
 - [ ] 1.7 After the review period (target 2026-09-28): reviewed PR sets
       `inference_block_enabled = true`; `plan` shows exactly one rule attribute change;
       `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
@@ -74,11 +75,10 @@
       exists and workstation SSH is not a sanctioned path). Rolled back through the same
       path: site-config #14 reverts the two lockdown commits → sync → `Manage Caddy Sites`.
       Other hostnames on the host were unaffected throughout (matcher scoped to one block).
-      REOPENED as: (a) make the peer address observable through Semaphore BEFORE any
-      source-address control (a read-only task that prints the container's network mode and
-      one access-log line), then (b) either give the prod Caddy container the real peer
-      (host networking / source-preserving rootless backend) or move the control to the host
-      firewall (5.1), which sees the real source regardless of the container's port publish
+      NOT reopened: the operator withdrew the requirement. Kept for any FUTURE source-address
+      control on this host (ledger §10.14): the precondition is a read-only Semaphore task that
+      sends a known request through Cloudflare to the hostname and prints the matching
+      access-log entry's peer address — the network mode or an arbitrary log line is not it
 - [ ] 2.6 (withdrawn with the requirement) Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
       scenario "Proxied request is served"; 2.4 and a rendered diff prove scenario "Template
       and production block agree"

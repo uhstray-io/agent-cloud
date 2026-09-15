@@ -2178,10 +2178,13 @@ environment where the observable had a different value. "Fails closed" was accep
 safe property; it is safe for the origin and an outage for the users.
 
 **The rule.** Before deploying a control keyed on a runtime observable, make that
-observable readable through the sanctioned executor and read it — here, a read-only
-Semaphore task printing the container's network mode and one access-log peer address.
-If the read cannot be built in time, the deploy is a scheduled test with an announced
-outage window, not a landing.
+observable readable through the sanctioned executor and read it FOR THE TRAFFIC THE
+CONTROL WILL JUDGE. The network mode and an arbitrary access-log line do not show which
+peer Caddy sees for a Cloudflare-proxied request to the route in question; a read-only
+Semaphore task must send a known request through Cloudflare to that hostname, record its
+host and timestamp, and print the matching access-log entry's peer address — that value,
+not a proxy for it, is the precondition. If the read cannot be built in time, the deploy
+is a scheduled test with an announced outage window, not a landing.
 
 **Enforced by.** Convention. The mechanical form is the read-only task itself, added as a
 precondition to the deploy playbook when the route carries a source-address matcher.
