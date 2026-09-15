@@ -42,7 +42,10 @@
 - [x] 2.4 `platform/tests/test_service_caddy.bats`: extend the inference test to assert the
       `remote_ip` matcher exists inside the `inference_api` branch, references the variable
       (never a literal range), and precedes the `reverse_proxy`; run `bats platform/tests`
-- [ ] 2.5 Redeploy Caddy through the Semaphore playbook; from a host that can reach the origin
+- [ ] 2.5 PRE-CHECK: confirm the peer address the prod Caddy container sees for a Cloudflare
+      request is inside the published ranges (podman docs: pasta, the default rootless mode,
+      preserves the source IP on port forwarding; which backend the host runs is unverified) —
+      otherwise the route fails CLOSED for everyone. Then redeploy Caddy through the Semaphore playbook; from a host that can reach the origin
       address, `curl -H 'Host: inference.uhstray.io'` to `/health` returns 404; through
       Cloudflare `/health` returns 200 and `/v1/models` with the key returns the list
 - [ ] 2.6 Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
