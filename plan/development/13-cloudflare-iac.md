@@ -8,7 +8,12 @@
 > in Cloudflare R2. CF secrets seeded to OpenBao + `uhstray-tfstate` R2 bucket
 > created. REMAINING: the Semaphore `tofu` template for steady-state plan/apply
 > (bootstrap was run locally in a tofu container against the R2 backend), and
-> Phase 3. **Owner:** uhstray-io.
+> Phase 3. **Phase 3 opened 2026-09-14** with the first `http_ratelimit`
+> ruleset (`ratelimit.tf`: per-source ceiling on `inference.uhstray.io/v1/*`,
+> log twin + block; the zone is Pro, so two rules and a 10 s period are the
+> legal bounds) — declared in code, apply pending through **Apply Cloudflare
+> Tofu**. The managed set is now `http_request_firewall_custom`, platform DNS,
+> and `http_ratelimit`. **Owner:** uhstray-io.
 
 **Goal:** manage Cloudflare **as code** — OpenTofu roots run through Semaphore —
 as the platform standard for every future Cloudflare change (WAF rulesets, DNS,

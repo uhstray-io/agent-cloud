@@ -6,7 +6,8 @@ code. Run changes through Semaphore **Apply Cloudflare Tofu**, which invokes
 
 ## Ownership
 
-`waf.tf` and `dns.tf` declare managed resources. `imports.tf` records completed
+`waf.tf`, `ratelimit.tf` (the `http_ratelimit` entrypoint — per-source ceilings for
+machine APIs) and `dns.tf` declare managed resources. `imports.tf` records completed
 WAF/DNS adoption; it is not a pending DNS phase. Unmanaged resources remain outside
 this root. Removing a resource already owned in state from configuration can plan
 its deletion, so review the complete plan before applying.

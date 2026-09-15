@@ -88,6 +88,16 @@ all:
           caddy_internal_zone: agent-cloud.test
           caddy_tls_cert: /etc/caddy/certs/wildcard.crt
           caddy_tls_key: /etc/caddy/certs/wildcard.key
+          # Source addresses allowed to reach an inference_api route (Caddy
+          # remote_ip matcher; every other peer gets the route's 404). Prod
+          # (site-config) lists Cloudflare's published ranges so the origin
+          # answers only traffic that crossed the WAF, the challenge bypass and
+          # the rate limit. Local-dev has no Cloudflare in front — the peer is
+          # the podman gateway — so the local value is Caddy's private_ranges
+          # keyword. The prod list and its refresh procedure live next to the
+          # prod value in site-config. Required (no template default): the
+          # deploy asserts it is a non-empty list.
+          caddy_cloudflare_ranges: ["private_ranges"]
           # Each entry is {host, upstream}. Most upstreams are local-dev
           # container names; NetBox is the exception — it runs in its own compose
           # project (not local-dev), so it's reached via the host gateway
