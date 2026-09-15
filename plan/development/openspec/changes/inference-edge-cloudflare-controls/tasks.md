@@ -27,12 +27,19 @@
       defer a block action — both rules would fire on the first apply otherwise
 - [x] 1.3 Update the pointer comment on the inference skip rule in `waf.tf` to name
       `ratelimit.tf`
-- [ ] 1.4 **Apply Cloudflare Tofu** with `tofu_action=plan`: exactly one ruleset added, no
-      other change; then `tofu_action=apply`
-- [ ] 1.5 From a single source address, send more requests than the count inside one period;
+- [x] 1.4 **Apply Cloudflare Tofu** with `tofu_action=plan`: exactly one ruleset added, no
+      other change; then `tofu_action=apply`. DONE 2026-09-15 03:12 UTC via the Semaphore API:
+      task 884 plan `1 to add, 0 to change, 0 to destroy`; task 885 apply `1 added` (ruleset
+      `8d991211…`); first attempt task 882 failed on `logging.enabled` (ledger §10.13, PR #175)
+- [x] 1.5 From a single source address, send more requests than the count inside one period;
       during the log-only phase confirm the Security Events entry from the `log` rule and NO
-      block response (every request still reaches Caddy)
-- [ ] 1.6 Validation gate: a second `plan` reporting no changes proves scenario "Rule is code";
+      block response (every request still reaches Caddy). DONE 2026-09-15 03:12 UTC: 15 requests
+      to `/v1/models` in one second from one address through colo EWR — all 15 answered 401 by
+      Caddy, none carried `cf-mitigated`; Security Events (GraphQL `firewallEventsAdaptive`)
+      shows 11 `skip` events from the bypass rule and 3 `log` events from the new ruleset on
+      that host in the same second
+- [x] 1.6 Validation gate: a second `plan` reporting no changes proves scenario "Rule is code"
+      (DONE: task 886 `No changes. Your infrastructure matches the configuration.`);
       1.5 proves the counter fires at the declared threshold for one source through one data
       center (counters are per data center — `cf.colo.id` is a mandatory characteristic)
 - [ ] 1.7 After the review period (target 2026-09-28): reviewed PR sets
