@@ -22,8 +22,12 @@
    reach the upstream; every other path answers 404 at the edge, because vLLM
    leaves /metrics, /pause, /abort_requests, /invocations ... unauthenticated.
    Streams tokens (flush_interval -1) and caps request bodies at 16MB (a 184k-
-   token prompt is ~700 KB). Same shape as the prod block in site-config's
-   caddy_managed_sites; this is the locally testable copy.
+   token prompt is ~700 KB). Origin lockdown: the whole route sits behind a
+   remote_ip matcher over caddy_cloudflare_ranges, so a peer that is not
+   Cloudflare gets the same 404 as an unknown path and never reaches vLLM —
+   otherwise a client that learns the origin address skips the WAF, the
+   challenge bypass and the rate limit. Same shape as the prod block in
+   site-config's caddy_managed_sites; this is the locally testable copy.
    Do NOT edit by hand — re-run the playbook. #}
 {% set _cert = caddy_tls_cert | default('') %}
 {
@@ -43,30 +47,43 @@
 	request_body {
 		max_size 16MB
 	}
-	# Only the OpenAI-compatible API. The 401 must live INSIDE the handle block:
-	# Caddy orders `handle` before a top-level `respond`, so a top-level check
-	# would never run for /v1/* requests.
-	@api path /v1/*
-	handle @api {
-		# header_regexp, not `header ... Bearer*`: the trailing * is a PREFIX match,
-		# so `Bearer` alone or `BearerX` would pass the edge gate. Require the
-		# scheme, one space, and a non-empty credential.
-		@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"
-		respond @noauth 401
-		reverse_proxy {{ r.upstream }} {
-			# SSE token stream: flush every write; no read/write timeouts for
-			# long generations.
-			flush_interval -1
-			transport http {
-				dial_timeout 5s
+	# Origin lockdown: only Cloudflare's published ranges (inventory variable,
+	# never literals here) reach the handlers below. remote_ip, not client_ip:
+	# no trusted_proxies is set, so both mean the immediate peer today, and
+	# remote_ip keeps meaning "the peer is Cloudflare" if one is added later.
+	# Local-dev has no Cloudflare in front, so the default is the peer range
+	# the local edge is exercised from.
+	@cf remote_ip {{ caddy_cloudflare_ranges | default(['private_ranges']) | join(' ') }}
+	handle @cf {
+		# Only the OpenAI-compatible API. The 401 must live INSIDE the handle
+		# block: Caddy orders `handle` before a top-level `respond`, so a
+		# top-level check would never run for /v1/* requests.
+		@api path /v1/*
+		handle @api {
+			# header_regexp, not `header ... Bearer*`: the trailing * is a PREFIX
+			# match, so `Bearer` alone or `BearerX` would pass the edge gate.
+			# Require the scheme, one space, and a non-empty credential.
+			@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"
+			respond @noauth 401
+			reverse_proxy {{ r.upstream }} {
+				# SSE token stream: flush every write; no read/write timeouts
+				# for long generations.
+				flush_interval -1
+				transport http {
+					dial_timeout 5s
+				}
 			}
 		}
+		# Liveness only: 200 with an empty body, no model data.
+		handle /health {
+			reverse_proxy {{ r.upstream }}
+		}
+		# Everything else, including the upstream's unauthenticated endpoints.
+		handle {
+			respond 404
+		}
 	}
-	# Liveness only: 200 with an empty body, no model data.
-	handle /health {
-		reverse_proxy {{ r.upstream }}
-	}
-	# Everything else, including the upstream's unauthenticated endpoints.
+	# Not from Cloudflare: identical 404, so nothing reveals the route exists.
 	handle {
 		respond 404
 	}

@@ -99,8 +99,8 @@ resource "cloudflare_ruleset" "custom_firewall" {
     # regional and AI-crawler BLOCK rules above still apply. Every other path on
     # this host is a 404 at Caddy and is left under the challenge.
     #
-    # Rate limiting for /v1/* belongs in the http_ratelimit phase and is a
-    # separate, pending change (dgx-spark decision 2026-09).
+    # Rate limiting for /v1/* lives in the http_ratelimit phase: ratelimit.tf
+    # (per-source ceiling, log twin + block; dgx-spark decision 2026-09).
     {
       ref         = "inference-api-bypass-challenge"
       action      = "skip"

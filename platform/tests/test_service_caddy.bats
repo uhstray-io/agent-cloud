@@ -102,6 +102,18 @@ setup() {
   # The upstream comes from the route, never a literal.
   assert_grep -qF 'reverse_proxy {{ r.upstream }}' "$b"
   refute_grep -qE 'reverse_proxy [0-9]' "$b"
+  # Origin lockdown: a remote_ip matcher over the inventory variable (never a
+  # literal range) gates the handlers, so it must precede the reverse_proxy.
+  # remote_ip, not client_ip — the peer is what is meant (design decision 4).
+  assert_grep -qE '^[[:space:]]*@cf remote_ip \{\{ caddy_cloudflare_ranges' "$b"
+  assert_grep -qE '^[[:space:]]*handle @cf \{' "$b"
+  refute_grep -qE 'remote_ip [0-9]' "$b"
+  refute_grep -qE '^[[:space:]]*@cf client_ip' "$b"
+  [ "$(grep -nE '@cf remote_ip' "$b" | cut -d: -f1 | head -1)" -lt \
+    "$(grep -nE 'reverse_proxy \{\{ r.upstream \}\}' "$b" | cut -d: -f1 | head -1)" ]
+  # ...and every rendering of the variable gets a default, so the genesis
+  # INI inventory (which does not declare it) still renders a valid matcher.
+  assert_grep -qF "caddy_cloudflare_ranges | default(['private_ranges'])" "$b"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {

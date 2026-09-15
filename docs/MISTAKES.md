@@ -58,6 +58,7 @@ supersede it with a new entry and link both.
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
+| 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1055,6 +1056,31 @@ from live availability remain convention, documented in the canonical
 [Semaphore operating guide](../platform/semaphore/README.md).
 
 ---
+
+### 3.4 A validation step's cleanup deleted a committed provider lock file
+
+**What happened.** To prove a new `ratelimit.tf` against the real provider schema
+without a local `tofu`, the check ran `tofu init -backend=false && tofu validate`
+in a container mounted on `platform/infra/cloudflare/`, then cleaned up with
+`rm -rf .terraform .terraform.lock.hcl` so the init left nothing behind. The lock
+file was already committed. `git status` showed it as deleted one step later; it was
+restored with `git checkout --` before anything was staged. Validation itself was
+worth having — it also caught nothing wrong — but it was one `git add -A` away from a
+commit that silently unpinned the provider.
+
+**Root cause.** The cleanup was written for a scratch directory and run inside the
+working tree. `rm -rf` on a name that a tool *creates* does not distinguish the copy
+the tool just created from the one the repository already tracked.
+
+**The rule.** Tooling that writes into the tree runs on a copy: `cp -R` the
+directory into the scratchpad first, or mount the scratchpad copy, and let the
+cleanup delete the copy. Inside the working tree, never `rm` a path without first
+running `git ls-files --error-unmatch <path>` (tracked → do not delete) — and read
+`git status` before `git add`, every time, which is what caught this one.
+
+**Enforced by.** Convention. A mechanical guard exists in principle — a pre-commit
+check refusing a commit that deletes a `*.lock.hcl` / lockfile without a
+`chore(deps)`-style intent — but one occurrence does not yet justify it.
 
 ## 4. Data handling
 

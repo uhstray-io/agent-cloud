@@ -72,7 +72,7 @@ flowchart LR
 Key properties:
 - **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
 - **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
-- **CloudFlare is DNS only.** Traffic does not proxy through CloudFlare; Caddy handles TLS directly with DNS-01 certs.
+- **CloudFlare is DNS-only for most hostnames.** Caddy handles TLS directly with DNS-01 certs. The exceptions are the proxied (orange-cloud) hostnames — the platform records adopted into `platform/infra/cloudflare/dns.tf` and `inference.uhstray.io` — where Cloudflare sits in the request path; see "Cloudflare-proxied hostnames" below for what that decides.
 - **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
@@ -234,6 +234,37 @@ sequenceDiagram
 The CloudFlare API key needs **Zone:DNS:Edit** for the target zone -- no account-level access or anything beyond DNS record management. Use a scoped API token (not a Global API Key).
 
 ---
+
+## Cloudflare-proxied hostnames: the inference edge (decided 2026-09-14)
+
+`inference.uhstray.io` fronts vLLM on the DGX Spark pair and is proxied through
+Cloudflare on purpose: the zone's WAF block rules, the challenge bypass for machine
+clients (`waf.tf`), and the per-source rate limit (`ratelimit.tf`) all live there. Three
+consequences are settled and are not to be re-investigated on the next load test:
+
+1. **The 125 s Proxy Read Timeout is accepted.** Cloudflare severs a non-streamed
+   response, or an idle stream, after 125 s with HTTP 524; only the Enterprise plan can
+   raise it (to 6,000 s) and a 30 s write timeout is fixed on every plan. The zone is
+   Pro. The fix is origin-side: vLLM's SSE heartbeat resets the timer from behind the
+   edge (dgx-spark change `inference-endpoint-reliability`). Two ways to remove the timer
+   were rejected. **Enterprise plan:** not a plan this project is on, and the timeout is
+   the only thing it would buy here. **Grey-clouding the hostname (DNS-only):** removes
+   the timer, and with it the WAF rules, the challenge bypass and the rate limit, and
+   publishes the origin address in DNS — the exact exposure the origin lockdown exists
+   to close.
+2. **Rate limiting is Cloudflare's, keyed on source address, action block.** One shared
+   bearer key means the key cannot be the bucket; `ip.src` is the one characteristic
+   every plan offers. Caddy has no rate limiter without a third-party module.
+3. **The origin answers only Cloudflare.** The Caddy route wraps its handlers in a
+   `remote_ip` matcher over `caddy_cloudflare_ranges` (inventory variable; Cloudflare's
+   published ranges in site-config, `private_ranges` locally), so a request that did not
+   traverse Cloudflare gets the route's 404. A host firewall on 80/443 was rejected
+   because the Caddy host serves other hostnames whose reachability must not change.
+   The list is refreshed by hand from `https://www.cloudflare.com/ips-v4` and `ips-v6`
+   (procedure in the variable's comment); a stale list fails closed.
+
+Deliberation and measurements: OpenSpec change
+`plan/development/openspec/changes/inference-edge-cloudflare-controls`.
 
 ## Adding a New Service to the Proxy
 

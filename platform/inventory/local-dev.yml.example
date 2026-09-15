@@ -88,6 +88,18 @@ all:
           caddy_internal_zone: agent-cloud.test
           caddy_tls_cert: /etc/caddy/certs/wildcard.crt
           caddy_tls_key: /etc/caddy/certs/wildcard.key
+          # Source addresses allowed to reach an inference_api route (Caddy
+          # remote_ip matcher; every other peer gets the route's 404). Prod
+          # (site-config) lists Cloudflare's published ranges so the origin
+          # answers only traffic that crossed the WAF, the challenge bypass and
+          # the rate limit. Local-dev has no Cloudflare in front — the peer is
+          # the podman gateway — so the local value is Caddy's private_ranges
+          # keyword. REFRESH (prod): re-fetch https://www.cloudflare.com/ips-v4
+          # and https://www.cloudflare.com/ips-v6, replace the list and its
+          # fetch date in site-config, redeploy Caddy through Semaphore. A stale
+          # list fails closed (a new Cloudflare edge address is 404'd), which the
+          # dgx-spark public-path verify play surfaces.
+          caddy_cloudflare_ranges: ["private_ranges"]
           # Each entry is {host, upstream}. Most upstreams are local-dev
           # container names; NetBox is the exception — it runs in its own compose
           # project (not local-dev), so it's reached via the host gateway
