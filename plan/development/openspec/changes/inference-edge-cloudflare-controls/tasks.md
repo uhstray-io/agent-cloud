@@ -71,13 +71,25 @@
       and production block agree"
 
 ## 3. Confirm the bypass still holds and normal traffic is unaffected
-- [ ] 3.1 `curl -sI https://inference.uhstray.io/v1/models` (no key) returns 401 without a
+- [x] 3.1 `curl -sI https://inference.uhstray.io/v1/models` (no key) returns 401 without a
       `cf-mitigated` header; `curl -sI https://inference.uhstray.io/metrics` returns a
-      challenge
-- [ ] 3.2 Run the dgx-spark `vllm.yml` public-path verify play (companion change, section 3)
-      against the live edge; all probes pass under the new rule
-- [ ] 3.3 Validation gate: 3.1 proves scenario "SDK request reaches Caddy" and scenario
+      challenge. DONE 2026-09-15 03:17 UTC: `/v1/models` HTTP/2 401, no `cf-mitigated`;
+      `/metrics` HTTP/2 403 `cf-mitigated: challenge`
+- [x] 3.2 Run the dgx-spark `vllm.yml` public-path verify play (companion change, section 3)
+      against the live edge; all probes pass under the new rule. DONE 2026-09-15 03:28–03:46 UTC
+      from the companion worktree (`--start-at-task` on the public-path play; the two Spark
+      plays ran no tasks): efforts 7/7 accepted; long stream 256.6 s to `[DONE]`; queue 12/12
+      streams completed (longest 795.7 s, first token after 397 s with 26 keep-alives) — all
+      through the log-only rate limit with no mitigation
+- [x] 3.3 Validation gate: 3.1 proves scenario "SDK request reaches Caddy" and scenario
       "Unlisted path stays challenged"; 3.2 proves scenario "Normal agentic use is unaffected"
+      (under the log-only phase). NOTE for 1.7: the queue probe starts 12 streams at once from
+      ONE address, nominally above the 10 / 10 s threshold — yet Security Events recorded ZERO
+      rate-limit `log` events for the whole verify window, while the earlier burst of 15 GETs
+      in one second recorded 3 (not 5). The counter's behaviour at the threshold is not the
+      exact arithmetic the design assumed; measure it (paced bursts of 11, 15, 20 from one
+      address, count the log events) BEFORE enabling `block`, or a real client's fan-out and
+      the verify probe may be treated differently than expected
 
 ## 4. Records
 - [x] 4.1 `plan/development/13-cloudflare-iac.md`: status line for the rate-limit rule; the
