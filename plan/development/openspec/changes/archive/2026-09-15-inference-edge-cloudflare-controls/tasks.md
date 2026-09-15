@@ -79,7 +79,7 @@
 - [x] 2.4 `platform/tests/test_service_caddy.bats`: extend the inference test to assert the
       `remote_ip` matcher exists inside the `inference_api` branch, references the variable
       (never a literal range), and precedes the `reverse_proxy`; run `bats platform/tests`
-- [ ] 2.5 PRE-CHECK: confirm the peer address the prod Caddy container sees for a Cloudflare
+- [x] 2.5 (closed as WITHDRAWN, not done) PRE-CHECK: confirm the peer address the prod Caddy container sees for a Cloudflare
       request is inside the published ranges (podman docs: pasta, the default rootless mode,
       preserves the source IP on port forwarding; which backend the host runs is unverified) —
       otherwise the route fails CLOSED for everyone. Then redeploy Caddy through the Semaphore playbook; from a host that can reach the origin
@@ -97,7 +97,7 @@
       control on this host (ledger §10.14): the precondition is a read-only Semaphore task that
       sends a known request through Cloudflare to the hostname and prints the matching
       access-log entry's peer address — the network mode or an arbitrary log line is not it
-- [ ] 2.6 (withdrawn with the requirement) Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
+- [x] 2.6 (closed as WITHDRAWN, not done) Validation gate: 2.5 proves scenario "Direct request to the origin gets nothing" and
       scenario "Proxied request is served"; 2.4 and a rendered diff prove scenario "Template
       and production block agree"
 
@@ -130,18 +130,20 @@
       `inference-endpoint-reliability`
 - [x] 4.3 Cloudflare range refresh procedure documented next to the variable (re-fetch the two
       URLs, update the list and date, redeploy Caddy)
-- [ ] 4.4 Validation gate: the architecture record exists and names both rejected alternatives,
+- [x] 4.4 Validation gate: the architecture record exists and names both rejected alternatives,
       proving scenario "Decision is findable"; on archive, retain the outcome (worked / dead
-      end / corrected) into bank `agent-cloud-750a33b9`
+      end / corrected) into bank `agent-cloud-750a33b9`. DONE 2026-09-15: record at
+      `plan/architecture/05-platform-infra.md` names Enterprise and grey-clouding as rejected;
+      outcomes retained through the day (rate limit worked; origin lockdown dead end, withdrawn)
 
 ## 5. Deferred follow-ups (surfaced by the 2026-09-14 simplify pass; out of this change's scope)
-- [ ] 5.1 DROPPED 2026-09-15 by the same operator decision (no Cloudflare-range lockdown of the
+- [x] 5.1 (closed as DROPPED) 2026-09-15 by the same operator decision (no Cloudflare-range lockdown of the
       origin in any form). Original: "Only Cloudflare reaches this origin" is a property of the Caddy HOST, not one
       route: every platform hostname is proxied, so the general mechanism is a host firewall
       rule (`apply-firewall.yml` already models port-from-source) for 443 from the Cloudflare
       ranges, covering every vhost. The per-route matcher is the correct first landing; do
       not build a per-route `allow_from` flag in its place
-- [ ] 5.2 Bring the `inference` A-record under `dns.tf` (add to `platform_subdomains`, import
+- [x] 5.2 DONE 2026-09-15 (PR #178; Semaphore 908 plan `1 to import`, 909 apply, 910 `No changes`). Bring the `inference` A-record under `dns.tf` (add to `platform_subdomains`, import
       at zero-diff): the whole control stack assumes `proxied = true` and nothing in code
       enforces it today
 - [x] 5.3 DONE (this PR) — block proven, twin removed, single rule; frees the second Pro slot.
