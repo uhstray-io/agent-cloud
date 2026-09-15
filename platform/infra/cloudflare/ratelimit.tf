@@ -25,19 +25,16 @@
 # regions would get several counters, and that is accepted — no
 # provider-supported configuration gives a Pro zone a network-wide counter.
 #
-# STAGED ROLLOUT (design risk 1). Both rules share one definition so they
-# cannot drift apart. First apply (2026-09-15, Semaphore task 885) enabled
-# only `log`; the paced measurement the same night showed the counter is exact
-# for sequential arrivals (11/15/20 requests -> 1/5/9 log events), so the
-# operator brought the flip forward from the 2026-09-28 target and `block` is
-# now enabled too. Once block is proven live, the log twin is removed — it
-# holds the zone's second and last Pro rule slot. Rule order (log first) keeps
-# the twin's entries visible past the block rule's mitigation window.
+# ROLLOUT RECORD (design risk 1, log-first). First apply 2026-09-15 (Semaphore
+# task 885) enabled a `log` twin only; a paced measurement the same night
+# showed the counter exact for sequential arrivals (11/15/20 requests -> 1/5/9
+# log events); the operator brought the block forward from the 2026-09-28
+# target (task 906) and it was proven live: 15 requests in one second -> ten
+# 401s from Caddy, five 429s from Cloudflare, served again after the 10 s
+# window. The log twin was then removed to free the zone's second and last
+# Pro rule slot. Block matches are visible in Security Events on their own.
 
 locals {
-  # Flipped 2026-09-15 after the paced counter measurement (see header).
-  inference_block_enabled = true
-
   inference_host = "inference.${var.zone_name}"
   inference_v1   = "(http.host eq \"${local.inference_host}\" and starts_with(http.request.uri.path, \"/v1/\"))"
   inference_bucket = {
@@ -55,12 +52,11 @@ resource "cloudflare_ruleset" "ratelimit" {
   phase       = "http_ratelimit"
   description = "Per-source ceilings for machine APIs (inference)"
 
-  # A LIST, not a map: a map iterates in key order and would put block before log.
-  rules = [for a in ["log", "block"] : {
-    ref         = "inference-api-ratelimit-${a}"
-    action      = a
-    enabled     = a == "log" || local.inference_block_enabled
-    description = "Inference API - ${a} a source exceeding 10 req / 10 s (10 s mitigation)"
+  rules = [{
+    ref         = "inference-api-ratelimit-block"
+    action      = "block"
+    enabled     = true
+    description = "Inference API - block a source exceeding 10 req / 10 s (10 s mitigation)"
     expression  = local.inference_v1
     ratelimit   = local.inference_bucket
     # No `logging` block: the API accepts logging.enabled ONLY on skip-action
