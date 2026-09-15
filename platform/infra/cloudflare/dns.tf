@@ -14,7 +14,8 @@ locals {
     "auth",   # Authentik IdP
     "canvas", # OpenHands
     "devlog",
-    "memory", # honcho
+    "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
+    "memory",    # honcho
     "mixpost",
     "n8n",
     "netbox",
