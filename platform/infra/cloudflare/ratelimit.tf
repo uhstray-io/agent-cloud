@@ -31,7 +31,7 @@
 # period (target 2026-09-28), a reviewed PR flips inference_block_enabled to
 # true and, once block is proven, removes the log twin — it holds the zone's
 # second and last Pro rule slot. Rule order (log first) is kept so the twin's
-# Security Events entries survive the block rule's mitigation window later.
+# entries survive the block rule's mitigation window later.
 
 locals {
   # Flip to true in its own reviewed PR once the log-only review period is over.
@@ -62,6 +62,10 @@ resource "cloudflare_ruleset" "ratelimit" {
     description = "Inference API - ${a} a source exceeding 10 req / 10 s (10 s mitigation)"
     expression  = local.inference_v1
     ratelimit   = local.inference_bucket
-    logging     = { enabled = true }
+    # No `logging` block: the API accepts logging.enabled ONLY on skip-action
+    # rules (error 20018 "it can only be used with the skip action", first
+    # apply = Semaphore task 882). Provider schema, `tofu validate` and `plan`
+    # all accepted it; only the create call refused. Match visibility for these
+    # rules is what the `log` action itself provides.
   }]
 }
