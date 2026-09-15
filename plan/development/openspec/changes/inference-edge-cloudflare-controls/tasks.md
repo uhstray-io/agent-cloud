@@ -51,7 +51,7 @@
       rate-limit events. Before the flip, run that queue probe once more while watching
       Security Events; if it still records nothing, `block` will not trip it either; if it
       records 2, the probe must be paced or run from two addresses
-- [ ] 1.7 After the review period (target 2026-09-28): reviewed PR sets
+- [ ] 1.7 Brought forward from 2026-09-28 on the operator's call after 1.7a: reviewed PR sets
       `inference_block_enabled = true`; `plan` shows exactly one rule attribute change;
       `apply`; repeat 1.5 and confirm the block response — this proves scenario "Burst from
       one address is blocked". Then remove the `log` twin (5.3)

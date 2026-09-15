@@ -25,17 +25,18 @@
 # regions would get several counters, and that is accepted — no
 # provider-supported configuration gives a Pro zone a network-wide counter.
 #
-# STAGED ROLLOUT (design risk 1: log-first for one review period). Both rules
-# share one definition so they cannot drift apart, but only `log` is enabled
-# at first apply; the `block` rule is declared and DISABLED. After the review
-# period (target 2026-09-28), a reviewed PR flips inference_block_enabled to
-# true and, once block is proven, removes the log twin — it holds the zone's
-# second and last Pro rule slot. Rule order (log first) is kept so the twin's
-# entries survive the block rule's mitigation window later.
+# STAGED ROLLOUT (design risk 1). Both rules share one definition so they
+# cannot drift apart. First apply (2026-09-15, Semaphore task 885) enabled
+# only `log`; the paced measurement the same night showed the counter is exact
+# for sequential arrivals (11/15/20 requests -> 1/5/9 log events), so the
+# operator brought the flip forward from the 2026-09-28 target and `block` is
+# now enabled too. Once block is proven live, the log twin is removed — it
+# holds the zone's second and last Pro rule slot. Rule order (log first) keeps
+# the twin's entries visible past the block rule's mitigation window.
 
 locals {
-  # Flip to true in its own reviewed PR once the log-only review period is over.
-  inference_block_enabled = false
+  # Flipped 2026-09-15 after the paced counter measurement (see header).
+  inference_block_enabled = true
 
   inference_host = "inference.${var.zone_name}"
   inference_v1   = "(http.host eq \"${local.inference_host}\" and starts_with(http.request.uri.path, \"/v1/\"))"
