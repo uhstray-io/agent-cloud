@@ -50,8 +50,10 @@ mount source is deleted after startup.
 - **The deployed template controls schedules and workers.** `agent.yaml.j2`
   uses runtime `vault://` references and schedules pfSense/Proxmox workers.
   Legacy helpers in `lib/common.sh` do not describe this deployment path.
-- **`check-discovery.yml` mutates state.** It writes site coordinates and
-  tolerates query errors; do not advertise it as a read-only recovery gate.
+- **Verify the checker revision.** The current source replaces GPS writes with
+  bounded read-only evidence and refuses recovery acceptance. An older installed
+  revision may still mutate coordinates. Aggregate counts and submission messages
+  cannot establish complete collection or reconciliation.
 - **Preserve build and configuration boundaries.** Keep the upstream
   `netbox-docker/` clone untouched. The Diode target, plugin username and mounted
   client secret must agree; policy `scope` is a sibling of `config`, device roles
