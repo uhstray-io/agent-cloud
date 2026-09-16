@@ -38,6 +38,48 @@ flowchart LR
 4. After the reviewed release is merged, seed provider credentials, verify names, deploy the IdP only as needed, deploy Postiz, publish its proxy route and reconcile the service firewall. Require backend, workflow engine, search node and TLS checks. Complete the first approved sign-in and close registration through inventory.
 5. Leave social account consent, callback-console changes, scheduled publishing and restart-with-pending-post acceptance open until separately authorized.
 
+### Dedicated seed environment
+
+The controller provisions a named environment for each seed-template variant.
+It resolves existing controller AppRole inputs in memory and places only the
+required authentication fields into Semaphore's encrypted environment secrets;
+provider inputs remain the separate import helper's responsibility. No AppRole
+is exported to the operator or copied into task arguments or plaintext JSON.
+
+The provisioning operation must verify the declared seed template, repository,
+source binding and exclusive target ownership before mutation. Existing provider
+inputs, ambiguous records, active seed tasks or changed records cause a refusal.
+It preserves unrelated template settings and existing encrypted inputs, verifies
+the stored metadata, and never retries an uncertain mutation automatically.
+A reservation is required because the API has no compare-and-swap.
+
+`isolated_environment` in `templates.yml` declares the desired environment name;
+generated Dev variants receive a distinct suffixed name. The existing catalog
+applier creates missing empty environments and resolves their IDs. It does not
+copy credentials or preserve an arbitrary live binding as desired state.
+First full publication leaves the seed variants unavailable until their named
+environments are provisioned. Reserve this installation window, run the
+provisioner for each needed variant, and complete the read-only survey check
+before importing provider inputs.
+The controller provisioner supplies authentication before changing its selected
+binding; scoped survey publication continues to preserve all bindings.
+The seed playbook gains a read-only access mode that authenticates and reads its
+fixed OpenBao path, then exits before every write even if provider inputs exist.
+Run that mode through the dedicated binding before importing credentials.
+
+Acceptance: repeat provisioning converges without changing existing credentials;
+full and scoped publication retain the dedicated binding; wrong ownership and
+concurrent work fail before writes; read-only validation performs no secret-store
+write. Initial installation still requires the reviewed controller entrypoint.
+
+This is trigger-converged automation: declarative metadata with guarded API
+operations, following `01-automation-model.md` (Configuration-as-Code, Workflow
+Decoupling, and taxonomy §4). `04-credentials-access.md` §1 limits genesis to
+initial trust bootstrap; a missing template on a running controller does not
+authorize a new manual access path. Credential tasks retain scoped `no_log` per
+the current engineering instructions; the older blanket-ban migration text in
+`03-testing-ci-quality.md` is not an implemented redaction guarantee.
+
 ## Validation Criteria
 
 | Check | Pass condition |

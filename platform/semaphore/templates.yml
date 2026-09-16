@@ -732,9 +732,41 @@ templates:
         type: string
         required: true
 
+  - name: Provision Postiz Seed Environment
+    playbook: platform/playbooks/provision-postiz-seed-environment.yml
+    dev_variant: true
+    survey_vars:
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified seed inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current seed environment ID"
+        type: string
+        required: true
+      - name: postiz_seed_variant
+        title: "Seed variant (dev or main)"
+        description: "Use dev until the seed access-verification code is promoted to main."
+        type: string
+        default_value: dev
+        required: true
+
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
     dev_variant: true
+    isolated_environment: Postiz seed inputs
+    survey_vars:
+      - name: postiz_verify_access_only
+        title: "Verify access without writing secrets"
+        type: string
+        description: "Set true to authenticate and read the fixed path without writing secrets."
+        default_value: "false"
+    # Full publication binds an empty environment on first installation.
+    # Run the provisioner, then the read-only survey check, before importing.
     # Places the operator's social-platform application credentials at
     # secret/services/postiz, additively (KV-v2 merge-patch), so the three
     # generated secrets already there survive. deploy-postiz.yml declares these
@@ -742,9 +774,8 @@ templates:
     # generates them, because they are the operator's own credentials from each
     # platform's developer console.
     #
-    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
-    # database, so a credential typed into a survey field would be stored there
-    # indefinitely.
+    # The only survey is a non-secret read-only switch. Semaphore PERSISTS survey
+    # values, so credentials must never be declared as survey fields.
     #
     # LAUNCH-TIME EXTRA VARS ARE NOT THE ANSWER EITHER, and this comment used to
     # say they were. Semaphore persists a task's extra-var JSON the same way and
@@ -761,8 +792,8 @@ templates:
     #   SEED_DISCORD_CLIENT_ID    SEED_DISCORD_CLIENT_SECRET
     #   SEED_DISCORD_BOT_TOKEN_ID
     #
-    #   Project -> Environment -> (the environment this template uses)
-    #     -> Secrets -> add each as type "environment variable"
+    # Use scripts/postiz-seed-input.py after provisioning and access verification;
+    # it stages encrypted inputs and removes only its own inputs after completion.
     #
     # The playbook prefers the environment over the matching seed_* extra var, so
     # a stray -e cannot override a configured secret. The extra-var form remains
