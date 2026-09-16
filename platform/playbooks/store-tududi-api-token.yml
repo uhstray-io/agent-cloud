@@ -48,14 +48,16 @@
     # The configured service account; task 6.0 separately gates visibility
     # for both this identity and the human operator. Do not change ownership
     # or substitute the operator's token as a side effect of validation.
-    _validate_only: "{{ (tududi_token_validate_only | default(false) | string | lower) in ['true', ''] }}"
+    # Older published templates may omit the survey. Proof must stay the default
+    # at the execution boundary; initial mint requires an explicit false.
+    _validate_only: "{{ (tududi_token_validate_only | default(true) | string | lower) in ['true', ''] }}"
     _login_email: "{{ tududi_sync_user_email }}"
 
   tasks:
     - name: "Require an unambiguous token validation mode"
       ansible.builtin.assert:
         that:
-          - (tududi_token_validate_only | default(false) | string | lower) in ['true', 'false', '']
+          - (tududi_token_validate_only | default(true) | string | lower) in ['true', 'false', '']
         fail_msg: "tududi_token_validate_only must be true, false, or blank."
 
     - name: "Require the explicitly configured sync account"

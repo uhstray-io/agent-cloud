@@ -201,22 +201,29 @@ def token_guards(directory):
             assert "Set tududi_sync_user_email explicitly" in result.stdout, result.stdout
     start = next(i for i, task in enumerate(TOKEN["tasks"]) if task["name"] == "Decide convergence")
     end = next(i for i, task in enumerate(TOKEN["tasks"]) if task["name"].startswith("Mint (and capture)"))
-    tasks = TOKEN["tasks"][start:end] + [
+    tasks = TOKEN["tasks"][:1] + TOKEN["tasks"][start:end] + [
         {"name": "Reached initial mint", "ansible.builtin.debug": {"msg": "INITIAL_MINT"}, "when": "not _converged"},
     ]
     for validate, present, rows, proof in [
+        (None, True, 1, 0), (None, False, 0, 1), (None, True, 1, 1),
+        ("", False, 0, 1), ("true", True, 1, 0), ("false", False, 0, 1),
         (True, True, 1, 0), (True, False, 0, 1), (True, True, 1, 1),
         (False, True, 1, 0), (False, True, 1, 1), (False, False, 1, 1), (False, True, 0, 1), (False, False, 0, 1),
     ]:
         play = {"name": "Token preservation guards", "hosts": "localhost", "gather_facts": False,
-                "vars": {"_validate_only": validate, "_bao_has_token": present, "_active_rows": rows,
+                "vars": {"_validate_only": TOKEN["vars"]["_validate_only"],
+                         "_bao_has_token": present, "_active_rows": rows,
                          "_stored_proof": {"rc": proof}, "_bao_path": "services/tududi", "_bao_key": "api_token",
                          "_token_label": "fixture", "_login_email": "fixture"}, "tasks": tasks}
+        # None models an older published template with no survey field at all.
+        if validate is not None:
+            play["vars"]["tududi_token_validate_only"] = validate
         result = run_play(play, directory)
         converged = present and proof == 0
-        success = converged or (not validate and not present and rows == 0)
+        explicit_mint = validate is False or validate == "false"
+        success = converged or (explicit_mint and not present and rows == 0)
         assert (result.returncode == 0) == success, result.stdout + result.stderr
-        assert ("INITIAL_MINT" in result.stdout) == (success and not validate and not converged), result.stdout
+        assert ("INITIAL_MINT" in result.stdout) == (success and explicit_mint and not converged), result.stdout
     print("PASS token proof-only and existing-access refusal guards")
 
 
