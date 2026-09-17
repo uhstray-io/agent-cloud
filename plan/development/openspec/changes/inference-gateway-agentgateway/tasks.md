@@ -78,7 +78,8 @@
       `config.metrics.fields.add.identity` + `config.logging.fields.add.identity`
       (first-token latency is already a default log field on streams). Upstream key per
       the api-keys doc: `params.apiKey: $VLLM_API_KEY` env reference, omitted when the
-      upstream takes no key (LM Studio locally); prod renders it from OpenBao
+      upstream takes no key; proven 2026-09-17 with LM Studio switched to a required token,
+      seeded via `seed-openbao-key.yml` (task 616: completions 200, no plaintext in config)
 - [ ] 1.9 Validation gate: unauthenticated browser to `https://admin.inference.<zone>` is
       redirected to Authentik; after `agent-cloud-admin` login the UI renders and
       `/ui/api/config_dump` is reachable only through that path, proving scenario "UI

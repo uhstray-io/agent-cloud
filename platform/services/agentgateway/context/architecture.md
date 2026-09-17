@@ -73,7 +73,7 @@ per-client layer. Everything is inventory-driven code (design §10):
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|
-| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | none — `params.apiKey` omitted |
+| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
 ## Verification log
@@ -96,4 +96,10 @@ per-client layer. Everything is inventory-driven code (design §10):
   attached: `budget_usage` gained one row charging the completion's 91 tokens to the
   `hourly-tokens` budget of the enrolled key hash; `$AGW_DATABASE_URL` expands inside
   `config.database.url`, so the rendered config still carries no credential.
+- 2026-09-17 — upstream-key path proven end to end locally: LM Studio switched to
+  requiring a token (401 upstream, surfaced by the gateway as `invalid_api_key`); the token
+  was seeded with `seed-openbao-key.yml` (value as an environment secret, Mac-direct) into
+  `vllm_api_key`; redeploy (task 616) rendered `params.apiKey: $VLLM_API_KEY` with no
+  plaintext in config.yaml; completions succeed on :4000 and through the UI origin; no-key
+  is still 401. This is the exact prod shape with vLLM's key.
 - Task 2 (conformance against the direct upstream): pending.
