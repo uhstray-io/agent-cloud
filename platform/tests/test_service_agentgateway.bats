@@ -37,6 +37,11 @@ setup() {
 @test "agentgateway: operator UI rides its own listener and the GATEWAY runs the OIDC login" {
   assert_grep -qE '^\s*ui:$' "$CONFIG"
   assert_grep -qE '^\s*gateways: ui$' "$CONFIG"
+  # Named gateways (llm.port is deprecated); LLM routes on BOTH so the UI playground
+  # calls /v1 on its own origin through Caddy (no CORS, no extra browser port).
+  assert_grep -qE '^\s*default:$' "$CONFIG"
+  assert_grep -qE '^\s*gateways: \[default, ui\]$' "$CONFIG"
+  refute_grep -qE '^\s*port: 4000$' <(sed -n '/^llm:/,$p' "$CONFIG")
   # Auth is the gateway's own ui.policies (the UI ignores an external gate — banner
   # "UI is exposed without authentication", 2026-09-17): OIDC + admin-group rule.
   assert_grep -qE '^\s*oidc:$' "$CONFIG"
@@ -122,6 +127,14 @@ setup() {
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"
+}
+
+@test "agentgateway: observability — identity label on metrics and logs, never prompt content" {
+  assert_grep -qE '^\s*metrics:$' "$CONFIG"
+  assert_grep -qE '^\s*logging:$' "$CONFIG"
+  [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 2 ]
+  # Key form only: a comment may NAME the fields it forbids.
+  refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
 
 @test "agentgateway: config template has no retry block and no request timeouts (design §3)" {

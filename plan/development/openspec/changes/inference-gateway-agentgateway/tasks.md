@@ -72,6 +72,13 @@
       `agentgateway:4001` as a PLAIN proxy in the example, working inventory and the
       control plane's route table; BATS. Prod: site-config `caddy_managed_sites` block +
       `agentgateway_external_host` on the authentik host + `agentgateway` in `authentik_apps`
+      Playground (Joe, 2026-09-17): `llm.gateways: [default, ui]` so the UI calls /v1 on
+      its own origin through Caddy (verified apiKey-gated, not OIDC-gated; completion
+      round-trips at admin.inference.agent-cloud.test/v1). Observability per upstream:
+      `config.metrics.fields.add.identity` + `config.logging.fields.add.identity`
+      (first-token latency is already a default log field on streams). Upstream key per
+      the api-keys doc: `params.apiKey: $VLLM_API_KEY` env reference, omitted when the
+      upstream takes no key (LM Studio locally); prod renders it from OpenBao
 - [ ] 1.9 Validation gate: unauthenticated browser to `https://admin.inference.<zone>` is
       redirected to Authentik; after `agent-cloud-admin` login the UI renders and
       `/ui/api/config_dump` is reachable only through that path, proving scenario "UI

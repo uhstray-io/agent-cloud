@@ -36,6 +36,12 @@ reachable from any host other than the Caddy host.
   admin-group login the UI renders, and the UI shows no "exposed without
   authentication" warning
 
+#### Scenario: Playground completes a request through the UI origin
+- WHEN an admin, logged into the UI, sends a chat completion from the LLM Playground
+  with an enrolled client key
+- THEN the request reaches the gateway's `/v1` on the UI's own origin through Caddy,
+  is authenticated by the API-key policy, and the completion is returned
+
 #### Scenario: UI listener is not reachable around Caddy
 - WHEN a LAN host that is not the Caddy host connects to the UI listener's port
 - THEN the connection is refused
@@ -108,8 +114,10 @@ only at the gateway.
   the gateway is back in the path, the vLLM key is rotated and no published copy remains
 
 ### Requirement: Gateway telemetry lands in the platform stack
-The gateway SHALL export request metrics to Prometheus and traces over OTLP to the
-o11y host's collector, and the inference dashboard MUST show client-view first-token
+The gateway SHALL export request metrics to Prometheus (with the client identity as a
+label) and traces over OTLP to the o11y host's collector, SHALL record the identity on every
+access-log line (first-token latency is already a default field on streamed responses)
+without ever logging prompt or completion content, and the inference dashboard MUST show client-view first-token
 latency, request duration, failures and per-identity request counts from those signals.
 
 #### Scenario: Client-view latency on the dashboard

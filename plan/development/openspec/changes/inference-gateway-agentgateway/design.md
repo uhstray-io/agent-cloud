@@ -122,7 +122,12 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    and a Tempo decision is deferred: traces are sampled at `randomSampling` low and go
    to Loki as structured log lines until Tempo has an owner (plan 05 Phase 3).
    Alternative rejected: deploy Tempo now, because one producer does not justify a
-   store with no retention owner.
+   store with no retention owner. Amended 2026-09-17 per upstream's LLM observability
+   page: the default access log already carries the `gen_ai.*` model and token fields;
+   the config adds `identity: apiKey.name` to BOTH metrics (bounded cardinality: the
+   enrolled identities) and logs; the default log already carries
+   `agw.ai.time_to_first_token` on streamed responses, so nothing else is added. `llm.prompt` / `llm.completion`
+   are never logged.
 
 7. **Caddy stays the TLS front door.** Caddy terminates TLS, keeps the path allowlist
    and the Bearer 401, and proxies to the gateway over the LAN. The gateway does not
@@ -158,6 +163,15 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    trusts step-ca via `SSL_CERT_FILE` (rustls-native-certs) and the compose overlay
    `!override`s the UI publish away, so the only path is through Caddy. The admin
    interface itself stays on the container loopback (decision 2 unchanged).
+   *Playground (Joe, 2026-09-17):* the UI's LLM Playground calls `/v1` on its OWN
+   origin when the LLM routes share the UI's gateway (upstream `ui/src/gatewayUrls.ts`
+   `sameOrigin`), so `llm.gateways: [default, ui]` — the API stays on :4000 for clients
+   and is also served on :4001 for the playground through Caddy, no CORS and no second
+   browser-reachable port. Verified: `/v1` on the UI listener is still apiKey-gated (401
+   without a key) and not OIDC-redirected; the playground needs an enrolled client key
+   pasted in (the config holds hashes, so the UI has no saved key to offer). The UI's
+   own "Apply CORS" button writes to `/config.yaml`, which is mounted read-only on
+   purpose: configuration is code, rendered by the deploy, never edited from the UI.
    *Corrected:* the first cut gated the route with Caddy + Authentik forward_auth,
    which authenticated the browser but is invisible to the gateway — the UI kept
    warning "UI is exposed without authentication", because it only recognises its own

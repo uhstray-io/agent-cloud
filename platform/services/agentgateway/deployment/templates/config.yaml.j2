@@ -27,6 +27,23 @@ config:
   # it is an env reference expanded by the gateway, never written here.
   database:
     url: $AGW_DATABASE_URL
+  # Observability (upstream llm/observability): per-identity request and token
+  # series on the stats endpoint. `apiKey.name` is bounded by the enrolled
+  # identities, so the label cardinality is small and known.
+  metrics:
+    fields:
+      add:
+        identity: apiKey.name
+  # The default access log already carries gen_ai.request.model / response.model /
+  # usage.input_tokens / output_tokens / reasoning_tokens and, on streamed
+  # responses, agw.ai.time_to_first_token (read on the running container
+  # 2026-09-17). The one thing it lacks is WHO: add the identity. Never
+  # llm.prompt or llm.completion — content stays out of logs.
+  logging:
+    fields:
+      add:
+        identity: apiKey.name
+
 {% if agw_otlp_endpoint | default('') %}
   tracing:
     # Alloy's OTLP receiver on the o11y host (grpc). Sampled low: traces land in
@@ -44,6 +61,8 @@ config:
 # Verified on v1.5.0: `/` -> 308 `/ui`, assets under /ui/assets, API under /ui/api;
 # discovery + token exchange trust the IdP via SSL_CERT_FILE (rustls-native-certs).
 gateways:
+  default:
+    port: 4000
   ui:
     port: 4001
 
@@ -71,7 +90,14 @@ frontendPolicies:
     maxBufferSize: 20971520
 
 llm:
-  port: 4000
+  # Attached to BOTH gateways. On `default` (:4000) it is the API clients use. On
+  # `ui` (:4001) it makes the UI's LLM Playground work: the UI calls /v1 on its
+  # OWN origin when the LLM routes share its gateway (upstream ui/src/gatewayUrls.ts
+  # `sameOrigin`), i.e. https://admin.inference.<zone>/v1 through Caddy — no CORS,
+  # no second browser-reachable port. The OIDC policy below is scoped to the UI
+  # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
+  # 2026-09-17), so the playground needs an enrolled client key pasted in.
+  gateways: [default, ui]
   policies:
     apiKey:
       # strict: a request with no key or an unknown key is 401 here and never
