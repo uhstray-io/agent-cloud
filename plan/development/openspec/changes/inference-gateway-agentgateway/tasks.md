@@ -80,7 +80,13 @@
       429 while another identity is served, proving scenario "One client cannot exceed its
       share"; the gateway access log shows the public request, proving scenario "Public
       path traverses the gateway"; one inventory change and a Caddy redeploy restores the
-      direct path, proving scenario "Rollback is one value"
+      direct path, proving scenario "Rollback is one value during the grace period"
+- [ ] 4.6 `rollback-inference-route.yml` with `mode=gateway-config|direct|restore` as in the
+      proposal's Rollback Plan, each mode idempotent (re-run converges, no duplicate key
+      publication, `restore` is a no-op once the upstream is the gateway and the key is
+      rotated); BATS asserts the three modes exist and that `direct` never prints a key;
+      drill `direct` then `restore` against the live route in a window Joe names, proving
+      scenario "Rollback after retirement is the playbook"
 
 ## 5. Retire the shared key, records
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template

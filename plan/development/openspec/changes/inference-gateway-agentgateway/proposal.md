@@ -112,12 +112,14 @@ see no change of base URL.
   head node and redeploy Caddy through Semaphore; clients keep working with the shared
   key, which remains valid at vLLM throughout the grace period.
 - Route back (after the shared key is retired and rotated): clients hold gateway keys
-  that vLLM does not know, so a direct route is an incident procedure, not one value.
-  Preferred: keep the gateway in the path and roll back the gateway's own config
-  (previous rendered config, Semaphore redeploy). If the gateway host itself is lost:
-  re-issue the current vLLM key to clients through the same secret channel used for
-  their gateway keys, route Caddy back, and treat the exposure as a key rotation once
-  the gateway returns.
+  that vLLM does not know, so a direct route is not one value. It is encoded as
+  `rollback-inference-route.yml`, idempotent and re-runnable, with three modes:
+  `-e mode=gateway-config` redeploys the previous rendered gateway config (default, the
+  gateway stays in the path); `-e mode=direct` publishes the current vLLM key into each
+  enrolled client's OpenBao secret path (the same channel the client keys use), sets the
+  Caddy upstream to the head node and redeploys Caddy; `-e mode=restore` sets the upstream
+  back to the gateway, redeploys Caddy, rotates the vLLM key at vLLM and in OpenBao, and
+  removes the published copies. Each mode converges when re-run; none is a manual step.
 - Stop the gateway: Semaphore stop template; nothing on the nodes changes.
 - Remove: `clean-deploy-agentgateway.yml` in destroy mode; OpenBao client keys
   revoked; the architecture record stays with status `Rejected` if the approach is

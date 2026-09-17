@@ -19,7 +19,8 @@
       default `7d`, binds loopback for Prometheus and Alloy, Loki and Grafana bound to the
       VM address; compose reads the retention vars
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
-      `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape;
+      `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
+      with `/api/health` exempted from `forward_auth` (unauthenticated liveness, no data);
       `manage-caddy-sites.yml` through Semaphore
 - [ ] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
@@ -41,10 +42,12 @@
 - [ ] 2.4 Confirm every `dgx-spark` target `up == 1`; confirm
       `{cluster="dgx-spark", service="vllm"}` returns lines after a rank restart on the
       nodes (dgx-spark window)
-- [ ] 2.5 Stop one node exporter for twelve minutes (dgx-spark window), longer than the
-      alert's five-minute pending window plus scrape and evaluation delay; confirm the
-      target goes `up == 0`, the overview panel shows a gap (not zero), and the
-      `telemetry-missing` rule reaches state firing in Grafana
+- [ ] 2.5 Fault drill, encoded: `o11y-fault-drill.yml -e drill=exporter` stops one node
+      exporter, waits twelve minutes (longer than the alert's five-minute pending window
+      plus scrape and evaluation delay), asserts the target is `up == 0` and the
+      `telemetry-missing` rule is firing in Grafana, then restores the exporter in an
+      `always:` block so an interrupted run never leaves it stopped; re-running after a
+      restore is a no-op. Run in a dgx-spark window; the overview panel shows a gap, not zero
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
@@ -73,15 +76,21 @@
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
 - [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
-      scenario "Dashboards render from provisioning alone"; point the probe at a model
-      name the server does not serve for six minutes (the completion fails, `/health`
-      stays 200), confirm `/health` returned 200 throughout, the Discord message arrived
-      and `vllm-node` on the nodes was not restarted, proving scenario "Alert reaches the
-      contact point" and scenario "Health up, inference down"
-- [ ] 3.6 External liveness watcher: a Semaphore schedule runs `check-o11y-liveness.yml`
-      from the Semaphore host every 10 min (curl Grafana `/api/health` and Prometheus
-      `/-/ready` through the LAN, Discord webhook on failure); stop Grafana for 15 minutes
-      and confirm the Discord message arrives from the watcher, not from Grafana
+      scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
+      drill=probe` points the probe at a model name the server does not serve for six
+      minutes (the completion fails, `/health` stays 200), asserts `/health` returned 200
+      throughout and the Discord message arrived, then restores the probe target in an
+      `always:` block; `vllm-node` on the nodes was not restarted; proving scenario "Alert
+      reaches the contact point" and scenario "Health up, inference down"
+- [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
+      runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
+      Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
+      from `forward_auth`, task 1.3) and Prometheus readiness through Grafana's datasource
+      health API (`/api/datasources/uid/<prometheus>/health`) with a read-only Grafana
+      service-account token from OpenBao `secret/services/o11y:watcher_token`; Discord
+      webhook on failure. No direct VM port is opened for the watcher. Drill:
+      `o11y-fault-drill.yml -e drill=grafana` stops Grafana for 15 minutes, asserts the
+      Discord message arrived from the watcher, and restarts Grafana in an `always:` block
 
 ## 4. Retention, thresholds, records
 - [ ] 4.1 After seven days: read Prometheus TSDB size and Loki ingestion per day; set

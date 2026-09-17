@@ -58,10 +58,13 @@ grace period.
 
 ### Requirement: Caddy routes the inference hostname to the gateway
 The Caddy `inference_api` route SHALL proxy to the gateway host and port taken from
-inventory, keeping TLS termination, the path allowlist and the Bearer 401 at Caddy, and
-MUST be revertible to the direct upstream by changing one inventory value. Caddy's Bearer
-check SHALL remain a header-shape check so that every enrolled client key passes it and
-identity is decided only at the gateway.
+inventory, keeping TLS termination, the path allowlist and the Bearer 401 at Caddy.
+During the shared key's grace period the route MUST be revertible to the direct upstream
+by changing one inventory value; after the shared key is retired, rollback SHALL be the
+`rollback-inference-route.yml` playbook (gateway-config, direct, restore modes), because
+vLLM cannot authenticate gateway-issued client keys. Caddy's Bearer check SHALL remain a
+header-shape check so that every enrolled client key passes it and identity is decided
+only at the gateway.
 
 #### Scenario: Client key passes Caddy and is judged at the gateway
 - WHEN a request with an enrolled client key arrives at the public hostname
@@ -72,10 +75,16 @@ identity is decided only at the gateway.
 - WHEN a request arrives at `https://inference.uhstray.io/v1/models` with an enrolled key
 - THEN the gateway's access log records it and the model list is returned
 
-#### Scenario: Rollback is one value
-- WHEN the route's upstream inventory value is set back to the head node and Caddy is
-  redeployed
+#### Scenario: Rollback is one value during the grace period
+- WHEN, before the shared key is retired, the route's upstream inventory value is set
+  back to the head node and Caddy is redeployed
 - THEN direct vLLM serves the hostname again with no other change
+
+#### Scenario: Rollback after retirement is the playbook
+- WHEN, after the shared key is retired, `rollback-inference-route.yml` runs in `direct`
+  mode and then in `restore` mode
+- THEN clients are served directly by vLLM with the key it publishes, and after `restore`
+  the gateway is back in the path, the vLLM key is rotated and no published copy remains
 
 ### Requirement: Gateway telemetry lands in the platform stack
 The gateway SHALL export request metrics to Prometheus and traces over OTLP to the
