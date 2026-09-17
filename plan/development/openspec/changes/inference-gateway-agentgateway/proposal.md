@@ -55,14 +55,33 @@ record in this change writes that down so plan 06 is amended, not superseded.
   and request METADATA rows, no prompt payloads. The rendered config carries no plaintext
   credential — the upstream key and the database URL are environment references, client
   keys are enrolled as sha256 hashes.
-- **Operator UI behind SSO (Joe, 2026-09-17).** The gateway's built-in UI has no login of
-  its own and dumps its config unauthenticated, so it is served on its own listener (:4001,
-  `ui.gateways`) and reached ONLY through Caddy with an admin-tier Authentik forward_auth
-  gate at `admin.inference.uhstray.io` (prod) / `admin.inference.agent-cloud.test`
-  (local-dev). The admin interface itself stays on the container loopback. A nested
-  hostname, so the local internal wildcard cert gains a `*.inference.<zone>` SAN, derived
-  from the route table by `deploy-caddy.yml`; prod gets a proxied Cloudflare A record in
-  `dns.tf`.
+- **Operator UI, authenticated by the gateway itself (Joe, 2026-09-17).** The gateway's
+  built-in UI has no login of its own and dumps its config unauthenticated, so it is served
+  on its own listener (:4001, `ui.gateways`) with the gateway's `ui.policies.oidc` running
+  the login against an Authentik OAuth2 provider (admin tier) plus an authorization rule
+  requiring the platform admin group — upstream's documented "Secure the UI" path, and the
+  only one the UI recognises (a Caddy forward_auth gate in front was tried first and left
+  the UI warning "exposed without authentication"). Caddy is a plain TLS proxy at
+  `admin.inference.uhstray.io` (prod) / `admin.inference.agent-cloud.test` (local-dev);
+  the admin interface itself stays on the container loopback. A nested hostname, so the
+  local internal wildcard cert gains a `*.inference.<zone>` SAN, derived from the route
+  table by `deploy-caddy.yml`; prod gets a proxied Cloudflare A record in `dns.tf`.
+- **LLM Playground through the UI origin (Joe, 2026-09-17).** The LLM routes attach to
+  both gateways (`llm.gateways: [default, ui]`), so the UI's playground calls `/v1` on its
+  own origin through Caddy — no CORS policy, no second browser-reachable port, and no UI
+  write to the read-only config. `/v1` on the UI listener stays API-key gated.
+- **Virtual keys managed as code, aligned with vLLM's single key (Joe, 2026-09-17).**
+  vLLM accepts one static `--api-key`, so the gateway owns the per-client layer: one
+  virtual key per identity declared in inventory (`agw_clients`), minted once by the
+  deploy, enrolled as a sha256 hash, with per-identity model allow-list and token budget
+  overrides (`agw_client_policies`). `manage-agentgateway-client-key.yml` rotates or
+  revokes one identity (inventory-gated: rotate needs the name declared, revoke needs it
+  removed first) and re-renders/reloads; handout is the existing site-config backup
+  channel. The UI's key editor is inert by design (read-only config).
+- **Observability per upstream's guide.** `identity` (`apiKey.name`) as a label on every
+  metric and a field on every access-log line; the default log already carries the
+  `gen_ai.*` model/token fields and first-token latency on streams; prompt and completion
+  content is never logged.
 - **vLLM as a `custom` provider backend.** The Qwen served name maps to
   `baseUrl: http://<head>:8000/v1` with the vLLM API key injected from OpenBao; the
   gateway's own `/v1` speaks the same OpenAI shape the team already uses, so client
@@ -109,11 +128,12 @@ see no change of base URL.
   deploy.sh, templates/env.j2, templates/config.yaml.j2, .gitignore, README.md}`,
   `platform/services/agentgateway/context/architecture.md`,
   `platform/playbooks/deploy-agentgateway.yml`, `clean-deploy-agentgateway.yml`,
+  `manage-agentgateway-client-key.yml`,
   `platform/tests/test_service_agentgateway.bats`, `platform/inventory/local-dev.yml.example`
   (service group + the `admin.inference` Caddy route), `bootstrap-local-dev.yml` (the
   control plane's static inventory + its Caddy route table), `templates.yml` +
-  `templates-local.yml`, Authentik `app-catalog.yml` + `agentgateway-forward-auth.yaml` +
-  `env.j2`, `deploy-caddy.yml` + `tasks/mint-internal-cert.yml` (nested-host SANs),
+  `templates-local.yml`, Authentik `app-catalog.yml` + `agentgateway-oidc.yaml` + `env.j2` +
+  `deploy-authentik.yml` (client secret), `.pre-commit-config.yaml` (compose overlays), `deploy-caddy.yml` + `tasks/mint-internal-cert.yml` (nested-host SANs),
   `platform/infra/cloudflare/dns.tf` (`admin.inference` record),
   `Caddyfile.local.j2` (`inference_api` upstream from inventory, unchanged shape),
   o11y `config.alloy` (OTLP receiver) and `scrape.d`, `plan/development/06-inference-skynet.md`
@@ -121,10 +141,13 @@ see no change of base URL.
   `plan/architecture/02-service-onboarding.md` Known Gaps (IPAM lookup).
 - site-config (branch `feat/agentgateway-host`): vm-specs vmid 216; `agentgateway_svc` group
   (upstream, identities, limit figures, firewall vars, UI bind); `admin.inference.uhstray.io`
-  forward_auth block in `caddy_managed_sites`; `agentgateway` in `authentik_apps` +
-  `agentgateway_external_host`; later, the production inference block's upstream.
+  plain block in `caddy_managed_sites`; `agentgateway` in `authentik_apps` +
+  `agentgateway_redirect_uri`/`agentgateway_launch_url`; gateway `agw_oidc_issuer` +
+  `agw_ui_redirect_uri` + UI bind; later, the production inference block's upstream.
 - OpenBao: `secret/services/agentgateway` with the vLLM upstream key (`existing`, seeded
-  by a separate playbook), the budget database password and the minted `client_<name>` keys.
+  by a separate playbook), the budget database password, the OIDC cookie seed and the
+  minted `client_<name>` virtual keys; `secret/services/authentik:agentgateway_oidc_client_secret`
+  (owned by the IdP, shared-read by the gateway deploy).
 - Live: one new VM in the request path (two containers); one Caddy redeploy (plus the
   new UI block); one Cloudflare apply (new record); one Authentik redeploy (new app); one client-key rollout to
   team members and agents (the old shared key keeps working at the gateway for a

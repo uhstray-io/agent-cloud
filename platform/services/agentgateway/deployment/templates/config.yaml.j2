@@ -109,18 +109,24 @@ llm:
           prefix: 'Bearer '
       keys:
 {% for c in agw_clients | default([]) %}
+{% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
       - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
         metadata:
           name: {{ c }}
+{% if _pol.allowed_models is defined %}
+        # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
+        allowedModels: {{ _pol.allowed_models | to_json }}
+{% endif %}
         # Per-identity token budget: a rolling UTC-hour window, charged from the
-        # upstream's reported usage, Block once exceeded. Figure from inventory,
-        # derived from the measured ceiling (design §4). This is the ONE
-        # per-identity control v1.5.0 offers, and it is why the db exists.
+        # upstream's reported usage, Block once exceeded. Default figure from
+        # inventory, derived from the measured ceiling (design §4); a per-identity
+        # override lives in agw_client_policies.<name>.tokens_per_hour. This is the
+        # ONE per-identity control v1.5.0 offers, and it is why the db exists.
         budgets:
         - name: hourly-tokens
           limit:
             unit: Tokens
-            amount: {{ agw_rate_tokens_per_hour | default(2000000) }}
+            amount: {{ _pol.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
           window:
             rolling: 1h
           onBudgetExceeded: Block

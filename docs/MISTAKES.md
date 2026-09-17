@@ -77,6 +77,7 @@ supersede it with a new entry and link both.
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
+| 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | 1 | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1544,6 +1545,33 @@ stays censored (the pattern `provision-tududi-github-sync.yml` already used).
 provisions the thing it verifies.
 
 ---
+
+### 6.5 Deleted a blueprint file to retire its object, and the replacement blueprint took it over by name
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** The agentgateway operator UI was first gated with an Authentik forward_auth
+PROXY provider (`agentgateway-forward-auth.yaml`). When the design changed to the gateway's own
+OIDC login, that file was deleted and `agentgateway-oidc.yaml` created an OAuth2 provider with the
+same `name: agentgateway`. Authentik matched the identifier to the still-existing proxy provider
+and wrote the OAuth2 attributes onto it: `signing_key` stayed null, the JWKS endpoint returned
+`{}`, and the gateway crash-looped at startup ("failed to load oidc jwks ... missing field `keys`",
+792 restarts before it was noticed, local task 613). The Authentik API showed the "OAuth2" provider
+still carrying the outpost's callback redirect URIs.
+
+**Root cause.** Blueprints are append-only declarations: removing a file removes nothing.
+Retiring an object requires an explicit `state: absent` entry (the repo already does this for a
+stale policy binding in `zz-sso-bindings.yaml.j2`), and a replacement that reuses an identifier must
+be ordered after that tombstone.
+
+**The rule.** When a blueprint stops declaring an object, or an object changes model under the
+same name, the new blueprint carries a `state: absent` entry for the old model + identifier BEFORE
+the entry that reuses the name. Never rely on a deleted file to delete anything.
+
+**Enforced by.** `Convention`. The prod path has a partial mechanical guard: the Authentik
+deploy's post-apply VERIFY asserts the live OAuth2 provider's `redirect_uris` carry the declared
+`verify_redirect` value, which the hijacked proxy provider would have failed — but that check is
+prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIFY in local mode too.
 
 ## 7. Which of these OPA can carry
 

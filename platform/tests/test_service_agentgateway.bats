@@ -227,3 +227,29 @@ setup() {
   assert_grep -q 'playbook: platform/playbooks/deploy-agentgateway.yml' "$l"
   assert_grep -q 'playbook: platform/playbooks/clean-deploy-agentgateway.yml' "$l"
 }
+
+@test "agentgateway: virtual-key management is code — rotate/revoke playbook, inventory-gated, no values printed" {
+  local f="$REPO_ROOT/platform/playbooks/manage-agentgateway-client-key.yml"
+  [ -f "$f" ]
+  assert_grep -q 'import_playbook: preflight-target-group.yml' "$f"
+  assert_grep -q 'include_tasks: tasks/assert-bao-transport.yml' "$f"
+  # Store writes go through the shared merge task; revoke is a merge-patch null.
+  assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$f"
+  assert_grep -q 'application/merge-patch+json' "$f"
+  # Inventory is the source of who exists: rotate needs the name declared, revoke needs it gone.
+  assert_grep -q '_client in _declared' "$f"
+  assert_grep -q '_client not in _declared' "$f"
+  # Always ends by re-rendering + reloading through the deploy playbook.
+  assert_grep -q 'import_playbook: deploy-agentgateway.yml' "$f"
+  # Handout is the existing site-config channel, never stdout.
+  assert_grep -q 'backup-credentials-to-site-config.yml' "$f"
+  refute_grep -qE 'debug:.*client_' "$f"
+  assert_grep -q 'playbook: platform/playbooks/manage-agentgateway-client-key.yml' "$REPO_ROOT/platform/semaphore/templates.yml"
+  assert_grep -q 'playbook: platform/playbooks/manage-agentgateway-client-key.yml' "$REPO_ROOT/platform/semaphore/templates-local.yml"
+}
+
+@test "agentgateway: per-identity policy overrides render from inventory (allowedModels, budget)" {
+  assert_grep -qF 'agw_client_policies' "$CONFIG"
+  assert_grep -qF 'allowedModels: {{ _pol.allowed_models | to_json }}' "$CONFIG"
+  assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
+}

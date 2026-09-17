@@ -351,6 +351,29 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Manage agentgateway Client Key
+    playbook: platform/playbooks/manage-agentgateway-client-key.yml
+    survey_vars:
+      - name: client
+        title: "Client identity"
+        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        type: string
+        required: true
+      - name: action
+        title: "Action"
+        description: "rotate = new key for a declared identity; revoke = remove a retired identity's key"
+        type: enum
+        required: true
+        values:
+          - { name: "rotate", value: "rotate" }
+          - { name: "revoke", value: "revoke" }
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     survey_vars:

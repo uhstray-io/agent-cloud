@@ -79,6 +79,22 @@ and MUST accept the legacy shared key as one identity only during a dated grace 
 - THEN its further requests are blocked by the gateway while other identities are
   served, and the budget window resets on the UTC hour
 
+#### Scenario: Adding a client is an inventory change
+- WHEN a name is added to the gateway's client list in inventory and the deploy runs
+- THEN a key is generated once into OpenBao, enrolled as a hash, and reused unchanged on
+  every later deploy
+
+#### Scenario: Rotating a client key is explicit and never printed
+- WHEN the key-management playbook runs with `action=rotate` for a declared client
+- THEN a new value replaces the stored one, the gateway is re-rendered and reloaded, the
+  old key gets 401, and the task output carries the field name only; the value reaches
+  its owner through the site-config backup channel
+
+#### Scenario: Revoking requires the inventory to forget the client first
+- WHEN the playbook runs with `action=revoke` for a name still declared in inventory
+- THEN it refuses; once the name is removed, revoke deletes the stored field and the
+  reload drops the hash, so the key is rejected
+
 #### Scenario: Grace period ends
 - WHEN the dated grace period has passed
 - THEN the shared key is no longer enrolled at the gateway and has been rotated at vLLM

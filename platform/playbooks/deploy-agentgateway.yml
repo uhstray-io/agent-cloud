@@ -19,6 +19,8 @@
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
 #   agw_models             [{name, upstream_model?}] one entry per served name
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#                          rotate/revoke: manage-agentgateway-client-key.yml
 #   agw_rate_requests_per_minute_total  (optional) one global request bucket
 #   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
 #   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host

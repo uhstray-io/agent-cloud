@@ -23,6 +23,16 @@ context:
   agentgateway_redirect: "{{ agentgateway_redirect_uri | default('https://admin.inference.agent-cloud.test:8443/oidc/callback') }}"
   agentgateway_launch: "{{ agentgateway_launch_url | default('https://admin.inference.agent-cloud.test:8443/') }}"
 entries:
+  # TOMBSTONE. The first cut of this app was a forward_auth PROXY provider with the
+  # same name; deleting that blueprint file did not retire the object, and this
+  # OIDC entry then matched it by name and wrote OAuth2 attrs onto a proxy provider
+  # (no signing key -> empty JWKS -> the gateway crash-looped, local task 613,
+  # 2026-09-17). Blueprints are append-only: retiring an object is an explicit
+  # `state: absent`, ordered before the entry that reuses the name.
+  - model: authentik_providers_proxy.proxyprovider
+    state: absent
+    identifiers:
+      name: agentgateway
   - model: authentik_providers_oauth2.oauth2provider
     id: provider-agentgateway
     identifiers:

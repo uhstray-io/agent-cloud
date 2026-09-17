@@ -50,6 +50,21 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 - No log-only mode exists for `localRateLimit` in v1.5.0; the first week runs with a
   loose figure and tightens from observed rates (design open question, answered).
 
+## Virtual-key lifecycle (aligned with vLLM's single key)
+
+vLLM accepts one static `--api-key` and knows nothing about clients; the gateway owns the
+per-client layer. Everything is inventory-driven code (design §10):
+
+| Operation | How |
+|---|---|
+| Add a client | Add the name to `agw_clients` (site-config / local inventory) and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
+| Per-client policy | `agw_client_policies.<name>.allowed_models` and `.tokens_per_hour` render `allowedModels` and the budget amount |
+| Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
+| Revoke | Remove the name from `agw_clients` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
+| Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
+| UI key editor | Inert on purpose: the config is read-only in the container; configuration is code |
+| Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
+
 ## Upstream
 
 `custom` provider, `formats: [{type: completions}]`, `params.baseUrl` from inventory

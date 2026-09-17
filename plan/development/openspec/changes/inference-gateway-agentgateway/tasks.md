@@ -117,12 +117,18 @@
       per-identity counts, proving scenario "Client-view latency on the dashboard"
 
 ## 4. Identities, limits, re-route
-- [ ] 4.1 `mint-agentgateway-client-key.yml`: idempotent per client name: if
-      `secret/services/agentgateway/clients/<name>` exists the key is kept, otherwise one
-      is generated; rotation is an explicit `-e rotate=true` run, never implicit; every
-      run re-renders and reloads the gateway. Mint the first set (Joe names it; default one
-      per current user, OpenCode, pi, skynet) and enrol the legacy shared key as identity
-      `legacy-shared` with the tightest limit and `legacy_shared_expires: <date>` in inventory
+- [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
+      `client_<name>` once per `agw_clients` entry (fields on the service's secret path,
+      not a `clients/*` subpath); `manage-agentgateway-client-key.yml` rotates (name must
+      be declared) or revokes (name must be removed first; merge-patch null) one identity
+      and re-renders/reloads; per-identity `allowedModels` + budget overrides via
+      `agw_client_policies`; Semaphore templates shared + local; BATS. Local rotate drill
+      run through the local Semaphore 2026-09-17 (task 615 after the Authentik tombstone,
+      MISTAKES 6.5): the morning's key answers 401, the rotated value 200, gateway 0 restarts. LEFT for prod: mint the
+      first set (`stray`, `opencode`, `pi`, `skynet` — declared in site-config) by the first
+      deploy, hand each out with `backup-credentials-to-site-config.yml`, and enrol the
+      legacy shared key as identity `legacy-shared` with the tightest budget and
+      `legacy_shared_expires: <date>` in inventory (task 5.1 enforces the expiry)
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`

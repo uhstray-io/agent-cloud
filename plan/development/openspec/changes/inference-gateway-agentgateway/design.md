@@ -172,11 +172,34 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    pasted in (the config holds hashes, so the UI has no saved key to offer). The UI's
    own "Apply CORS" button writes to `/config.yaml`, which is mounted read-only on
    purpose: configuration is code, rendered by the deploy, never edited from the UI.
+   *Retiring the first cut:* the forward_auth PROXY provider had the same name; deleting
+   its blueprint file retired nothing and the OIDC entry took the object over (empty JWKS,
+   gateway crash loop, task 613). The OIDC blueprint now carries a `state: absent`
+   tombstone for the proxy provider, ordered first (MISTAKES 6.5).
    *Corrected:* the first cut gated the route with Caddy + Authentik forward_auth,
    which authenticated the browser but is invisible to the gateway — the UI kept
    warning "UI is exposed without authentication", because it only recognises its own
    policies. Alternative rejected: keep forward_auth AND add native OIDC (two logins,
    no gain). Alternative rejected: publish the admin port (carries more than the UI).
+
+10. **Virtual-key lifecycle is inventory-driven code, aligned with vLLM's single key
+    (Joe, 2026-09-17).** Upstream's cost-controls/virtual-keys page manages keys either in
+    the UI or in the config file for GitOps; the platform takes the GitOps path because the
+    config is rendered by the deploy and mounted read-only. WHO exists = `agw_clients` in
+    inventory; the deploy mints `client_<name>` once and reuses it (manage-secrets
+    `random`), enrols the sha256 hash, and renders per-identity `allowedModels` and
+    token-budget overrides from `agw_client_policies`. `manage-agentgateway-client-key.yml`
+    is the one place a key changes value: rotate (name must be declared) merges a new
+    value; revoke (name must already be removed from inventory, so the next deploy cannot
+    mint it back) removes the field with a KV-v2 merge-patch null (verified against the
+    local store); both end by importing the deploy, which is the reload. Handout is
+    `backup-credentials-to-site-config.yml` (branch, names only), never stdout. vLLM
+    itself has one static `--api-key` and no per-client concept, so it never sees virtual
+    keys; its key is the gateway's internal upstream credential (`params.apiKey:
+    $VLLM_API_KEY`, omitted when the upstream takes no key, as LM Studio does) and rotates
+    on its own schedule (task 5.1). Alternative rejected: keys kept in the gateway's
+    Postgres via the UI, because the config would then have two owners and the UI's write
+    path is disabled on purpose.
 
 ## Risks / Trade-offs
 

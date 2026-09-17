@@ -104,6 +104,8 @@ templates:
   # Studio on the Mac locally via host.containers.internal:1234).
   - name: "Deploy agentgateway (Local)"
     playbook: platform/playbooks/deploy-agentgateway.yml
+  - name: "Manage agentgateway Client Key (Local)"
+    playbook: platform/playbooks/manage-agentgateway-client-key.yml
 
   # postiz - social publishing (app + postgres + redis + temporal + temporal-pg;
   # native OIDC, API-key automation endpoint ungated at the edge).
