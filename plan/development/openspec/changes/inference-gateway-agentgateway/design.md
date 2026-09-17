@@ -114,6 +114,11 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    own listener publicly, because the Cloudflare skip rule, the rate limit and the
    origin lockdown are all written against the Caddy origin.
 
+   Authentication boundary: Caddy's 401 checks only the header's shape (`Authorization:
+   Bearer <non-empty>`, the existing `header_regexp`), so every enrolled client key passes
+   Caddy unchanged and reaches the gateway, which is the only component that decides
+   identity. The vLLM key is held by the gateway alone and is never sent by a client.
+
 8. **Health is the gateway's readiness plus a synthetic completion.** `readinessAddr`
    for the deploy's health check; the o11y synthetic probe (telemetry change) continues
    to go through the public hostname, so it now proves Cloudflare, Caddy, gateway and

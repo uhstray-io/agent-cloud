@@ -122,9 +122,13 @@ shape); benchmark coordination (its own change once the gateway exists).
 
 - [Loki fills the disk during a node boot storm] → Loki retention plus a per-stream
   rate limit; the nodes' Alloy caps its WAL; disk alert at 80 %.
-- [Single observation host fails] → accepted per the ecosystem document; its failure is
-  visible as `up == 0` from Grafana's own health and from the Semaphore deploy verify;
-  no redundancy until availability requirements justify it.
+- [Single observation host fails] → accepted per the ecosystem document, with one
+  external watcher: a Semaphore-scheduled liveness check (plan 06's synthetic-probe
+  pattern) curls Grafana `/api/health` and Prometheus `/-/ready` from the Semaphore host
+  and posts to the Discord contact point on failure, since a dead o11y VM cannot alert
+  on itself. Until that scheduled check exists (task 3.6), an o11y VM failure has no
+  timely alert; this is stated, not hidden. No redundancy until availability
+  requirements justify it.
 - [Alert thresholds page on a normal load test] → thresholds are set after one baseline
   week and the load-test window is annotated in Grafana by the benchmark manifest.
 - [Synthetic probe consumes a concurrency slot] → one short request per five minutes

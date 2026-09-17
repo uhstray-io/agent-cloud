@@ -59,7 +59,14 @@ grace period.
 ### Requirement: Caddy routes the inference hostname to the gateway
 The Caddy `inference_api` route SHALL proxy to the gateway host and port taken from
 inventory, keeping TLS termination, the path allowlist and the Bearer 401 at Caddy, and
-MUST be revertible to the direct upstream by changing one inventory value.
+MUST be revertible to the direct upstream by changing one inventory value. Caddy's Bearer
+check SHALL remain a header-shape check so that every enrolled client key passes it and
+identity is decided only at the gateway.
+
+#### Scenario: Client key passes Caddy and is judged at the gateway
+- WHEN a request with an enrolled client key arrives at the public hostname
+- THEN Caddy forwards it unchanged and the gateway's access log attributes it to that
+  identity; the vLLM key appears only in the gateway's upstream request
 
 #### Scenario: Public path traverses the gateway
 - WHEN a request arrives at `https://inference.uhstray.io/v1/models` with an enrolled key

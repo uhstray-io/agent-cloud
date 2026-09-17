@@ -1,8 +1,8 @@
 # Tasks: agentgateway as the inference edge gateway
 
 ## 0. Branch, decision record, host
-- [ ] 0.1 Feature branch from `dev`: `feat/inference-gateway-agentgateway`; one
-      `feat → dev` PR, then `dev → main`
+- [ ] 0.1 Feature branch from `dev`: `feat/inference-gateway-agentgateway`. Pull requests
+      only when Joe asks for them (repo rule)
 - [ ] 0.2 Draft the `plan/architecture/` record (agentgateway inference edge; skynet
       orchestrating gateway; distinct authorities; alternatives) as Proposed; Joe confirms
       the text before it is Accepted
@@ -62,11 +62,12 @@
       per-identity counts, proving scenario "Client-view latency on the dashboard"
 
 ## 4. Identities, limits, re-route
-- [ ] 4.1 `mint-agentgateway-client-key.yml`: generates a key, stores it at
-      `secret/services/agentgateway/clients/<name>`, re-renders and reloads the gateway;
-      mint the first set (Joe names it; default one per current user, OpenCode, pi,
-      skynet) and enrol the legacy shared key as identity `legacy-shared` with the
-      tightest limit and a dated expiry in the config comment
+- [ ] 4.1 `mint-agentgateway-client-key.yml`: idempotent per client name: if
+      `secret/services/agentgateway/clients/<name>` exists the key is kept, otherwise one
+      is generated; rotation is an explicit `-e rotate=true` run, never implicit; every
+      run re-renders and reloads the gateway. Mint the first set (Joe names it; default one
+      per current user, OpenCode, pi, skynet) and enrol the legacy shared key as identity
+      `legacy-shared` with the tightest limit and `legacy_shared_expires: <date>` in inventory
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments
 - [ ] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
@@ -82,9 +83,13 @@
       direct path, proving scenario "Rollback is one value"
 
 ## 5. Retire the shared key, records
-- [ ] 5.1 After the grace period: remove `legacy-shared`; rotate `VLLM_API_KEY` at vLLM
-      (dgx-spark `secrets/vllm_api_key` and a two-rank restart) and in OpenBao; hand
-      dgx-spark the gateway address for narrowing `vllm_api_allowed_cidr`
+- [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
+      renders `legacy-shared` only while today is before `legacy_shared_expires`; a deploy
+      on or after that date drops the identity and fails if the vLLM key in OpenBao still
+      equals the pre-rotation value, so a rerun cannot leave the shared key valid. Rotate
+      `VLLM_API_KEY` at vLLM (dgx-spark `secrets/vllm_api_key` and a two-rank restart) and in
+      OpenBao; record the retirement date in `context/architecture.md`; hand dgx-spark the
+      gateway address for narrowing `vllm_api_allowed_cidr`
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record

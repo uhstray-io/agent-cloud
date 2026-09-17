@@ -46,3 +46,11 @@ rules:
     - Each "## <n>." phase ends with an explicit validation gate whose final task
       names the spec scenario that proves the phase (that scenario is the
       openspec-validate-enforced gate).
+
+operations:
+  apply:
+    guidance:
+      - Before executing a task, detect the state it would produce and skip or converge
+        if it already exists; every task must be safe to rerun after an interruption,
+        because a task can be retried before its checkbox is updated (CodeRabbit review
+        of PR 181). Deploy tasks go through the idempotent playbooks, never one-off writes.

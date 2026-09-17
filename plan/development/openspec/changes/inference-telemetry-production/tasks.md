@@ -1,8 +1,8 @@
 # Tasks: inference telemetry in production
 
 ## 0. Branch and inventory
-- [ ] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`; one
-      `feat → dev` PR, then `dev → main`
+- [ ] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`. Pull requests
+      only when Joe asks for them (repo rule)
 - [ ] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
       production host today; record the result in `design.md` Context
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
@@ -41,10 +41,13 @@
 - [ ] 2.4 Confirm every `dgx-spark` target `up == 1`; confirm
       `{cluster="dgx-spark", service="vllm"}` returns lines after a rank restart on the
       nodes (dgx-spark window)
-- [ ] 2.5 Stop one node exporter for five minutes (dgx-spark window); confirm the target
-      goes `up == 0` and the overview panel shows a gap, not zero
+- [ ] 2.5 Stop one node exporter for twelve minutes (dgx-spark window), longer than the
+      alert's five-minute pending window plus scrape and evaluation delay; confirm the
+      target goes `up == 0`, the overview panel shows a gap (not zero), and the
+      `telemetry-missing` rule reaches state firing in Grafana
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
-      journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure";
+      journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
+      including the alert firing;
       a push to the Loki port from the controller Mac is refused, proving scenario
       "Unlisted source cannot push"
 
@@ -62,15 +65,23 @@
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored
       `.env`), systemd timer every 5 min on the o11y host, writes
       `inference_probe_success` and `inference_probe_latency_seconds` to node_exporter's
-      textfile directory
+      textfile directory. node_exporter is provisioned on the o11y VM by the same deploy
+      (`platform/playbooks/install-node-exporter.yml`, textfile collector directory
+      `/var/lib/node_exporter/textfile`) and added as a Prometheus scrape target, so the
+      probe metrics exist for the dashboards and alerts
 - [ ] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
 - [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
-      scenario "Dashboards render from provisioning alone"; block the probe's egress for
-      five minutes and confirm the Discord message and that `vllm-node` on the nodes was
-      not restarted, proving scenario "Alert reaches the contact point" and scenario
-      "Health up, inference down"
+      scenario "Dashboards render from provisioning alone"; point the probe at a model
+      name the server does not serve for six minutes (the completion fails, `/health`
+      stays 200), confirm `/health` returned 200 throughout, the Discord message arrived
+      and `vllm-node` on the nodes was not restarted, proving scenario "Alert reaches the
+      contact point" and scenario "Health up, inference down"
+- [ ] 3.6 External liveness watcher: a Semaphore schedule runs `check-o11y-liveness.yml`
+      from the Semaphore host every 10 min (curl Grafana `/api/health` and Prometheus
+      `/-/ready` through the LAN, Discord webhook on failure); stop Grafana for 15 minutes
+      and confirm the Discord message arrives from the watcher, not from Grafana
 
 ## 4. Retention, thresholds, records
 - [ ] 4.1 After seven days: read Prometheus TSDB size and Loki ingestion per day; set

@@ -76,8 +76,8 @@ unchanged.
 - site-config: `o11y_svc` host entry; the Caddy route for `o11y.uhstray.io`; the two
   node addresses and exporter ports as inventory variables; firewall allow rules for the
   Loki push port from the two nodes.
-- Live: one new VM or a co-located deploy (design decides); one Caddy route; Prometheus
-  and Loki storage sized from measurement.
+- Live: one dedicated new VM (design decision 2); one Caddy route; Prometheus and Loki
+  storage sized from measurement.
 - Out of scope, recorded: Tempo and traces (no producer yet; the gateway change adds
   OTLP later); Mimir; the Grafana MCP triage path from the instrumentation contract;
   anything on the nodes themselves.

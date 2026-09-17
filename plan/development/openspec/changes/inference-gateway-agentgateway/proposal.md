@@ -55,8 +55,9 @@ record in this change writes that down so plan 06 is amended, not superseded.
   gateway's own `/v1` speaks the same OpenAI shape the team already uses, so client
   base URLs do not change.
 - **Caddy routes the inference hostname to the gateway.** The `inference_api` route's
-  upstream becomes the gateway host and port; its Bearer 401 stays as defence in depth;
-  the path allowlist stays. The `/metrics` and control routes on vLLM that were
+  upstream becomes the gateway host and port; its Bearer 401 stays as defence in depth
+  (a shape check on the header, so any enrolled client key passes it and identity is
+  decided at the gateway); the path allowlist stays. The `/metrics` and control routes on vLLM that were
   LAN-readable become gateway-host-only once the node firewall's API CIDR narrows to the
   gateway (dgx-spark side, coordinated).
 - **Per-client keys and limits at the gateway.** `apiKey` policy with keys minted per
@@ -107,9 +108,16 @@ see no change of base URL.
 
 ## Rollback Plan
 
-- Route back: set the production Caddy block's upstream to the head node and redeploy
-  Caddy through Semaphore; clients keep working with the shared key, which remains
-  valid at vLLM throughout the grace period.
+- Route back (during the grace period): set the production Caddy block's upstream to the
+  head node and redeploy Caddy through Semaphore; clients keep working with the shared
+  key, which remains valid at vLLM throughout the grace period.
+- Route back (after the shared key is retired and rotated): clients hold gateway keys
+  that vLLM does not know, so a direct route is an incident procedure, not one value.
+  Preferred: keep the gateway in the path and roll back the gateway's own config
+  (previous rendered config, Semaphore redeploy). If the gateway host itself is lost:
+  re-issue the current vLLM key to clients through the same secret channel used for
+  their gateway keys, route Caddy back, and treat the exposure as a key rotation once
+  the gateway returns.
 - Stop the gateway: Semaphore stop template; nothing on the nodes changes.
 - Remove: `clean-deploy-agentgateway.yml` in destroy mode; OpenBao client keys
   revoked; the architecture record stays with status `Rejected` if the approach is
