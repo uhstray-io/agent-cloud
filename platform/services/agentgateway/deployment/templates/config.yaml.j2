@@ -5,7 +5,9 @@
    - the upstream key is the env reference $VLLM_API_KEY (the gateway expands it
      from its environment; the value lives in the 0600 .env)
    - every client key is enrolled as `keyHash: sha256:<hex>` of the OpenBao
-     value, so a reader of this file cannot use it to call the gateway
+     value, so a reader of this file cannot use it to call the gateway — except
+     under the local-dev-only `agw_plaintext_keys` flag, which trades that for a
+     playground with saved keys
    Identity = the key's `metadata.name`, surfaced to CEL as `apiKey.name`
    (metadata is flattened onto the apiKey object — upstream
    crates/agentgateway/src/http/apikey.rs `Claims`), which the per-client request
@@ -110,7 +112,14 @@ llm:
       keys:
 {% for c in agw_clients | default([]) %}
 {% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
+{% if agw_plaintext_keys | default(false) | bool %}
+      # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
+      # UI's playground can offer it as a saved key. Prod keeps hashes — the rendered
+      # config is then never a credential.
+      - key: {{ secrets['client_' ~ c] }}
+{% else %}
       - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
+{% endif %}
         metadata:
           name: {{ c }}
 {% if _pol.allowed_models is defined %}

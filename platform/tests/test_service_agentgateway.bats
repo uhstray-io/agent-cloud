@@ -123,7 +123,10 @@ setup() {
   refute_grep -qE 'apiKey:\s*\{\{ secrets' "$CONFIG"
   # Client keys are enrolled as hashes of the OpenBao value.
   assert_grep -qF "keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}" "$CONFIG"
-  refute_grep -qE '^\s*-\s*key:\s' "$CONFIG"
+  # A plaintext `key:` exists only inside the local-dev-only flag branch, default off.
+  assert_grep -qE '^\{% if agw_plaintext_keys \| default\(false\)' "$CONFIG"
+  [ "$(grep -cE '^\s*-\s*key:\s' "$CONFIG")" -eq 1 ]
+  refute_grep -q 'agw_plaintext_keys' "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"

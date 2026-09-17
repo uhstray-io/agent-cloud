@@ -199,7 +199,10 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
     $VLLM_API_KEY`, omitted when the upstream takes no key, as LM Studio does) and rotates
     on its own schedule (task 5.1). Alternative rejected: keys kept in the gateway's
     Postgres via the UI, because the config would then have two owners and the UI's write
-    path is disabled on purpose.
+    path is disabled on purpose. Local-dev convenience (Joe, 2026-09-17): inventory flag
+    `agw_plaintext_keys: true` renders the key VALUES instead of hashes so the UI's
+    playground lists them as saved keys; default off, never set in prod inventory, and
+    the deploy playbook does not know the flag (it is template-only).
 
 ## Risks / Trade-offs
 

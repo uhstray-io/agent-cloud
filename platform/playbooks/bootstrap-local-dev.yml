@@ -1125,6 +1125,7 @@
           agw_upstream_base_url=http://host.containers.internal:1234/v1
           agw_models=[{"name": "gpt-oss-20b", "upstream_model": "openai/gpt-oss-20b"}]
           agw_clients=["dev-local"]
+          agw_plaintext_keys=true
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
