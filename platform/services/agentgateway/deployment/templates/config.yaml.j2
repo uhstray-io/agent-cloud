@@ -1,0 +1,104 @@
+{# agentgateway config-as-code — rendered by deploy-agentgateway.yml from
+   inventory + OpenBao. Schema: https://agentgateway.dev/schema/config (v1.5.0).
+
+   No credential is written here:
+   - the upstream key is the env reference $VLLM_API_KEY (the gateway expands it
+     from its environment; the value lives in the 0600 .env)
+   - every client key is enrolled as `keyHash: sha256:<hex>` of the OpenBao
+     value, so a reader of this file cannot use it to call the gateway
+   Identity = the key's `metadata.name`, surfaced to CEL as `apiKey.name`
+   (metadata is flattened onto the apiKey object — upstream
+   crates/agentgateway/src/http/apikey.rs `Claims`), which the per-client request
+   buckets condition on; token budgets attach to the key itself.
+
+   Deliberately absent (design §3): `retry` (a retried partial stream repeats tool
+   side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
+   run past any fixed value; the upstream keep-alive owns idle).
+   Do NOT edit by hand — re-run the playbook. #}
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+config:
+  # Bind on all container interfaces; compose publishes them on the host binds
+  # from .env (loopback by default). The admin listener keeps its default
+  # (container loopback :15000) and is not published.
+  readinessAddr: 0.0.0.0:19001
+  statsAddr: 0.0.0.0:19002
+  # The gateway's own Postgres, for per-API-key token budgets only (v1.5.0
+  # refuses budgets without config.database). The URL carries the password, so
+  # it is an env reference expanded by the gateway, never written here.
+  database:
+    url: $AGW_DATABASE_URL
+{% if agw_otlp_endpoint | default('') %}
+  tracing:
+    # Alloy's OTLP receiver on the o11y host (grpc). Sampled low: traces land in
+    # Loki as structured log lines until Tempo has an owner (design §6).
+    otlpEndpoint: {{ agw_otlp_endpoint }}
+    randomSampling: {{ agw_trace_sampling | default('0.05') }}
+{% endif %}
+
+frontendPolicies:
+  http:
+    # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the
+    # gateway, is the component that answers 413.
+    maxBufferSize: 20971520
+
+llm:
+  port: 4000
+  policies:
+    apiKey:
+      # strict: a request with no key or an unknown key is 401 here and never
+      # reaches the upstream (spec scenario "Unknown key is rejected").
+      mode: strict
+      location:
+        header:
+          name: authorization
+          prefix: 'Bearer '
+      keys:
+{% for c in agw_clients | default([]) %}
+      - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
+        metadata:
+          name: {{ c }}
+        # Per-identity token budget: a rolling UTC-hour window, charged from the
+        # upstream's reported usage, Block once exceeded. Figure from inventory,
+        # derived from the measured ceiling (design §4). This is the ONE
+        # per-identity control v1.5.0 offers, and it is why the db exists.
+        budgets:
+        - name: hourly-tokens
+          limit:
+            unit: Tokens
+            amount: {{ agw_rate_tokens_per_hour | default(2000000) }}
+          window:
+            rolling: 1h
+          onBudgetExceeded: Block
+{% endfor %}
+    # Request-rate ceiling for the gateway as a whole. v1.5.0 has no per-identity
+    # REQUEST bucket under the `llm` shortcut, verified against the binary
+    # 2026-09-17: localRateLimit `key` is on main only (unreleased; the published
+    # schema at agentgateway.dev tracks main) -> "unknown field `key`"; the
+    # `conditional` form is accepted only on binds[].listeners[].routes[]
+    # policies -> "expected a sequence". Per-identity control is the token
+    # budget on each key above (operator's choice 2026-09-17: add the db rather
+    # than wait for `key`); this ONE bucket protects the upstream's measured
+    # concurrency ceiling. Revisit when a release ships `key`.
+    localRateLimit:
+      - type: requests
+        maxTokens: {{ agw_rate_requests_per_minute_total | default(120) }}
+        tokensPerFill: {{ agw_rate_requests_per_minute_total | default(120) }}
+        fillInterval: 60s
+  models:
+{% for m in agw_models %}
+  # The gateway's model name equals the upstream's served name unless
+  # `upstream_model` remaps it (local-dev: gpt-oss-20b -> openai/gpt-oss-20b).
+  - name: {{ m.name }}
+    provider:
+      custom:
+        formats:
+        - type: completions
+    params:
+      baseUrl: {{ agw_upstream_base_url }}
+{% if m.upstream_model | default('') %}
+      model: {{ m.upstream_model }}
+{% endif %}
+{% if secrets.vllm_api_key | default('') %}
+      apiKey: $VLLM_API_KEY
+{% endif %}
+{% endfor %}

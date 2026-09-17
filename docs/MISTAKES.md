@@ -55,6 +55,7 @@ supersede it with a new entry and link both.
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | 1 | Test (this playbook); fleet-wide test proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -981,6 +982,36 @@ parses a module's output must be guarded on the module's success (`rc == 0 and
 case (`already_managed` reported, text unchanged) and the mixed case;
 `test_manage_caddy_sites_playbook.py` asserts the retire step's `changed_when`
 begins with the rc guard (mutation-proven: dropping the guard fails it).
+
+### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
+which has no pre-flight. Its first run through the local Semaphore (task 592) printed
+`skipping: no hosts matched` for all three plays and was recorded as `success`; zero
+containers existed afterwards. The group was absent because the local control plane's
+inventory is a static INI inside `bootstrap-local-dev.yml`, separate from
+`platform/inventory/local-dev.yml`, and only the latter had been edited. The exact
+incident is described, with the fix, in the header of `preflight-target-group.yml`
+(postiz, 2026-08-24) — and at the time of writing 24 of 26 `deploy-*.yml` playbooks still
+do not import it.
+
+**Root cause.** The guard exists but is opt-in per playbook, and the template new
+playbooks are copied from does not carry it. A rule that lives in one file's header does
+not reach a playbook written from a different file.
+
+**The rule.** Every deploy playbook whose plays target an inventory group imports
+`preflight-target-group.yml` as its first play, with the group passed twice
+(`preflight_group` and `preflight_group_expected`), before any `hosts: <group>` play.
+When adding a local-dev service, the group goes in BOTH inventories: the working
+`local-dev.yml(.example)` and the static INI in `bootstrap-local-dev.yml`.
+
+**Enforced by.** Test, for this playbook only: `test_service_agentgateway.bats` asserts the
+import and both vars. Fleet-wide, still `Convention` — the mechanical guard this entry
+proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
+a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
+allow-list that only shrinks.
 
 ## 3. Acting on live state
 

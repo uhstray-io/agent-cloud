@@ -1,44 +1,66 @@
 # Tasks: agentgateway as the inference edge gateway
 
 ## 0. Branch, decision record, host
-- [ ] 0.1 Feature branch from `dev`: `feat/inference-gateway-agentgateway`. Pull requests
-      only when Joe asks for them (repo rule)
-- [ ] 0.2 Draft the `plan/architecture/` record (agentgateway inference edge; skynet
+- [x] 0.1 Feature branch from `dev`: `feat/inference-gateway-agentgateway`. Pull requests
+      only when Joe asks for them (repo rule). 2026-09-17: the exact name was held by a
+      stale codex worktree (one superseded proposal commit), so the work is on
+      `feat/inference-gateway-agentgateway-impl`; the stale branch is Joe's to delete
+- [x] 0.2 Draft the `plan/architecture/` record (agentgateway inference edge; skynet
       orchestrating gateway; distinct authorities; alternatives) as Proposed; Joe confirms
-      the text before it is Accepted
+      the text before it is Accepted. Drafted 2026-09-17 as a Proposed section in
+      `plan/architecture/05-platform-infra.md` (the repo's decision convention: numbered
+      docs, no separate ADR directory)
 - [ ] 0.3 Allocate the gateway VM in site-config `proxmox/vm-specs.yml` (Infrastructure
       tier, Podman); provision through onboarding phases 1 to 2; AppRole
       `agentgateway` with read on `secret/services/agentgateway`
+      2026-09-17 PARTIAL: declared on site-config branch `feat/agentgateway-host` —
+      vm-specs vmid 216 on apollo (2c/4 GB/20G, podman) and the `agentgateway_svc`
+      inventory group (upstream = the current Caddy inference upstream, four
+      identities, firewall vars). Address chosen from the inventory's declared set
+      because NetBox (IPAM) was unavailable; recorded as a future feature in
+      `plan/architecture/02-service-onboarding.md` Known Gaps. NOT yet done, blocked
+      off-LAN (prod Semaphore is 403 from outside): NetBox reserve, Provision VM,
+      SSH key generate/distribute/verify/harden, Apply Firewall, AppRole
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
 
 ## 1. Service onboarding
-- [ ] 1.1 `platform/services/agentgateway/deployment/compose.yml`: image
+- [x] 1.1 `platform/services/agentgateway/deployment/compose.yml`: image
       `${AGW_IMAGE:-cr.agentgateway.dev/agentgateway:v1.5.0}`, command `-f
       /config.yaml`, config mounted read-only, publish `${AGW_BIND:-127.0.0.1}:${AGW_PORT:-4000}:4000`,
       `readinessAddr` health check, no admin port published; `compose.local.yml`
       overlay per the o11y pattern
-- [ ] 1.2 `templates/config.yaml.j2`: `llm.port: 4000`; one model entry per served name
+      2026-09-17: done, plus `agentgateway-db` (Postgres for per-key budgets, operator's choice) — see 4.2; no compose healthcheck on the gateway (image has no shell), readiness probed from the sibling db container
+- [x] 1.2 `templates/config.yaml.j2`: `llm.port: 4000`; one model entry per served name
       with `provider: {custom: {formats: [{type: completions}]}}`,
       `params.baseUrl: http://{{ agw_vllm_upstream }}/v1`, `params.apiKey: $VLLM_API_KEY`;
       `frontendPolicies.http.maxBufferSize: 20971520`; `config.statsAddr` on the LAN bind;
       `config.tracing.otlpEndpoint` to the o11y host; no `retry`, no `requestTimeout`
-- [ ] 1.3 `templates/env.j2` (gitignored `.env` at deploy): `VLLM_API_KEY` from OpenBao
+      2026-09-17: done; `config.database.url: $AGW_DATABASE_URL` added; limits shape per 4.2
+- [x] 1.3 `templates/env.j2` (gitignored `.env` at deploy): `VLLM_API_KEY` from OpenBao
       `secret/services/agentgateway:vllm_api_key`; client keys rendered into the
-      `apiKey` policy from `secret/services/agentgateway/clients/*`
-- [ ] 1.4 Read `statsAddr` once on the running container and record what it serves in
+      `apiKey` policy from `secret/services/agentgateway/clients/*`. 2026-09-17: client
+      keys live as fields `client_<name>` on the SAME secret path (manage-secrets reads
+      one path per service and already does generate-once/reuse), rendered as sha256
+      hashes — the rendered config carries no plaintext key
+      2026-09-17: done (see the note above on where client keys live)
+- [x] 1.4 Read `statsAddr` once on the running container and record what it serves in
       `context/architecture.md`; if it is not Prometheus text, find the documented
-      metrics endpoint and update task 3.1
-- [ ] 1.5 `deploy-agentgateway.yml` (place-monorepo, manage-secrets, deploy.sh, verify
+      metrics endpoint and update task 3.1. 2026-09-17: Prometheus text on `/metrics`
+      (`/` and `/stats` 404); task 3.1 scrapes `/metrics` on the stats port
+- [x] 1.5 `deploy-agentgateway.yml` (place-monorepo, manage-secrets, deploy.sh, verify
       readiness and one `/v1/models` through the gateway) and `clean-deploy-agentgateway.yml`
-- [ ] 1.6 `platform/tests/test_service_agentgateway.bats`: env-param image, pinned tag,
+      2026-09-17: done; carries the zero-hosts pre-flight and the OpenBao transport guard (both found missing on the first runs — MISTAKES 2.21); verify runs over the compose network, no keyed request (a key on an exec argv is a token on a command line — the keyed proof is task 2's conformance script)
+- [x] 1.6 `platform/tests/test_service_agentgateway.bats`: env-param image, pinned tag,
       readiness health check, no published admin port, config template has no literal
       key and no `retry` block, `deploy.sh` container-only
-- [ ] 1.7 Validation gate: second deploy reports no changes and readiness answers,
+      2026-09-17: 18 tests green; full suite 576 BATS + 120 pytest
+- [x] 1.7 Validation gate: second deploy reports no changes and readiness answers,
       proving scenario "Deploy converges"; `nc` to the admin port from a LAN host is
       refused, proving scenario "Admin interface is not exposed"
 
+      2026-09-17 LOCAL (LM Studio upstream, local Semaphore tasks 595 then 596): second run `changed=2` — the deploy.sh shell step (`changed_when: true` by the repo's convention) and the monorepo copy; every other task unchanged, readiness 200 before and after, secrets reused. Admin port: zero published mappings and connection refused from the Mac; the LAN-host refusal is re-proven on the prod VM
 ## 2. Conformance against direct vLLM
 - [ ] 2.1 Conformance script `platform/services/agentgateway/deployment/tests/conformance.sh`
       (curl + jq): models list; chat completion thinking off; `reasoning_effort` each of
@@ -69,7 +91,13 @@
       per current user, OpenCode, pi, skynet) and enrol the legacy shared key as identity
       `legacy-shared` with the tightest limit and `legacy_shared_expires: <date>` in inventory
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
-      per hour, figures derived from the measured ceiling and written as comments
+      per hour, figures derived from the measured ceiling and written as comments.
+      2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
+      unreleased, `conditional` rejected); Joe chose per-key token BUDGETS backed by the
+      service's own Postgres (design.md Open Questions). Shipped in the template: one
+      global request bucket (`agw_rate_requests_per_minute_total`) + `hourly-tokens`
+      budget per key (`agw_rate_tokens_per_hour`). Left for this task: derive both
+      figures from the measured ceiling and write them into site-config inventory
 - [ ] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore

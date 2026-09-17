@@ -341,6 +341,16 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy agentgateway
+    playbook: platform/playbooks/deploy-agentgateway.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     survey_vars:
@@ -474,6 +484,16 @@ templates:
 
   - name: Clean Deploy tududi
     playbook: platform/playbooks/clean-deploy-tududi.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy agentgateway
+    playbook: platform/playbooks/clean-deploy-agentgateway.yml
     survey_vars:
       - name: service_branch
         title: "Branch"

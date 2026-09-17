@@ -160,9 +160,26 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
 - Does skynet call the DGX Spark model through agentgateway, or directly over the LAN
   with its own identity? Default if unanswered: through the gateway, so one place
   meters every request and the node firewall can narrow to one source.
-- VM id and address for the gateway (site-config `vm-specs.yml`).
-- Whether `localRateLimit` supports a log-only mode. Unverified; if not, the first week
-  runs with limits set high and tightened from observed rates.
+- ~~VM id and address for the gateway (site-config `vm-specs.yml`).~~ Answered 2026-09-17:
+  vmid 216 on apollo, 2 cores / 4 GB / 20G; address picked from the inventory's declared
+  set because NetBox was down — to be reserved in NetBox before provisioning.
+- ~~Whether `localRateLimit` supports a log-only mode.~~ Answered 2026-09-17: no such
+  mode in v1.5.0; the first week runs with the figure set high and tightened from
+  observed rates.
+- **Per-identity limits (decision 4) do not exist in v1.5.0 without a database.**
+  Found 2026-09-17 by running the binary, not by reading the published schema (which
+  tracks main): `localRateLimit[].key` is unreleased, the `conditional` form is not
+  accepted under the `llm` shortcut, and per-key `budgets` require `config.database`
+  (Postgres). The example the Context cites (`examples/llm-keyed-rate-limit`) does not
+  exist at the v1.5.0 tag. Shipped for now: strict per-client keys (identity +
+  revocation) and one global request bucket. Options for fairness were (a) wait for the
+  release that ships `key` (present on main); (b) rewrite the template in the full
+  `binds/listeners/routes` shape where `conditional` per identity is accepted today;
+  (c) add a Postgres and use per-key token budgets. **Joe chose (c), 2026-09-17:** the
+  service gains its own internal-only Postgres (`agentgateway-db`), decision 2's "own
+  VM" now hosts two containers, and the gateway is no longer stateless — the state is
+  budget usage plus request metadata rows (no payloads by default). (a) remains the
+  path to a per-identity request bucket.
 - Per-client key list: which people and which agent roles get keys in the first
   rollout. Default: one per current human user of the endpoint, one for OpenCode
   sessions, one for pi, one for skynet.

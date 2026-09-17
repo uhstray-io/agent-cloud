@@ -339,3 +339,13 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 5. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
 6. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
 7. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.
+
+- **Provisioning does not consult IPAM for a free address (recorded 2026-09-17).** NetBox
+  is the address authority and `netbox-allocate-ip.yml` can report and reserve, but
+  Phase 1 still starts from a human reading `inventory/production.yml` and picking an
+  address that is not declared there. The agentgateway VM (216) was allocated that way
+  because NetBox was unavailable at the time; its address carries an "ADDRESS PROVENANCE"
+  note in site-config and must be reserved in NetBox before the VM is provisioned. The
+  future feature: `provision-vm.yml` (or a preflight it imports) asks NetBox whether the
+  declared address is free or already reserved for this host, and refuses a declaration
+  the authority contradicts — so the ledger and the inventory cannot drift apart.
