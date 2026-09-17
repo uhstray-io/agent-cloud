@@ -143,18 +143,26 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    to go through the public hostname, so it now proves Cloudflare, Caddy, gateway and
    vLLM together.
 
-9. **Operator UI behind Caddy + Authentik forward_auth, on its own listener (Joe,
-   2026-09-17).** v1.5.0 serves its built-in UI on the admin interface by default and its
-   schema lets `ui.gateways` attach it to a named gateway; upstream advises OIDC in front
-   when exposing it. The UI has no login of its own and `/ui/api/config_dump` answers
-   unauthenticated (verified on the binary), so it is treated as an admin surface: a
-   dedicated gateway listener on :4001, published only for Caddy, gated by an admin-tier
-   Authentik proxy provider (`agentgateway-forward-auth.yaml`, catalog tier `admin`), at
-   `admin.inference.<zone>`. The admin interface itself stays on the container loopback
-   (decision 2 unchanged). Alternative rejected: publish the admin port, because it
-   carries more than the UI. Alternative rejected: the gateway's native `oidc` policy on
-   the UI listener, because every other human UI on the platform is gated at Caddy by
-   the same outpost, and a second OIDC client would be a second thing to rotate.
+9. **Operator UI: the gateway runs its own OIDC login against Authentik, on its own
+   listener (Joe, 2026-09-17; CORRECTED the same day).** v1.5.0 serves its built-in UI
+   on the admin interface by default and lets `ui.gateways` attach it to a named
+   gateway; upstream's "Secure the UI" page puts the login in `ui.policies` (oidc, jwt,
+   basic, apikey, authorization). The UI has no login of its own and
+   `/ui/api/config_dump` answers unauthenticated (verified on the binary), so it is an
+   admin surface: a dedicated listener on :4001, `ui.policies.oidc` against an
+   Authentik OAuth2 provider (`agentgateway-oidc.yaml`, catalog tier `admin`,
+   client secret owned by Authentik and shared-read by the gateway deploy), an
+   `authorization` rule requiring the platform admin group in the token's `groups`
+   claim, the session cookie key derived (sha256) from a stored seed, reached at
+   `admin.inference.<zone>` through Caddy as a PLAIN TLS proxy. Locally the gateway
+   trusts step-ca via `SSL_CERT_FILE` (rustls-native-certs) and the compose overlay
+   `!override`s the UI publish away, so the only path is through Caddy. The admin
+   interface itself stays on the container loopback (decision 2 unchanged).
+   *Corrected:* the first cut gated the route with Caddy + Authentik forward_auth,
+   which authenticated the browser but is invisible to the gateway — the UI kept
+   warning "UI is exposed without authentication", because it only recognises its own
+   policies. Alternative rejected: keep forward_auth AND add native OIDC (two logins,
+   no gain). Alternative rejected: publish the admin port (carries more than the UI).
 
 ## Risks / Trade-offs
 

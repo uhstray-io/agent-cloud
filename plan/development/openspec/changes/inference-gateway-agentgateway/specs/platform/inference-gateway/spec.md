@@ -24,13 +24,17 @@ and key hashes only).
 
 ### Requirement: The operator UI is reachable only through SSO
 The gateway's built-in operator UI SHALL be served on its own listener, separate from
-the admin interface (which stays on the container loopback), and MUST be reachable only
-through central Caddy with an admin-tier Authentik forward_auth gate; the listener MUST
-NOT be reachable from any host other than the Caddy host.
+the admin interface (which stays on the container loopback), and MUST authenticate
+browsers ITSELF with an OIDC policy against Authentik plus an authorization rule
+requiring the platform admin group, so that the gateway reports the UI as
+authenticated; Caddy SHALL be a plain TLS proxy in front, and the listener MUST NOT be
+reachable from any host other than the Caddy host.
 
 #### Scenario: UI requires an admin login
 - WHEN an unauthenticated browser opens the gateway's UI hostname
-- THEN Caddy redirects to Authentik, and after an admin-tier login the UI renders
+- THEN the gateway redirects to Authentik's authorization endpoint, after an
+  admin-group login the UI renders, and the UI shows no "exposed without
+  authentication" warning
 
 #### Scenario: UI listener is not reachable around Caddy
 - WHEN a LAN host that is not the Caddy host connects to the UI listener's port

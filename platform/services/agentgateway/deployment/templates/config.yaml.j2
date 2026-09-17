@@ -36,17 +36,33 @@ config:
 {% endif %}
 
 # The built-in operator UI, on its OWN listener (:4001) instead of the admin
-# interface (which stays on the container loopback, unpublished). The UI has no
-# login of its own and /ui/api/config_dump answers unauthenticated, so this
-# listener is reached ONLY through Caddy with Authentik forward_auth in front
-# (admin tier). Verified on v1.5.0 2026-09-17: `/` -> 308 `/ui`, assets under
-# /ui/assets, API under /ui/api.
+# interface (which stays on the container loopback, unpublished), and
+# authenticated BY THE GATEWAY: an OIDC authorization-code flow against Authentik
+# in ui.policies (the documented "Secure the UI" path — the UI only recognises
+# its own policies; a Caddy forward_auth gate in front left it warning "UI is
+# exposed without authentication", 2026-09-17). Caddy is a plain TLS proxy.
+# Verified on v1.5.0: `/` -> 308 `/ui`, assets under /ui/assets, API under /ui/api;
+# discovery + token exchange trust the IdP via SSL_CERT_FILE (rustls-native-certs).
 gateways:
   ui:
     port: 4001
 
 ui:
   gateways: ui
+  policies:
+    oidc:
+      issuer: {{ agw_oidc_issuer | default('https://auth.agent-cloud.test:8443/application/o/agentgateway/') }}
+      clientId: agentgateway
+      # Env reference (OIDC_* values live in the 0600 .env); the same secret the
+      # Authentik blueprint injects, shared-read from secret/services/authentik.
+      clientSecret: $AGW_OIDC_CLIENT_SECRET
+      redirectURI: {{ agw_ui_redirect_uri | default('https://admin.inference.agent-cloud.test:8443/oidc/callback') }}
+      scopes: [profile, email]
+    # Admin tier, enforced here too: the ID token's `groups` claim (Authentik's
+    # profile scope) must carry the platform admin group.
+    authorization:
+      rules:
+        - allow: '"{{ agw_ui_admin_group | default('platform-admins') }}" in jwt.groups'
 
 frontendPolicies:
   http:

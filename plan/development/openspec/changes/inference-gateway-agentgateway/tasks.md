@@ -61,11 +61,15 @@
       refused, proving scenario "Admin interface is not exposed"
 
       2026-09-17 LOCAL (LM Studio upstream, local Semaphore tasks 595 then 596): second run `changed=2` — the deploy.sh shell step (`changed_when: true` by the repo's convention) and the monorepo copy; every other task unchanged, readiness 200 before and after, secrets reused. Admin port: zero published mappings and connection refused from the Mac; the LAN-host refusal is re-proven on the prod VM
-- [x] 1.8 Operator UI (design §9): `gateways.ui` on :4001 + `ui.gateways: ui` in the
-      config; compose publishes `AGW_UI_BIND:AGW_UI_PORT`; Authentik catalog entry
-      `agentgateway` (forward_auth, admin tier) + `agentgateway-forward-auth.yaml` with
-      `!Env AGENTGATEWAY_EXTERNAL_HOST`; local Caddy route `admin.inference.<zone>` ->
-      `agentgateway:4001` with forward_auth in the example, working inventory and the
+- [x] 1.8 Operator UI (design §9): `gateways.ui` on :4001 + `ui.gateways: ui` +
+      `ui.policies.oidc` (issuer/redirect from inventory, `$AGW_OIDC_CLIENT_SECRET`) +
+      `authorization` admin-group rule in the config; `OIDC_COOKIE_SECRET` derived from a
+      stored seed; compose publishes `AGW_UI_BIND:AGW_UI_PORT` (local overlay removes it);
+      Authentik catalog entry `agentgateway` (oidc, admin tier, `prod_required`
+      redirect/launch vars) + `agentgateway-oidc.yaml` with `!Env
+      AGENTGATEWAY_OIDC_CLIENT_SECRET`, shared-read by the gateway deploy; step-ca trust
+      via `SSL_CERT_FILE` locally; local Caddy route `admin.inference.<zone>` ->
+      `agentgateway:4001` as a PLAIN proxy in the example, working inventory and the
       control plane's route table; BATS. Prod: site-config `caddy_managed_sites` block +
       `agentgateway_external_host` on the authentik host + `agentgateway` in `authentik_apps`
 - [ ] 1.9 Validation gate: unauthenticated browser to `https://admin.inference.<zone>` is

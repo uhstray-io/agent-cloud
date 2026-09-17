@@ -71,8 +71,8 @@
       - {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
       - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
-      # agentgateway operator UI — admin-tier forward_auth gate (no login of its own).
-      - {'host': 'admin.inference.{{ _dev_zone }}', 'upstream': 'agentgateway:4001', 'forward_auth': 'authentik-server:9000'}
+      # agentgateway operator UI — the gateway runs its own OIDC login (plain proxy).
+      - {'host': 'admin.inference.{{ _dev_zone }}', 'upstream': 'agentgateway:4001'}
       # inference — vLLM edge shape (/v1 + /health allowlist, edge 401/404); the
       # upstream is the Mac-host stand-in, scripts/fake-inference-upstream.py.
       - {'host': 'inference.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8001', 'inference_api': true}

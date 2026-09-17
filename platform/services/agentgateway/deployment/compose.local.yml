@@ -40,6 +40,15 @@ services:
     networks:
       - agentgateway
       - local-dev
+    # OIDC: the gateway does discovery + token exchange against the IdP at
+    # https://auth.<zone>:8443 (Caddy's step-ca-minted leaf), so it must trust
+    # the step-ca chain. The bundle is distributed into ./certs by
+    # tasks/distribute-ca-root.yml; rustls-native-certs reads SSL_CERT_FILE.
+    # Local-only (prod's IdP chain is publicly trusted).
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/step-ca-bundle.crt
   agentgateway-db:
     mem_limit: 256m
     security_opt:

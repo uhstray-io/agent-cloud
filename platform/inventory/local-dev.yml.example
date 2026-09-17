@@ -126,9 +126,9 @@ all:
             # exercised without a GPU box. Prod points the same shape at spark-1 via
             # site-config's caddy_managed_sites.
             - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
-            # agentgateway operator UI — admin-tier forward_auth gate; the UI has no
-            # login of its own. Caddy dials the gateway's UI listener by name.
-            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001", forward_auth: "authentik-server:9000" }
+            # agentgateway operator UI — the gateway runs its own OIDC login against
+            # Authentik (ui.policies), so this is a plain proxy to its UI listener.
+            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The

@@ -1,0 +1,55 @@
+# Authentik blueprint — agentgateway operator UI OIDC (OAuth2) provider + application.
+#
+# The inference gateway's built-in UI has no login of its own and only counts a
+# policy in ITS OWN `ui.policies` as authentication (a Caddy forward_auth gate
+# in front left it warning "UI is exposed without authentication", 2026-09-17).
+# So the gateway runs the OIDC authorization-code flow itself against this
+# provider, and central Caddy is a plain reverse_proxy — the tududi/postiz
+# pattern. The client_secret is injected from the worker's env
+# (AGENTGATEWAY_OIDC_CLIENT_SECRET, OpenBao via env.j2); the gateway deploy reads
+# the SAME value via manage-secrets _shared_reads. ADMIN tier (app-catalog.yml):
+# the UI shows the config (key hashes) and request logs.
+#
+# The redirect is the gateway policy's `redirectURI` — an absolute callback URI
+# the gateway itself handles (upstream http/oidc/redirect.rs parses the path
+# from it), so it is ours to choose: <public-url>/oidc/callback.
+version: 1
+metadata:
+  name: agent-cloud - agentgateway OIDC
+context:
+  # Rendered from inventory at deploy (deploy-authentik.yml templates this file).
+  # Defaults are LOCAL-DEV ONLY — prod promotion requires agentgateway_redirect_uri
+  # and agentgateway_launch_url in site-config, which the deploy's prod guard asserts.
+  agentgateway_redirect: "{{ agentgateway_redirect_uri | default('https://admin.inference.agent-cloud.test:8443/oidc/callback') }}"
+  agentgateway_launch: "{{ agentgateway_launch_url | default('https://admin.inference.agent-cloud.test:8443/') }}"
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-agentgateway
+    identifiers:
+      name: agentgateway
+    attrs:
+      client_type: confidential
+      client_id: agentgateway
+      client_secret: !Env AGENTGATEWAY_OIDC_CLIENT_SECRET
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      signing_key:
+        !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      redirect_uris:
+        - matching_mode: strict
+          url: !Context agentgateway_redirect
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        # profile carries the `groups` claim the gateway's authorization rule reads.
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+  - model: authentik_core.application
+    identifiers:
+      slug: agentgateway
+    attrs:
+      name: agentgateway
+      provider: !KeyOf provider-agentgateway
+      meta_launch_url: !Context agentgateway_launch
+      open_in_new_tab: true

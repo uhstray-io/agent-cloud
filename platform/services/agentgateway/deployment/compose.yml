@@ -21,8 +21,9 @@
 #   19001  readiness — probed by deploy.sh from the host (the Chainguard
 #          glibc-dynamic base image has no shell, so no in-container healthcheck)
 #   19002  stats/metrics — Prometheus scrapes this from the o11y host in prod
-#   4001   operator UI — reached only through Caddy + Authentik forward_auth. Published
-#          for the Caddy host in prod; compose.local.yml !overrides it AWAY locally
+#   4001   operator UI — OIDC login run by the gateway itself (ui.policies); Caddy
+#          is a plain TLS proxy. Published for the Caddy host in prod;
+#          compose.local.yml !overrides it AWAY locally
 #   15000  admin — NOT published; stays on the container loopback (design §1)
 #   5432   agentgateway-db — NOT published; compose network only
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
