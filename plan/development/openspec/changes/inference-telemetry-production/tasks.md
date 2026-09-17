@@ -20,7 +20,10 @@
       VM address; compose reads the retention vars
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
-      with `/api/health` exempted from `forward_auth` (unauthenticated liveness, no data);
+      with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
+      no data) and `/api/datasources/uid/*/health` (Grafana validates the watcher's
+      service-account bearer token itself; Authentik's embedded outpost knows only
+      forward-auth providers, so the token would be rejected before Grafana saw it);
       `manage-caddy-sites.yml` through Semaphore
 - [ ] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
@@ -77,8 +80,10 @@
       probe script `shellcheck` clean and contains no literal key
 - [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
       scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
-      drill=probe` points the probe at a model name the server does not serve for six
-      minutes (the completion fails, `/health` stays 200), asserts `/health` returned 200
+      drill=probe` points the probe at a model name the server does not serve, starts
+      `inference-probe.service` immediately (so the first failed sample does not wait for
+      the five-minute timer), holds the invalid target for twelve minutes (the rule's
+      `for: 5m` plus evaluation and notification margin), asserts `/health` returned 200
       throughout and the Discord message arrived, then restores the probe target in an
       `always:` block; `vllm-node` on the nodes was not restarted; proving scenario "Alert
       reaches the contact point" and scenario "Health up, inference down"
