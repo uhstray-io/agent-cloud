@@ -26,8 +26,17 @@ Verified 2026-09-14:
   Schema reference: policies `apiKey`, `basicAuth`, `oidc`, `authorization.rules`,
   `timeout.requestTimeout`/`backendRequestTimeout`, `retry.attempts/backoff/codes`;
   `config.metrics.fields`, `config.logging`.
-- Not verified: what `statsAddr` serves (assumed a Prometheus endpoint; task 1.4 reads
-  it); whether the `custom` provider passes `reasoning_effort`, `chat_template_kwargs`
+- Verified 2026-09-17 by running the v1.5.0 binary (the published schema at
+  agentgateway.dev tracks main and misled twice): `statsAddr` serves Prometheus text on
+  `/metrics`; readiness is `/healthz/ready`; the image is a Chainguard glibc-dynamic base
+  (no shell, runs non-root); `localRateLimit[].key` is unreleased; the `conditional`
+  rate-limit form is rejected under `llm.policies`; `budgets` require `config.database`;
+  API-key metadata is flattened onto the CEL `apiKey` object; `$VAR` references expand in
+  `params.apiKey` and `config.database.url`; the UI attaches to a named gateway via
+  `ui.gateways` and serves `/ui`, `/ui/assets`, `/ui/api` (config dump unauthenticated).
+  The `examples/llm-keyed-rate-limit` directory the previous Context cited does not exist
+  at the v1.5.0 tag.
+- Not verified: whether the `custom` provider passes `reasoning_effort`, `chat_template_kwargs`
   and the Responses API through unchanged (task 2.3 tests each); streaming behaviour
   with SSE keep-alive comments from vLLM (task 2.3).
 - agent-cloud: Caddy `inference_api` route shape and its BATS test; production block in
@@ -68,9 +77,12 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    the ecosystem document's request-telemetry and per-client-limit rows would stay
    empty. Recorded as an architecture record that amends plan 06.
 
-2. **Own VM, Infrastructure tier.** The gateway is in the request path and holds
-   OpenBao-sourced credentials at runtime (the vLLM upstream key, client keys), which
-   the onboarding decision tree routes to a dedicated VM with its own AppRole.
+2. **Own VM, Infrastructure tier — two containers.** The gateway is in the request path
+   and holds OpenBao-sourced credentials at runtime (the vLLM upstream key, client
+   keys), which the onboarding decision tree routes to a dedicated VM with its own
+   AppRole. Amended 2026-09-17: the VM also runs the gateway's own internal-only
+   Postgres for per-key budgets (decision 4); it publishes no host port and its
+   password is generated once by manage-secrets.
    Alternative rejected: co-locate on the Caddy host, because Caddy is the front door
    for every platform hostname and a gateway fault or upgrade must not touch it.
    Alternative rejected: run on the head node, because the node's memory is the
@@ -89,9 +101,13 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
 4. **API keys, not JWT, for the first rollout.** Clients are SDKs and CLIs configured
    with a bearer key today. `apiKey` policy with one key per person or agent role,
    minted by a playbook into OpenBao and handed out through the existing secret
-   channel; `localRateLimit` keyed on the key's identity, `type: requests` at a
-   per-minute figure derived from the measured ceiling, and `type: tokens` per hour as
-   the budget guard. JWT via Authentik OIDC is the second step once the OIDC client for
+   channel, enrolled as sha256 `keyHash` entries so the rendered config carries no
+   plaintext key. Limits, as v1.5.0 allows (verified against the binary 2026-09-17):
+   one GLOBAL `type: requests` bucket per minute derived from the measured ceiling, and
+   a per-key `budgets` entry (`Tokens`, rolling `1h` UTC-aligned, `Block`) as the
+   per-identity guard — which requires `config.database`, hence the Postgres (Joe's
+   choice over waiting for the unreleased bucket `key` or rewriting in the verbose
+   `binds/routes` shape). JWT via Authentik OIDC is the second step once the OIDC client for
    machine identities exists (plan 02). Alternative rejected: keep the single shared
    key at the gateway, because per-client limits are the reason the gateway exists.
 
@@ -120,9 +136,25 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    identity. The vLLM key is held by the gateway alone and is never sent by a client.
 
 8. **Health is the gateway's readiness plus a synthetic completion.** `readinessAddr`
-   for the deploy's health check; the o11y synthetic probe (telemetry change) continues
+   (`/healthz/ready`) for the deploy's health check, probed from the sibling database
+   container over the compose network — the gateway image has no shell for a compose
+   healthcheck, and the host loopback is the wrong vantage when the play runs inside
+   the local control plane (found 2026-09-17); the o11y synthetic probe (telemetry change) continues
    to go through the public hostname, so it now proves Cloudflare, Caddy, gateway and
    vLLM together.
+
+9. **Operator UI behind Caddy + Authentik forward_auth, on its own listener (Joe,
+   2026-09-17).** v1.5.0 serves its built-in UI on the admin interface by default and its
+   schema lets `ui.gateways` attach it to a named gateway; upstream advises OIDC in front
+   when exposing it. The UI has no login of its own and `/ui/api/config_dump` answers
+   unauthenticated (verified on the binary), so it is treated as an admin surface: a
+   dedicated gateway listener on :4001, published only for Caddy, gated by an admin-tier
+   Authentik proxy provider (`agentgateway-forward-auth.yaml`, catalog tier `admin`), at
+   `admin.inference.<zone>`. The admin interface itself stays on the container loopback
+   (decision 2 unchanged). Alternative rejected: publish the admin port, because it
+   carries more than the UI. Alternative rejected: the gateway's native `oidc` policy on
+   the UI listener, because every other human UI on the platform is gated at Caddy by
+   the same outpost, and a second OIDC client would be a second thing to rotate.
 
 ## Risks / Trade-offs
 
@@ -134,10 +166,13 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
   a blocker.
 - [A new hop in the request path fails] → Caddy's upstream is one inventory value;
   rollback is a Caddy redeploy. Health and the synthetic probe surface it.
-- [Per-key limits trip a legitimate agent] → limits derived from the measured ceiling
-  with `type: tokens` as budget rather than hard block where the config allows;
-  matches logged; first week in log-only where the policy supports it (task 3.2
-  checks).
+- [Per-key limits trip a legitimate agent] → the global request bucket and the per-key
+  token budget are derived from the measured ceiling; no log-only mode exists in v1.5.0
+  (task 3.2, answered), so the first week runs with loose figures tightened from the
+  metrics and the budget rows.
+- [The operator UI leaks configuration] → it is reached only through the admin-tier
+  forward_auth gate; the listener is published for the Caddy host alone (firewall
+  auto-detect) and the admin interface stays on the container loopback (decision 9).
 - [Two gateways confuse the platform] → decision 1's record; agentgateway's config
   carries no placement or policy logic, and skynet's docs gain a pointer to the record.
 
@@ -145,6 +180,10 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
 
 1. Onboard the service (VM, AppRole, secrets, compose, playbook, BATS) with the
    gateway on the LAN only; conformance test through the gateway against direct vLLM.
+   Done first in local-dev against LM Studio on the developer's Mac (2026-09-17), which
+   is where the v1.5.0 findings above surfaced.
+1a. Operator UI: Authentik app + Caddy block + Cloudflare record for
+   `admin.inference.uhstray.io`, proven locally at `admin.inference.agent-cloud.test`.
 2. Add OTLP receiver and scrape job on the o11y host; confirm gateway signals on the
    inference dashboard.
 3. Mint per-client keys; enrol the shared key as one identity; document the client
@@ -180,6 +219,8 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
   VM" now hosts two containers, and the gateway is no longer stateless — the state is
   budget usage plus request metadata rows (no payloads by default). (a) remains the
   path to a per-identity request bucket.
-- Per-client key list: which people and which agent roles get keys in the first
-  rollout. Default: one per current human user of the endpoint, one for OpenCode
-  sessions, one for pi, one for skynet.
+- ~~Per-client key list.~~ Declared 2026-09-17 in site-config: `stray`, `opencode`, `pi`,
+  `skynet` (local-dev: `dev-local`). `legacy-shared` joins in task 4.1.
+- Streamed completions were not charged to the budget in the local test (only the
+  non-stream request's 93 tokens appeared in `budget_usage`); whether LM Studio omits
+  `usage` in stream mode or the gateway charges late is for task 2's conformance run.

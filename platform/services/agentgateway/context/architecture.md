@@ -25,6 +25,7 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 | Listener | container `:4000`, published `AGW_BIND:AGW_PORT` | Caddy proxies `inference.<zone>` here |
 | Readiness | container `:19001` `/healthz/ready` | upstream `management/readiness_server.rs`. Probed by deploy.sh and the verify play from the sibling `agentgateway-db` container (busybox `wget`) over the compose network — the gateway image has no shell, and the host loopback is the wrong vantage when the play runs inside the local Semaphore container |
 | Stats | container `:19002`, published `AGW_STATS_BIND:AGW_STATS_PORT` | Task 1.4 records what it serves (below) |
+| Operator UI | gateway listener `:4001` (`gateways.ui` + `ui.gateways: ui`), published `AGW_UI_BIND:AGW_UI_PORT` in prod; `compose.local.yml` `!override`s the publish away locally | Reached ONLY via Caddy at `admin.inference.<zone>` with admin-tier Authentik forward_auth (`agentgateway-forward-auth.yaml`); the UI has no login and `/ui/api/config_dump` is unauthenticated on the listener. Paths: `/` → 308 `/ui`, `/ui/assets/*`, `/ui/api/*` |
 | Admin | container loopback `:15000` | Never published |
 | Postgres | `agentgateway-db` (`postgres:16-alpine`), compose network only, volume `agentgateway-pg-data` | Exists for per-key budgets; v1.5.0 refuses budgets without `config.database`. Also receives request METADATA rows (`request_logs`); prompt/completion payloads are NOT stored by default (`request_log_payloads` stayed 0 after a completion, verified 2026-09-17) |
 

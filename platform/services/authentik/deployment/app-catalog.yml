@@ -69,6 +69,12 @@ authentik_app_catalog:
     prod_required: [openbao_oidc_redirect_ui, openbao_oidc_launch_url]
     verify_redirect: openbao_oidc_redirect_ui
     tombstone_member: true
+  # agentgateway operator UI: shows config (incl. key hashes) and request logs —
+  # admins only. No login of its own; the Caddy forward_auth gate IS the auth.
+  agentgateway:
+    file: agentgateway-forward-auth.yaml
+    type: forward_auth
+    tier: admin
   openhands:
     file: openhands-forward-auth.yaml
     type: forward_auth

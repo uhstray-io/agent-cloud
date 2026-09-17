@@ -121,3 +121,15 @@ setup() {
   # would APPEND (not replace), so it must not appear here.
   ! grep -qE '^[[:space:]]*ports:' "$f"
 }
+
+@test "caddy: the internal cert gains a *.<parent> SAN for every nested route host" {
+  # A TLS wildcard matches ONE label: *.zone does not cover admin.inference.zone.
+  # deploy-caddy derives the extra SANs from the route table; the mint task emits
+  # them as --san flags. Landed 2026-09-17 with admin.inference.<zone>.
+  local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
+  local mint="$BATS_TEST_DIRNAME/../playbooks/tasks/mint-internal-cert.yml"
+  grep -q '_mint_extra_sans:' "$pb"
+  grep -q "map(attribute='host')" "$pb"
+  grep -q '_mint_extra_sans | default(\[\])' "$mint"
+  grep -qF -- '--san "{{ san }}"' "$mint"
+}

@@ -35,6 +35,19 @@ config:
     randomSampling: {{ agw_trace_sampling | default('0.05') }}
 {% endif %}
 
+# The built-in operator UI, on its OWN listener (:4001) instead of the admin
+# interface (which stays on the container loopback, unpublished). The UI has no
+# login of its own and /ui/api/config_dump answers unauthenticated, so this
+# listener is reached ONLY through Caddy with Authentik forward_auth in front
+# (admin tier). Verified on v1.5.0 2026-09-17: `/` -> 308 `/ui`, assets under
+# /ui/assets, API under /ui/api.
+gateways:
+  ui:
+    port: 4001
+
+ui:
+  gateways: ui
+
 frontendPolicies:
   http:
     # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the

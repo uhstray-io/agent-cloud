@@ -126,6 +126,9 @@ all:
             # exercised without a GPU box. Prod points the same shape at spark-1 via
             # site-config's caddy_managed_sites.
             - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # agentgateway operator UI — admin-tier forward_auth gate; the UI has no
+            # login of its own. Caddy dials the gateway's UI listener by name.
+            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001", forward_auth: "authentik-server:9000" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -225,10 +228,8 @@ all:
           service_name: agentgateway
           monorepo_deploy_path: platform/services/agentgateway/deployment
           container_engine: podman
-          agw_bind: 127.0.0.1
-          agw_port: 4400        # host debug port; Caddy reaches the container :4000 by name
-          agw_ready_port: 4401
-          agw_stats_port: 4402
+          # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
+          # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
           agw_upstream_base_url: http://host.containers.internal:1234/v1
           agw_models:
             # The name clients send -> the model id LM Studio serves.

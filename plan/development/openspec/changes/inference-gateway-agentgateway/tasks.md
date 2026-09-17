@@ -61,6 +61,23 @@
       refused, proving scenario "Admin interface is not exposed"
 
       2026-09-17 LOCAL (LM Studio upstream, local Semaphore tasks 595 then 596): second run `changed=2` — the deploy.sh shell step (`changed_when: true` by the repo's convention) and the monorepo copy; every other task unchanged, readiness 200 before and after, secrets reused. Admin port: zero published mappings and connection refused from the Mac; the LAN-host refusal is re-proven on the prod VM
+- [x] 1.8 Operator UI (design §9): `gateways.ui` on :4001 + `ui.gateways: ui` in the
+      config; compose publishes `AGW_UI_BIND:AGW_UI_PORT`; Authentik catalog entry
+      `agentgateway` (forward_auth, admin tier) + `agentgateway-forward-auth.yaml` with
+      `!Env AGENTGATEWAY_EXTERNAL_HOST`; local Caddy route `admin.inference.<zone>` ->
+      `agentgateway:4001` with forward_auth in the example, working inventory and the
+      control plane's route table; BATS. Prod: site-config `caddy_managed_sites` block +
+      `agentgateway_external_host` on the authentik host + `agentgateway` in `authentik_apps`
+- [ ] 1.9 Validation gate: unauthenticated browser to `https://admin.inference.<zone>` is
+      redirected to Authentik; after `agent-cloud-admin` login the UI renders and
+      `/ui/api/config_dump` is reachable only through that path, proving scenario "UI
+      requires an admin login"; on prod, `nc` to :4001 from a non-Caddy LAN host is refused.
+      2026-09-17 LOCAL: `admin.inference.agent-cloud.test` resolves (wildcard), the served
+      cert carries `*.inference.agent-cloud.test`, an unauthenticated GET is a 302 to
+      Authentik's authorize endpoint, the outpost ping answers 204, the worker applied
+      the blueprint; the local overlay removes the UI host publish so no unauthenticated
+      path exists. Browser login as `agent-cloud-admin` and the prod `nc` are Joe's/prod
+
 ## 2. Conformance against direct vLLM
 - [ ] 2.1 Conformance script `platform/services/agentgateway/deployment/tests/conformance.sh`
       (curl + jq): models list; chat completion thinking off; `reasoning_effort` each of
@@ -75,11 +92,16 @@
       with a stream past 130 s proves scenario "Stream is not buffered"
 
 ## 3. Telemetry
-- [ ] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint; Alloy
+- [ ] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
+      stats port; series `agentgateway_requests_total`, `agentgateway_request_duration_seconds_*`,
+      `agentgateway_gen_ai_server_request_duration_*`, `agentgateway_gen_ai_client_token_usage_*`
+      — read on the running container 2026-09-17); Alloy
       `otelcol.receiver.otlp` on the o11y host forwarding spans as structured log lines to
       Loki (Tempo deferred); inference dashboard gains the client-view row
-- [ ] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
-      the answer in `design.md` and set the first-week policy accordingly
+- [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
+      the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
+      such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
+      `type`); first week runs with loose figures tightened from observed rates
 - [ ] 3.3 Validation gate: one hour of traffic renders p50 and p95 first-token latency and
       per-identity counts, proving scenario "Client-view latency on the dashboard"
 

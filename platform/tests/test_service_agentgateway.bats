@@ -34,6 +34,20 @@ setup() {
   refute_grep -E 'agentgateway:latest' "$f"
 }
 
+@test "agentgateway: operator UI rides its own listener, published env-parameterized, behind forward_auth" {
+  assert_grep -qE '^\s*ui:$' "$CONFIG"
+  assert_grep -qE '^\s*gateways: ui$' "$CONFIG"
+  assert_grep -qE '\$\{AGW_UI_BIND:-127\.0\.0\.1\}:\$\{AGW_UI_PORT' "$DEPLOY_DIR/compose.yml"
+  # Locally the UI publish is removed: the overlay !overrides the port list without it.
+  assert_grep -qE 'ports: !override' "$DEPLOY_DIR/compose.local.yml"
+  refute_grep -q 'AGW_UI_PORT' "$DEPLOY_DIR/compose.local.yml"
+  # The UI is admin-tier forward_auth in Authentik, and the local Caddy route gates it.
+  local cat="$REPO_ROOT/platform/services/authentik/deployment/app-catalog.yml"
+  assert_grep -qE '^  agentgateway:$' "$cat"
+  [ -f "$REPO_ROOT/platform/services/authentik/deployment/blueprints/agentgateway-forward-auth.yaml" ]
+  assert_grep -qE 'host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001", forward_auth:' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+}
+
 @test "agentgateway: admin port 15000 is never published" {
   # The admin listener stays on the container loopback (spec: "Admin interface
   # is not exposed"). Any `ports:` line carrying 15000 is a regression.

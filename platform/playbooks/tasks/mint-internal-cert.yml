@@ -16,6 +16,10 @@
 #   _mint_zone       internal zone, e.g. "agent-cloud.test" (cert covers *.zone + zone)
 #   _mint_dest_dir   consuming service's deploy dir; cert lands in <dir>/certs/
 # Optional vars:
+#   _mint_extra_sans additional DNS SANs, e.g. ["*.inference.agent-cloud.test"]. A TLS
+#                    wildcard matches ONE label, so `*.<zone>` does not cover a nested
+#                    hostname like admin.inference.<zone>; the caller derives one
+#                    `*.<parent>` per nested route host (deploy-caddy.yml)
 #   _mint_engine     container engine (default: podman)
 #   _mint_dur        leaf validity (default: 8760h; needs the CA's x509-max-dur
 #                    raised to match — deploy-step-ca.yml does this)
@@ -49,6 +53,7 @@
       step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
         --provisioner admin --provisioner-password-file /tmp/pw \
         --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
+        {% for san in (_mint_extra_sans | default([]) | unique) %}--san "{{ san }}" {% endfor %}\
         --not-after {{ _mint_dur | default("8760h") }} --force \
         --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
       rc=$?; rm -f /tmp/pw; exit $rc

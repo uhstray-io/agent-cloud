@@ -15,6 +15,10 @@ locals {
     "canvas", # OpenHands
     "devlog",
     "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
+    # agentgateway operator UI — NEW record (created by apply, not imported), proxied like
+    # every browser UI; the inference API's WAF skip does not extend to it, so the managed
+    # challenge applies. Caddy gates it with admin-tier Authentik forward_auth.
+    "admin.inference",
     "memory",    # honcho
     "mixpost",
     "n8n",

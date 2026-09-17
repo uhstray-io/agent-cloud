@@ -1,0 +1,38 @@
+# Authentik blueprint — agentgateway operator UI via forward_auth (proxy provider).
+#
+# The inference gateway ships a built-in UI (config view incl. API-key hashes,
+# request logs) with NO authentication of its own; upstream advises OIDC in
+# front before exposing it. Central Caddy authenticates each request against the
+# embedded outpost before proxying to the gateway's UI listener (:4001), and the
+# admin interface itself stays on the container loopback. Same pattern as
+# openhands-forward-auth.yaml; access tier is ADMIN (app-catalog.yml).
+#
+# external_host MUST match the public URL the browser uses or the auth redirect
+# breaks — prod value via !Env (AGENTGATEWAY_EXTERNAL_HOST from env.j2); the
+# default keeps a local-dev instance working unchanged.
+#
+# The embedded-outpost binding + the per-app access gate live in
+# zz-sso-bindings.yaml (rendered from the enabled app set).
+version: 1
+metadata:
+  name: agent-cloud - agentgateway forward_auth
+entries:
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-agentgateway
+    identifiers:
+      name: agentgateway
+    attrs:
+      mode: forward_single
+      external_host: !Env [AGENTGATEWAY_EXTERNAL_HOST, "https://admin.inference.agent-cloud.test:8443/"]
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+  - model: authentik_core.application
+    identifiers:
+      slug: agentgateway
+    attrs:
+      name: agentgateway
+      provider: !KeyOf provider-agentgateway
+      meta_launch_url: !Env [AGENTGATEWAY_EXTERNAL_HOST, "https://admin.inference.agent-cloud.test:8443/"]
+      open_in_new_tab: true

@@ -21,6 +21,8 @@
 #   19001  readiness — probed by deploy.sh from the host (the Chainguard
 #          glibc-dynamic base image has no shell, so no in-container healthcheck)
 #   19002  stats/metrics — Prometheus scrapes this from the o11y host in prod
+#   4001   operator UI — reached only through Caddy + Authentik forward_auth. Published
+#          for the Caddy host in prod; compose.local.yml !overrides it AWAY locally
 #   15000  admin — NOT published; stays on the container loopback (design §1)
 #   5432   agentgateway-db — NOT published; compose network only
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
@@ -39,6 +41,7 @@ services:
       - "${AGW_BIND:-127.0.0.1}:${AGW_PORT:-4000}:4000"
       - "${AGW_READY_BIND:-127.0.0.1}:${AGW_READY_PORT:-19001}:19001"
       - "${AGW_STATS_BIND:-127.0.0.1}:${AGW_STATS_PORT:-19002}:19002"
+      - "${AGW_UI_BIND:-127.0.0.1}:${AGW_UI_PORT:-4001}:4001"
     volumes:
       - ./config.yaml:/config.yaml:ro
     networks: [agentgateway]
