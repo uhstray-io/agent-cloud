@@ -154,6 +154,9 @@ setup() {
   # The pre-migrate wait is cluster-wide (the VM may already have left the template's node).
   assert_grep -qE 'cluster/resources\?type=vm' <(sed -n '/Wait until the VM is unlocked/,/Skip the migrate POST/p' "$pb")
   assert_grep -q 'Skip the migrate POST when the VM already sits on the declared node' "$pb"
+  # After the wait the record is re-validated by name and permitted node (vmid reuse).
+  assert_grep -q "Re-validate the VM's identity after the wait" "$pb"
+  assert_grep -qF "in [_tmpl_node, _node]" "$pb"
   # uri reports changed:false on a POST — nothing may gate on `is changed` (CodeRabbit, PR 188).
   refute_grep -q 'is changed' "$pb"
   [ "$(grep -c 'changed_when: .*json.data is defined' "$pb")" -eq 2 ]

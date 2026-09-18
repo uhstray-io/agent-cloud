@@ -279,6 +279,19 @@
       changed_when: false
       when: _do_migrate | bool
 
+    - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
+      # The wait selects by vmid alone. If our VM vanished and the vmid was reused
+      # meanwhile, every later task would configure the replacement — so the record
+      # must still carry our name and sit on one of the two nodes we own here.
+      ansible.builtin.assert:
+        that:
+          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='name') | first) == _name
+          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) in [_tmpl_node, _node]
+        fail_msg: >-
+          vmid {{ _vmid }} is no longer '{{ _name }}' on '{{ _tmpl_node }}' or '{{ _node }}'
+          after the wait; refusing to continue against a VM this run did not create.
+      when: _do_migrate | bool
+
     - name: "Skip the migrate POST when the VM already sits on the declared node"
       ansible.builtin.set_fact:
         _vm_now_node: "{{ _placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first }}"
