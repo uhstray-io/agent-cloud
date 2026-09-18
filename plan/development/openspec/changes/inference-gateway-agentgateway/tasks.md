@@ -10,7 +10,7 @@
       the text before it is Accepted. Drafted 2026-09-17 as a Proposed section in
       `plan/architecture/05-platform-infra.md` (the repo's decision convention: numbered
       docs, no separate ADR directory)
-- [ ] 0.3 Allocate the gateway VM in site-config `proxmox/vm-specs.yml` (Infrastructure
+- [x] 0.3 Allocate the gateway VM in site-config `proxmox/vm-specs.yml` (Infrastructure
       tier, Podman); provision through onboarding phases 1 to 2; AppRole
       `agentgateway` with read on `secret/services/agentgateway`
       2026-09-17 PARTIAL: declared on site-config branch `feat/agentgateway-host` —
@@ -46,10 +46,18 @@
       pve/data": the cluster-wide local-lvm storage is absent on that node). Joe rejected
       skipping the scan (dead disks waste space); PR #190 makes the play sweep the node's
       ACTIVE image storages for leftover volumes itself. Merged; `Destroy VM (Dev)` task 1075
-      destroyed 218 cleanly: vm-lvms and local swept, zero leftovers, vmid gone
-- [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
+      destroyed 218 cleanly: vm-lvms and local swept, zero leftovers, vmid gone.
+      DONE 2026-09-18: `Provision VM (Dev)` task 1076 re-created 218 on apollo at .156 (address
+      guard passed, clone on alphacentauri + offline migrate); cloud-init done; Distribute SSH
+      Keys 1078; Verify Host Access 1079 (controller side) + workstation key-only login;
+      Harden SSH 1080 (password REJECTED, key CONFIRMED, NOPASSWD sudo). Apply Firewall waits
+      for the gateway deploy so port auto-detection sees the containers. Per-service AppRole
+      not created: the composable deploy runs under the controller AppRole like every other
+      service (onboarding step 9 is optional)
+- [x] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
-      distributed key
+      distributed key. 2026-09-18: all three hold (validate passes; plan 05 section is
+      Proposed; key-only SSH to the VM from both the controller and a workstation)
 
 ## 1. Service onboarding
 - [x] 1.1 `platform/services/agentgateway/deployment/compose.yml`: image

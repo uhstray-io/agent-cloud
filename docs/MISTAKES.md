@@ -61,7 +61,7 @@ supersede it with a new entry and link both.
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | 1 | Test (provision-vm guard) |
-| 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | 1 | Convention (IPAM lookup gap) |
+| 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | 1 | Playbook guard + test (provision-vm address probe) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1168,9 +1168,11 @@ refusal to proceed if anything answers. When two vantages disagree about reachab
 identify the responder before retrying. Every VM the hypervisor lists must be declared in the
 inventory with its address before another allocation is made.
 
-**Enforced by.** `Convention`. Mechanical candidate: a pre-provision check in `provision-vm.yml`
-that arps/pings the declared address from the controller and refuses on any answer; and the
-IPAM lookup recorded in `plan/architecture/02-service-onboarding.md` Known Gaps.
+**Enforced by.** Playbook guard + test, since PR #189 (same day): `provision-vm.yml` pings the
+declared address from the controller on the create path and refuses on any answer, fails closed
+when the probe cannot run (explicit `allow_unverified_address` override only), and
+`test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
+proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
 
 ## 4. Data handling
 
