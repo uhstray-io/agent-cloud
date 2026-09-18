@@ -1,0 +1,188 @@
+---
+# destroy-vm.yml — Destroy ONE declared VM on Proxmox, as code, with the refusals
+# that make a destructive step safe to offer as a Semaphore template.
+#
+# Why it exists: provisioning left agentgateway's VM configured with an address
+# that a live production runner already held (docs/MISTAKES.md 3.6). The only ways
+# to remove it were the Proxmox UI or an ad-hoc API call — neither is the
+# platform's way (AGENTS.md: config is code; no console clicks for anything
+# reproducible). This is the reproducible way: destroy, then re-run Provision VM
+# with the corrected declaration.
+#
+# Inventory-first, like provision-vm.yml: the declaration is the host in the
+# `<target_service>_svc` group (vm_vmid, vm_name, vm_node). The live VM must MATCH
+# it on vmid AND name AND node, or nothing happens — a vmid alone is not an
+# identity (3.5). And the run must name the vmid it is about to destroy:
+#   -e target_service=agentgateway -e target_host=agentgateway -e confirm_destroy=218
+# A survey default of "" means a template launch cannot destroy by accident.
+#
+# Steps: resolve declaration → find the live VM → refuse on mismatch → stop it if
+# running (qm stop, immediate) → wait until stopped → DELETE with purge=1 and
+# destroy-unreferenced-disks=1 (qm destroy options, pve-docs qm(1)) → wait for the
+# task → confirm the vmid is gone from cluster/resources. Re-running against a VM
+# that is already gone is a clean no-op.
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: "{{ target_service ~ '_svc' }}"
+    preflight_group_expected: "{{ target_service ~ '_svc' }}"
+
+- name: "Destroy a declared VM"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: false
+      headers:
+        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+      'secret/data/services/proxmox',
+      url=_bao_url, auth_method='approle',
+      role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+    _pve_secret: "{{ _pve_data.api_token }}"
+
+    _group_hosts: "{{ groups[target_service ~ '_svc'] | default([]) }}"
+    _decl_host: "{{ target_host | default(_group_hosts | first | default('')) }}"
+    _decl: "{{ hostvars[_decl_host] | default({}) }}"
+    _vmid: "{{ _decl.vm_vmid | default('') }}"
+    _name: "{{ _decl.vm_name | default(target_service) }}"
+    _node: "{{ _decl.vm_node | default('') }}"
+
+  tasks:
+    # The AppRole secret_id and the Proxmox token cross this connection.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # The Proxmox token is destructive; it must not cross public cleartext either.
+    # validate_certs stays off (the cluster presents a self-signed certificate, as
+    # every Proxmox play here accepts); pinning the cluster CA is a platform-wide
+    # follow-up recorded in 02-service-onboarding Known Gaps, not a per-play choice.
+    - name: "Refuse a cleartext Proxmox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pve_host }}"
+        _assert_url_label: "Proxmox"
+
+    - name: "Require an explicit target_host when the service declares more than one"
+      ansible.builtin.assert:
+        that:
+          - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
+          - _decl_host | length > 0
+          # target_host may only name a host OF THIS SERVICE — otherwise a caller could
+          # read another service's declaration and destroy that service's VM.
+          - _decl_host in _group_hosts
+        fail_msg: >-
+          {{ target_service }}_svc declares {{ _group_hosts | length }} host(s)
+          ({{ _group_hosts | join(', ') }}); pass -e target_host=<one of those names>.
+
+    - name: "Require a complete declaration (vm_vmid, vm_name, vm_node)"
+      ansible.builtin.assert:
+        that:
+          - _vmid | string | length > 0
+          - _name | length > 0
+          - _node | length > 0
+        fail_msg: "Declaration '{{ _decl_host }}' lacks vm_vmid/vm_name/vm_node — nothing to destroy safely."
+
+    - name: "Require the run to NAME the vmid it destroys"
+      ansible.builtin.assert:
+        that: (confirm_destroy | default('') | string) == (_vmid | string)
+        fail_msg: >-
+          Refusing: pass -e confirm_destroy={{ _vmid }} to destroy '{{ _name }}' (vmid
+          {{ _vmid }} on {{ _node }}). A destructive template must be told which VM,
+          in its own launch, every time.
+
+    - name: "Find the live VM by vmid"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+      register: _all
+
+    - name: "Resolve the live record"
+      ansible.builtin.set_fact:
+        _live: "{{ _all.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
+
+    - name: "Nothing to do — the vmid is not in the cluster"
+      ansible.builtin.debug:
+        msg: "vmid {{ _vmid }} does not exist; nothing to destroy (idempotent no-op)."
+      when: _live | length == 0
+
+    - name: "End play when the VM is already gone"
+      ansible.builtin.meta: end_play
+      when: _live | length == 0
+
+    - name: "Refuse to destroy a VM that is not the declared one"
+      ansible.builtin.assert:
+        that:
+          - (_live.name | default('')) == _name
+          - (_live.node | default('')) == _node
+        fail_msg: >-
+          vmid {{ _vmid }} is '{{ _live.name | default('?') }}' on '{{ _live.node | default('?') }}',
+          not '{{ _name }}' on '{{ _node }}'. Refusing — this is somebody else's VM.
+
+    - name: "Stop the VM if it is running (immediate stop; the VM is being destroyed)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/stop"
+        method: POST
+        status_code: [200]
+      register: _stop
+      changed_when: _stop.json.data is defined
+      when: (_live.status | default('')) == 'running'
+
+    - name: "Wait until the VM is stopped and unlocked"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+        method: GET
+      register: _cur
+      until: >-
+        (_cur is succeeded) and (_cur.json.data.status == 'stopped') and
+        ((_cur.json.data.lock | default('')) == '')
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: "Destroy the VM (purge references, destroy unreferenced disks)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1&destroy-unreferenced-disks=1"
+        method: DELETE
+        status_code: [200]
+      register: _destroy
+      changed_when: _destroy.json.data is defined
+
+    - name: "Wait for the destroy task"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _destroy.json.data }}/status"
+        method: GET
+      register: _task
+      until: _task.json.data.status == "stopped"
+      retries: 60
+      delay: 5
+      when: _destroy.json.data is defined
+
+    - name: "Verify the destroy task succeeded"
+      ansible.builtin.fail:
+        msg: "Destroy failed: {{ _task.json.data.exitstatus | default('unknown') }}"
+      when: _task is defined and (_task.json.data.exitstatus | default('OK')) != 'OK'
+
+    - name: "Confirm the vmid is gone from the cluster"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+      register: _after
+      until: (_after.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 0
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Destroyed '{{ _name }}' (vmid {{ _vmid }}) on {{ _node }}. Re-run Provision VM to recreate it from its declaration."
