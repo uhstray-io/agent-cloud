@@ -26,10 +26,19 @@ setup() {
   ! grep -A22 '^  - name: Destroy VM$' "$t" | grep -A4 'name: confirm_destroy' | grep -q 'default_value'
 }
 
-@test "destroy-vm: stops, deletes with purge + unreferenced disks, verifies the task and the absence" {
+@test "destroy-vm: stops, deletes with purge, sweeps active image storages for leftovers, verifies task and absence" {
   assert_grep -q 'status/stop' "$PB"
-  assert_grep -qF '?purge=1&destroy-unreferenced-disks=1' "$PB"
-  assert_grep -q 'method: DELETE' "$PB"
+  # The complete DELETE URL expression, not a fragment a comment could satisfy.
+  assert_grep -qF 'url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1"' "$PB"
+  assert_grep -qF 'url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ (item | split('"'"':'"'"'))[0] }}/content/{{ item | urlencode }}"' "$PB"
+  # Proxmox's own unreferenced-disk scan aborts on a node missing a cluster-wide storage,
+  # so the play sweeps ACTIVE image storages itself and frees every leftover volume.
+  refute_grep -q 'destroy-unreferenced-disks=1' "$PB"
+  assert_grep -qF "selectattr('active', 'equalto', 1)" "$PB"
+  assert_grep -qF "content?vmid={{ _vmid }}" "$PB"
+  assert_grep -q 'Free every leftover volume' "$PB"
+  assert_grep -q 'Re-check: nothing tagged with this vmid remains' "$PB"
+  [ "$(grep -c 'method: DELETE' "$PB")" -eq 2 ]
   assert_grep -q 'Verify the destroy task succeeded' "$PB"
   assert_grep -q 'Confirm the vmid is gone from the cluster' "$PB"
   # A vmid already absent is a clean no-op, not a failure.
