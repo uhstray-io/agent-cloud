@@ -181,6 +181,26 @@
     - name: "Check for existing VM"
       ansible.builtin.set_fact:
         vm_exists: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length > 0 }}"
+        _existing: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
+
+    # "Exists" is only a reason to skip the clone when it is OUR VM. A different
+    # VM at the declared vmid is a collision, and the steps below would have
+    # applied THIS declaration's cores/memory/cloud-init to it. Measured 2026-09-18:
+    # vmid 216 was declared for agentgateway on apollo while Proxmox already ran
+    # gh-runner-01 as 216 on alphacentauri; the clone was skipped and the configure
+    # call only failed because the node differed (docs/MISTAKES.md 3.5). Refuse on
+    # a name or node mismatch instead of continuing.
+    - name: "Refuse to adopt a DIFFERENT VM that already holds the declared vmid"
+      ansible.builtin.assert:
+        that:
+          - (_existing.name | default('')) == _name
+          - (_existing.node | default('')) == _node
+        fail_msg: >-
+          vmid {{ _vmid }} is already '{{ _existing.name | default('?') }}' on
+          '{{ _existing.node | default('?') }}', but this run declares '{{ _name }}' on
+          '{{ _node }}'. Refusing: continuing would reconfigure that VM with this
+          declaration. Pick a free vmid (and record the existing one in the ledger).
+      when: vm_exists | bool
 
     - name: "Skip clone if VM already exists"
       ansible.builtin.debug:

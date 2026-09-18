@@ -60,6 +60,7 @@ supersede it with a new entry and link both.
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
+| 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | 1 | Test (provision-vm guard) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1116,6 +1117,32 @@ running `git ls-files --error-unmatch <path>` (tracked → do not delete) — an
 check refusing a commit that deletes a `*.lock.hcl` / lockfile without a
 `chore(deps)`-style intent — but one occurrence does not yet justify it.
 
+### 3.5 A vmid allocated from an incomplete ledger, and a provisioner that adopted the collision
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** The agentgateway VM was allocated vmid 216 as "highest in `vm-specs.yml` plus
+one". Proxmox already ran `gh-runner-01` as 216 and `gh-runner-02` as 217, on alphacentauri,
+with no ledger entry. `provision-vm.yml` listed cluster resources, found 216, printed "already
+exists — skipping clone", and proceeded to "Configure VM resources and cloud-init" against
+`nodes/apollo/qemu-server/216.conf` (Semaphore task 1060). It failed only because the runner is
+on alphacentauri, not apollo. Had the nodes matched, the runner would have received
+agentgateway's cores, memory and cloud-init network.
+
+**Root cause.** Two assumptions. The ledger was treated as complete when it is one of three
+records (ledger, inventory `vm_*`, Proxmox itself) and the authority is Proxmox. And the
+playbook's "exists" branch meant "ours, resume" without checking that the existing VM IS the
+declared one.
+
+**The rule.** Allocate a vmid from the hypervisor's own listing (the range listing the playbook
+already prints), never from the ledger alone, and record every VM the listing shows that the
+ledger lacks. A provisioner that finds a VM at the declared vmid compares name AND node with the
+declaration and refuses on mismatch.
+
+**Enforced by.** Test — `platform/tests/test_provision_vm.bats` asserts the refusal guard exists
+and precedes the skip. The allocation half is `Convention` until the IPAM/ledger lookup recorded
+in `plan/architecture/02-service-onboarding.md` Known Gaps exists.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -1301,6 +1328,14 @@ Either separate them into two turns and read the result, or chain with `&&` so
 failure actually stops the commit. Printing a warning is not a gate.
 
 **Enforced by.** `.githooks/pre-push` — added 2026-08-24; see §5.6 for the mechanism, its fail-open rationale, and the red suite it caught on its first run.
+
+**Occurrence 2026-09-18 (agentgateway session).** Wrote a new BATS test into an existing file
+that does not `load assert_helpers`, ran the file, saw `not ok 9 ... assert_grep: command not
+found` in the same output, and the `git commit` in the same script ran anyway (`1d1e5b6`).
+Why the rule did not fire: the test run and the commit were chained in one script, exactly
+the shape §5.2 describes; the pre-push hook is the mechanical gate and it had not yet run.
+Fixed by amending the commit before any push. Counted here rather than as a new entry, per
+the repeat convention.
 
 ### 5.3 Merging while the review was rate-limited
 

@@ -20,7 +20,15 @@
       because NetBox (IPAM) was unavailable; recorded as a future feature in
       `plan/architecture/02-service-onboarding.md` Known Gaps. NOT yet done, blocked
       off-LAN (prod Semaphore is 403 from outside): NetBox reserve, Provision VM,
-      SSH key generate/distribute/verify/harden, Apply Firewall, AppRole
+      SSH key generate/distribute/verify/harden, Apply Firewall, AppRole.
+      2026-09-18 (on-LAN, via the prod Semaphore API with the operator token): inventory
+      synced to record `production` (sync-inventory.yml, operator-side); `vm_*` added to the
+      host because the runner never sees vm-specs.yml. NetBox reservation NOT done: the
+      IPAM read needs `secret/services/netbox:automation_api_token`, which is absent, and
+      `Provision NetBox Automation Token` (task 1058) fails inside its no_log Django-shell
+      mint — NetBox side, out of this change; the address keeps its provenance note.
+      vmid moved 216 -> 218: 216/217 are the GitHub runners, absent from the ledger (adopted
+      into vm-specs); provision-vm.yml gained a foreign-VM refusal guard (MISTAKES 3.5)
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
