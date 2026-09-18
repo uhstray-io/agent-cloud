@@ -61,6 +61,7 @@ supersede it with a new entry and link both.
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | 1 | Test (provision-vm guard) |
+| 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | 1 | Convention (IPAM lookup gap) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1143,6 +1144,34 @@ declaration and refuses on mismatch.
 and precedes the skip. The allocation half is `Convention` until the IPAM/ledger lookup recorded
 in `plan/architecture/02-service-onboarding.md` Known Gaps exists.
 
+### 3.6 A static address chosen from an incomplete inventory, applied to a new VM, that a live production host already held
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** With NetBox unavailable, the agentgateway VM's address was chosen as an
+undeclared value in `site-config/inventory/production.yml` (operator instruction, provenance
+noted). Provisioning configured VM 218 with it. Key distribution then failed with "connection
+refused" from the Semaphore runner while a workstation got an SSH banner from the same address;
+logging in with the platform management key showed the responder was `gh-runner-01`, up 25 days.
+The runners were never declared in the inventory (nor the ledger, see 3.5), so "not declared"
+meant nothing. The guest agent on 218 never came up, and no second MAC ever appeared for the
+address, so the collision did not go live — but the VM carries the conflicting cloud-init config.
+
+**Root cause.** The inventory records what was declared, not what exists; the authority for
+addresses is NetBox (down) or the network itself. A refusal-vs-banner disagreement between two
+vantages is the signature of an address conflict (see 1.6), and the runner's default-deny
+firewall turned the conflict into a misleading "refused".
+
+**The rule.** Before applying a static address to a new VM, prove it free from the network
+itself when the IPAM is unavailable: an ARP/ping sweep from at least two vantages, and a
+refusal to proceed if anything answers. When two vantages disagree about reachability, stop and
+identify the responder before retrying. Every VM the hypervisor lists must be declared in the
+inventory with its address before another allocation is made.
+
+**Enforced by.** `Convention`. Mechanical candidate: a pre-provision check in `provision-vm.yml`
+that arps/pings the declared address from the controller and refuses on any answer; and the
+IPAM lookup recorded in `plan/architecture/02-service-onboarding.md` Known Gaps.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -1336,6 +1365,13 @@ Why the rule did not fire: the test run and the commit were chained in one scrip
 the shape §5.2 describes; the pre-push hook is the mechanical gate and it had not yet run.
 Fixed by amending the commit before any push. Counted here rather than as a new entry, per
 the repeat convention.
+
+**Occurrence 2026-09-18, second time this day.** Ran the full suite and `git commit` in one
+script again while adding `destroy-vm.yml`; the suite reported the new play unguarded by the
+OpenBao transport ratchet and the commit ran anyway. The pre-push hook then refused the push,
+which is the mechanical gate doing its job — but the rule that the commit must not follow a red
+suite in the same command still did not fire. Two occurrences in one day on the same shape:
+the commit MUST be a separate command issued after reading the suite result, never chained.
 
 ### 5.3 Merging while the review was rate-limited
 
