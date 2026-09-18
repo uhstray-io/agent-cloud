@@ -260,18 +260,29 @@
         _do_migrate: "{{ _node != _tmpl_node and (clone_result.json.data is defined or (_ours_pending_migrate | default(false) | bool)) }}"
 
     # ── Move to the declared node when it differs from the template's ─────
-    - name: "Wait for the clone lock to clear before migrating"
+    # Cluster-wide view, not a node-bound one: a rerun may land while a PREVIOUS
+    # run's migration is still moving the VM, and once it leaves the template's
+    # node a status request there stops answering. cluster/resources always lists
+    # the VM with its current node and lock, so wait there until it is unlocked,
+    # then decide from where it actually is.
+    - name: "Wait until the VM is unlocked and note which node it is on now"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/status/current"
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
         method: GET
-      register: _clone_lock
-      until: (_clone_lock is succeeded) and ((_clone_lock.json.data.lock | default('')) == '')
-      retries: 60
+      register: _placed
+      until: >-
+        (_placed is succeeded) and
+        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 1) and
+        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='lock', default='') | first) == '')
+      retries: 90
       delay: 10
       changed_when: false
-      failed_when:
-        - (_clone_lock.json.data.lock | default('')) != ''
-        - _clone_lock.attempts | default(0) >= 60
+      when: _do_migrate | bool
+
+    - name: "Skip the migrate POST when the VM already sits on the declared node"
+      ansible.builtin.set_fact:
+        _vm_now_node: "{{ _placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first }}"
+        _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
       when: _do_migrate | bool
 
     - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"

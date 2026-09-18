@@ -151,6 +151,9 @@ setup() {
   assert_grep -qE 'qemu/\{\{ _vmid \}\}/migrate' "$pb"
   assert_grep -qE 'targetstorage: "\{\{ _storage \}\}"' "$pb"
   assert_grep -q '_do_migrate' "$pb"
+  # The pre-migrate wait is cluster-wide (the VM may already have left the template's node).
+  assert_grep -qE 'cluster/resources\?type=vm' <(sed -n '/Wait until the VM is unlocked/,/Skip the migrate POST/p' "$pb")
+  assert_grep -q 'Skip the migrate POST when the VM already sits on the declared node' "$pb"
   # uri reports changed:false on a POST — nothing may gate on `is changed` (CodeRabbit, PR 188).
   refute_grep -q 'is changed' "$pb"
   [ "$(grep -c 'changed_when: .*json.data is defined' "$pb")" -eq 2 ]
