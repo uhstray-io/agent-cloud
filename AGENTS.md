@@ -325,6 +325,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Preflight Target Group | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
 | Verify Host Access | `verify-host-access.yml` | Prove KEY-ONLY SSH works before `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
 | Provision VM | `provision-vm.yml` | Clone the template and provision a declared VM. Inventory-first; `-e target_host=` REQUIRED when the group declares more than one host |
+| Destroy VM | `destroy-vm.yml` | DESTRUCTIVE, as code: stop + `qm destroy` (purge, unreferenced disks) for ONE declared VM. Inventory-first like Provision VM; refuses unless the live VM matches the declaration on vmid+name+node AND the launch names the vmid in `confirm_destroy` (no default). A vmid already absent is a clean no-op. Exists because a mis-addressed VM could otherwise only be removed by console click (MISTAKES 3.6) |
 | Apply Firewall | `apply-firewall.yml` | Default-deny inbound + optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: SSH allows precede enable, then a fresh handshake is forced |
 | Validate All | `validate-all.yml` | Health check all services |
 | Check Secrets | `check-secrets.yml` | Read-only secret inventory from OpenBao |

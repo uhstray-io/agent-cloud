@@ -984,6 +984,28 @@ templates:
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
 
+  - name: Destroy VM
+    playbook: platform/playbooks/destroy-vm.yml
+    # DESTRUCTIVE. Inventory-first like Provision VM; refuses unless the live VM matches
+    # the declaration on vmid+name+node AND the launch names the vmid in confirm_destroy.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. agentgateway)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host — REQUIRED when the group declares more than one"
+        type: string
+        required: false
+      - name: confirm_destroy
+        title: "Confirm: vmid to destroy"
+        description: "Type the declared vm_vmid. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
     # main's copy of this playbook predates the inventory-first fix ("make it runnable
