@@ -28,7 +28,13 @@
       `Provision NetBox Automation Token` (task 1058) fails inside its no_log Django-shell
       mint — NetBox side, out of this change; the address keeps its provenance note.
       vmid moved 216 -> 218: 216/217 are the GitHub runners, absent from the ledger (adopted
-      into vm-specs); provision-vm.yml gained a foreign-VM refusal guard (MISTAKES 3.5)
+      into vm-specs); provision-vm.yml gained a foreign-VM refusal guard (MISTAKES 3.5).
+      Provisioning on apollo then hit Proxmox's rule that a cross-node clone needs SHARED
+      source storage (template 9000 sits on alphacentauri's local vm-lvms; task 1064) —
+      fixed as clone-on-template-node + offline migrate in agent-cloud PR #188 (from dev,
+      Joe's call); `Provision VM (Dev)` runs it once merged. SSH keypair minted (task 1061)
+      and backed up to site-config branch `backup/ssh-agentgateway-20260918T115852Z-6a5828`
+      (task 1063, dev-bound template — the playbook is not on main yet)
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
