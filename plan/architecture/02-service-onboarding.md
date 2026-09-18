@@ -349,3 +349,12 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
   future feature: `provision-vm.yml` (or a preflight it imports) asks NetBox whether the
   declared address is free or already reserved for this host, and refuses a declaration
   the authority contradicts — so the ledger and the inventory cannot drift apart.
+
+- **Provisioning trusts vmid+name+node after its waits (recorded 2026-09-18).** `provision-vm.yml`
+  refuses a foreign VM at the declared vmid and re-checks name and node after the pre-migrate
+  wait (PR #188), but a concurrent actor that deleted and recreated the same vmid AND name on
+  the declared node during a wait would not be detected. The stronger form, raised in review
+  and deferred: capture the clone's `smbios1` UUID before the wait and require it after, and
+  send the config `digest` on every config PUT so a concurrent write is rejected. Deferred
+  because the platform has one sanctioned Proxmox writer (Semaphore) and the pair comes from a
+  committed declaration; revisit if a second writer ever exists.

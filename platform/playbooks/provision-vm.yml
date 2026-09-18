@@ -190,11 +190,17 @@
     # gh-runner-01 as 216 on alphacentauri; the clone was skipped and the configure
     # call only failed because the node differed (docs/MISTAKES.md 3.5). Refuse on
     # a name or node mismatch instead of continuing.
+    # An INTERRUPTED cross-node run leaves our VM (declared name) on the template's
+    # node, not yet migrated. That is ours to resume, not a foreign VM to refuse.
+    - name: "Classify an existing VM: ours-in-place, ours-awaiting-migration, or foreign"
+      ansible.builtin.set_fact:
+        _ours_in_place: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _node }}"
+        _ours_pending_migrate: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _tmpl_node and _node != _tmpl_node }}"
+
     - name: "Refuse to adopt a DIFFERENT VM that already holds the declared vmid"
       ansible.builtin.assert:
         that:
-          - (_existing.name | default('')) == _name
-          - (_existing.node | default('')) == _node
+          - (_ours_in_place | bool) or (_ours_pending_migrate | bool)
         fail_msg: >-
           vmid {{ _vmid }} is already '{{ _existing.name | default('?') }}' on
           '{{ _existing.node | default('?') }}', but this run declares '{{ _name }}' on
@@ -208,7 +214,14 @@
       when: vm_exists | bool
 
     # ── Clone template ────────────────────────────────────────────────────
-    - name: "Clone template to new VM"
+    # Proxmox: "--target: Target node. Only allowed if the original VM is on shared
+    # storage" (qm(1)). Template 9000's disk is on alphacentauri's LOCAL vm-lvms, so a
+    # cross-node clone is refused with "can't clone to non-shared storage" (Semaphore
+    # task 1064, 2026-09-18). The clone therefore always lands on the TEMPLATE's node,
+    # and when the declaration names another node the new VM is migrated there
+    # offline (a stopped VM with local disks moves with `targetstorage`) before it is
+    # configured. Same-node declarations behave exactly as before.
+    - name: "Clone template to new VM (on the template's node)"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/clone"
         method: POST
@@ -216,11 +229,15 @@
         body:
           newid: "{{ _vmid }}"
           name: "{{ _name }}"
-          target: "{{ _node }}"
           full: "1"
-          storage: "{{ _storage }}"
+          # Storage on the TEMPLATE's node for the interim copy; the migrate below
+          # maps it onto the declared storage on the declared node.
+          storage: "{{ vm_clone_storage | default(_storage) }}"
         status_code: [200]
       register: clone_result
+      # uri never reports changed on a POST by itself; the returned UPID is the
+      # evidence the clone was started, and every step below gates on it.
+      changed_when: clone_result.json.data is defined
       when: not (vm_exists | bool)
 
     - name: "Wait for clone task"
@@ -231,12 +248,83 @@
       until: clone_task.json.data.status == "stopped"
       retries: 60
       delay: 10
-      when: clone_result is changed and clone_result.json.data is defined
+      when: clone_result.json.data is defined
 
     - name: "Verify clone succeeded"
       ansible.builtin.fail:
         msg: "Clone failed: {{ clone_task.json.data.exitstatus | default('unknown') }}"
-      when: clone_result is changed and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
+      when: clone_result.json.data is defined and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
+
+    - name: "Decide whether a migration is needed (fresh clone or resumed run)"
+      ansible.builtin.set_fact:
+        _do_migrate: "{{ _node != _tmpl_node and (clone_result.json.data is defined or (_ours_pending_migrate | default(false) | bool)) }}"
+
+    # ── Move to the declared node when it differs from the template's ─────
+    # Cluster-wide view, not a node-bound one: a rerun may land while a PREVIOUS
+    # run's migration is still moving the VM, and once it leaves the template's
+    # node a status request there stops answering. cluster/resources always lists
+    # the VM with its current node and lock, so wait there until it is unlocked,
+    # then decide from where it actually is.
+    - name: "Wait until the VM is unlocked and note which node it is on now"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+      register: _placed
+      until: >-
+        (_placed is succeeded) and
+        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 1) and
+        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='lock', default='') | first) == '')
+      retries: 90
+      delay: 10
+      changed_when: false
+      when: _do_migrate | bool
+
+    - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
+      # The wait selects by vmid alone. If our VM vanished and the vmid was reused
+      # meanwhile, every later task would configure the replacement — so the record
+      # must still carry our name and sit on one of the two nodes we own here.
+      ansible.builtin.assert:
+        that:
+          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='name') | first) == _name
+          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) in [_tmpl_node, _node]
+        fail_msg: >-
+          vmid {{ _vmid }} is no longer '{{ _name }}' on '{{ _tmpl_node }}' or '{{ _node }}'
+          after the wait; refusing to continue against a VM this run did not create.
+      when: _do_migrate | bool
+
+    - name: "Skip the migrate POST when the VM already sits on the declared node"
+      ansible.builtin.set_fact:
+        _vm_now_node: "{{ _placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first }}"
+        _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
+      when: _do_migrate | bool
+
+    - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/migrate"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          target: "{{ _node }}"
+          targetstorage: "{{ _storage }}"
+        status_code: [200]
+      register: migrate_result
+      changed_when: migrate_result.json.data is defined
+      when: _do_migrate | bool
+
+    - name: "Wait for migrate task"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/tasks/{{ migrate_result.json.data }}/status"
+        method: GET
+      register: migrate_task
+      until: migrate_task.json.data.status == "stopped"
+      retries: 90
+      delay: 10
+      when: migrate_result.json.data is defined
+
+    - name: "Verify migrate succeeded"
+      ansible.builtin.fail:
+        msg: "Migrate to {{ _node }} failed: {{ migrate_task.json.data.exitstatus | default('unknown') }}"
+      when: migrate_result.json.data is defined and migrate_task is defined and migrate_task.json.data.exitstatus | default('OK') != 'OK'
 
     # ── Configure VM (single PUT with all settings) ───────────────────────
     - name: "Wait for the clone lock to clear before configuring"
