@@ -150,9 +150,16 @@
       delay: 5
       changed_when: false
 
-    - name: "Destroy the VM (purge references, destroy unreferenced disks)"
+    # destroy-unreferenced-disks is OPT-IN. The scan walks every ENABLED storage on the
+    # node, and a storage defined cluster-wide but absent on this node aborts it before
+    # anything is deleted: on apollo the cluster's `local-lvm` (thin pool pve/data) does
+    # not exist, and the destroy failed twice with "no such logical volume pve/data"
+    # (Semaphore tasks 1072/1073, 2026-09-18) leaving the VM stopped but intact. purge=1
+    # (backup/replication/HA references) always applies; pass
+    # -e destroy_unreferenced_disks=true only on a node whose storages are all present.
+    - name: "Destroy the VM (purge references; unreferenced-disk scan only on request)"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1&destroy-unreferenced-disks=1"
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1{{ '&destroy-unreferenced-disks=1' if (destroy_unreferenced_disks | default(false) | bool) else '' }}"
         method: DELETE
         status_code: [200]
       register: _destroy

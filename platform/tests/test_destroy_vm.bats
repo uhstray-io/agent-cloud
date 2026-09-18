@@ -28,7 +28,9 @@ setup() {
 
 @test "destroy-vm: stops, deletes with purge + unreferenced disks, verifies the task and the absence" {
   assert_grep -q 'status/stop' "$PB"
-  assert_grep -qF '?purge=1&destroy-unreferenced-disks=1' "$PB"
+  assert_grep -qF '?purge=1' "$PB"
+  # The unreferenced-disk scan aborts on a node missing a cluster-wide storage; opt-in only.
+  assert_grep -qF "destroy_unreferenced_disks | default(false)" "$PB"
   assert_grep -q 'method: DELETE' "$PB"
   assert_grep -q 'Verify the destroy task succeeded' "$PB"
   assert_grep -q 'Confirm the vmid is gone from the cluster' "$PB"
