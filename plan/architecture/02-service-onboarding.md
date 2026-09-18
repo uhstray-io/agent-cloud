@@ -358,3 +358,10 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
   send the config `digest` on every config PUT so a concurrent write is rejected. Deferred
   because the platform has one sanctioned Proxmox writer (Semaphore) and the pair comes from a
   committed declaration; revisit if a second writer ever exists.
+
+- **Proxmox API calls accept the cluster's self-signed certificate (recorded 2026-09-18).**
+  Every Proxmox play (`provision-vm.yml`, `destroy-vm.yml`, `proxmox-validate.yml`,
+  `resize-vm.yml`) sets `validate_certs: false`; the transport guard refuses cleartext but a
+  spoofed HTTPS endpoint on the path would not be detected. Raised in the PR #189 review. The
+  fix is platform-wide, not per play: pin the cluster CA (distribute it to the controller and
+  set `ca_path`), then flip `validate_certs` on everywhere at once.

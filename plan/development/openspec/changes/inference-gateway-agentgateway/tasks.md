@@ -34,7 +34,14 @@
       fixed as clone-on-template-node + offline migrate in agent-cloud PR #188 (from dev,
       Joe's call); `Provision VM (Dev)` runs it once merged. SSH keypair minted (task 1061)
       and backed up to site-config branch `backup/ssh-agentgateway-20260918T115852Z-6a5828`
-      (task 1063, dev-bound template — the playbook is not on main yet)
+      (task 1063, dev-bound template — the playbook is not on main yet).
+      Provision VM (Dev) with the clone-then-migrate path then created VM 218 on apollo
+      (task 1068) — but at .154, which turned out to be gh-runner-01's address: the runners
+      were declared only on site-config's unmerged `feat/apply-firewall` (MISTAKES 3.6).
+      Joe's decisions: destroy 218 AS CODE (`destroy-vm.yml`, PR #189, with an
+      address-answers refusal in provision-vm), re-provision at .156 (network-swept,
+      undeclared on every branch), and fold the runner declaration into the inventory
+      (done; Semaphore record re-synced)
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
