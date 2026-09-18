@@ -41,7 +41,10 @@
       Joe's decisions: destroy 218 AS CODE (`destroy-vm.yml`, PR #189, with an
       address-answers refusal in provision-vm), re-provision at .156 (network-swept,
       undeclared on every branch), and fold the runner declaration into the inventory
-      (done; Semaphore record re-synced)
+      (done; Semaphore record re-synced). PR #189 merged; `Destroy VM (Dev)` stopped 218
+      but Proxmox's unreferenced-disk scan aborted on apollo ("no such logical volume
+      pve/data": the cluster-wide local-lvm storage is absent on that node) — scan made
+      opt-in in a follow-up PR; 218 is stopped and intact until it lands
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
