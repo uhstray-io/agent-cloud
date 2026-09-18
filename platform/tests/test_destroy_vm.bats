@@ -28,7 +28,9 @@ setup() {
 
 @test "destroy-vm: stops, deletes with purge, sweeps active image storages for leftovers, verifies task and absence" {
   assert_grep -q 'status/stop' "$PB"
-  assert_grep -qF '?purge=1' "$PB"
+  # The complete DELETE URL expression, not a fragment a comment could satisfy.
+  assert_grep -qF 'url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1"' "$PB"
+  assert_grep -qF 'url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ (item | split('"'"':'"'"'))[0] }}/content/{{ item | urlencode }}"' "$PB"
   # Proxmox's own unreferenced-disk scan aborts on a node missing a cluster-wide storage,
   # so the play sweeps ACTIVE image storages itself and frees every leftover volume.
   refute_grep -q 'destroy-unreferenced-disks=1' "$PB"
