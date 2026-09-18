@@ -134,6 +134,8 @@ setup() {
   assert_grep -q 'Refuse to adopt a DIFFERENT VM' "$pb"
   assert_grep -qF "(_existing.name | default('')) == _name" "$pb"
   assert_grep -qF "(_existing.node | default('')) == _node" "$pb"
+  # An interrupted run (our name, still on the template's node) is RESUMED, not refused.
+  assert_grep -q '_ours_pending_migrate' "$pb"
   local guard skip
   guard=$(grep -n 'Refuse to adopt a DIFFERENT VM' "$pb" | cut -d: -f1)
   skip=$(grep -n 'Skip clone if VM already exists' "$pb" | cut -d: -f1)
@@ -148,7 +150,10 @@ setup() {
   refute_grep -qE '^\s+target: "\{\{ _node \}\}"$' <(sed -n '/name: "Clone template to new VM/,/register: clone_result/p' "$pb")
   assert_grep -qE 'qemu/\{\{ _vmid \}\}/migrate' "$pb"
   assert_grep -qE 'targetstorage: "\{\{ _storage \}\}"' "$pb"
-  assert_grep -q "when: clone_result is changed and _node != _tmpl_node" "$pb"
+  assert_grep -q '_do_migrate' "$pb"
+  # uri reports changed:false on a POST — nothing may gate on `is changed` (CodeRabbit, PR 188).
+  refute_grep -q 'is changed' "$pb"
+  [ "$(grep -c 'changed_when: .*json.data is defined' "$pb")" -eq 2 ]
   # Migration is verified like the clone: task status polled, exitstatus asserted.
   assert_grep -q 'Verify migrate succeeded' "$pb"
 }
