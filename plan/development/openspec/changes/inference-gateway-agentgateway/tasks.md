@@ -43,8 +43,10 @@
       undeclared on every branch), and fold the runner declaration into the inventory
       (done; Semaphore record re-synced). PR #189 merged; `Destroy VM (Dev)` stopped 218
       but Proxmox's unreferenced-disk scan aborted on apollo ("no such logical volume
-      pve/data": the cluster-wide local-lvm storage is absent on that node) — scan made
-      opt-in in a follow-up PR; 218 is stopped and intact until it lands
+      pve/data": the cluster-wide local-lvm storage is absent on that node). Joe rejected
+      skipping the scan (dead disks waste space); PR #190 makes the play sweep the node's
+      ACTIVE image storages for leftover volumes itself. Merged; `Destroy VM (Dev)` task 1075
+      destroyed 218 cleanly: vm-lvms and local swept, zero leftovers, vmid gone
 - [ ] 0.4 Validation gate: `openspec validate inference-gateway-agentgateway --store
       agent-cloud` passes; record file exists as Proposed; VM answers over the
       distributed key
