@@ -17,9 +17,10 @@
 # A survey default of "" means a template launch cannot destroy by accident.
 #
 # Steps: resolve declaration → find the live VM → refuse on mismatch → stop it if
-# running (qm stop, immediate) → wait until stopped → DELETE with purge=1 and
-# destroy-unreferenced-disks=1 (qm destroy options, pve-docs qm(1)) → wait for the
-# task → confirm the vmid is gone from cluster/resources. Re-running against a VM
+# running (qm stop, immediate) → wait until stopped → DELETE with purge=1 → wait for
+# the task → confirm the vmid is gone from cluster/resources → sweep the node's ACTIVE
+# image storages for volumes still tagged with the vmid and free them (the
+# unreferenced-disk scan, done so an absent storage cannot abort it). Re-running against a VM
 # that is already gone is a clean no-op.
 
 - name: "Pre-flight"
@@ -150,16 +151,30 @@
       delay: 5
       changed_when: false
 
-    # destroy-unreferenced-disks is OPT-IN. The scan walks every ENABLED storage on the
-    # node, and a storage defined cluster-wide but absent on this node aborts it before
-    # anything is deleted: on apollo the cluster's `local-lvm` (thin pool pve/data) does
-    # not exist, and the destroy failed twice with "no such logical volume pve/data"
-    # (Semaphore tasks 1072/1073, 2026-09-18) leaving the VM stopped but intact. purge=1
-    # (backup/replication/HA references) always applies; pass
-    # -e destroy_unreferenced_disks=true only on a node whose storages are all present.
-    - name: "Destroy the VM (purge references; unreferenced-disk scan only on request)"
+    # Proxmox's own --destroy-unreferenced-disks scan walks every ENABLED storage on
+    # the node and aborts when a cluster-wide storage is absent there (apollo has no
+    # local-lvm thin pool; "no such logical volume pve/data", tasks 1072/1073, the VM
+    # left stopped but intact). So the scan is done HERE, resiliently: only storages the
+    # node reports ACTIVE and image-capable are swept, and every volume still tagged
+    # with this vmid after the destroy is freed. Same outcome — no dead disks wasting
+    # space — without depending on every defined storage being mounted on the node.
+    - name: "List the node's storages before destroying (active + image-capable ones get swept)"
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1{{ '&destroy-unreferenced-disks=1' if (destroy_unreferenced_disks | default(false) | bool) else '' }}"
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+        method: GET
+      register: _stor
+
+    - name: "Select the storages to sweep for leftovers"
+      ansible.builtin.set_fact:
+        _sweep_storages: >-
+          {{ _stor.json.data
+             | selectattr('active', 'defined') | selectattr('active', 'equalto', 1)
+             | selectattr('content', 'defined') | selectattr('content', 'search', 'images')
+             | map(attribute='storage') | list }}
+
+    - name: "Destroy the VM (purge backup/replication/HA references)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1"
         method: DELETE
         status_code: [200]
       register: _destroy
@@ -190,6 +205,44 @@
       delay: 5
       changed_when: false
 
+    - name: "Sweep each active image storage for volumes still tagged with this vmid"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item }}/content?vmid={{ _vmid }}"
+        method: GET
+      register: _leftovers
+      loop: "{{ _sweep_storages }}"
+      changed_when: false
+
+    - name: "Collect leftover volumes"
+      ansible.builtin.set_fact:
+        _orphans: >-
+          {{ _leftovers.results | map(attribute='json') | map(attribute='data')
+             | flatten | map(attribute='volid') | list }}
+
+    - name: "Free every leftover volume (the unreferenced-disk scan, done resiliently)"
+      ansible.builtin.uri:
+        # volid is "<storage>:<volume>"; the storage id is the part before the first colon.
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ (item | split(':'))[0] }}/content/{{ item | urlencode }}"
+        method: DELETE
+        status_code: [200]
+      register: _freed
+      changed_when: _freed.status == 200
+      loop: "{{ _orphans }}"
+
+    - name: "Re-check: nothing tagged with this vmid remains on the swept storages"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item }}/content?vmid={{ _vmid }}"
+        method: GET
+      register: _recheck
+      loop: "{{ _sweep_storages }}"
+      changed_when: false
+      until: (_recheck.json.data | default([]) | length) == 0
+      retries: 6
+      delay: 5
+
     - name: "Report"
       ansible.builtin.debug:
-        msg: "Destroyed '{{ _name }}' (vmid {{ _vmid }}) on {{ _node }}. Re-run Provision VM to recreate it from its declaration."
+        msg: >-
+          Destroyed '{{ _name }}' (vmid {{ _vmid }}) on {{ _node }}; swept
+          {{ _sweep_storages | join(', ') }} and freed {{ _orphans | length }} leftover
+          volume(s). Re-run Provision VM to recreate it from its declaration.
