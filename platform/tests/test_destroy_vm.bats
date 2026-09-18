@@ -13,6 +13,10 @@ setup() {
   assert_grep -q 'import_playbook: preflight-target-group.yml' "$PB"
   assert_grep -qF "(_live.name | default('')) == _name" "$PB"
   assert_grep -qF "(_live.node | default('')) == _node" "$PB"
+  # target_host must belong to the service group; both token-bearing endpoints are transport-guarded.
+  assert_grep -qF '_decl_host in _group_hosts' "$PB"
+  [ "$(grep -c 'include_tasks: tasks/assert-bao-transport.yml' "$PB")" -eq 2 ]
+  assert_grep -q '_assert_url_label: "Proxmox"' "$PB"
 }
 
 @test "destroy-vm: the launch must name the vmid (confirm_destroy), with no default" {
@@ -36,11 +40,13 @@ setup() {
 
 @test "provision-vm: refuses a declared address that already answers on the network (MISTAKES 3.6)" {
   local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
-  assert_grep -q 'Refuse a declared address that already answers on the network' "$pb"
-  assert_grep -q 'Stop when something answered at the declared address' "$pb"
+  assert_grep -q 'Probe the declared address from the controller' "$pb"
+  assert_grep -q 'Stop when something answered at the declared address, or when the probe could not run' "$pb"
+  # Fails closed when the probe cannot run; explicit audited override only.
+  assert_grep -q 'allow_unverified_address' "$pb"
   # Create path only: after the existence check, before the clone.
   local g e c
-  g=$(grep -n 'Refuse a declared address that already answers' "$pb" | cut -d: -f1)
+  g=$(grep -n 'Probe the declared address from the controller' "$pb" | cut -d: -f1)
   e=$(grep -n 'name: "Check for existing VM"' "$pb" | cut -d: -f1)
   c=$(grep -n 'name: "Clone template to new VM' "$pb" | cut -d: -f1)
   [ "$e" -lt "$g" ] && [ "$g" -lt "$c" ]

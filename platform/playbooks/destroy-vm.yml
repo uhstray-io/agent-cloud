@@ -63,12 +63,27 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    # The Proxmox token is destructive; it must not cross public cleartext either.
+    # validate_certs stays off (the cluster presents a self-signed certificate, as
+    # every Proxmox play here accepts); pinning the cluster CA is a platform-wide
+    # follow-up recorded in 02-service-onboarding Known Gaps, not a per-play choice.
+    - name: "Refuse a cleartext Proxmox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pve_host }}"
+        _assert_url_label: "Proxmox"
+
     - name: "Require an explicit target_host when the service declares more than one"
       ansible.builtin.assert:
         that:
           - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
           - _decl_host | length > 0
-        fail_msg: "{{ target_service }}_svc declares {{ _group_hosts | length }} host(s); pass -e target_host=<name>."
+          # target_host may only name a host OF THIS SERVICE — otherwise a caller could
+          # read another service's declaration and destroy that service's VM.
+          - _decl_host in _group_hosts
+        fail_msg: >-
+          {{ target_service }}_svc declares {{ _group_hosts | length }} host(s)
+          ({{ _group_hosts | join(', ') }}); pass -e target_host=<one of those names>.
 
     - name: "Require a complete declaration (vm_vmid, vm_name, vm_node)"
       ansible.builtin.assert:

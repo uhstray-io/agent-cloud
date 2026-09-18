@@ -213,7 +213,7 @@
           declaration. Pick a free vmid (and record the existing one in the ledger).
       when: vm_exists | bool
 
-    - name: "Refuse a declared address that already answers on the network"
+    - name: "Probe the declared address from the controller (ICMP)"
       ansible.builtin.command:
         argv: [ping, -c, "2", -W, "2", "{{ _ip }}"]
       register: _addr_probe
@@ -221,15 +221,25 @@
       failed_when: false
       when: not (vm_exists | bool)
 
-    - name: "Stop when something answered at the declared address"
+    # Evidence, not proof: an answer is a certain refusal; silence is only as good
+    # as ICMP on that network, and a missing `ping` binary is no evidence at all.
+    # So: rc 0 -> refuse; probe could not run -> refuse (fail closed) unless the
+    # launch carries the audited override; rc 1 -> proceed. The authoritative
+    # check is the IPAM (02-service-onboarding Known Gaps).
+    - name: "Stop when something answered at the declared address, or when the probe could not run"
       ansible.builtin.assert:
-        that: (_addr_probe.rc | default(1)) != 0
+        that:
+          - _addr_probe.rc != 0
+          - (_addr_probe.rc in [1, 2]) or (allow_unverified_address | default(false) | bool)
         fail_msg: >-
-          {{ _ip }} answers to ping from the controller, so a live host already holds
-          the address declared for '{{ _name }}'. Refusing to provision onto it: find
-          the responder (ledger, inventory, and if needed a login) and declare a free
-          address. This check is what the IPAM would have done (02-service-onboarding
-          Known Gaps).
+          {% if _addr_probe.rc == 0 %}{{ _ip }} answers to ping from the controller, so a live
+          host already holds the address declared for '{{ _name }}'. Refusing to provision
+          onto it: find the responder (ledger, inventory, and if needed a login) and declare a
+          free address.{% else %}The controller could not run the address probe
+          (rc {{ _addr_probe.rc }}: {{ _addr_probe.msg | default(_addr_probe.stderr | default('')) | truncate(120) }}).
+          Refusing to provision onto an unverified address; pass
+          -e allow_unverified_address=true only for an approved exception.{% endif %}
+      when: not (vm_exists | bool)
 
     - name: "Skip clone if VM already exists"
       ansible.builtin.debug:
