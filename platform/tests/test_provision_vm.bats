@@ -11,6 +11,8 @@
 # Structural only (grep asserts) — no live Proxmox calls.
 # Run: bats platform/tests/test_provision_vm.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks/provision-vm.yml"
@@ -123,4 +125,30 @@ setup() {
   wait_line=$(grep -n 'Wait for the clone lock to clear' "$PB" | head -1 | cut -d: -f1)
   cfg_line=$(grep -n 'Configure VM resources and cloud-init' "$PB" | head -1 | cut -d: -f1)
   [ "$wait_line" -lt "$cfg_line" ]
+}
+
+@test "provision-vm: a different VM at the declared vmid is a refusal, never an adoption" {
+  # MISTAKES 3.5: "exists" skipped the clone and the run went on to configure the
+  # foreign VM. The guard must compare name AND node and sit before the skip.
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  assert_grep -q 'Refuse to adopt a DIFFERENT VM' "$pb"
+  assert_grep -qF "(_existing.name | default('')) == _name" "$pb"
+  assert_grep -qF "(_existing.node | default('')) == _node" "$pb"
+  local guard skip
+  guard=$(grep -n 'Refuse to adopt a DIFFERENT VM' "$pb" | cut -d: -f1)
+  skip=$(grep -n 'Skip clone if VM already exists' "$pb" | cut -d: -f1)
+  [ "$guard" -lt "$skip" ]
+}
+
+@test "provision-vm: clones on the template's node, then migrates offline when the declared node differs" {
+  # qm(1): --target is only allowed when the source is on SHARED storage; template
+  # 9000 is on local storage, so a cross-node --target clone is refused (task 1064).
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  # The clone body carries no `target:` any more.
+  refute_grep -qE '^\s+target: "\{\{ _node \}\}"$' <(sed -n '/name: "Clone template to new VM/,/register: clone_result/p' "$pb")
+  assert_grep -qE 'qemu/\{\{ _vmid \}\}/migrate' "$pb"
+  assert_grep -qE 'targetstorage: "\{\{ _storage \}\}"' "$pb"
+  assert_grep -q "when: clone_result is changed and _node != _tmpl_node" "$pb"
+  # Migration is verified like the clone: task status polled, exitstatus asserted.
+  assert_grep -q 'Verify migrate succeeded' "$pb"
 }
