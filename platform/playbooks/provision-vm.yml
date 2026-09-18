@@ -172,6 +172,11 @@
         msg: "Template VM {{ _tmpl_vmid }} not found. Run provision-template.yml first."
       when: tmpl_check is failed or (tmpl_check.json.data.template | default(0) | int != 1)
 
+    # The inventory records what was DECLARED, not what exists: an undeclared host
+    # held the address this playbook applied to a fresh VM (docs/MISTAKES.md 3.6).
+    # With the IPAM unavailable the network itself is the authority, and the
+    # controller is a second vantage point: anything answering the declared
+    # address is a refusal before a single Proxmox write.
     - name: "Check if VMID already in use"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
@@ -207,6 +212,24 @@
           '{{ _node }}'. Refusing: continuing would reconfigure that VM with this
           declaration. Pick a free vmid (and record the existing one in the ledger).
       when: vm_exists | bool
+
+    - name: "Refuse a declared address that already answers on the network"
+      ansible.builtin.command:
+        argv: [ping, -c, "2", -W, "2", "{{ _ip }}"]
+      register: _addr_probe
+      changed_when: false
+      failed_when: false
+      when: not (vm_exists | bool)
+
+    - name: "Stop when something answered at the declared address"
+      ansible.builtin.assert:
+        that: (_addr_probe.rc | default(1)) != 0
+        fail_msg: >-
+          {{ _ip }} answers to ping from the controller, so a live host already holds
+          the address declared for '{{ _name }}'. Refusing to provision onto it: find
+          the responder (ledger, inventory, and if needed a login) and declare a free
+          address. This check is what the IPAM would have done (02-service-onboarding
+          Known Gaps).
 
     - name: "Skip clone if VM already exists"
       ansible.builtin.debug:
