@@ -139,6 +139,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards. A
 | [PODMAN-VS-DOCKER-COMPOSE.md](PODMAN-VS-DOCKER-COMPOSE.md) | ACTIVE | Compatibility guide for Podman vs Docker across all services. |
 | [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) | ACTIVE | Security testing standards for code, playbooks, templates, and configuration. |
 | [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
+| [08-ansible-automation-standards.md](08-ansible-automation-standards.md) | ACTIVE | Ansible standards from the official docs, each rule linked: check mode as the dry run, the three check-mode task classes, `--tags verify`, `set_stats` for machine-read results, recorded deviations. |
 | [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
 
 ---

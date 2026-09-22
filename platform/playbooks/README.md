@@ -4,6 +4,22 @@ Ansible playbooks for deploying, updating, validating, and hardening agent-cloud
 
 ## Conventions
 
+### Dry run, verify and results
+
+Standard: [`plan/architecture/08-ansible-automation-standards.md`](../../plan/architecture/08-ansible-automation-standards.md).
+
+- **Dry run is Ansible check mode**: `ansible-playbook --check`, or Semaphore's "Dry run"
+  option, which passes `--check`. Do not add a `dry_run` variable. The three playbooks that
+  still accept `-e dry_run=true` (`create-netbox-device.yml`, `cleanup-netbox.yml`,
+  `manage-github-runner-group.yml`) are migrating to check mode.
+- **Every task is in one check-mode class.** Read-only probes on modules without full
+  check-mode support (`uri` GET, a reading `command`) carry `check_mode: false`; writes that
+  cannot simulate carry `when: not ansible_check_mode`; modules with full support need
+  nothing. Under `--check`, a `uri` task without `check_mode: false` is skipped.
+- **Verify is `--tags verify`**, and changes nothing.
+- **Machine-read results use `ansible.builtin.set_stats`** through
+  `tasks/emit-step-result.yml`, not `debug`.
+
 ### Thin Wrappers
 
 There are two deployment patterns in use:

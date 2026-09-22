@@ -31,23 +31,28 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 1. Ansible standards and check-mode patterns
 
-- [ ] 1.1 Write `plan/architecture/08-ansible-automation-standards.md` from the official
+- [x] 1.1 Write `plan/architecture/08-ansible-automation-standards.md` from the official
       pages (check and diff mode, variables, inventory, error handling, roles, tips and
       tricks, sample setup, ansible-lint, `set_stats`, `uri` module attributes), each rule
       linked to its source URL, then the platform conventions on top; add its row to the
       architecture index in `00-foundation-standards.md`
-- [ ] 1.2 Reconcile automation docs with it: `platform/playbooks/README.md`, root `AGENTS.md`
+- [x] 1.2 Reconcile automation docs with it: `platform/playbooks/README.md`, root `AGENTS.md`
       (Independent Workflows `-e dry_run=true` references), plan 15 (`STEP-RESULT` line
       replaced by `set_stats`), `plan/architecture/01-automation-model.md` where it describes
       dry runs
-- [ ] 1.3 `tasks/emit-step-result.yml`: one `ansible.builtin.set_stats` call carrying the
-      step-result fields; `ANSIBLE_SHOW_CUSTOM_STATS=true` in both controllers' environment
-- [ ] 1.4 pytest check-mode guard: flags state-changing `command`/`shell`/non-GET `uri`
+- [x] 1.3 `tasks/emit-step-result.yml`: one `ansible.builtin.set_stats` call carrying the
+      step-result fields; `ANSIBLE_SHOW_CUSTOM_STATS=true` in both controllers' environment.
+      2026-09-22: done as a repo-root `ansible.cfg` (`show_custom_stats = True`) instead of an
+      env var per controller, since Semaphore runs from the clone root; proven by
+      `platform/tests/test_emit_step_result.py` in normal and check mode (mutated once: red)
+- [x] 1.4 pytest check-mode guard: flags state-changing `command`/`shell`/non-GET `uri`
       without `when: not ansible_check_mode` or `check_mode`, and read-only `uri` GET without
       `check_mode: false`; seeded with an allowlist of every current violation so it passes
-      today and shrinks per wave
-- [ ] 1.5 Mutate once: add an unguarded write to a fixture playbook and watch 1.4 go red
-- [ ] 1.6 Validation gate: spec scenarios "A reader finds the standard" and "Unguarded write
+      today and shrinks per wave. 2026-09-22: `platform/tests/test_check_mode_contract.py` +
+      `check_mode_allowlist.txt` (96 of 145 files, 480 tasks); a write under
+      `check_mode: false` is also a violation, because it runs for real in a dry run
+- [x] 1.5 Mutate once: add an unguarded write to a fixture playbook and watch 1.4 go red
+- [x] 1.6 Validation gate: spec scenarios "A reader finds the standard" and "Unguarded write
       is caught" pass
 
 ## 2. Check mode on every playbook

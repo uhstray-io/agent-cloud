@@ -264,6 +264,7 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
 | `tasks/site-config-clone.yml` / `tasks/site-config-push.yml` | Clone site-config on a fresh branch with the deploy key the caller read from OpenBao (0600 inside the scratch dir, `IdentitiesOnly`, pinned host keys), then stage one path, commit, push and report names only. The shared path both backup playbooks use; the caller wipes the dir in `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
+| `tasks/emit-step-result.yml` | Record ONE service-deployment-workflow step result with `set_stats` (printed as JSON under `CUSTOM STATS` by the repo `ansible.cfg`); runs in check mode too. Included last by every workflow executor and snapshot playbook |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
 `platform/playbooks/tasks/` contains the shared tasks; the table above is the curated set
@@ -575,6 +576,7 @@ which does not exist — the content lives in the numbered architecture doc.)
 - `plan/architecture/02-service-onboarding.md` — Service onboarding checklist
 - `plan/architecture/04-credentials-access.md` — Secret generation, storage, rotation, and retirement
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
+- `plan/architecture/08-ansible-automation-standards.md` — Ansible standards from the official docs: dry run is check mode (`--check`, never a `dry_run` variable), the three check-mode task classes (a `uri` probe without `check_mode: false` is silently skipped under `--check`), verify is `--tags verify`, machine-read results use `set_stats`
 
 ## Dependencies
 

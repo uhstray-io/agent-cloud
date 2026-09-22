@@ -96,7 +96,7 @@ flowchart LR
     subgraph AUTO["Automation"]
         SEM["Semaphore<br/>one template per step"]
         SNAP["snapshot-*.yml<br/>(read-only)"]
-        EXE["executor playbooks<br/>emit STEP-RESULT"]
+        EXE["executor playbooks<br/>record set_stats result"]
         COL["collect-service-conformance.yml<br/>(scheduled)"]
     end
     subgraph INF["Inference edge"]
@@ -184,15 +184,20 @@ gate. skynet references them by path; there is one source.
 
 ### Step result (`step-result.json`)
 
-Every executor's last task prints one line:
+Every executor records one result through Ansible's run statistics, which also run under
+check mode (`plan/architecture/08-ansible-automation-standards.md`). The shared task
+`tasks/emit-step-result.yml` calls `ansible.builtin.set_stats`; with
+`ANSIBLE_SHOW_CUSTOM_STATS=true` the task output ends with:
 
 ```text
-STEP-RESULT {"schema":"agentcloud/step-result/v1","workflow_id":"…","service":"agentgateway","step":"fw-harden","status":"pass","evidence":{"ufw_active":true,"allows":[…]},"error":null,"undo":"none"}
+CUSTOM STATS: ******************************************************************
+	RUN: { "step_result": { "schema": "agentcloud/step-result/v1", "workflow_id": "…", "service": "agentgateway", "step": "fw-harden", "status": "pass", "evidence": { "ufw_active": true, "allows": […] }, "error": null, "undo": "none" }}
 ```
 
-`status` is `pass`, `fail`, or `skip`. A Semaphore task that ends non-zero with no marker is
-recorded as `fail` with the last twenty output lines as context. The emitter is one shared
-task, `tasks/emit-step-result.yml`, so the line is the same in every playbook.
+`status` is `pass`, `fail`, or `skip`. A Semaphore task that ends non-zero with no result is
+recorded as `fail` with the last twenty output lines as context. (Revised 2026-09-22: the
+first draft printed a `STEP-RESULT` marker with `debug`, whose default rendering escapes
+the embedded JSON.)
 
 ### Proposal envelope (`proposal-envelope.json`)
 
@@ -272,14 +277,14 @@ One entry per step:
   auth mode, health signals, known quirks, undo path, what "healthy" means. The snapshot
   template ships that file into the node.
 - **Graph** `service_onboarding`, built from the registry at start. Deterministic node: OPA
-  decision → `run_task` → poll `check_task` → parse `STEP-RESULT`. Reasoning node: snapshot
+  decision → `run_task` → poll `check_task` → parse the step result from `CUSTOM STATS`. Reasoning node: snapshot
   `run_task` → `GatewayProposer` with the facts schema as `response_format json_schema`
   (vLLM enforces the grammar) → validate against the full schema → OPA → executor
   `run_task`, or record a `change-required` finding. Node context always carries prior
   results and the current and next registry entries (D11).
 - **Step policy.** `required` halts the run on fail; `advisory` records and continues. The
   run record is one JSON document per service run, kept by skynet and mirrored into Loki by
-  the collector via the step-result lines.
+  the collector via the step results.
 - **Eval harness** at `bench/service_onboarding/`: replays recorded snapshots against the
   live edge under a dedicated identity `client_skynet-eval` and the pinned served model.
   Per reasoning step: schema validity rate, decision match against golden (`verdict` and
@@ -290,12 +295,12 @@ One entry per step:
 ## Tracking
 
 - **Review** (D10). For each existing executor a checklist: criteria written into the
-  registry, idempotent re-run proven, `STEP-RESULT` emitted, undo named or `none`, BATS
+  registry, idempotent re-run proven, step result recorded, undo named or `none`, BATS
   guard for the emitter. `reviewed:` is stamped when all five hold.
 - **Collector** `collect-service-conformance.yml`, a scheduled Semaphore template
   (`schedule:` in `templates.yml`, the same mechanism the tududi token refresh uses).
   Reads: Semaphore `GET /project/{id}/tasks` and `GET /project/{id}/tasks/{task_id}/output`
-  for step-result lines; Prometheus for the observability criteria; NetBox for the VM
+  for step results; Prometheus for the observability criteria; NetBox for the VM
   record. Writes: NetBox custom fields on the VM object (`ac_workflow_status` JSON of
   per-step status, `ac_failed_steps`, `ac_last_run`) and one Loki line per step result via
   `POST /loki/api/v1/push` with labels `service`, `step`, `status`. Nothing else writes
@@ -363,7 +368,7 @@ One entry per step:
 
 **Tasks:** `lookup-service-inventory.yml`, `validate-address-free.yml`, NetBox VM record variant, three snapshot templates, `instrument-host-o11y.yml` with the Alloy OTLP receiver (coordinate with the `inference-telemetry-production` change and `05-observability.md` phase 2), per-service OTEL wiring pattern proven on one service.
 
-**Acceptance criteria:** each new template is idempotent (second run no change), emits `STEP-RESULT`, has a BATS test, and a snapshot template's output validates against its snapshot schema.
+**Acceptance criteria:** each new template is idempotent (second run no change), records a step result, has a BATS test, and a snapshot template's output validates against its snapshot schema.
 
 ### Phase 4: skynet roles, graph, eval harness
 
@@ -448,3 +453,4 @@ One entry per step:
 | Date | Change |
 |---|---|
 | 2026-09-22 | Initial design, approved in session; decisions D1-D11 recorded |
+| 2026-09-22 | Step results via `set_stats` instead of a `debug` marker line; OpenSpec change `service-deployment-workflow` carries implementation |
