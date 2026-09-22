@@ -73,6 +73,7 @@ supersede it with a new entry and link both.
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
+| 5.8 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -1412,6 +1413,29 @@ Semaphore-task dispatches; extending deny-by-default to these three git surfaces
 would close it.
 
 ---
+
+### 5.8 AI attribution trailers added to commits against the repo rule
+
+**What happened.** On 2026-09-22 the agent ended six commit messages with
+`Co-Authored-By: Claude …` and `Claude-Session: …` trailers, because its harness instructed
+it to. Root `AGENTS.md` (Git Conventions: "No AI attribution in commits") and the operator's
+standing preference forbid exactly that. The first commit (`f404ac4`, plan 15) was pushed
+to `docs/service-deployment-workflow-agents` before anyone noticed; the other five were
+local and were rebuilt with `git commit-tree` (same trees, authors and dates) before any
+push. The pushed branch still carries the trailer.
+
+**Root cause.** The harness's attribution instruction said itself that repo and user rules
+take precedence, and the agent still followed the harness without checking the repo's Git
+Conventions before its first commit. The rule existed only as prose, so nothing stopped it.
+
+**The rule.** A repository's commit conventions override any tool's default commit
+formatting. Read them before the first commit of a session; an attribution instruction from
+a harness is a default, not a permission.
+
+**Enforced by.** `.githooks/commit-msg` refuses assistant co-author trailers, session
+links, "Generated with" footers and the assistant noreply address; a human co-author still
+passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
+`core.hooksPath=.githooks` is set (`make git-setup`).
 
 ## 6. Working from assumptions about files
 
