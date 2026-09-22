@@ -179,6 +179,8 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | IMPLEMENTED | step-ca internal CA deployed via local Semaphore: stable root, serves the `*.agent-cloud.test` wildcard Caddy presents (token-mint locally; ACME dns-01 is the prod path). |
 | [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
 
+| [15-service-deployment-workflow-agents.md](../development/15-service-deployment-workflow-agents.md) | PROPOSED | The 22-step service deployment workflow as code: step registry, step-result and proposal contracts, four skynet agent roles (OPA identities), OPA-only gate, collector + NetBox custom fields + Loki + Grafana tracking; agentgateway backfill → estate sweep → greenfield pilot. |
+
 ### Archived Plans
 
 Documents in `plan/archive/` have reached terminal status (COMPLETE or SUPERSEDED).
