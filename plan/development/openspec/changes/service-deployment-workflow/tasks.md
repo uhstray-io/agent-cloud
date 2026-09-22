@@ -1,0 +1,172 @@
+# Tasks: service deployment workflow
+
+Every task is rerun-safe: detect the state it would produce first and converge or skip.
+Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks marked
+**[skynet]** land in the private `uhstray-io/skynet` repository.
+
+## 0. Prerequisites and verifications
+
+- [x] 0.1 Feature branch `feat/service-deployment-workflow` from `dev` (via the plan-15 docs
+      branch). 2026-09-22: `inference-gateway-agentgateway`'s implementation is NOT on `dev`
+      (16 commits ahead on its impl branch, no PR), so its merge became the entry gate of
+      section 3, the only section that needs the gateway code; see 3.0
+- [ ] 0.2 Spike on the local controller, recorded in `design.md` Context: does a task's
+      `dry_run` flag reach `ansible-playbook` as `--check`, does `diff` reach it as `--diff`,
+      and does a task-level `git_branch` override run that branch's tree for a template bound
+      to `main`
+- [ ] 0.3 Pin the Semaphore image (compose uses `:latest`) to the version the spike ran on
+- [ ] 0.4 Verify NetBox virtual machines accept custom fields on the pinned NetBox version and
+      record the API used to create them
+- [ ] 0.5 Verify agentgateway passes `response_format` with `type: json_schema` through to vLLM
+      unchanged (schema-constrained request through the local gateway, then direct)
+- [ ] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
+      passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
+      unblocks every later section
+
+## 1. Ansible standards and check-mode patterns
+
+- [ ] 1.1 Write `plan/architecture/08-ansible-automation-standards.md` from the official
+      pages (check and diff mode, variables, inventory, error handling, roles, tips and
+      tricks, sample setup, ansible-lint, `set_stats`, `uri` module attributes), each rule
+      linked to its source URL, then the platform conventions on top; add its row to the
+      architecture index in `00-foundation-standards.md`
+- [ ] 1.2 Reconcile automation docs with it: `platform/playbooks/README.md`, root `AGENTS.md`
+      (Independent Workflows `-e dry_run=true` references), plan 15 (`STEP-RESULT` line
+      replaced by `set_stats`), `plan/architecture/01-automation-model.md` where it describes
+      dry runs
+- [ ] 1.3 `tasks/emit-step-result.yml`: one `ansible.builtin.set_stats` call carrying the
+      step-result fields; `ANSIBLE_SHOW_CUSTOM_STATS=true` in both controllers' environment
+- [ ] 1.4 pytest check-mode guard: flags state-changing `command`/`shell`/non-GET `uri`
+      without `when: not ansible_check_mode` or `check_mode`, and read-only `uri` GET without
+      `check_mode: false`; seeded with an allowlist of every current violation so it passes
+      today and shrinks per wave
+- [ ] 1.5 Mutate once: add an unguarded write to a fixture playbook and watch 1.4 go red
+- [ ] 1.6 Validation gate: spec scenarios "A reader finds the standard" and "Unguarded write
+      is caught" pass
+
+## 2. Check mode on every playbook
+
+- [ ] 2.1 Wave 1, registry executors (the templates named in plan 15's step table): apply the
+      three patterns; tag verification `verify`; add the legacy `dry_run` mapping to the three
+      playbooks that accept it; remove each from the 1.4 allowlist
+- [ ] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
+      `--tags verify`) and record the result per playbook in `design.md`
+- [ ] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs
+- [ ] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
+- [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
+      skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
+
+## 3. Local-dev agent runtime (skynet)
+
+- [ ] 3.0 Entry gate: `git ls-tree origin/dev platform/services/agentgateway` lists the service
+      (the gateway implementation has merged to `dev`); rebase this branch onto `dev`
+- [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
+      only the host); record the result; if unreachable, record the degraded path in design
+- [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
+      `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
+      secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
+- [ ] 3.3 agentgateway route for skynet's orchestration API on the default gateway, key-gated,
+      restricted to the operator identity; deploy and verify locally
+- [ ] 3.4 **[skynet]** Drop Bifrost from the agent-cloud path: Tier 2 calls the gateway's `/v1`
+      with the calling role's key; Tier 1 stays only for skynet-local models
+- [ ] 3.5 **[skynet]** Postgres checkpointer in place of the in-memory saver; its own small
+      Postgres in skynet's compose
+- [ ] 3.6 **[skynet]** A deployable image and compose file for Tier 2
+- [ ] 3.7 `skynet_svc` in `local-dev.yml.example`, `deploy-skynet.yml` and
+      `clean-deploy-skynet.yml` from the shared tasks, local templates in
+      `templates-local.yml`; secrets through manage-secrets; BATS test
+- [ ] 3.8 Validation gate: spec scenarios "Agent calls are attributable per role",
+      "Orchestration route is key-gated", "Restart mid-run" and "No private address in the
+      public repo" pass on local-dev
+
+## 4. Registry, contracts and OPA
+
+- [ ] 4.1 `platform/workflows/service-onboarding/registry.yml` with the twenty-two entries
+      from plan 15, `reviewed: null` everywhere
+- [ ] 4.2 Schemas under `platform/services/opa/deployment/policies/agentcloud/schemas/`:
+      step result, proposal envelope, service assessment, firewall policy, access policy
+- [ ] 4.3 Registry test: every named template exists in the catalog, every reasoning step has
+      a snapshot template and schema, ids match the diagram
+- [ ] 4.4 `data.json`: four identities with `allowed_actions` and `allowed_templates`;
+      `netclaw` and `nemoclaw` frozen with a comment
+- [ ] 4.5 Rego: template allowlist rule; firewall content rule (controller SSH source kept,
+      SSH never wider than the declared sources); service-assessment content rule (no
+      destructive runtime action, VM spec within tier bounds); branch rule (no `main` for an
+      unreviewed step); rego tests with fixtures
+- [ ] 4.6 `firewall_controller_cidr` inventory variable and an `apply-firewall.yml` assertion
+      that it is in the SSH allow set before enable; BATS test
+- [ ] 4.7 Validation gate: spec scenarios "Registry and catalog agree", "Role launches only
+      its own steps", "Destructive template still needs a human", "Orchestrator keeps SSH",
+      "SSH stays scoped" and "Unreviewed step cannot run from main" pass
+
+## 5. Semaphore environments
+
+- [ ] 5.1 If 0.2 proved task-level branch override: remove `dev_variant` generation from
+      `setup-templates.yml`, launch on `dev` by branch; update the operating guide. If not:
+      record the result and keep the twins (design risk entry)
+- [ ] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
+- [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
+      cannot reach production" pass (the first is marked not-applicable if 5.1 kept the twins)
+
+## 6. Local NetBox
+
+- [ ] 6.1 Execute plan 04's local-engine fix: app tier under podman through the local
+      controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik
+- [ ] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
+      any declared target outside them and disables discovery when none are declared
+- [ ] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
+      keep discovery disabled and record why
+- [ ] 6.4 NetBox custom fields for the collector created by a playbook, locally
+- [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
+      local-dev is refused", "No targets means no discovery" and "Local targets are
+      discovered" pass
+
+## 7. Executors, snapshots and tracking
+
+- [ ] 7.1 D10 review of each existing executor against its registry criteria: idempotent
+      rerun, result emitted, undo named; stamp `reviewed`
+- [ ] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`
+- [ ] 7.3 New executors: inventory lookup, address validation against pfSense ARP and NetBox,
+      NetBox VM record, host instrumentation (after `inference-telemetry-production` lands the
+      OTLP receiver)
+- [ ] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
+      emitting one JSON document
+- [ ] 7.5 Collector (scheduled), NetBox custom-field writes, Loki push, Grafana dashboard JSON,
+      read-only report; single-writer test
+- [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
+      wiring with the three schemas, eval harness with thresholds in CI
+- [ ] 7.7 `agent-practices.md` for agentgateway
+- [ ] 7.8 Validation gate: spec scenarios "Passing step records its evidence", "A failure with
+      no result is still recorded", "Invalid proposal never executes", "Assessment sees
+      earlier steps", "Failure appears within one interval", "NetBox outage does not block
+      deployment", "Only the collector writes status", "Unreviewed step is visible" and
+      "Regression blocks a prompt change" pass on local-dev
+
+## 8. Backfill agentgateway end to end
+
+- [ ] 8.1 Local-dev run of the graph for agentgateway; record snapshots as eval cases
+- [ ] 8.2 Production run when on the network; each finding becomes a pull request or a
+      registry correction
+- [ ] 8.3 Validation gate: spec scenarios "Declared state is right" and "Declared state is
+      wrong" observed on the agentgateway run; dashboard green on every required step or a
+      named finding per red step
+
+## 9. Assessment sweep
+
+- [ ] 9.1 Run the three reasoning steps in verify-only mode across every service with a deploy
+      playbook; collector records; report generated
+- [ ] 9.2 Triage findings into pull requests or recorded registry exceptions
+- [ ] 9.3 Validation gate: spec scenario "Failure appears within one interval" holds across the
+      estate and the report lists every service
+
+## 10. Greenfield pilot and close-out
+
+- [ ] 10.1 Operator picks the pilot service; all twenty-two steps pass, with its first
+      configuration landing through pull requests the workflow opened
+- [ ] 10.2 Update the diagram to the twenty-two steps, plan 15 status, root `AGENTS.md`
+      workflow rows
+- [ ] 10.3 On archive, retain the outcome (worked / dead end / corrected) into bank
+      `agent-cloud-750a33b9`
+- [ ] 10.4 Validation gate: `openspec validate service-deployment-workflow --store
+      agent-cloud --strict` passes and spec scenario "Registry and catalog agree" holds for
+      the pilot service's templates
