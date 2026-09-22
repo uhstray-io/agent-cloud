@@ -99,6 +99,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -129,6 +130,7 @@
       retries: 10
       delay: 6
       until: _tududi_health.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

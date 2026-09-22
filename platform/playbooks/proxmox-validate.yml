@@ -46,6 +46,7 @@
         status_code: 200
       register: pve_version
       ignore_errors: true
+      check_mode: false
 
     - name: "Record API check"
       ansible.builtin.set_fact:
@@ -64,6 +65,7 @@
 
 
       register: pve_nodes
+      check_mode: false
 
     - name: "Check target node status"
       ansible.builtin.set_fact:
@@ -85,6 +87,7 @@
 
 
       register: pve_storage
+      check_mode: false
 
     - name: "Check VM storage"
       ansible.builtin.set_fact:
@@ -110,6 +113,7 @@
 
 
       register: pve_isos
+      check_mode: false
 
     - name: "Check Ubuntu ISO exists"
       ansible.builtin.set_fact:
@@ -127,6 +131,7 @@
 
 
       register: pve_vms
+      check_mode: false
 
     - name: "Find VMs in target range"
       ansible.builtin.set_fact:
@@ -170,6 +175,7 @@
       register: tmpl_config
       ignore_errors: true
       when: tmpl_exists | bool
+      check_mode: false
 
     - name: "Record template check"
       ansible.builtin.set_fact:
@@ -187,6 +193,7 @@
 
       register: pve_network
       ignore_errors: true
+      check_mode: false
 
     - name: "Record network check"
       ansible.builtin.set_fact:
@@ -226,6 +233,7 @@
         label: "{{ item.name }}"
       ignore_errors: true
       when: check_vms is defined and check_vms | length > 0
+      check_mode: false
 
     - name: "Record VM health checks"
       ansible.builtin.set_fact:

@@ -57,6 +57,7 @@
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -78,6 +79,7 @@
       retries: 6
       delay: 5
       until: _gf.rc == 0
+      check_mode: false
 
     - name: "Prometheus ready (/-/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-prometheus wget -q -O /dev/null http://127.0.0.1:9090/-/ready"
@@ -86,6 +88,7 @@
       retries: 6
       delay: 5
       until: _prom.rc == 0
+      check_mode: false
 
     - name: "Loki ready (/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"
@@ -94,6 +97,7 @@
       retries: 8
       delay: 5
       until: _loki.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

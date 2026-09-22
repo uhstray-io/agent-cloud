@@ -77,8 +77,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       is proven by `--list-tasks`, since Semaphore cannot launch a tag override. REMAINING:
       a production dry run of each Proxmox, SSH-host and backup playbook's `(Dev)` template
       after this branch reaches `dev` (operator decision)
-- [ ] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs
-- [ ] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
+- [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
+      2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
+      findings; normal runs are unchanged by construction (every guard is inert without
+      --check), BATS 0 failures, pytest 339, ansible-lint and syntax-check clean. Check-mode
+      RUNS of wave 2 are not done: each is proven when its service is next dry-run
+- [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
 

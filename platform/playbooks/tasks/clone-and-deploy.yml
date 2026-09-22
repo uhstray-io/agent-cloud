@@ -53,6 +53,7 @@
     PROXMOX_TOKEN_ID: "{{ proxmox_token_id | default('') }}"
   register: deploy_result
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Show deploy output"
   ansible.builtin.debug:
@@ -68,6 +69,7 @@
   retries: 5
   delay: 5
   when: health_path is defined and service_url is defined
+  check_mode: false
 
 - name: "Report status for {{ service_name }}"
   ansible.builtin.debug:

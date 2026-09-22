@@ -97,6 +97,7 @@
           - "SELECT to_regclass('public.user_api_keys');"
       register: _schema
       changed_when: false
+      check_mode: false
 
     - name: "Require the user_api_keys table (verified at n8n@2.25.7)"
       ansible.builtin.assert:
@@ -130,6 +131,7 @@
       register: _row
       changed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Parse what the database answered"
       ansible.builtin.set_fact:
@@ -162,6 +164,8 @@
       no_log: true
 
     # ── Mint path: only when no key with our label exists yet ──────────────
+      changed_when: false
+      check_mode: false
     - name: "Mint the API key via the owner session"
       when: _key_count | int == 0
       block:
@@ -173,6 +177,7 @@
           register: _n8n_secret
           delegate_to: localhost
           no_log: true
+          check_mode: false
 
         - name: "Compute the owner's TOTP code (only when 2FA is enrolled)"
           # /rest/login accepts an optional mfaCode (verified at n8n@2.25.7,
@@ -193,6 +198,7 @@
           delegate_to: localhost
           changed_when: false
           no_log: true
+          check_mode: false
 
         - name: "Log in to n8n as the owner"
           # 401 here has two usual causes on a migrated instance: the live
@@ -214,6 +220,7 @@
             status_code: [200]
           register: _login
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Fetch the valid API-key scopes for the owner role"
           # 404 = the public API is disabled at the instance level
@@ -225,6 +232,7 @@
             status_code: [200, 404]
           register: _scopes
           no_log: true
+          check_mode: false
 
         - name: "Require the public API to be enabled"
           ansible.builtin.assert:
@@ -249,6 +257,7 @@
             status_code: [200]
           register: _mint
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Take the raw key from the creation response"
           ansible.builtin.set_fact:

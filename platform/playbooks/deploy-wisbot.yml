@@ -81,6 +81,7 @@
         WISBOT_URL: "{{ service_url | default('http://localhost:8080') }}"
       register: _wisbot_deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Deploy output"
       ansible.builtin.debug:
@@ -109,6 +110,7 @@
       retries: 6
       delay: 10
       until: _wisbot_health is succeeded
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

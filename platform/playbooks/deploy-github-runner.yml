@@ -142,6 +142,7 @@
       register: _sudocheck
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Refuse to proceed if the runner account can escalate"
       ansible.builtin.assert:
@@ -174,6 +175,7 @@
         label: "{{ item.repo }} v{{ item.ver }}"
       delegate_to: localhost
       become: false
+      check_mode: false
 
     - name: "Extract each artefact's published digest"
       # Both releases expose a per-asset `digest` field ("sha256:..."), so no release-body
@@ -207,6 +209,8 @@
       delegate_to: localhost
       become: false
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the App private key from OpenBao"
       ansible.builtin.uri:
@@ -219,6 +223,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     - name: "Mint a single-use runner registration token"
       # Runs on the CONTROLLER: the runner host is firewalled away from the secret store
@@ -260,6 +265,7 @@
     # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
     # the helper's stderr is matched against its own known messages and only the verdict
     # is printed. Shapes, counts and verdicts are safe; values are not.
+      check_mode: false
     - name: "Classify the outcome without exposing any credential"
       ansible.builtin.set_fact:
         # Matches the PEM armour prefix WITHOUT spelling out the full header: the
@@ -373,6 +379,7 @@
     # no_log step that merely fails is undiagnosable. The script never echoes the token
     # and the runner's own configuration masks secrets it is given, so its output is safe
     # to surface — and surfacing it is what turns "failed" into something actionable.
+      when: not ansible_check_mode
     - name: "Report the registration outcome"
       ansible.builtin.debug:
         msg: >-
@@ -428,6 +435,7 @@
       # False for a dead runner and this gate passed it. The final verification reported
       # success for a runner serving nothing.
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

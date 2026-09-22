@@ -79,6 +79,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -105,6 +106,7 @@
       retries: 5
       delay: 3
       until: _dig_wild.stdout | trim | length > 0
+      check_mode: false
 
     - name: "Assert the wildcard resolves to the configured target"
       ansible.builtin.assert:
@@ -122,6 +124,7 @@
       register: _dig_fwd
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

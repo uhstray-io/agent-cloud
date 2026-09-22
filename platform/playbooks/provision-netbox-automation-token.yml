@@ -39,6 +39,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the NetBox secret (does the token already exist?)"
       ansible.builtin.uri:
@@ -50,6 +52,7 @@
       register: _nb_secret
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data.automation_api_token | default('')) | length > 0
@@ -93,6 +96,7 @@
       register: _mint
       changed_when: true
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Sanity-check the minted token (NetBox keys are 40 chars)"
       ansible.builtin.assert:
@@ -113,6 +117,7 @@
         status_code: [200, 204]
       delegate_to: localhost
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Provisioned"
       ansible.builtin.debug:

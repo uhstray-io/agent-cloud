@@ -31,6 +31,7 @@
       register: _docker_check
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Install Docker CE"
       when: _docker_check.rc != 0
@@ -59,11 +60,13 @@
           ansible.builtin.command: dpkg --print-architecture
           register: _arch
           changed_when: false
+          check_mode: false
 
         - name: "Get Ubuntu codename"
           ansible.builtin.shell: . /etc/os-release && echo "${VERSION_CODENAME}"
           register: _codename
           changed_when: false
+          check_mode: false
 
         - name: "Add Docker apt repository"
           ansible.builtin.apt_repository:
@@ -99,6 +102,7 @@
       become: false
       register: _docker_ver
       changed_when: false
+      check_mode: false
 
     - name: "Docker ready"
       ansible.builtin.debug:

@@ -59,6 +59,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the n8n and tududi secrets"
       ansible.builtin.uri:
@@ -70,6 +72,7 @@
       register: _secrets
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "Hold the keys"
       ansible.builtin.set_fact:
@@ -99,6 +102,7 @@
         status_code: [200]
       register: _workflows
       no_log: true
+      check_mode: false
 
     - name: "Require exactly one workflow by that name (named)"
       # The execution URL below indexes `| first` on this selection. With no
@@ -127,6 +131,7 @@
         status_code: [200]
       register: _executions
       no_log: true
+      check_mode: false
 
     - name: "Fetch every tududi task (undeclared-project sweep included)"
       ansible.builtin.uri:
@@ -137,6 +142,7 @@
       register: _tasks
       failed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Refuse an unreadable tududi (named — the fetch above is censored)"
       ansible.builtin.assert:
@@ -162,6 +168,7 @@
         argv: ["{{ _engine }}", "cp", "/tmp/{{ item }}", "{{ _container }}:/tmp/{{ item }}"]
       loop: [sync-core.js, verify-pair.js]
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Verify each enabled pair (read-only; the engine renders the verdict)"
       ansible.builtin.include_tasks: tasks/verify-tududi-sync-pair.yml

@@ -31,6 +31,7 @@
         {{ container_engine | default('docker') }} rm netbox-orb-agent 2>/dev/null || true
       become: true
       changed_when: false
+      check_mode: false
 
     - name: "Start orb-agent (privileged, host networking, with workers)"
       ansible.builtin.shell: |
@@ -47,6 +48,7 @@
           run -c /opt/orb/agent.yaml
       become: true
       register: _orb_start
+      when: not ansible_check_mode
 
     - name: "Wait for orb-agent to be running"
       ansible.builtin.shell: |
@@ -57,6 +59,7 @@
       delay: 10
       until: _orb_running.stdout == 'true'
       changed_when: false
+      check_mode: false
 
     - name: "Check agent logs for vault auth"
       ansible.builtin.shell: |
@@ -67,6 +70,7 @@
       become: true
       register: _orb_logs
       changed_when: false
+      check_mode: false
 
     - name: "Orb Agent status"
       ansible.builtin.debug:

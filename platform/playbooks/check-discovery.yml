@@ -12,6 +12,7 @@
       register: _agent_status
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: Report agent status
       ansible.builtin.debug:
@@ -23,6 +24,7 @@
       register: _agent_logs
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: Show worker run output
       ansible.builtin.debug:
@@ -48,6 +50,7 @@
       register: _nb_stats
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: Show NetBox discovery stats
       ansible.builtin.debug:
@@ -81,6 +84,7 @@
       register: _vm_stats
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: Show virtualization and primary_ip4 stats
       ansible.builtin.debug:
@@ -107,6 +111,7 @@
         executable: /bin/bash
       register: _gps_fix
       changed_when: "'SET GPS' in _gps_fix.stdout"
+      when: not ansible_check_mode
 
     - name: Show GPS result
       ansible.builtin.debug:
@@ -145,6 +150,7 @@
       register: _seed_stats
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: Show seed data stats
       ansible.builtin.debug:

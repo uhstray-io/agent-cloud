@@ -36,6 +36,7 @@
   changed_when: false
   failed_when: _mint_ca_present.rc != 0
   # A clear failure beats a confusing exec error if step-ca isn't up yet.
+  check_mode: false
 
 - name: "Mint the wildcard (+ apex) leaf from step-ca for zone {{ _mint_zone }}"
   # Password comes from the CA container's own env — the key never leaves the
@@ -54,6 +55,7 @@
       rc=$?; rm -f /tmp/pw; exit $rc
     '
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Ensure the consumer's certs dir exists"
   ansible.builtin.file:
@@ -67,6 +69,7 @@
     - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.crt {{ _mint_dest_dir }}/certs/wildcard.crt"
     - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.key {{ _mint_dest_dir }}/certs/wildcard.key"
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Lock down the leaf key perms"
   ansible.builtin.file:
@@ -78,3 +81,4 @@
     {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }}
     rm -f /tmp/mint.crt /tmp/mint.key
   changed_when: true
+  when: not ansible_check_mode

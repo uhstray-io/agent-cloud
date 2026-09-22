@@ -123,6 +123,7 @@
       register: _machine
       changed_when: false
       failed_when: "'running' not in _machine.stdout"
+      check_mode: false
 
     - name: "Ensure state dir"
       ansible.builtin.file:
@@ -137,6 +138,7 @@
       changed_when: "'created' in _netres.stdout | default('')"
 
     # ── Stage 1: OpenBao (persistent file storage) ──────────────────────
+      when: not ansible_check_mode
     - name: "Ensure local OpenBao config dir"
       # 0755 (not 0700): the container mounts this :ro and the unprivileged
       # in-container `openbao` user must traverse it to read openbao.hcl. The
@@ -201,6 +203,7 @@
         fi
       register: _bao_start
       changed_when: "(_bao_start.stdout | trim) != 'running'"
+      when: not ansible_check_mode
 
     - name: "Wait for OpenBao to accept API requests"
       # seal-status answers 200 even while uninitialized/sealed; /sys/health
@@ -215,6 +218,7 @@
 
     # _bao_listen.json (from the wait above) IS the seal-status body — reuse it
     # rather than re-GET the same endpoint; nothing mutates state in between.
+      check_mode: false
     - name: "Initialize OpenBao (first run only)"
       ansible.builtin.uri:
         url: "{{ _bao_url_host }}/v1/sys/init"
@@ -222,7 +226,9 @@
         body_format: json
         body: { secret_shares: 1, secret_threshold: 1 }
       register: _bao_init
-      when: not _bao_listen.json.initialized
+      when:
+        - not ansible_check_mode
+        - not _bao_listen.json.initialized
       no_log: true
 
     - name: "Persist init material (root token + unseal key, 0600)"
@@ -277,7 +283,9 @@
       until: not _bao_unseal.json.sealed
       retries: 5
       delay: 2
-      when: _bao_listen.json.sealed
+      when:
+        - not ansible_check_mode
+        - _bao_listen.json.sealed
       no_log: true
 
     - name: "Enable KV v2 at secret/ (idempotent; dev mode auto-mounted this)"
@@ -291,6 +299,7 @@
         status_code: [200, 204, 400]   # 400 = already mounted
       register: _kv_enable
       changed_when: _kv_enable.status in [200, 204]
+      when: not ansible_check_mode
 
     - name: "Enable AppRole auth (idempotent)"
       ansible.builtin.uri:
@@ -303,6 +312,7 @@
         status_code: [200, 204, 400]   # 400 = already enabled
       register: _approle_enable
       changed_when: _approle_enable.status in [200, 204]
+      when: not ansible_check_mode
 
     - name: "Write local-semaphore policy"
       ansible.builtin.uri:
@@ -316,6 +326,7 @@
             path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
         status_code: [200, 204]
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Create local-semaphore AppRole"
       ansible.builtin.uri:
@@ -329,6 +340,7 @@
           token_max_ttl: 2h
         status_code: [200, 204]
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Read AppRole role-id"
       ansible.builtin.uri:
@@ -336,6 +348,7 @@
         headers: *bao_root_hdr
       register: _role_id
       no_log: true
+      check_mode: false
 
     - name: "Generate AppRole secret-id"
       ansible.builtin.uri:
@@ -358,6 +371,7 @@
     #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
     # No no_log here — deploys + their verify phases must stay diagnosable
     # (CLAUDE.md: scope no_log to credential tasks only).
+      when: not ansible_check_mode
     - name: "Locate podman-compose on the Mac (forces the compose provider)"  # noqa: command-instead-of-shell
       # shell (not command): `command -v` is a shell builtin. Genesis REQUIRES
       # podman-compose — without it detect_runtime falls back to `podman compose`
@@ -366,6 +380,7 @@
       register: _pc
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Require podman-compose for the Mac-direct genesis path"
       ansible.builtin.assert:
@@ -407,12 +422,14 @@
     # must never be left unbootable). The local admin login is always retained
     # as the fallback (OIDC users are non-admin — Semaphore has no group->role
     # mapping; promote OIDC admins by hand).
+      when: not ansible_check_mode
     - name: "Detect OIDC dependencies (step-ca + authentik up)"
       ansible.builtin.shell: >-
         podman container exists {{ _stepca_name }} && podman container exists authentik-server
         && echo ready || echo notready
       register: _oidc_deps
       changed_when: false
+      check_mode: false
 
     - name: "Read the Semaphore OIDC client secret from OpenBao"
       ansible.builtin.uri:
@@ -422,6 +439,7 @@
       register: _ak_secret
       when: _oidc_deps.stdout | trim == 'ready'
       no_log: true
+      check_mode: false
 
     - name: "Build SEMAPHORE_OIDC_PROVIDERS (inner-map JSON, keyed 'authentik')"
       # provider_url is the Authentik issuer for OIDC auto-discovery; redirect_url
@@ -456,6 +474,7 @@
       changed_when: false
       when: _sem_oidc_json is defined
       no_log: true
+      check_mode: false
 
     - name: "Mark OIDC ready (deps up + validated JSON present)"
       ansible.builtin.set_fact:
@@ -477,6 +496,7 @@
       register: _stepca_root
       changed_when: false
       when: _oidc_ready | bool
+      check_mode: false
 
     - name: "Enable the OpenBao oidc auth method (idempotent)"
       ansible.builtin.uri:
@@ -486,7 +506,9 @@
         body_format: json
         body: { type: oidc }
         status_code: [200, 204, 400]   # 400 = already enabled
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Write the OpenBao admin policy (platform-admin)"
@@ -499,7 +521,9 @@
           policy: |
             path "*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
         status_code: [200, 204]
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Configure OpenBao auth/oidc against Authentik (validates discovery)"
@@ -519,7 +543,9 @@
           default_role: platform-admins
         status_code: [200, 204]
       register: _bao_oidc_cfg
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       retries: 5
       delay: 6
       until: _bao_oidc_cfg.status is defined and _bao_oidc_cfg.status in [200, 204]
@@ -542,7 +568,9 @@
           token_policies: ["platform-admin"]
           token_ttl: 1h
         status_code: [200, 204]
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
@@ -565,7 +593,9 @@
         } > {{ _state_dir }}/step-ca-bundle.crt
       register: _bundle
       changed_when: true
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
 
     - name: "Write the Semaphore OIDC env-file (0600) — avoids shell-quoting the JSON"
       ansible.builtin.copy:
@@ -596,6 +626,7 @@
         "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
       register: _share_mkdir
       changed_when: false
+      check_mode: false
 
     - name: "Recreate Semaphore if any required mount or label=disable is missing"
       ansible.builtin.shell: |
@@ -627,6 +658,7 @@
         WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
       register: _sem_recreate
       changed_when: "_sem_recreate.stdout | trim == 'recreated'"
+      when: not ansible_check_mode
 
     - name: "Start local Semaphore"
       ansible.builtin.shell: |
@@ -655,6 +687,7 @@
         fi
       register: _sem_start
       changed_when: "_sem_start.stdout | trim != 'running'"
+      when: not ansible_check_mode
 
     - name: "Wait for Semaphore API"
       ansible.builtin.uri:
@@ -664,6 +697,7 @@
       until: _sem_ping.status == 200
       retries: 30
       delay: 2
+      check_mode: false
 
     - name: "Install task-execution deps inside Semaphore (hvac + collections)"
       # Check + install each dependency independently so a warm rerun after a
@@ -679,6 +713,7 @@
            { ansible-galaxy collection install ansible.posix; echo INSTALLED; }"
       register: _sem_deps
       changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
+      when: not ansible_check_mode
 
     - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
       ansible.builtin.command: >-
@@ -688,6 +723,7 @@
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
 
     # ── Stage 3: automatic API token ────────────────────────────────────
+      when: not ansible_check_mode
     - name: "Login to Semaphore (session cookie)"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/auth/login"
@@ -699,6 +735,7 @@
         status_code: [204]
       register: _login
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Create API token automatically"
       ansible.builtin.uri:
@@ -709,6 +746,7 @@
         status_code: [201]
       register: _token_resp
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Set token fact"
       ansible.builtin.set_fact:
@@ -726,6 +764,7 @@
         headers:
           Authorization: "Bearer {{ _sem_token }}"
       register: _sem_users
+      check_mode: false
 
     - name: "Create agent-cloud-admin Semaphore admin user (idempotent)"
       ansible.builtin.uri:
@@ -741,7 +780,9 @@
           admin: true
           external: true
         status_code: [201, 204]
-      when: _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
       changed_when: true
 
     # ── Stage 4: project + resources (idempotent by name) ───────────────
@@ -751,6 +792,7 @@
         headers: &sem_hdr
           Authorization: "Bearer {{ _sem_token }}"
       register: _projects
+      check_mode: false
 
     - name: "Create agent-cloud project"
       ansible.builtin.uri:
@@ -760,7 +802,9 @@
         body_format: json
         body: { name: agent-cloud }
         status_code: [201]
-      when: _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
       register: _proj_create
 
     - name: "Resolve project id"
@@ -768,6 +812,7 @@
         url: "{{ _sem_url }}/api/projects"
         headers: *sem_hdr
       register: _projects2
+      check_mode: false
 
     - name: "Set project id"
       ansible.builtin.set_fact:
@@ -778,6 +823,7 @@
         url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
         headers: *sem_hdr
       register: _keys
+      check_mode: false
 
     - name: "Create 'none' key"
       ansible.builtin.uri:
@@ -787,13 +833,16 @@
         body_format: json
         body: { name: none, type: none, project_id: "{{ _pid | int }}" }
         status_code: [201, 204]
-      when: _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
 
     - name: "Resolve key id"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
         headers: *sem_hdr
       register: _keys2
+      check_mode: false
 
     - name: "Ensure repository"
       ansible.builtin.uri:
@@ -811,6 +860,7 @@
     # `agent-cloud worktree` is claimed by no other declaration; templates-local
     # binds every (Local) template to it. HEAD = whatever branch the developer
     # has checked out, at its last commit — the thing local-dev exists to test.
+      check_mode: false
     - name: "Create the agent-cloud worktree repository record"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
@@ -824,7 +874,9 @@
           git_branch: "{{ _repo_branch }}"
           ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
         status_code: [201, 204]
-      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 0
 
     - name: "Correct the worktree record if it drifted"
       ansible.builtin.uri:
@@ -843,6 +895,7 @@
       vars:
         _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | first }}"
       when:
+        - not ansible_check_mode
         - _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length > 0
         - _existing_repo.git_url != _repo_mount or _existing_repo.git_branch != _repo_branch
       changed_when: true
@@ -852,6 +905,7 @@
         url: "{{ _sem_url }}/api/project/{{ _pid }}/inventory"
         headers: *sem_hdr
       register: _invs
+      check_mode: false
 
     - name: "Create or update local inventory"
       ansible.builtin.uri:
@@ -1132,12 +1186,14 @@
               'inventory': _inv_ini}
              | combine({'id': (_existing_inv | first | int)} if (_existing_inv | length > 0) else {}) }}
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Ensure environment (AppRole injection, as in prod)"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
         headers: *sem_hdr
       register: _envs
+      check_mode: false
 
     - name: "Create or update local-openbao environment"
       ansible.builtin.uri:
@@ -1168,6 +1224,7 @@
              | combine({'id': (_existing_env | first | int)} if (_existing_env | length > 0) else {}) }}
       changed_when: true
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Resolve inventory + environment ids"
       ansible.builtin.uri:
@@ -1175,6 +1232,7 @@
         headers: *sem_hdr
       register: _res
       loop: [inventory, environment]
+      check_mode: false
 
     - name: "Set resource ids"
       ansible.builtin.set_fact:
@@ -1205,6 +1263,7 @@
           # honcho shared-reads gemini_api_key from nemoclaw (deploy-honcho.yml).
           nemoclaw:
             gemini_api_key: LOCAL_FAKE_gemini_api_key
+      check_mode: false
 
     - name: "Seed LOCAL_FAKE secrets for absent services"
       ansible.builtin.uri:
@@ -1215,7 +1274,9 @@
         body:
           data: "{{ item.item.value }}"
         status_code: [200, 204]
-      when: item.status == 404
+      when:
+        - not ansible_check_mode
+        - item.status == 404
       loop: "{{ _seed_check.results }}"
       loop_control:
         label: "{{ item.item.key }}"
@@ -1262,6 +1323,7 @@
         SEMAPHORE_URL: "{{ _sem_url }}"
         SEMAPHORE_TOKEN: "{{ _sem_token }}"
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Register templates (shared + local-only)"
       ansible.builtin.command:
@@ -1275,6 +1337,7 @@
         SEMAPHORE_URL: "{{ _sem_url }}"
         SEMAPHORE_TOKEN: "{{ _sem_token }}"
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Bootstrap complete"
       ansible.builtin.debug:

@@ -88,6 +88,7 @@
         N8N_LISTEN: "{{ n8n_bind | default('127.0.0.1') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -121,11 +122,13 @@
     # owner account or it serves /setup. Seed agent-cloud-admin as the owner so an
     # SSO'd admin lands ready. Idempotent: only runs when n8n still wants setup,
     # so re-deploys never clobber an existing owner. Password from OpenBao.
+      check_mode: false
     - name: "Check whether n8n still needs owner setup"
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/rest/settings"
         status_code: [200]
       register: _n8n_settings
+      check_mode: false
 
     - name: "Seed the n8n owner account (agent-cloud-admin)"
       when: _n8n_settings.json.data.userManagement.showSetupOnFirstLoad | default(false) | bool
@@ -138,6 +141,8 @@
             body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
           register: _bao_login
           no_log: true
+          changed_when: false
+          check_mode: false
 
         - name: "Read the n8n owner password from OpenBao"
           ansible.builtin.uri:
@@ -146,6 +151,7 @@
               X-Vault-Token: "{{ _bao_login.json.auth.client_token }}"
           register: _n8n_secret
           no_log: true
+          check_mode: false
 
         - name: "Create the n8n owner via the setup endpoint"
           ansible.builtin.uri:
@@ -159,6 +165,7 @@
               password: "{{ _n8n_secret.json.data.data.owner_password }}"
             status_code: [200]
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Owner seeded"
           ansible.builtin.debug:

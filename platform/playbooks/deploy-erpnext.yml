@@ -83,6 +83,7 @@
         ERPNEXT_PORT: "{{ erpnext_port | default('8080') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -107,6 +108,7 @@
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
       register: _bootstrap
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show post-deploy.sh output"
       ansible.builtin.debug:
@@ -131,6 +133,7 @@
       retries: 12
       delay: 5
       until: _erpnext.status == 200
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

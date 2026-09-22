@@ -21,6 +21,7 @@
 # apt_key is removed on Ubuntu 24.04 and deprecated in modern Ansible. Use the
 # signed-by keyring pattern instead: drop the (ASCII-armored) key into
 # /etc/apt/keyrings and reference it from the repo's signed-by option.
+  check_mode: false
 - name: "Ensure apt keyrings directory"
   ansible.builtin.file:
     path: /etc/apt/keyrings
@@ -73,6 +74,7 @@
   register: _gpu_probe
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: "GPU probe result"
   ansible.builtin.debug:

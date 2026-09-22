@@ -26,6 +26,8 @@
   register: _admin_auth
   delegate_to: localhost
   no_log: true
+  changed_when: false
+  check_mode: false
 
 - name: "Create or update policy for {{ _approle_name }}"
   ansible.builtin.uri:
@@ -38,6 +40,7 @@
       policy: "{{ _approle_policy }}"
     status_code: [200, 204]
   delegate_to: localhost
+  when: not ansible_check_mode
 
 - name: "Ensure AppRole auth is enabled"
   ansible.builtin.uri:
@@ -48,6 +51,7 @@
     status_code: [200]
   register: _auth_methods
   delegate_to: localhost
+  check_mode: false
 
 - name: "Create or update AppRole — {{ _approle_name }}"
   ansible.builtin.uri:
@@ -73,6 +77,7 @@
       token_num_uses: "{{ _approle_token_num_uses | default(25) }}"
     status_code: [200, 204]
   delegate_to: localhost
+  when: not ansible_check_mode
 
 - name: "Get role_id"
   ansible.builtin.uri:
@@ -83,6 +88,7 @@
     status_code: [200]
   register: _role_id_resp
   delegate_to: localhost
+  check_mode: false
 
 - name: "Read existing stored credentials (idempotency read-guard)"
   # Avoid minting a fresh, orphaned secret_id on every run: only generate one when
@@ -96,6 +102,7 @@
   register: _existing_creds
   delegate_to: localhost
   no_log: true
+  check_mode: false
 
 - name: "Generate secret_id (only when none is already stored)"
   ansible.builtin.uri:
@@ -109,9 +116,11 @@
   register: _secret_id_resp
   delegate_to: localhost
   no_log: true
-  when: >-
-    (_existing_creds.status | default(404)) != 200
-    or (_existing_creds.json.data.data.secret_id | default('')) | length == 0
+  when:
+    - not ansible_check_mode
+    - >-
+      (_existing_creds.status | default(404)) != 200
+      or (_existing_creds.json.data.data.secret_id | default('')) | length == 0
 
 - name: "Set AppRole credentials (reuse the stored secret_id when present)"
   ansible.builtin.set_fact:
@@ -133,7 +142,9 @@
     status_code: [200]
   delegate_to: localhost
   no_log: true
-  when: _secret_id_resp is not skipped
+  when:
+    - not ansible_check_mode
+    - _secret_id_resp is not skipped
 
 - name: "AppRole provisioned"
   ansible.builtin.debug:

@@ -94,6 +94,7 @@
         status_code: [200]
       register: _sem_users
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
+      check_mode: false
 
     - name: "Report how many users Semaphore returned (safe — count + status only)"
       ansible.builtin.debug:
@@ -141,6 +142,7 @@
       register: _sem_promoted
       changed_when: true
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
+      when: not ansible_check_mode
 
     - name: "Report the promotion PUT statuses (safe — status codes only, no token)"
       ansible.builtin.debug:

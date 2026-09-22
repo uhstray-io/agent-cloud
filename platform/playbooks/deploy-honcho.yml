@@ -105,6 +105,7 @@
       changed_when: false
       failed_when: false
       when: not (local_mode | default(false) | bool)
+      check_mode: false
 
     - name: "Pre-flight: fall back to the local image store when the pull failed"
       ansible.builtin.command: "{{ _engine }} image exists {{ _honcho_image }}"
@@ -114,6 +115,7 @@
       when:
         - not (local_mode | default(false) | bool)
         - _honcho_pull.rc | default(1) != 0
+      check_mode: false
 
     - name: "Pre-flight: require the pinned honcho image before deploying"
       ansible.builtin.assert:
@@ -140,6 +142,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -167,6 +170,7 @@
       retries: 10
       delay: 6
       until: _honcho_health.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

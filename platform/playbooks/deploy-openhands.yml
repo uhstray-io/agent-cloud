@@ -44,6 +44,7 @@
       register: _docker_check
       changed_when: false
       failed_when: _docker_check.rc != 0
+      check_mode: false
 
     - name: "Render compose .env"
       ansible.builtin.template:
@@ -81,6 +82,7 @@
         CONTAINER_ENGINE: docker
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -103,6 +105,7 @@
       retries: 12
       delay: 6
       until: _oh.status is defined and _oh.status > 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

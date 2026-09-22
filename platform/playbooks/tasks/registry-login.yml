@@ -58,6 +58,7 @@
   register: _reg_login
   changed_when: false
   no_log: true
+  check_mode: false
 
 - name: "Report the registry login (safe fields only)"
   ansible.builtin.debug:
