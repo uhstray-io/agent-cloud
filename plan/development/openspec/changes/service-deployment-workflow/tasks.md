@@ -120,10 +120,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 5. Semaphore environments
 
-- [ ] 5.1 If 0.2 proved task-level branch override: remove `dev_variant` generation from
+- [ ] 5.1 PENDING one live launch of a `dev` task by branch on a base template. If 0.2 proved task-level branch override: remove `dev_variant` generation from
       `setup-templates.yml`, launch on `dev` by branch; update the operating guide. If not:
       record the result and keep the twins (design risk entry)
-- [ ] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
+- [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
+      (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
 - [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
       cannot reach production" pass (the first is marked not-applicable if 5.1 kept the twins)
 
