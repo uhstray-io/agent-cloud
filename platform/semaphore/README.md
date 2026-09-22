@@ -33,7 +33,11 @@ The controller runs a template from one of the two repository records declared i
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
 in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
-**A feature branch is invisible to the controller.** Code that a Semaphore task
+**In the web UI, a feature branch is invisible to the controller.** Through the API it
+is not: a task's `git_branch` replaces the repository's branch for that run, and the
+template's "allow override branch" flag is checked only by the UI (Semaphore v2.18.12,
+`services/tasks/LocalJob.go:817` and `web/src/components/TaskForm.vue:123`; see
+`docs/MISTAKES.md` 1.9). Treat an API token as able to run any pushed branch. Code that a Semaphore task
 must execute — a new playbook, a new OpenTofu file, a changed template — has to
 be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 `(Dev)` variant can run it, and into `main` before the base template can. Plan

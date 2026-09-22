@@ -35,6 +35,7 @@ supersede it with a new entry and link both.
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
+| 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -348,6 +349,28 @@ earns the words "works for the current values", nothing stronger.
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
+
+### 1.9 "A feature branch is invisible to the controller" held only in the web UI
+
+**What happened.** `platform/semaphore/README.md` (section "What Semaphore can see",
+recorded 2026-09-14) stated that the controller can run only `main` and `dev` and that a
+feature branch is invisible to it. On 2026-09-22, while checking whether the `(Dev)` twins
+could be replaced by choosing the branch at launch, the Semaphore source at the commit the
+local controller runs (`v2.18.12^0-8a4dcf0`) showed `services/tasks/LocalJob.go:817-819`
+replacing the repository's branch with the task's `git_branch` unconditionally. The
+template flag `allow_override_branch_in_task` is read only by
+`web/src/components/TaskForm.vue:123`; the API validates the branch name's syntax and
+nothing else (`db/git_branch.go`).
+
+**Root cause.** The claim was derived from what the UI offers and from the two repository
+records, not from the API or the runner. A UI affordance was read as a server-side control.
+
+**The rule.** A statement that a system cannot do something must name the server-side code
+or live refusal that prevents it. What a UI does not offer is not a control.
+
+**Enforced by.** Convention. For agents, OPA's branch rule in change
+`service-deployment-workflow` (task 4.5) becomes the control; for human API tokens nothing
+server-side limits the branch.
 
 ## 2. Tests that would have passed for the wrong reason
 

@@ -10,15 +10,21 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       branch). 2026-09-22: `inference-gateway-agentgateway`'s implementation is NOT on `dev`
       (16 commits ahead on its impl branch, no PR), so its merge became the entry gate of
       section 3, the only section that needs the gateway code; see 3.0
-- [ ] 0.2 Spike on the local controller, recorded in `design.md` Context: does a task's
+- [x] 0.2 Spike on the local controller, recorded in `design.md` Context: does a task's
       `dry_run` flag reach `ansible-playbook` as `--check`, does `diff` reach it as `--diff`,
       and does a task-level `git_branch` override run that branch's tree for a template bound
-      to `main`
-- [ ] 0.3 Pin the Semaphore image (compose uses `:latest`) to the version the spike ran on
-- [ ] 0.4 Verify NetBox virtual machines accept custom fields on the pinned NetBox version and
-      record the API used to create them
-- [ ] 0.5 Verify agentgateway passes `response_format` with `type: json_schema` through to vLLM
-      unchanged (schema-constrained request through the local gateway, then direct)
+      to `main`. 2026-09-22: yes to all three, from source at the running commit; the
+      override is not gated server-side (ledger 1.9); live confirmation rides on section 2
+- [ ] 0.3 Pin the Semaphore image (compose uses `:latest`) to the version the spike ran on.
+      BLOCKED 2026-09-22: production's running version is readable only through the
+      authenticated `GET /api/info` or the UI; pinning blind could downgrade it across its
+      database migrations. Operator reads it, then pin at or above it
+- [x] 0.4 Verify NetBox virtual machines accept custom fields on the pinned NetBox version and
+      record the API used to create them. 2026-09-22: yes, see `design.md` Context
+- [x] 0.5 Verify agentgateway passes `response_format` with `type: json_schema` through to vLLM
+      unchanged (schema-constrained request through the local gateway, then direct).
+      2026-09-22: source-level yes at v1.5.0 (`design.md` Context); the live request needs an
+      enrolled client key, which has no sanctioned workstation path, so it runs in 3.3
 - [ ] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
@@ -66,7 +72,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
       secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
 - [ ] 3.3 agentgateway route for skynet's orchestration API on the default gateway, key-gated,
-      restricted to the operator identity; deploy and verify locally
+      restricted to the operator identity; deploy and verify locally. The verify also sends
+      one `response_format: json_schema` request through the gateway to the DGX and asserts
+      the reply parses against the schema (live half of 0.5)
 - [ ] 3.4 **[skynet]** Drop Bifrost from the agent-cloud path: Tier 2 calls the gateway's `/v1`
       with the calling role's key; Tier 1 stays only for skynet-local models
 - [ ] 3.5 **[skynet]** Postgres checkpointer in place of the in-memory saver; its own small

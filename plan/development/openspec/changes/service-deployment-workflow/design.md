@@ -21,9 +21,21 @@ Verified on 2026-09-22:
   `RUN: { ...json... }` under `CUSTOM STATS:` (throwaway run, ansible-core 2.21.0). The
   plan-15 idea of a `debug` line with an embedded JSON string came out escaped
   (`"msg": "STEP-RESULT {\"schema\":...}"`) in the same probe.
-- **Semaphore tasks carry `dry_run` and `diff` fields** (`db/Task.go`, `DryRun`/`Diff`, in the
-  upstream `develop` branch). Whether the runner turns them into `--check`/`--diff` was not
-  found in the files read; task 0.2 verifies it on the live controllers.
+- **Semaphore turns a task's `dry_run` into `--check` and `diff` into `--diff`**, and a task's
+  `git_branch` replaces the repository's branch for that run. Evidence (task 0.2,
+  2026-09-22), read from the source at the commit the local controller runs (`semaphore
+  version` in the container: `v2.18.12^0-8a4dcf0`): `services/tasks/LocalJob.go:432-439`
+  appends `--diff` and `--check`; `LocalJob.go:811-819` applies the template's branch, then
+  the task's. Not yet exercised by a live task, because no operator API token exists on the
+  workstation and the operating guide forbids reading the controller's own; the first
+  section-2 run through the UI with "Dry run" ticked confirms it.
+- **The template's "allow override branch" flag is enforced only in the web UI.**
+  `web/src/components/TaskForm.vue:123` hides the branch field unless the flag is set; the
+  API path validates only the branch name's syntax (`db/git_branch.go`,
+  `db/Task.go:166-169`) and the runner applies it unconditionally. Any caller with an API
+  token and run rights can run any branch that exists on the remote, feature branches
+  included. For agents, OPA's branch rule (task 4.5) is therefore the only branch control;
+  recorded as `docs/MISTAKES.md` 1.9.
 - **Semaphore sees `main` and `dev` only**, through two repository records; `dev_variant:
   true` is set on 35 templates in `templates.yml`, each generating a `(Dev)` twin. Local-dev
   has its own controller and `templates-local.yml` bound to the working tree.
@@ -33,6 +45,12 @@ Verified on 2026-09-22:
 - **agentgateway is not on `dev` yet.** Its service, playbooks and tests live on
   `feat/inference-gateway-agentgateway-impl`; its config attaches an `llm` block to a
   `default` gateway (`:4000`) and a `ui` gateway (`:4001`) with a strict key policy.
+- **agentgateway v1.5.0 forwards `response_format`.** Its passthrough completions `Request`
+  (`crates/llm/src/types/completions.rs:14-55`, tag `v1.5.0`, commit `fe67324`) types a
+  fixed set of fields and captures every other field in `#[serde(flatten, default)] rest`,
+  so `response_format` survives parse and re-serialisation; other providers read it from
+  that map (`conversion/vertex_gemini.rs:725`). Source-level only; the live request is in
+  task 3.3 (task 0.5, 2026-09-22).
 - **The DGX API is reachable from local-dev's host.** This Mac sits on the controller network
   and `spark-1`'s `/health` on the API port answered 200 from it; SSH to the node also
   answered. The node's address is known to the operator and must stay out of this repo;
@@ -40,6 +58,14 @@ Verified on 2026-09-22:
 - **`firewall_ssh_cidrs` is the only SSH source list** in `apply-firewall.yml` (required, at
   least one entry, rules added before enable). Nothing names the controller explicitly, and
   whether each host's list contains the controller's source was not checked (site-config).
+- **NetBox virtual machines accept custom fields** on the pinned base image
+  (`Dockerfile-Plugins`: `netboxcommunity/netbox:v4.5-4.0.0`; source read at `v4.5.10`):
+  `VirtualMachine` extends `PrimaryModel` → `NetBoxModel` → `NetBoxFeatureSet`, which
+  includes `CustomFieldsMixin` (`netbox/models/__init__.py:25-37`). Fields are created with
+  `POST /api/extras/custom-fields/` (`extras/api/urls.py:12`) and bound with `object_types:
+  ["virtualization.virtualmachine"]`, parsed as `app_label.model`
+  (`netbox/api/fields.py:112`); values are written through the object's `custom_fields` key
+  (task 0.4, 2026-09-22).
 - **Local NetBox** has a written fix plan (plan 04, "NetBox Local Engine"): app tier under
   podman through the local controller, discovery excluded. `production.yml` in this repo is a
   placeholder template; real ranges are in site-config only.
@@ -155,8 +181,9 @@ what. The current model encodes the second one by duplicating 35 templates.
 - Production vs local-dev stays two controllers (already true), and the registry names base
   templates only; skynet's configuration carries the controller URL and project per
   environment.
-- The twins are removed only after task 0.2 proves the controller honours a task-level
-  branch override for a template; until then both coexist.
+- Task 0.2 found the controller honours a task-level branch for every template, gated by
+  nothing server-side, so removing the twins loses no protection that exists today. The
+  twins go after one live `dev` launch by branch confirms it; until then both coexist.
 
 ### Thread G: local NetBox, discovery on local-dev only
 
