@@ -155,3 +155,6 @@ templates:
         description: Inventory group whose secrets to inventory (e.g. tududi_svc)
         type: string
         required: true
+
+  - name: "Validate All Services (Local)"
+    playbook: platform/playbooks/validate-all.yml

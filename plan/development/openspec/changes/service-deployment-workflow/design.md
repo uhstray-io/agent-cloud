@@ -96,6 +96,25 @@ Verified on 2026-09-22:
   podman through the local controller, discovery excluded. `production.yml` in this repo is a
   placeholder template; real ranges are in site-config only.
 
+## Wave-1 check-mode results (task 2.2)
+
+Local controller v2.18.12 / Ansible 2.16.5, `DRY_RUN=1 scripts/local-dev.sh run <playbook>`
+through worktree-bound `(Local)` templates, 2026-09-22.
+
+| Playbook | Normal | `--check` | Notes |
+|---|---|---|---|
+| `check-secrets.yml` | pass (task 958) | pass (959) | step result recorded in both; `check_mode: true` in the dry run |
+| `validate-all.yml` | pass (960) | pass (961) | identical output in both modes. **Finding for 7.1:** it reports success while four health checks never ran: `service_url` is undefined for four local hosts and `ignore_errors` hides it |
+| `deploy-authentik.yml` | not run (would redeploy local Authentik) | pass (962), `changed=4` | **Findings for 7.1:** the blueprint directory is reset every run, so the reset and every render after it report a change on a converged host; the `.env` render also reports a change, cause not yet diagnosed |
+
+Not runnable on local-dev: the Proxmox playbooks (`provision-template`, `provision-vm`,
+`resize-vm`, `snapshot-vm`, `destroy-vm`), the SSH host playbooks (`verify-host-access`,
+`distribute-ssh-keys`, `harden-ssh`, `apply-firewall`) and the site-config backups. The
+operator chose (2026-09-22) to prove those with a production dry run of their `(Dev)`
+templates once this branch reaches `dev`. That run is read-only against production by
+construction: every write is skipped under `--check`, and each playbook's guard test
+enforces it.
+
 ## Goals / Non-Goals
 
 **Goals:**

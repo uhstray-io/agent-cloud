@@ -33,7 +33,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       local_semaphore_image=docker.io/semaphoreui/semaphore:v2.19.11-ansible2.16.5`, confirm the
       sqlite store starts (the recorded v2.19-beta panic is gone), then move the default in
       `bootstrap-local-dev.yml`; keeps local and production on one branch-override behaviour
-- [ ] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
+- [x] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
 
@@ -65,11 +65,18 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 2. Check mode on every playbook
 
-- [ ] 2.1 Wave 1, registry executors (the templates named in plan 15's step table): apply the
+- [x] 2.1 Wave 1, registry executors (the templates named in plan 15's step table): apply the
       three patterns; tag verification `verify`; add the legacy `dry_run` mapping to the three
-      playbooks that accept it; remove each from the 1.4 allowlist
+      playbooks that accept it; remove each from the 1.4 allowlist. 2026-09-22: 32 files, allowlist 96 -> 67.
+      Deprecated `dry_run` only where it defaulted to false (create-netbox-device); the runner
+      group and NetBox cleanup keep `dry_run=true` as their safety default (spec scenario
+      "A dry-by-default playbook keeps its safety default")
 - [ ] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
-      `--tags verify`) and record the result per playbook in `design.md`
+      `--tags verify`) and record the result per playbook in `design.md`. 2026-09-22: the
+      local-runnable ones are recorded (design "Wave-1 check-mode results"); `--tags verify`
+      is proven by `--list-tasks`, since Semaphore cannot launch a tag override. REMAINING:
+      a production dry run of each Proxmox, SSH-host and backup playbook's `(Dev)` template
+      after this branch reaches `dev` (operator decision)
 - [ ] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs
 - [ ] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
