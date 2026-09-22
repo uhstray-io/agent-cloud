@@ -15,7 +15,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       and does a task-level `git_branch` override run that branch's tree for a template bound
       to `main`. 2026-09-22: yes to all three, from source at the running commit; the
       override is not gated server-side (ledger 1.9); live confirmation rides on section 2
-- [ ] 0.3 Pin the Semaphore image (compose uses `:latest`) to the version the spike ran on.
+- [x] 0.3 Pin the Semaphore image (compose uses `:latest`) to the version the spike ran on.
+      2026-09-22, operator decision: pinned one release behind latest instead, `v2.19.11`
+      (latest `v2.19.12`; the compare shows one file and no migration between them). The
+      spike read v2.18.12, the local controller's version; the flag and branch code it cited
+      is re-checked against v2.19.11 in 0.6.
       BLOCKED 2026-09-22: production's running version is readable only through the
       authenticated `GET /api/info` or the UI; pinning blind could downgrade it across its
       database migrations. Operator reads it, then pin at or above it
@@ -25,6 +29,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       unchanged (schema-constrained request through the local gateway, then direct).
       2026-09-22: source-level yes at v1.5.0 (`design.md` Context); the live request needs an
       enrolled client key, which has no sanctioned workstation path, so it runs in 3.3
+- [ ] 0.7 Local-dev Semaphore to v2.19.11: bootstrap with `-e
+      local_semaphore_image=docker.io/semaphoreui/semaphore:v2.19.11-ansible2.16.5`, confirm the
+      sqlite store starts (the recorded v2.19-beta panic is gone), then move the default in
+      `bootstrap-local-dev.yml`; keeps local and production on one branch-override behaviour
 - [ ] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
@@ -120,8 +128,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 5. Semaphore environments
 
-- [ ] 5.1 PENDING one live launch of a `dev` task by branch on a base template. If 0.2 proved task-level branch override: remove `dev_variant` generation from
-      `setup-templates.yml`, launch on `dev` by branch; update the operating guide. If not:
+- [ ] 5.1 PENDING one live launch of a `dev` task by branch on a base template. On v2.19.11 the
+      template must set `allow_override_branch_in_task` (design Context). Then: set it in
+      `setup-templates.yml`, remove `dev_variant` generation, launch on `dev` by branch; update the operating guide. If not:
       record the result and keep the twins (design risk entry)
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)

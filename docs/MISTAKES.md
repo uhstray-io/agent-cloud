@@ -373,6 +373,12 @@ or live refusal that prevents it. What a UI does not offer is not a control.
 `service-deployment-workflow` (task 4.5) becomes the control; for human API tokens nothing
 server-side limits the branch.
 
+**Note — 2026-09-22, later the same day.** The finding is version-scoped. Semaphore
+v2.19.11, to which production was pinned the same day, applies a task's branch only when the
+template allows it (`services/tasks/local_executor.go:938`), so the server does enforce the
+flag there. The rule stands unchanged: the original claim still named no server-side
+control, and on v2.18.12 there was none.
+
 ## 2. Tests that would have passed for the wrong reason
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it

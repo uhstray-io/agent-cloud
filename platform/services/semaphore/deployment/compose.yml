@@ -14,7 +14,12 @@ services:
 
   semaphore:
     container_name: workflow-semaphore
-    image: docker.io/semaphoreui/semaphore:latest
+    # Pinned ONE release behind the latest (operator decision 2026-09-22): latest was
+    # v2.19.12, and v2.19.11..v2.19.12 changes one file and no database migration, so this
+    # pin is safe whichever of the two `:latest` last pulled. The conformance collector and
+    # the workflow agents depend on this API, so the version moves only by an edit here.
+    # Override for a test with SEMAPHORE_IMAGE.
+    image: ${SEMAPHORE_IMAGE:-docker.io/semaphoreui/semaphore:v2.19.11}
     restart: always
     ports:
       - "${SEMAPHORE_LISTEN:-127.0.0.1}:${SEMAPHORE_PORT:-3000}:3000"

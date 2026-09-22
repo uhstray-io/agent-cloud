@@ -39,7 +39,15 @@ Verified on 2026-09-22:
   creation does not visibly clear it (`services/tasks/TaskPool.go:766-778`); if the API
   accepts it, a token with run rights can run any playbook in the repository under any
   template's inventory and keys. Source-level only, not exercised; not used by this change.
-- **The template's "allow override branch" flag is enforced only in the web UI.**
+- **Version note (2026-09-22): production is pinned to v2.19.11**, where the runner moved to
+  `services/tasks/local_executor.go`. There `--check`/`--diff` still follow `dry_run`/`diff`
+  (lines 512-516) and the task-level `playbook` is still read first (line 423), but a
+  task's `git_branch` applies only when the template sets `allow_override_branch_in_task`
+  (line 938). The next bullet describes v2.18.12, which local-dev keeps: its pin records that
+  v2.19 (then a beta) panicked on the local sqlite store (`bootstrap-local-dev.yml:95-98`), and
+  whether 2.19.11 still does is unverified. Local moves only after a local bootstrap on
+  2.19.11 starts cleanly; until then local and production differ on branch override.
+- **The template's "allow override branch" flag is enforced only in the web UI** (v2.18.12).
   `web/src/components/TaskForm.vue:123` hides the branch field unless the flag is set; the
   API path validates only the branch name's syntax (`db/git_branch.go`,
   `db/Task.go:166-169`) and the runner applies it unconditionally. Any caller with an API
@@ -198,9 +206,11 @@ what. The current model encodes the second one by duplicating 35 templates.
 - Production vs local-dev stays two controllers (already true), and the registry names base
   templates only; skynet's configuration carries the controller URL and project per
   environment.
-- Task 0.2 found the controller honours a task-level branch for every template, gated by
-  nothing server-side, so removing the twins loses no protection that exists today. The
-  twins go after one live `dev` launch by branch confirms it; until then both coexist.
+- On v2.19.11 a task-level branch needs `allow_override_branch_in_task: true` on the template,
+  so branch-at-launch means `setup-templates.yml` sets that flag on every workflow template.
+  The flag lets a caller name ANY pushed branch, so OPA's branch rule is what keeps agents
+  on `main` or `dev`. The twins go after one live `dev` launch by branch confirms it; until
+  then both coexist.
 
 ### Thread G: local NetBox, discovery on local-dev only
 
