@@ -61,6 +61,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read Cloudflare secrets + config from OpenBao"
       ansible.builtin.uri:
@@ -71,6 +73,7 @@
         status_code: [200]
       register: _cf_secret
       no_log: true
+      check_mode: false
 
     - name: "Resolve config (launch override -> OpenBao -> default)"
       ansible.builtin.set_fact:
@@ -101,6 +104,7 @@
         status_code: [200]
       register: _cf_zone
       no_log: true
+      check_mode: false
 
     - name: "Assert the zone was found (guard the index below)"
       ansible.builtin.assert:
@@ -143,18 +147,44 @@
       register: _tf_init
       changed_when: false
 
-    - name: "OpenTofu {{ tofu_action }}"
+    # A dry run (--check, Semaphore "Dry run") is a `tofu plan` whatever tofu_action says;
+    # apply runs only in a real run. Two tasks with two registers, because a skipped task
+    # overwrites a shared register with its skip result (docs/MISTAKES.md 10.10).
+      check_mode: false
+    - name: "OpenTofu plan"
       ansible.builtin.command:
         chdir: "{{ _tf_dir }}"
-        argv: "{{ ['tofu', tofu_action, '-input=false'] + (['-auto-approve'] if tofu_action == 'apply' else []) }}"
+        argv: [tofu, plan, -input=false]
       environment:
         AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
         AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
         CLOUDFLARE_API_TOKEN: "{{ _cf.api_token }}"
         TF_VAR_zone_id: "{{ _zone_id }}"
         TF_VAR_caddy_origin_ip: "{{ _caddy_ip }}"
-      register: _tf_run
-      changed_when: "tofu_action == 'apply' and 'Apply complete' in (_tf_run.stdout | default(''))"
+      register: _tf_plan
+      changed_when: false
+      check_mode: false
+      when: tofu_action == 'plan' or ansible_check_mode
+
+    - name: "OpenTofu apply"
+      ansible.builtin.command:
+        chdir: "{{ _tf_dir }}"
+        argv: [tofu, apply, -input=false, -auto-approve]
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
+        CLOUDFLARE_API_TOKEN: "{{ _cf.api_token }}"
+        TF_VAR_zone_id: "{{ _zone_id }}"
+        TF_VAR_caddy_origin_ip: "{{ _caddy_ip }}"
+      register: _tf_apply
+      changed_when: "'Apply complete' in (_tf_apply.stdout | default(''))"
+      when:
+        - not ansible_check_mode
+        - tofu_action == 'apply'
+
+    - name: "Keep the output of whichever ran"
+      ansible.builtin.set_fact:
+        _tf_run: "{{ _tf_plan if (_tf_plan is not skipped) else _tf_apply }}"
 
     - name: "Show OpenTofu output for action {{ tofu_action }}"
       ansible.builtin.debug:

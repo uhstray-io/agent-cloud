@@ -93,6 +93,7 @@
   changed_when: false
   failed_when: false
   when: _fragment_written.changed
+  check_mode: false
 
 - name: "Fail (without rollback) when Caddy is unreachable — fragment could not be validated"
   ansible.builtin.fail:
@@ -121,6 +122,7 @@
   when:
     - _fragment_written.changed
     - _caddy_reachable.rc == 0
+  check_mode: false
 
 - name: "Roll back to the previous fragment when the config is invalid"
   ansible.builtin.copy:
@@ -164,7 +166,9 @@
   delegate_to: "{{ _caddy_target }}"
   register: _caddy_reload
   changed_when: _fragment_written.changed
-  when: _fragment_written.changed          # nothing to reload if the fragment didn't change
+  when:
+    - not ansible_check_mode
+    - _fragment_written.changed          # nothing to reload if the fragment didn't change
 
 - name: "Report"
   ansible.builtin.debug:

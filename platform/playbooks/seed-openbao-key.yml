@@ -90,6 +90,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Merge the key (shared write path: fetch, patch-or-create, verify)"
       # tasks/bao-merge-keys.yml is THE merge-patch implementation: GET for

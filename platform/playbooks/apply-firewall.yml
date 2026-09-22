@@ -185,6 +185,7 @@
       register: _sshrule
       changed_when: "'Rule added' in _sshrule.stdout or 'Rules updated' in _sshrule.stdout"
       loop: "{{ _ssh_cidrs }}"
+      when: not ansible_check_mode
 
     - name: "Allow each STATIC service port from its intended source"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw allow from {{ item.from }} to any port {{ item.port }} proto {{ item.proto | default('tcp') }}"
@@ -193,6 +194,7 @@
       loop: "{{ _rules }}"
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} ({{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     - name: "Allow each STATIC route rule on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
       # Published ports on rootful/Docker are DNAT'd to the container and routed
@@ -215,6 +217,7 @@
     # Docker containers belong to root (become:true) — querying them as the service
     # user finds NOTHING, so detection would silently yield no rules. Loopback-only
     # binds are skipped (not externally reachable). Container must be running.
+      when: not ansible_check_mode
     - name: "Detect published host ports + protocols of running containers"
       ansible.builtin.shell: |
         set -o pipefail
@@ -233,6 +236,7 @@
       register: _detected
       changed_when: false
       when: firewall_detect_ports | default(true) | bool
+      check_mode: false
 
     - name: "Normalise the upstream source(s) to a list"
       # One source or many, the rules below loop the same way. A string becomes
@@ -269,6 +273,7 @@
       loop_control:
         label: "{{ item.0 }} from {{ item.1 }}"
       when:
+        - not ansible_check_mode
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
 
@@ -284,6 +289,7 @@
       loop_control:
         label: "{{ item.0 }} from {{ item.1 }} (route)"
       when:
+        - not ansible_check_mode
         - _rootful
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
@@ -312,6 +318,7 @@
         - _allow_bridge_dns
         - _rootful
         - _engine == 'podman'
+      check_mode: false
 
     - name: "Allow container->gateway DNS (53/udp+tcp) on each podman bridge (INPUT) — BEFORE enable"  # noqa: command-instead-of-module
       # Scoped to port 53 only: aardvark-dns is the sole host-gateway service the
@@ -325,6 +332,7 @@
       loop_control:
         label: "{{ item.0 }} 53/{{ item.1 }} (podman bridge DNS, INPUT)"
       when:
+        - not ansible_check_mode
         - _allow_bridge_dns
         - _rootful
         - _engine == 'podman'
@@ -369,16 +377,19 @@
       loop: "{{ _deny_egress }}"
       loop_control:
         label: "deny out to {{ item.to }}{{ (':' ~ item.port) if item.port is defined else ' (all ports)' }} ({{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     - name: "Default-deny incoming"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default deny incoming"
       register: _din
       changed_when: "'changed' in _din.stdout"
+      when: not ansible_check_mode
 
     - name: "Default-allow outgoing"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default allow outgoing"
       register: _dout
       changed_when: "'changed' in _dout.stdout"
+      when: not ansible_check_mode
 
     - name: "Enable UFW"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw --force enable"
@@ -391,6 +402,7 @@
     # meta: reset_connection cannot be conditional (Ansible ignores `when`), so it
     # always runs — harmless (just forces a reconnect on the next task). The
     # explicit verify below is what firewall_verify_ssh gates.
+      when: not ansible_check_mode
     - name: "Drop the SSH connection to force a fresh handshake"
       ansible.builtin.meta: reset_connection
 
@@ -398,11 +410,13 @@
       ansible.builtin.command: "true"
       changed_when: false
       when: _verify
+      check_mode: false
 
     - name: "Capture UFW status"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw status verbose"
       register: _status
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

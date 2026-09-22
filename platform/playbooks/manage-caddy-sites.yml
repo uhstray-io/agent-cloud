@@ -80,6 +80,7 @@
         executable: python3
       register: _sites_raw
       changed_when: false
+      check_mode: false
 
     - name: "Report the current routes"
       ansible.builtin.debug:
@@ -116,7 +117,9 @@
             executable: python3
           register: _retired
           changed_when: _retired.rc == 0 and ((_retired.stdout | from_json).changed | default(false))
-          when: caddy_retire_sites | default([]) | length > 0
+          when:
+            - not ansible_check_mode
+            - caddy_retire_sites | default([]) | length > 0
 
         - name: "Insert/update the managed site block in the Caddyfile"
           ansible.builtin.blockinfile:
@@ -132,6 +135,7 @@
           # file-mount inode) — otherwise validation passes against old content.
           ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
           changed_when: false
+          check_mode: false
 
         - name: "Validate the updated Caddyfile"
           ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
@@ -143,6 +147,7 @@
         # Also no longer gated on _bi.changed: a retire alone can invalidate the file
         # without blockinfile reporting a change, and that case previously fell
         # through to the failure below with the broken file left in place.
+          check_mode: false
         - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
           ansible.builtin.fail:
             msg: >-
@@ -169,16 +174,19 @@
       register: _running
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Restart Caddy to load the updated Caddyfile (changed, or host not yet served)"
       ansible.builtin.command: "{{ _engine }} restart {{ _container }}"
       register: _restart
       changed_when: true
-      when: >-
-        _bi.changed
-        or (_retired is defined and _retired is changed)
-        or (caddy_probe_host | default('') | length > 0
-            and caddy_probe_host not in (_running.stdout | default('')))
+      when:
+        - not ansible_check_mode
+        - >-
+          _bi.changed
+          or (_retired is defined and _retired is changed)
+          or (caddy_probe_host | default('') | length > 0
+              and caddy_probe_host not in (_running.stdout | default('')))
 
     # noqa: no-handler — a sequential post-restart readiness wait, not a handler.
     - name: "Wait for the Caddy admin API to answer after restart"  # noqa: no-handler
@@ -188,7 +196,9 @@
       retries: 10
       delay: 3
       until: _post.rc == 0
-      when: _restart is changed
+      when:
+        - not ansible_check_mode
+        - _restart is changed
 
     - name: "Confirm the managed host is now served"
       ansible.builtin.assert:

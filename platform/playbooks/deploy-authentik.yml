@@ -276,6 +276,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -302,6 +303,7 @@
       retries: 5
       delay: 6
       until: _ak_health.rc == 0
+      check_mode: false
 
     - name: "API answers (unauthenticated root config endpoint -> 200)"
       ansible.builtin.command: >-
@@ -313,6 +315,7 @@
       retries: 5
       delay: 6
       until: _ak_api.rc == 0
+      check_mode: false
 
     - name: "Wait for the embedded outpost to serve forward_auth (proxy-provider sync)"
       # `ak healthcheck` + the API go green BEFORE the embedded outpost finishes
@@ -347,6 +350,7 @@
     # local default that a content-unchanged blueprint never re-applied (the exact
     # semaphore failure). Runs inside authentik-server so the script reads the
     # bootstrap token from the container env (nothing secret on the command line).
+      check_mode: false
     - name: "Promotion verify (prod): render the live-OIDC checker"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-oidc.py.j2"
@@ -360,6 +364,7 @@
       changed_when: false
       failed_when: _oidc_verify.rc != 0
       when: _do_oidc_verify | bool
+      check_mode: false
 
     - name: "Promotion verify: result"
       ansible.builtin.debug:
@@ -385,6 +390,7 @@
       register: _users_verify
       changed_when: false
       failed_when: _users_verify.rc != 0
+      check_mode: false
 
     - name: "Blueprint verify: result"
       ansible.builtin.debug:

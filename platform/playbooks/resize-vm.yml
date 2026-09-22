@@ -165,12 +165,14 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
         method: GET
       register: _cfg
+      check_mode: false
 
     - name: "Read the VM's current run state"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
         method: GET
       register: _state
+      check_mode: false
 
     - name: "Resolve current values + the disk device to grow"
       ansible.builtin.set_fact:
@@ -312,7 +314,9 @@
         body: "{{ _cfg_changes }}"
         status_code: [200]
       register: _cfg_put
-      when: _cfg_changes | length > 0
+      when:
+        - not ansible_check_mode
+        - _cfg_changes | length > 0
       changed_when: _cfg_changes | length > 0
 
     # ── Apply: disk growth ──────────────────────────────────────────────────
@@ -329,6 +333,7 @@
         status_code: [200]
       register: _disk_put
       when:
+        - not ansible_check_mode
         - _want_disk_gb | string | length > 0
         - _disk_device | length > 0
         - (_want_disk_gb | int) > (_have_disk_gb | int)
@@ -365,6 +370,7 @@
             method: POST
             status_code: [200]
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Wait for the guest to stop"
           ansible.builtin.uri:
@@ -375,6 +381,7 @@
           retries: "{{ ((_shutdown_timeout | int) / 5) | round(0, 'ceil') | int }}"
           delay: 5
           changed_when: false
+          when: not ansible_check_mode
 
         - name: "Start the guest again"
           ansible.builtin.uri:
@@ -382,6 +389,7 @@
             method: POST
             status_code: [200]
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Wait for the guest to be running again"
           ansible.builtin.uri:
@@ -392,6 +400,7 @@
           retries: 24
           delay: 5
           changed_when: false
+          when: not ansible_check_mode
 
       rescue:
         # Read the real state rather than assuming which step failed.
@@ -401,6 +410,7 @@
             method: GET
           register: _rescue_state
           changed_when: false
+          when: not ansible_check_mode
 
         - name: "Recovery: bring a stopped guest back up"
           # Only when it is actually stopped. A guest still mid-shutdown must not
@@ -409,7 +419,9 @@
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
             method: POST
             status_code: [200]
-          when: (_rescue_state.json.data.status | default('')) == 'stopped'
+          when:
+            - not ansible_check_mode
+            - (_rescue_state.json.data.status | default('')) == 'stopped'
           changed_when: true
 
         - name: "Fail with the reason, after recovering"
@@ -432,6 +444,7 @@
         method: GET
       register: _cfg_after
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

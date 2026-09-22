@@ -87,6 +87,8 @@
       register: _bao_auth
       when: _bao_token | length == 0
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Settle on the token to use"
       ansible.builtin.set_fact:
@@ -102,6 +104,7 @@
         status_code: [200, 403, 404]
       register: _secret
       no_log: true
+      check_mode: false
 
     - name: "Report what the store answered (never the material)"
       # Deliberately NOT no_log'd. A credential task that hides its own failure is
@@ -135,6 +138,7 @@
         status_code: [200, 403, 404]
       register: _key
       no_log: true
+      check_mode: false
 
     - name: "Say plainly when the deploy key is missing"
       ansible.builtin.assert:
@@ -149,6 +153,14 @@
           GitHub repo as a deploy key WITH WRITE ACCESS.
 
     # ── Clone, write, push ───────────────────────────────────────────────────
+    - name: "Dry run ends here: a real run would clone site-config and push a new branch"
+      # Under --check every read above ran (the store answered, the keypair exist, the deploy key
+      # is present). The clone needs a real scratch dir, which the tempfile module cannot
+      # simulate, and pushing is the whole effect of this playbook, so a dry run stops
+      # before either (plan/architecture/08-ansible-automation-standards.md).
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
+
     - name: "Everything below runs inside a block so the scratch dir is always wiped"
       # The clone holds two live private keys — the one being backed up and the
       # deploy key. The wipe is an `always`, not a final task, so a failure cannot

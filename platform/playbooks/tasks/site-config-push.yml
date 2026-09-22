@@ -17,6 +17,7 @@
     argv: ["git", "add", "--", "{{ _sc_add_path }}"]
     chdir: "{{ _sc_clone }}"
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Is there anything to commit?"
   ansible.builtin.command:
@@ -25,6 +26,7 @@
   register: _sc_staged
   changed_when: false
   failed_when: false
+  when: not ansible_check_mode
 
 - name: "Commit"
   # argv: the quotes that look like they protect the message are consumed by
@@ -38,7 +40,9 @@
       - "-m"
       - "{{ _sc_commit_body }}"
     chdir: "{{ _sc_clone }}"
-  when: _sc_staged.rc != 0
+  when:
+    - not ansible_check_mode
+    - _sc_staged.rc != 0
   changed_when: true
 
 - name: "Push the branch"
@@ -46,7 +50,9 @@
     cmd: "git push origin {{ _sc_branch }}"
     chdir: "{{ _sc_clone }}"
   environment: "{{ _sc_git_env }}"
-  when: _sc_staged.rc != 0
+  when:
+    - not ansible_check_mode
+    - _sc_staged.rc != 0
   changed_when: true
 
 - name: "Report"

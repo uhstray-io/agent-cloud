@@ -45,6 +45,7 @@
   register: _bm_existing
   delegate_to: localhost
   no_log: true
+  check_mode: false
 
 - name: "Refuse a missing path when the caller requires one"
   ansible.builtin.assert:
@@ -62,6 +63,18 @@
     _bm_current: "{{ (_bm_existing.json.data.data | default({})) if _bm_existing.status == 200 else {} }}"
   no_log: true
 
+- name: "Dry run: report what this merge would write (key names only)"
+  # Under --check the writes below are skipped; this says what a real run would do. Only key
+  # NAMES are printed, never values.
+  ansible.builtin.debug:
+    msg: >-
+      check mode: secret/{{ _bm_path }} would be
+      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would change:
+      {% for k, v in _bm_data.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %}
+  when:
+    - ansible_check_mode
+    - _bm_existing.status == 404 or (_bm_current | combine(_bm_data)) != _bm_current
+
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
   # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a
   # concurrent write to a sibling key cannot be clobbered by a read-modify-write.
@@ -76,6 +89,7 @@
       data: "{{ _bm_data }}"
     status_code: [200]
   when:
+    - not ansible_check_mode
     - _bm_existing.status == 200
     - (_bm_current | combine(_bm_data)) != _bm_current
   register: _bm_patch
@@ -105,6 +119,7 @@
         cas: 0
     status_code: [200, 400]
   when:
+    - not ansible_check_mode
     - _bm_existing.status == 404
     - (_bm_on_missing | default('create')) == 'create'
   register: _bm_create
@@ -124,7 +139,9 @@
     body:
       data: "{{ _bm_data }}"
     status_code: [200]
-  when: (_bm_create.status | default(0)) == 400
+  when:
+    - not ansible_check_mode
+    - (_bm_create.status | default(0)) == 400
   register: _bm_patch_after_race
   changed_when: true
   delegate_to: localhost
@@ -149,6 +166,7 @@
   when: _bm_changed | bool  # noqa: no-handler — sequential verify of THIS run's write, not an event
   delegate_to: localhost
   no_log: true
+  check_mode: false
 
 - name: "Require every merged key to hold"
   ansible.builtin.assert:

@@ -166,6 +166,7 @@
         method: GET
       register: tmpl_check
       ignore_errors: true
+      check_mode: false
 
     - name: "Fail if template not found"
       ansible.builtin.fail:
@@ -182,6 +183,7 @@
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
         method: GET
       register: all_vms
+      check_mode: false
 
     - name: "Check for existing VM"
       ansible.builtin.set_fact:
@@ -226,6 +228,7 @@
     # So: rc 0 -> refuse; probe could not run -> refuse (fail closed) unless the
     # launch carries the audited override; rc 1 -> proceed. The authoritative
     # check is the IPAM (02-service-onboarding Known Gaps).
+      check_mode: false
     - name: "Stop when something answered at the declared address, or when the probe could not run"
       ansible.builtin.assert:
         that:
@@ -271,7 +274,9 @@
       # uri never reports changed on a POST by itself; the returned UPID is the
       # evidence the clone was started, and every step below gates on it.
       changed_when: clone_result.json.data is defined
-      when: not (vm_exists | bool)
+      when:
+        - not ansible_check_mode
+        - not (vm_exists | bool)
 
     - name: "Wait for clone task"
       ansible.builtin.uri:
@@ -281,7 +286,9 @@
       until: clone_task.json.data.status == "stopped"
       retries: 60
       delay: 10
-      when: clone_result.json.data is defined
+      when:
+        - not ansible_check_mode
+        - clone_result.json.data is defined
 
     - name: "Verify clone succeeded"
       ansible.builtin.fail:
@@ -310,7 +317,9 @@
       retries: 90
       delay: 10
       changed_when: false
-      when: _do_migrate | bool
+      when:
+        - not ansible_check_mode
+        - _do_migrate | bool
 
     - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
       # The wait selects by vmid alone. If our VM vanished and the vmid was reused
@@ -342,7 +351,9 @@
         status_code: [200]
       register: migrate_result
       changed_when: migrate_result.json.data is defined
-      when: _do_migrate | bool
+      when:
+        - not ansible_check_mode
+        - _do_migrate | bool
 
     - name: "Wait for migrate task"
       ansible.builtin.uri:
@@ -352,7 +363,9 @@
       until: migrate_task.json.data.status == "stopped"
       retries: 90
       delay: 10
-      when: migrate_result.json.data is defined
+      when:
+        - not ansible_check_mode
+        - migrate_result.json.data is defined
 
     - name: "Verify migrate succeeded"
       ansible.builtin.fail:
@@ -383,6 +396,7 @@
       failed_when:
         - (_vm_lock.json.data.lock | default('')) != ''
         - _vm_lock.attempts | default(0) >= 60
+      when: not ansible_check_mode
 
     - name: "Configure VM resources and cloud-init"
       ansible.builtin.uri:
@@ -399,6 +413,7 @@
           ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
           nameserver: "{{ _dns }}"
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Set Proxmox tags"
       ansible.builtin.uri:
@@ -408,6 +423,7 @@
         body:
           tags: "{{ _tags }}"
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Resize disk to size — {{ _disk }}"
       ansible.builtin.uri:
@@ -420,6 +436,7 @@
         status_code: [200]
       register: resize_result
       ignore_errors: true
+      when: not ansible_check_mode
 
     - name: "Warn if disk resize failed"
       ansible.builtin.debug:
@@ -432,13 +449,16 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
         method: GET
       register: pre_start
+      check_mode: false
 
     - name: "Start VM"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
         method: POST
         status_code: [200]
-      when: pre_start.json.data.status != "running"
+      when:
+        - not ansible_check_mode
+        - pre_start.json.data.status != "running"
 
     - name: "Wait for VM running"
       ansible.builtin.uri:
@@ -448,6 +468,7 @@
       until: vm_running.json.data.status == "running"
       retries: 30
       delay: 5
+      when: not ansible_check_mode
 
     - name: "Wait for QEMU guest agent"
       ansible.builtin.uri:
@@ -459,6 +480,7 @@
       retries: 60
       delay: 10
       ignore_errors: true
+      when: not ansible_check_mode
 
     - name: "Wait for SSH"
       ansible.builtin.wait_for:
@@ -480,6 +502,8 @@
       delay: 15
       until: ssh_test.rc == 0
       ignore_errors: true
+      changed_when: false
+      check_mode: false
 
     - name: "Show SSH test output"
       ansible.builtin.debug:
@@ -501,7 +525,9 @@
           sudo systemctl enable --now semaphore-runner"
       register: runner_setup
       ignore_errors: true
-      when: ssh_test is succeeded and _runner_token | length > 0
+      when:
+        - not ansible_check_mode
+        - ssh_test is succeeded and _runner_token | length > 0
 
     - name: "Show runner setup output"
       ansible.builtin.debug:

@@ -4,7 +4,9 @@ Under `ansible-playbook --check`, a module without check-mode support is skipped
 
 - a READ that such a module performs must set `check_mode: false`, or verification silently
   does nothing during a dry run: a `uri` GET/HEAD, or any `uri`/`command`/`shell`/`raw`/
-  `script` marked read-only by `changed_when: false` (an OpenBao login POST, for example);
+  `script` marked read-only by `changed_when: false` (an OpenBao login POST, for example),
+  unless it is skipped on purpose by a `when` on `ansible_check_mode` because it reads state
+  an earlier skipped write would have made;
 - a WRITE that such a module performs must be guarded: a `when` mentioning
   `ansible_check_mode`, `check_mode: true`, or `creates`/`removes` on a command. A write
   under `check_mode: false` runs for real during a dry run and is always a violation.
@@ -83,7 +85,9 @@ def violations_in(doc) -> list[str]:
             if module is None:
                 continue
             kind = _classify(task, module, args)
-            if kind == "read" and not off:
+            # A read either runs in check mode (check_mode: false) or is skipped ON PURPOSE
+            # (a `when` on ansible_check_mode), e.g. a read of a clone the dry run never made.
+            if kind == "read" and not off and not _mentions_check_mode(task.get("when")) and not inherited:
                 found.append(f"{name}: read-only {module} without check_mode: false")
             elif kind == "write" and off:
                 found.append(f"{name}: {module} write forced to run in check mode (check_mode: false)")
@@ -215,3 +219,10 @@ def test_login_post_marked_read_only_needs_check_mode_false():
         "    method: POST\n  changed_when: false\n"
     )
     assert found == ["login: read-only uri without check_mode: false"]
+
+
+def test_read_skipped_on_purpose_passes():
+    assert not _tasks(
+        "- name: anything to commit\n  ansible.builtin.command: git status --porcelain\n"
+        "  changed_when: false\n  when: not ansible_check_mode\n"
+    )

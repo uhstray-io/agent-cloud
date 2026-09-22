@@ -34,7 +34,14 @@ dry-run variables MUST NOT be introduced; existing ones MUST map onto check mode
 #### Scenario: Legacy dry-run argument still works
 - **WHEN** a playbook that accepted `-e dry_run=true` is launched that way during the
   transition
-- **THEN** it behaves as it does under `--check` and prints that the argument is deprecated
+- **THEN** it changes nothing, as under `--check`, and a playbook whose `dry_run` defaulted to
+  false prints that the argument is deprecated
+
+#### Scenario: A dry-by-default playbook keeps its safety default
+- **WHEN** a playbook whose `dry_run` defaults to true (it replaces or deletes shared state)
+  is launched with no arguments
+- **THEN** it changes nothing, and it changes state only on an explicit `-e dry_run=false`
+  outside check mode
 
 ### Requirement: Verification is a first-class run
 Every playbook that changes state SHALL tag its verification tasks so the verification alone
