@@ -179,8 +179,9 @@ visible rather than assumed.
 ## Contracts
 
 All schemas live in this repo under
-`platform/services/opa/deployment/policies/agentcloud/schemas/`, next to the catalog they
-gate. skynet references them by path; there is one source.
+`platform/workflows/service-onboarding/schemas/`, next to the registry. skynet references them by path; there is one source.
+(Revised 2026-09-22: the first draft put them in the OPA policy tree, where OPA loads every
+JSON file as data; `opa test` failed with `merge error` on them.)
 
 ### Step result (`step-result.json`)
 

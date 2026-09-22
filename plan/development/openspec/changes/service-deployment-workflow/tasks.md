@@ -94,21 +94,27 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 4. Registry, contracts and OPA
 
-- [ ] 4.1 `platform/workflows/service-onboarding/registry.yml` with the twenty-two entries
+- [x] 4.1 `platform/workflows/service-onboarding/registry.yml` with the twenty-two entries
       from plan 15, `reviewed: null` everywhere
-- [ ] 4.2 Schemas under `platform/services/opa/deployment/policies/agentcloud/schemas/`:
-      step result, proposal envelope, service assessment, firewall policy, access policy
-- [ ] 4.3 Registry test: every named template exists in the catalog, every reasoning step has
+- [x] 4.2 Schemas under `platform/workflows/service-onboarding/schemas/` (moved out of the OPA policy
+      tree, where `opa test` rejected them with `merge error`): step result, proposal
+      envelope, service assessment, firewall policy, access policy, plus a shared verdict
+- [x] 4.3 Registry test: every named template exists in the catalog, every reasoning step has
       a snapshot template and schema, ids match the diagram
-- [ ] 4.4 `data.json`: four identities with `allowed_actions` and `allowed_templates`;
+- [x] 4.4 `data.json`: four identities with `allowed_actions` and `allowed_templates`;
       `netclaw` and `nemoclaw` frozen with a comment
-- [ ] 4.5 Rego: template allowlist rule; firewall content rule (controller SSH source kept,
+- [x] 4.5 Rego: template allowlist rule; firewall content rule (controller SSH source kept,
       SSH never wider than the declared sources); service-assessment content rule (no
       destructive runtime action, VM spec within tier bounds); branch rule (no `main` for an
-      unreviewed step); rego tests with fixtures
-- [ ] 4.6 `firewall_controller_cidr` inventory variable and an `apply-firewall.yml` assertion
-      that it is in the SSH allow set before enable; BATS test
-- [ ] 4.7 Validation gate: spec scenarios "Registry and catalog agree", "Role launches only
+      unreviewed step); rego tests with fixtures. 2026-09-22: 36/36 in OPA 1.0.0, and CI now
+      runs `opa check --strict` and `opa test`; `not a <= b` with `b` undefined fails OPEN
+      in Rego, so the bounds rule negates a helper built with `every`
+- [x] 4.6 `firewall_controller_cidr` inventory variable and an `apply-firewall.yml` assertion
+      that it is in the SSH allow set before enable; BATS test. 2026-09-22: checked when set,
+      warned when absent, because making it required would fail every live Apply Firewall
+      run until site-config declares it. Follow-up: declare it per host in site-config, then
+      make it required
+- [x] 4.7 Validation gate: spec scenarios "Registry and catalog agree", "Role launches only
       its own steps", "Destructive template still needs a human", "Orchestrator keeps SSH",
       "SSH stays scoped" and "Unreviewed step cannot run from main" pass
 

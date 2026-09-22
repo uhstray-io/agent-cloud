@@ -5,7 +5,7 @@
 # as a normal run, and is printed as JSON under "CUSTOM STATS" because the repository's
 # ansible.cfg sets show_custom_stats. The conformance collector and the skynet graph read
 # it from Semaphore's task output. Contract: plan 15 "Step result"; schema
-# agentcloud/step-result/v1 (platform/services/opa/deployment/policies/agentcloud/schemas/).
+# agentcloud/step-result/v1 (platform/workflows/service-onboarding/schemas/step-result.json).
 #
 # Include LAST in an executor or snapshot playbook:
 #

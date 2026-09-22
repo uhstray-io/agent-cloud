@@ -2,27 +2,143 @@
   "catalog": {
     "nemoclaw": {
       "allowed_actions": {
-        "nocodb": ["read", "create", "update"],
-        "github": ["list_issues", "create_issue", "update_issue", "add_comment"],
-        "discord": ["send_message", "read_messages"],
-        "n8n": ["list_workflows", "trigger_workflow", "list_executions"],
-        "semaphore": ["list_projects", "list_templates", "run_task", "check_task"],
-        "netbox": ["read"]
-      }
+        "nocodb": [
+          "read",
+          "create",
+          "update"
+        ],
+        "github": [
+          "list_issues",
+          "create_issue",
+          "update_issue",
+          "add_comment"
+        ],
+        "discord": [
+          "send_message",
+          "read_messages"
+        ],
+        "n8n": [
+          "list_workflows",
+          "trigger_workflow",
+          "list_executions"
+        ],
+        "semaphore": [
+          "list_projects",
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "frozen": "2026-09-22: not a workflow agent; all agents are skynet roles (change service-deployment-workflow). Kept unchanged so existing callers keep their decisions."
     },
     "netclaw": {
       "allowed_actions": {
-        "netbox": ["read", "create", "update"],
-        "nocodb": ["read", "create", "update"],
-        "pfsense": ["read_config", "read_status"],
-        "snmp": ["poll"],
-        "nmap": ["scan_subnet"]
-      }
+        "netbox": [
+          "read",
+          "create",
+          "update"
+        ],
+        "nocodb": [
+          "read",
+          "create",
+          "update"
+        ],
+        "pfsense": [
+          "read_config",
+          "read_status"
+        ],
+        "snmp": [
+          "poll"
+        ],
+        "nmap": [
+          "scan_subnet"
+        ]
+      },
+      "frozen": "2026-09-22: not a workflow agent; all agents are skynet roles (change service-deployment-workflow). Kept unchanged so existing callers keep their decisions."
     },
     "skynet": {
       "allowed_actions": {
-        "semaphore": ["list_templates", "run_task", "check_task"]
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ]
       }
+    },
+    "infra-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read",
+          "create",
+          "update"
+        ]
+      },
+      "allowed_templates": [
+        "Create VM Template",
+        "Provision VM",
+        "Distribute SSH Keys",
+        "Back Up Service SSH Key",
+        "Resize VM"
+      ]
+    },
+    "security-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Harden SSH",
+        "Apply Firewall",
+        "Deploy Authentik",
+        "Back Up Credentials to site-config"
+      ]
+    },
+    "o11y-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": []
+    },
+    "service-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Check Secrets",
+        "Validate All Services",
+        "Manage Caddy Sites"
+      ],
+      "allowed_template_prefixes": [
+        "Deploy "
+      ]
     },
     "semaphore": {
       "destructive_templates": [

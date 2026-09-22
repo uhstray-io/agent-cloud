@@ -28,7 +28,7 @@ the orchestrator, check mode, the Semaphore environment model and local NetBox.
   date. It is the one definition read by skynet, the collector and the review checklist.
 - **Every step reports a structured result** through Ansible's own `set_stats`, which runs
   in check mode and needs no custom output format. Proposals from the three reasoning steps
-  use one envelope and three versioned schemas stored next to the OPA catalog.
+  use one envelope and three versioned schemas stored next to the step registry.
 - **Every playbook supports a dry run and a verify run** through Ansible check mode
   (`--check`, `check_mode`, `ansible_check_mode`), replacing the three bespoke `dry_run`
   variables. Read-only probes are marked to run in check mode so verification never
@@ -83,8 +83,9 @@ requirement "The skynet relationship is a recorded decision" is refined by
   registry executors and go first. New: inventory lookup, address validation, three snapshot
   templates, host instrumentation, collector, report, NetBox custom fields.
 - **Tasks library**: a shared step-result task; a shared check-mode-safe probe pattern.
-- **OPA**: `data.json` identities and `allowed_templates`; new rego rules and tests; proposal
-  schemas under the policy directory.
+- **OPA**: `data.json` identities and `allowed_templates`; new rego rules and tests. Proposal
+  schemas sit next to the step registry, NOT in the policy tree: OPA loads every JSON file
+  there as data and rejected them with `merge error` (tested 2026-09-22).
 - **Semaphore**: `templates.yml` loses generated `(Dev)` twins once branch-at-launch is
   proven; `setup-templates.yml` and the operating guide change accordingly.
 - **Inventory**: local-dev gains `skynet_svc`, a DGX upstream for agentgateway and a NetBox

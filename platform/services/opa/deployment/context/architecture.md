@@ -46,5 +46,24 @@ supplied per-query in `input` — never stored in OPA.
 - `agentcloud/agent_actions.rego` — per-agent action authorization; `deny` (e.g.
   destructive Semaphore templates without `human_approved`) takes precedence
   over `allow`.
+- `agentcloud/workflow_agents_test.rego` — tests for the service-deployment workflow agents.
+
+### Workflow agents (service-deployment workflow)
+
+`infra-agent`, `security-agent`, `o11y-agent` and `service-agent` are **role-scoped**: each
+declares `allowed_templates` (and `service-agent` the prefix `Deploy `), which must equal the
+templates the step registry (`platform/workflows/service-onboarding/registry.yml`) assigns
+it; `platform/tests/test_workflow_registry.py` fails when they drift. For a role-scoped
+agent, `run_task` is denied when the template is not its own, when the branch is `main`
+(`git_branch`, missing means main) and `step_reviewed` is not true, and when an attached
+reasoning-step `proposal` fails a content rule: a firewall proposal must keep SSH from
+`context.controller_cidr` and allow SSH only from `context.ssh_cidrs`; a service proposal may
+not name a destructive template and must fit `context.tier_bounds`. Missing context fails
+closed. `reason` lists every denial, joined with `; `. `netclaw` and `nemoclaw` are frozen:
+kept, unchanged, not workflow agents.
+
+Proposal JSON Schemas are NOT in `policies/`: OPA loads every JSON file under it as data,
+and schema files there fail `opa check` with `merge error`. They live beside the registry.
+CI runs `opa check --strict` and `opa test` on this tree.
 
 Full design + phased rollout: `plan/development/03-guardrails-governance.md`.

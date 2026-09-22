@@ -20,6 +20,13 @@
 #
 # Inventory (site-config):
 #   firewall_ssh_cidrs       REQUIRED list of CIDRs allowed to SSH (group var)
+#   firewall_controller_cidr the orchestrator's (Semaphore's) SSH source. When set it MUST be
+#                            one of firewall_ssh_cidrs, compared by equality like every CIDR
+#                            check here (no ipaddr on the runner): Semaphore reaches the host
+#                            only over SSH, so dropping its source orphans the host from
+#                            automation. OPA's firewall content rule reads the same value
+#                            (change service-deployment-workflow). Optional until site-config
+#                            declares it for every host; then required (task 4.6 follow-up)
 #   firewall_detect_ports    auto-discover the running containers' published host
 #                            ports + protocols and allow them from the upstream
 #                            (default true) — so the rule tracks whatever the
@@ -150,6 +157,22 @@
           - _ssh_cidrs | length > 0
         fail_msg: >-
           firewall_ssh_cidrs must list >=1 CIDR, or enabling UFW would lock SSH out.
+
+    - name: "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)"
+      ansible.builtin.assert:
+        that:
+          - firewall_controller_cidr in _ssh_cidrs
+        fail_msg: >-
+          firewall_controller_cidr {{ firewall_controller_cidr }} is not in firewall_ssh_cidrs
+          {{ _ssh_cidrs | to_json }}: enabling UFW would cut Semaphore off from this host.
+      when: firewall_controller_cidr is defined
+
+    - name: "Warn when the orchestrator's SSH source is undeclared"
+      ansible.builtin.debug:
+        msg: >-
+          firewall_controller_cidr is not set for {{ inventory_hostname }}, so nothing here
+          proves Semaphore keeps SSH access. Declare it in site-config.
+      when: firewall_controller_cidr is not defined
 
     - name: "Install ufw"
       ansible.builtin.apt:

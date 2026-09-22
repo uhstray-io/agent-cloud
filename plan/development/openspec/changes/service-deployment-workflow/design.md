@@ -29,6 +29,16 @@ Verified on 2026-09-22:
   the task's. Not yet exercised by a live task, because no operator API token exists on the
   workstation and the operating guide forbids reading the controller's own; the first
   section-2 run through the UI with "Dry run" ticked confirms it.
+- **Tags need a template flag; the playbook path may not.** A task's `tags`, `skip_tags`
+  and `limit` apply only when the template allows the override
+  (`services/tasks/LocalJob.go:491-500`), and `setup-templates.yml` sets none of those
+  flags, so an agent cannot launch `--tags verify` today. It does not need to: under check
+  mode the verify tasks run (`check_mode: false`) and writes are skipped, so the
+  orchestrator verifies by launching with `dry_run`. Separately, the runner takes a
+  task-level `playbook` before the template's (`LocalJob.go:345`, `db/Task.go:49`) and task
+  creation does not visibly clear it (`services/tasks/TaskPool.go:766-778`); if the API
+  accepts it, a token with run rights can run any playbook in the repository under any
+  template's inventory and keys. Source-level only, not exercised; not used by this change.
 - **The template's "allow override branch" flag is enforced only in the web UI.**
   `web/src/components/TaskForm.vue:123` hides the branch field unless the flag is set; the
   API path validates only the branch name's syntax (`db/git_branch.go`,
@@ -141,6 +151,13 @@ Verified on 2026-09-22:
   error handling, roles, tips and tricks, sample setup, ansible-lint, `set_stats`, `uri`).
 - Rejected: base64 payload after a marker (non-standard, unreadable in the Semaphore UI);
   the JSON callback for all runs (changes every operator's output format).
+
+### Schemas and registry live together, outside the policy tree
+
+The proposal schemas sit in `platform/workflows/service-onboarding/schemas/` beside the
+registry. The first placement, `policies/agentcloud/schemas/`, broke OPA: `opa test` loads
+every JSON file under the policy directory as data and failed with `merge error` on the
+schema files (OPA 1.0.0, 2026-09-22), and the deployed service mounts the same directory.
 
 ### Thread C: skynet on local-dev against the DGX vLLM
 
