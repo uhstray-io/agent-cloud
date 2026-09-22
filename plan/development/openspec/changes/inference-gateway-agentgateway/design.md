@@ -204,6 +204,15 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
     playground lists them as saved keys; default off, never set in prod inventory, and
     the deploy playbook does not know the flag (it is template-only).
 
+   *Review 2026-09-22 (pre-PR security + quality pass):* the admin listener is pinned to
+   `127.0.0.1:15000` instead of trusting the upstream default; `agw_plaintext_keys` only
+   takes effect with `local_mode` and the deploy refuses it otherwise; identity and group
+   names are restricted to `^[a-z0-9][a-z0-9-]*$` because they land in YAML, JSON and a
+   CEL literal; the per-source edge rate limit now covers the admin host too, since its
+   playground serves the same `/v1`. The two-level hostname was checked against the zone:
+   Total TLS (Advanced Certificate Manager) is enabled and issues a per-hostname edge
+   certificate for every proxied record, so `admin.inference.uhstray.io` is covered.
+
 ## Risks / Trade-offs
 
 - [Gateway strips or rewrites fields vLLM needs] → task 2.3 sends `reasoning_effort`,

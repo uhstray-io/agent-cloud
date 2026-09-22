@@ -3,8 +3,9 @@
 #
 # Ansible's deploy-agentgateway.yml renders .env (upstream key from OpenBao) and
 # config.yaml (identities as sha256 hashes, upstream, limits) BEFORE this runs.
-# This script does NOT generate secrets — it pulls the image, starts the single
-# container, and waits for the readiness listener to answer from the host.
+# This script does NOT generate secrets — it pulls the images, starts the gateway
+# and its own Postgres, waits for the db to be healthy, then for the gateway's
+# readiness listener (probed from the db container, see below).
 #
 # Why no `wait_for_healthy` on the GATEWAY: the image is a Chainguard glibc-dynamic
 # base with no shell or curl, so a compose healthcheck cannot run inside it.

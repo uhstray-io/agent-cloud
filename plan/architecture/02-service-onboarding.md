@@ -365,3 +365,11 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
   spoofed HTTPS endpoint on the path would not be detected. Raised in the PR #189 review. The
   fix is platform-wide, not per play: pin the cluster CA (distribute it to the controller and
   set `ca_path`), then flip `validate_certs` on everywhere at once.
+
+- **Compose `env_file` values reach the container runtime's argv (recorded 2026-09-22).**
+  podman-compose 1.6.0 expands `env_file` entries into `-e KEY=VALUE` arguments on the
+  `podman` command line, so every secret a service reads from its rendered `.env` is
+  briefly visible in the host's process table. It is not written to Semaphore output
+  (podman-compose logs the command only at verbose levels). Platform-wide, not
+  agentgateway-specific; the fix is a runtime-level one (a secrets mount or
+  `--env-file` passed through to podman) in one change for every service.

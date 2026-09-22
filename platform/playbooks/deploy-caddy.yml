@@ -50,9 +50,8 @@
         # the route table, so a new nested host needs no cert change.
         _mint_extra_sans: >-
           {{ caddy_routes | default([]) | map(attribute='host')
-             | map('regex_replace', '\.' ~ (caddy_internal_zone | default('agent-cloud.test')) | regex_escape ~ '$', '')
-             | select('search', '\.') | map('regex_replace', '^[^.]+\.', '*.')
-             | map('regex_replace', '$', '.' ~ (caddy_internal_zone | default('agent-cloud.test'))) | unique | list }}
+             | select('search', '\.[^.]+\.' ~ (_mint_zone | regex_escape) ~ '$')
+             | map('regex_replace', '^[^.]+', '*') | unique | list }}
         _mint_engine: "{{ container_engine | default('podman') }}"
       when:
         - local_mode | default(false) | bool

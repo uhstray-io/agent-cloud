@@ -117,38 +117,15 @@
         _bm_missing_msg: "secret/services/{{ service_name }} does not exist yet — run the deploy first; it mints every declared identity."
       when: _action == 'rotate'
 
-    - name: "Revoke: remove the client field with a merge-patch null (KV-v2 deletes the field; verified 2026-09-17)"
-      # JSON merge-patch (RFC 7396) null removes the member; OpenBao KV-v2 honours it
-      # and keeps every sibling. A GET->rewrite would race a concurrent deploy.
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
-        method: PATCH
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-          Content-Type: application/merge-patch+json
-        body_format: json
-        body: { data: { "{{ _field }}": null } }
-        status_code: [200, 204]
-      delegate_to: localhost
-      no_log: true
-      when: _action == 'revoke'
-
-    - name: "Revoke: confirm the field is gone (names only)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200]
-      register: _after
-      delegate_to: localhost
-      no_log: true
-      when: _action == 'revoke'
-
-    - name: "Revoke: assert absence"
-      ansible.builtin.assert:
-        that: _field not in (_after.json.data.data | default({}))
-        fail_msg: "{{ _field }} is still present after the patch."
-        success_msg: "{{ _field }} removed from secret/services/{{ service_name }}."
+    - name: "Revoke: remove the client field (shared merge task, merge-patch null, absence verified)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_remove: ["{{ _field }}"]
+        _bm_on_missing: fail
+        _bm_missing_msg: "secret/services/{{ service_name }} does not exist — nothing to revoke."
       when: _action == 'revoke'
 
     - name: "Report (no values)"

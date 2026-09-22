@@ -18,6 +18,12 @@
 #   _bm_on_missing   'create' (default) — POST a new path when absent;
 #                    'fail' — refuse, with _bm_missing_msg as the reason
 #   _bm_missing_msg  optional message for the 'fail' case
+#   _bm_remove       optional list of keys to DELETE from the path in the same
+#                    merge-patch (RFC 7396: a null member removes the field; OpenBao
+#                    KV-v2 honours it and keeps every sibling). Either _bm_data or
+#                    _bm_remove must be non-empty. Removing from an absent path is a
+#                    no-op, never a create. Verified by the same read-back: every
+#                    merged key holds AND no removed key remains.
 #
 # Sets for the caller:
 #   _bm_changed      whether anything was written
@@ -31,8 +37,8 @@
       - _bm_url is defined and _bm_url | length > 0
       - _bm_token is defined and _bm_token | length > 0
       - _bm_path is defined and _bm_path | length > 0
-      - _bm_data is defined and _bm_data | length > 0
-    fail_msg: "bao-merge-keys.yml needs _bm_url, _bm_token, _bm_path and a non-empty _bm_data dict."
+      - ((_bm_data | default({})) | length > 0) or ((_bm_remove | default([])) | length > 0)
+    fail_msg: "bao-merge-keys.yml needs _bm_url, _bm_token, _bm_path and a non-empty _bm_data dict or _bm_remove list."
   no_log: true
 
 - name: "Fetch the current secret (idempotency + sibling preservation)"
@@ -60,6 +66,10 @@
   # one expression instead of a per-key loop.
   ansible.builtin.set_fact:
     _bm_current: "{{ (_bm_existing.json.data.data | default({})) if _bm_existing.status == 200 else {} }}"
+    _bm_set: "{{ _bm_data | default({}) }}"
+    _bm_del: "{{ _bm_remove | default([]) }}"
+    # The one PATCH body: values to set, plus a null per key to delete.
+    _bm_body: "{{ (_bm_data | default({})) | combine(dict((_bm_remove | default([])) | zip([none] * ((_bm_remove | default([])) | length)))) }}"
   no_log: true
 
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
@@ -73,11 +83,11 @@
       Content-Type: application/merge-patch+json
     body_format: json
     body:
-      data: "{{ _bm_data }}"
+      data: "{{ _bm_body }}"
     status_code: [200]
   when:
     - _bm_existing.status == 200
-    - (_bm_current | combine(_bm_data)) != _bm_current
+    - ((_bm_current | combine(_bm_set)) != _bm_current) or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
   register: _bm_patch
   # uri does not mark a POST/PATCH as changed on its own — measured: a PATCH that
   # visibly rewrote the value still reported changed=false, which silently
@@ -100,13 +110,14 @@
       X-Vault-Token: "{{ _bm_token }}"
     body_format: json
     body:
-      data: "{{ _bm_data }}"
+      data: "{{ _bm_set }}"
       options:
         cas: 0
     status_code: [200, 400]
   when:
     - _bm_existing.status == 404
     - (_bm_on_missing | default('create')) == 'create'
+    - _bm_set | length > 0
   register: _bm_create
   changed_when: _bm_create.status | default(0) == 200
   delegate_to: localhost
@@ -122,7 +133,7 @@
       Content-Type: application/merge-patch+json
     body_format: json
     body:
-      data: "{{ _bm_data }}"
+      data: "{{ _bm_body }}"
     status_code: [200]
   when: (_bm_create.status | default(0)) == 400
   register: _bm_patch_after_race
@@ -153,7 +164,8 @@
 - name: "Require every merged key to hold"
   ansible.builtin.assert:
     that:
-      - ((_bm_after.json.data.data | default({})) | combine(_bm_data)) == (_bm_after.json.data.data | default({}))
-    fail_msg: "Stored values at secret/{{ _bm_path }} do not match what was merged."
+      - ((_bm_after.json.data.data | default({})) | combine(_bm_set)) == (_bm_after.json.data.data | default({}))
+      - (_bm_del | intersect((_bm_after.json.data.data | default({})).keys() | list)) | length == 0
+    fail_msg: "Stored values at secret/{{ _bm_path }} do not match what was merged (or a removed key remains)."
   when: _bm_changed | bool  # noqa: no-handler — pairs with the gated verify above
   no_log: true

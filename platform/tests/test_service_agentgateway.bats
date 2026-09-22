@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Structural tests for the agentgateway service (platform/services/agentgateway).
-# Verifies the composable shape: env-parameterized single-container compose with
-# a pinned image and NO published admin port, container-only deploy.sh that
-# probes readiness from the host (the image has no shell), a config template
+# Verifies the composable shape: env-parameterized compose (gateway + its own
+# budget Postgres) with a pinned image and NO published admin port, container-only
+# deploy.sh that probes readiness from the sibling db container (the gateway image
+# has no shell), a config template
 # that carries no literal credential and no `retry`/`requestTimeout` block, and
 # a composable deploy playbook (manage-secrets, `existing` upstream key, no
 # secret generation of its own). No hardcoded IPs/credentials.
@@ -75,7 +76,8 @@ setup() {
   # is not exposed"). Any `ports:` line carrying 15000 is a regression.
   refute_grep -E '^\s*-\s*".*15000' "$DEPLOY_DIR/compose.yml"
   refute_grep -E '^\s*-\s*".*15000' "$DEPLOY_DIR/compose.local.yml"
-  refute_grep -E 'adminAddr' "$CONFIG"
+  # Pinned to the container loopback explicitly, not left to the upstream default.
+  assert_grep -qE '^  adminAddr: 127\.0\.0\.1:15000$' "$CONFIG"
 }
 
 @test "agentgateway: config is a read-only bind mount; the only volume is the budget db" {
@@ -124,9 +126,11 @@ setup() {
   # Client keys are enrolled as hashes of the OpenBao value.
   assert_grep -qF "keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}" "$CONFIG"
   # A plaintext `key:` exists only inside the local-dev-only flag branch, default off.
-  assert_grep -qE '^\{% if agw_plaintext_keys \| default\(false\)' "$CONFIG"
+  # ...and only together with local_mode, so a prod inventory cannot enable it.
+  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}" "$CONFIG"
   [ "$(grep -cE '^\s*-\s*key:\s' "$CONFIG")" -eq 1 ]
-  refute_grep -q 'agw_plaintext_keys' "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
+  # The deploy refuses the flag outside local_mode instead of silently ignoring it.
+  assert_grep -qF "not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)" "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"
@@ -238,15 +242,21 @@ setup() {
   assert_grep -q 'include_tasks: tasks/assert-bao-transport.yml' "$f"
   # Store writes go through the shared merge task; revoke is a merge-patch null.
   assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$f"
-  assert_grep -q 'application/merge-patch+json' "$f"
   # Inventory is the source of who exists: rotate needs the name declared, revoke needs it gone.
   assert_grep -q '_client in _declared' "$f"
   assert_grep -q '_client not in _declared' "$f"
   # Always ends by re-rendering + reloading through the deploy playbook.
   assert_grep -q 'import_playbook: deploy-agentgateway.yml' "$f"
-  # Handout is the existing site-config channel, never stdout.
-  assert_grep -q 'backup-credentials-to-site-config.yml' "$f"
-  refute_grep -qE 'debug:.*client_' "$f"
+  # Handout is the existing site-config channel, never stdout: the report task names
+  # the channel and carries no key value (scoped to that task, not the whole file).
+  local report
+  report=$(sed -n '/name: "Report (no values)"/,/^- name:/p' "$f")
+  assert_contains "$report" 'backup-credentials-to-site-config.yml'
+  refute_contains "$report" '_new_value'
+  refute_contains "$report" "secrets["
+  # Revoke goes through the shared merge task (no hand-rolled merge-patch here).
+  assert_grep -q '_bm_remove:' "$f"
+  refute_grep -q 'application/merge-patch+json' "$f"
   assert_grep -q 'playbook: platform/playbooks/manage-agentgateway-client-key.yml' "$REPO_ROOT/platform/semaphore/templates.yml"
   assert_grep -q 'playbook: platform/playbooks/manage-agentgateway-client-key.yml' "$REPO_ROOT/platform/semaphore/templates-local.yml"
 }

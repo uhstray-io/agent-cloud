@@ -10,8 +10,10 @@
      playground with saved keys
    Identity = the key's `metadata.name`, surfaced to CEL as `apiKey.name`
    (metadata is flattened onto the apiKey object — upstream
-   crates/agentgateway/src/http/apikey.rs `Claims`), which the per-client request
-   buckets condition on; token budgets attach to the key itself.
+   crates/agentgateway/src/http/apikey.rs `Claims`): the identity label on metrics
+   and logs. Per-identity limits are the token budgets attached to each key; the
+   request bucket is one global ceiling (v1.5.0 has no per-identity request bucket
+   under `llm.policies`).
 
    Deliberately absent (design §3): `retry` (a retried partial stream repeats tool
    side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
@@ -20,8 +22,10 @@
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 config:
   # Bind on all container interfaces; compose publishes them on the host binds
-  # from .env (loopback by default). The admin listener keeps its default
-  # (container loopback :15000) and is not published.
+  # from .env (loopback by default). The admin listener (config dump, unauthenticated
+  # UI copy) is pinned to the container loopback explicitly rather than trusted to
+  # the upstream default, and is never published.
+  adminAddr: 127.0.0.1:15000
   readinessAddr: 0.0.0.0:19001
   statsAddr: 0.0.0.0:19002
   # The gateway's own Postgres, for per-API-key token budgets only (v1.5.0
@@ -96,7 +100,7 @@ llm:
   # `ui` (:4001) it makes the UI's LLM Playground work: the UI calls /v1 on its
   # OWN origin when the LLM routes share its gateway (upstream ui/src/gatewayUrls.ts
   # `sameOrigin`), i.e. https://admin.inference.<zone>/v1 through Caddy — no CORS,
-  # no second browser-reachable port. The OIDC policy below is scoped to the UI
+  # no second browser-reachable port. The OIDC policy above is scoped to the UI
   # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
   # 2026-09-17), so the playground needs an enrolled client key pasted in.
   gateways: [default, ui]
@@ -112,7 +116,7 @@ llm:
       keys:
 {% for c in agw_clients | default([]) %}
 {% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
-{% if agw_plaintext_keys | default(false) | bool %}
+{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}
       # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
       # UI's playground can offer it as a saved key. Prod keeps hashes — the rendered
       # config is then never a credential.

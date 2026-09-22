@@ -100,8 +100,8 @@ templates:
   - name: "Deploy honcho (Local)"
     playbook: platform/playbooks/deploy-honcho.yml
 
-  # agentgateway - inference edge gateway (one stateless container; fronts LM
-  # Studio on the Mac locally via host.containers.internal:1234).
+  # agentgateway - inference edge gateway (gateway + its own budget Postgres;
+  # fronts LM Studio on the Mac locally via host.containers.internal:1234).
   - name: "Deploy agentgateway (Local)"
     playbook: platform/playbooks/deploy-agentgateway.yml
   - name: "Manage agentgateway Client Key (Local)"

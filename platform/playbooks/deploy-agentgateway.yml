@@ -8,8 +8,9 @@
 #          and reused, rotated only by an explicit run) + render .env and
 #          config.yaml (identities as sha256 hashes, no plaintext key).
 # Phase 2: deploy.sh — container lifecycle (pull, up: db healthy then gateway ready).
-# Phase 3: Verify — readiness answers, an unenrolled request is 401 at the
-#          gateway, and one enrolled identity lists the models through it.
+# Phase 3: Verify — readiness answers and an unenrolled request is 401 at the
+#          gateway. The keyed round-trip is not done here (a key on an exec argv is
+#          a token on a command line); it belongs to the conformance run (task 2).
 #
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
 # Design: identities/limits §4, no retry/timeouts §3, telemetry §6.
@@ -89,6 +90,25 @@
           agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
           list in inventory — an empty gateway would answer 404 for every model.
 
+    # Names are interpolated into YAML, JSON (the secret definitions) and a CEL
+    # string literal; restrict them to a charset that is inert in all three.
+    - name: "Refuse identity or group names outside the safe charset"
+      ansible.builtin.assert:
+        that:
+          - (agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+          - agw_ui_admin_group | default('platform-admins') is match('^[a-z0-9][a-z0-9-]*$')
+        fail_msg: >-
+          agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
+          (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # Plaintext keys in the rendered config are a LOCAL-DEV convenience only; the
+    # template ignores the flag outside local_mode, and this makes a prod
+    # inventory that sets it fail loudly instead of silently being ignored.
+    - name: "Refuse agw_plaintext_keys outside local_mode"
+      ansible.builtin.assert:
+        that: not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)
+        fail_msg: "agw_plaintext_keys renders raw client keys into config.yaml; it is only allowed with local_mode: true."
+
     # The AppRole secret_id, the token OpenBao returns and every secret read cross
     # this connection — refuse a public cleartext endpoint before any of it is sent.
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -153,8 +173,7 @@
 # container rather than on the host that publishes the port. Same probe on
 # every path — local, prod VM — so the verify cannot pass for the wrong reason.
 # No keyed request here: a client key on an exec argv is a token on a command
-# line. The enrolled-identity proof is the conformance script (task 2), run on
-# the gateway host.
+# line. The enrolled-identity proof is the conformance run (change task 2).
 - name: "Phase 3: Verify agentgateway"
   hosts: agentgateway_svc
   gather_facts: false
@@ -166,11 +185,10 @@
   tasks:
     - name: "Readiness listener answers (via the compose network)"
       ansible.builtin.command: "{{ _probe }} http://agentgateway:19001/healthz/ready"
+      # Single shot: deploy.sh already waited up to 90 s for exactly this and fails
+      # hard, so a retry here would only re-prove a fact in hand.
       register: _ready
       changed_when: false
-      retries: 10
-      delay: 3
-      until: _ready.rc == 0
 
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
@@ -184,5 +202,5 @@
       ansible.builtin.debug:
         msg: >-
           agentgateway ready — /healthz/ready answers on the compose network;
-          unauthenticated /v1/models is 401 at the gateway. Enrolled-identity and
-          conformance checks: platform/services/agentgateway/deployment/tests/conformance.sh.
+          unauthenticated /v1/models is 401 at the gateway. The keyed round-trip and
+          conformance against the direct upstream are change task 2.

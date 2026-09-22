@@ -1,7 +1,7 @@
 # Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
 # Image/ports are env-parameterized in the BASE (.env); this overlay carries
-# what overlays can add PLUS one `!override` (the UI publish removed): a memory cap, the SELinux opt (the podman-machine
-# VM enforces SELinux on bind mounts), and the extra `local-dev` network so
+# what overlays can add PLUS one `!override` (the UI publish removed): a memory
+# cap, the SELinux opt (the podman-machine VM enforces SELinux on bind mounts), and the extra `local-dev` network so
 # central Caddy reaches the gateway by name (agentgateway:4000) for the
 # inference.agent-cloud.test route.
 #
@@ -23,9 +23,9 @@ services:
     mem_limit: 512m
     # `!override` (podman-compose 1.6.0 honours it, verified 2026-09-17): REPLACE the
     # base port list instead of appending, so the operator-UI publish is DROPPED
-    # locally. The UI has no login of its own; locally the only path to it is
-    # https://admin.inference.<zone> through Caddy + Authentik forward_auth (Caddy
-    # dials agentgateway:4001 on the local-dev network). In prod the base publish
+    # locally, so the only path to the UI is https://admin.inference.<zone> through
+    # Caddy (a plain proxy; Caddy dials agentgateway:4001 on the local-dev network),
+    # where the gateway's own ui.policies OIDC login against Authentik applies. In prod the base publish
     # stays, bound for the Caddy host alone (firewall auto-detect).
     # Literals, not ${VAR}: podman-compose does NOT substitute env inside a tagged
     # node (task 603, 2026-09-17: "invalid port format" with the ${...} text intact),

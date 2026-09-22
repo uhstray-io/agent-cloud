@@ -125,6 +125,9 @@
       path exists. Browser login as `agent-cloud-admin` and the prod `nc` are Joe's/prod
 
 ## 2. Conformance against direct vLLM
+      Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
+      has never been shown DENYING anyone — log in as a platform-developers member and
+      require a refusal at the gateway (the IdP-side admin binding is the other half).
 - [ ] 2.1 Conformance script `platform/services/agentgateway/deployment/tests/conformance.sh`
       (curl + jq): models list; chat completion thinking off; `reasoning_effort` each of
       the seven values; `chat_template_kwargs` override; tool call; streamed request with

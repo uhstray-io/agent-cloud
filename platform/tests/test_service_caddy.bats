@@ -124,12 +124,43 @@ setup() {
 
 @test "caddy: the internal cert gains a *.<parent> SAN for every nested route host" {
   # A TLS wildcard matches ONE label: *.zone does not cover admin.inference.zone.
-  # deploy-caddy derives the extra SANs from the route table; the mint task emits
-  # them as --san flags. Landed 2026-09-17 with admin.inference.<zone>.
+  # EVALUATES the expression deploy-caddy.yml actually carries (extracted from the
+  # file, not re-typed here) against sample routes, so a broken regex fails.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
   local mint="$BATS_TEST_DIRNAME/../playbooks/tasks/mint-internal-cert.yml"
-  grep -q '_mint_extra_sans:' "$pb"
-  grep -q "map(attribute='host')" "$pb"
-  grep -q '_mint_extra_sans | default(\[\])' "$mint"
-  grep -qF -- '--san "{{ san }}"' "$mint"
+  python3 - "$pb" "$BATS_TEST_TMPDIR/sans.yml" <<'PY2'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+expr = None
+for play in plays:
+    for t in play.get('tasks', []) or []:
+        v = (t.get('vars') or {}).get('_mint_extra_sans')
+        if v: expr = v
+assert expr, "no _mint_extra_sans in deploy-caddy.yml"
+out = [{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+        'vars': {'_mint_zone': 'z.test', 'caddy_routes': [
+            {'host': 'semaphore.z.test'}, {'host': 'admin.inference.z.test'},
+            {'host': 'x.inference.z.test'}, {'host': 'a.b.c.z.test'}, {'host': 'z.test'}],
+            '_sans': expr},
+        'tasks': [{'ansible.builtin.copy': {'content': '{{ _sans | to_json }}', 'dest': sys.argv[2] + '.out'}}]}]
+yaml.safe_dump(out, open(sys.argv[2], 'w'))
+PY2
+  ansible-playbook "$BATS_TEST_TMPDIR/sans.yml" >/dev/null 2>&1
+  [ "$(cat "$BATS_TEST_TMPDIR/sans.yml.out")" = '["*.inference.z.test", "*.b.c.z.test"]' ]
+  # The mint task emits each SAN and refuses non-hostname characters first. Evaluate
+  # that refusal too: the derived wildcard passes, a shell metacharacter does not.
+  assert_grep -qF -- '--san "{{ san }}"' "$mint"
+  python3 - "$mint" "$BATS_TEST_TMPDIR/sancheck.yml" <<'PY2'
+import sys, yaml
+tasks = yaml.safe_load(open(sys.argv[1]))
+t = [x for x in tasks if x.get('name') == 'Refuse an extra SAN outside hostname characters'][0]
+that = t['ansible.builtin.assert']['that']
+play = [{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+         'tasks': [{'ansible.builtin.assert': {'that': that}}]}]
+yaml.safe_dump(play, open(sys.argv[2], 'w'))
+PY2
+  ansible-playbook "$BATS_TEST_TMPDIR/sancheck.yml" -e '{"_mint_extra_sans":["*.inference.z.test","plain.z.test"]}' >/dev/null 2>&1
+  run ansible-playbook "$BATS_TEST_TMPDIR/sancheck.yml" -e '{"_mint_extra_sans":["x$(id).z.test"]}'
+  [ "$status" -ne 0 ]
 }

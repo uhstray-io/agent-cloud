@@ -15,16 +15,17 @@
 #                  as sha256 hashes. Gitignored because it is rendered per deploy.
 # deploy.sh is container lifecycle only — no secret generation.
 #
-# Ports (all env-parameterized; overlays merge `ports` append-only, so the local
-# loopback shift lives in .env, not compose.local.yml):
+# Ports (env-parameterized here; compose.local.yml replaces the whole list with
+# `!override` literals, which also drops the operator-UI publish locally):
 #   4000   the OpenAI-compatible /v1 listener (Caddy proxies in)
-#   19001  readiness — probed by deploy.sh from the host (the Chainguard
-#          glibc-dynamic base image has no shell, so no in-container healthcheck)
+#   19001  readiness — probed by deploy.sh and the verify play from the sibling
+#          agentgateway-db container over the compose network (the Chainguard
+#          glibc-dynamic gateway image has no shell, so no in-container healthcheck)
 #   19002  stats/metrics — Prometheus scrapes this from the o11y host in prod
 #   4001   operator UI — OIDC login run by the gateway itself (ui.policies); Caddy
 #          is a plain TLS proxy. Published for the Caddy host in prod;
 #          compose.local.yml !overrides it AWAY locally
-#   15000  admin — NOT published; stays on the container loopback (design §1)
+#   15000  admin — NOT published; pinned to the container loopback in config.yaml (design §1)
 #   5432   agentgateway-db — NOT published; compose network only
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
 

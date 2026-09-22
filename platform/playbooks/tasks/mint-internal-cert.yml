@@ -34,6 +34,14 @@
       - _mint_dest_dir | length > 0
     fail_msg: "mint-internal-cert.yml requires `_mint_zone` (internal zone) and `_mint_dest_dir` (consuming service's deploy dir)."
 
+# The SANs are templated into a `sh -c '...'` inside the CA container, so they are
+# restricted to hostname characters (plus the leading wildcard) before any use.
+- name: "Refuse an extra SAN outside hostname characters"
+  ansible.builtin.assert:
+    that:
+      - (_mint_extra_sans | default([]) | reject('match', '^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') | list) | length == 0
+    fail_msg: "Extra SANs must be DNS names (optionally *.-prefixed): {{ _mint_extra_sans | default([]) }}"
+
 - name: "Assert the CA is reachable before minting"
   ansible.builtin.command: "{{ _mint_engine | default('podman') }} container exists {{ _mint_ca_name | default('step-ca') }}"
   register: _mint_ca_present
@@ -53,7 +61,7 @@
       step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
         --provisioner admin --provisioner-password-file /tmp/pw \
         --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
-        {% for san in (_mint_extra_sans | default([]) | unique) %}--san "{{ san }}" {% endfor %}\
+        {% for san in _mint_extra_sans | default([]) %}--san "{{ san }}" {% endfor %}\
         --not-after {{ _mint_dur | default("8760h") }} --force \
         --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
       rc=$?; rm -f /tmp/pw; exit $rc
