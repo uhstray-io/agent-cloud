@@ -143,3 +143,15 @@ templates:
 #         title: "Target group"
 #         type: string
 #         required: false
+
+  # Service-deployment workflow executors, bound to the working tree so a dry run
+  # (DRY_RUN=1 scripts/local-dev.sh run <playbook>) exercises the code being written, not
+  # GitHub's (MISTAKES 10.9). Change service-deployment-workflow, task 2.2.
+  - name: "Check Secrets (Local)"
+    playbook: platform/playbooks/check-secrets.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group whose secrets to inventory (e.g. tududi_svc)
+        type: string
+        required: true

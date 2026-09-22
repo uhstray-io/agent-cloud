@@ -35,7 +35,16 @@ def test_only_the_local_bootstrap_turns_it_on():
         for p in candidates
         if f"{FLAG}=true" in _code(p) or f"{FLAG}: true" in _code(p)
     )
-    assert setters == ["platform/playbooks/bootstrap-local-dev.yml"]
+    # The genesis bootstrap, and the runner's `templates` subcommand, which refuses any
+    # controller not on loopback (test below). Nothing else may turn the flag on.
+    assert setters == ["platform/playbooks/bootstrap-local-dev.yml", "scripts/local-dev.sh"]
+
+
+def test_runner_publishes_local_templates_only_to_a_loopback_controller():
+    text = (REPO / "scripts/local-dev.sh").read_text()
+    body = text[text.index("templates() {"):text.index("\n}\n", text.index("templates() {"))]
+    assert "http://127.0.0.1:*|http://localhost:*) ;;" in body
+    assert body.index("is not the local controller") < body.index("semaphore_include_local_templates=true")
 
 
 def test_no_local_template_name_is_in_the_shared_catalog():

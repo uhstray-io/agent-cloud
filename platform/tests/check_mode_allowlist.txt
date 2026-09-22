@@ -10,7 +10,6 @@ platform/playbooks/backup-n8n-db.yml
 platform/playbooks/backup-service-ssh-key.yml
 platform/playbooks/bootstrap-local-dev.yml
 platform/playbooks/check-discovery.yml
-platform/playbooks/check-secrets.yml
 platform/playbooks/cleanup-netbox.yml
 platform/playbooks/configure-host-network.yml
 platform/playbooks/create-netbox-device.yml

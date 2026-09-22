@@ -117,6 +117,9 @@ _CURL_OPTS=(--connect-timeout 5 --max-time 30 --retry 2 --retry-delay 1 --retry-
 _api() { curl -sf "${_CURL_OPTS[@]}" -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" "$@"; }
 
 # _run_template <playbook-rel-path> [extra-vars-json]
+# DRY_RUN=1 launches the task in Ansible check mode: Semaphore turns the task's
+# params.dry_run into --check (v2.18.12 LocalJob.go:438, v2.19.11 local_executor.go:516).
+# Standard: plan/architecture/08-ansible-automation-standards.md.
 _run_template() {
   local playbook="$1" extra="${2:-}"
   _load_state
@@ -152,6 +155,7 @@ print(('' if local else 'FALLBACK ') + str(pick[0]['id']) if pick else '')" "$re
   [ -n "$tid" ] || die "no template registered for playbook: $playbook"
   local body="{\"template_id\": ${tid}, \"project_id\": ${SEMAPHORE_PROJECT_ID}"
   [ -n "$extra" ] && body="${body}, \"environment\": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$extra")"
+  [ "${DRY_RUN:-0}" = "1" ] && body="${body}, \"params\": {\"dry_run\": true}" && info "DRY_RUN=1: check mode (--check), no changes"
   body="${body}}"
   local task
   task=$(curl -sf "${_CURL_OPTS[@]}" -X POST -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" \
@@ -200,6 +204,28 @@ run_playbook() {
   [ -n "$name" ] || die "usage: local-dev.sh run <playbook-basename> ['{\"k\":\"v\"}']"
   guard "$INV"
   _run_template "platform/playbooks/${name%.yml}.yml" "$extra"
+}
+
+# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as
+# bootstrap-local-dev.yml's "Register templates" step does, without re-running genesis. Use
+# after editing templates-local.yml or templates.yml. Resolves the same records by name
+# (inventory `local`, environment `local-openbao`) that the bootstrap creates.
+templates() {
+  _load_state
+  # Local-only by construction: the local-template flag must never reach production.
+  case "$SEMAPHORE_URL" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *) die "refusing: SEMAPHORE_URL ${SEMAPHORE_URL} is not the local controller" ;;
+  esac
+  local base="${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}" inv env
+  inv=$(_api "${base}/inventory" | python3 -c "import json,sys; print(next(i['id'] for i in json.load(sys.stdin) if i['name'] == 'local'))") \
+    || die "no 'local' inventory record — run: make local-bootstrap"
+  env=$(_api "${base}/environment" | python3 -c "import json,sys; print(next(e['id'] for e in json.load(sys.stdin) if e['name'] == 'local-openbao'))") \
+    || die "no 'local-openbao' environment record — run: make local-bootstrap"
+  SEMAPHORE_URL="$SEMAPHORE_URL" SEMAPHORE_TOKEN="$SEMAPHORE_TOKEN" ansible-playbook \
+    "${REPO_ROOT}/platform/semaphore/setup-templates.yml" \
+    -e "semaphore_project_id=${SEMAPHORE_PROJECT_ID}" -e "semaphore_inventory_id=${inv}" \
+    -e "semaphore_environment_id=${env}" -e semaphore_include_local_templates=true
 }
 
 # Show the Authentik SSO logins so the developer can test login/access in the
@@ -516,6 +542,7 @@ case "${1:-}" in
   clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
   run)       shift; run_playbook "$@" ;;
+  templates) templates ;;
   creds)     creds ;;
   resolver)  shift; resolver "$@" ;;
   https)     shift; https "$@" ;;
@@ -533,6 +560,7 @@ usage: scripts/local-dev.sh <subcommand>
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
   validate           run Validate All via LOCAL Semaphore
+  templates          re-publish shared + local-only templates to LOCAL Semaphore
   run <playbook> [json]  run any registered template by playbook basename via
                      LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON)
   creds              show the Authentik admin login (read from OpenBao) for browser testing

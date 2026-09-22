@@ -88,8 +88,10 @@ Each row is a rule from the linked page, read 2026-09-22.
    `services/tasks/LocalJob.go:432-439`, read 2026-09-22).
 2. **Every task falls in one of three check-mode classes.**
    - *Read-only probe on a module without full check-mode support* (`uri` GET, a
-     `command` or `shell` that only reads): `check_mode: false`, `changed_when: false`.
-     Read-only modules with full support (`stat`, `slurp`) need neither.
+     `command` or `shell` that only reads, or any call the author marks
+     `changed_when: false`, such as the OpenBao AppRole login, a POST that only reads a
+     token): `check_mode: false`, `changed_when: false`. Read-only modules with full
+     support (`stat`, `slurp`) need neither.
    - *Write that cannot simulate* (`command`, `shell`, non-GET `uri`, container engine
      calls): `when: not ansible_check_mode`, or `creates`/`removes` where they express it.
    - *Write that simulates* (a module whose documentation lists check mode as `full`, such

@@ -3,8 +3,8 @@
 Under `ansible-playbook --check`, a module without check-mode support is skipped, so:
 
 - a READ that such a module performs must set `check_mode: false`, or verification silently
-  does nothing during a dry run: a `uri` GET/HEAD, or a `command`/`shell`/`raw`/`script`
-  marked read-only by `changed_when: false`;
+  does nothing during a dry run: a `uri` GET/HEAD, or any `uri`/`command`/`shell`/`raw`/
+  `script` marked read-only by `changed_when: false` (an OpenBao login POST, for example);
 - a WRITE that such a module performs must be guarded: a `when` mentioning
   `ansible_check_mode`, `check_mode: true`, or `creates`/`removes` on a command. A write
   under `check_mode: false` runs for real during a dry run and is always a violation.
@@ -55,11 +55,14 @@ def _guarded(task: dict, inherited: bool) -> bool:
 
 
 def _classify(task: dict, module: str, args) -> str:
+    # `changed_when: false` is the author's declaration that the task changes nothing, for a
+    # command and for an HTTP call alike (an OpenBao AppRole login is a POST that only
+    # reads a token, and verification cannot run without it).
+    if task.get("changed_when") is False:
+        return "read"
     if module == "uri":
         method = str((args or {}).get("method", "GET")) if isinstance(args, dict) else "GET"
         return "read" if method.upper() in READ_METHODS else "write"
-    if task.get("changed_when") is False:
-        return "read"
     return "write"
 
 
@@ -204,3 +207,11 @@ def test_write_forced_into_check_mode_is_caught():
         "- name: restart it\n  ansible.builtin.command: podman restart x\n  check_mode: false\n"
     )
     assert found == ["restart it: command write forced to run in check mode (check_mode: false)"]
+
+
+def test_login_post_marked_read_only_needs_check_mode_false():
+    found = _tasks(
+        "- name: login\n  ansible.builtin.uri:\n    url: http://x/v1/auth/approle/login\n"
+        "    method: POST\n  changed_when: false\n"
+    )
+    assert found == ["login: read-only uri without check_mode: false"]

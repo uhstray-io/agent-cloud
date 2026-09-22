@@ -39,6 +39,14 @@ Verified on 2026-09-22:
   creation does not visibly clear it (`services/tasks/TaskPool.go:766-778`); if the API
   accepts it, a token with run rights can run any playbook in the repository under any
   template's inventory and keys. Source-level only, not exercised; not used by this change.
+- **Dry run proven live on the local controller** (v2.18.12, Ansible 2.16.5, 2026-09-22):
+  `DRY_RUN=1 scripts/local-dev.sh run check-secrets` sent `params.dry_run`; the step result
+  reported `check_mode: true`, both OpenBao calls ran (not skipped) and the task succeeded
+  (Semaphore tasks 958 normal, 959 check). On Ansible 2.16 templated values in a step result
+  render as strings (`key_count: "3"`) and an absent error as `""`; consumers treat `""` and
+  `null` alike. `--tags verify` cannot be launched through Semaphore, because
+  `setup-templates.yml` sets no template's `allow_override_tags`; tag coverage is proven with
+  `--list-tasks --tags verify`, and the orchestrator verifies by dry run.
 - **Version note (2026-09-22): production is pinned to v2.19.11**, where the runner moved to
   `services/tasks/local_executor.go`. There `--check`/`--diff` still follow `dry_run`/`diff`
   (lines 512-516) and the task-level `playbook` is still read first (line 423), but a

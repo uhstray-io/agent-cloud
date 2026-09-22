@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-templates local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
 .PHONY: local-deploy-% local-clean-deploy-% git-setup
 
 help: ## Show available targets
@@ -78,6 +78,9 @@ local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then 
 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
+
+local-templates: ## Re-publish shared + local-only templates to the LOCAL Semaphore
+	@$(LOCAL_DEV) templates
 
 local-smoke: ## Smoke-test the live local stack (control plane, DNS, Caddy/TLS); --full adds lint+BATS
 	@bash scripts/local-smoke.sh $(ARGS)
