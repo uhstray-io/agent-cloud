@@ -343,9 +343,12 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 - **Provisioning does not consult IPAM for a free address (recorded 2026-09-17).** NetBox
   is the address authority and `netbox-allocate-ip.yml` can report and reserve, but
   Phase 1 still starts from a human reading `inventory/production.yml` and picking an
-  address that is not declared there. The agentgateway VM (216) was allocated that way
-  because NetBox was unavailable at the time; its address carries an "ADDRESS PROVENANCE"
-  note in site-config and must be reserved in NetBox before the VM is provisioned. The
+  address that is not declared there. The agentgateway VM (first allocated as 216, which collided with a GitHub runner; provisioned as 218 on 2026-09-18) was addressed that way
+  because NetBox was unavailable at the time. The first address chosen that way
+  belonged to an undeclared GitHub runner (docs/MISTAKES.md 3.6); the VM now runs at a
+  network-swept address that carries an "ADDRESS PROVENANCE" note in site-config and is
+  still NOT reserved in NetBox, because the IPAM automation token cannot currently be
+  minted on the live instance. Reserve it when the IPAM is back. The
   future feature: `provision-vm.yml` (or a preflight it imports) asks NetBox whether the
   declared address is free or already reserved for this host, and refuses a declaration
   the authority contradicts — so the ledger and the inventory cannot drift apart.

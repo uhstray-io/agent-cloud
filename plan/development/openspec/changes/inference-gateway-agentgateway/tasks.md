@@ -137,6 +137,10 @@
       in `context/architecture.md`
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
+- [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
+      per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
+      entry makes vLLM report usage on streams without changing the client-visible contract
+      (the budget is otherwise best-effort for streams; PR 191 review)
 - [ ] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
       with a stream past 130 s proves scenario "Stream is not buffered"
 

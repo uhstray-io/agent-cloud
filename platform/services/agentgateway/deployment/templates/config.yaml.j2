@@ -130,11 +130,15 @@ llm:
         # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
         allowedModels: {{ _pol.allowed_models | to_json }}
 {% endif %}
-        # Per-identity token budget: a rolling UTC-hour window, charged from the
-        # upstream's reported usage, Block once exceeded. Default figure from
-        # inventory, derived from the measured ceiling (design §4); a per-identity
-        # override lives in agw_client_policies.<name>.tokens_per_hour. This is the
-        # ONE per-identity control v1.5.0 offers, and it is why the db exists.
+        # Per-identity token budget, BEST-EFFORT: a rolling UTC-hour window charged
+        # AFTER each response from the upstream's reported usage (upstream docs,
+        # cost-controls/budget-limits: the request that crosses the limit completes,
+        # the NEXT one is rejected, and a response without usage is not charged at
+        # all — a stream without a usage chunk is free). It is a spend guard, not a
+        # hard cap; the hard admission control is the global request bucket below.
+        # Default figure from inventory (design §4); per-identity override in
+        # agw_client_policies.<name>.tokens_per_hour. The only per-identity control
+        # v1.5.0 offers, and the reason the db exists.
         budgets:
         - name: hourly-tokens
           limit:

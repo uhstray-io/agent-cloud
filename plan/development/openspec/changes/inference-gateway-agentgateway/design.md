@@ -107,7 +107,12 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    a per-key `budgets` entry (`Tokens`, rolling `1h` UTC-aligned, `Block`) as the
    per-identity guard — which requires `config.database`, hence the Postgres (Joe's
    choice over waiting for the unreleased bucket `key` or rewriting in the verbose
-   `binds/routes` shape). JWT via Authentik OIDC is the second step once the OIDC client for
+   `binds/routes` shape). The budget is BEST-EFFORT by upstream design (charged after
+   the response; the crossing request completes; a response without usage, such as a
+   stream without a usage chunk, is not charged), so it is a spend guard and the global
+   request bucket is the hard admission control (PR 191 review). Whether forcing
+   `stream_options.include_usage` through a model `overrides` entry closes the stream
+   gap is a conformance question (task 2.3a). JWT via Authentik OIDC is the second step once the OIDC client for
    machine identities exists (plan 02). Alternative rejected: keep the single shared
    key at the gateway, because per-client limits are the reason the gateway exists.
 
@@ -228,7 +233,8 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
   (task 3.2, answered), so the first week runs with loose figures tightened from the
   metrics and the budget rows.
 - [The operator UI leaks configuration] → it is reached only through the admin-tier
-  forward_auth gate; the listener is published for the Caddy host alone (firewall
+  gateway-native OIDC login (`ui.policies.oidc`) plus the `platform-admins` authorization
+  rule; the listener is published for the Caddy host alone (firewall
   auto-detect) and the admin interface stays on the container loopback (decision 9).
 - [Two gateways confuse the platform] → decision 1's record; agentgateway's config
   carries no placement or policy logic, and skynet's docs gain a pointer to the record.

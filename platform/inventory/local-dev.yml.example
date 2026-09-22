@@ -241,6 +241,8 @@ all:
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
+          # LM Studio may run without authentication locally; prod leaves this unset (true).
+          agw_upstream_requires_key: false
 
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own

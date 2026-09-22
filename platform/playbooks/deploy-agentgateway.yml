@@ -24,6 +24,7 @@
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   agw_rate_requests_per_minute_total  (optional) one global request bucket
 #   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
+#   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key
 #   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 
@@ -127,6 +128,20 @@
 
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
+    # none, and an empty key starts a gateway that is ready but answers every client
+    # with the upstream's invalid_api_key. Refuse that unless the inventory declares
+    # the upstream takes no key (agw_upstream_requires_key: false — LM Studio without
+    # authentication). Checks presence only; the value is never printed.
+    - name: "Refuse to deploy without the upstream key when the upstream requires one"
+      ansible.builtin.assert:
+        that: (secrets.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
+        fail_msg: >-
+          secret/services/{{ service_name }}:vllm_api_key is empty. Seed it (Seed OpenBao Key,
+          value as the BAO_VALUE environment secret) before deploying, or set
+          agw_upstream_requires_key: false for an upstream that takes no key.
+        success_msg: "Upstream key present (or not required by this upstream)."
 
     # The gateway's OIDC discovery/token calls reach the IdP at https://auth.<zone>:8443
     # (step-ca-minted leaf) — distribute the trust bundle into ./certs; compose.local.yml

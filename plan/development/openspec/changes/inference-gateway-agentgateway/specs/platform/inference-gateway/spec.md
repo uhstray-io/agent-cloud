@@ -65,7 +65,9 @@ semantics or buffering the stream.
 
 ### Requirement: Every client has its own identity and limit
 The gateway SHALL authenticate `/v1` requests with per-client API keys stored in
-OpenBao and enrolled as hashes, MUST apply a token budget per client identity and a
+OpenBao and enrolled as hashes, MUST apply a best-effort token budget per client identity
+(charged after each response from reported usage, so the crossing request completes and a
+response without usage is not charged) and a
 request-rate ceiling for the gateway as a whole (v1.5.0 offers no per-identity request
 bucket without the verbose route shape; revisit when a release ships the bucket key),
 and MUST accept the legacy shared key as one identity only during a dated grace period.
