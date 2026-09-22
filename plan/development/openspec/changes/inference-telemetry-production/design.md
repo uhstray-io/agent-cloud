@@ -40,6 +40,10 @@ Verified 2026-09-14:
 Not verified: which estate host has capacity for the stack; whether any o11y containers
 run anywhere in production today outside the inventory (task 0.2 checks).
 
+2026-09-22 inventory attempt: the authenticated Semaphore front door returned a
+Cloudflare 502 host error at `/project/1/templates`. No production host or container
+state was observed; task 0.2 remains open.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of

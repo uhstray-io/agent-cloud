@@ -19,6 +19,7 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}
       - --web.enable-lifecycle
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -37,7 +38,9 @@ services:
     image: ${O11Y_LOKI_IMAGE:-docker.io/grafana/loki:3.3.2}
     container_name: o11y-loki
     restart: unless-stopped
-    command: ["-config.file=/etc/loki/config.yml"]
+    command: ["-config.file=/etc/loki/config.yml", "-config.expand-env=true"]
+    environment:
+      O11Y_LOKI_RETENTION: ${O11Y_LOKI_RETENTION:-7d}
     volumes:
       - ./config/loki-config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki

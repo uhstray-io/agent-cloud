@@ -1,7 +1,7 @@
 # Tasks: inference telemetry in production
 
 ## 0. Branch and inventory
-- [ ] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`. Pull requests
+- [x] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`. Pull requests
       only when Joe asks for them (repo rule)
 - [ ] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
       production host today; record the result in `design.md` Context

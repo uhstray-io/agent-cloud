@@ -57,6 +57,14 @@ setup() {
   grep -qE "o11y_grafana_image \| default\('docker\.io/grafana/grafana:[0-9.]+'\)" "$f"
 }
 
+@test "o11y: retention defaults reach Prometheus and Loki" {
+  grep -q "O11Y_PROM_RETENTION={{ o11y_prom_retention | default('15d') }}" "$DEPLOY_DIR/templates/env.j2"
+  grep -q "O11Y_LOKI_RETENTION={{ o11y_loki_retention | default('7d') }}" "$DEPLOY_DIR/templates/env.j2"
+  grep -q 'storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}' "$DEPLOY_DIR/compose.yml"
+  grep -q -- '-config.expand-env=true' "$DEPLOY_DIR/compose.yml"
+  grep -q 'retention_period: ${O11Y_LOKI_RETENTION:-7d}' "$DEPLOY_DIR/config/loki-config.yml"
+}
+
 @test "o11y: committed config-as-code present (prometheus/loki/alloy/grafana)" {
   # Prometheus self-scrape is the committed config-as-code. Per-target scrapes
   # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in prometheus.yml
