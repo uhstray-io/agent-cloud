@@ -44,6 +44,18 @@ run anywhere in production today outside the inventory (task 0.2 checks).
 Cloudflare 502 host error at `/project/1/templates`. No production host or container
 state was observed; task 0.2 remains open.
 
+2026-09-22 partial production inventory: Semaphore task 1105 ran the read-only
+`audit-o11y-containers.yml` against the 15 `agent_cloud` service hosts. On the 12
+reachable hosts (`agentgateway`, `authentik`, `caddy`, `gh-runner-01`,
+`gh-runner-02`, `honcho`, `n8n`, `netbox`, `openbao`, `postiz`, `semaphore`,
+`tududi`), the rootless and rootful Podman and Docker queries all reported
+empty `o11y-*` container lists. At least one runtime query succeeded on each
+host. `nemoclaw`, `nocodb`, and `openhands` were unreachable, so this does not
+establish absence on every production host. Semaphore task 1106 attempted the
+existing read-only Proxmox validation playbook to check VM state, but its
+OpenBao lookup could not connect; no VM status was observed. Task 0.2 remains
+open until those hosts or their stopped VM state are verified.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of
