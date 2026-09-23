@@ -226,13 +226,18 @@
 
     # The keyed round-trip: one enrolled identity lists the served models and completes one
     # chat request, which the gateway can only answer by reaching agw_upstream_base_url. The
-    # key goes in on stdin (never argv, never a log): the two key-bearing probes are no_log and
-    # never fail themselves; the asserts after them carry the diagnosis (status, model names).
-    # A dry run skips them: it renders no new key and restarts nothing, so it has no gateway
-    # state of its own to prove.
+    # probes are `uri` calls from the target to the gateway's published port, so the key is a
+    # module argument, never any process's argv: a shell probe in the db container put it on
+    # wget's command line (PR 221 Codex review). The two key-bearing probes are no_log and never
+    # fail themselves; the asserts after them carry the diagnosis (status, model names). A dry
+    # run skips them: it renders no new key and restarts nothing, so it has no gateway state of
+    # its own to prove.
+    #
     # The identity may be restricted to some models (agw_client_policies.<name>.allowed_models):
-    # it is checked against, and asks for, only models it may use.
-    - name: "Keyed probes: pick the verifying identity and its models"
+    # it is checked against, and asks for, only models it may use. The URL is the published
+    # port (an unspecified bind is reached on loopback); local-dev, where the target is the
+    # Semaphore container, declares agw_verify_base_url.
+    - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
         _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
         _verify_models: >-
@@ -240,6 +245,10 @@
               | default({})).allowed_models
              | default(agw_models | map(attribute='name') | list)
              | intersect(agw_models | map(attribute='name') | list) }}
+        _verify_url: >-
+          {{ agw_verify_base_url | default('http://'
+             ~ ('127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1'))
+             ~ ':' ~ (agw_port | default('4000'))) }}
 
     - name: "Keyed probes: the identity may use at least one declared model"
       ansible.builtin.assert:
@@ -250,18 +259,13 @@
         - _verify_client | length > 0
 
     - name: "An enrolled identity lists the served models"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - exec
-          - -i
-          - agentgateway-db
-          - sh
-          - -c
-          - 'read -r k; wget -q -S -O - -T 10 --header "authorization: Bearer $k" http://agentgateway:4000/v1/models'
-        stdin: "{{ _resolved['client_' ~ _verify_client] }}"
+      ansible.builtin.uri:
+        url: "{{ _verify_url }}/v1/models"
+        headers:
+          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
+        timeout: 10
+        status_code: [200]
       register: _keyed_models
-      changed_when: false
       failed_when: false
       no_log: true
       when:
@@ -274,7 +278,7 @@
     # round-trip was not proven on this run.
     - name: "Keyed probes: note a policy refusal"
       ansible.builtin.set_fact:
-        _verify_refused: "{{ 'HTTP/1.1 429' in (_keyed_models.stderr | default('')) }}"
+        _verify_refused: "{{ (_keyed_models.status | default(-1)) == 429 }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -282,37 +286,33 @@
     - name: "Require every model this identity may use in the keyed listing"
       ansible.builtin.assert:
         that:
-          - _keyed_models.rc == 0
-          - _verify_models is subset((_keyed_models.stdout | from_json).data | map(attribute='id') | list)
+          - _keyed_models.status == 200
+          - _verify_models is subset(_keyed_models.json.data | map(attribute='id') | list)
         fail_msg: >-
-          Keyed /v1/models as {{ _verify_client }}: expected {{ _verify_models | join(', ') }};
-          {% if _keyed_models.rc == 0 %}listed
-          {{ (_keyed_models.stdout | from_json).data | map(attribute='id') | join(', ') }}{% else %}rc={{ _keyed_models.rc }}
-          {{ (_keyed_models.stderr | default('')).splitlines() | first | default('') }}{% endif %}
+          Keyed /v1/models as {{ _verify_client }} at {{ _verify_url }}: expected
+          {{ _verify_models | join(', ') }};
+          {% if _keyed_models.status == 200 %}listed
+          {{ _keyed_models.json.data | map(attribute='id') | join(', ') }}{% else %}HTTP
+          {{ _keyed_models.status }} {{ _keyed_models.msg | default('') }}{% endif %}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
         - not (_verify_refused | bool)
 
     - name: "An enrolled identity completes one chat request through the upstream"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - exec
-          - -i
-          - agentgateway-db
-          - sh
-          - -c
-          - >-
-            read -r k; wget -q -S -O - -T 120
-            --header "authorization: Bearer $k" --header "content-type: application/json"
-            --post-data "$0" http://agentgateway:4000/v1/chat/completions
-          - >-
-            {{ {'model': _verify_models[0], 'max_tokens': 64,
-                'messages': [{'role': 'user', 'content': 'Reply with one word: pong'}]} | to_json }}
-        stdin: "{{ _resolved['client_' ~ _verify_client] }}"
+      ansible.builtin.uri:
+        url: "{{ _verify_url }}/v1/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
+        body_format: json
+        body:
+          model: "{{ _verify_models[0] }}"
+          max_tokens: 64
+          messages: [{role: user, content: "Reply with one word: pong"}]
+        timeout: 120
+        status_code: [200]
       register: _keyed_chat
-      changed_when: false
       failed_when: false
       no_log: true
       when:
@@ -322,7 +322,7 @@
 
     - name: "Keyed probes: note a policy refusal of the completion"
       ansible.builtin.set_fact:
-        _verify_refused: "{{ 'HTTP/1.1 429' in (_keyed_chat.stderr | default('')) }}"
+        _verify_refused: "{{ (_keyed_chat.status | default(-1)) == 429 }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -333,13 +333,13 @@
       # upstream's own served name (local-dev: openai/gpt-oss-20b), and usage is its count.
       ansible.builtin.assert:
         that:
-          - _keyed_chat.rc == 0
-          - (_keyed_chat.stdout | from_json).object == 'chat.completion'
-          - (_keyed_chat.stdout | from_json).choices | length > 0
-          - ((_keyed_chat.stdout | from_json).usage.completion_tokens | default(0) | int) > 0
+          - _keyed_chat.status == 200
+          - _keyed_chat.json.object == 'chat.completion'
+          - _keyed_chat.json.choices | length > 0
+          - (_keyed_chat.json.usage.completion_tokens | default(0) | int) > 0
         fail_msg: >-
           Keyed chat completion as {{ _verify_client }} for {{ _verify_models[0] }} failed:
-          rc={{ _keyed_chat.rc }} {{ _keyed_chat.stderr | default('') | trim }}
+          HTTP {{ _keyed_chat.status }} {{ _keyed_chat.msg | default('') }}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -358,7 +358,7 @@
           {% elif _verify_client | length > 0 %}As {{ _verify_client }}: /v1/models lists
           {{ _verify_models | join(', ') }}; one chat completion for
           {{ _verify_models[0] }} came back from upstream model
-          {{ (_keyed_chat.stdout | from_json).model }} at {{ agw_upstream_base_url }}
-          ({{ (_keyed_chat.stdout | from_json).usage.completion_tokens }} completion tokens).
+          {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
+          ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
           run.{% endif %}
