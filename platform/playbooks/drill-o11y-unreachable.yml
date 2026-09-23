@@ -210,7 +210,7 @@
               - docker.io/library/alpine:3.20
               - sh
               - -c
-              - "echo {{ _probe }}-ready; sleep 600"
+              - "echo {{ _probe }}-ready; sleep 900"
           register: _probe_run
           changed_when: true
 
@@ -227,7 +227,8 @@
               - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
           register: _probe_scrapes
           changed_when: false
-          retries: 12
+          # Podman discovery, the 15s scrape, and remote write may span a minute.
+          retries: 24
           delay: 5
           until: >-
             _probe_scrapes.rc == 0 and
