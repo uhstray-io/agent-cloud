@@ -1,8 +1,14 @@
 ---
 # Local-only fault drill: a disposable opted-in container declares a metrics
 # port with no listener. The shared onboarding verifier must name that endpoint.
-# With drill_expect_alert=true, also require Grafana's service-down rule to fire.
-# External notification receipt is a separate acceptance check.
+# With drill_expect_alert=true, require both the provisioned Grafana rule and
+# a new matching message from its dedicated Discord webhook.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
 - name: Verify the proposed revision before the fault drill
   hosts: localhost
   connection: local
@@ -23,15 +29,44 @@
           - _controller_revision.stdout == expected_repository_sha
         fail_msg: "Semaphore checked out a different revision; no fault probe was started."
 
+    - name: Read candidate checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean candidate checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no fault probe was started."
+
 - name: Prove a declared unreachable metrics endpoint fails visibly
   hosts: o11y_svc
   gather_facts: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
-    _probe: o11y-fault-probe
-    expected_service: o11y-fault-probe
-    expected_instance: o11y-fault-probe:65535
+    expected_service: "{{ _probe }}"
+    expected_instance: "{{ _probe }}:65535"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
   tasks:
+    - name: Create a unique identity for this drill run
+      ansible.builtin.command:
+        argv: [python3, -c, "import uuid; print(uuid.uuid4().hex[:12])"]
+      register: _probe_nonce
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Name this run's disposable probe
+      ansible.builtin.set_fact:
+        _probe: "o11y-fault-probe-{{ _probe_nonce.stdout }}"
+
     - name: Require local mode before creating a disposable probe
       ansible.builtin.assert:
         that: local_mode | default(false) | bool
@@ -65,8 +100,100 @@
         fail_msg: "The provisioned service-down rule is paused; no alert fault was injected."
       when: drill_expect_alert | default(false) | bool
 
+    - name: Require the declared Discord receipt channel
+      ansible.builtin.assert:
+        that:
+          - _channel_id is match('^[0-9]{17,21}$')
+          - _bao_url | length > 0
+        fail_msg: "Declare the Discord alert channel and OpenBao endpoint before the delivery drill."
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Refuse a cleartext OpenBao endpoint before the delivery drill
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Authenticate to OpenBao for the delivery drill
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Read the Discord bot credential for message receipt
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discord"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _discord_secret
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Read the provisioned alert webhook identity
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _o11y_secret
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Require the bot token and a stored Discord webhook
+      ansible.builtin.assert:
+        that:
+          - _discord_secret.json.data.data.bot_token | default('') | length > 0
+          - not (_discord_secret.json.data.data.bot_token | default('')).startswith('REPLACE_WITH_')
+          - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('hostname') == 'discord.com'
+          - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('path') is match('^/api/webhooks/[0-9]{17,21}/[^/]+$')
+        fail_msg: "Seed the bot token and the declared Discord webhook before the delivery drill."
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Extract the stored webhook identity without its token
+      ansible.builtin.set_fact:
+        _webhook_id: "{{ _o11y_secret.json.data.data.alert_discord_webhook_url | regex_search('(?<=/webhooks/)[0-9]+') }}"
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Mark the last Discord message before the probe
+      ansible.builtin.uri:
+        url: "https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=1"
+        headers:
+          Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+        status_code: [200]
+      register: _before_messages
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+      ignore_errors: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Require Discord message-history access before the probe
+      ansible.builtin.assert:
+        that: _before_messages is succeeded
+        fail_msg: "Discord message-history read failed with HTTP {{ _before_messages.status | default('unknown') }}; no fault probe was started."
+      when: drill_expect_alert | default(false) | bool
+
     # The drill injects a fault; a dry run cannot prove anything without it, so the whole
-    # exercise (probe start, waits, verifier refusal, cleanup) skips under --check.
+    # exercise (probe start, waits, verifier refusal, cleanup) skips under --check. The
+    # preconditions above still run, so a dry run proves the drill could start.
     - name: Exercise the declared unreachable endpoint
       when: not ansible_check_mode
       block:
@@ -96,7 +223,7 @@
               - docker.io/library/alpine:3.20
               - sh
               - -c
-              - "echo o11y-fault-probe-ready; sleep 600"
+              - "echo {{ _probe }}-ready; sleep 600"
           register: _probe_run
           changed_when: true
 
@@ -164,9 +291,47 @@
              selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
           when: drill_expect_alert | default(false) | bool
 
-        - name: Report the firing rule without claiming external delivery
+        - name: Wait for the matching Discord webhook message
+          ansible.builtin.uri:
+            url: >-
+              https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=100{{ '&after=' ~ _before_messages.json[0].id if _before_messages.json | length > 0 else '' }}
+            headers:
+              Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+              User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+            status_code: [200]
+          register: _discord_messages
+          delegate_to: localhost
+          retries: 60
+          delay: 5
+          until: >-
+            (_discord_messages.json | default([]) |
+             selectattr('webhook_id', 'defined') |
+             selectattr('webhook_id', 'equalto', _webhook_id) |
+             list | to_json) is search(_delivery_marker)
+          no_log: true
+          ignore_errors: true
+          when: drill_expect_alert | default(false) | bool
+
+        - name: Require a readable firing receipt from the owned webhook
+          ansible.builtin.assert:
+            that: _discord_messages is succeeded
+            fail_msg: >-
+              Discord firing receipt absent after the wait: webhook messages={{
+              _discord_messages.json | default([]) |
+              selectattr('webhook_id', 'defined') |
+              selectattr('webhook_id', 'equalto', _webhook_id) |
+              list | length }}, readable messages={{
+              _discord_messages.json | default([]) |
+              selectattr('webhook_id', 'defined') |
+              selectattr('webhook_id', 'equalto', _webhook_id) |
+              selectattr('content', 'defined') |
+              rejectattr('content', 'equalto', '') |
+              list | length }}. Check bot message-history and message-content access.
+          when: drill_expect_alert | default(false) | bool
+
+        - name: Report the fired rule and confirmed Discord receipt
           ansible.builtin.debug:
-            msg: "Grafana fired the service-down rule for {{ expected_service }}; confirm receipt at the configured destination."
+            msg: "Grafana fired for {{ expected_service }} and its dedicated webhook delivered a matching Discord message."
           when: drill_expect_alert | default(false) | bool
       always:
         - name: Remove only the probe started by this drill
