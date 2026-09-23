@@ -61,7 +61,11 @@ scripted path exist and are recorded here so it is built once, deliberately:
    into a repo, a survey parameter or a launch argument.
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
-   as a JSON string of the survey values; `GET /api/project/{project_id}/tasks/{task_id}`
+   as a JSON string of the survey values. **Check mode and diff go inside
+   `params`:** `"params": {"dry_run": true, "diff": true}` (v2.17.31 `db/Task.go`,
+   `AnsibleTaskParams`). A top-level `dry_run` is silently ignored and the task
+   runs for real (`docs/MISTAKES.md` 3.8), so read the created task back and stop it
+   (`POST .../tasks/{task_id}/stop`) unless `params.dry_run` is `true`; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
