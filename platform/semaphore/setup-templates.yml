@@ -90,6 +90,7 @@
     _selected_templates: >-
       {{ (_catalog | selectattr('_publish_name', 'in', semaphore_template_names) | list)
          if _scoped else _catalog }}
+    _allow_scoped_create: "{{ semaphore_allow_scoped_create | default(false) | bool }}"
 
 
   tasks:
@@ -108,6 +109,17 @@
           - semaphore_template_names | difference(_catalog | map(attribute='_publish_name') | list) | length == 0
         fail_msg: "Supply a nonempty list of unique, exact declared template names, including any (Dev) suffix."
       when: _scoped
+
+    - name: "Require explicit bindings for a one-template scoped bootstrap"
+      ansible.builtin.assert:
+        that:
+          - _scoped
+          - _selected_templates | length == 1
+          - semaphore_project_id is defined and semaphore_project_id | int > 0
+          - semaphore_inventory_id is defined and semaphore_inventory_id | int > 0
+          - semaphore_environment_id is defined and semaphore_environment_id | int > 0
+        fail_msg: "A scoped create needs one exact template name and verified project, inventory, and environment IDs."
+      when: _allow_scoped_create
 
     - name: "Resolve approved Semaphore runtime access"
       ansible.builtin.include_tasks: tasks/runtime-access.yml
@@ -214,9 +226,10 @@
     - name: "Require unambiguous existing bindings before scoped publication"
       ansible.builtin.assert:
         that:
-          - _matches | length == 1
-          - (_matches | first).repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
-          - (_matches | first).playbook == item.playbook
+          - _matches | length <= 1
+          - _matches | length == 1 or _allow_scoped_create
+          - _matches | length == 0 or (_matches | first).repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
+          - _matches | length == 0 or (_matches | first).playbook == item.playbook
         fail_msg: >-
           Scoped publication requires exactly one existing '{{ item._publish_name }}'
           with the declared repository and playbook. Bootstrap or binding changes
@@ -303,7 +316,7 @@
         _tpl_body: >-
           {{ (_existing_template | publication_settings
               | combine({'survey_vars': item.survey_vars | default([])}))
-             if _scoped else _default_body }}
+             if _scoped and (_existing_ids | length > 0) else _default_body }}
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item.name }}{{ ' (Dev)' if (item._generated | default(false)) else '' }}"
@@ -371,7 +384,30 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _scoped
+      when:
+        - _scoped
+        - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 1
+
+    - name: "Verify a newly created scoped template's exact bindings"
+      ansible.builtin.assert:
+        that:
+          - _after.name == item._publish_name
+          - _after.project_id | int == semaphore_project_id | int
+          - _after.inventory_id | int == semaphore_inventory_id | int
+          - _after.environment_id | int == semaphore_environment_id | int
+          - _after.repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
+          - _after.playbook == item.playbook
+          - item.survey_vars | default([]) | publication_matches(_after.survey_vars | default([]))
+        fail_msg: "Scoped template creation readback failed for '{{ item._publish_name }}'."
+      vars:
+        _after: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | first }}"
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when:
+        - _scoped
+        - _allow_scoped_create
+        - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 0
 
     - name: "Get existing schedules"
       ansible.builtin.uri:
