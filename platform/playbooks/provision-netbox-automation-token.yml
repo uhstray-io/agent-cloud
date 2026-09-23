@@ -27,6 +27,11 @@
     _user: "{{ netbox_automation_user | default('skynet-automation') }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
