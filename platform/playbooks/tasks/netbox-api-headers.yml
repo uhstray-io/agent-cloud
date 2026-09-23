@@ -1,0 +1,8 @@
+---
+# NetBox v1 tokens use Token; v2 bearer values start with nbt_.
+- name: Build NetBox API headers for either token version
+  ansible.builtin.set_fact:
+    _nb_headers:
+      Authorization: "{{ ('Bearer ' if _netbox_api_token.startswith('nbt_') else 'Token ') ~ _netbox_api_token }}"
+      Accept: application/json
+  no_log: true
