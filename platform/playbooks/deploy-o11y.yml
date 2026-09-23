@@ -44,6 +44,11 @@
         fail_msg: "Candidate checkout has uncommitted files; no o11y files were placed."
       when: expected_repository_sha is defined
 
+    - name: Require a declared o11y receiver before placement
+      ansible.builtin.assert:
+        that: (groups['o11y_svc'] | default([]) | length) > 0
+        fail_msg: "Inventory has no o11y_svc receiver; refusing a no-op deployment."
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage o11y secrets"
   hosts: o11y_svc
