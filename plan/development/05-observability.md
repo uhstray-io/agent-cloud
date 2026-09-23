@@ -137,6 +137,16 @@
 > dashboard range also included the earlier disposable fault-probe series;
 > this historical series is not evidence of a currently running probe. These
 > checks validate the current local revision but do not prove alert delivery.
+> Production Semaphore task 1137 ran the NetBox free-address workflow in its
+> read-only mode and stopped before querying IPAM: OpenBao held the NetBox
+> service record but no `automation_api_token`. It reserved no address.
+> Separate read-only Proxmox validation task 1138 passed all nine checks on
+> `alphacentauri`, reported 511 GB available on its VM storage, and found VMID
+> 219 absent from both its live VM listing and the private allocation ledger.
+> That VMID is a candidate, not a reservation or a provisioned receiver.
+> PR #201 prepares the existing scoped NetBox token bootstrap and a Dev-bound
+> Semaphore template; it must pass final-head CodeRabbit review and checks
+> before the token is provisioned and the NetBox report is retried.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
