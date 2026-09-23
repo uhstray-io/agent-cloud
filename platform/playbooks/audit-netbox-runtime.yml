@@ -40,6 +40,23 @@
       changed_when: false
       failed_when: false
 
+    - name: Inspect NetBox image and named-volume identities
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - >-
+            {{ '{{.Name}} image_ref={{.Config.Image}} image_id={{.Image}} volumes={{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}:{{.Destination}},{{end}}{{end}}' }}
+          - netbox-netbox-1
+          - netbox-postgres-1
+          - netbox-redis-cache-1
+          - netbox-redis-1
+      register: _storage
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
     - name: Read host boot time
       ansible.builtin.command:
         argv: [uptime, -s]
@@ -73,6 +90,9 @@
           dependencies_rc: "{{ _dependencies.rc }}"
           dependencies: "{{ _dependencies.stdout_lines }}"
           dependencies_error: "{{ _dependencies.stderr }}"
+          storage_rc: "{{ _storage.rc }}"
+          storage: "{{ _storage.stdout_lines }}"
+          storage_error: "{{ _storage.stderr }}"
           boot_rc: "{{ _boot.rc }}"
           boot_time: "{{ _boot.stdout }}"
           boot_error: "{{ _boot.stderr }}"
