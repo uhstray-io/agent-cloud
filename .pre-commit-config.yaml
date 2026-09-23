@@ -184,7 +184,11 @@ repos:
         name: codebase-memory graph artifact is consistent
         language: system
         entry: sh scripts/check-graph-artifact.sh
-        files: ^\.codebase-memory/
+        # always_run, not `files:`: pre-commit leaves DELETED paths out of the file list
+        # it matches against, so a graph-only deletion (the 2026-09-23 incident) would
+        # skip a file-filtered hook. The script itself exits when nothing under
+        # .codebase-memory/ is staged.
+        always_run: true
         pass_filenames: false
         stages: [pre-commit]
 

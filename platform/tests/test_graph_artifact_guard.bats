@@ -78,6 +78,10 @@ write_meta() {  # $1 project, $2 compressed_size
 
 @test "graph guard: wired into the pre-commit suite for .codebase-memory changes" {
   local cfg="$REPO_ROOT/.pre-commit-config.yaml"
-  assert_grep -qF 'entry: sh scripts/check-graph-artifact.sh' "$cfg"
-  assert_grep -qF 'files: ^\.codebase-memory/' "$cfg"
+  local blk
+  blk=$(sed -n '/id: graph-artifact-consistent/,/stages:/p' "$cfg")
+  assert_grep -qF 'entry: sh scripts/check-graph-artifact.sh' <<<"$blk"
+  # A file filter would skip a graph-only DELETION: pre-commit omits deleted paths.
+  assert_grep -qF 'always_run: true' <<<"$blk"
+  refute_grep -qE '^\s*files:' <<<"$blk"
 }
