@@ -89,7 +89,7 @@ assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000
 assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
 
 prod = values(local_mode=False, o11y_zone='uhstray.io')
-assert prod['GF_SERVER_ROOT_URL'] == 'https://grafana.uhstray.io/'
+assert prod['GF_SERVER_ROOT_URL'] == 'https://o11y.uhstray.io/'
 assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
 assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
 assert prod['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'https://auth.uhstray.io/application/o/userinfo/'
@@ -137,7 +137,7 @@ import sys
 import yaml
 
 plays = yaml.safe_load(open(sys.argv[1]))
-tasks = {task['name']: task for play in plays for task in play['tasks']}
+tasks = {task['name']: task for play in plays for task in play.get('tasks', [])}
 for name in (
     'Read the placed revision when a candidate SHA is required',
     'Refuse a receiver checkout that differs from the reviewed candidate',
@@ -148,11 +148,28 @@ PY
 
 @test "o11y: an incorrect candidate SHA refuses before receiver placement" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  run ansible-playbook "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
     -e expected_repository_sha=0000000000000000000000000000000000000000
   [ "$status" -ne 0 ]
   assert_contains "$output" "Semaphore checked out a different revision; no o11y files were placed."
-  refute_contains "$output" "TASK [Place the monorepo"
+  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
+}
+
+@test "o11y: an empty receiver inventory refuses before placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  run ansible-playbook -i localhost, "$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Inventory group 'o11y_svc' is absent or empty"
+  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
 }
 
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {

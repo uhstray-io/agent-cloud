@@ -200,6 +200,28 @@
 > compatibility and an unloaded-window test are proven. The receiver
 > must publish its actual Loki push URL and admit both DGX source hosts before
 > log shipping can be enabled. No DGX telemetry receipt exists yet.
+> PR #206 passed CodeRabbit review and final-head checks and merged the local
+> baseline to `dev` as `3de6fe71cd60efe2e2986922c08ab4c55bce0929`.
+> Local Dev-bound Semaphore task 1225 deployed that merge; task 1231 found a
+> Caddy log within 15 minutes and a healthy Caddy metrics scrape. A browser
+> sign-out followed by Grafana's Authentik sign-in returned to the signed-in
+> Grafana home over the local TLS front door using the existing Authentik
+> session. This proves the merged revision's SSO redirect and return path,
+> not a new password challenge or production SSO. Production Dev-bound task
+> 1156 published `Deploy o11y (Dev)` as template 224, but no production
+> receiver host is declared, so no production deployment has been launched.
+> The production Caddy inventory sets `caddy_composable: false`; its route
+> must be declared in private `site-config` as `caddy_managed_sites` and
+> applied through `manage-caddy-sites.yml`, rather than through a service
+> fragment. Private site-config PR #17 merged the Grafana Authentik app
+> declaration, but that declaration has not been applied to live Authentik.
+> The production telemetry contract names `o11y.uhstray.io`, which already has
+> an OpenTofu-managed DNS record. The local front door remains
+> `grafana.agent-cloud.test`. Before production SSO, align the private Grafana
+> Authentik redirect/launch URLs and Caddy route with `o11y.uhstray.io`, then
+> apply them through the Dev-bound Semaphore workflows. Read-only Dev-bound
+> task 1160 planned one unrelated DNS addition and one rate-limit update at
+> `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

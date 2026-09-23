@@ -3,7 +3,7 @@
 # declaration against its own host: deploy-agentgateway.yml loads it with vars_files, check-secrets.yml
 # with include_vars. It is computed (Jinja over inventory), and a computed value read out of a
 # playbook as text is only a string, which hid the required `existing` key from the secrets
-# step (PR 203 Codex review). test_workflow_registry.py refuses a computed declaration left in a
+# step (PR 203 Codex review). test_check_secrets_verdict.py refuses a computed declaration left in a
 # playbook's own vars.
 
 # The upstream key is `existing`: surfaced to the templates, never invented.

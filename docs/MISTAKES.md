@@ -106,6 +106,7 @@ supersede it with a new entry and link both.
 | 10.13 | `tofu validate` + `plan` passed a ruleset attribute the Cloudflare API rejects on create | Schema ≠ API acceptance | Convention |
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
+| 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -2456,6 +2457,34 @@ included) is not `always` or `"no"`, refuses any `--restart unless-stopped`, req
 include the linger task, and requires that task to link the user unit into
 `default.target.wants`. Both guards were mutated once and went red. An actual reboot
 test of a service host is still not exercised by any automation.
+
+### 10.16 The agentgateway deploy was proven only on an executor where its bug could not show
+
+**What happened.** `deploy-agentgateway.yml` built `_client_defs` as TEXT, a
+`[{% for c in agw_clients %}{"name": ...}{% endfor %}]` template, and then declared
+`_secret_definitions: [...] + _client_defs`. The deploy was proven repeatedly on the local
+controller (`semaphoreui/semaphore:v2.18.12-ansible2.16.5`, ansible-core 2.16.18). That version
+turns template text that looks like a list into a list, so the proof passed. On 2026-09-23, just
+before the first production run, a test harness on the workstation (ansible-core 2.21.0) failed
+with `can only concatenate list (not "_AnsibleTaggedStr") to list`. The production controller
+image `semaphoreui/semaphore:v2.19.11` ships ansible-core 2.20.8 and fails the same way. So
+`Deploy agentgateway (Dev)` would have failed at secret resolution on its first production run.
+
+**Root cause.** Two things combined. The expression depended on a coercion that ansible-core
+2.19's data tagging removed. And the only executor it was ever run on predated the removal. As in
+10.14, the proof ran where the defect could not appear. The varying factor here was the
+executor's version, not a runtime observable, so 10.14's rule did not cover it.
+
+**The rule.** Widens 10.14: when a proof runs on an executor that differs from production's
+(controller image, ansible-core, engine), either run it on production's version too, or name the
+difference as an unproven precondition. For Ansible, build lists and dicts as native values:
+filters, or a statement block whose only output is the value itself. Never rely on template
+text being coerced, and never on JSON text assembled with escapes.
+
+**Enforced by.** Test: `platform/tests/test_agentgateway_secret_defs.py` evaluates the play's real
+`_client_defs` and `_secret_definitions` with `ansible-playbook`. CI installs the current
+ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
+general case.
 
 ## 11. The largest one
 

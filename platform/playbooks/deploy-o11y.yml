@@ -10,6 +10,12 @@
 #
 # Plan: plan/development/O11Y-DEPLOYMENT.md.
 
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
 - name: Verify the controller checkout before a candidate deploy
   hosts: localhost
   connection: local
