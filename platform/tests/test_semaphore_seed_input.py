@@ -17,6 +17,7 @@ cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 
 SECRET = "synthetic-value-never-printed"
+ENDPOINT = "https://bao.example:8200"
 
 
 def test_catalog_declares_the_openbao_seed_as_isolated():
@@ -63,7 +64,7 @@ class FakeAPI:
                          "playbook": "platform/playbooks/seed-openbao-key.yml",
                          "environment_id": bound_env, "app": "ansible", "arguments": None,
                          "repository_id": 5, "inventory_id": 2}
-        self.env = {"id": 9, "project_id": 1, "name": "OpenBao key seed inputs (Dev)", "json": '{"openbao_addr":"x"}',
+        self.env = {"id": 9, "project_id": 1, "name": "OpenBao key seed inputs (Dev)", "json": '{"openbao_addr":"https://bao.example:8200"}',
                     "env": "{}", "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
                                              {"id": 2, "name": "BAO_SECRET_ID", "type": "env"}]}
         self.shared = {"id": 2, "project_id": 1, "name": "local-dev"}
@@ -112,7 +113,7 @@ def test_locate_requires_the_isolated_binding():
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
     api = FakeAPI()
     cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                       template_names={"Seed OpenBao Key (Dev)"}, extra={"bao_path": "services/x", "bao_key": "k"})
+                       endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"}, extra={"bao_path": "services/x", "bao_key": "k"})
     submissions = [body for path, body in api.calls if path == "/tasks" and body]
     assert len(submissions) == 1
     assert json.loads(submissions[0]["environment"]) == {"bao_path": "services/x", "bao_key": "k"}
@@ -126,7 +127,7 @@ def test_seed_refuses_a_leftover_staged_input_before_any_write():
     api.env["secrets"].append({"id": 7, "name": "BAO_VALUE", "type": "env"})
     with pytest.raises(cli.Refusal):
         cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                           template_names={"Seed OpenBao Key (Dev)"})
+                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -150,7 +151,7 @@ def run_cli(monkeypatch, tmp_path, api, *mode):
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("synthetic-token"))
     monkeypatch.setattr("sys.argv", ["semaphore-seed-input.py", "--template", "Seed OpenBao Key",
                                      "--set", "bao_path=services/x", "--set", "bao_key=k",
-                                     "--input", f"BAO_VALUE={value}", "--inventory", "2",
+                                     "--input", f"BAO_VALUE={value}", "--inventory", "2", "--openbao-addr", ENDPOINT,
                                      "--url", "https://semaphore.example", *mode])
     return cli.main()
 
@@ -168,12 +169,15 @@ def test_a_consistent_seed_passes_every_mode(monkeypatch, tmp_path, capsys, mode
 
 @pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply"), ("--apply",)])
 @pytest.mark.parametrize("drift", [{"repository_id": 4}, {"inventory_id": 7}, {"arguments": '["-e","x=1"]'},
-                                   {"app": "terraform"}])
+                                   {"app": "terraform"}, {"_env_json": '{"openbao_addr":"https://elsewhere.example"}'}])
 def test_a_rebound_or_reshaped_template_is_refused_before_any_write(monkeypatch, tmp_path, capsys, mode, drift):
     # Review of PR #205: a template rebound to another repository or inventory after
     # provisioning, or given arguments, must get no staged input and no task, in any mode.
     api = FakeAPI()
-    api.template.update(drift)
+    if "_env_json" in drift:  # the environment's endpoint moved after provisioning
+        api.env["json"] = drift["_env_json"]
+    else:
+        api.template.update(drift)
     assert run_cli(monkeypatch, tmp_path, api, *mode) == 1
     assert writes_of(api) == []
     assert SECRET not in capsys.readouterr().out

@@ -29,9 +29,12 @@ def test_parser_is_literal_and_allowlisted():
             seed.parse_inputs(bad, fields)
 
 
+ENDPOINT = "https://bao.example:8200"
+
+
 class FakeAPI:
     def __init__(self, status="success"):
-        self.env = {"id": 2, "project_id": 1, "name": "dedicated-seed", "json": '{"keep":"unchanged"}',
+        self.env = {"id": 2, "project_id": 1, "name": "dedicated-seed", "json": '{"openbao_addr":"https://bao.example:8200","keep":"unchanged"}',
                     "env": '{"keep":"unchanged"}', "secrets": [{"id": 4, "name": "KEEP", "type": "env"}]}
         self.template = {"id": 151, "name": "Seed Postiz Secrets", "playbook": seed.SEED_PLAYBOOK,
                          "environment_id": 2, "app": "ansible"}
@@ -66,7 +69,7 @@ class FakeAPI:
 
 def test_seed_cleans_only_created_inputs(capsys):
     api = FakeAPI()
-    seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"})
+    seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert api.env["secrets"] == [{"id": 4, "name": "KEEP", "type": "env"}]
     assert "synthetic-value" not in capsys.readouterr().out
     assert all("synthetic-value" not in str(body) for path, body in api.calls if path == "/tasks")
@@ -75,7 +78,7 @@ def test_seed_cleans_only_created_inputs(capsys):
 def test_uncertain_submission_retains_inputs_and_never_retries():
     api = FakeAPI("uncertain")
     with pytest.raises(seed.Refusal, match="uncertain"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"})
+        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert len([path for path, body in api.calls if path == "/tasks"]) == 1
     assert any(s["name"] == "SEED_X_API_KEY" for s in api.env["secrets"])
 
@@ -84,7 +87,7 @@ def test_collision_refuses_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 5, "name": "SEED_DISCORD_CLIENT_ID", "type": "env"})
     with pytest.raises(seed.Refusal, match="Existing encrypted"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"})
+        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert all(body is None for path, body in api.calls)
 
 
@@ -97,7 +100,7 @@ def test_shared_environment_refuses_before_any_write():
         return api(path, body)
 
     with pytest.raises(seed.Refusal, match="dedicated environment"):
-        seed.stage_and_seed(shared, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"})
+        seed.stage_and_seed(shared, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert all(body is None for path, body in api.calls)
 
 
@@ -105,7 +108,7 @@ def test_missing_secret_metadata_refuses_before_any_write():
     api = FakeAPI()
     del api.env["secrets"]
     with pytest.raises(seed.Refusal, match="no secrets array"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"})
+        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert all(body is None for path, body in api.calls)
 
 
@@ -152,3 +155,14 @@ def test_provider_config_survives_actual_loader(tmp_path, value, newline):
     result = subprocess.run([*command[:2], script], text=True, capture_output=True, check=True)
     actual = json.loads(result.stdout)
     assert {name: actual[name] for name in fields} == dict.fromkeys(fields, value or "")
+
+
+def test_a_changed_openbao_endpoint_refuses_before_any_write():
+    # Review of PR #205: the seed task logs in and writes at the environment's address, so
+    # an address changed after provisioning must stop the seed before anything is staged.
+    for configured in ('{"openbao_addr":"https://elsewhere.example:8200"}', "{}", "not json"):
+        api = FakeAPI()
+        api.env["json"] = configured
+        with pytest.raises(seed.Refusal, match="endpoint"):
+            seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+        assert not any(body for path, body in api.calls if path in ("/environment/2", "/tasks"))

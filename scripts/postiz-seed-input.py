@@ -68,9 +68,9 @@ def parse_inputs(text, fields):
     return selected
 
 
-def stage_and_seed(api, project, template_id, expected_env, values, timeout=600):
+def stage_and_seed(api, project, template_id, expected_env, values, endpoint, timeout=600):
     return _stage_and_seed(
-        api, project, template_id, expected_env, values, playbook=SEED_PLAYBOOK,
+        api, project, template_id, expected_env, values, playbook=SEED_PLAYBOOK, endpoint=endpoint,
         template_names={"Seed Postiz Secrets", "Seed Postiz Secrets (Dev)"}, staged_prefixes=("SEED_",),
         message="Seed declared Postiz provider credentials via encrypted inputs", timeout=timeout)
 
@@ -83,16 +83,17 @@ def main():
     parser.add_argument("--project", type=int)
     parser.add_argument("--template", type=int)
     parser.add_argument("--environment", type=int)
+    parser.add_argument("--openbao-addr", help="the APPROVED OpenBao endpoint the seed environment must point at")
     args = parser.parse_args()
     try:
         values = parse_inputs(args.env_file.read_text(), provider_fields())
         providers = sorted({name.removeprefix("SEED_").split("_")[0] for name in values})
         print("Configured provider fields: " + ", ".join(providers))
         if args.apply:
-            if not all((args.url, args.project, args.template, args.environment)):
-                raise Refusal("Apply requires URL, project, template and expected environment")
+            if not all((args.url, args.project, args.template, args.environment, args.openbao_addr)):
+                raise Refusal("Apply requires URL, project, template, expected environment and approved OpenBao endpoint")
             api = API(args.url, args.project, sys.stdin.read().strip())
-            stage_and_seed(api, args.project, args.template, args.environment, values)
+            stage_and_seed(api, args.project, args.template, args.environment, values, args.openbao_addr)
     except Refusal as error:
         print(str(error), file=sys.stderr)
         return 1

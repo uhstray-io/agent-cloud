@@ -148,7 +148,7 @@ task could receive it.
    ```bash
    scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
      --set bao_path=services/<svc> --set bao_key=<key> \
-     --inventory <approved-id> --url https://semaphore.uhstray.io --verify-only --apply < <token-file>
+     --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --verify-only --apply < <token-file>
    ```
 
 3. **Each seed:** put the value in a file, one line, then run a dry run without
@@ -157,14 +157,15 @@ task could receive it.
    ```bash
    scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
      --set bao_path=services/<svc> --set bao_key=<key> \
-     --input BAO_VALUE=<value-file> --inventory <approved-id> --url https://semaphore.uhstray.io --apply < <token-file>
+     --input BAO_VALUE=<value-file> --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --apply < <token-file>
    ```
 
 The CLI accepts only the input names the template declares and only its survey
 settings. It resolves the template and environment by name and refuses unless they
 are bound to each other, the template still runs from its declared repository record
 (URL and branch checked against `repositories.yml`) and from the inventory you approve
-with `--inventory`, and it is an Ansible template with no extra arguments. Dry run,
+with `--inventory`, the environment still points at the OpenBao endpoint you approve with
+`--openbao-addr` (the seed task logs in and writes there), and it is an Ansible template with no extra arguments. Dry run,
 `--verify-only` and the real seed all run that same read-only preflight first, so a
 dry run fails on anything the seed would refuse. It refuses a leftover input from an earlier run, runs
 exactly one task, removes exactly the input it created, and never prints the value.

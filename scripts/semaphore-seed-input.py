@@ -10,7 +10,8 @@ back over its API.
   # dry run: resolve and check everything, change nothing
   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \\
       --set bao_path=services/agentgateway --set bao_key=vllm_api_key \\
-      --input BAO_VALUE=/path/to/value-file --inventory 2 --url https://semaphore.example <token-file
+      --input BAO_VALUE=/path/to/value-file --inventory 2 --openbao-addr https://bao.example:8200 \\
+      --url https://semaphore.example <token-file
 
   # after Provision Seed Environment: prove the environment's AppRole, no write
   ... --verify-only --apply <token-file
@@ -153,6 +154,8 @@ def main():
     parser.add_argument("--apply", action="store_true", help="without it, resolve and check only")
     parser.add_argument("--inventory", type=int, required=True,
                         help="the APPROVED inventory id the template must still be bound to")
+    parser.add_argument("--openbao-addr", required=True,
+                        help="the APPROVED OpenBao endpoint the seed environment must still point at")
     parser.add_argument("--url", required=True)
     parser.add_argument("--project", type=int, default=1)
     args = parser.parse_args()
@@ -172,7 +175,8 @@ def main():
 
         def check():
             return preflight(api, args.project, template_id, environment_id, decl["seed_inputs"],
-                             playbook=decl["playbook"], template_names={template_name}, bindings=bindings)
+                             playbook=decl["playbook"], template_names={template_name},
+                             endpoint=args.openbao_addr, bindings=bindings)
         check()
         if not args.apply:
             print(f"Template {template_id}, environment {environment_id}: every preflight check passed. "
@@ -183,7 +187,7 @@ def main():
             return 0
         stage_and_seed(api, args.project, template_id, environment_id, values,
                        playbook=decl["playbook"], template_names={template_name}, extra=settings,
-                       bindings=bindings, message=f"Seed via {environment_name} (encrypted, removed after the task)")
+                       endpoint=args.openbao_addr, bindings=bindings, message=f"Seed via {environment_name} (encrypted, removed after the task)")
     except Refusal as error:
         print(str(error), file=sys.stderr)
         return 1

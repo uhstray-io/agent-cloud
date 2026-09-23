@@ -62,7 +62,7 @@ def environment_body(env, operations):
 
 
 def preflight(api, project, template_id, expected_env, input_names, *, playbook, template_names,
-              staged_prefixes=(), bindings=None):
+              endpoint, staged_prefixes=(), bindings=None):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
@@ -87,6 +87,16 @@ def preflight(api, project, template_id, expected_env, input_names, *, playbook,
     secrets = before.get("secrets")
     if not isinstance(secrets, list):
         raise Refusal("Environment response has no secrets array; absence cannot be established")
+    # The seed task logs in to OpenBao and writes the value at THIS address. Pinned to the
+    # operator-approved endpoint: an environment whose address changed after provisioning
+    # would otherwise receive the AppRole login and the staged value (review of PR #205).
+    # Required, with no default, so no caller can skip it.
+    try:
+        configured = (json.loads(before.get("json") or "{}") or {}).get("openbao_addr")
+    except ValueError:
+        configured = None
+    if not endpoint or configured != endpoint:
+        raise Refusal("Seed environment's OpenBao endpoint differs from the approved endpoint")
     names = set(input_names)
 
     # Refuse any leftover input of this seed's family, staged or plaintext: it means an
@@ -112,7 +122,7 @@ def preflight(api, project, template_id, expected_env, input_names, *, playbook,
 
 
 def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
-                   staged_prefixes=(), extra=None, bindings=None,
+                   endpoint, staged_prefixes=(), extra=None, bindings=None,
                    message="Seed declared inputs via encrypted inputs", timeout=600):
     """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
     seed template, then remove exactly the inputs it created.
@@ -121,6 +131,7 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     SEED_*). `extra` is NON-SECRET launch configuration only: Semaphore persists it.
     """
     template, before = preflight(api, project, template_id, expected_env, set(values), playbook=playbook,
+                                 endpoint=endpoint,
                                  template_names=template_names, staged_prefixes=staged_prefixes,
                                  bindings=bindings)
     env_path = f"/environment/{expected_env}"
