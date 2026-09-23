@@ -142,6 +142,17 @@
 > dashboard range also included the earlier disposable fault-probe series;
 > this historical series is not evidence of a currently running probe. These
 > checks validate the current local revision but do not prove alert delivery.
+> On 2026-09-23, the operator required subsequent Semaphore automation to run
+> code pushed to `dev`, without temporary recovery patches. A local candidate
+> task at `69aad0454daefa32b00217fa3cb2856f51254b37` first refused an
+> abbreviated SHA before placement. A full-SHA rerun then reached the local
+> placement check, which failed because the shared local copy deliberately
+> excludes `.git`. Commit `4572a20` makes the candidate controller checkout
+> clean-state check explicit, uses the successful local copy as its placement
+> evidence, and retains the receiver Git SHA check for production cloning.
+> The baseline now needs a reviewed PR into `dev`; the next local and
+> production Semaphore runs must use that exact merged revision. Alert rules
+> stay paused until an approved destination and a notification drill pass.
 > Production Semaphore task 1137 ran the NetBox free-address workflow in its
 > read-only mode and stopped before querying IPAM: OpenBao held the NetBox
 > service record but no `automation_api_token`. It reserved no address.
