@@ -4,6 +4,8 @@ See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy were healthy at ba
 
 On 2026-09-23, the local Prometheus v3.1.0 TSDB reported 616 active series, all under `job=prometheus`; this is a self-scrape baseline, not the service pilot measurement required by task 2.1. A read-only inventory listing confirmed that the declared `grafanapodman` host sits under `virtualmachines`, outside `agent_cloud`. The audit playbook now targets both, and `ansible-playbook --list-hosts` includes `grafanapodman`; no production container state has been observed yet.
 
+The branch-bound local Semaphore verifier checked out `be5bbe8b3a0eafa3829a74baaccb72c0a8ae97e2`. Task 1079 found an `o11y-grafana` Loki log from the preceding 15 minutes in log-only mode. Task 1080 used the same revision with metrics required and failed at the named service with `targets found=0`, matching Prometheus's observed self-only target list. This proves the read-only receipt gate and leaves the opt-in metrics pilot unfulfilled. Task 1078 exposed the local Semaphore runner's separate loopback namespace; the verifier now queries Loki and Prometheus across the o11y container network.
+
 ## Goals / Non-Goals
 
 **Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.

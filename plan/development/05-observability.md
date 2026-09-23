@@ -23,6 +23,11 @@
 > returned to the signed-in dashboard. Loki then exposed local `service` label
 > values, while Prometheus still had only its self-target. New service metric
 > collection, alert delivery, and production receipt remain unverified.
+> Local Semaphore verifier task 1079 checked out
+> `be5bbe8b3a0eafa3829a74baaccb72c0a8ae97e2` and found a fresh
+> `o11y-grafana` log in Loki. Metrics-required task 1080 on the same revision
+> failed with `targets found=0` for that service, as expected from the
+> self-only Prometheus target list. The metrics pilot is still pending.
 > The committed production inference telemetry groundwork is merged into this
 > branch; its scrape declarations do not prove a reachable receiver.
 
