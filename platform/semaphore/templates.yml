@@ -760,6 +760,7 @@ templates:
 
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
+    dev_variant: true
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
     # honcho reads secret/services/nemoclaw:gemini_api_key).
@@ -877,9 +878,32 @@ templates:
   - name: Seed o11y Alert Webhook
     playbook: platform/playbooks/seed-o11y-alert-webhook.yml
     dev_variant: true
-    # Supply O11Y_ALERT_DISCORD_WEBHOOK_URL as an encrypted Semaphore environment
-    # secret. Never use a survey field or launch extra var: Semaphore persists
-    # both outside OpenBao. Run this before enabling o11y alerts in inventory.
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact checkout revision required before Discord or OpenBao access"
+        type: string
+        required: true
+    # Reconciles a named webhook in the text channel declared by private
+    # o11y_alert_discord_guild_id/o11y_alert_discord_channel_id inventory vars.
+    # Reads the bot token from OpenBao and stores the webhook URL under o11y.
+    # Run before enabling o11y alerts in inventory.
+
+  - name: Drill o11y Unreachable
+    playbook: platform/playbooks/drill-o11y-unreachable.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before the drill"
+        type: string
+        required: true
+      - name: drill_expect_alert
+        title: "Verify alert delivery"
+        description: "Set true after the OpenBao-backed Discord contact point is enabled"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
