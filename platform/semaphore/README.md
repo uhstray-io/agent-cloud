@@ -96,7 +96,8 @@ not a survey-controlled URL. This entry point assumes execution inside the
 declared Semaphore controller container. A separate remote runner needs its own
 reviewed transport design; do not redirect this token with a launch argument.
 
-Only exact, nonempty, unique names of existing declared templates are accepted.
+Normally, only exact, nonempty, unique names of existing declared templates are
+accepted. The guarded one-template creation described below is the sole exception.
 Repository URL/branch and template repository/playbook bindings must match the
 declaration. The selected surveys are updated and read back; inventory,
 environment, arguments and operational settings are preserved. No schedules,
@@ -153,12 +154,12 @@ bootstrap and inventory sync remain explicit operator configuration operations.
 Their shared runtime access task supports the controller AppRole without making
 those broader operations available through the survey-only entry point.
 
-For a missing template already declared in a reviewed branch, the same
+For a missing template already declared on a reviewed branch,
 `setup-templates.yml` accepts one exact `semaphore_template_names` entry with
 `semaphore_allow_scoped_create=true`. Supply verified non-secret
 `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_environment_id`.
-It creates only that named template, checks its repository URL/branch against
-`repositories.yml`, reads back its repository, inventory, environment and
-playbook bindings, and leaves existing templates and schedules alone. Repeating
-the call is a no-op when the declaration and live record already match.
-Without the explicit create flag, a missing scoped template still refuses.
+It creates only that template, checks its repository URL and branch against
+`repositories.yml`, and reads back its repository, inventory, environment and
+playbook bindings. Existing templates and schedules remain unchanged; rerunning
+an already matching declaration makes no write. Without the explicit create
+flag, a missing scoped template still refuses.
