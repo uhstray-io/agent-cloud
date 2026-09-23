@@ -140,6 +140,16 @@
         label: "{{ item.host }}"
       when: caddy_routes | default([]) | length > 0
 
+    - name: "Require the private local metrics listener"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, caddy, wget, -q, -O, /dev/null, http://127.0.0.1:2021/metrics]
+      register: _metrics
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: _metrics.rc == 0
+      when: local_mode | default(false) | bool
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-

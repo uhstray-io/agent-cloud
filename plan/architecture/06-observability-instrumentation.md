@@ -31,7 +31,9 @@
 > snippets below record the original design and are superseded for local
 > collection. Remote VM targets still come from inventory-rendered Prometheus
 > scrape fragments. This amendment is proposed on the observability feature
-> branch; live pilot evidence and PR review remain required.
+> branch; live pilot evidence and PR review remain required. Collector-only
+> scrape listeners remain private to their service network; human queries go
+> through Grafana behind Caddy and Authentik.
 
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->

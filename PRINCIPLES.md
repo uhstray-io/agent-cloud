@@ -385,8 +385,9 @@ inverts the value-to-cost order and risks the o11y stack eating the disk it's me
 
 **Every signal path is self-hosted, least-privilege, and free of secrets-in-labels.** Telemetry
 never leaves the platform (analytics disabled). The Grafana MCP token is OpenBao-managed and
-read-only; metrics endpoints sit behind Caddy + Authentik; never put secrets or PII in metric names
-or labels.
+read-only; human metrics access goes through Caddy + Authentik, while collector-only scrape
+listeners stay on private container networks and are never published publicly. Never put secrets
+or PII in metric names or labels.
 *Why: socket access for Alloy/Prometheus is the same trust surface already accepted - a deliberate,
 bounded decision keeps observability from quietly becoming an exfiltration channel.*
 
