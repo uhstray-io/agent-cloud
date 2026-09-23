@@ -14,8 +14,11 @@
 > A later read-only check on 2026-09-22 found all four local containers healthy.
 > Grafana `/api/health`, Prometheus `/-/ready`, and Loki `/ready` each returned
 > HTTP 200; the chain-verified Caddy URL returned Grafana health and its OIDC
-> login route redirected to Authentik with PKCE. A completed SSO login, feature
-> branch deployment, target/log queries, and production receipt remain unverified.
+> login route redirected to Authentik with PKCE. The browser completed that
+> login and returned to the provisioned overview dashboard, where the live
+> log panel listed local containers and the scrape panel showed only the
+> Prometheus self-target. Feature-branch deployment, new service target/log
+> queries, and production receipt remain unverified.
 > The committed production inference telemetry groundwork is merged into this
 > branch; its scrape declarations do not prove a reachable receiver.
 

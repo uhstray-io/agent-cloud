@@ -14,10 +14,12 @@
 > the repo, but the generic service selector and alert rules described below
 > are not yet in the committed o11y config. A later read-only local check on
 > 2026-09-22 found all four containers healthy and their health/ready endpoints
-> returning HTTP 200. Grafana's chain-verified TLS route began an Authentik OIDC
-> redirect with PKCE; a completed login and feature-branch deploy remain
-> unverified. The merged DGX scrape declarations are production groundwork,
-> not evidence that a production receiver exists or receives telemetry.
+> returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
+> OIDC login and returned to the provisioned overview dashboard. The dashboard
+> showed local container logs and only the Prometheus self-target; a
+> feature-branch deploy remains unverified. The merged DGX scrape declarations
+> are production groundwork, not evidence that a production receiver exists
+> or receives telemetry.
 
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
