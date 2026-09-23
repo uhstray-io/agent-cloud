@@ -9,6 +9,8 @@ load assert_helpers
   grep -qF 'docker, ps, -a' "$audit"
   grep -qF 'docker, inspect' "$audit"
   grep -qF 'oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$audit"
+  grep -qF 'policy={{.HostConfig.RestartPolicy.Name}}' "$audit"
+  grep -qF 'argv: [uptime, -s]' "$audit"
   grep -qF 'netbox-postgres-1' "$audit"
   grep -qF 'netbox-redis-cache-1' "$audit"
   grep -qF "/login/" "$audit"

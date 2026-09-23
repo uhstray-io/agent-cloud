@@ -27,7 +27,7 @@
           - docker
           - inspect
           - --format
-          - "{{ '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} finished={{.State.FinishedAt}}' }}"
+          - "{{ '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} policy={{.HostConfig.RestartPolicy.Name}} finished={{.State.FinishedAt}}' }}"
           - netbox-netbox-1
           - netbox-postgres-1
           - netbox-redis-cache-1
@@ -36,6 +36,14 @@
           - netbox-diode-reconciler-1
           - netbox-netbox-worker-1
       register: _dependencies
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Read host boot time
+      ansible.builtin.command:
+        argv: [uptime, -s]
+      register: _boot
       check_mode: false
       changed_when: false
       failed_when: false
@@ -65,5 +73,8 @@
           dependencies_rc: "{{ _dependencies.rc }}"
           dependencies: "{{ _dependencies.stdout_lines }}"
           dependencies_error: "{{ _dependencies.stderr }}"
+          boot_rc: "{{ _boot.rc }}"
+          boot_time: "{{ _boot.stdout }}"
+          boot_error: "{{ _boot.stderr }}"
           http_status: "{{ _http.status | default('unreachable') }}"
           http_message: "{{ _http.msg | default('') }}"
