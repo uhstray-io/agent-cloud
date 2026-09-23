@@ -154,6 +154,22 @@
           workflow uses — if the cycle succeeds, check tududi_sync_tududi_url
           on THIS host's inventory.
 
+    # The engine renders the verdict from the candidate scripts, which only a real run copies
+    # into the container; a dry run would execute whatever copy is already there, or none
+    # (PR 203 Codex review). Every read above has run, so the dry run stops here.
+    - name: "Dry run: report that the engine verdict needs a real run"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: OpenBao, n8n, GitHub and tududi all answered for
+          {{ _pairs | map(attribute='github_repo') | join(', ') }}. The engine verdict runs the
+          candidate verifier inside the tududi container, which a dry run does not place, so it
+          is not rendered. Run without --check for the gate (it writes only scratch files).
+      when: ansible_check_mode
+
+    - name: "Dry run: stop before placing the verifier"
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
+
     - name: "Place the verifier and the engine beside it in the container"
       ansible.builtin.copy:
         src: "{{ item }}"

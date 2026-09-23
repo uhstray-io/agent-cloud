@@ -398,6 +398,24 @@
         msg: "Migrate to {{ _node }} failed: {{ migrate_task.json.data.exitstatus | default('unknown') }}"
       when: migrate_result.json.data is defined and migrate_task is defined and migrate_task.json.data.exitstatus | default('OK') != 'OK'
 
+    # A dry run does not migrate, so the VM is still on the template node and every probe
+    # below, addressed to the declared node, would fail (PR 203 Codex review).
+    - name: "Dry run, migration pending: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) sits on {{ _tmpl_node }} and would be migrated
+          offline to {{ _node }} (storage {{ _storage }}); its configure, start, SSH and runner
+          checks address {{ _node }}, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - _do_migrate | bool
+
+    - name: "Dry run, migration pending: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _do_migrate | bool
+
     # ── Configure VM (single PUT with all settings) ───────────────────────
     - name: "Wait for the clone lock to clear before configuring"
       # Proxmox reports the clone TASK complete while it still holds the VM's config

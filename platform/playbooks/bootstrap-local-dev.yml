@@ -724,9 +724,11 @@
         "command -v podman >/dev/null || apk add --no-cache podman"
       register: _sem_podman
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
+      when: not ansible_check_mode
 
     # ── Stage 3: automatic API token ────────────────────────────────────
-      when: not ansible_check_mode
+    # The login only opens a session, so a dry run performs it: that proves the admin
+    # credentials work.
     - name: "Login to Semaphore (session cookie)"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/auth/login"
@@ -737,8 +739,9 @@
           password: "{{ _sem_admin_password }}"
         status_code: [204]
       register: _login
+      changed_when: false
+      check_mode: false
       no_log: true
-      when: not ansible_check_mode
 
     - name: "Create API token automatically"
       ansible.builtin.uri:
@@ -750,6 +753,20 @@
       register: _token_resp
       no_log: true
       when: not ansible_check_mode
+
+    # Every later stage authenticates with the API token, and minting one is a write. A dry
+    # run therefore stops here instead of reading a token it never created (PR 203 Codex review).
+    - name: "Dry run: report the stages that need an API token"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: Semaphore answers and the admin login works. The admin user, project, key,
+          repository, inventory, environment, secret seeding and template registration need an
+          API token, which a dry run does not mint, so the dry run stops here.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop before the token-dependent stages"
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
 
     - name: "Set token fact"
       ansible.builtin.set_fact:
