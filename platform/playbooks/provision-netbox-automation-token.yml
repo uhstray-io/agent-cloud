@@ -11,6 +11,7 @@
 # The Django snippet targets NetBox v4.5+ (users.models.{Token,ObjectPermission},
 # core.models.ObjectType). A v2 token's plaintext is available only at creation,
 # so an orphaned token is refused rather than storing its public key as a secret.
+# replace_unrecoverable_token=true explicitly revokes exactly one orphan before minting.
 # The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
 # objects the executor touches (not superuser); a stricter view-vs-add split is the
 # upgrade path if that over-grant ever matters.
@@ -118,17 +119,37 @@
         from users.models import Token
 
         user = get_user_model().objects.get(username="{{ _user }}")
-        print("present" if Token.objects.filter(
+        print(Token.objects.filter(
             user=user, description="skynet build #1 automation (create-netbox-device)",
-        ).exists() else "absent")
+        ).count())
         PYSCRIPT
       register: _orphaned_token
       changed_when: false
 
     - name: "Refuse an unrecoverable dedicated token"
       ansible.builtin.assert:
-        that: (_orphaned_token.stdout_lines | last | trim) == 'absent'
-        fail_msg: "NetBox has the dedicated token but OpenBao lacks its bearer value; refuse to replace an existing credential."
+        that: >-
+          (_orphaned_token.stdout_lines | last | trim | int) == 0 or
+          (replace_unrecoverable_token | default(false) | bool and
+           (_orphaned_token.stdout_lines | last | trim | int) == 1)
+        fail_msg: "NetBox has a dedicated token without its OpenBao bearer value; replacement requires replace_unrecoverable_token=true and exactly one matching token."
+
+    - name: "Revoke exactly one unrecoverable dedicated token when explicitly requested"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token
+
+        user = get_user_model().objects.get(username="{{ _user }}")
+        matches = Token.objects.filter(
+            user=user, description="skynet build #1 automation (create-netbox-device)",
+        )
+        if matches.count() != 1:
+            raise RuntimeError("Expected exactly one unrecoverable dedicated token")
+        matches.delete()
+        print("revoked")
+        PYSCRIPT
+      when: (_orphaned_token.stdout_lines | last | trim | int) == 1
 
     - name: "Mint the dedicated scoped token via the NetBox Django shell"
       ansible.builtin.shell: |
@@ -151,7 +172,7 @@
       ansible.builtin.assert:
         that:
           - (_mint.stdout_lines | default([]) | length) > 0
-          - (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]+\.[A-Za-z0-9]+$')
+          - (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]{12}\.[A-Za-z0-9]{40}$')
         fail_msg: "NetBox Django shell did not return a v2 bearer token — mint failed; check the run."
       no_log: true
 

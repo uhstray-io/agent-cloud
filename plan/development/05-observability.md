@@ -225,7 +225,9 @@
 > returned HTTP 200. Task 1190 reached the token bootstrap but stopped before
 > token creation: NetBox removed `User.is_staff` and changed its default token
 > format to v2. The bootstrap must mint and store the complete one-time v2
-> bearer value before IPAM allocation can resume.
+> bearer value before IPAM allocation can resume. If the store fails after a
+> token is minted, its plaintext cannot be recovered; the bootstrap refuses by
+> default and offers a separately gated replacement of exactly one named orphan.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
