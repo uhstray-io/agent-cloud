@@ -14,13 +14,15 @@ setup() {
   DEPLOY_DIR="$REPO_ROOT/platform/services/o11y/deployment"
 }
 
-@test "o11y: webhook seed refuses a missing environment secret before OpenBao access" {
+@test "o11y: webhook provisioning refuses missing private channel IDs before OpenBao access" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  run env -u O11Y_ALERT_DISCORD_WEBHOOK_URL ansible-playbook \
+  cp "$REPO_ROOT/platform/inventory/local-dev.yml.example" "$BATS_TEST_TMPDIR/inventory.yml"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook \
+    -i "$BATS_TEST_TMPDIR/inventory.yml" \
     "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
     -e openbao_addr=http://127.0.0.1:8200
   [ "$status" -ne 0 ]
-  [[ "$output" == *"O11Y_ALERT_DISCORD_WEBHOOK_URL environment secret"* ]]
+  [[ "$output" == *"Declare Discord guild and text-channel IDs in private o11y inventory."* ]]
 }
 
 @test "o11y: compose env-parameterizes all four images + grafana bind/port" {

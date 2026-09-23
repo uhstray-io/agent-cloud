@@ -91,6 +91,13 @@
 > only as an encrypted environment secret, merges that one key into OpenBao,
 > and skips an unchanged value. It has not been run with a webhook; no alert
 > recipient has been approved or delivery observed.
+> On 2026-09-23 the operator selected the existing Discord operations channel
+> and supplied a bot credential. The revised Dev-bound seed workflow uses that
+> credential from OpenBao to reconcile one named webhook in a declared text
+> channel, then stores its URL under the o11y secret. The actual channel ID
+> belongs in private inventory. The webhook, alert drill, and delivery receipt
+> are still unverified; the earlier manual-webhook seed description above is
+> historical.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
