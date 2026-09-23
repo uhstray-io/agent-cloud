@@ -58,6 +58,12 @@
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    - name: "Render declarative Grafana alert rules"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"
+        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+        mode: "0644"
+
     - name: "Require complete DGX scrape settings when nodes are declared"
       ansible.builtin.assert:
         that:
