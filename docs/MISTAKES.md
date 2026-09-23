@@ -35,6 +35,7 @@ supersede it with a new entry and link both.
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
+| 1.9 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -354,6 +355,30 @@ earns the words "works for the current values", nothing stronger.
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
+
+### 1.9 A gate justified by a status-code claim nobody checked
+
+**What happened.** On 2026-09-23 I added a read-only access check to `seed-openbao-key.yml`
+for isolated seed environments (PR #205). It accepted HTTP 200 or 404 from a GET on the
+target path, and its comment said: "a 404 is only returned to a token the policy allows to
+read it; a denied token gets 403." I wrote that from recall. The review cited the Vault API
+documentation: a 404 means the path is missing *or* the token cannot see it. For a brand-new
+secret, which is exactly when the check runs, a denied AppRole would have passed and reported
+"access verified". The Postiz seed's check, from PR #170, had the same hole.
+
+**Root cause.** The pass condition rested on API behaviour asserted from memory, and the
+tests used a fake server that returned what the claim predicted, so nothing could contradict it.
+
+**The rule.** A gate's pass condition cites where the behaviour it relies on is established:
+a docs URL, a read of the server code, or a run against the real service. For "may this token
+do X", ask the server for the token's capabilities (`sys/capabilities-self`), never infer it
+from another endpoint's status code.
+
+**Enforced by.** Test. `tasks/assert-bao-seed-access.yml` requires `read` plus `create`,
+`update` or `patch` from `sys/capabilities-self`. `platform/tests/test_postiz_access_only.py`
+runs both seed playbooks against a synthetic OpenBao where every GET answers 404 and asserts
+that deny, read-only and write-only tokens are refused; forcing the assertion to pass turns
+six cases red. The citation rule itself is `Convention`.
 
 ## 2. Tests that would have passed for the wrong reason
 
