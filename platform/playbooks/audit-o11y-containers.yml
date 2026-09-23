@@ -10,13 +10,17 @@
     - name: Read the SSH user's UID for the rootless Docker socket
       ansible.builtin.command:
         argv: [id, -u]
+      vars:
+        ansible_become: false
       register: o11y_audit_uid
       check_mode: false
       changed_when: false
 
     - name: List rootless o11y Podman containers
       ansible.builtin.command:
-        argv: [podman, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [podman, ps, -a, --format, "{{ '{{.Names}}' }}"]
+      vars:
+        ansible_become: false
       register: o11y_rootless
       check_mode: false
       changed_when: false
@@ -24,7 +28,7 @@
 
     - name: List rootful o11y Podman containers
       ansible.builtin.command:
-        argv: [sudo, -n, podman, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [sudo, -n, podman, ps, -a, --format, "{{ '{{.Names}}' }}"]
       register: o11y_rootful
       check_mode: false
       changed_when: false
@@ -32,7 +36,9 @@
 
     - name: List rootless o11y Docker containers
       ansible.builtin.command:
-        argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --format, "{{ '{{.Names}}' }}"]
+      vars:
+        ansible_become: false
       register: o11y_docker_rootless
       check_mode: false
       changed_when: false
@@ -40,7 +46,7 @@
 
     - name: List rootful o11y Docker containers
       ansible.builtin.command:
-        argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --format, "{{ '{{.Names}}' }}"]
       register: o11y_docker_rootful
       check_mode: false
       changed_when: false
@@ -51,21 +57,23 @@
         msg:
           host: "{{ inventory_hostname }}"
           rootless_rc: "{{ o11y_rootless.rc }}"
-          rootless_containers: "{{ o11y_rootless.stdout_lines }}"
+          rootless_containers: "{{ o11y_rootless.stdout_lines | select('match', '^o11y-') | list }}"
           rootless_errors: "{{ o11y_rootless.stderr_lines }}"
           rootful_rc: "{{ o11y_rootful.rc }}"
-          rootful_containers: "{{ o11y_rootful.stdout_lines }}"
+          rootful_containers: "{{ o11y_rootful.stdout_lines | select('match', '^o11y-') | list }}"
           rootful_errors: "{{ o11y_rootful.stderr_lines }}"
           docker_rootless_rc: "{{ o11y_docker_rootless.rc }}"
-          docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines }}"
+          docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines | select('match', '^o11y-') | list }}"
           docker_rootless_errors: "{{ o11y_docker_rootless.stderr_lines }}"
           docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
-          docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines }}"
+          docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines | select('match', '^o11y-') | list }}"
           docker_rootful_errors: "{{ o11y_docker_rootful.stderr_lines }}"
 
     - name: List all containers on the existing Grafana host
       ansible.builtin.command:
         argv: "{{ item.argv }}"
+      vars:
+        ansible_become: false
       loop:
         - {name: podman-rootless, argv: [podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
         - {name: podman-rootful, argv: [sudo, -n, podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
@@ -98,6 +106,8 @@
     - name: List rootless OpenBao containers
       ansible.builtin.command:
         argv: [podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
+      vars:
+        ansible_become: false
       register: openbao_rootless
       check_mode: false
       changed_when: false
