@@ -78,6 +78,13 @@
 > Task 1132 reverified the Caddy metrics/logs receipt. The render test now
 > uses Ansible's whitespace behavior. Alert notification receipt is not yet
 > proven, and the enabled branch still requires an approved webhook.
+> At `ebff111f40105ae0c7437f732fcb768fa0162c8e`, separate branch-bound
+> local Semaphore templates were registered for alert enablement and the
+> alert drill without launching either during registration. Alert-drill task
+> 1137 then refused before probe creation because the provisioned service-down
+> rule was paused; a container-existence check confirmed no probe was made.
+> Ordinary unreachable-endpoint task 1138 still passed and removed its probe.
+> The enabled alert-firing and external notification paths remain untested.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
