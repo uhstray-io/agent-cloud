@@ -8,6 +8,9 @@ load assert_helpers
   grep -qF 'hosts: netbox_svc' "$audit"
   grep -qF 'docker, ps, -a' "$audit"
   grep -qF 'docker, inspect' "$audit"
+  grep -qF 'oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$audit"
+  grep -qF 'netbox-postgres-1' "$audit"
+  grep -qF 'netbox-redis-cache-1' "$audit"
   grep -qF "/login/" "$audit"
   refute_grep -Eq 'ansible.builtin.(shell|script)|method: (POST|PUT|PATCH|DELETE)|docker, (start|stop|restart|run)' "$audit"
   grep -A2 -F 'name: Audit NetBox Runtime' "$templates" | grep -qF 'dev_variant: true'
