@@ -51,6 +51,8 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/secret-declarations/o11y.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -58,12 +60,6 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions: >-
-      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
-         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
-          if o11y_alerts_enabled | default(false) | bool else []) }}
-    _required_existing_secrets: >-
-      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
     # OIDC client secret is owned by authentik (the IdP); read it here so
     # Grafana's generic_oauth secret matches the provider blueprint.
     _shared_reads:

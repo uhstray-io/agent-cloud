@@ -342,9 +342,10 @@
       retries: 90
       delay: 10
       changed_when: false
-      when:
-        - not ansible_check_mode
-        - _do_migrate | bool
+      # A read, and the identity check and node choice below consume it, so it runs under
+      # --check too (PR 203 Codex review: skipping it left them dereferencing nothing).
+      check_mode: false
+      when: _do_migrate | bool
 
     - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
       # The wait selects by vmid alone. If our VM vanished and the vmid was reused

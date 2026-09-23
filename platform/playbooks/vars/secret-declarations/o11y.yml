@@ -1,0 +1,14 @@
+---
+# The o11y deploy's secret declaration, in its own file so every reader evaluates the SAME
+# declaration against its own host: deploy-o11y.yml loads it with vars_files, check-secrets.yml
+# with include_vars. It is computed (Jinja over inventory), and a computed value read out of a
+# playbook as text is only a string, which hid the required `existing` key from the secrets
+# step (PR 203 Codex review). test_workflow_registry.py refuses a computed declaration left in a
+# playbook's own vars.
+
+_secret_definitions: >-
+  {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
+     ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
+      if o11y_alerts_enabled | default(false) | bool else []) }}
+_required_existing_secrets: >-
+  {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}

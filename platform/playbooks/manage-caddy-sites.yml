@@ -210,7 +210,20 @@
         that: caddy_probe_host in (_post.stdout | default(_running.stdout) | default(''))
         fail_msg: "{{ caddy_probe_host }} is not in Caddy's running config after load."
         success_msg: "{{ caddy_probe_host }} is served by Caddy."
-      when: caddy_probe_host | default('') | length > 0
+      # A dry run loaded nothing, so the live config can only show the OLD routes: asserting a
+      # newly proposed host against it would fail a valid change (PR 203 Codex review).
+      when:
+        - not ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
+
+    - name: "Dry run: whether the managed host is served now, and what a real run would do"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ caddy_probe_host }} is
+          {{ 'already served' if caddy_probe_host in (_running.stdout | default('')) else 'not yet served; a real run would load it' }}.
+      when:
+        - ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
 
     - name: "Report"
       ansible.builtin.debug:

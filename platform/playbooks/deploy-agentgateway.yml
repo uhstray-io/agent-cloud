@@ -46,6 +46,8 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -53,22 +55,6 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # The upstream key is `existing`: surfaced to the templates, never invented.
-    # Client keys are `random`: generated ONCE per identity and reused on every
-    # later run, which is exactly "mint if absent, keep if present" (task 4.1);
-    # rotation is a deliberate separate run, never implicit in a deploy.
-    # Built with a Jinja loop rather than a collection filter so the play needs
-    # nothing beyond ansible-core (community.general is not a declared dependency).
-    _client_defs: >-
-      [{% for c in agw_clients | default([]) %}{"name": "client_{{ c }}", "type": "random", "length": 48}{{ "," if not loop.last }}{% endfor %}]
-    # agw_db_password: the gateway's own Postgres (budget usage only) — generated
-    # once, reused; a new value would orphan the existing data directory.
-    # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
-    # OIDC session cookie key — stable so UI sessions survive a redeploy.
-    _secret_definitions: >-
-      {{ [{'name': 'vllm_api_key', 'type': 'existing'},
-          {'name': 'agw_db_password', 'type': 'random', 'length': 32},
-          {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
     # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
     # Skipped with agw_ui_enabled: false, so /v1 deploys before that client exists.
