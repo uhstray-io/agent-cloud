@@ -67,3 +67,29 @@
       loop: "{{ (pve_resources.stdout | from_json) | selectattr('vmid', 'in', [205, 207, 209]) | list }}"
       loop_control:
         label: "{{ item.vmid }}"
+
+- name: Inspect OpenBao container state without reading secrets
+  hosts: openbao
+  gather_facts: false
+  tasks:
+    - name: List rootless OpenBao containers
+      ansible.builtin.command:
+        argv: [podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
+      register: openbao_rootless
+      changed_when: false
+      failed_when: false
+
+    - name: List rootful OpenBao containers
+      ansible.builtin.command:
+        argv: [sudo, -n, podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
+      register: openbao_rootful
+      changed_when: false
+      failed_when: false
+
+    - name: Report OpenBao container states
+      ansible.builtin.debug:
+        msg:
+          rootless_rc: "{{ openbao_rootless.rc }}"
+          rootless_containers: "{{ openbao_rootless.stdout_lines }}"
+          rootful_rc: "{{ openbao_rootful.rc }}"
+          rootful_containers: "{{ openbao_rootful.stdout_lines }}"
