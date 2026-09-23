@@ -155,6 +155,14 @@ PY
   refute_contains "$output" "TASK [Place the monorepo"
 }
 
+@test "o11y: an empty receiver inventory refuses before placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  run ansible-playbook -i localhost, "$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Inventory has no o11y_svc receiver; refusing a no-op deployment."
+  refute_contains "$output" "TASK [Place the monorepo"
+}
+
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" <<'PY'
 import json, re, sys, yaml
