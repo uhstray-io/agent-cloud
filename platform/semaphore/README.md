@@ -89,7 +89,8 @@ not a survey-controlled URL. This entry point assumes execution inside the
 declared Semaphore controller container. A separate remote runner needs its own
 reviewed transport design; do not redirect this token with a launch argument.
 
-Only exact, nonempty, unique names of existing declared templates are accepted.
+Normally, only exact, nonempty, unique names of existing declared templates are
+accepted. The guarded one-template creation described below is the sole exception.
 Repository URL/branch and template repository/playbook bindings must match the
 declaration. The selected surveys are updated and read back; inventory,
 environment, arguments and operational settings are preserved. No schedules,
