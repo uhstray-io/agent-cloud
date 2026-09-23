@@ -44,7 +44,7 @@ groups:
           summary: A declared service metrics endpoint is unreachable.
           dashboard_url: /d/service-overview
         labels: { severity: critical }
-        isPaused: {% if o11y_alerts_enabled | default(false) | bool %}false{% else %}true{% endif %}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool else 'true' }}
 {% if o11y_alerts_enabled | default(false) | bool %}
         notification_settings:
           receiver: agent-cloud-ops
@@ -88,7 +88,7 @@ groups:
           summary: Expected metrics have disappeared for {{ target.service }}.
           dashboard_url: /d/service-overview
         labels: { severity: critical, service: '{{ target.service }}' }
-        isPaused: {% if o11y_alerts_enabled | default(false) | bool %}false{% else %}true{% endif %}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool else 'true' }}
 {% if o11y_alerts_enabled | default(false) | bool %}
         notification_settings:
           receiver: agent-cloud-ops

@@ -121,7 +121,7 @@ import sys
 import yaml
 from jinja2 import Environment, StrictUndefined
 
-env = Environment(undefined=StrictUndefined)
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
 env.filters['bool'] = bool
 template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
