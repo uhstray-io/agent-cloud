@@ -4,7 +4,36 @@
   hosts: netbox_svc
   gather_facts: false
   become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _compose_path: "{{ monorepo_deploy_path | default('platform/services/netbox/deployment') }}/docker-compose.yml"
   tasks:
+    - name: Read host repository revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _host_revision
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Read tracked Compose changes on host
+      ansible.builtin.command:
+        argv: [git, --no-optional-locks, status, --porcelain, --, "{{ _compose_path }}"]
+        chdir: "{{ _monorepo_dir }}"
+      register: _compose_status
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Read host Compose checksum
+      ansible.builtin.stat:
+        path: "{{ _monorepo_dir }}/{{ _compose_path }}"
+        checksum_algorithm: sha256
+      register: _compose_file
+      check_mode: false
+      changed_when: false
+
     - name: List NetBox containers and their state
       ansible.builtin.command:
         argv: [docker, ps, -a, --filter, name=netbox, --format, "{{ '{{.Names}} {{.Status}}' }}"]
@@ -81,6 +110,15 @@
       ansible.builtin.debug:
         msg:
           host: "{{ inventory_hostname }}"
+          repository_revision: "{{ _host_revision.stdout | default('') }}"
+          repository_rc: "{{ _host_revision.rc | default('not_run') }}"
+          repository_msg: "{{ _host_revision.msg | default('') }}"
+          repository_error: "{{ _host_revision.stderr | default('') }}"
+          compose_status: "{{ _compose_status.stdout_lines | default([]) }}"
+          compose_status_rc: "{{ _compose_status.rc | default('not_run') }}"
+          compose_status_msg: "{{ _compose_status.msg | default('') }}"
+          compose_status_error: "{{ _compose_status.stderr | default('') }}"
+          compose_sha256: "{{ _compose_file.stat.checksum | default('missing') }}"
           containers_rc: "{{ _containers.rc }}"
           containers: "{{ _containers.stdout_lines }}"
           containers_error: "{{ _containers.stderr }}"
