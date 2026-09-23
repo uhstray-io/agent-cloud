@@ -32,35 +32,45 @@
 - name: Verify the named service is collected
   hosts: o11y_svc
   gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
   tasks:
     - name: Query recent Loki logs for the service
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ o11y_loki_port | default(3100) }}/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
-        return_content: true
-        status_code: 200
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://loki:3100/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
       register: _service_logs
       changed_when: false
+      check_mode: false
 
     - name: Require a recent service log line
       ansible.builtin.assert:
         that:
-          - _service_logs.json.status == 'success'
-          - _service_logs.json.data.result | length > 0
+          - _logs_json.status == 'success'
+          - _logs_json.data.result | length > 0
         fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
+      vars:
+        _logs_json: "{{ _service_logs.stdout | from_json }}"
 
     - name: Query active Prometheus targets
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ o11y_prom_port | default(9090) }}/api/v1/targets?state=active"
-        return_content: true
-        status_code: 200
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, wget, -q, -O, "-", "http://prometheus:9090/api/v1/targets?state=active"]
       register: _targets
       changed_when: false
+      check_mode: false
       when: expect_metrics | default('true') | bool
 
     - name: Require a healthy named metrics target
       ansible.builtin.assert:
         that:
-          - _targets.json.status == 'success'
+          - _targets_json.status == 'success'
           - _service_targets | length > 0
           - _unhealthy_targets | length == 0
         fail_msg: >-
@@ -69,7 +79,8 @@
           errors={{ _unhealthy_targets | map(attribute='lastError') | list }};
           targets found={{ _service_targets | length }}.
       vars:
-        _service_targets: "{{ _targets.json.data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
+        _targets_json: "{{ _targets.stdout | from_json }}"
+        _service_targets: "{{ _targets_json.data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
         _unhealthy_targets: "{{ _service_targets | rejectattr('health', 'equalto', 'up') | list }}"
       when: expect_metrics | default('true') | bool
 
@@ -79,7 +90,7 @@
           {{ expected_service }} has a Loki log from the last 15 minutes and
           {{ _service_targets | length }} healthy Prometheus target(s).
       vars:
-        _service_targets: "{{ _targets.json.data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
+        _service_targets: "{{ (_targets.stdout | from_json).data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
       when: expect_metrics | default('true') | bool
 
     - name: Report verified log-only collection
