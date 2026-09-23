@@ -1,22 +1,37 @@
 ---
-# enable-linger.yml — enable systemd user lingering for the deploy user so
-# rootless podman containers auto-restart after an unattended VM reboot.
+# enable-linger.yml — make rootless podman containers come back after an
+# unattended VM reboot. Two host settings, BOTH required:
 #
-# Podman is daemonless (05-platform-infra §11): a rootless user's containers run
-# only while that user has a live login session, so `restart: always` does NOT
-# bring them back after a reboot the way Docker's daemon does. `loginctl
-# enable-linger <user>` starts the user's systemd instance at boot, which in
-# turn restarts the (rootless) containers. Companion to the deploy playbooks —
-# call it once per rootless-podman service so a power cycle self-heals.
+#   1. Linger (`loginctl enable-linger <user>`) starts the user's systemd
+#      instance at boot, without anyone logging in.
+#   2. The user unit `podman-restart.service` is enabled inside that instance.
+#      It is what actually starts containers at boot, and it starts ONLY those
+#      whose policy is `restart: always`
+#      (`ExecStart=... start --all --filter restart-policy=always`, podman 4.9.3).
+#
+# Podman is daemonless (05-platform-infra §11), so nothing else restarts a
+# container. Linger alone starts an empty user manager: the unit ships DISABLED
+# for users on the Ubuntu 24.04 image (read 2026-09-22). This task used to claim
+# linger was enough; the 2026-09-19 reboot showed otherwise (docs/MISTAKES.md
+# 10.15). The compose-side half — every service declaring `always` — is guarded by
+# platform/tests/test_restart_policy.bats.
+#
+# Rootful podman containers use the SYSTEM podman-restart.service instead, which
+# the image ships enabled; this task does not touch it.
+#
+# The unit is enabled by creating the symlink `systemctl --user enable` itself
+# creates (default.target.wants/, from the unit's WantedBy=default.target), so
+# the task needs no live user bus and runs the same under --check. Skipped when
+# the host has no podman user unit (a Docker-only host).
 #
 # Idempotent: reads the current Linger property first and only enables when off.
 # Requires privilege escalation (become) to set linger for another user.
 #
 # SELF-GATING: skips entirely under local_mode (local-dev containers run on the
 # developer's podman machine, not host linger) — callers just include it, no
-# per-call `when` needed. Candidate to hoist into the shared prod preamble
-# (tasks/place-monorepo.yml) so EVERY rootless service gets reboot persistence,
-# not only the ones that remember to include it — tracked as a follow-up.
+# per-call `when` needed. Included by the shared prod preamble
+# (tasks/place-monorepo.yml), so every composable service gets reboot
+# persistence without remembering to ask for it.
 #
 # Required vars: none. Optional `linger_user` names the account to linger when it is
 # NOT the connecting user — needed by any service that runs under a DEDICATED
@@ -43,3 +58,38 @@
     - not (local_mode | default(false) | bool)
     - "'Linger=yes' not in (_linger_state.stdout | default(''))"
   changed_when: true
+
+- name: "Look up the account that owns the rootless containers"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ linger_user | default(ansible_user) }}"
+  when: not (local_mode | default(false) | bool)
+
+- name: "Check the host ships podman's user boot unit"
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/user/podman-restart.service
+  register: _podman_user_unit
+  when: not (local_mode | default(false) | bool)
+
+- name: "Enable podman's user boot unit (starts restart: always containers at boot)"
+  when:
+    - not (local_mode | default(false) | bool)
+    - _podman_user_unit.stat.exists | default(false)
+  become: true
+  become_user: "{{ linger_user | default(ansible_user) }}"
+  vars:
+    # getent_passwd[<user>] = [password, uid, gid, gecos, home, shell]
+    _unit_wants_dir: >-
+      {{ ansible_facts.getent_passwd[linger_user | default(ansible_user)][4] }}/.config/systemd/user/default.target.wants
+  block:
+    - name: "Ensure the user unit wants directory exists"
+      ansible.builtin.file:
+        path: "{{ _unit_wants_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Link podman-restart.service into default.target"
+      ansible.builtin.file:
+        src: /usr/lib/systemd/user/podman-restart.service
+        dest: "{{ _unit_wants_dir }}/podman-restart.service"
+        state: link

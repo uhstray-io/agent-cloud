@@ -980,49 +980,40 @@ Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true`. This ca
 
 ### The problem
 
-Docker containers with `restart: always` auto-restart when the daemon starts at boot. Podman is daemonless, so containers do not auto-restart after a host reboot.
+Docker's daemon restarts containers at boot. Podman has no daemon, so a container
+comes back only if a systemd unit starts it.
 
-### systemd integration
+### The mechanism in use
 
-Podman containers need systemd management for restart-after-reboot:
+Podman ships `podman-restart.service` in two copies. Both run the same command, read
+from the unit on the production OpenBao host (podman 4.9.3, Ubuntu 24.04):
 
-```bash
-# Generate systemd unit from running container
-podman generate systemd --new --name workflow-nocodb > \
-  ~/.config/systemd/user/container-workflow-nocodb.service
-
-# Enable with lingering (survives logout)
-loginctl enable-linger $USER
-systemctl --user enable container-workflow-nocodb.service
+```
+ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always
 ```
 
-### podman-compose + systemd
+| Containers | Unit | Enabled how |
+|------------|------|-------------|
+| Rootful (`sudo podman`) | system `podman-restart.service` | Shipped enabled on the image |
+| Rootless (the deploy user, or a dedicated account) | user `podman-restart.service` | Ships **disabled**. `tasks/enable-linger.yml` enables it and turns on linger so the user's systemd starts at boot |
 
-For compose-managed stacks, generate a systemd unit for the whole project:
+Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
 
-```bash
-# Option A: systemd unit that runs compose up/down
-cat > ~/.config/systemd/user/nocodb-stack.service << 'EOF'
-[Unit]
-Description=NocoDB Stack (podman-compose)
-After=network-online.target
+1. **Every compose service declares `restart: always`**, or `"no"` for a one-shot
+   container. On 4.9.3 the filter skips `unless-stopped`, whatever newer upstream
+   documentation says. Docker honours `always` as well, so one policy serves both engines.
+2. **Every composable deploy runs `tasks/enable-linger.yml`** through the shared
+   `tasks/place-monorepo.yml` preamble. Lingering alone is not enough: it starts an empty
+   user manager unless the user unit is enabled.
 
-[Service]
-Type=oneshot
-RemainAfterExit=true
-WorkingDirectory=/home/%u/services/nocodb
-ExecStart=/usr/bin/podman-compose -f compose.yml up -d
-ExecStop=/usr/bin/podman-compose -f compose.yml down
-TimeoutStartSec=300
+### What this does not cover
 
-[Install]
-WantedBy=default.target
-EOF
-```
-
-### Current state
-
-systemd integration is not yet automated in agent-cloud playbooks. After reboot, services restart by re-running the deploy playbook via Semaphore. A planned `configure-podman-systemd.yml` will automate systemd unit generation for all Podman services.
+- **OpenBao comes back sealed.** Production uses manual Shamir unseal, so a reboot still
+  needs a human. Transit auto-unseal is the planned fix
+  (`plan/development/01-secrets-credentials.md`, problem 2 and phase B2).
+- **A container created under the old policy keeps it.** The policy is fixed at create
+  time, so a service picks up `always` only when its deploy recreates the container.
+- **No automation reboots a host to prove any of this.** See `docs/MISTAKES.md` 10.15.
 
 ---
 
@@ -1069,8 +1060,8 @@ pip3 install --upgrade podman-compose>=1.3.0
 | Top-level `volumes: name:` | Yes | IGNORED | Yes | Use `--project-name` instead |
 | `container_name:` | Yes | Yes | Yes | Always set explicitly |
 | `healthcheck:` definition | Yes | Yes | Yes | Runs but not enforced for deps |
-| `restart: always` | Yes | Yes | Yes | But no daemon restart (see sec 11) |
-| `restart: unless-stopped` | Yes | Yes | Yes | |
+| `restart: always` | Yes | Yes | Yes | Started at boot by `podman-restart.service` (see sec 11) |
+| `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. Not used (sec 11) |
 | `restart: "no"` | Yes | Yes | Yes | One-shot containers |
 | `env_file:` (simple KEY=VALUE) | Yes | Yes | Yes | |
 | `env_file:` (quoted values) | Yes | Partial | Partial | Avoid quotes |

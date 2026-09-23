@@ -40,6 +40,40 @@ Verified 2026-09-14:
 Not verified: which estate host has capacity for the stack; whether any o11y containers
 run anywhere in production today outside the inventory (task 0.2 checks).
 
+2026-09-22 inventory attempt: the authenticated Semaphore front door returned a
+Cloudflare 502 host error at `/project/1/templates`. No production host or container
+state was observed; task 0.2 remains open.
+
+2026-09-22 partial production inventory: Semaphore task 1105 ran the read-only
+`audit-o11y-containers.yml` against the 15 `agent_cloud` service hosts. On the 12
+reachable hosts (`agentgateway`, `authentik`, `caddy`, `gh-runner-01`,
+`gh-runner-02`, `honcho`, `n8n`, `netbox`, `openbao`, `postiz`, `semaphore`,
+`tududi`), the rootless and rootful Podman and Docker queries all reported
+empty `o11y-*` container lists. At least one runtime query succeeded on each
+host. `nemoclaw`, `nocodb`, and `openhands` were unreachable, so this does not
+establish absence on every production host. Semaphore task 1106 attempted the
+existing read-only Proxmox validation playbook to check VM state, but its
+OpenBao lookup could not connect; no VM status was observed. Task 0.2 remains
+open until those hosts or their stopped VM state are verified.
+
+Semaphore task 1107 also found the production-inventory Proxmox host
+`aquilarift` unreachable by SSH, so a local `pvesh` read could not substitute
+for the token-backed API. Task 1109 found the rootful `workflow-openbao`
+container on the reachable OpenBao host in `Created` state, with no rootless
+OpenBao container; its API port refused connections from both Semaphore and the
+operator workstation. Starting OpenBao and checking the VM records are separate
+follow-up steps; neither was performed by this read-only inventory.
+
+2026-09-22 follow-up: the operator's existing Semaphore API token worked through
+the authenticated `/api/` route. Task 1115 ran the read-only Proxmox validation
+successfully (9 PASS, 0 FAIL): the target node, template, storage and bridge were
+ready, and VMID 204 was the first free ID in the 200–299 range. This confirms
+capacity, not an unallocated IP address. NetBox report task 1116 lacked a
+`netbox_url`; task 1117 reached OpenBao with an HTTPS URL but found no
+`automation_api_token` there. No address was allocated or reserved. The existing
+token-provisioning task requires separate authorization because it creates a
+persistent credential with view/add permissions.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of

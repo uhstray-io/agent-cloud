@@ -14,7 +14,7 @@ name: authentik
 
 x-authentik: &authentik
   image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server:2024.12.3}
-  restart: unless-stopped
+  restart: always
   env_file:
     - .env
   networks: [authentik]
@@ -28,7 +28,7 @@ services:
   postgresql:
     image: ${AUTHENTIK_POSTGRES_IMAGE:-docker.io/library/postgres:16-alpine}
     container_name: authentik-postgresql
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: ${AUTHENTIK_POSTGRES_DB:-authentik}
       POSTGRES_USER: ${AUTHENTIK_POSTGRES_USER:-authentik}
@@ -45,7 +45,7 @@ services:
   redis:
     image: ${AUTHENTIK_REDIS_IMAGE:-docker.io/valkey/valkey:8-alpine}
     container_name: authentik-redis
-    restart: unless-stopped
+    restart: always
     command: ["--save", "60", "1", "--loglevel", "warning"]
     volumes:
       - authentik-redis:/data

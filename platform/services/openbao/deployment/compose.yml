@@ -2,7 +2,7 @@ services:
   openbao:
     image: docker.io/openbao/openbao:latest
     container_name: workflow-openbao
-    restart: unless-stopped
+    restart: always
     ports:
       - "${OPENBAO_LISTEN:-127.0.0.1}:8200:8200"
     environment:

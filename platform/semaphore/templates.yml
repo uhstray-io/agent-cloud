@@ -27,6 +27,10 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Audit o11y Containers
+    playbook: platform/playbooks/audit-o11y-containers.yml
+    dev_variant: true
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:
@@ -92,6 +96,7 @@ templates:
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
+    dev_variant: true
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
@@ -343,6 +348,10 @@ templates:
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -353,6 +362,10 @@ templates:
 
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: client
         title: "Client identity"
@@ -517,6 +530,10 @@ templates:
 
   - name: Clean Deploy agentgateway
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
