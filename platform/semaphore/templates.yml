@@ -27,6 +27,10 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Audit o11y Containers
+    playbook: platform/playbooks/audit-o11y-containers.yml
+    dev_variant: true
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:
