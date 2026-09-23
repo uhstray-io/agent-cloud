@@ -109,7 +109,13 @@ Cluster   -> Cluster (type: "Proxmox VE", scope_site from inventory)
 
 **Key behaviors:**
 - `_build_node()` uses first IPv4 from management bridge interfaces for `primary_ip4`
-- `_build_vm()` uses first guest agent IPv4 (falls back gracefully without agent)
+- `_build_vm()` uses the first usable guest agent IPv4. If none is available,
+  it may use a validated static IPv4 from Proxmox cloud-init `ipconfig0` or
+  `ipconfig1`, keeping the matched configuration key as the synthetic
+  VMInterface name. DHCP, malformed, loopback, and link-local values are skipped.
+  After promotion from the older worker that named every fallback interface
+  `eth0`, audit for stale `eth0` VMInterfaces; do not delete records without
+  checking current guest-agent data and Diode reconciliation.
 - `_build_lxc()` uses first container IPv4
 - `_pick_primary_ipv4()` skips loopback, link-local, and IPv6 addresses
 - `_sanitize_description()` strips lines containing credential keywords before ingestion
