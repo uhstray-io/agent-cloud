@@ -235,6 +235,9 @@
 > missing active global prefix through the reusable Semaphore prefix workflow,
 > verify its read-back, then rerun the address report and reserve one exact
 > address before declaring the receiver VM in private site-config.
+> A prefix created through the NetBox Django shell has no NetBox request
+> changelog entry; the versioned playbook and Semaphore task ID/output are its
+> audit record. Preserve that task record with the production rollout evidence.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter

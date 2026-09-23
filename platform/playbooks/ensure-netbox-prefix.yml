@@ -50,7 +50,7 @@
         print(json.dumps({"action": action, "prefix": str(network), "id": record.pk if record else None}))
         PYSCRIPT
       register: _prefix_result
-      changed_when: (_prefix_result.stdout_lines | last | from_json).action == 'created'
+      changed_when: _prefix_result.rc == 0 and (_prefix_result.stdout_lines | last | from_json).action == 'created'
 
     - name: Show exact prefix outcome
       ansible.builtin.debug:
