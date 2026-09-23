@@ -118,7 +118,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+          # Keep the installer and release aligned; an incomplete newest
+          # release once made this required scan fail before it could run.
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/64d939a56362f519781c53ea09b27f8d1dc0140a/scripts/install.sh | sh -s -- -b /usr/local/bin v3.97.6
           trufflehog git file://. --since-commit "$BASE_SHA" --fail --no-update
 
       - name: RFC1918 IP address audit
