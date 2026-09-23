@@ -101,7 +101,9 @@ values = {
     'dgx_spark_api_port': 8000,
 }
 for gpu in (False, True):
-    jobs = yaml.safe_load(template.render(**values, dgx_spark_gpu_exporter_enabled=gpu))
+    config = yaml.safe_load(template.render(**values, dgx_spark_gpu_exporter_enabled=gpu))
+    assert list(config) == ['scrape_configs']
+    jobs = config['scrape_configs']
     assert [job['job_name'] for job in jobs] == (
         ['dgx-spark-node', 'dgx-spark-gpu', 'dgx-spark-vllm']
         if gpu else ['dgx-spark-node', 'dgx-spark-vllm']
