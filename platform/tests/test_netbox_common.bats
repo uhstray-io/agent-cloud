@@ -8,7 +8,6 @@ setup() {
   export DOT_ENV=$(mktemp)
   export DEFAULT_TIMEOUT=10
   export CONTAINER_ENGINE="docker"
-  export CONTAINER_SEP="-"
   export LIB_DIR="$SCRIPT_DIR/lib"
   TEST_DIR=$(mktemp -d)
 
@@ -107,4 +106,41 @@ teardown() {
   [ "$(read_existing "test_val" "$TEST_DIR/test.env" "TEST_VAR")" = "from_secrets" ]
   [ "$(read_existing "missing" "$TEST_DIR/test.env" "TEST_VAR")" = "from_env" ]
   [ -z "$(read_existing "missing" "$TEST_DIR/none.env" "MISSING")" ]
+}
+
+# ── compose object names (MISTAKES 6.5) ─────────────────────────────
+
+_stub_engine() {
+  # A fake engine that knows ONE container, found only by compose's labels, and the
+  # volume both providers name netbox_netbox-postgres. Any name-based lookup misses.
+  cat > "$TEST_DIR/engine" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  ps) [[ "$*" == *"label=com.docker.compose.project=netbox"* && "$*" == *"label=com.docker.compose.service=hydra-migrate"* ]] && echo c0ffee ;;
+  volume) [ "$3" = "netbox_netbox-postgres" ] ;;
+  inspect) [ "${@: -1}" = c0ffee ] || exit 1
+           case "$3" in *Status*) echo exited ;; *ExitCode*) echo 0 ;; esac ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$TEST_DIR/engine"
+  export CONTAINER_ENGINE="$TEST_DIR/engine"
+}
+
+@test "container_of: a service is found by compose labels, whatever the provider names it" {
+  _stub_engine
+  [ "$(container_of hydra-migrate)" = "c0ffee" ]
+  [ -z "$(container_of postgres)" ]
+}
+
+@test "postgres_volume_exists: the volume name is fixed, not derived from a container separator" {
+  _stub_engine
+  postgres_volume_exists
+}
+
+@test "wait_for_completed: follows the labelled container to a clean exit" {
+  _stub_engine
+  run wait_for_completed hydra-migrate 3
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hydra-migrate completed successfully."* ]]
 }

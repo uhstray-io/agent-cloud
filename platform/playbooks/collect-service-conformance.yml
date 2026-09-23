@@ -5,9 +5,13 @@
 # "Per-service conformance is tracked and reported". Runs INSIDE the Semaphore controller on
 # a schedule and is the ONLY writer of the workflow status (single-writer test):
 #
-#   read   Semaphore task history + output (the step results each executor recorded)
-#   parse  workflows/service-onboarding/lib/step_results.py: latest result per service and
-#          step; a failed task with no result counts as `fail` with its last 20 lines
+#   read   each WORKFLOW template's own task history, then the raw output of only the newest
+#          finished task per (template, service). Reading per template, not the project-wide
+#          last-200, keeps a service visible however busy the project is (this collector
+#          alone runs 96 times a day), and older tasks are superseded anyway.
+#   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
+#          result per service and step; a failed task with no result counts as `fail` with
+#          its last 20 lines. A service is named by its inventory group's service_name.
 #   write  NetBox custom fields on each service's VM (declared in
 #          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
 #          workflow-collector token (view/change VMs only); and, when collector_loki_url is
@@ -33,12 +37,9 @@
     _semaphore_url: "http://127.0.0.1:3000"
     _pid: "{{ semaphore_project_id | default(1) }}"
     _workflow: "{{ playbook_dir }}/../workflows/service-onboarding"
+    _parser: "{{ _workflow }}/lib/step_results.py"
     _registry: "{{ (lookup('file', _workflow ~ '/registry.yml') | from_yaml).steps }}"
-    _step_templates: >-
-      {{ ((_registry | map(attribute='executor') | list) + (_registry | selectattr('snapshot', 'defined') | map(attribute='snapshot') | list))
-         | reject('none') | reject('equalto', 'Deploy {service}') | list }}
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
-    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
 
   tasks:
     - name: "Refuse a controller API destination override before authentication"
@@ -58,72 +59,63 @@
       check_mode: false
       no_log: true
 
-    - name: "Read recent task history"
+    - name: "Map each inventory host to its service name"
+      # Plain names only: hostvars themselves never go to the parser.
+      ansible.builtin.set_fact:
+        _host_services: "{{ _host_services | default({}) | combine({item: hostvars[item].service_name}) }}"
+      loop: "{{ groups['all'] }}"
+      when: hostvars[item].service_name is defined
+
+    - name: "Select the workflow templates"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'select', 'registry': _registry, 'templates': _templates.json,
+              'groups': groups, 'host_services': _host_services | default({})} | to_json }}
+      register: _select
+      changed_when: false
+      check_mode: false
+
+    - name: "Read each workflow template's task history"
       ansible.builtin.uri:
-        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/last"
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates/{{ item }}/tasks/last"
         headers:
           Authorization: "Bearer {{ _token }}"
-      register: _history
+      loop: "{{ (_select.stdout | from_json).template_ids }}"
+      register: _histories
       check_mode: false
       no_log: true
 
-    - name: "Keep the finished tasks of workflow templates"
-      ansible.builtin.set_fact:
-        _tpl_names: "{{ dict(_templates.json | map(attribute='id') | zip(_templates.json | map(attribute='name'))) }}"
-        _candidates: >-
-          {{ _history.json | selectattr('status', 'in', ['success', 'error'])
-             | selectattr('template_id', 'in', _templates.json
-                 | selectattr('name', 'regex', '^(' ~ (_step_templates | map('regex_escape') | join('|')) ~ '|Deploy .+)( \((Dev|Local)\))?$')
-                 | map(attribute='id') | list)
-             | list }}
+    - name: "Pick the newest finished task per template and service"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'pick', 'groups': groups, 'host_services': _host_services | default({}),
+              'histories': _histories.results | map(attribute='json') | list} | to_json }}
+      register: _pick
+      changed_when: false
+      check_mode: false
 
-    - name: "Read each candidate task's output"
+    - name: "Read each picked task's output"
       ansible.builtin.uri:
-        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}/output"
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}/raw_output"
         headers:
           Authorization: "Bearer {{ _token }}"
-      loop: "{{ _candidates }}"
+        return_content: true
+      loop: "{{ (_pick.stdout | from_json).tasks }}"
       loop_control:
         label: "task {{ item.id }}"
       register: _outputs
       check_mode: false
       no_log: true
 
-    - name: "Read each failed candidate's launch vars (its target service, when it recorded no result)"
-      ansible.builtin.uri:
-        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}"
-        headers:
-          Authorization: "Bearer {{ _token }}"
-      loop: "{{ _candidates | selectattr('status', 'equalto', 'error') | list }}"
-      loop_control:
-        label: "task {{ item.id }}"
-      register: _details
-      check_mode: false
-      no_log: true
-
-    - name: "One parser record per task (service taken from a per-service playbook name)"
-      ansible.builtin.set_fact:
-        _collected: >-
-          {{ (_collected | default([])) + [{
-               'id': item.item.id,
-               'status': item.item.status,
-               'end': item.item.end,
-               'template_name': _tpl_names[item.item.template_id] | default(''),
-               'service': ((item.item.tpl_playbook | basename | regex_replace('^deploy-|\\.yml$', ''))
-                           if (item.item.tpl_playbook | default('') | basename) is match('deploy-[a-z0-9-]+\\.yml$') else none),
-               'output': item.json | map(attribute='output') | map('regex_replace', '\\x1b\\[[0-9;]*m', '') | list,
-               'environment': (_details.results | selectattr('item.id', 'equalto', item.item.id)
-                               | map(attribute='json.environment') | first | default(''))
-             }] }}
-      loop: "{{ _outputs.results }}"
-      loop_control:
-        label: "task {{ item.item.id }}"
-      no_log: true
-
     - name: "Aggregate: latest result per service and step"
       ansible.builtin.command:
-        argv: [python3, "{{ _workflow }}/lib/step_results.py"]
-        stdin: "{{ {'registry': _registry, 'tasks': _collected | default([]), 'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}"
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json,
+              'fetched': _outputs.results | default([]),
+              'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
       register: _aggregate_run
       changed_when: false
       check_mode: false
@@ -135,7 +127,7 @@
     - name: "Record the aggregate for the report and the dashboard"
       ansible.builtin.set_stats:
         data:
-          conformance: "{{ _agg }}"
+          conformance: "{{ _agg | dict2items | rejectattr('key', 'equalto', 'loki_streams') | items2dict }}"
         per_host: false
         aggregate: false
 
@@ -143,71 +135,82 @@
     - name: "NetBox: read the collector token"
       when: _netbox_url | length > 0
       block:
+        - name: "Refuse a cleartext NetBox endpoint before any token goes to it"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _netbox_url }}"
+            _assert_url_label: "NetBox"
+
         - name: "Refuse a cleartext secret-store endpoint"
           ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
           vars:
-            _assert_bao_url: "{{ _bao_url }}"
+            _assert_bao_url: "{{ _runtime_bao_url }}"
 
-        - name: "Authenticate to OpenBao (AppRole)"
+        - name: "Authenticate to OpenBao (AppRole), unless runtime access already did"
           ansible.builtin.uri:
-            url: "{{ _bao_url }}/v1/auth/approle/login"
+            url: "{{ _runtime_bao_url }}/v1/auth/approle/login"
             method: POST
             body_format: json
             body:
               role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
               secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+            follow_redirects: none
           register: _bao_auth
+          when: _runtime_login.json is not defined
           changed_when: false
           check_mode: false
           no_log: true
 
         - name: "Read the NetBox secret"
           ansible.builtin.uri:
-            url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+            url: "{{ _runtime_bao_url }}/v1/secret/data/services/netbox"
             headers:
-              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+              X-Vault-Token: "{{ (_runtime_login.json | default(_bao_auth.json)).auth.client_token }}"
+            unredirected_headers: [X-Vault-Token]
+            follow_redirects: none
           register: _nb_secret
           check_mode: false
           no_log: true
 
-        - name: "Set the NetBox auth header (Bearer for a v2 token, Token for v1)"
-          ansible.builtin.set_fact:
-            _collector_token: "{{ _nb_secret.json.data.data.collector_api_token | default('') }}"
-          no_log: true
+        - name: "Build the NetBox API headers"
+          ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+          vars:
+            _nb_token: "{{ _nb_secret.json.data.data.collector_api_token | default('') }}"
+          when: (_nb_secret.json.data.data.collector_api_token | default('')) | length > 0
 
     - name: "NetBox: find each service's VM"
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?name={{ (collector_vm_names | default({}))[item] | default(item) | urlencode }}"
-        headers:
-          Authorization: "{{ ('Bearer ' if (_collector_token is match('nbt_')) else 'Token ') ~ _collector_token }}"
-          Accept: application/json
+        headers: "{{ _nb_headers }}"
         status_code: [200]
       loop: "{{ _agg.services.keys() | list }}"
       register: _vms
       failed_when: false
       check_mode: false
       no_log: true
-      when:
-        - _netbox_url | length > 0
-        - (_collector_token | default('')) | length > 0
+      when: _nb_headers is defined
+
+    - name: "NetBox: sort the lookups"
+      ansible.builtin.set_fact:
+        _vm_found: "{{ _answered | selectattr('json.count', 'gt', 0) | list }}"
+        _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
+        _vm_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
+      vars:
+        _answered: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | list }}"
 
     - name: "NetBox: write each service's workflow status"
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.json.results[0].id }}/"
         method: PATCH
-        headers:
-          Authorization: "{{ ('Bearer ' if (_collector_token is match('nbt_')) else 'Token ') ~ _collector_token }}"
-          Accept: application/json
+        headers: "{{ _nb_headers }}"
         body_format: json
         body:
           custom_fields:
-            ac_workflow_status: >-
-              {{ dict(_agg.services[item.item] | dict2items | map(attribute='key')
-                 | zip(_agg.services[item.item] | dict2items | map(attribute='value') | map(attribute='status'))) }}
+            ac_workflow_status: "{{ _agg.status_by_service[item.item] }}"
             ac_failed_steps: "{{ _agg.failed_steps[item.item] | join(',') }}"
             ac_last_run: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
         status_code: [200]
-      loop: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | selectattr('json.count', 'gt', 0) | list }}"
+      loop: "{{ _vm_found }}"
       loop_control:
         label: "{{ item.item }}"
       register: _nb_writes
@@ -238,6 +241,6 @@
         msg:
           report: "{{ _agg.report }}"
           netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
-          netbox_no_vm: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
-          netbox_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
+          netbox_no_vm: "{{ _vm_missing }}"
+          netbox_unreachable: "{{ _vm_unreachable }}"
           loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"

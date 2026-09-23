@@ -11,9 +11,8 @@
 #   - the deploying user has systemd linger, so its containers start without a login
 #     (tasks/enable-linger.yml is what sets it)
 #
-# The service's containers are selected by the compose label
-# com.docker.compose.project.working_dir == the service's deploy directory, because compose
-# project names are not stable per service (n8n's project is literally "deployment").
+# The service's containers come from tasks/list-service-containers.yml (the compose
+# working_dir label, which says why).
 #
 # Usage (Semaphore): -e target_service=tududi_svc
 
@@ -23,25 +22,14 @@
   become: false
   tags: [verify]
   vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _engine: "{{ container_engine | default('podman') }}"
     _restart_ok: [always, unless-stopped]
 
   tasks:
     - name: "List the service's containers (by compose working directory)"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - ps
-          - -a
-          - --filter
-          - "label=com.docker.compose.project.working_dir={{ _deploy_dir }}"
-          - --format
-          - "{{ '{{' }}.Names{{ '}}' }}"
-      register: _containers
-      changed_when: false
-      check_mode: false
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
 
     - name: "Read each container's restart policy"
       ansible.builtin.command:
@@ -51,14 +39,16 @@
           - --format
           - "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}"
           - "{{ item }}"
-      loop: "{{ _containers.stdout_lines }}"
+      loop: "{{ _lsc.stdout_lines }}"
       register: _policies
       changed_when: false
       check_mode: false
 
-    - name: "Rootless podman on Linux: read the deploying user's linger"
+    - name: "Rootless podman on Linux: read the service account's linger"
+      # Same account rule as tasks/enable-linger.yml: linger_user when a service runs under a
+      # dedicated account, else the connecting user.
       ansible.builtin.command:
-        argv: [loginctl, show-user, "{{ ansible_user | default(lookup('env', 'USER')) }}", --property=Linger]
+        argv: [loginctl, show-user, "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}", --property=Linger]
       register: _linger
       changed_when: false
       failed_when: false
@@ -70,7 +60,7 @@
 
     - name: "Decide the result"
       ansible.builtin.set_fact:
-        _restart_policies: "{{ dict(_policies.results | map(attribute='item') | zip(_policies.results | map(attribute='stdout'))) }}"
+        _restart_policies: "{{ _policies.results | items2dict(key_name='item', value_name='stdout') }}"
         _linger_state: >-
           {{ 'not-applicable' if (_linger is skipped)
              else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
@@ -78,8 +68,9 @@
     - name: "Decide the failures"
       ansible.builtin.set_fact:
         _persistence_errors: >-
-          {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir]
-              if (_containers.stdout_lines | length == 0) else [])
+          {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir
+               ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
+              if (_lsc.stdout_lines | length == 0) else [])
              + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok)
                 | map(attribute='key')
                 | map('regex_replace', '^', 'restart policy not always/unless-stopped: ') | list)
@@ -100,7 +91,7 @@
         step_result_evidence:
           linger: "{{ _linger_state }}"
           restart_policies: "{{ _restart_policies }}"
-        step_result_error: "{{ _persistence_errors | join('; ') if _persistence_errors else '' }}"
+        step_result_error: "{{ _persistence_errors | join('; ') }}"
 
     - name: "Fail when the service would not survive a reboot"
       ansible.builtin.fail:

@@ -46,23 +46,20 @@ if [ -z "${CONTAINER_ENGINE:-}" ]; then
     exit 1
   fi
 fi
-# Separator compose puts between project, service and index in object names. It is NOT one
-# value: Docker Compose writes netbox-postgres-1, python podman-compose (the local Semaphore
-# runner, 1.6.0) writes netbox_postgres_1. Hardcoded "-" made postgres_volume_exists miss
-# the podman volume, so the password sync was skipped as a "first deploy" and hydra could
-# not log in (2026-09-22). An existing volume decides; otherwise the compose provider does.
-detect_container_sep() {
-  if "$CONTAINER_ENGINE" volume inspect netbox_netbox-postgres >/dev/null 2>&1; then
-    CONTAINER_SEP="_"
-  elif "$CONTAINER_ENGINE" volume inspect netbox-netbox-postgres >/dev/null 2>&1; then
-    CONTAINER_SEP="-"
-  elif "$CONTAINER_ENGINE" compose version 2>&1 | grep -qi 'podman-compose'; then
-    CONTAINER_SEP="_"
-  else
-    CONTAINER_SEP="-"
-  fi
+# Compose object names. Containers differ by provider: Docker Compose writes
+# netbox-postgres-1, podman-compose 1.6.0 (the local Semaphore runner) writes
+# netbox_postgres_1. Volumes do NOT follow the container separator: both write
+# netbox_netbox-postgres (Docker Compose verified with `compose config`, 2026-09-22).
+# A single detected separator therefore got one of the two wrong on every host
+# (MISTAKES 6.5). Containers are found by the labels both providers set; the volume
+# name is fixed.
+NETBOX_PG_VOLUME="netbox_netbox-postgres"
+
+# container_of <service> — the container compose created for one netbox service.
+container_of() {
+  "$CONTAINER_ENGINE" ps -aq --filter label=com.docker.compose.project=netbox \
+    --filter "label=com.docker.compose.service=$1" | head -n 1
 }
-[ -n "${CONTAINER_SEP:-}" ] || detect_container_sep
 
 # ─── Logging ──────────────────────────────────────────────────────
 info()  { echo "==> $*"; }
@@ -82,13 +79,15 @@ sedi() {
 # ─── Compose wrapper ─────────────────────────────────────────────
 # Wraps the detected container engine's compose with explicit project name and
 # compose file to avoid auto-discovery of override files and keep names stable.
-# NETBOX_COMPOSE_EXTRA: space-separated overlay files (relative to the deployment dir)
-# added after the base file, e.g. the LOCAL-ONLY forward_auth overlay
-# docker-compose.local-auth.yml. Unset in production, so prod runs the base file alone.
+# COMPOSE_OVERLAYS: space-separated overlay files (relative to the deployment dir) added
+# after the base file, e.g. the LOCAL-ONLY forward_auth overlay docker-compose.local-auth.yml.
+# Same name and rule as platform/lib/common.sh compose(): each named file must exist, because
+# a missing -f silently degrades to the base topology. Unset in production.
 compose() {
   local compose_dir="${ROOT_DIR:-${SCRIPT_DIR}}"
   local files=(-f "${compose_dir}/docker-compose.yml") overlay
-  for overlay in ${NETBOX_COMPOSE_EXTRA:-}; do
+  for overlay in ${COMPOSE_OVERLAYS:-}; do
+    [ -f "${compose_dir}/${overlay}" ] || error "COMPOSE_OVERLAYS names '${overlay}', which does not exist in ${compose_dir}"
     files+=(-f "${compose_dir}/${overlay}")
   done
   $CONTAINER_ENGINE compose --project-name "netbox" "${files[@]}" "$@"
@@ -189,11 +188,12 @@ wait_for_completed() {
   local service="$1"
   local timeout="${2:-$DEFAULT_TIMEOUT}"
   local elapsed=0
-  local container="netbox${CONTAINER_SEP}${service}${CONTAINER_SEP}1"
+  local container=""
 
   info "Waiting for ${service} to complete (timeout: ${timeout}s)..."
   while [ "$elapsed" -lt "$timeout" ]; do
     local state
+    [ -n "$container" ] || container=$(container_of "$service")
     state=$($CONTAINER_ENGINE inspect --format '{{.State.Status}}' "${container}" 2>/dev/null || echo "unknown")
     if [ "$state" = "exited" ]; then
       local exit_code
@@ -208,7 +208,7 @@ wait_for_completed() {
     sleep 3
     elapsed=$((elapsed + 3))
   done
-  error "${service} did not complete within ${timeout}s. Check: $CONTAINER_ENGINE logs ${container}"
+  error "${service} did not complete within ${timeout}s. Check: $CONTAINER_ENGINE logs ${container:-<no container labelled netbox/${service}>}"
 }
 
 # ─── Service log verification ────────────────────────────────────
@@ -366,7 +366,7 @@ print(json.dumps(matching[0] if matching else {}))
 
 # Check if the netbox postgres volume already exists (i.e. data was persisted).
 postgres_volume_exists() {
-  $CONTAINER_ENGINE volume inspect "netbox${CONTAINER_SEP}netbox-postgres" >/dev/null 2>&1
+  $CONTAINER_ENGINE volume inspect "$NETBOX_PG_VOLUME" >/dev/null 2>&1
 }
 
 # sync_postgres_passwords — If the postgres volume exists, start only postgres,
@@ -509,10 +509,7 @@ ensure_agent_credentials() {
 # restart_discovery_services
 # Restarts ingester, reconciler, and nginx containers after credential registration.
 restart_discovery_services() {
-  $CONTAINER_ENGINE restart \
-    "netbox${CONTAINER_SEP}diode-ingester${CONTAINER_SEP}1" \
-    "netbox${CONTAINER_SEP}diode-reconciler${CONTAINER_SEP}1" \
-    "netbox${CONTAINER_SEP}ingress-nginx${CONTAINER_SEP}1" 2>/dev/null || true
+  compose restart diode-ingester diode-reconciler ingress-nginx 2>/dev/null || true
 }
 
 # ─── Orb Agent lifecycle (standalone, privileged) ─────────────────

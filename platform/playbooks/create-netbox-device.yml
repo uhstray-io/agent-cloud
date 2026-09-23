@@ -94,15 +94,9 @@
       check_mode: false
 
     - name: "Set NetBox auth header"
-      ansible.builtin.set_fact:
-        _nb_headers:
-          # NetBox >= 4.5 v2 tokens are stored as the full bearer credential nbt_<key>.<token>
-          # and sent as "Bearer"; a legacy v1 token (40 chars) keeps the "Token" scheme.
-          Authorization: >-
-            {{ ('Bearer ' if (_nb_secret.json.data.data[_token_key] is match('nbt_')) else 'Token ')
-               ~ _nb_secret.json.data.data[_token_key] }}
-          Accept: "application/json"
-      no_log: true
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+      vars:
+        _nb_token: "{{ _nb_secret.json.data.data[_token_key] }}"
 
     # ── resolve slugs -> ids ───────────────────────────────────────────────
     - name: "Resolve site / device_type / device_role by slug"

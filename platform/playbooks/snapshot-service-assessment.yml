@@ -14,29 +14,17 @@
   tags: [verify]
   vars:
     _svc_dir: "{{ playbook_dir }}/../services/{{ service_name }}/deployment"
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _engine: "{{ container_engine | default('podman') }}"
     _registry: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml).steps }}"
     _compose_file: "{{ lookup('ansible.builtin.first_found', {'files': ['compose.yml', 'docker-compose.yml'], 'paths': [_svc_dir], 'skip': true}) }}"
 
   tasks:
-    - name: "The service's running containers and their state"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - ps
-          - -a
-          - --filter
-          - "label=com.docker.compose.project.working_dir={{ _deploy_dir }}"
-          - --format
-          - "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}"
-      register: _running
-      changed_when: false
-      failed_when: false
-      check_mode: false
+    - name: "The service's containers and their state"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, Status]
+        _lsc_all: true
 
-    - name: "Assemble the snapshot"
+    - name: "Read the committed compose file"
       ansible.builtin.set_fact:
         _compose: "{{ (lookup('file', _compose_file) | from_yaml) if _compose_file else {} }}"
 
@@ -63,7 +51,7 @@
               disk: "{{ vm_disk | default('') }}"
             runtime: "{{ _engine }}"
             compose_services: "{{ _compose_services | default({}) }}"
-            running: "{{ _running.stdout_lines | default([]) }}"
+            running: "{{ _lsc.stdout_lines | default([]) }}"
             practices: "{{ lookup('file', playbook_dir ~ '/../services/' ~ service_name ~ '/context/agent-practices.md', errors='ignore') | default('', true) }}"
             registry: "{{ _registry | selectattr('id', 'in', ['service-assess', 'vm-rightsize', 'service-deploy']) | list }}"
         per_host: false
@@ -76,4 +64,4 @@
         step_result_status: pass
         step_result_evidence:
           compose_found: "{{ _compose_file | length > 0 }}"
-          running_count: "{{ _running.stdout_lines | default([]) | length }}"
+          running_count: "{{ _lsc.stdout_lines | default([]) | length }}"

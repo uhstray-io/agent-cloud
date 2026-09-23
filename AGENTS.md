@@ -265,6 +265,8 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/site-config-clone.yml` / `tasks/site-config-push.yml` | Clone site-config on a fresh branch with the deploy key the caller read from OpenBao (0600 inside the scratch dir, `IdentitiesOnly`, pinned host keys), then stage one path, commit, push and report names only. The shared path both backup playbooks use; the caller wipes the dir in `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/emit-step-result.yml` | Record ONE service-deployment-workflow step result with `set_stats` (printed as JSON under `CUSTOM STATS` by the repo `ansible.cfg`); runs in check mode too. Included last by every workflow executor and snapshot playbook |
+| `tasks/list-service-containers.yml` | The containers one service's compose project created, by the compose `working_dir` label — the one selector the workflow snapshots and the persistence check share |
+| `tasks/netbox-api-headers.yml` | NetBox API headers for a stored token (`Bearer` for a v2 `nbt_` token, `Token` for v1) — every NetBox API caller builds them here |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
 `platform/playbooks/tasks/` contains the shared tasks; the table above is the curated set
@@ -323,6 +325,10 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Provision VM | `provision-vm.yml` | Clone the template and provision a declared VM. Inventory-first; `-e target_host=` REQUIRED when the group declares more than one host |
 | Destroy VM | `destroy-vm.yml` | DESTRUCTIVE, as code: stop + `qm destroy` (purge, unreferenced disks) for ONE declared VM. Inventory-first like Provision VM; refuses unless the live VM matches the declaration on vmid+name+node AND the launch names the vmid in `confirm_destroy` (no default). A vmid already absent is a clean no-op. Exists because a mis-addressed VM could otherwise only be removed by console click (MISTAKES 3.6) |
 | Apply Firewall | `apply-firewall.yml` | Default-deny inbound + optional declarative `firewall_deny_egress` for a semi-trusted host. Anti-lockout: SSH allows precede enable, then a fresh handshake is forced |
+| Collect Service Conformance | `collect-service-conformance.yml` | The service deployment workflow's ONLY status writer, every 15 minutes: each workflow template's own Semaphore history → newest result per service and step (a failure that recorded none counts as `fail` with its last 20 lines) → NetBox VM custom fields with a scoped view/change-VM token, and Loki for the `service-conformance` Grafana dashboard. Its dry run is the read-only failure report |
+| Snapshot Service Assessment / Snapshot Firewall / Snapshot Access | `snapshot-*.yml` | The one input each light-blue reasoning step (plan 15) reads: names and metadata only, never secret values; read-only and identical under `--check` |
+| Verify Service Persistence | `verify-service-persistence.yml` | Workflow step systemd-enablement: restart policies `always`/`unless-stopped` and rootless-podman linger; an empty container selection fails |
+| Provision NetBox Custom Fields | `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields from `workflows/service-onboarding/netbox-custom-fields.yml` via the Django shell; refuses to retype a field |
 | Validate All | `validate-all.yml` | Health check all services |
 | Check Secrets | `check-secrets.yml` | Read-only secret inventory from OpenBao |
 | Validate Secrets | `validate-secrets.yml` | Test credentials against live services |
@@ -396,7 +402,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 - **Phase 0-0.5**: Foundation + per-VM deployment
 - **Monorepo consolidation** — two repos: agent-cloud (public) + site-config (private)
 - **SSH hardening** — per-service ed25519 keys, password disabled, NOPASSWD sudo
-- **Semaphore pipeline** — 78 declared task templates (plus generated `(Dev)` variants), SSH key auth
+- **Semaphore pipeline** — 97 declared task templates (plus generated `(Dev)` variants; counted from `templates.yml` 2026-09-22), SSH key auth
 - **NetBox deployment recorded; discovery recovery unverified** — the full-stack and Orb Agent mechanisms exist, but historical discovered-record counts do not establish freshness. Production is the current validation target; local Docker setup for NetBox is not established
 - **Authentik deployed (prod)** — central IdP/SSO at `auth.uhstray.io` (own VM, podman); akadmin + `stray` + `svc-automation` service account; blueprints (groups, OIDC, forward_auth, SSO bindings) applied
 - **OpenHands deployed (prod)** — Agent Canvas at `canvas.uhstray.io` (own VM, Docker, host docker.sock runtime), gated by Authentik forward_auth at the central Caddy

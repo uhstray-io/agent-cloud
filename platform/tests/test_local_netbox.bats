@@ -20,14 +20,15 @@ setup() {
 }
 
 @test "deploy-netbox passes the local overlay and loopback publish from inventory only" {
-  assert_grep -qF "NETBOX_COMPOSE_EXTRA: \"{{ netbox_compose_overlays | default([]) | join(' ') }}\"" "$PB/deploy-netbox.yml"
+  assert_grep -qF "COMPOSE_OVERLAYS: \"{{ netbox_compose_overlays | default([]) | join(' ') }}\"" "$PB/deploy-netbox.yml"
   assert_grep -qF "NETBOX_HOST_IP: \"{{ netbox_host_ip | default('') }}\"" "$PB/deploy-netbox.yml"
 }
 
 @test "the NetBox compose wrapper adds overlays after the base file, and none by default" {
   blk=$(sed -n '/^compose() {/,/^}/p' "$NB/lib/common.sh")
   assert_grep -qF 'files=(-f "${compose_dir}/docker-compose.yml")' <<<"$blk"
-  assert_grep -qF 'for overlay in ${NETBOX_COMPOSE_EXTRA:-}; do' <<<"$blk"
+  assert_grep -qF 'for overlay in ${COMPOSE_OVERLAYS:-}; do' <<<"$blk"
+  assert_grep -qF 'which does not exist in' <<<"$blk"
 }
 
 @test "deploy.sh moves a non-git netbox-docker copy aside instead of failing or deleting it" {
@@ -64,19 +65,22 @@ setup() {
 
 @test "verify-service-persistence selects containers by deploy dir and reports systemd-enablement" {
   pb="$PB/verify-service-persistence.yml"
-  assert_grep -qF 'label=com.docker.compose.project.working_dir={{ _deploy_dir }}' "$pb"
+  # the selector lives once, in the shared task, and all three workflow readers use it
+  assert_grep -qF "'label=com.docker.compose.project.working_dir=' ~ _deploy_dir" "$PB/tasks/list-service-containers.yml"
+  for f in verify-service-persistence snapshot-firewall snapshot-service-assessment; do
+    assert_grep -qF 'include_tasks: tasks/list-service-containers.yml' "$PB/$f.yml"
+  done
   assert_grep -qF '_restart_ok: [always, unless-stopped]' "$pb"
   assert_grep -qF 'step_result_step: systemd-enablement' "$pb"
   # an empty selection is a failure, never a vacuous pass
   assert_grep -qF 'no containers carry the compose working_dir label' "$pb"
 }
 
-@test "the NetBox name separator is detected, not hardcoded (podman-compose writes _)" {
+@test "NetBox containers are found by compose labels, not a guessed name separator" {
   lib="$NB/lib/common.sh"
-  refute_grep -qE '^CONTAINER_SEP="-"$' "$lib"
-  assert_grep -qF 'volume inspect netbox_netbox-postgres' "$lib"
-  assert_grep -qF "grep -qi 'podman-compose'" "$lib"
-  assert_grep -qF '[ -n "${CONTAINER_SEP:-}" ] || detect_container_sep' "$lib"
+  refute_grep -qF 'CONTAINER_SEP' "$lib"
+  assert_grep -qF 'label=com.docker.compose.service=$1' "$lib"
+  assert_grep -qF 'NETBOX_PG_VOLUME="netbox_netbox-postgres"' "$lib"
 }
 
 @test "the local controller's OpenBao policy is production's file, not an inline fork" {

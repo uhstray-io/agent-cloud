@@ -439,8 +439,12 @@ for u in accept:
 for u in refuse:
     if re.match(pat, u): bad.append('should REFUSE: ' + u)
 # The local_mode branch's own pattern: single-label only, same trailing anchor.
-sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1']
+sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1',
+             'http://host.containers.internal:8000']   # podman's engine-host name, exact
 sl_refuse = [
+    'http://host.containers.internal.evil.example/',   # the exact name is not a prefix
+    'http://host.containers.internal@evil.example/',   # trufflehog:ignore — userinfo
+    'http://evil.containers.internal:8000',            # only the one host-gateway name
     'http://local-openbao@bao.evil.example/',   # trufflehog:ignore — userinfo
     'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space
     'https://anything',                          # wrong scheme for this branch
@@ -454,7 +458,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 26 cases correct"* ]]
+  [[ "$output" == *"all 30 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

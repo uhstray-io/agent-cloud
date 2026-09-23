@@ -22,7 +22,9 @@
 #   undo             template that reverses the step, or the literal none
 #   policy           required (a fail halts the run) | advisory (recorded, run continues)
 #   criteria         pass conditions the executor proves
-#   evidence_keys    keys the executor's step result carries in `evidence`
+#   evidence_keys    keys the executor's step result carries in `evidence`; for a reasoning
+#                    step, its snapshot's (the verdict has its own schema). Pinned to the
+#                    emitting playbook by test_workflow_registry.py
 #   reviewed         date the step review passed (tasks 7.1), or null
 steps:
   - id: vm-template
@@ -148,7 +150,7 @@ steps:
     criteria:
       - the proposal validates against its schema
       - it names an existing deploy template for an existing service
-    evidence_keys: [verdict]
+    evidence_keys: [compose_found, running_count]
     reviewed: null
 
   - id: vm-rightsize
@@ -174,7 +176,7 @@ steps:
     criteria:
       - every existing-typed secret is present and non-empty
       - the service AppRole exists with the service policy
-    evidence_keys: [missing, empty]
+    evidence_keys: [path_found, key_count, empty]
     reviewed: null
 
   - id: instrument-host
@@ -244,7 +246,7 @@ steps:
       - the proposal validates against its schema
       - every allow rule maps to a listening socket with a declared consumer
       - SSH stays open to the orchestrator and to no source outside the declared SSH sources
-    evidence_keys: [verdict]
+    evidence_keys: [host_applicable, published_count, has_practices]
     reviewed: null
 
   - id: fw-harden
@@ -301,7 +303,7 @@ steps:
       - the proposal validates against its schema
       - the auth mode matches the service's agent practices
       - every named group exists
-    evidence_keys: [verdict]
+    evidence_keys: [catalog_entries, blueprint_count]
     reviewed: null
 
   - id: oidc-config

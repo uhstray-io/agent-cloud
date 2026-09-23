@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn Semaphore task output into per-service workflow status (the conformance collector).
+"""Turn Semaphore task history into per-service workflow status (the conformance collector).
 
 Change service-deployment-workflow, platform/service-onboarding-workflow: "Every step emits
 one structured result", "A failure with no result is still recorded", "Per-service
@@ -10,16 +10,24 @@ ansible.cfg makes Ansible print it as one line `RUN: {...json...}` after `CUSTOM
 A task that FAILED without recording one is still a result: the registry maps its template
 to a step, and it is recorded as `fail` with the last twenty output lines as the error.
 
-stdin: {"registry": [<registry steps>],
-        "tasks": [{"id", "status", "end", "template_name", "service", "output": [lines],
-                   "environment": <the task's extra vars as Semaphore stores them, a JSON string>}]}
-        optional "now_ns": a timestamp in nanoseconds, to also emit Loki push streams
-stdout: {"services": {service: {step: {status, task_id, end, check_mode, error, evidence}}},
-         "failed_steps": {service: [step, ...]},
-         "report": {service: {"failed": [{step, criteria, error, undo, task_id}],
-                              "unreviewed": [step, ...]}},
-         "loki_streams": [...]  (only with now_ns; POST /loki/api/v1/push body "streams")}
-Only the LATEST result per (service, step) is kept, by task id.
+The collector calls this three times, one JSON object on stdin each, keyed by "mode":
+
+  select     {registry, templates, groups, host_services}
+                                                    -> {"template_ids": [...]}
+             the workflow templates whose history is worth reading: a per-service deploy
+             counts only when its service is in this inventory
+  pick       {groups, host_services, histories: [[task rows]]}
+                                                    -> {"tasks": [task rows + "service"]}
+             the newest finished task per (template, service): older ones are superseded
+  aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
+              now_ns?}
+                                                    -> {services, failed_steps,
+                                                        status_by_service, report,
+                                                        loki_streams (only with now_ns)}
+
+An inventory group is mapped to its first host's service_name (groups + host_services, both
+plain data: hostvars themselves never cross), so a service is named the way its own step
+results name it (step_ca_svc -> step-ca), never by string surgery.
 """
 
 import json
@@ -27,6 +35,9 @@ import re
 import sys
 
 RUN = re.compile(r"^\s*RUN:\s*(\{.*\})\s*$")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+VARIANT = re.compile(r" \((Dev|Local)\)$")
+PER_SERVICE = "Deploy {service}"
 FINISHED = {"success", "error"}
 TAIL = 20
 
@@ -48,40 +59,68 @@ def results_in(lines: list[str]) -> list[dict]:
 
 
 def _step_for(template: str, registry: list[dict]) -> str | None:
-    base = re.sub(r" \((Dev|Local)\)$", "", template or "")
-    for step in sorted(registry, key=lambda s: s["order"]):
-        names = {step.get("executor"), step.get("snapshot")}
-        if base in names or (step.get("executor") == "Deploy {service}" and base.startswith("Deploy ")):
+    base = VARIANT.sub("", template or "")
+    for step in registry:
+        if base in {step.get("executor"), step.get("snapshot")}:
+            return step["id"]
+        if step.get("executor") == PER_SERVICE and base.startswith("Deploy "):
             return step["id"]
     return None
 
 
-def _service_of(task: dict) -> str | None:
-    """The service a task ran for: a per-service playbook's name, else the launch's
-    `target_service` group minus its `_svc` suffix (the inventory's group convention)."""
-    if task.get("service"):
-        return task["service"]
+def select(registry: list[dict], templates: list[dict], by_group: dict) -> list[int]:
+    def wanted(t: dict) -> bool:
+        step = _step_for(t["name"], registry)
+        if step is None:
+            return False
+        per_service = next(s for s in registry if s["id"] == step).get("executor") == PER_SERVICE
+        return not per_service or _service_of({"tpl_playbook": t.get("playbook")}, by_group) is not None
+    return [t["id"] for t in templates if wanted(t)]
+
+
+def _service_of(task: dict, by_group: dict) -> str | None:
+    """The service a task ran for: the launch's target_service group, else the group a
+    per-service deploy playbook is named after. None when neither names an inventory group
+    (a phantom such as deploy-all.yml)."""
     try:
         target = json.loads(task.get("environment") or "{}").get("target_service")
     except (ValueError, AttributeError):
-        return None
-    return re.sub(r"_svc$", "", target) if isinstance(target, str) and target else None
+        target = None
+    if isinstance(target, str) and target:
+        return by_group.get(target)
+    match = re.search(r"(?:^|/)deploy-([a-z0-9-]+)\.yml$", task.get("tpl_playbook") or "")
+    return by_group.get(match.group(1).replace("-", "_") + "_svc") if match else None
 
 
-def aggregate(registry: list[dict], tasks: list[dict]) -> dict:
+def group_services(groups: dict, host_services: dict) -> dict:
+    return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
+
+
+def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
+    newest: dict[tuple, dict] = {}
+    for history in histories:
+        for task in history:
+            if task.get("status") not in FINISHED:
+                continue
+            key = (task["template_id"], _service_of(task, by_group))
+            if key not in newest or task["id"] > newest[key]["id"]:
+                newest[key] = task
+    return [dict(t, service=key[1]) for key, t in sorted(newest.items(), key=lambda kv: kv[1]["id"])]
+
+
+def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict]) -> dict:
+    names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     for task in sorted(tasks, key=lambda t: t["id"]):
-        if task.get("status") not in FINISHED:
-            continue
-        results = results_in(task.get("output", []))
+        lines = ANSI.sub("", task.get("output") or "").splitlines()
+        results = results_in(lines)
         if not results and task["status"] == "error":
-            step = _step_for(task.get("template_name", ""), registry)
-            service = _service_of(task)
-            if step and service:
+            step = _step_for(names.get(task["template_id"], ""), registry)
+            if step and task.get("service"):
                 results = [{
-                    "service": service, "step": step, "status": "fail",
+                    "service": task["service"], "step": step, "status": "fail",
                     "check_mode": False, "evidence": {},
-                    "error": "\n".join(task.get("output", [])[-TAIL:]) or "task failed with no output",
+                    "error": "\n".join(lines[-TAIL:]) or "task failed with no output",
                 }]
         for result in results:
             service = result.get("service") or task.get("service")
@@ -99,7 +138,10 @@ def aggregate(registry: list[dict], tasks: list[dict]) -> dict:
         service: sorted(step for step, r in steps.items() if r["status"] == "fail")
         for service, steps in services.items()
     }
-    return {"services": services, "failed_steps": failed}
+    status = {s: {step: r["status"] for step, r in steps.items()} for s, steps in services.items()}
+    agg = {"services": services, "failed_steps": failed, "status_by_service": status}
+    agg["report"] = report(agg, registry)
+    return agg
 
 
 def report(agg: dict, registry: list[dict]) -> dict:
@@ -107,7 +149,7 @@ def report(agg: dict, registry: list[dict]) -> dict:
     not meet, its error context, whether an undo exists and the Semaphore task, plus every
     step whose review has not passed (spec scenario "Unreviewed step is visible")."""
     steps = {s["id"]: s for s in registry}
-    unreviewed = [s["id"] for s in sorted(registry, key=lambda s: s["order"]) if not s.get("reviewed")]
+    unreviewed = [s["id"] for s in registry if not s.get("reviewed")]
     out = {}
     for service, results in sorted(agg["services"].items()):
         failed = [
@@ -137,11 +179,20 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
 
 def main() -> int:
     data = json.load(sys.stdin)
-    agg = aggregate(data["registry"], data["tasks"])
-    agg["report"] = report(agg, data["registry"])
-    if data.get("now_ns"):
-        agg["loki_streams"] = loki_streams(agg, int(data["now_ns"]))
-    json.dump(agg, sys.stdout, sort_keys=True)
+    mode = data["mode"]
+    by_group = group_services(data.get("groups", {}), data.get("host_services", {}))
+    if mode == "select":
+        out = {"template_ids": select(data["registry"], data["templates"], by_group)}
+    elif mode == "pick":
+        out = {"tasks": pick(data["histories"], by_group)}
+    elif mode == "aggregate":
+        tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
+        out = aggregate(data["registry"], data["templates"], tasks)
+        if data.get("now_ns"):
+            out["loki_streams"] = loki_streams(out, int(data["now_ns"]))
+    else:
+        raise SystemExit(f"unknown mode {mode!r}")
+    json.dump(out, sys.stdout, sort_keys=True)
     return 0
 
 

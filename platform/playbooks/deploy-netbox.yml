@@ -109,7 +109,7 @@
         # Local-dev: the forward_auth overlay (docker-compose.local-auth.yml) and a
         # loopback publish, so Caddy's Authentik gate is the only way in. Both unset in
         # production (inventory netbox_compose_overlays / netbox_host_ip).
-        NETBOX_COMPOSE_EXTRA: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
+        COMPOSE_OVERLAYS: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
         NETBOX_HOST_IP: "{{ netbox_host_ip | default('') }}"
         NETBOX_BUILD_SECCOMP: "{{ netbox_build_seccomp_profile | default('') }}"
       register: _deploy
@@ -139,7 +139,7 @@
         # Local-dev: the forward_auth overlay (docker-compose.local-auth.yml) and a
         # loopback publish, so Caddy's Authentik gate is the only way in. Both unset in
         # production (inventory netbox_compose_overlays / netbox_host_ip).
-        NETBOX_COMPOSE_EXTRA: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
+        COMPOSE_OVERLAYS: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
         NETBOX_HOST_IP: "{{ netbox_host_ip | default('') }}"
       register: _post_deploy
       changed_when: true

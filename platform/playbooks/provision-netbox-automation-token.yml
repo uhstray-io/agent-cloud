@@ -46,6 +46,11 @@
     _user: "{{ _profile.user }}"
 
   tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
@@ -128,18 +133,16 @@
         fail_msg: "NetBox Django shell did not return a token of a known shape — mint failed; check the run."
       no_log: true
 
-    - name: "Store the token in OpenBao (patch, preserving other fields)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
-        method: POST
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        body_format: json
-        body:
-          data: "{{ (_nb_secret.json.data.data | default({})) | combine({_profile.field: (_mint.stdout_lines | last | trim)}) }}"
-        status_code: [200, 204]
-      delegate_to: localhost
-      no_log: true
+    - name: "Store the token in OpenBao (merge-patch: siblings preserved, write verified)"
+      # The shared merge task, not a read-modify-POST: two profiles and the Diode credential
+      # task all write secret/services/netbox, and a whole-document POST drops a sibling
+      # written between our read and our write.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: services/netbox
+        _bm_data: "{{ {_profile.field: (_mint.stdout_lines | last | trim)} }}"
       when: not ansible_check_mode
 
     - name: "Provisioned"

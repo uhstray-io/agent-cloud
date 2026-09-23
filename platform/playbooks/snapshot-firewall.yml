@@ -22,9 +22,6 @@
   become: false
   tags: [verify]
   vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _engine: "{{ container_engine | default('podman') }}"
     _local: "{{ (ansible_connection | default('ssh')) == 'local' }}"
     _registry: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml).steps }}"
     _practices_path: "{{ playbook_dir }}/../services/{{ service_name }}/context/agent-practices.md"
@@ -49,18 +46,9 @@
       when: not _local
 
     - name: "Host: the service's published container ports"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - ps
-          - --filter
-          - "label=com.docker.compose.project.working_dir={{ _deploy_dir }}"
-          - --format
-          - "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Ports{{ '}}' }}"
-      register: _ports
-      changed_when: false
-      failed_when: false
-      check_mode: false
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, Ports]
 
     - name: "Assemble the snapshot"
       ansible.builtin.set_fact:
@@ -70,9 +58,9 @@
           service: "{{ service_name }}"
           host:
             applicable: "{{ not _local }}"
-            listening: "{{ (_ss.stdout_lines | default([])) if not _local else [] }}"
-            ufw: "{{ (_ufw.stdout_lines | default([])) if not _local else [] }}"
-            published: "{{ _ports.stdout_lines | default([]) }}"
+            listening: "{{ _ss.stdout_lines | default([]) }}"
+            ufw: "{{ _ufw.stdout_lines | default([]) }}"
+            published: "{{ _lsc.stdout_lines | default([]) }}"
           declared:
             ssh_cidrs: "{{ firewall_ssh_cidrs | default([]) }}"
             controller_cidr: "{{ firewall_controller_cidr | default('') }}"
@@ -98,5 +86,5 @@
         step_result_status: pass
         step_result_evidence:
           host_applicable: "{{ not _local }}"
-          published_count: "{{ _ports.stdout_lines | default([]) | length }}"
+          published_count: "{{ _lsc.stdout_lines | default([]) | length }}"
           has_practices: "{{ _snapshot.practices | length > 0 }}"

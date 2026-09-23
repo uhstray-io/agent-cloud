@@ -55,13 +55,14 @@
               cf.save()
               cf.object_types.set(types)
       print("CF_RESULT " + json.dumps(out))
+    # The script goes to the shell on stdin: no heredoc, no shell.
+    _run: "{{ _script | replace('DECLARED_JSON', (_declared | to_json | to_json)) }}"
 
   tasks:
     - name: "Compute the difference against the declaration (read-only)"
-      ansible.builtin.shell: |
-        {{ _manage }} << 'PYSCRIPT'
-        {{ _script | replace('APPLY_FLAG', 'False') | replace('DECLARED_JSON', (_declared | to_json | to_json)) }}
-        PYSCRIPT
+      ansible.builtin.command:
+        cmd: "{{ _manage }}"
+        stdin: "{{ _run | replace('APPLY_FLAG', 'False') }}"
       register: _cf_plan
       changed_when: false
       check_mode: false
@@ -70,7 +71,7 @@
       # Read the keys with brackets: `_cf.update` is the dict's own update() method in Jinja,
       # not the key (the same trap manage-secrets.yml notes for `.keys`).
       ansible.builtin.set_fact:
-        _cf: "{{ (_cf_plan.stdout_lines | select('match', '^CF_RESULT ') | last)[10:] | from_json }}"
+        _cf: "{{ _cf_plan.stdout_lines | select('match', '^CF_RESULT ') | last | regex_replace('^CF_RESULT ', '') | from_json }}"
 
     - name: "Refuse a declared name that exists with a different type"
       ansible.builtin.assert:
@@ -78,10 +79,9 @@
         fail_msg: "Retyping would orphan stored values; resolve by hand: {{ _cf['refuse'] | join('; ') }}"
 
     - name: "Apply the difference"
-      ansible.builtin.shell: |
-        {{ _manage }} << 'PYSCRIPT'
-        {{ _script | replace('APPLY_FLAG', 'True') | replace('DECLARED_JSON', (_declared | to_json | to_json)) }}
-        PYSCRIPT
+      ansible.builtin.command:
+        cmd: "{{ _manage }}"
+        stdin: "{{ _run | replace('APPLY_FLAG', 'True') }}"
       register: _cf_apply
       changed_when: true
       when:

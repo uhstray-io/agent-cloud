@@ -5,6 +5,7 @@ this proves the contract the collector depends on: the result is printed as JSON
 CUSTOM STATS by the repository ansible.cfg, and --check does not suppress it.
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -15,6 +16,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/emit-step-result.yml"
+_spec = importlib.util.spec_from_file_location(
+    "step_results", REPO / "platform/workflows/service-onboarding/lib/step_results.py"
+)
+step_results = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(step_results)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed"
@@ -48,9 +54,10 @@ def _run(play: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _result(stdout: str) -> dict:
-    lines = [line.strip() for line in stdout.splitlines() if line.strip().startswith("RUN:")]
-    assert len(lines) == 1, f"expected one CUSTOM STATS line, got {lines!r}\n{stdout}"
-    return json.loads(lines[0][len("RUN:"):])["step_result"]
+    # The collector's own parser, so this proves the emit -> collector contract end to end.
+    found = step_results.results_in(stdout.splitlines())
+    assert len(found) == 1, f"expected one step result, got {found!r}\n{stdout}"
+    return found[0]
 
 
 @pytest.mark.parametrize("check", [False, True])

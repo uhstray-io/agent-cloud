@@ -1,0 +1,17 @@
+---
+# netbox-api-headers.yml — the request headers for one stored NetBox API token.
+#
+# NetBox >= 4.5 v2 tokens are stored as the full bearer credential nbt_<key>.<token> and sent
+# as "Bearer"; a legacy v1 token (40 characters) keeps the "Token" scheme. The token's shape
+# decides, so every caller sends the scheme its token was minted for
+# (provision-netbox-automation-token.yml mints both shapes).
+#
+# Caller passes:  _nb_token   the stored token value
+# Sets:           _nb_headers {Authorization, Accept}
+
+- name: "Build the NetBox API headers for the stored token"
+  ansible.builtin.set_fact:
+    _nb_headers:
+      Authorization: "{{ ('Bearer ' if (_nb_token is match('nbt_')) else 'Token ') ~ _nb_token }}"
+      Accept: "application/json"
+  no_log: true

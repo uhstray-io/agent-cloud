@@ -79,6 +79,7 @@ supersede it with a new entry and link both.
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
+| 6.5 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1616,6 +1617,38 @@ stays censored (the pattern `provision-tududi-github-sync.yml` already used).
 provisions the thing it verifies.
 
 ---
+
+### 6.5 Took the volume separator for the container separator, and would have broken the production NetBox deploy
+
+**What happened.** Local NetBox under podman-compose 1.6.0 names its containers
+`netbox_postgres_1`, and its volume `netbox_netbox-postgres`. The shared lib had `-`
+hardcoded as a single `CONTAINER_SEP`, so the local password sync missed the volume and Hydra
+could not log in. The fix (commit fb2c121) derived that one separator from which volume
+existed: `netbox_netbox-postgres` meant `_`. Docker Compose also writes that volume name.
+`docker compose -p netbox config` renders `netbox_netbox-postgres`, while its containers use
+`-` (`pkg/api/api.go:833`, `Separator = "-"`). On the production Docker host the existing
+volume would therefore have set `_`. `wait_for_completed` would then have polled
+`netbox_hydra-migrate_1`, which does not exist, and timed out the deploy. The discovery
+restart would have silently restarted nothing. The local deploy passed, because on podman
+both names do use `_`. The altitude pass of the grounding review caught it before the branch
+was pushed.
+
+**Root cause.** Two naming rules, one for containers and one for volumes, were treated as
+one fact. The fact was then inferred from the one host where both rules happen to agree. The
+comment on the fix even stated the Docker container name correctly. What was never checked
+was how Docker names the volume that the detection keyed on.
+
+**The rule.** Do not derive an object's name from a naming convention when the tool that
+created it records its identity. Compose labels every container with its project and
+service, and both providers set the same labels, so look a container up by
+`com.docker.compose.project` / `com.docker.compose.service`. When a fix is proven on one
+runtime, name the other runtime it has to hold on, and check that one from its source or
+by running it before calling the fix done.
+
+**Enforced by.** Test: `platform/tests/test_netbox_common.bats` drives `container_of`,
+`postgres_volume_exists` and `wait_for_completed` against a stub engine that answers only
+label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
+failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
 
 ## 7. Which of these OPA can carry
 
