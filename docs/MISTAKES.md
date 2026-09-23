@@ -81,6 +81,7 @@ supersede it with a new entry and link both.
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
+| 6.6 | The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1670,6 +1671,32 @@ the entry that reuses the name. Never rely on a deleted file to delete anything.
 deploy's post-apply VERIFY asserts the live OAuth2 provider's `redirect_uris` carry the declared
 `verify_redirect` value, which the hijacked proxy provider would have failed — but that check is
 prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIFY in local mode too.
+
+### 6.6 A generated artifact rewritten under the wrong identity, one `git add -A` from being committed
+
+**What happened.** On 2026-09-23 a Codex review of the main checkout found
+`.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
+9,250 nodes, written 11:35 local) and `.codebase-memory/graph.db.zst` deleted. `list_projects`
+showed two graph projects on the same root: the documented `agent-cloud` (7,697 nodes, matching
+the committed artifact) and a path-named one (9,474 nodes). codebase-memory-mcp 0.9.0 runs with
+`auto_index = true` and `auto_watch = true` and names projects after the checkout path. A second
+checkout (`agent-cloud-check-mode-standard`) carried the same path-derived ID. Nothing refused
+committing either state.
+
+**Root cause.** The graph artifact is generated, committed and named by convention (AGENTS.md
+"Memory & specs": project `agent-cloud`), but the tool's automatic path derives a different name,
+and nothing checked the committed pair. A commit of that working tree would have shipped metadata
+for a graph that no longer existed, under an ID no documented query uses.
+
+**The rule.** A committed generated artifact carries a check on what is committed, not only a
+convention for how to produce it. The graph metadata and the graph travel together, under the
+documented project ID, with a recorded size that matches the staged graph. To regenerate:
+`index_repository` with `name="agent-cloud"` and `persistence=true`.
+
+**Enforced by.** Pre-commit gate `graph-artifact-consistent` (`scripts/check-graph-artifact.sh`,
+reading the index) and `platform/tests/test_graph_artifact_guard.bats`, which replays the
+2026-09-23 state and was mutated red. The auto-index behaviour itself is not changed; it is
+machine configuration, not repository code.
 
 ## 7. Which of these OPA can carry
 

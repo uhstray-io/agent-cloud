@@ -175,6 +175,19 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # The committed codebase-memory graph must stay loadable under its documented ID.
+  # Auto-index names projects after the checkout path and once shipped metadata
+  # for a deleted graph (docs/MISTAKES.md 6.6). Reads the index, not the tree.
+  - repo: local
+    hooks:
+      - id: graph-artifact-consistent
+        name: codebase-memory graph artifact is consistent
+        language: system
+        entry: sh scripts/check-graph-artifact.sh
+        files: ^\.codebase-memory/
+        pass_filenames: false
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
