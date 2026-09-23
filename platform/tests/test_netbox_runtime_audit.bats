@@ -26,6 +26,36 @@ load assert_helpers
   grep -qF "_permissions.stdout_lines | default([]) | last | default('')" "$bootstrap"
 }
 
+@test "NetBox token bootstrap stores a new v2 bearer value, never a reusable public key" {
+  python3 - "$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml" "$BATS_TEST_DIRNAME/../semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+permissions, = (task for task in tasks if task["name"] == "Ensure NetBox automation user and scoped permissions")
+assert '"is_staff"' not in permissions["ansible.builtin.shell"]
+refuse, = (task for task in tasks if task["name"] == "Refuse an unrecoverable dedicated token")
+assert "replace_unrecoverable_token" in str(refuse["ansible.builtin.assert"]["that"])
+revoke, = (task for task in tasks if task["name"] == "Revoke exactly one unrecoverable dedicated token when explicitly requested")
+assert "matches.count() != 1" in revoke["ansible.builtin.shell"]
+assert "matches.delete()" in revoke["ansible.builtin.shell"]
+assert "_orphaned_token" in revoke["when"]
+mint, = (task for task in tasks if task["name"] == "Mint the dedicated scoped token via the NetBox Django shell")
+script = mint["ansible.builtin.shell"]
+assert "Token.objects.create(" in script and "version=2" in script
+assert "get_auth_header_prefix()" in script and "+ issued.token" in script
+assert "Token.objects.filter(user=user).first()" not in script
+assert mint["no_log"] is True
+check, = (task for task in tasks if task["name"] == "Sanity-check the minted NetBox v2 bearer token")
+assert "^nbt_[A-Za-z0-9]{12}" in str(check["ansible.builtin.assert"]["that"])
+assert check["no_log"] is True
+templates = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))["templates"]
+bootstrap, = (item for item in templates if item["name"] == "Provision NetBox Automation Token")
+survey, = (item for item in bootstrap["survey_vars"] if item["name"] == "replace_unrecoverable_token")
+assert survey["default_value"] == "false"
+PY
+}
+
 @test "NetBox recovery publishes only a dev-bound template with preflight default" {
   python3 - "$BATS_TEST_DIRNAME/../semaphore/templates.yml" "$BATS_TEST_DIRNAME/../playbooks/recover-netbox-runtime.yml" <<'PY'
 import json

@@ -163,6 +163,13 @@ templates:
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
     dev_variant: true
+    survey_vars:
+      - name: replace_unrecoverable_token
+        title: Replace unrecoverable token
+        description: "Default false. Only when NetBox has the dedicated token but OpenBao lost its value, revoke exactly one match and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
