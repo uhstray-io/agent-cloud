@@ -133,6 +133,15 @@
       delay: 5
       until: _prom.rc == 0
 
+    - name: "Alloy healthy (collector config loaded)"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{% raw %}{{.State.Health.Status}}{% endraw %}", o11y-alloy]
+      register: _alloy_health
+      changed_when: false
+      retries: 8
+      delay: 5
+      until: _alloy_health.rc == 0 and _alloy_health.stdout == 'healthy'
+
     - name: "Reload Prometheus after the DGX scrape file changes"
       ansible.builtin.uri:
         url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"

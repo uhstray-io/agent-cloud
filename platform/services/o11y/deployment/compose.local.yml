@@ -26,8 +26,6 @@ services:
     mem_limit: 192m
     security_opt:
       - label=disable
-    environment:
-      O11Y_METRICS_NETWORK: local-dev
     networks:
       - o11y
       - local-dev

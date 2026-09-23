@@ -47,13 +47,8 @@ loki.write "default" {
 }
 
 // Reuse Alloy's socket discovery for opted-in metrics. Prometheus has no socket.
-discovery.docker "metrics" {
-  host                = "unix:///var/run/docker.sock"
-  match_first_network = false
-}
-
 discovery.relabel "metrics" {
-  targets = discovery.docker.metrics.targets
+  targets = discovery.docker.containers.targets
 
   rule {
     source_labels = ["__meta_docker_container_label_prometheus_io_scrape"]
@@ -74,15 +69,9 @@ discovery.relabel "metrics" {
   }
 
   rule {
-    source_labels = ["__meta_docker_network_name"]
-    action        = "keep"
-    regex         = sys.env("O11Y_METRICS_NETWORK")
-  }
-
-  rule {
-    source_labels = ["__meta_docker_container_label_prometheus_io_port", "__meta_docker_network_ip"]
-    regex         = "([0-9]+);(.+)"
-    replacement   = "$2:$1"
+    source_labels = ["__meta_docker_container_name", "__meta_docker_container_label_prometheus_io_port"]
+    regex         = "/?(.+);([0-9]+)"
+    replacement   = "$1:$2"
     target_label  = "__address__"
   }
 

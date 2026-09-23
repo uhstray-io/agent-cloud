@@ -25,7 +25,7 @@
 
 > **Collection design amendment, 2026-09-23:** Preserve the two-label opt-in
 > contract below, but use the existing Alloy Podman discovery for local metrics.
-> Alloy filters to the service network, scrapes the declared port, and forwards
+> Alloy joins the service network, scrapes the declared port, and forwards
 > samples to Prometheus's remote-write receiver on the private o11y network.
 > Prometheus does not mount the engine socket. The historical `docker_sd_configs`
 > snippets below record the original design and are superseded for local
