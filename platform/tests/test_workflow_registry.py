@@ -151,3 +151,19 @@ def test_opa_step_map_matches_the_registry():
             entry["proposal_from"] = feeders[s["id"]]
         want[s["id"]] = entry
     assert json.loads(OPA_DATA.read_text())["catalog"]["workflow_steps"] == want
+
+
+# The read-only step checks a local dry run exercises. Each needs a (Local) twin, because only
+# templates-local.yml entries are bound to the working tree; the shared template runs GitHub's
+# copy (PR 203 Codex review; MISTAKES 10.9).
+LOCAL_DRY_RUN_EXECUTORS = {"Check Secrets", "Verify Service Health"}
+
+
+def test_local_dry_run_executors_have_a_working_tree_twin():
+    local = yaml.safe_load((REPO / "platform/semaphore/templates-local.yml").read_text())["templates"]
+    shared = {t["name"]: t["playbook"] for t in yaml.safe_load(CATALOG.read_text())["templates"]}
+    twins = {t["name"].removesuffix(" (Local)"): t["playbook"] for t in local}
+    executors = {s.get("executor") for s in STEPS}
+    assert executors >= LOCAL_DRY_RUN_EXECUTORS
+    for name in LOCAL_DRY_RUN_EXECUTORS:
+        assert twins.get(name) == shared[name], name

@@ -30,22 +30,32 @@ pinned_image() {
   printf '%s\n' "${SEMAPHORE_IMAGE:-$default}"
 }
 
-# assert_no_downgrade — refuse to start a pinned Semaphore older than the one running.
+# assert_no_downgrade — refuse to start a pinned Semaphore older than the existing controller.
 # Semaphore migrates its database forward at start and has no downward migration, so an
 # older binary over a newer schema is a broken controller. The pin in compose.yml was chosen
 # without reading production's version (PR 203 review; change task 0.3), so the deploy reads
-# it: `semaphore version` in the running container prints e.g. v2.18.12^0-8a4dcf0-1780941924.
-# A pin that is not a version (latest) or no running container has nothing to compare.
+# it: `semaphore version` in the running container prints e.g. v2.18.12^0-8a4dcf0-1780941924;
+# a stopped container still names the image it was created from. An existing controller whose
+# version neither answers is refused, not waved through (PR 203 Codex review). A pin that is
+# not a version (latest) or no controller container has nothing to compare.
+# ponytail: reads the container, not the database; a data volume whose container was removed
+# is not compared. Read the schema's migration table if that case needs covering.
 assert_no_downgrade() {
-  local running pinned
+  local running="" pinned image=""
+  pinned=$(pinned_image | sed -nE 's/.*:v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+  [ -n "$pinned" ] || return 0
+  $CONTAINER_ENGINE container inspect workflow-semaphore >/dev/null 2>&1 || return 0
   running=$($CONTAINER_ENGINE exec workflow-semaphore semaphore version 2>/dev/null \
     | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+' | tr -d v) || running=""
-  pinned=$(pinned_image | sed -nE 's/.*:v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
-  [ -n "$running" ] && [ -n "$pinned" ] || return 0
+  if [ -z "$running" ]; then
+    image=$($CONTAINER_ENGINE container inspect --format '{{.Config.Image}}' workflow-semaphore 2>/dev/null) || image=""
+    running=$(printf '%s\n' "$image" | sed -nE 's/.*:v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+  fi
+  [ -n "$running" ] || error "Refusing to deploy Semaphore: workflow-semaphore exists but its version cannot be read (not answering, image '${image:-unknown}' has no version tag). Start it so 'semaphore version' answers, or remove it deliberately."
   if [ "$(printf '%s\n%s\n' "$pinned" "$running" | sort -V | head -n 1)" != "$running" ]; then
     error "Refusing to downgrade Semaphore: v${running} is running, the pin is v${pinned}. Raise the pin in compose.yml (or SEMAPHORE_IMAGE) to v${running} or later."
   fi
-  info "  Semaphore version check: running v${running}, pin v${pinned}."
+  info "  Semaphore version check: existing v${running}, pin v${pinned}."
 }
 
 step_start_services() {

@@ -167,3 +167,14 @@ templates:
 
   - name: "Validate All Services (Local)"
     playbook: platform/playbooks/validate-all.yml
+
+  # Workflow step service-validate's executor (PR 203 Codex review: the shared template
+  # alone runs GitHub's playbook on local-dev).
+  - name: "Verify Service Health (Local)"
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
