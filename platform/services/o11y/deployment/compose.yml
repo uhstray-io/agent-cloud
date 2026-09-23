@@ -20,7 +20,9 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}
+      - --storage.tsdb.retention.size=${O11Y_PROM_RETENTION_SIZE:-0B}
       - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/scrape.d:/etc/prometheus/scrape.d:ro
@@ -63,6 +65,8 @@ services:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
       - /etc/alloy/config.alloy
+    environment:
+      O11Y_SCRAPE_SAMPLE_LIMIT: ${O11Y_SCRAPE_SAMPLE_LIMIT:-2000}
     volumes:
       - ./config/config.alloy:/etc/alloy/config.alloy:ro
     networks: [o11y]

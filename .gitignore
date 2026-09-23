@@ -13,6 +13,8 @@ data/
 
 # Build artifacts
 proxmox/cloud-init/autoinstall-seed.iso
+build/
+*.egg-info/
 
 # OS files
 .DS_Store

@@ -103,7 +103,7 @@
         print("changed" if changed else "unchanged")
         PYSCRIPT
       register: _permissions
-      changed_when: _permissions.stdout_lines | last | trim == 'changed'
+      changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
       when: not ansible_check_mode
 
     - name: "Already provisioned — skip (idempotent)"

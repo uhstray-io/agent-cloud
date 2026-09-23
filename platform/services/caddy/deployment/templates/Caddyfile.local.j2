@@ -31,6 +31,12 @@
 {% endif %}	metrics
 }
 
+# Scrape listener on the private local-dev container network. The admin API
+# stays loopback-only; this port is never published to the host.
+http://:2021 {
+	metrics /metrics
+}
+
 {% for r in caddy_routes | default([]) %}
 {# A route may opt into a second, internal-only HTTPS listener (e.g. :8443) so
    in-network OIDC clients reach the IdP at the SAME host:port the browser uses

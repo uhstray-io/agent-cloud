@@ -1,0 +1,130 @@
+---
+# Seed an approved Discord alert destination into OpenBao. Supply the webhook
+# as a Semaphore environment secret named O11Y_ALERT_DISCORD_WEBHOOK_URL; task
+# surveys and launch extra vars are persisted by Semaphore and are not safe for
+# this value. The o11y deploy reads the key only when alerts are enabled.
+- name: Verify the candidate checkout before seeding
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no o11y alert secret was seeded."
+      when: expected_repository_sha is defined
+
+- name: Seed the o11y alert webhook
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _webhook: "{{ lookup('env', 'O11Y_ALERT_DISCORD_WEBHOOK_URL') }}"
+
+  tasks:
+    - name: Require OpenBao and the approved environment secret
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _webhook | length > 0
+        fail_msg: "Set OpenBao access and the O11Y_ALERT_DISCORD_WEBHOOK_URL environment secret before seeding."
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Require a Discord HTTPS webhook
+      ansible.builtin.assert:
+        that:
+          - _webhook | urlsplit('scheme') == 'https'
+          - _webhook | urlsplit('hostname') in ['discord.com', 'discordapp.com']
+          - _webhook | urlsplit('path') is match('^/api(/v[0-9]+)?/webhooks/[0-9]+/[^/]+$')
+        fail_msg: "The environment secret must contain a Discord HTTPS webhook URL."
+      no_log: true
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the existing o11y secret
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _existing
+      check_mode: false
+      no_log: true
+
+    - name: Require an initialized o11y secret
+      ansible.builtin.assert:
+        that: _existing.status == 200
+        fail_msg: "Deploy o11y once to initialize its OpenBao record before seeding the alert destination."
+
+    - name: Check whether the approved webhook differs
+      ansible.builtin.set_fact:
+        _needs_write: "{{ _existing.json.data.data.alert_discord_webhook_url | default('') != _webhook }}"
+      no_log: true
+
+    - name: Add or update only the alert webhook key
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        method: PATCH
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+          Content-Type: application/merge-patch+json
+        body_format: json
+        body:
+          data:
+            alert_discord_webhook_url: "{{ _webhook }}"
+        status_code: [200]
+      when:
+        - not ansible_check_mode
+        - _needs_write | bool
+      no_log: true
+
+    - name: Read back the stored alert destination
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _verified
+      check_mode: false
+      no_log: true
+
+    - name: Require the stored value to match the approved destination
+      ansible.builtin.assert:
+        that: _verified.json.data.data.alert_discord_webhook_url == _webhook
+      # A dry run wrote nothing, so the store can still hold the old value.
+      when: not ansible_check_mode
+      no_log: true
+
+    - name: Report the seed result without the destination
+      ansible.builtin.debug:
+        msg: "o11y alert destination {{ 'updated' if _needs_write | bool else 'already current' }} in OpenBao."
