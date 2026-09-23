@@ -230,9 +230,24 @@
     # never fail themselves; the asserts after them carry the diagnosis (status, model names).
     # A dry run skips them: it renders no new key and restarts nothing, so it has no gateway
     # state of its own to prove.
-    - name: "Keyed probes: pick the verifying identity"
+    # The identity may be restricted to some models (agw_client_policies.<name>.allowed_models):
+    # it is checked against, and asks for, only models it may use.
+    - name: "Keyed probes: pick the verifying identity and its models"
       ansible.builtin.set_fact:
         _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
+        _verify_models: >-
+          {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
+              | default({})).allowed_models
+             | default(agw_models | map(attribute='name') | list)
+             | intersect(agw_models | map(attribute='name') | list) }}
+
+    - name: "Keyed probes: the identity may use at least one declared model"
+      ansible.builtin.assert:
+        that: _verify_models | length > 0
+        fail_msg: "{{ _verify_client }} is allowed none of the declared agw_models; set agw_verify_client to one that is."
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
 
     - name: "An enrolled identity lists the served models"
       ansible.builtin.command:
@@ -243,7 +258,7 @@
           - agentgateway-db
           - sh
           - -c
-          - 'read -r k; wget -q -O - -T 10 --header "authorization: Bearer $k" http://agentgateway:4000/v1/models'
+          - 'read -r k; wget -q -S -O - -T 10 --header "authorization: Bearer $k" http://agentgateway:4000/v1/models'
         stdin: "{{ _resolved['client_' ~ _verify_client] }}"
       register: _keyed_models
       changed_when: false
@@ -253,17 +268,31 @@
         - not ansible_check_mode
         - _verify_client | length > 0
 
-    - name: "Require every declared model in the keyed listing"
-      ansible.builtin.assert:
-        that:
-          - _keyed_models.rc == 0
-          - (agw_models | map(attribute='name') | list) is subset((_keyed_models.stdout | from_json).data | map(attribute='id') | list)
-        fail_msg: >-
-          Keyed /v1/models as {{ _verify_client }} failed: rc={{ _keyed_models.rc }}
-          {{ _keyed_models.stderr | default('') | trim }}
+    # A 429 is the gateway's own policy refusing the probe, not a routing failure: the request
+    # bucket answers 429 when spent (measured on local-dev, 2026-09-23; the budget refusal's
+    # status was not measured). A redeploy must not fail on it, and the report says the
+    # round-trip was not proven on this run.
+    - name: "Keyed probes: note a policy refusal"
+      ansible.builtin.set_fact:
+        _verify_refused: "{{ 'HTTP/1.1 429' in (_keyed_models.stderr | default('')) }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
+
+    - name: "Require every model this identity may use in the keyed listing"
+      ansible.builtin.assert:
+        that:
+          - _keyed_models.rc == 0
+          - _verify_models is subset((_keyed_models.stdout | from_json).data | map(attribute='id') | list)
+        fail_msg: >-
+          Keyed /v1/models as {{ _verify_client }}: expected {{ _verify_models | join(', ') }};
+          {% if _keyed_models.rc == 0 %}listed
+          {{ (_keyed_models.stdout | from_json).data | map(attribute='id') | join(', ') }}{% else %}rc={{ _keyed_models.rc }}
+          {{ (_keyed_models.stderr | default('')).splitlines() | first | default('') }}{% endif %}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
 
     - name: "An enrolled identity completes one chat request through the upstream"
       ansible.builtin.command:
@@ -275,11 +304,11 @@
           - sh
           - -c
           - >-
-            read -r k; wget -q -O - -T 120
+            read -r k; wget -q -S -O - -T 120
             --header "authorization: Bearer $k" --header "content-type: application/json"
             --post-data "$0" http://agentgateway:4000/v1/chat/completions
           - >-
-            {{ {'model': agw_models[0].name, 'max_tokens': 64,
+            {{ {'model': _verify_models[0], 'max_tokens': 64,
                 'messages': [{'role': 'user', 'content': 'Reply with one word: pong'}]} | to_json }}
         stdin: "{{ _resolved['client_' ~ _verify_client] }}"
       register: _keyed_chat
@@ -289,6 +318,15 @@
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
+        - not (_verify_refused | bool)
+
+    - name: "Keyed probes: note a policy refusal of the completion"
+      ansible.builtin.set_fact:
+        _verify_refused: "{{ 'HTTP/1.1 429' in (_keyed_chat.stderr | default('')) }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - _keyed_chat is not skipped
 
     - name: "Require a completion the upstream produced"
       # The gateway answers a completion only by reaching agw_upstream_base_url; `model` is the
@@ -300,11 +338,12 @@
           - (_keyed_chat.stdout | from_json).choices | length > 0
           - ((_keyed_chat.stdout | from_json).usage.completion_tokens | default(0) | int) > 0
         fail_msg: >-
-          Keyed chat completion as {{ _verify_client }} for {{ agw_models[0].name }} failed:
+          Keyed chat completion as {{ _verify_client }} for {{ _verify_models[0] }} failed:
           rc={{ _keyed_chat.rc }} {{ _keyed_chat.stderr | default('') | trim }}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
+        - not (_verify_refused | bool)
 
     - name: "Report"
       ansible.builtin.debug:
@@ -312,9 +351,13 @@
           agentgateway ready — /healthz/ready answers on the compose network; unauthenticated
           /v1/models is 401 at the gateway.
           {% if ansible_check_mode %}Check mode: the keyed round-trip runs only in a real run.
+          {% elif _verify_client | length > 0 and (_verify_refused | bool) %}WARNING: the keyed
+          round-trip was NOT proven on this run: the gateway's own rate or budget policy refused
+          {{ _verify_client }} with HTTP 429. Rerun the verify after the window, or set
+          agw_verify_client to an identity with budget left.
           {% elif _verify_client | length > 0 %}As {{ _verify_client }}: /v1/models lists
-          {{ agw_models | map(attribute='name') | join(', ') }}; one chat completion for
-          {{ agw_models[0].name }} came back from upstream model
+          {{ _verify_models | join(', ') }}; one chat completion for
+          {{ _verify_models[0] }} came back from upstream model
           {{ (_keyed_chat.stdout | from_json).model }} at {{ agw_upstream_base_url }}
           ({{ (_keyed_chat.stdout | from_json).usage.completion_tokens }} completion tokens).
           {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not

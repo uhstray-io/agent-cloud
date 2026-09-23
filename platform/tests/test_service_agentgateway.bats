@@ -222,6 +222,12 @@ setup() {
   [ "$(grep -F "_resolved['client_" "$PLAYBOOK" | grep -cE '^\s+stdin: ')" -eq 2 ]
   refute_grep -qF 'Bearer {{' "$PLAYBOOK"
   assert_grep -qF 'read -r k;' "$PLAYBOOK"
+  # The identity is checked against, and asks for, only the models it may use; a 429 from the
+  # gateway's own policy is reported as unproven, not failed as a routing fault.
+  assert_grep -qF '.allowed_models' "$PLAYBOOK"
+  assert_grep -qF "'model': _verify_models[0]" "$PLAYBOOK"
+  assert_grep -qF "'HTTP/1.1 429' in (_keyed_models.stderr" "$PLAYBOOK"
+  assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
   assert_grep -q 'http://agentgateway:19001/healthz/ready' "$PLAYBOOK"
   assert_grep -qF "'401' not in _noauth.stderr" "$PLAYBOOK"
