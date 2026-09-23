@@ -5,7 +5,6 @@ import json
 import subprocess
 import sys
 
-
 SERVICES = ("postgres", "redis", "redis-cache", "netbox")
 COMPOSE = ("docker", "compose", "--project-name", "netbox", "-f", "docker-compose.yml")
 
