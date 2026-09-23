@@ -82,6 +82,9 @@ platform/inventory/local-dev.yml
 # A generated dependency tree — never committed, and excluded from yamllint
 # (see .yamllint.yml) so a third-party collection bump cannot fail our CI.
 .ansible/
+# Semaphore's Galaxy dependency installer writes these checksums beside each
+# requirements.yml, including inside the controller checkout before playbooks run.
+requirements.yml_*.md5
 
 # Session continuation file — local working state, never committed
 .claude/CONTINUE.md
