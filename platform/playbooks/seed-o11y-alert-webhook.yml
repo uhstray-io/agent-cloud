@@ -1,14 +1,17 @@
 ---
-# Seed an approved Discord alert destination into OpenBao. Supply the webhook
-# as a Semaphore environment secret named O11Y_ALERT_DISCORD_WEBHOOK_URL; task
-# surveys and launch extra vars are persisted by Semaphore and are not safe for
-# this value. The o11y deploy reads the key only when alerts are enabled.
-- name: Verify the candidate checkout before seeding
+# Reconcile a named Discord webhook in the declared text channel, then store
+# its URL in OpenBao. The bot credential stays at secret/services/discord.
+- name: Verify the candidate checkout
   hosts: localhost
   connection: local
   gather_facts: false
   tasks:
-    - name: Read the controller checkout revision when required
+    - name: Require exactly one declared o11y receiver
+      ansible.builtin.assert:
+        that: groups.get('o11y_svc', []) | length == 1
+        fail_msg: "Declare exactly one o11y_svc receiver before provisioning alerts."
+
+    - name: Read the controller revision when required
       ansible.builtin.command:
         argv: [git, rev-parse, HEAD]
         chdir: "{{ playbook_dir | dirname | dirname }}"
@@ -21,40 +24,33 @@
         that:
           - expected_repository_sha is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
-        fail_msg: "Semaphore checked out a different revision; no o11y alert secret was seeded."
+        fail_msg: "Semaphore checked out a different revision; no webhook was provisioned."
       when: expected_repository_sha is defined
 
-- name: Seed the o11y alert webhook
-  hosts: localhost
+- name: Provision the o11y Discord alert destination
+  hosts: o11y_svc
   connection: local
   gather_facts: false
   vars:
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _webhook: "{{ lookup('env', 'O11Y_ALERT_DISCORD_WEBHOOK_URL') }}"
-
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+    _guild_id: "{{ o11y_alert_discord_guild_id | default('') | string }}"
+    _webhook_name: Agent Cloud Observability
   tasks:
-    - name: Require OpenBao and the approved environment secret
+    - name: Require the private Discord destination and OpenBao access
       ansible.builtin.assert:
         that:
           - _bao_url | length > 0
-          - _webhook | length > 0
-        fail_msg: "Set OpenBao access and the O11Y_ALERT_DISCORD_WEBHOOK_URL environment secret before seeding."
+          - _channel_id is match('^[0-9]{17,21}$')
+          - _guild_id is match('^[0-9]{17,21}$')
+        fail_msg: "Declare Discord guild and text-channel IDs in private o11y inventory."
 
     - name: Refuse a cleartext OpenBao endpoint
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
-
-    - name: Require a Discord HTTPS webhook
-      ansible.builtin.assert:
-        that:
-          - _webhook | urlsplit('scheme') == 'https'
-          - _webhook | urlsplit('hostname') in ['discord.com', 'discordapp.com']
-          - _webhook | urlsplit('path') is match('^/api(/v[0-9]+)?/webhooks/[0-9]+/[^/]+$')
-        fail_msg: "The environment secret must contain a Discord HTTPS webhook URL."
-      no_log: true
 
     - name: Authenticate to OpenBao
       ansible.builtin.uri:
@@ -66,6 +62,24 @@
           secret_id: "{{ _bao_secret_id }}"
         status_code: [200]
       register: _bao_auth
+      no_log: true
+
+    - name: Read the bot credential from OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discord"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _discord_secret
+      no_log: true
+
+    - name: Require a seeded bot credential
+      ansible.builtin.assert:
+        that:
+          - _discord_secret.status == 200
+          - _discord_secret.json.data.data.bot_token | default('') | length > 0
+          - not (_discord_secret.json.data.data.bot_token | default('')).startswith('REPLACE_WITH_')
+        fail_msg: "Seed secret/services/discord:bot_token through Semaphore first."
       no_log: true
 
     - name: Read the existing o11y secret
@@ -80,14 +94,98 @@
     - name: Require an initialized o11y secret
       ansible.builtin.assert:
         that: _existing.status == 200
-        fail_msg: "Deploy o11y once to initialize its OpenBao record before seeding the alert destination."
+        fail_msg: "Deploy o11y once before provisioning its alert destination."
 
-    - name: Check whether the approved webhook differs
-      ansible.builtin.set_fact:
-        _needs_write: "{{ _existing.json.data.data.alert_discord_webhook_url | default('') != _webhook }}"
+    - name: Read the declared Discord channel
+      ansible.builtin.uri:
+        url: "https://discord.com/api/v10/channels/{{ _channel_id }}"
+        headers:
+          Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+        status_code: [200]
+      register: _channel
       no_log: true
 
-    - name: Add or update only the alert webhook key
+    - name: Require a text channel in the declared guild
+      ansible.builtin.assert:
+        that:
+          - _channel.json.id == _channel_id
+          - _channel.json.guild_id == _guild_id
+          - _channel.json.type == 0
+        fail_msg: "The alert destination must be a text channel in the declared Discord guild."
+
+    - name: Read the bot identity
+      ansible.builtin.uri:
+        url: https://discord.com/api/v10/users/@me
+        headers:
+          Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+        status_code: [200]
+      register: _bot
+      no_log: true
+
+    - name: List the channel webhooks
+      ansible.builtin.uri:
+        url: "https://discord.com/api/v10/channels/{{ _channel_id }}/webhooks"
+        headers:
+          Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+        status_code: [200]
+      register: _listed
+      no_log: true
+
+    - name: Find the webhook owned by this workflow
+      ansible.builtin.set_fact:
+        _matching: "{{ _listed.json | selectattr('name', 'equalto', _webhook_name) | list }}"
+      no_log: true
+
+    - name: Refuse duplicate or foreign webhook names
+      ansible.builtin.assert:
+        that:
+          - _matching | length <= 1
+          - _matching | length == 0 or _matching[0].type == 1
+          - _matching | length == 0 or _matching[0].channel_id == _channel_id
+          - _matching | length == 0 or _matching[0].user.id | default('') == _bot.json.id
+        fail_msg: "The named webhook is duplicated or owned by another account."
+      no_log: true
+
+    - name: Create the webhook only when absent
+      ansible.builtin.uri:
+        url: "https://discord.com/api/v10/channels/{{ _channel_id }}/webhooks"
+        method: POST
+        headers:
+          Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+        body_format: json
+        body:
+          name: "{{ _webhook_name }}"
+        status_code: [200, 201]
+      register: _created
+      when: _matching | length == 0
+      no_log: true
+
+    - name: Select the existing or new webhook
+      ansible.builtin.set_fact:
+        _webhook: "{{ _matching[0] if _matching | length == 1 else _created.json }}"
+      no_log: true
+
+    - name: Require a usable incoming webhook token
+      ansible.builtin.assert:
+        that:
+          - _webhook.type == 1
+          - _webhook.channel_id == _channel_id
+          - _webhook.id is match('^[0-9]{17,21}$')
+          - _webhook.token | default('') | length > 0
+        fail_msg: "Discord did not return a usable incoming webhook."
+      no_log: true
+
+    - name: Build the channel-specific webhook URL in memory
+      ansible.builtin.set_fact:
+        _webhook_url: "https://discord.com/api/webhooks/{{ _webhook.id }}/{{ _webhook.token }}"
+      no_log: true
+
+    - name: Check whether the stored destination differs
+      ansible.builtin.set_fact:
+        _needs_write: "{{ _existing.json.data.data.alert_discord_webhook_url | default('') != _webhook_url }}"
+      no_log: true
+
+    - name: Store only the alert destination key
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/services/o11y"
         method: PATCH
@@ -97,7 +195,7 @@
         body_format: json
         body:
           data:
-            alert_discord_webhook_url: "{{ _webhook }}"
+            alert_discord_webhook_url: "{{ _webhook_url }}"
         status_code: [200]
       when: _needs_write | bool
       no_log: true
@@ -113,9 +211,9 @@
 
     - name: Require the stored value to match the approved destination
       ansible.builtin.assert:
-        that: _verified.json.data.data.alert_discord_webhook_url == _webhook
+        that: _verified.json.data.data.alert_discord_webhook_url == _webhook_url
       no_log: true
 
-    - name: Report the seed result without the destination
+    - name: Report the result without credentials
       ansible.builtin.debug:
-        msg: "o11y alert destination {{ 'updated' if _needs_write | bool else 'already current' }} in OpenBao."
+        msg: "o11y Discord alert destination {{ 'updated' if _needs_write | bool else 'already current' }} in OpenBao."

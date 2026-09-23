@@ -760,6 +760,7 @@ templates:
 
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
+    dev_variant: true
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
     # honcho reads secret/services/nemoclaw:gemini_api_key).
@@ -877,9 +878,10 @@ templates:
   - name: Seed o11y Alert Webhook
     playbook: platform/playbooks/seed-o11y-alert-webhook.yml
     dev_variant: true
-    # Supply O11Y_ALERT_DISCORD_WEBHOOK_URL as an encrypted Semaphore environment
-    # secret. Never use a survey field or launch extra var: Semaphore persists
-    # both outside OpenBao. Run this before enabling o11y alerts in inventory.
+    # Reconciles a named webhook in the text channel declared by private
+    # o11y_alert_discord_guild_id/o11y_alert_discord_channel_id inventory vars.
+    # Reads the bot token from OpenBao and stores the webhook URL under o11y.
+    # Run before enabling o11y alerts in inventory.
 
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
