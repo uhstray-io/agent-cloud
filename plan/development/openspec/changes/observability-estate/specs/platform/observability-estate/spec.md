@@ -46,3 +46,21 @@ The platform SHALL enable trace ingestion only after the metrics, alert delivery
 #### Scenario: Trace rollout gate
 - **WHEN** the operator requests trace deployment before those gates are recorded as passed
 - **THEN** the deployment refuses to enable the trace receiver and reports the missing gate
+
+### Requirement: Local validation uses the proposed revision
+The platform SHALL validate the exact proposed revision through an isolated local Semaphore repository/template binding without repointing the shared worktree binding. Grafana SHALL complete an Authentik sign-in through the chain-verified TLS route before local acceptance.
+
+#### Scenario: Proposed revision is validated
+- **WHEN** the local pilot deployment finishes
+- **THEN** its Semaphore record identifies the proposed revision and live queries prove Grafana login, metrics, logs, and alert delivery
+
+### Requirement: Production receiver proves external receipt
+The production o11y deployment SHALL use Semaphore, OpenBao, and private site inventory for the receiver, retention, SSO, and approved network paths. A declared external collector SHALL not count as integrated until a named signal is queryable from the production receiver.
+
+#### Scenario: DGX Spark and agentgateway telemetry arrives
+- **WHEN** their approved collectors send telemetry to the production receiver
+- **THEN** named DGX node and vLLM targets are UP, DGX logs are queryable in Loki, and agentgateway's agreed signal is queryable with stable service identity
+
+#### Scenario: Optional GPU exporter is absent
+- **WHEN** a DGX GPU exporter has not passed host and reachability validation
+- **THEN** the GPU scrape job remains disabled and its absence is reported without claiming GPU coverage

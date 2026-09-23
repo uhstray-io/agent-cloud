@@ -21,6 +21,14 @@ discovery.relabel "containers" {
     regex         = "/?(.*)"
     target_label  = "container"
   }
+
+  // Keep the historical container label for existing dashboards while adding
+  // the canonical service identity used by metrics and future traces.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
 }
 
 loki.source.docker "default" {

@@ -11,11 +11,13 @@
 > committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
 > `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`
 > ships local container logs but has no OTLP receiver or OpenBao-audit tail.
-> This verifies repository configuration, not running health. A read-only
-> `podman ps --filter name=o11y` check could not connect to the local Podman
-> socket in this task, so current local deployment is unverified. Production
-> deployment is also unverified here; the separate
-> `inference-telemetry-production` change owns its production rollout.
+> A later read-only check on 2026-09-22 found all four local containers healthy.
+> Grafana `/api/health`, Prometheus `/-/ready`, and Loki `/ready` each returned
+> HTTP 200; the chain-verified Caddy URL returned Grafana health and its OIDC
+> login route redirected to Authentik with PKCE. A completed SSO login, feature
+> branch deployment, target/log queries, and production receipt remain unverified.
+> The committed production inference telemetry groundwork is merged into this
+> branch; its scrape declarations do not prove a reachable receiver.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

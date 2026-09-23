@@ -1,12 +1,12 @@
 ## Context
 
-See `proposal.md`. At the branch base, the local o11y compose has Grafana, Prometheus, Loki, and Alloy. Prometheus scrapes itself; Alloy discovers container logs over the local Podman socket. `inference-telemetry-production` has uncommitted changes to the o11y deploy, scrape config, compose, and tests in a different worktree. `plan/architecture/06-observability-instrumentation.md` describes the desired contract but contains as-built claims that require verification.
+See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy are healthy; the TLS front door and Grafana's Authentik authorization redirect respond. A completed SSO login and branch-specific local deployment remain unverified. Prometheus scrapes itself; Alloy discovers container logs over the local Podman socket. The clean production inference telemetry branch is merged here and provides inventory-rendered DGX scrape jobs, but no production receiver is verified. `plan/architecture/06-observability-instrumentation.md` describes the desired contract but contains historical as-built claims.
 
 ## Goals / Non-Goals
 
-**Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove each signal on one local pilot before broad adoption.
+**Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.
 
-**Non-Goals:** modify DGX Spark nodes, allocate the production o11y VM, replace the production inference change, or claim production health from static files.
+**Non-Goals:** modify DGX Spark nodes outside their owning task, enable an unproven GPU exporter, or claim production health from static files.
 
 ## Decisions
 
@@ -15,19 +15,24 @@ See `proposal.md`. At the branch base, the local o11y compose has Grafana, Prome
 3. **Normalize identity at collection.** Container name is the stable `service` label, matching `PRINCIPLES.md` §7. Keep `container` as a compatibility label for existing Loki dashboards; add `service` without replacing it until dashboards migrate. High-churn containers are dropped by a relabel rule. Alternative rejected: rename the existing Loki label in place.
 4. **Keep provisioning declarative.** Grafana reads dashboards and alert rules from committed files. Ansible retrieves notification material from OpenBao and renders only gitignored, owner-readable runtime files. The alert delivery drill is an explicit Semaphore workflow. Alternative rejected: UI-created contact points or alert rules.
 5. **Set budgets before expansion.** Inventory controls retention and a target series ceiling. The pilot records series count and storage growth before enabling remote targets or Tempo. The eventual Tempo receiver has real downstream consumers and a bounded block retention; a listener with no consumer is excluded.
-6. **Protect parallel work.** This branch first edits its own change artifacts, onboarding contract, and generic dashboard. It avoids the o11y files currently dirty in `inference-telemetry-production`. Rebase and reconcile those files after that work lands; tests must pass against the combined tree before local deployment.
+6. **Integrate committed work without changing its checkout.** The clean production inference telemetry branch is merged into this isolated branch. Its DGX jobs are inventory-generated and optional; local discovery is additive. Review the combined diff and test it before local deployment.
+7. **Validate the branch that will be reviewed.** The existing local Semaphore repository record is mounted from the main checkout, so its successful run cannot validate this feature branch. Use a declared, separate repository/template binding or equivalent isolated local Semaphore mechanism; never repoint the shared record. Verify the exact revision used by the task.
+8. **Treat production receipt as the finish line.** Private inventory names a `grafanapodman` host outside the current `agent_cloud` service group, while the prior audit did not include it. Audit that host and its ownership before allocating another VM. Then provision or adopt the receiver through the service VM and Semaphore workflows, verify its network and SSO boundary, and query named DGX and agentgateway series/log labels. Keep GPU collection disabled until the DGX owner proves the exporter and approved access path.
 
 ## Risks / Trade-offs
 
 - [A mounted engine socket grants powerful API access even with a read-only bind] → constrain it to the o11y collector, review engine permissions, and never expose it over TCP.
 - [Labels exist but the collector cannot route to a service] → require a live target query in the onboarding gate and name unreachable endpoints.
 - [An alert only proves Grafana evaluated a rule] → run a delivery drill and confirm receipt at the configured destination.
-- [Concurrent telemetry work changes shared o11y files] → keep ownership disjoint until rebase and review the combined diff before implementation of shared scrape files.
+- [The local Semaphore template executes the main checkout] → create an isolated branch binding and record the task revision before calling a local run valid.
+- [A remote scrape job exists but its endpoint is unreachable] → gate production on inventory, firewall, target-UP, and Loki receipt checks; name the failing source.
+- [An unexamined legacy Grafana host is mistaken for a new or empty VM] → audit `grafanapodman` through approved read-only automation before host selection.
 - [Historical plans describe future components in the present tense] → add dated, evidence-backed as-built notes without deleting the original design rationale.
 
 ## Migration Plan
 
 1. Record current local and production evidence, and mark unverified claims explicitly.
 2. Add the generic dashboard and onboarding verification contract on this branch; validate static artifacts.
-3. Rebase after the production inference telemetry change, then implement the shared collection and alerting mechanisms, pilot locally through Semaphore, and record live results.
-4. Enable tracing only after metrics and alert gates pass. Roll back by reverting provisioned config and redeploying through Semaphore; preserve volumes and retained data.
+3. Implement shared collection and alerting mechanisms, pilot the isolated branch through Semaphore, and record live results including SSO.
+4. Open a PR to `dev` after the local gate. Reconcile any intervening changes and rerun focused checks before production.
+5. Provision and deploy the production receiver through Semaphore, then prove DGX and agentgateway telemetry receipt. Enable tracing only after metrics and alert gates pass. Roll back by reverting provisioned config and redeploying through Semaphore; preserve volumes and retained data.
