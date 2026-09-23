@@ -23,6 +23,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       BLOCKED 2026-09-22: production's running version is readable only through the
       authenticated `GET /api/info` or the UI; pinning blind could downgrade it across its
       database migrations. Operator reads it, then pin at or above it
+      2026-09-23 (PR 203 review): the pin no longer depends on that read. Semaphore's
+      deploy.sh reads the running controller's version and refuses a pin older than it
+      (test_semaphore_downgrade.bats). A production redeploy is therefore safe to attempt,
+      but it stops rather than downgrading.
 - [x] 0.4 Verify NetBox virtual machines accept custom fields on the pinned NetBox version and
       record the API used to create them. 2026-09-22: yes, see `design.md` Context
 - [x] 0.5 Verify agentgateway passes `response_format` with `type: json_schema` through to vLLM

@@ -655,6 +655,17 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  # Workflow step service-validate: the service answers on its inventory-declared health
+  # path (service_url + health_path, health_status_codes). Read-only.
+  - name: Verify Service Health
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
 

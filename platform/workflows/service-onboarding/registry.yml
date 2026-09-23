@@ -209,7 +209,7 @@ steps:
     order: 14
     diagram_label: Service Validate
     owner: service-agent
-    executor: Validate All Services
+    executor: Verify Service Health
     undo: none
     policy: required
     criteria:

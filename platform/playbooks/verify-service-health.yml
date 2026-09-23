@@ -1,0 +1,55 @@
+---
+# verify-service-health.yml — workflow step service-validate: the service answers on its
+# declared health path.
+#
+# Read-only, identical under --check. The service's inventory host declares the contract:
+# service_url, health_path and optionally health_status_codes (default [200]). A service with
+# no declared health path fails: the criterion is "answers through its declared path", and an
+# undeclared one cannot be checked. Validate All Services stays the fleet overview; it only
+# prints, so it cannot prove a step (PR 203 review).
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Verify the service answers on its declared health path: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _codes: "{{ health_status_codes | default([200]) }}"
+    _url: "{{ (service_url | default('')) ~ (health_path | default('')) }}"
+
+  tasks:
+    - name: "Probe the declared health path"
+      ansible.builtin.uri:
+        url: "{{ _url }}"
+        method: GET
+        status_code: "{{ _codes }}"
+        timeout: 10
+      register: _health
+      failed_when: false
+      check_mode: false
+      delegate_to: localhost
+      when: (service_url | default('') | length > 0) and (health_path | default('') | length > 0)
+
+    - name: "Decide"
+      ansible.builtin.set_fact:
+        _health_errors: >-
+          {{ (['no declared service_url + health_path for ' ~ inventory_hostname]
+              if _health is skipped else [])
+             + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
+                 ~ (_codes | join(', '))] if (_health is not skipped and _health.status not in _codes) else []) }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: service-validate
+        step_result_status: "{{ 'pass' if (_health_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          health_status: "{{ _health.status | default(none) }}"
+        step_result_error: "{{ _health_errors | join('; ') }}"
+
+    - name: "Fail when the service is not healthy on its declared path"
+      ansible.builtin.fail:
+        msg: "{{ _health_errors | join('; ') }}"
+      when: _health_errors | length > 0

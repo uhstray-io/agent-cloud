@@ -23,9 +23,35 @@ step_generate_secrets() {
 
 # ── Step 2: Start services ────────────────────────────────────────────────────
 
+# The image this deploy would start: SEMAPHORE_IMAGE, else the pin compose.yml declares.
+pinned_image() {
+  local default
+  default=$(sed -nE 's/.*image: \$\{SEMAPHORE_IMAGE:-([^}]+)\}.*/\1/p' "${SCRIPT_DIR}/compose.yml" | head -n 1)
+  printf '%s\n' "${SEMAPHORE_IMAGE:-$default}"
+}
+
+# assert_no_downgrade — refuse to start a pinned Semaphore older than the one running.
+# Semaphore migrates its database forward at start and has no downward migration, so an
+# older binary over a newer schema is a broken controller. The pin in compose.yml was chosen
+# without reading production's version (PR 203 review; change task 0.3), so the deploy reads
+# it: `semaphore version` in the running container prints e.g. v2.18.12^0-8a4dcf0-1780941924.
+# A pin that is not a version (latest) or no running container has nothing to compare.
+assert_no_downgrade() {
+  local running pinned
+  running=$($CONTAINER_ENGINE exec workflow-semaphore semaphore version 2>/dev/null \
+    | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+' | tr -d v) || running=""
+  pinned=$(pinned_image | sed -nE 's/.*:v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+  [ -n "$running" ] && [ -n "$pinned" ] || return 0
+  if [ "$(printf '%s\n%s\n' "$pinned" "$running" | sort -V | head -n 1)" != "$running" ]; then
+    error "Refusing to downgrade Semaphore: v${running} is running, the pin is v${pinned}. Raise the pin in compose.yml (or SEMAPHORE_IMAGE) to v${running} or later."
+  fi
+  info "  Semaphore version check: running v${running}, pin v${pinned}."
+}
+
 step_start_services() {
   info "Step 2: Starting Semaphore services..."
   cd "$SCRIPT_DIR"
+  assert_no_downgrade
   compose up -d
   wait_for_http "${SEMAPHORE_URL}/api/ping" "Semaphore" 120
 }
@@ -130,4 +156,7 @@ main() {
   info "=== Semaphore deployment complete ==="
 }
 
-main "$@"
+# Sourced by its tests for the functions above; run as a script, it deploys.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
