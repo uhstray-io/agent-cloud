@@ -1,12 +1,15 @@
 ---
 # Register an additive, branch-bound local Semaphore template, then optionally
-# launch it. The existing worktree repository and (Local) templates are untouched.
+# launch it. candidate_action=verify selects the service receipt check; the
+# default deploy action and existing (Local) templates remain untouched.
 # Run with SEMAPHORE_URL/TOKEN from the local-dev runtime environment:
 #   ansible-playbook platform/semaphore/deploy-local-o11y-candidate.yml \
 #     -e candidate_branch=feat/example -e candidate_expected_sha=<40-hex-sha> \
 #     -e candidate_deploy=true
+#   candidate_action=verify -e candidate_service=o11y-grafana \
+#     -e candidate_expect_metrics=false -e candidate_deploy=true
 
-- name: Deploy an isolated o11y candidate through local Semaphore
+- name: Run an isolated o11y candidate through local Semaphore
   hosts: localhost
   connection: local
   gather_facts: false
@@ -14,10 +17,28 @@
     _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(lookup('env', 'SEMAPHORE_PROJECT_ID'), true) }}"
     _branch: "{{ candidate_branch | default('') }}"
+    _action: "{{ candidate_action | default('deploy') }}"
     _expected_sha: "{{ candidate_expected_sha | default('') }}"
     _candidate_suffix: "{{ (_branch | hash('sha256'))[:12] }}"
     _candidate_repo_name: "agent-cloud o11y candidate {{ _candidate_suffix }}"
-    _candidate_template_name: "Deploy o11y (Candidate {{ _candidate_suffix }})"
+    _candidate_template_name: "{{ 'Verify o11y Service' if _action == 'verify' else 'Deploy o11y' }} (Candidate {{ _candidate_suffix }})"
+    _candidate_playbook: "{{ 'platform/playbooks/verify-o11y-service.yml' if _action == 'verify' else 'platform/playbooks/deploy-o11y.yml' }}"
+    _candidate_survey_vars: >-
+      {{ [{'name': 'expected_repository_sha', 'title': 'Expected checkout commit',
+           'description': 'Full commit SHA to verify before running.',
+           'type': 'string', 'required': true}] +
+         ([{'name': 'expected_service', 'title': 'Service label',
+            'description': 'Lowercase service identity to verify.',
+            'type': 'string', 'required': true},
+           {'name': 'expect_metrics', 'title': 'Expect metrics',
+            'description': 'true for metrics; false for log-only.',
+            'type': 'string', 'required': false, 'default_value': 'true'}]
+          if _action == 'verify' else []) }}
+    _candidate_inputs: >-
+      {{ {'expected_repository_sha': _expected_sha} |
+         combine({'expected_service': candidate_service | default(''),
+                  'expect_metrics': candidate_expect_metrics | default('true')}
+                 if _action == 'verify' else {}) }}
     _candidate_repo_url: "https://github.com/uhstray-io/agent-cloud.git"
 
   tasks:
@@ -27,8 +48,11 @@
           - (_semaphore_url | urlsplit('hostname')) in ['localhost', '127.0.0.1', '::1']
           - _branch | length > 0
           - _branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
+          - _action in ['deploy', 'verify']
           - _project_id | int > 0
           - not (candidate_deploy | default(false) | bool) or _expected_sha is match('^[0-9a-f]{40}$')
+          - not (candidate_deploy | default(false) | bool) or _action != 'verify' or candidate_service | default('') is match('^[a-z][a-z0-9-]*$')
+          - not (candidate_deploy | default(false) | bool) or _action != 'verify' or candidate_expect_metrics | default('true') | string | lower in ['true', 'false']
         fail_msg: "Use the local Semaphore URL, an explicit Git branch, and a full commit SHA when deploying."
 
     - name: Validate the branch ref
@@ -138,14 +162,11 @@
               'inventory_id': _local_template.inventory_id | int,
               'repository_id': _candidate_repo_id | int,
               'environment_id': _local_template.environment_id | int,
-              'playbook': _local_template.playbook,
+              'playbook': _candidate_playbook,
               'app': 'ansible',
               'autorun': false,
               'suppress_success_alerts': true,
-              'survey_vars': [{'name': 'expected_repository_sha',
-                               'title': 'Expected checkout commit',
-                               'description': 'Full commit SHA to verify before deployment.',
-                               'type': 'string', 'required': true}]} | to_json }}
+              'survey_vars': _candidate_survey_vars} | to_json }}
         status_code: [200, 201, 204]
       when: _templates | selectattr('name', 'equalto', _candidate_template_name) | list | length == 0
       changed_when: true
@@ -168,7 +189,7 @@
           - (_matches | first).repository_id | int == _candidate_repo_id | int
           - (_matches | first).inventory_id | int == _local_template.inventory_id | int
           - (_matches | first).environment_id | int == _local_template.environment_id | int
-          - (_matches | first).playbook == _local_template.playbook
+          - (_matches | first).playbook == _candidate_playbook
         fail_msg: "Candidate template binding differs; refusing to run it."
       vars:
         _matches: "{{ _templates_after.json | selectattr('name', 'equalto', _candidate_template_name) | list }}"
@@ -189,7 +210,7 @@
         body: >-
           {{ {'template_id': (_templates_after.json | selectattr('name', 'equalto', _candidate_template_name) | first).id | int,
               'project_id': _project_id | int,
-              'environment': {'expected_repository_sha': _expected_sha} | to_json} | to_json }}
+              'environment': _candidate_inputs | to_json} | to_json }}
         status_code: [200, 201]
       register: _launch
       when: candidate_deploy | default(false) | bool

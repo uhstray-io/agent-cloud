@@ -6,6 +6,21 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Read the candidate checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; service collection was not verified."
+        success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
+      when: expected_repository_sha is defined
+
     - name: Validate verification inputs
       ansible.builtin.assert:
         that:
