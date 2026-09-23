@@ -50,10 +50,15 @@ controller_tasks = plays[1]['tasks']
 assert any(task.get('ansible.builtin.command', {}).get('argv') == ['git', 'rev-parse', 'refs/remotes/origin/dev'] for task in controller_tasks)
 assert any('_controller_revision.stdout == _dev_revision.stdout' in task.get('ansible.builtin.assert', {}).get('that', []) for task in controller_tasks)
 tasks = plays[2]["tasks"]
-source, = (task for task in tasks if task['name'] == 'Place the exact reviewed dev revision without forcing local changes')
-assert source['ansible.builtin.git']['force'] is False
-assert '_controller_revision.stdout' in source['ansible.builtin.git']['version']
-assert 'netbox_source_apply' in source['when']
+tracked, = (task for task in tasks if task['name'] == 'Read tracked host source changes without refreshing its Git index')
+assert tracked['ansible.builtin.command']['argv'][-1] == '--untracked-files=no'
+fetch, = (task for task in tasks if task['name'] == 'Fetch reviewed dev source without changing the host checkout')
+assert fetch['ansible.builtin.command']['argv'] == ['git', 'fetch', '--quiet', 'origin', 'dev']
+assert 'netbox_source_apply' in fetch['when']
+source, = (task for task in tasks if task['name'] == 'Place the exact reviewed dev revision without overwriting host files')
+assert source['ansible.builtin.command']['argv'][:4] == ['git', 'switch', '--detach', '--no-overwrite-ignore']
+assert '_controller_revision.stdout' in source['ansible.builtin.command']['argv'][-1]
+assert 'netbox_source_apply' in source['when'][0]
 assert any(task['name'] == 'Require the audited starting revision before source placement' for task in tasks)
 assert any("ansible.builtin.stat" in task and "checksum_algorithm" in task["ansible.builtin.stat"] for task in tasks)
 checksum, = (task for task in tasks if task['name'] == 'Require the host Compose file to match reviewed dev')
