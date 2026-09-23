@@ -15,13 +15,15 @@ services:
   prometheus:
     image: ${O11Y_PROM_IMAGE:-docker.io/prom/prometheus:v3.1.0}
     container_name: o11y-prometheus
-    restart: unless-stopped
+    restart: always
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}
       - --web.enable-lifecycle
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/scrape.d:/etc/prometheus/scrape.d:ro
       - prometheus-data:/prometheus
     ports:
       - "${O11Y_PROM_BIND:-127.0.0.1}:${O11Y_PROM_PORT:-9090}:9090"
@@ -36,8 +38,10 @@ services:
   loki:
     image: ${O11Y_LOKI_IMAGE:-docker.io/grafana/loki:3.3.2}
     container_name: o11y-loki
-    restart: unless-stopped
-    command: ["-config.file=/etc/loki/config.yml"]
+    restart: always
+    command: ["-config.file=/etc/loki/config.yml", "-config.expand-env=true"]
+    environment:
+      O11Y_LOKI_RETENTION: ${O11Y_LOKI_RETENTION:-7d}
     volumes:
       - ./config/loki-config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
@@ -54,7 +58,7 @@ services:
   alloy:
     image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
     container_name: o11y-alloy
-    restart: unless-stopped
+    restart: always
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -78,7 +82,7 @@ services:
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
     container_name: o11y-grafana
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     environment:

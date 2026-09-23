@@ -279,6 +279,10 @@ AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
 
+Production DGX Spark scrape targets are rendered from private inventory by
+[`deploy-o11y.yml`](platform/playbooks/deploy-o11y.yml); see the
+[`o11y deployment notes`](platform/services/o11y/deployment/README.md).
+
 ## Related Repositories
 
 | Repo | Visibility | Purpose |

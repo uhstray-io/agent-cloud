@@ -33,6 +33,9 @@
         permission: skynet-device-write
         actions: [view, add]
         object_types: [dcim.device, dcim.site, dcim.devicetype, dcim.devicerole, dcim.interface, ipam.ipaddress, extras.tag]
+        # netbox-allocate-ip reads prefixes: view only, as its own permission
+        view_object_types: [ipam.prefix]
+        view_permission: skynet-ipam-prefix-view
         field: automation_api_token
         description: skynet build #1 automation (create-netbox-device)
       workflow-collector:
@@ -87,6 +90,46 @@
       no_log: true
       check_mode: false
 
+    # Converged on EVERY run, before the skip below: a scope added to a profile has to reach
+    # the identity whose token already exists, and the token itself is never re-minted for it.
+    # The `|` below is a Django QuerySet union inside Python, not a shell pipe.
+    - name: "Converge the identity and its scoped permissions"
+      ansible.builtin.command:
+        cmd: "{{ _manage }}"
+        stdin: |
+          from django.contrib.auth import get_user_model
+          from users.models import ObjectPermission
+          from core.models import ObjectType
+
+          # The NetBox 4.5 User model has no is_staff field (FieldError, 2026-09-22).
+          user, changed = get_user_model().objects.get_or_create(
+              username="{{ _user }}", defaults={"is_active": True},
+          )
+          scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }})]
+          if {{ _profile.view_object_types | default([]) | to_json }}:
+              scopes.append(("{{ _profile.view_permission | default(_profile.permission ~ '-view') }}", ["view"],
+                             {{ _profile.view_object_types | default([]) | to_json }}))
+          for name, actions, types in scopes:
+              wanted = {ObjectType.objects.get_by_natural_key(*t.split(".")).pk for t in types}
+              perm, created = ObjectPermission.objects.get_or_create(
+                  name=name, defaults={"enabled": True, "actions": actions},
+              )
+              changed |= created
+              if not perm.enabled or perm.actions != actions:
+                  perm.enabled, perm.actions = True, actions
+                  perm.save(update_fields=["enabled", "actions"])
+                  changed = True
+              if set(perm.object_types.values_list("pk", flat=True)) != wanted:
+                  perm.object_types.set(list(wanted))
+                  changed = True
+              if not perm.users.filter(pk=user.pk).exists():
+                  perm.users.add(user)
+                  changed = True
+          print("changed" if changed else "unchanged")
+      register: _permissions
+      changed_when: _permissions.stdout_lines | last | trim == 'changed'
+      when: not ansible_check_mode
+
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data[_profile.field] | default('')) | length > 0
       block:
@@ -96,35 +139,13 @@
         - name: "End play"
           ansible.builtin.meta: end_play
 
-    # noqa risky-shell-pipe: the `|` is a Python queryset union inside the heredoc,
-    # not a shell pipe; the assert below catches a failed mint (pipefail N/A here).
-    - name: "Mint the dedicated scoped token via the NetBox Django shell"  # noqa: risky-shell-pipe
+    - name: "Mint the dedicated scoped token via the NetBox Django shell"
       ansible.builtin.shell: |
         {{ _manage }} << 'PYSCRIPT'
         from django.contrib.auth import get_user_model
-        from users.models import Token, ObjectPermission
-        from core.models import ObjectType
+        from users.models import Token
 
-        User = get_user_model()
-        user, _ = User.objects.get_or_create(
-            username="{{ _user }}",
-            # The NetBox 4.5 User model has no is_staff field (FieldError, 2026-09-22).
-            defaults={"is_active": True},
-        )
-        perm, _ = ObjectPermission.objects.get_or_create(
-            name="{{ _profile.permission }}",
-            defaults={"enabled": True, "actions": {{ _profile.actions | to_json }}},
-        )
-        perm.object_types.set([ObjectType.objects.get_by_natural_key(*t.split(".")) for t in {{ _profile.object_types | to_json }}])
-        perm.users.add(user)
-        view_types = {{ _profile.view_object_types | default([]) | to_json }}
-        if view_types:
-            view, _ = ObjectPermission.objects.get_or_create(
-                name="{{ _profile.permission }}-view", defaults={"enabled": True, "actions": ["view"]},
-            )
-            view.object_types.set([ObjectType.objects.get_by_natural_key(*t.split(".")) for t in view_types])
-            view.users.add(user)
-
+        user = get_user_model().objects.get(username="{{ _user }}")
         # NetBox 4.5 v2 token: the secret exists ONLY at creation (hashed with the pepper,
         # never stored), so an existing token cannot be recovered and a new one is minted.
         # This task runs only when OpenBao holds no token (the skip above). The stored value

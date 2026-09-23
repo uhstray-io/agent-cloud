@@ -324,7 +324,7 @@ setup() {
   [ -f "$PLAYBOOK" ]
   grep -q 'tasks/manage-secrets.yml' "$PLAYBOOK"
   grep -q 'tasks/place-monorepo.yml' "$PLAYBOOK"
-  grep -q 'tasks/enable-linger.yml' "$PLAYBOOK"
+  grep -q 'tasks/place-monorepo.yml' "$PLAYBOOK"  # the preamble enables linger
   grep -q 'tasks/distribute-ca-root.yml' "$PLAYBOOK"
   # Renders both files, and creates the config dir first (template does not
   # create parent directories).

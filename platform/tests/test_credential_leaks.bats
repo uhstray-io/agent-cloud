@@ -312,6 +312,10 @@ _committed_files() {
 # loopback/RFC1918 because the platform's OpenBao sits on an internal VLAN;
 # public cleartext is refused.
 
+@test "NetBox token bootstrap guards AppRole transport before login" {
+  assert_guard_precedes_first_uri "$REPO_ROOT/platform/playbooks/provision-netbox-automation-token.yml"
+}
+
 @test "every play that resolves an OpenBao URL includes the transport guard" {
   # Counted, not merely present: a playbook with three plays and one include
   # leaves two plays unguarded, and a file-wide grep cannot tell the difference.

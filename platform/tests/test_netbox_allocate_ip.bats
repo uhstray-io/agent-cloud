@@ -56,6 +56,23 @@ setup() {
   grep -qF '(_pfx.json.results | default([])) | length == 1' "$PLAYBOOK"
 }
 
+@test "netbox-allocate: bootstrap token can view prefixes without adding them" {
+  local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
+  assert_precedes "$bootstrap" 'Converge the identity and its scoped permissions' 'Already provisioned'
+  assert_grep -qF 'view_permission: skynet-ipam-prefix-view' "$bootstrap"
+  assert_grep -qF 'view_object_types: [ipam.prefix]' "$bootstrap"
+  assert_grep -qF 'scopes.append(("{{ _profile.view_permission' "$bootstrap"
+  assert_grep -qF 'perm.enabled, perm.actions = True, actions' "$bootstrap"
+  assert_grep -qF 'perm.users.add(user)' "$bootstrap"
+}
+
+@test "netbox-allocate: token bootstrap has a dev-bound Semaphore template" {
+  local templates="$BATS_TEST_DIRNAME/../semaphore/templates.yml"
+  local block
+  block=$(grep -A2 -F 'name: Provision NetBox Automation Token' "$templates")
+  assert_contains "$block" 'dev_variant: true'
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).

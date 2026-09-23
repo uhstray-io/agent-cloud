@@ -585,7 +585,7 @@ start_orb_agent() {
     --name "${ORB_AGENT_CONTAINER}" \
     --privileged \
     --net=host \
-    --restart unless-stopped \
+    --restart always \
     -v "${resolved_config}:/opt/orb/agent.yaml:ro,z" \
     -v "${compose_dir}/discovery/snmp-extensions:/opt/orb/snmp-extensions:ro,z" \
     docker.io/netboxlabs/orb-agent:latest run -c /opt/orb/agent.yaml
