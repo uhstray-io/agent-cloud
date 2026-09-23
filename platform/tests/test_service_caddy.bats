@@ -122,6 +122,21 @@ setup() {
   ! grep -qE '^[[:space:]]*ports:' "$f"
 }
 
+@test "caddy: reviewed revision gates the controller and production receiver" {
+  local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
+  assert_grep -qF 'argv: [git, status, --porcelain, --untracked-files=all]' "$pb"
+  assert_precedes "$pb" 'Refuse a receiver checkout that differs from the reviewed candidate' 'Render compose .env'
+  python3 - "$pb" <<'PY'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+tasks = {task['name']: task for play in plays for task in play['tasks']}
+for name in ('Read the placed revision when a candidate SHA is required',
+             'Refuse a receiver checkout that differs from the reviewed candidate'):
+    assert 'expected_repository_sha is defined' in tasks[name]['when']
+    assert 'not (local_mode | default(false) | bool)' in tasks[name]['when']
+PY
+}
+
 @test "caddy: the internal cert gains a *.<parent> SAN for every nested route host" {
   # A TLS wildcard matches ONE label: *.zone does not cover admin.inference.zone.
   # EVALUATES the expression deploy-caddy.yml actually carries (extracted from the

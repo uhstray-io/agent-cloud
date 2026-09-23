@@ -367,7 +367,8 @@ first** - the liveness loop and every honest secret-isolation claim depend on it
 
 **Observability is opt-in by declaration, never bespoke per service.** Logs are free (Alloy socket
 discovery); metrics are two compose labels (`prometheus.io/scrape`, `prometheus.io/port`) consumed by
-Prometheus docker_sd; traces are two env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
+Alloy's socket discovery and forwarded to Prometheus over the private o11y network; traces are two
+env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
 The container name is the canonical `service.name` joining all three. No per-service `prometheus.yml`
 edits; dashboards and alerts are provisioned as code.
 *Why: a new service must not land observability-blind. The single correlation key is what makes
@@ -384,8 +385,9 @@ inverts the value-to-cost order and risks the o11y stack eating the disk it's me
 
 **Every signal path is self-hosted, least-privilege, and free of secrets-in-labels.** Telemetry
 never leaves the platform (analytics disabled). The Grafana MCP token is OpenBao-managed and
-read-only; metrics endpoints sit behind Caddy + Authentik; never put secrets or PII in metric names
-or labels.
+read-only; human metrics access goes through Caddy + Authentik, while collector-only scrape
+listeners stay on private container networks and are never published publicly. Never put secrets
+or PII in metric names or labels.
 *Why: socket access for Alloy/Prometheus is the same trust surface already accepted - a deliberate,
 bounded decision keeps observability from quietly becoming an exfiltration channel.*
 

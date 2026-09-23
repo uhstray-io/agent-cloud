@@ -1,0 +1,51 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "title": "Metrics target up",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "max(up{service=~\"$service\"})", "instant": true } ]
+    },
+    {
+      "title": "Container log lines per second",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(rate({container=~\"$service\"}[5m]))", "legendFormat": "{{container}}" } ]
+    },
+    {
+      "title": "Recent container logs",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true },
+      "targets": [ { "refId": "A", "expr": "{container=~\"$service\"}" } ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["agent-cloud", "observability"],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": "label_values({container=~\".+\"}, container)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Service Overview",
+  "uid": "service-overview",
+  "version": 1
+}

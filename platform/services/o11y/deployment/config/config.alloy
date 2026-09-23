@@ -21,6 +21,14 @@ discovery.relabel "containers" {
     regex         = "/?(.*)"
     target_label  = "container"
   }
+
+  // Keep the historical container label for existing dashboards while adding
+  // the canonical service identity used by metrics and future traces.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
 }
 
 loki.source.docker "default" {
@@ -35,5 +43,65 @@ loki.write "default" {
   }
   external_labels = {
     cluster = "agent-cloud-local",
+  }
+}
+
+// Reuse Alloy's socket discovery for opted-in metrics. Prometheus has no socket.
+discovery.relabel "metrics" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_scrape"]
+    action        = "keep"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_port"]
+    action        = "keep"
+    regex         = "[0-9]+"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_high_churn"]
+    action        = "drop"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name", "__meta_docker_container_label_prometheus_io_port"]
+    regex         = "/?(.+);([0-9]+)"
+    replacement   = "$1:$2"
+    target_label  = "__address__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_path"]
+    regex         = "(.+)"
+    target_label  = "__metrics_path__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "component"
+  }
+}
+
+prometheus.scrape "local_containers" {
+  targets         = discovery.relabel.metrics.output
+  scrape_interval = "15s"
+  sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))
+  forward_to      = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
   }
 }
