@@ -233,6 +233,22 @@
 > apply them through the Dev-bound Semaphore workflows. Read-only Dev-bound
 > task 1160 planned one unrelated DNS addition and one rate-limit update at
 > `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
+> On 2026-09-23, reviewed PRs #208 and #210 merged the receiver guard and
+> OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
+> PR #18 merged the alert destination and Grafana browser URLs, but its
+> production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
+> runtime recovery workflow; it has not been run on production. PR #214 merged
+> one-template Dev publication. Local Semaphore tasks 1292, 1293, and 1294
+> updated the publisher and created its webhook and fault-drill Dev templates
+> with verified local bindings. Task 1295 found the failed scrape only after its
+> one-minute wait expired and cleaned up its probe. Reviewed PR #215 extended
+> that bounded wait and the probe lifetime; local Dev-bound task 1300 ran its
+> merged revision `0b64a0c447e476a1ad02a39de4368f0bab5053d8`, saw the
+> unreachable target, proved the onboarding verifier refused it, and removed
+> the probe. Its alert-delivery option was off. Discord notification receipt,
+> production NetBox recovery, receiver placement, and production telemetry
+> remain unverified. Production Semaphore sign-in currently meets a Cloudflare
+> challenge before its Authentik session can be opened from this workstation.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
