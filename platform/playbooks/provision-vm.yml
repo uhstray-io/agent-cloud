@@ -407,6 +407,10 @@
           cores: "{{ _cores }}"
           memory: "{{ _mem }}"
           agent: "1"
+          # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
+          # come back after a hypervisor reboot silently takes its service down. Workflow
+          # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
+          onboot: "{{ '1' if (vm_onboot | default(true) | bool) else '0' }}"
           net0: "virtio,bridge={{ _bridge }},firewall=0"
           ciuser: "{{ ci_user | default(ansible_user) }}"
           sshkeys: "{{ _ssh_pub | urlencode }}"

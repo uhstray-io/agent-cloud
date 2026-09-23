@@ -86,7 +86,8 @@
         "Provision VM",
         "Distribute SSH Keys",
         "Back Up Service SSH Key",
-        "Resize VM"
+        "Resize VM",
+        "Verify Service Persistence"
       ]
     },
     "security-agent": {
@@ -104,7 +105,8 @@
         "Harden SSH",
         "Apply Firewall",
         "Deploy Authentik",
-        "Back Up Credentials to site-config"
+        "Back Up Credentials to site-config",
+        "Snapshot Firewall"
       ]
     },
     "o11y-agent": {
@@ -134,7 +136,9 @@
       "allowed_templates": [
         "Check Secrets",
         "Validate All Services",
-        "Manage Caddy Sites"
+        "Manage Caddy Sites",
+        "Snapshot Service Assessment",
+        "Snapshot Access"
       ],
       "allowed_template_prefixes": [
         "Deploy "

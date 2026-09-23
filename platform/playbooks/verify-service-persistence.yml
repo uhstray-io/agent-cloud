@@ -1,0 +1,108 @@
+---
+# verify-service-persistence.yml — does the service come back after a reboot?
+#
+# Workflow step systemd-enablement (platform/workflows/service-onboarding/registry.yml),
+# change service-deployment-workflow task 7.2. Read-only: it changes nothing and runs
+# identically under --check.
+#
+# Proves, for every container of the service:
+#   - it restarts on its own (restart policy `always` or `unless-stopped`)
+# and, on a Linux host running rootless podman:
+#   - the deploying user has systemd linger, so its containers start without a login
+#     (tasks/enable-linger.yml is what sets it)
+#
+# The service's containers are selected by the compose label
+# com.docker.compose.project.working_dir == the service's deploy directory, because compose
+# project names are not stable per service (n8n's project is literally "deployment").
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Verify the service survives a reboot: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    _restart_ok: [always, unless-stopped]
+
+  tasks:
+    - name: "List the service's containers (by compose working directory)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - ps
+          - -a
+          - --filter
+          - "label=com.docker.compose.project.working_dir={{ _deploy_dir }}"
+          - --format
+          - "{{ '{{' }}.Names{{ '}}' }}"
+      register: _containers
+      changed_when: false
+      check_mode: false
+
+    - name: "Read each container's restart policy"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          - "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}"
+          - "{{ item }}"
+      loop: "{{ _containers.stdout_lines }}"
+      register: _policies
+      changed_when: false
+      check_mode: false
+
+    - name: "Rootless podman on Linux: read the deploying user's linger"
+      ansible.builtin.command:
+        argv: [loginctl, show-user, "{{ ansible_user | default(lookup('env', 'USER')) }}", --property=Linger]
+      register: _linger
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - not (local_mode | default(false) | bool)
+        - not (podman_rootful | default(false) | bool)
+
+    - name: "Decide the result"
+      ansible.builtin.set_fact:
+        _restart_policies: "{{ dict(_policies.results | map(attribute='item') | zip(_policies.results | map(attribute='stdout'))) }}"
+        _linger_state: >-
+          {{ 'not-applicable' if (_linger is skipped)
+             else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
+
+    - name: "Decide the failures"
+      ansible.builtin.set_fact:
+        _persistence_errors: >-
+          {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir]
+              if (_containers.stdout_lines | length == 0) else [])
+             + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok)
+                | map(attribute='key')
+                | map('regex_replace', '^', 'restart policy not always/unless-stopped: ') | list)
+             + (['linger is off for the deploying user'] if _linger_state == 'no' else []) }}
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          containers: "{{ _restart_policies }}"
+          linger: "{{ _linger_state }}"
+          errors: "{{ _persistence_errors }}"
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: systemd-enablement
+        step_result_status: "{{ 'pass' if (_persistence_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          linger: "{{ _linger_state }}"
+          restart_policies: "{{ _restart_policies }}"
+        step_result_error: "{{ _persistence_errors | join('; ') if _persistence_errors else '' }}"
+
+    - name: "Fail when the service would not survive a reboot"
+      ansible.builtin.fail:
+        msg: "{{ _persistence_errors | join('; ') }}"
+      when: _persistence_errors | length > 0

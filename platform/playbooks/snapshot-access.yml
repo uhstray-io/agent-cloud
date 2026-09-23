@@ -1,0 +1,54 @@
+---
+# snapshot-access.yml — the ONE input to the role and access assessment (step access-assess).
+# Read-only, identical under --check (change service-deployment-workflow task 7.4).
+# Collects, for the service: its Authentik app-catalog entries (integration type, tier), which
+# blueprints and OpenBao policy files exist for it, its agent practices, and the registry
+# entries for this step and the step it feeds. Names and metadata only, no credential values.
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Snapshot the access inputs: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _services: "{{ playbook_dir }}/../services"
+    _catalog: "{{ (lookup('file', _services ~ '/authentik/deployment/app-catalog.yml') | from_yaml).authentik_app_catalog }}"
+    _registry: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml).steps }}"
+
+  tasks:
+    - name: "Find the service's blueprints and OpenBao policy files"
+      ansible.builtin.find:
+        paths:
+          - "{{ _services }}/authentik/deployment/blueprints"
+          - "{{ _services }}/openbao/deployment/config/policies"
+        patterns: ["{{ service_name }}*"]
+      delegate_to: localhost
+      register: _files
+
+    - name: "Record the snapshot"
+      ansible.builtin.set_stats:
+        data:
+          snapshot:
+            schema: agentcloud/snapshot/v1
+            step: access-assess
+            service: "{{ service_name }}"
+            catalog_entries: >-
+              {{ _catalog | dict2items | selectattr('key', 'match', '^' ~ service_name)
+                 | items2dict }}
+            blueprints: "{{ _files.files | map(attribute='path') | select('search', '/blueprints/') | map('basename') | list }}"
+            openbao_policies: "{{ _files.files | map(attribute='path') | select('search', '/policies/') | map('basename') | list }}"
+            practices: "{{ lookup('file', _services ~ '/' ~ service_name ~ '/context/agent-practices.md', errors='ignore') | default('', true) }}"
+            registry: "{{ _registry | selectattr('id', 'in', ['access-assess', 'oidc-config']) | list }}"
+        per_host: false
+        aggregate: false
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: access-assess
+        step_result_status: pass
+        step_result_evidence:
+          catalog_entries: "{{ _catalog | dict2items | selectattr('key', 'match', '^' ~ service_name) | map(attribute='key') | list }}"
+          blueprint_count: "{{ _files.files | map(attribute='path') | select('search', '/blueprints/') | list | length }}"

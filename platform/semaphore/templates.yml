@@ -552,6 +552,48 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  # Workflow step fw-assess: the read-only snapshot that is the firewall assessment's only
+  # model input.
+  - name: Snapshot Firewall
+    playbook: platform/playbooks/snapshot-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow steps service-assess and access-assess: the read-only snapshots that are each
+  # assessment's only model input.
+  - name: Snapshot Service Assessment
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: Snapshot Access
+    playbook: platform/playbooks/snapshot-access.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step systemd-enablement: every container of the service restarts on its own and,
+  # for rootless podman, the deploying user has linger. Read-only.
+  - name: Verify Service Persistence
+    playbook: platform/playbooks/verify-service-persistence.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
 

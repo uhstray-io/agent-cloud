@@ -158,3 +158,44 @@ templates:
 
   - name: "Validate All Services (Local)"
     playbook: platform/playbooks/validate-all.yml
+
+  # NetBox under podman through the local controller (change service-deployment-workflow
+  # section 6). Replaces the Mac-driven scripts/local-netbox-up.sh path.
+  - name: "Deploy NetBox (Local)"
+    playbook: platform/playbooks/deploy-netbox.yml
+
+  - name: "Verify Service Persistence (Local)"
+    playbook: platform/playbooks/verify-service-persistence.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Firewall (Local)"
+    playbook: platform/playbooks/snapshot-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Service Assessment (Local)"
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Access (Local)"
+    playbook: platform/playbooks/snapshot-access.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true

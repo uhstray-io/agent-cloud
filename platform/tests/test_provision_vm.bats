@@ -163,3 +163,9 @@ setup() {
   # Migration is verified like the clone: task status polled, exitstatus asserted.
   assert_grep -q 'Verify migrate succeeded' "$pb"
 }
+
+@test "provision-vm: the VM starts with its node (onboot), opt-out per host" {
+  # Change service-deployment-workflow task 7.2; registry step provision-vm requires onboot=1.
+  blk=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml")
+  printf '%s' "$blk" | grep -qF "onboot: \"{{ '1' if (vm_onboot | default(true) | bool) else '0' }}\""
+}

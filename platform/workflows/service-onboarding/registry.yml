@@ -141,8 +141,7 @@ steps:
     owner: service-agent
     executor: null
     feeds: [vm-rightsize, service-deploy]
-    snapshot: null
-    planned_snapshot: Snapshot Service Assessment
+    snapshot: Snapshot Service Assessment
     schema: service-assessment.json
     undo: none
     policy: required
@@ -237,8 +236,7 @@ steps:
     owner: security-agent
     executor: null
     feeds: [fw-harden]
-    snapshot: null
-    planned_snapshot: Snapshot Firewall
+    snapshot: Snapshot Firewall
     schema: firewall-policy.json
     undo: none
     policy: required
@@ -280,8 +278,7 @@ steps:
     order: 19
     diagram_label: Systemd enablement
     owner: infra-agent
-    executor: null
-    planned_executor: Verify Service Persistence
+    executor: Verify Service Persistence
     undo: none
     policy: required
     criteria:
@@ -296,8 +293,7 @@ steps:
     owner: service-agent
     executor: null
     feeds: [oidc-config]
-    snapshot: null
-    planned_snapshot: Snapshot Access
+    snapshot: Snapshot Access
     schema: access-policy.json
     undo: none
     policy: required
