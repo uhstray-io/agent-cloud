@@ -36,7 +36,10 @@
 
 locals {
   inference_host = "inference.${var.zone_name}"
-  inference_v1   = "(http.host eq \"${local.inference_host}\" and starts_with(http.request.uri.path, \"/v1/\"))"
+  # The same /v1 API is also served on the agentgateway operator-UI host (its LLM
+  # playground calls /v1 on its own origin), so the per-source ceiling covers both.
+  inference_admin_host = "admin.inference.${var.zone_name}"
+  inference_v1         = "(http.host in {\"${local.inference_host}\" \"${local.inference_admin_host}\"} and starts_with(http.request.uri.path, \"/v1/\"))"
   inference_bucket = {
     characteristics     = ["cf.colo.id", "ip.src"]
     period              = 10
