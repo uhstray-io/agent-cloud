@@ -173,9 +173,10 @@ steps:
     undo: none
     policy: required
     criteria:
-      - every existing-typed secret is present and non-empty
-      - the service AppRole exists with the service policy
-    evidence_keys: [missing, empty]
+      - every existing-typed secret the service's deploy declares is present and non-empty
+      - the service AppRole exists with the service policy, when the service declares one
+        (a committed OpenBao policy file named for the service)
+    evidence_keys: [path_found, key_count, missing, empty, approle]
     reviewed: null
 
   - id: instrument-host
