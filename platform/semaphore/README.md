@@ -152,3 +152,13 @@ The full-catalog [`setup-templates.yml`](setup-templates.yml), repository
 bootstrap and inventory sync remain explicit operator configuration operations.
 Their shared runtime access task supports the controller AppRole without making
 those broader operations available through the survey-only entry point.
+
+For a missing template already declared in a reviewed branch, the same
+`setup-templates.yml` accepts one exact `semaphore_template_names` entry with
+`semaphore_allow_scoped_create=true`. Supply verified non-secret
+`semaphore_project_id`, `semaphore_inventory_id` and `semaphore_environment_id`.
+It creates only that named template, checks its repository URL/branch against
+`repositories.yml`, reads back its repository, inventory, environment and
+playbook bindings, and leaves existing templates and schedules alone. Repeating
+the call is a no-op when the declaration and live record already match.
+Without the explicit create flag, a missing scoped template still refuses.

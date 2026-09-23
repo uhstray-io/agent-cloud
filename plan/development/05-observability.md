@@ -91,6 +91,14 @@
 > only as an encrypted environment secret, merges that one key into OpenBao,
 > and skips an unchanged value. It has not been run with a webhook; no alert
 > recipient has been approved or delivery observed.
+> A read-only production Semaphore API check on 2026-09-23 authenticated with
+> the existing operator token. The reviewed `dev` declaration includes both
+> `Audit o11y Containers` templates, but neither is registered there. A
+> declaration/live comparison found 129 matching templates whose success-alert
+> setting differs and 65 survey differences; full-catalog publication would
+> therefore touch unrelated production configuration. The scoped publisher is
+> being extended to create one exact declared template with verified bindings.
+> No production audit task has been launched.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
