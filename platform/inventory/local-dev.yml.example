@@ -241,7 +241,9 @@ all:
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
-          # LM Studio may run without authentication locally; prod leaves this unset (true).
+          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
+          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
+          # Prod leaves this unset (true = refuse an empty key).
           agw_upstream_requires_key: false
 
 

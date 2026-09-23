@@ -24,7 +24,8 @@
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   agw_rate_requests_per_minute_total  (optional) one global request bucket
 #   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
-#   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key
+#   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
+#                                        false makes the key optional (still sent when present)
 #   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 
