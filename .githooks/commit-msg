@@ -3,7 +3,7 @@
 #
 # Repo rule (AGENTS.md, Git Conventions): "No AI attribution in commits". A coding agent's
 # harness can instruct it to append attribution trailers, and on 2026-09-22 one did so on
-# six commits, one of which was pushed (docs/MISTAKES.md 5.8). A rule carried by memory
+# six commits, one of which was pushed (docs/MISTAKES.md 5.9). A rule carried by memory
 # failed; this hook carries it mechanically. Authorship stays the committer's own identity.
 #
 # Escape hatch for a reason you can defend in review: git commit --no-verify

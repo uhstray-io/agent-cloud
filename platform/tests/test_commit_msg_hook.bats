@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The commit-msg hook refuses AI attribution (AGENTS.md Git Conventions; docs/MISTAKES.md 5.8).
+# The commit-msg hook refuses AI attribution (AGENTS.md Git Conventions; docs/MISTAKES.md 5.9).
 load assert_helpers
 
 setup() {

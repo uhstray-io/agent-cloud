@@ -28,6 +28,7 @@
 #                                        false makes the key optional (still sent when present)
 #   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
+#   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 
 # ── Pre-flight: refuse to "succeed" against a group the inventory lacks ──────
 # Ansible treats a play whose hosts: matches nothing as a no-op and exits 0, so a
@@ -70,8 +71,10 @@
           {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
     # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
-    _shared_reads:
-      - { from_service: authentik, read_keys: [agentgateway_oidc_client_secret] }
+    # Skipped with agw_ui_enabled: false, so /v1 deploys before that client exists.
+    _shared_reads: >-
+      {{ [{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
+         if (agw_ui_enabled | default(true) | bool) else [] }}
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
       # 0644 on purpose: the gateway image runs as a non-root user and the file is

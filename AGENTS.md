@@ -429,7 +429,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 
 ## Git Conventions
 
-- **No AI attribution** in commits — enforced by `.githooks/commit-msg` (`docs/MISTAKES.md` 5.8)
+- **No AI attribution** in commits — enforced by `.githooks/commit-msg` (`docs/MISTAKES.md` 5.9)
 - **No credentials, IPs, or usernames** in committed files — use `{{ }}` template variables
 - IPs and real credentials belong exclusively in site-config (private)
 

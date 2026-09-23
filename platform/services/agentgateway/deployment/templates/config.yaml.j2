@@ -19,6 +19,11 @@
    side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
    run past any fixed value; the upstream keep-alive owns idle).
    Do NOT edit by hand — re-run the playbook. #}
+{# agw_ui_enabled (default true): false renders no UI listener and no OIDC block,
+   so /v1 can be deployed and proven before the Authentik client exists. The
+   admin listener still carries its own unauthenticated UI copy on the container
+   loopback, which is never published. #}
+{% set _ui = agw_ui_enabled | default(true) | bool %}
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 config:
   # Bind on all container interfaces; compose publishes them on the host binds
@@ -69,6 +74,7 @@ config:
 gateways:
   default:
     port: 4000
+{% if _ui %}
   ui:
     port: 4001
 
@@ -88,6 +94,7 @@ ui:
     authorization:
       rules:
         - allow: '"{{ agw_ui_admin_group | default('platform-admins') }}" in jwt.groups'
+{% endif %}
 
 frontendPolicies:
   http:
@@ -103,7 +110,7 @@ llm:
   # no second browser-reachable port. The OIDC policy above is scoped to the UI
   # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
   # 2026-09-17), so the playground needs an enrolled client key pasted in.
-  gateways: [default, ui]
+  gateways: {{ '[default, ui]' if _ui else '[default]' }}
   policies:
     apiKey:
       # strict: a request with no key or an unknown key is 401 here and never
