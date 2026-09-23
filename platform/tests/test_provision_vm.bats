@@ -163,3 +163,35 @@ setup() {
   # Migration is verified like the clone: task status polled, exitstatus asserted.
   assert_grep -q 'Verify migrate succeeded' "$pb"
 }
+
+@test "provision-vm: refuses a declared address another inventory host claims (evaluated)" {
+  # docs/MISTAKES.md 4.7: an edit left a runner declared at the gateway's address.
+  # Extract the REAL guard and run it against a small inventory, both ways.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  python3 - "$pb" "$BATS_TEST_TMPDIR/claim.yml" <<'PY2'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+task = [t for p in plays for t in (p.get('tasks') or [])
+        if t.get('name') == 'Refuse a declared address claimed by another inventory host'][0]
+yaml.safe_dump([{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+                 'tasks': [task]}], open(sys.argv[2], 'w'))
+PY2
+  # RFC 5737 documentation addresses only.
+  cat > "$BATS_TEST_TMPDIR/inv.yml" <<'YAML'
+all:
+  hosts:
+    localhost: { ansible_connection: local }
+    gw: { ansible_host: 192.0.2.56, vm_ip: 192.0.2.56 }
+    runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.54 }
+YAML
+  # No conflict: gw's own address is not a claim against itself.
+  ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" \
+    -e _decl_host=gw -e _ip=192.0.2.56 >/dev/null 2>&1
+  # Conflict via another host's vm_ip (the real incident) and via its ansible_host.
+  sed -i.bak 's/runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.54 }/runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.56 }/' "$BATS_TEST_TMPDIR/inv.yml"
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" -e _decl_host=gw -e _ip=192.0.2.56
+  [ "$status" -ne 0 ]
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" -e _decl_host=gw -e _ip=192.0.2.54
+  [ "$status" -ne 0 ]
+}
