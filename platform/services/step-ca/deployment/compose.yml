@@ -16,7 +16,7 @@ services:
   step-ca:
     image: ${STEPCA_IMAGE:-docker.io/smallstep/step-ca:0.30.2}
     container_name: step-ca
-    restart: unless-stopped
+    restart: always
     environment:
       # First-run auto-init (ignored once /home/step/config/ca.json exists).
       DOCKER_STEPCA_INIT_NAME: ${STEPCA_NAME:-agent-cloud Internal CA}

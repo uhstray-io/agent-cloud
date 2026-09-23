@@ -19,7 +19,7 @@ name: erpnext
 # workers, scheduler, websocket, configurator) — same image + sites volume.
 x-frappe: &frappe
   image: ${ERPNEXT_IMAGE:-docker.io/frappe/erpnext}:${ERPNEXT_VERSION:?set ERPNEXT_VERSION in .env}
-  restart: unless-stopped
+  restart: always
   networks: [erpnext]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
@@ -28,7 +28,7 @@ services:
   db:
     image: ${MARIADB_IMAGE:-docker.io/library/mariadb:10.6}
     container_name: erpnext-db
-    restart: unless-stopped
+    restart: always
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -48,7 +48,7 @@ services:
   redis-cache:
     image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
     container_name: erpnext-redis-cache
-    restart: unless-stopped
+    restart: always
     networks: [erpnext]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -59,7 +59,7 @@ services:
   redis-queue:
     image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
     container_name: erpnext-redis-queue
-    restart: unless-stopped
+    restart: always
     volumes:
       - redis-queue-data:/data
     networks: [erpnext]

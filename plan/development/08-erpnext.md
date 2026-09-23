@@ -264,7 +264,7 @@ name: erpnext
 
 x-frappe: &frappe
   image: ${ERPNEXT_IMAGE:-docker.io/frappe/erpnext}:${ERPNEXT_VERSION:?set in .env}
-  restart: unless-stopped
+  restart: always
   networks: [erpnext]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
@@ -273,7 +273,7 @@ services:
   db:
     image: docker.io/library/mariadb:10.6
     container_name: erpnext-db
-    restart: unless-stopped
+    restart: always
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -293,7 +293,7 @@ services:
   redis-cache:
     image: docker.io/library/redis:7-alpine
     container_name: erpnext-redis-cache
-    restart: unless-stopped
+    restart: always
     networks: [erpnext]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -304,7 +304,7 @@ services:
   redis-queue:
     image: docker.io/library/redis:7-alpine
     container_name: erpnext-redis-queue
-    restart: unless-stopped
+    restart: always
     volumes:
       - redis-queue-data:/data
     networks: [erpnext]
@@ -394,7 +394,7 @@ services:
   minio:
     image: docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     container_name: erpnext-minio
-    restart: unless-stopped
+    restart: always
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}

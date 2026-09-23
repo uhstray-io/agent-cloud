@@ -65,7 +65,7 @@ services:
       timeout: 3s
       interval: 15s
     # Restart so it recovers if it starts before migrations complete.
-    restart: unless-stopped
+    restart: always
     volumes:
       - ./netbox-docker/configuration:/etc/netbox/config:z,ro
       - ./configuration/plugins.py:/etc/netbox/config/plugins.py:ro,z
@@ -148,7 +148,7 @@ services:
         condition: service_started
       diode-auth:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
 
   # Processes incoming discovery data via Redis streams
   diode-ingester:
@@ -162,7 +162,7 @@ services:
         condition: service_healthy
       diode-auth:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
 
   # Reconciles discovered data against NetBox objects
   diode-reconciler:
@@ -183,7 +183,7 @@ services:
         condition: service_healthy
       diode-auth:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
 
   # OAuth2 token management
   # OAuth2 clients are registered by deploy.sh via authmanager after this is running.
@@ -199,7 +199,7 @@ services:
     depends_on:
       hydra:
         condition: service_started
-    restart: unless-stopped
+    restart: always
 
   # OAuth2/OIDC provider
   hydra:
@@ -221,7 +221,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
 
   # One-shot: runs Hydra database migrations
   hydra-migrate:
@@ -252,7 +252,7 @@ services:
     env_file: env/discovery.env
     volumes:
       - diode-redis-data:/data
-    restart: unless-stopped
+    restart: always
 volumes:
   netbox-media-files:
     driver: local

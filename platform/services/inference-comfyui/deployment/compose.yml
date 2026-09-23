@@ -20,7 +20,7 @@ services:
     # Pinned RELEASE tag (no :latest). Override with MINIO_IMAGE to bump.
     image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z}
     container_name: comfyui-minio
-    restart: unless-stopped
+    restart: always
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -41,7 +41,7 @@ services:
     # deploy time. Override COMFYUI_API_IMAGE to pin a specific tag/digest.
     image: ${COMFYUI_API_IMAGE:-ghcr.io/uhstray-io/inference-comfyui:latest}
     container_name: comfyui-api
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     ports:

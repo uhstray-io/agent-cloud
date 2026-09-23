@@ -40,6 +40,31 @@
 | 7 | **Init/secret escrow gaps** | root token never revoked (`IMPLEMENTATION_PLAN.md:1666`); `site-config/secrets/openbao/` referenced but **absent**; no audit device (`:1670`) | Long-lived root token on VM; no audit trail; manual key backup |
 | 8 | **Storage-backend fork local↔prod** | local-dev = `file`; prod = `raft` | Local never exercises the Raft path prod runs (init/unseal/snapshot untested) |
 
+### Measured cost of problem 2 — the 2026-09-19 reboot
+
+The production OpenBao host rebooted on 2026-09-19. The outage ran in two stages, and
+only the first is fixed:
+
+| Stage | Cause | Status |
+|-------|-------|--------|
+| Container stayed stopped for three days | Compose declared `restart: unless-stopped`; podman 4.9.3's boot unit starts only `always` | **Fixed** (`docs/MISTAKES.md` 10.15; guarded by `platform/tests/test_restart_policy.bats`) |
+| Started container was sealed | Manual Shamir unseal, no auto-unseal (problem 2) | **Open gap.** Unsealed by hand on 2026-09-22 from the on-VM init file (problem 7) |
+
+While OpenBao is sealed, every Semaphore deploy that reads a secret fails, including the
+ones that would repair other services. Auto-unseal is therefore the one remaining step
+between "a host rebooted" and "the platform is down until someone notices". Two things
+follow for phase B2:
+
+- **B2 can now be accepted on a real reboot.** The container comes back on its own, so
+  "restart a node, and it auto-unseals" tests the seal, not the restart policy.
+- **The live container keeps its old policy until it is recreated.** The restart policy
+  is fixed at create time. The fix reaches production OpenBao only when its deploy
+  recreates the container. Phase B1 replaces that legacy deploy path.
+
+Until B2 lands, recovery after a reboot is: confirm the container is running, then unseal.
+That recovery needs the unseal key, which today lives only in the on-VM init file, so the
+escrow work in problem 7 blocks any runbook that avoids SSH.
+
 ---
 
 ## Design Principles
@@ -285,6 +310,7 @@ flowchart LR
 | Date | Summary |
 |------|---------|
 | 2026-06-14 | Initial draft. A1 (persistent local file backend) landed; Tracks A/B and decision criteria authored from OpenBao docs + repo current-state assessment. |
+| 2026-09-22 | Recorded the 2026-09-19 reboot outage as the measured cost of problem 2. Its restart-policy stage is fixed; the sealed-after-restart stage stays open until B2. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 
