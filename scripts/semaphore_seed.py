@@ -61,14 +61,14 @@ def environment_body(env, operations):
     return {**env, "secrets": operations}
 
 
-def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
-                   staged_prefixes=(), extra=None, message="Seed declared inputs via encrypted inputs",
-                   timeout=600):
-    """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
-    seed template, then remove exactly the inputs it created.
+def preflight(api, project, template_id, expected_env, input_names, *, playbook, template_names,
+              staged_prefixes=(), bindings=None):
+    """Every read-only check a seed makes before its first write. Returns (template, env).
 
-    `staged_prefixes` widens the collision refusal to a whole name family (Postiz stages
-    SEED_*). `extra` is NON-SECRET launch configuration only: Semaphore persists it.
+    Dry run, the read-only access check and the real seed all call this, so none of them
+    can launch or stage against a template the others would refuse. `bindings` maps
+    template fields (repository_id, inventory_id) to their APPROVED values: a template
+    rebound after provisioning is refused before anything is staged or launched.
     """
     template = api(f"/templates/{template_id}")
     if (template.get("playbook") != playbook
@@ -76,7 +76,10 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
             or template.get("app") != "ansible"
             or template.get("arguments") not in (None, "[]", [])
             or template.get("environment_id") != expected_env):
-        raise Refusal("Template name, playbook or expected environment binding differs")
+        raise Refusal("Template name, playbook, app, arguments or environment binding differs")
+    for field, approved in (bindings or {}).items():
+        if template.get(field) != approved:
+            raise Refusal(f"Template {field} differs from its approved binding")
     env_path = f"/environment/{expected_env}"
     before = api(env_path)
     if before.get("project_id") != project or before.get("id") != expected_env:
@@ -84,10 +87,12 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     secrets = before.get("secrets")
     if not isinstance(secrets, list):
         raise Refusal("Environment response has no secrets array; absence cannot be established")
+    names = set(input_names)
+
     # Refuse any leftover input of this seed's family, staged or plaintext: it means an
     # earlier run did not finish, and its task may still need it.
     def staged(name):
-        return name in values or name.startswith(tuple(staged_prefixes)) if staged_prefixes else name in values
+        return name in names or (bool(staged_prefixes) and name.startswith(tuple(staged_prefixes)))
     if any(staged(item.get("name", "")) for item in secrets):
         raise Refusal("Existing encrypted seed inputs require reconciliation before staging")
     for field in ("json", "env"):
@@ -103,6 +108,22 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
             owner = templates.get(task.get("template_id"), {})
             if owner.get("environment_id") == expected_env:
                 raise Refusal("Another task is using the seed environment")
+    return template, before
+
+
+def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
+                   staged_prefixes=(), extra=None, bindings=None,
+                   message="Seed declared inputs via encrypted inputs", timeout=600):
+    """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
+    seed template, then remove exactly the inputs it created.
+
+    `staged_prefixes` widens the collision refusal to a whole name family (Postiz stages
+    SEED_*). `extra` is NON-SECRET launch configuration only: Semaphore persists it.
+    """
+    template, before = preflight(api, project, template_id, expected_env, set(values), playbook=playbook,
+                                 template_names=template_names, staged_prefixes=staged_prefixes,
+                                 bindings=bindings)
+    env_path = f"/environment/{expected_env}"
     # A fresh equality check catches changes made during preflight. It is not CAS.
     if api(env_path) != before:
         raise Refusal("Environment changed during preflight")

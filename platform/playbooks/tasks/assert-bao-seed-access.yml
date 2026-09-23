@@ -1,0 +1,44 @@
+---
+# assert-bao-seed-access.yml — prove an OpenBao token may seed one KV-v2 path,
+# without reading a value back and without writing.
+#
+# A GET alone proves nothing for a NEW secret: OpenBao answers 404 both for a
+# missing path and for a path the token cannot see, so a denied AppRole passed the
+# seed templates' read-only checks (review of PR #205, 2026-09-23). The token's own
+# capabilities on the path decide. Seeds write with PATCH (existing path) or POST
+# (new path), so the token needs read plus create, update or patch.
+#
+# Required vars:
+#   _sa_url    OpenBao base URL (transport already asserted by the caller)
+#   _sa_token  the token to test (a no_log'd login result)
+#   _sa_path   KV-v2 path UNDER secret/data (e.g. services/agentgateway)
+
+- name: "Query the token's capabilities on secret/data/{{ _sa_path }}"
+  ansible.builtin.uri:
+    url: "{{ _sa_url }}/v1/sys/capabilities-self"
+    method: POST
+    body_format: json
+    body:
+      paths: ["secret/data/{{ _sa_path }}"]
+    headers:
+      X-Vault-Token: "{{ _sa_token }}"
+    follow_redirects: none
+  register: _sa_caps
+  no_log: true
+  check_mode: false
+
+- name: "Require read and write capability on secret/data/{{ _sa_path }}"
+  vars:
+    _caps: >-
+      {{ _sa_caps.json['secret/data/' ~ _sa_path]
+         | default(_sa_caps.json.capabilities | default([])) }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        'root' in _caps or ('read' in _caps
+        and (_caps | intersect(['create', 'update', 'patch']) | length > 0))
+    fail_msg: >-
+      The AppRole holds {{ _caps | join(', ') or 'no capabilities' }} on
+      secret/data/{{ _sa_path }}; seeding needs read plus create, update or patch.
+      Fix the policy through apply-openbao-policies.yml, not by hand.
+    success_msg: "Capabilities on secret/data/{{ _sa_path }}: {{ _caps | join(', ') }}"

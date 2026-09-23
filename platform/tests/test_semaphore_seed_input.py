@@ -67,6 +67,10 @@ class FakeAPI:
                     "env": "{}", "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
                                              {"id": 2, "name": "BAO_SECRET_ID", "type": "env"}]}
         self.shared = {"id": 2, "project_id": 1, "name": "local-dev"}
+        self.repos = [{"id": 4, "name": "agent-cloud", "git_url": "https://github.com/uhstray-io/agent-cloud.git",
+                       "git_branch": "main"},
+                      {"id": 5, "name": "agent-cloud dev", "git_url": "https://github.com/uhstray-io/agent-cloud.git",
+                       "git_branch": "dev"}]
         self.status = status
         self.calls = []
 
@@ -78,6 +82,8 @@ class FakeAPI:
             return copy.deepcopy(self.template)
         if path == "/environment":
             return [copy.deepcopy(self.env), copy.deepcopy(self.shared)]
+        if path == "/repositories":
+            return copy.deepcopy(self.repos)
         if path == "/environment/9":
             if body:
                 for op in body["secrets"]:
@@ -126,9 +132,64 @@ def test_seed_refuses_a_leftover_staged_input_before_any_write():
 
 def test_verify_only_stages_nothing_and_sets_only_the_access_switch():
     api = FakeAPI()
-    cli.verify_access(api, 1, 301, "bao_verify_access_only", {"bao_path": "services/x", "bao_key": "k"})
+    cli.verify_access(api, 1, 301, "bao_verify_access_only", {"bao_path": "services/x", "bao_key": "k"},
+                      check=lambda: None)
     writes = [(path, body) for path, body in api.calls if body]
     assert [path for path, _ in writes] == ["/tasks"]
     assert json.loads(writes[0][1]["environment"])["bao_verify_access_only"] == "true"
     with pytest.raises(cli.Refusal):
-        cli.verify_access(FakeAPI(status="error"), 1, 301, "bao_verify_access_only", {})
+        cli.verify_access(FakeAPI(status="error"), 1, 301, "bao_verify_access_only", {}, check=lambda: None)
+
+
+# ── the CLI end to end: every mode runs the same read-only preflight first ──────
+
+def run_cli(monkeypatch, tmp_path, api, *mode):
+    value = tmp_path / "value"
+    value.write_text(SECRET + "\n")
+    monkeypatch.setattr(cli, "API", lambda url, project, token: api)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("synthetic-token"))
+    monkeypatch.setattr("sys.argv", ["semaphore-seed-input.py", "--template", "Seed OpenBao Key",
+                                     "--set", "bao_path=services/x", "--set", "bao_key=k",
+                                     "--input", f"BAO_VALUE={value}", "--inventory", "2",
+                                     "--url", "https://semaphore.example", *mode])
+    return cli.main()
+
+
+def writes_of(api):
+    return [path for path, body in api.calls if body is not None]
+
+
+@pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply"), ("--apply",)])
+def test_a_consistent_seed_passes_every_mode(monkeypatch, tmp_path, capsys, mode):
+    api = FakeAPI()
+    assert run_cli(monkeypatch, tmp_path, api, *mode) == 0, capsys.readouterr().err
+    assert SECRET not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply"), ("--apply",)])
+@pytest.mark.parametrize("drift", [{"repository_id": 4}, {"inventory_id": 7}, {"arguments": '["-e","x=1"]'},
+                                   {"app": "terraform"}])
+def test_a_rebound_or_reshaped_template_is_refused_before_any_write(monkeypatch, tmp_path, capsys, mode, drift):
+    # Review of PR #205: a template rebound to another repository or inventory after
+    # provisioning, or given arguments, must get no staged input and no task, in any mode.
+    api = FakeAPI()
+    api.template.update(drift)
+    assert run_cli(monkeypatch, tmp_path, api, *mode) == 1
+    assert writes_of(api) == []
+    assert SECRET not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply")])
+def test_a_leftover_input_fails_dry_run_and_verify_not_only_apply(monkeypatch, tmp_path, capsys, mode):
+    api = FakeAPI()
+    api.env["secrets"].append({"id": 7, "name": "BAO_VALUE", "type": "env"})
+    assert run_cli(monkeypatch, tmp_path, api, *mode) == 1
+    assert "reconciliation" in capsys.readouterr().err
+    assert writes_of(api) == []
+
+
+def test_a_repository_record_that_drifted_from_its_declaration_is_refused(monkeypatch, tmp_path):
+    api = FakeAPI()
+    api.repos[1]["git_branch"] = "feature/unreviewed"
+    assert run_cli(monkeypatch, tmp_path, api, "--apply") == 1
+    assert writes_of(api) == []

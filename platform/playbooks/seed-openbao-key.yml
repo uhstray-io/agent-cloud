@@ -96,8 +96,19 @@
     # allowed to read the target path, then stops before any write, whether or not a
     # value is staged. Run it once after provisioning an isolated seed environment,
     # before the first real seed (scripts/semaphore-seed-input.py --verify-only).
-    # 404 is a pass: the path may not exist yet, and a 404 is only returned to a token
-    # the policy allows to read it; a denied token gets 403.
+    # A GET alone cannot prove access: OpenBao answers 404 both for a missing path and
+    # for one the token cannot see, so a denied AppRole would pass for a NEW secret.
+    # The capabilities this token actually holds on the path decide; the GET then only
+    # confirms an existing path answers. The seed writes with PATCH (existing path) or
+    # POST (new path), so it needs read plus create, update or patch.
+    - name: "Prove this AppRole may seed the path (capabilities, no write)"
+      ansible.builtin.include_tasks: tasks/assert-bao-seed-access.yml
+      vars:
+        _sa_url: "{{ _bao_url }}"
+        _sa_token: "{{ _bao_auth.json.auth.client_token }}"
+        _sa_path: "{{ bao_path }}"
+      when: bao_verify_access_only | default(false) | bool
+
     - name: "Read the target path with the AppRole token (access check)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
