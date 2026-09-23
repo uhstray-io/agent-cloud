@@ -839,6 +839,13 @@ templates:
     # Re-running with unchanged values writes nothing. Verify with Check
     # Secrets, then run Deploy Postiz.
 
+  - name: Seed o11y Alert Webhook
+    playbook: platform/playbooks/seed-o11y-alert-webhook.yml
+    dev_variant: true
+    # Supply O11Y_ALERT_DISCORD_WEBHOOK_URL as an encrypted Semaphore environment
+    # secret. Never use a survey field or launch extra var: Semaphore persists
+    # both outside OpenBao. Run this before enabling o11y alerts in inventory.
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's

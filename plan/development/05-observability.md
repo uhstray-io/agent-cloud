@@ -85,6 +85,12 @@
 > rule was paused; a container-existence check confirmed no probe was made.
 > Ordinary unreachable-endpoint task 1138 still passed and removed its probe.
 > The enabled alert-firing and external notification paths remain untested.
+> A read-only local OpenBao check on 2026-09-23 found the o11y record but no
+> `alert_discord_webhook_url` key. The branch now includes a repeatable
+> `Seed o11y Alert Webhook` Semaphore playbook: it accepts the approved value
+> only as an encrypted environment secret, merges that one key into OpenBao,
+> and skips an unchanged value. It has not been run with a webhook; no alert
+> recipient has been approved or delivery observed.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

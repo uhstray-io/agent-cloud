@@ -6,6 +6,8 @@
 # candidate_action=fault runs the local-only unreachable-endpoint drill.
 # candidate_action=alert-deploy enables the OpenBao-backed contact point;
 # candidate_action=alert runs the firing drill. Both are additive templates.
+# candidate_action=seed registers the OpenBao webhook seed workflow. Its value
+# must be an environment secret; this binder never accepts it as a survey var.
 # Run with SEMAPHORE_URL/TOKEN from the local-dev runtime environment:
 #   ansible-playbook platform/semaphore/deploy-local-o11y-candidate.yml \
 #     -e candidate_branch=feat/example -e candidate_expected_sha=<40-hex-sha> \
@@ -26,8 +28,8 @@
     _candidate_suffix: "{{ (_branch | hash('sha256'))[:12] }}"
     _candidate_repo_name: "agent-cloud o11y candidate {{ _candidate_suffix }}"
     _local_template_name: "{{ 'Deploy Caddy (Local)' if _action == 'caddy' else 'Deploy o11y (Local)' }}"
-    _candidate_template_name: "{{ {'verify': 'Verify o11y Service', 'caddy': 'Deploy Caddy', 'deploy': 'Deploy o11y', 'fault': 'Drill o11y Unreachable Endpoint', 'alert-deploy': 'Deploy o11y Alerts', 'alert': 'Drill o11y Alert'}.get(_action, '') }} (Candidate {{ _candidate_suffix }})"
-    _candidate_playbook: "{{ {'verify': 'platform/playbooks/verify-o11y-service.yml', 'caddy': 'platform/playbooks/deploy-caddy.yml', 'deploy': 'platform/playbooks/deploy-o11y.yml', 'fault': 'platform/playbooks/drill-o11y-unreachable.yml', 'alert-deploy': 'platform/playbooks/deploy-o11y.yml', 'alert': 'platform/playbooks/drill-o11y-unreachable.yml'}.get(_action, '') }}"
+    _candidate_template_name: "{{ {'verify': 'Verify o11y Service', 'caddy': 'Deploy Caddy', 'deploy': 'Deploy o11y', 'fault': 'Drill o11y Unreachable Endpoint', 'alert-deploy': 'Deploy o11y Alerts', 'alert': 'Drill o11y Alert', 'seed': 'Seed o11y Alert Webhook'}.get(_action, '') }} (Candidate {{ _candidate_suffix }})"
+    _candidate_playbook: "{{ {'verify': 'platform/playbooks/verify-o11y-service.yml', 'caddy': 'platform/playbooks/deploy-caddy.yml', 'deploy': 'platform/playbooks/deploy-o11y.yml', 'fault': 'platform/playbooks/drill-o11y-unreachable.yml', 'alert-deploy': 'platform/playbooks/deploy-o11y.yml', 'alert': 'platform/playbooks/drill-o11y-unreachable.yml', 'seed': 'platform/playbooks/seed-o11y-alert-webhook.yml'}.get(_action, '') }}"
     _candidate_survey_vars: >-
       {{ [{'name': 'expected_repository_sha', 'title': 'Expected checkout commit',
            'description': 'Full commit SHA to verify before running.',
@@ -64,7 +66,7 @@
           - (_semaphore_url | urlsplit('hostname')) in ['localhost', '127.0.0.1', '::1']
           - _branch | length > 0
           - _branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
-          - _action in ['deploy', 'verify', 'caddy', 'fault', 'alert-deploy', 'alert']
+          - _action in ['deploy', 'verify', 'caddy', 'fault', 'alert-deploy', 'alert', 'seed']
           - _project_id | int > 0
           - not (candidate_deploy | default(false) | bool) or _expected_sha is match('^[0-9a-f]{40}$')
           - not (candidate_deploy | default(false) | bool) or _action != 'verify' or candidate_service | default('') is match('^[a-z][a-z0-9-]*$')
