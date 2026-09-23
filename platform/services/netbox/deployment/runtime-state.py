@@ -2,9 +2,9 @@
 """Report safe NetBox Compose state and refuse image or volume drift."""
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 SERVICES = ("postgres", "redis", "redis-cache", "netbox")
 COMPOSE = ("docker", "compose", "--project-name", "netbox", "-f", "docker-compose.yml")

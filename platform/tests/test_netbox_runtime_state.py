@@ -36,7 +36,10 @@ def test_runtime_preflight_refuses_image_volume_bind_and_environment_drift(tmp_p
     containers = {
         service: {
             "Id": f"container-{service}",
-            "Config": {"Image": f"example/{service}:stable", "Env": ["PATH=/usr/bin", "DATABASE_PASSWORD=must-not-appear"]},
+            "Config": {
+                "Image": f"example/{service}:stable",
+                "Env": ["PATH=/usr/bin", "DATABASE_PASSWORD=must-not-appear"],
+            },
             "Image": f"sha256:{service}",
             "State": {"Status": "running", "Health": {"Status": "healthy"}},
             "HostConfig": {"RestartPolicy": {"Name": "always"}},
