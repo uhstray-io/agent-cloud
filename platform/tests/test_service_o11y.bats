@@ -25,6 +25,31 @@ setup() {
   [[ "$output" == *"Declare Discord guild and text-channel IDs in private o11y inventory."* ]]
 }
 
+@test "o11y: webhook credentials stay on the controller and out of task output" {
+  python3 - "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+tasks = plays[1]['tasks']
+uri_tasks = [task for task in tasks if 'ansible.builtin.uri' in task]
+assert uri_tasks
+assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True for task in uri_tasks)
+for task in tasks:
+    if task.get('ansible.builtin.set_fact') and any(
+        key in task['ansible.builtin.set_fact'] for key in ('_matching', '_webhook', '_webhook_url')
+    ):
+        assert task.get('no_log') is True
+merge, = (task for task in tasks if task.get('ansible.builtin.include_tasks') == 'tasks/bao-merge-keys.yml')
+assert merge.get('no_log') is True
+assert merge['vars']['_bm_on_missing'] == 'fail'
+templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
+seed, = (item for item in templates if item['name'] == 'Seed o11y Alert Webhook')
+sha, = (item for item in seed['survey_vars'] if item['name'] == 'expected_repository_sha')
+assert sha['required'] is True
+PY
+}
+
 @test "o11y: compose env-parameterizes all four images + grafana bind/port" {
   local f="$DEPLOY_DIR/compose.yml"
   [ -f "$f" ]
