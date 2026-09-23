@@ -225,15 +225,16 @@
 > must be declared in private `site-config` as `caddy_managed_sites` and
 > applied through `manage-caddy-sites.yml`, rather than through a service
 > fragment. Private site-config PR #17 merged the Grafana Authentik app
-> declaration, but that declaration has not been applied to live Authentik.
+> declaration; PR #18 aligned its production browser URLs. Neither change
+> has been applied to live Authentik.
 > The production telemetry contract names `o11y.uhstray.io`, which already has
 > an OpenTofu-managed DNS record. The local front door remains
-> `grafana.agent-cloud.test`. Before production SSO, align the private Grafana
-> Authentik redirect/launch URLs and Caddy route with `o11y.uhstray.io`, then
-> apply them through the Dev-bound Semaphore workflows. Read-only Dev-bound
+> `grafana.agent-cloud.test`. Before production SSO, apply the private Grafana
+> Authentik redirect/launch URLs and Caddy route for `o11y.uhstray.io`
+> through the Dev-bound Semaphore workflows. Read-only Dev-bound
 > task 1160 planned one unrelated DNS addition and one rate-limit update at
 > `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
-> On 2026-09-23, reviewed PRs #208 and #210 merged the receiver guard and
+> On 2026-09-23, PRs #208 and #210 merged the receiver guard and
 > OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
 > PR #18 merged the alert destination and Grafana browser URLs, but its
 > production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
@@ -245,10 +246,10 @@
 > that bounded wait and the probe lifetime; local Dev-bound task 1300 ran its
 > merged revision `0b64a0c447e476a1ad02a39de4368f0bab5053d8`, saw the
 > unreachable target, proved the onboarding verifier refused it, and removed
-> the probe. Its alert-delivery option was off. Discord notification receipt,
+> the probe. Task 1300 ran with alert delivery disabled. Discord notification receipt,
 > production NetBox recovery, receiver placement, and production telemetry
-> remain unverified. Production Semaphore sign-in currently meets a Cloudflare
-> challenge before its Authentik session can be opened from this workstation.
+> remain unverified. As of 2026-09-23, this workstation's production Semaphore
+> sign-in meets a Cloudflare challenge before the Authentik session opens.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
