@@ -55,6 +55,16 @@
 > `up=0`, and the shared onboarding verifier refused it with that service and
 > endpoint named. The playbook removed its probe in `always`; a subsequent
 > container-existence check confirmed absence.
+> At `21102b19bbafc294b3e46ef8cb7dcd93fc881a97`, local Semaphore task
+> 1126 redeployed the branch after provisioned alert rules were added. Grafana's
+> API reported `o11y_service_down` and `o11y_missing_caddy`, both paused while
+> the OpenBao-backed notification destination remains undecided. Its startup
+> log completed alert provisioning without a file-suffix warning. Task 1127
+> then found a Caddy log from the preceding 15 minutes and one healthy
+> Prometheus scrape. Grafana's API returned the Service Overview with three
+> panels spanning Loki and Prometheus. Together with task 1118's named
+> unreachable-endpoint refusal, this closes the local collection gate;
+> notification delivery, trace ingestion, and production receipt remain open.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

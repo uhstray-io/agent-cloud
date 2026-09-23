@@ -4,7 +4,7 @@
 - [x] 1.2 Provision a generic Service Overview dashboard with a service selector and panels for matching logs and metrics; keep existing dashboard IDs stable.
 - [x] 1.3 Reconcile the merged production DGX scrape files; add local engine discovery, opt-in filtering, service relabeling, high-churn exclusion, and a collector-reachable network path.
 - [x] 1.4 Add one pilot service's metrics declaration and a Semaphore-run verification query that names an unreachable target; update the onboarding checklist to require that evidence.
-- [ ] 1.5 Validation gate: local Semaphore deploy and target/log queries prove spec scenarios "Opted-in service is collected", "Unreachable endpoint fails visibly", "Operator pivots between signals", and "New service has live evidence".
+- [x] 1.5 Validation gate: local Semaphore deploy and target/log queries prove spec scenarios "Opted-in service is collected", "Unreachable endpoint fails visibly", "Operator pivots between signals", and "New service has live evidence".
 
 ## 2. Provisioned alerts and budgets
 

@@ -35,6 +35,15 @@
 > scrape listeners remain private to their service network; human queries go
 > through Grafana behind Caddy and Authentik.
 
+> **Local collection gate, 2026-09-23:** The feature branch now has the Alloy
+> opt-in metrics pilot. Exact-head Semaphore task 1127 found a fresh Caddy log
+> in Loki and one healthy `caddy:2021` scrape in Prometheus. Task 1118 had
+> already shown an opted-in but unreachable endpoint with `up=0` and a named
+> refusal from the shared onboarding verifier. Grafana read-back at the same
+> deployed revision found a Service Overview with Loki and Prometheus panels,
+> plus two provisioned alert rules kept paused until an OpenBao-backed contact
+> point and notification drill are complete. These are local receipts only.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 
