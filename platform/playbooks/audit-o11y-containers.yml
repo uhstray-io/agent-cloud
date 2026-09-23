@@ -7,10 +7,18 @@
   hosts: agent_cloud:grafanapodman
   gather_facts: false
   tasks:
+    - name: Read the SSH user's UID for the rootless Docker socket
+      ansible.builtin.command:
+        argv: [id, -u]
+      register: o11y_audit_uid
+      check_mode: false
+      changed_when: false
+
     - name: List rootless o11y Podman containers
       ansible.builtin.command:
         argv: [podman, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
       register: o11y_rootless
+      check_mode: false
       changed_when: false
       failed_when: false
 
@@ -18,20 +26,23 @@
       ansible.builtin.command:
         argv: [sudo, -n, podman, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
       register: o11y_rootful
+      check_mode: false
       changed_when: false
       failed_when: false
 
     - name: List rootless o11y Docker containers
       ansible.builtin.command:
-        argv: [docker, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
       register: o11y_docker_rootless
+      check_mode: false
       changed_when: false
       failed_when: false
 
     - name: List rootful o11y Docker containers
       ansible.builtin.command:
-        argv: [sudo, -n, docker, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+        argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
       register: o11y_docker_rootful
+      check_mode: false
       changed_when: false
       failed_when: false
 
@@ -41,12 +52,44 @@
           host: "{{ inventory_hostname }}"
           rootless_rc: "{{ o11y_rootless.rc }}"
           rootless_containers: "{{ o11y_rootless.stdout_lines }}"
+          rootless_errors: "{{ o11y_rootless.stderr_lines }}"
           rootful_rc: "{{ o11y_rootful.rc }}"
           rootful_containers: "{{ o11y_rootful.stdout_lines }}"
+          rootful_errors: "{{ o11y_rootful.stderr_lines }}"
           docker_rootless_rc: "{{ o11y_docker_rootless.rc }}"
           docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines }}"
+          docker_rootless_errors: "{{ o11y_docker_rootless.stderr_lines }}"
           docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
           docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines }}"
+          docker_rootful_errors: "{{ o11y_docker_rootful.stderr_lines }}"
+
+    - name: List all containers on the existing Grafana host
+      ansible.builtin.command:
+        argv: "{{ item.argv }}"
+      loop:
+        - {name: podman-rootless, argv: [podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
+        - {name: podman-rootful, argv: [sudo, -n, podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
+        - {name: docker-rootless, argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
+        - {name: docker-rootful, argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
+      loop_control:
+        label: "{{ item.name }}"
+      register: grafanapodman_containers
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname == 'grafanapodman'
+
+    - name: Report existing Grafana host inventory
+      ansible.builtin.debug:
+        msg:
+          runtime: "{{ item.item.name }}"
+          rc: "{{ item.rc }}"
+          containers: "{{ item.stdout_lines }}"
+          errors: "{{ item.stderr_lines }}"
+      loop: "{{ grafanapodman_containers.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: inventory_hostname == 'grafanapodman'
 
 - name: Inspect OpenBao container state without reading secrets
   hosts: openbao
@@ -56,6 +99,7 @@
       ansible.builtin.command:
         argv: [podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
       register: openbao_rootless
+      check_mode: false
       changed_when: false
       failed_when: false
 
@@ -63,6 +107,7 @@
       ansible.builtin.command:
         argv: [sudo, -n, podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
       register: openbao_rootful
+      check_mode: false
       changed_when: false
       failed_when: false
 
@@ -71,5 +116,7 @@
         msg:
           rootless_rc: "{{ openbao_rootless.rc }}"
           rootless_containers: "{{ openbao_rootless.stdout_lines }}"
+          rootless_errors: "{{ openbao_rootless.stderr_lines }}"
           rootful_rc: "{{ openbao_rootful.rc }}"
           rootful_containers: "{{ openbao_rootful.stdout_lines }}"
+          rootful_errors: "{{ openbao_rootful.stderr_lines }}"
