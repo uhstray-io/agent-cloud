@@ -36,6 +36,7 @@ supersede it with a new entry and link both.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -387,6 +388,26 @@ v2.19.11, to which production was pinned the same day, applies a task's branch o
 template allows it (`services/tasks/local_executor.go:938`), so the server does enforce the
 flag there. The rule stands unchanged: the original claim still named no server-side
 control, and on v2.18.12 there was none.
+
+### 1.10 Reported that a review had started, from a keyword match on a comment I never read
+
+**What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
+PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
+included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
+Review rate limited". The test labelled two refusals (#205, site-config#16) "started", and
+I told Joe that one of the two deploy prerequisites was now under review. It was not.
+Twenty minutes later, a read of the full comments showed every one of the four had been
+refused.
+
+**Root cause.** A loose classifier stood between me and the evidence, and its label was
+reported as the fact. The refusal phrasing had never been checked against the patterns, and
+the "other" output that would have exposed the mismatch was not what got read.
+
+**The rule.** When a reply decides what to tell the user, read the reply, or match it
+against a pattern proven on that exact phrasing. Report a keyword classifier's label only
+as a guess, and treat an unmatched or surprising label as a reason to read the text.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
