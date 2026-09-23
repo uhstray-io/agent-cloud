@@ -142,13 +142,12 @@ enforces it.
 
 ### Thread A: agentgateway owns the hostname; skynet is a capability under it
 
-```
-                     inference.uhstray.io  (Caddy TLS → agentgateway, agent-cloud)
-                     ├── /v1/*        → vLLM on the DGX pair        (model API)
-                     └── /skynet/*    → skynet Tier 2 API           (orchestration)
-                                          │
-                                          └── model calls ──▶ agentgateway /v1
-                                              one client key per agent role
+```mermaid
+flowchart LR
+    host["inference.uhstray.io<br/>(Caddy TLS to agentgateway, agent-cloud)"]
+    host -- "/v1/*" --> vllm["vLLM on the DGX pair<br/>(model API)"]
+    host -- "/skynet/*" --> skynet["skynet Tier 2 API<br/>(orchestration)"]
+    skynet -- "model calls, one client key per agent role" --> host
 ```
 
 - agentgateway (agent-cloud) is the single authority for the hostname: keys, budgets, rate
