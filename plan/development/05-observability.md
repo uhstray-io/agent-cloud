@@ -128,6 +128,15 @@
 > `up{service="caddy"}=1` and no loaded `agentgateway` scrape job, as required
 > while the local inventory omits that remote endpoint. These receipts do not
 > prove agentgateway telemetry or any production receiver state.
+> Local candidate deployment task 1166 and named verification task 1167 both
+> succeeded at `df8e8c58fc1083c9e8f6ef16318159e2e449bb4a`: Grafana,
+> Prometheus, Loki, and Alloy passed deployment checks, and the verifier found
+> a recent `caddy` log plus a healthy Caddy metrics scrape. A fresh browser
+> reload on 2026-09-23 returned to the signed-in Grafana Service Overview over
+> the local TLS front door and displayed the `caddy:2021` target. The six-hour
+> dashboard range also included the earlier disposable fault-probe series;
+> this historical series is not evidence of a currently running probe. These
+> checks validate the current local revision but do not prove alert delivery.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
