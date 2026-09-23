@@ -56,6 +56,14 @@ existing read-only Proxmox validation playbook to check VM state, but its
 OpenBao lookup could not connect; no VM status was observed. Task 0.2 remains
 open until those hosts or their stopped VM state are verified.
 
+Semaphore task 1107 also found the production-inventory Proxmox host
+`aquilarift` unreachable by SSH, so a local `pvesh` read could not substitute
+for the token-backed API. Task 1109 found the rootful `workflow-openbao`
+container on the reachable OpenBao host in `Created` state, with no rootless
+OpenBao container; its API port refused connections from both Semaphore and the
+operator workstation. Starting OpenBao and checking the VM records are separate
+follow-up steps; neither was performed by this read-only inventory.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of
