@@ -35,3 +35,8 @@ discovery/agent-resolved.yaml
 # Python virtual environment and cache (managed by uv)
 .venv/
 __pycache__/
+# Python build artifacts the orb agent writes into the bind-mounted workers/ when it installs
+# them (as root). Ignored so the local-dev placement rsync neither copies nor tries to delete
+# them: it could not, and every placement after an agent start failed with rsync code 23.
+workers/**/build/
+workers/**/*.egg-info/

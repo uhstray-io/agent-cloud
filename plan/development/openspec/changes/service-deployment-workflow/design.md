@@ -112,6 +112,8 @@ through worktree-bound `(Local)` templates, 2026-09-22.
 | `provision-netbox-automation-token.yml` (Local) | pass (990) after two fixes | not run | **Latent production bug:** the mint script passed `is_staff`, which the NetBox 4.5 User model does not have (FieldError), and printed only the 12-character key of a v2 token. Plan 04 records the production token as absent; this may be why. Fixed: v2 tokens are stored as the full `nbt_<key>.<token>` credential, and every consumer sends `Bearer` or `Token` according to the stored value |
 | `provision-netbox-custom-fields.yml` (Local) | create (995), unchanged (998) | unchanged (997) | runs through the Django shell: the scoped automation token has no permission on custom fields (403), by design |
 
+| `deploy-orb-agent.yml` (Local) | pass (1013) | pass (1014), agent left running | fixes: the local controller's OpenBao policy is now production's `semaphore-read.hcl` (the inline fork lacked `sys/policies/acl/*` and `auth/approle/role/*`); `tasks/manage-approle.yml` lost a dead `GET /v1/sys/auth` that no Semaphore policy grants; the agent drops sudo on local-dev and reaches OpenBao on the host loopback; worker build artifacts are gitignored so placement can leave them. Ledger 5.9: the first dry run (1008) removed the agent, because the wave-2 retrofit trusted `changed_when: false` on a stop-and-remove |
+
 Not runnable on local-dev: the Proxmox playbooks (`provision-template`, `provision-vm`,
 `resize-vm`, `snapshot-vm`, `destroy-vm`), the SSH host playbooks (`verify-host-access`,
 `distribute-ssh-keys`, `harden-ssh`, `apply-firewall`) and the site-config backups. The

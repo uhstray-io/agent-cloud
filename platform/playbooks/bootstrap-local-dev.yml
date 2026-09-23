@@ -320,10 +320,11 @@
         method: PUT
         headers: *bao_root_hdr
         body_format: json
+        # The SAME policy the production Semaphore holds (one codebase, no forks). The inline
+        # copy this replaced lacked sys/policies/acl/* and auth/approle/role/*, so any local
+        # AppRole provisioning (provision-orb-agent-approle.yml) got 403 (2026-09-22).
         body:
-          policy: |
-            path "secret/data/services/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
-            path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+          policy: "{{ lookup('file', playbook_dir ~ '/../services/openbao/deployment/config/policies/semaphore-read.hcl') }}"
         status_code: [200, 204]
       changed_when: true
       when: not ansible_check_mode
@@ -626,7 +627,7 @@
         "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
       register: _share_mkdir
       changed_when: false
-      check_mode: false
+      when: not ansible_check_mode
 
     - name: "Recreate Semaphore if any required mount or label=disable is missing"
       ansible.builtin.shell: |

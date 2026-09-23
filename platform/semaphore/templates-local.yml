@@ -205,3 +205,11 @@ templates:
 
   - name: "Provision NetBox Custom Fields (Local)"
     playbook: platform/playbooks/provision-netbox-custom-fields.yml
+
+  # Local discovery (platform/netbox-local): the orb agent's own scoped AppRole, then the
+  # agent itself, confined to local-dev networks by tasks/assert-local-discovery-scope.yml.
+  - name: "Provision AppRole - Orb Agent (Local)"
+    playbook: platform/playbooks/provision-orb-agent-approle.yml
+
+  - name: "Deploy Orb Agent (Local)"
+    playbook: platform/playbooks/deploy-orb-agent.yml

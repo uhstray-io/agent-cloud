@@ -16,6 +16,7 @@ check_mode_allowlist.txt; a listed file that has become clean fails the test unt
 removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4 and 2.4).
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,13 @@ ALLOWLIST = Path(__file__).with_name("check_mode_allowlist.txt")
 
 COMMANDS = {"command", "shell", "raw", "script"}
 READ_METHODS = {"GET", "HEAD"}
+# A container-engine lifecycle verb is a write whatever changed_when says. The check-mode
+# retrofit trusted changed_when: false on "stop + rm the orb agent", and a dry run removed
+# the running agent (docs/MISTAKES.md 5.9).
+ENGINE_WRITE = re.compile(
+    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose\s+)?"
+    r"(?:stop|rm|rmi|kill|restart|start|run|pull|up|down|create)\b"
+)
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
 
 
@@ -56,10 +64,24 @@ def _guarded(task: dict, inherited: bool) -> bool:
     return inherited or task.get("check_mode") is True or _mentions_check_mode(task.get("when"))
 
 
+def _command_text(args) -> str:
+    if isinstance(args, str):
+        return args
+    if isinstance(args, dict):
+        return str(args.get("cmd") or " ".join(map(str, args.get("argv", []))))
+    return str(args or "")
+
+
 def _classify(task: dict, module: str, args) -> str:
     # `changed_when: false` is the author's declaration that the task changes nothing, for a
     # command and for an HTTP call alike (an OpenBao AppRole login is a POST that only
-    # reads a token, and verification cannot run without it).
+    # reads a token, and verification cannot run without it), EXCEPT when the command runs
+    # a container-engine lifecycle verb: that is a write whatever the label says.
+    text = _command_text(args)
+    verb = ENGINE_WRITE.search(text)
+    # `run --rm` is a throwaway probe container (e.g. validating a config): it leaves nothing.
+    if module in COMMANDS and verb and not (verb.group(0).endswith("run") and "--rm" in text):
+        return "write"
     if task.get("changed_when") is False:
         return "read"
     if module == "uri":
@@ -225,4 +247,28 @@ def test_read_skipped_on_purpose_passes():
     assert not _tasks(
         "- name: anything to commit\n  ansible.builtin.command: git status --porcelain\n"
         "  changed_when: false\n  when: not ansible_check_mode\n"
+    )
+
+
+def test_engine_lifecycle_marked_read_is_still_a_write():
+    # The exact shape that removed the local orb agent under --check.
+    found = _tasks(
+        "- name: stop agent\n  ansible.builtin.shell: |\n"
+        "    {{ container_engine | default('docker') }} stop netbox-orb-agent || true\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+    assert found == ["stop agent: shell write forced to run in check mode (check_mode: false)"]
+
+
+def test_engine_reads_stay_reads():
+    assert not _tasks(
+        "- name: inspect\n  ansible.builtin.command: podman inspect x --format x\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+
+
+def test_throwaway_probe_container_is_a_read():
+    assert not _tasks(
+        "- name: validate\n  ansible.builtin.command: podman run --rm caddy caddy validate\n"
+        "  changed_when: false\n  check_mode: false\n"
     )

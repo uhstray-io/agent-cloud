@@ -74,6 +74,7 @@ supersede it with a new entry and link both.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
+| 5.9 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -1442,6 +1443,33 @@ a harness is a default, not a permission.
 links, "Generated with" footers and the assistant noreply address; a human co-author still
 passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
 `core.hooksPath=.githooks` is set (`make git-setup`).
+
+### 5.9 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
+
+**What happened.** On 2026-09-22 wave 2 of the check-mode retrofit (commit `187d787`)
+classified 161 tasks from the guard's findings, treating every command marked
+`changed_when: false` as a read and giving it `check_mode: false`. One of them,
+`tasks/deploy-orb-agent.yml` "Stop existing orb-agent", runs `stop` and `rm` on the running
+agent: a write its author had labelled `changed_when: false` only so it would not report a
+change. Under `--check` it therefore ran for real, and the first local dry run of
+`deploy-orb-agent.yml` (Semaphore task 1008) stopped and removed the local orb agent.
+Local-dev only; a real deploy restored it.
+
+**Root cause.** A label that means "do not report a change" was read as "cannot change
+anything". The classification was automatic and was validated for normal runs (every guard is
+inert without `--check`) but not for check-mode runs, which is exactly where the label
+mattered.
+
+**The rule.** `changed_when` describes reporting, not effect. Before a task may run under
+check mode, what it DOES decides, never how it reports. A container-engine lifecycle verb is
+a write regardless of its label.
+
+**Enforced by.** `platform/tests/test_check_mode_contract.py` (`ENGINE_WRITE`): a command
+running `stop`, `rm`, `kill`, `restart`, `start`, `run` (except `run --rm`), `pull`, `up`,
+`down` or `create` on docker, podman or a templated engine is a write even when marked
+`changed_when: false`, and a write under `check_mode: false` fails CI. An audit of every
+command marked read found two more writes (a pre-flight `pull`, a `mkdir`/`chmod`), now
+skipped under `--check`. Verb-free writes (`mv`, `sed -i`) are still only caught by review.
 
 ## 6. Working from assumptions about files
 

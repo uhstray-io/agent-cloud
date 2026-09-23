@@ -154,10 +154,17 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik.
       2026-09-22: full stack (NetBox + Diode + Hydra) deployed through the local Semaphore,
       tasks 982 and 985 (two consecutive successes); fixes recorded in design
-- [ ] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
-      any declared target outside them and disables discovery when none are declared
-- [ ] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
-      keep discovery disabled and record why
+- [x] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
+      any declared target outside them and disables discovery when none are declared.
+      2026-09-22: `tasks/assert-local-discovery-scope.yml` + `lib/discovery_scope.py` (pytest);
+      against the live engine: in-scope enabled, out-of-scope refused naming the target, none
+      declared disabled; the live orb-agent deploy (1013) passed the check with a local target
+- [x] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
+      keep discovery disabled and record why. 2026-09-22: runs privileged on the local socket
+      (1013), subnet_scan applied, pfSense/Proxmox workers off; its dry run leaves it running
+      (1014) after ledger 5.9. Needed: the local controller's policy is production's file
+      (the inline fork lacked AppRole management), and manage-approle's dead sys/auth check
+      is gone (it failed every run, production included)
 - [x] 6.4 NetBox custom fields for the collector created by a playbook, locally.
       2026-09-22: via the Django shell (the scoped token has no schema permission, 403);
       created in task 995, dry and real re-runs unchanged (997, 998). Also fixed the token

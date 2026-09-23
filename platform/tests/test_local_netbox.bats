@@ -78,3 +78,10 @@ setup() {
   assert_grep -qF "grep -qi 'podman-compose'" "$lib"
   assert_grep -qF '[ -n "${CONTAINER_SEP:-}" ] || detect_container_sep' "$lib"
 }
+
+@test "the local controller's OpenBao policy is production's file, not an inline fork" {
+  bs="$PB/bootstrap-local-dev.yml"
+  blk=$(sed -n '/name: "Write local-semaphore policy"/,/status_code/p' "$bs")
+  assert_grep -qF "config/policies/semaphore-read.hcl" <<<"$blk"
+  refute_grep -qF 'path "secret/data/services/*"' <<<"$blk"
+}
