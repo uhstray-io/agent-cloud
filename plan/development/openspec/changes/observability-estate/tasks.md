@@ -23,6 +23,6 @@
 ## 4. Local review and production receipt
 
 - [ ] 4.1 Add an isolated, declarative local Semaphore binding for this branch; prove the executed revision and complete Grafana Authentik login through the TLS front door.
-- [ ] 4.2 Open the agent-cloud PR to `dev` after the local metrics, logs, SSO, and alert gates pass. Submit every PR required for the rollout, obtain one completed CodeRabbit review round on each, address actionable findings, and reconcile each final reviewed revision.
+- [ ] 4.2 Open the agent-cloud PR to `dev` after the local metrics, logs, SSO, and alert gates pass. Submit every PR required for the rollout. For each PR, verify one completed CodeRabbit review round, resolve actionable findings, and confirm all required checks are green on the final head; then merge under the user's standing authorization.
 - [ ] 4.3 Audit the inventory's existing `grafanapodman` host and production o11y state, then provision or adopt a receiver host and private inventory through guarded automation. Deploy the stack through Semaphore and verify TLS/SSO, health, retention, and access boundaries.
 - [ ] 4.4 Coordinate DGX Spark and agentgateway exporters with their owning tasks; verify named DGX node/vLLM series and Loki log receipt, and agentgateway telemetry, on the production receiver. Keep optional GPU scraping disabled until proven.
