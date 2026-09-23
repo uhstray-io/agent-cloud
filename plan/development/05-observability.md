@@ -31,6 +31,19 @@
 > The committed production inference telemetry groundwork is merged into this
 > branch; its scrape declarations do not prove a reachable receiver.
 
+> **Local metrics pilot, 2026-09-23:** Branch-bound Semaphore task 1100
+> deployed Caddy at `9c87ed6ccd56ea0c8f6c502248d9b66d7ed7ff35` and
+> verified its private `/metrics` listener. An initial o11y candidate task
+> 1101 reported healthy Grafana/Prometheus/Loki while Alloy rejected a
+> network-selection setting absent in pinned v1.5.1; receipt 1102 correctly
+> failed with no `caddy` scrape. The shared deploy now checks Alloy health.
+> Corrected candidate task 1105 and named receipt 1106 both succeeded at
+> `3f9a9b97bf9e8362c0fdbe4924c89bc07dc63207`: Loki had a `caddy` log
+> within 15 minutes and Prometheus had one healthy `caddy:2021` scrape.
+> The local TSDB read back `up{service="caddy"}=1`, 361 active Caddy series,
+> and 1,049 total active series, versus a prior self-only baseline of 616.
+> These are point-in-time local measurements, not production or alert proof.
+
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

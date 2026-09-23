@@ -6,6 +6,8 @@ On 2026-09-23, the local Prometheus v3.1.0 TSDB reported 616 active series, all 
 
 The branch-bound local Semaphore verifier checked out `be5bbe8b3a0eafa3829a74baaccb72c0a8ae97e2`. Task 1079 found an `o11y-grafana` Loki log from the preceding 15 minutes in log-only mode. Task 1080 used the same revision with metrics required and failed at the named service with `targets found=0`, matching Prometheus's observed self-only target list. This proves the read-only receipt gate and leaves the opt-in metrics pilot unfulfilled. Task 1078 exposed the local Semaphore runner's separate loopback namespace; the verifier now queries Loki and Prometheus across the o11y container network.
 
+At commit `3f9a9b97bf9e8362c0fdbe4924c89bc07dc63207`, local Semaphore task 1105 deployed all four healthy o11y components and task 1106 found a recent `caddy` Loki log plus one healthy Prometheus scrape. A direct local Prometheus read returned `up{service="caddy"}=1` at `caddy:2021`, 361 series labeled `service="caddy"`, and 1,049 active TSDB series. The earlier self-only baseline was 616 series. These are point-in-time local measurements; alert delivery, a current-head SSO pass, and production receipt remain open. The prior attempt at task 1101 exposed an Alloy v1.5.1 incompatibility and a missing collector health gate; receipt 1102 failed with zero scrapes. Both were corrected before task 1105.
+
 ## Goals / Non-Goals
 
 **Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.
