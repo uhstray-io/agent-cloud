@@ -109,6 +109,13 @@
 > `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
 > Receiver placement and production retention sizing remain gated on a
 > declared, reachable host and its storage audit.
+> The private production inventory also omits Grafana from Authentik's enabled
+> app list and has no managed Grafana Caddy route. The public o11y env template
+> now derives production browser and OIDC token URLs from a required production
+> DNS zone over HTTPS, preserving the local shared-container path only in
+> local-dev. A localhost-only refusal probe stopped before placement when the
+> zone was absent, and the local/production render test passed. The production
+> IdP app, Caddy route, DNS, and network path are not yet deployed or verified.
 > The receiver now has an inventory-gated agentgateway `/metrics` scrape
 > template with `service=agentgateway`; an absent declaration removes the
 > target. The private production inventory still binds the gateway stats port

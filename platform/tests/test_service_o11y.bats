@@ -66,6 +66,52 @@ setup() {
   grep -qE "o11y_grafana_image \| default\('docker\.io/grafana/grafana:[0-9.]+'\)" "$f"
 }
 
+@test "o11y: Grafana OIDC uses local bridge only in local mode" {
+  python3 - "$DEPLOY_DIR/templates/env.j2" <<'PY'
+import sys
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+secrets = {'grafana_admin_password': 'test-only', 'grafana_oidc_client_secret': 'test-only'}
+
+def values(**kwargs):
+    rendered = template.render(secrets=secrets, **kwargs)
+    return dict(line.split('=', 1) for line in rendered.splitlines() if '=' in line and not line.startswith('#'))
+
+local = values(local_mode=True)
+assert local['GF_SERVER_ROOT_URL'] == 'https://grafana.agent-cloud.test:8443/'
+assert local['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.agent-cloud.test:8443/application/o/authorize/'
+assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000/application/o/token/'
+assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
+
+prod = values(local_mode=False, o11y_zone='uhstray.io')
+assert prod['GF_SERVER_ROOT_URL'] == 'https://grafana.uhstray.io/'
+assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
+assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
+assert prod['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'https://auth.uhstray.io/application/o/userinfo/'
+assert 'GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE' not in prod
+PY
+}
+
+@test "o11y: production refuses a missing DNS zone before placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Production o11y needs its declared DNS zone"* ]]
+  [[ "$output" != *"TASK [Place the monorepo"* ]]
+}
+
 @test "o11y: retention defaults reach Prometheus and Loki" {
   grep -q "O11Y_PROM_RETENTION={{ o11y_prom_retention | default('15d') }}" "$DEPLOY_DIR/templates/env.j2"
   grep -q "O11Y_LOKI_RETENTION={{ o11y_loki_retention | default('7d') }}" "$DEPLOY_DIR/templates/env.j2"

@@ -56,6 +56,15 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    - name: "Require the production DNS zone before rendering Grafana OIDC"
+      ansible.builtin.assert:
+        that:
+          - o11y_zone is defined
+          - o11y_zone | default('') is match('^[a-z0-9.-]+$')
+          - o11y_zone != 'agent-cloud.test'
+        fail_msg: "Production o11y needs its declared DNS zone; local test URLs are refused."
+      when: not (local_mode | default(false) | bool)
+
     - name: "Require complete DGX scrape settings when nodes are declared"
       ansible.builtin.assert:
         that:
