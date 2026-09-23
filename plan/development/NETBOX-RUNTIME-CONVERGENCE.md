@@ -31,7 +31,7 @@ The first change extends the existing read-only audit with the exact image refer
 ## Implementation Phases
 
 1. **Preflight:** merge the audit extension after green checks and one CodeRabbit review; run its Dev template in production. Record live image references, image IDs, and named-volume identities without printing secrets or bind paths. Acceptance: every required container is identified and the report changes no host state.
-2. **Convergence design:** compare the report to the reviewed Compose images and volume declarations. If any data-bearing image or mount differs, stop and write a migration/rollback procedure before applying. Acceptance: the apply playbook has a narrow, proven set of unchanged images and named volumes.
+2. **Convergence design:** compare the report to the reviewed Compose images and volume declarations. Immediately before its first mutation, the apply playbook must resolve each Compose image reference locally with `docker image inspect` and compare its image ID with the audited container's image ID; a missing image or changed ID refuses the run. If any data-bearing image or mount differs, stop and write a migration/rollback procedure before applying. Acceptance: the apply playbook has a narrow, proven set of unchanged images and named volumes.
 3. **Apply:** merge an idempotent playbook and Dev template after the same review gate. Use the normal OpenBao-backed env rendering and Compose to restore backing services before the app, without pulling, building, or deleting volumes. Acceptance: a dry run names every planned change and the apply reaches healthy services without changing a volume identity.
 4. **Verify:** read back restart policies, container health, `/login/`, and the NetBox automation-token prerequisite through Semaphore. Acceptance: a second apply is a no-op, then the IPAM workflow can report a free receiver address.
 
@@ -40,7 +40,7 @@ The first change extends the existing read-only audit with the exact image refer
 | Check | Pass condition |
 | --- | --- |
 | Read-only audit | Semaphore reports `changed=0`, the reviewed `dev` SHA, images, and named volumes. |
-| Unsafe drift | A mismatched image or volume refuses before a container or secret change. |
+| Unsafe drift | A missing or mismatched local image ID, or a mismatched volume, refuses before a container or secret change. |
 | Recovery | Existing named volumes remain attached; core services and `/login/` are healthy. |
 | Repeatability | A second convergence run reports no container changes. |
 | PR gate | Every PR has one completed CodeRabbit review, resolved actionable findings, and green final-head checks. |
