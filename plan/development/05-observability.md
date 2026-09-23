@@ -215,6 +215,15 @@
 > applied through `manage-caddy-sites.yml`, rather than through a service
 > fragment. Private site-config PR #17 merged the Grafana Authentik app
 > declaration, but that declaration has not been applied to live Authentik.
+> The Grafana DNS name resolves through a wildcard; Cloudflare has no exact
+> `grafana` record. The distinct `o11y` record is already OpenTofu-managed.
+> Add the exact Grafana name in `platform/infra/cloudflare/dns.tf` and apply
+> it through the Dev-bound OpenTofu Semaphore template after the receiver
+> route is ready. Read-only Dev-bound task 1160 planned the pre-change state
+> at `3de6fe71cd60efe2e2986922c08ab4c55bce0929`: one unrelated DNS
+> addition and one rate-limit update were already pending. Reconcile those
+> planned changes before applying the Grafana record; do not run the
+> deprecated `manage-cloudflare-records.yml` workflow.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
