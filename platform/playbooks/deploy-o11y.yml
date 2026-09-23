@@ -30,6 +30,20 @@
         success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
       when: expected_repository_sha is defined
 
+    - name: Read candidate checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require a clean candidate checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no o11y files were placed."
+      when: expected_repository_sha is defined
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage o11y secrets"
   hosts: o11y_svc
@@ -95,13 +109,17 @@
         chdir: "{{ _monorepo_dir }}"
       register: _placed_revision
       changed_when: false
-      when: expected_repository_sha is defined
+      when:
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
 
     - name: Refuse a receiver checkout that differs from the reviewed candidate
       ansible.builtin.assert:
         that: _placed_revision.stdout == expected_repository_sha
         fail_msg: "Receiver checkout differs from the reviewed o11y candidate; no secrets or containers were changed."
-      when: expected_repository_sha is defined
+      when:
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml

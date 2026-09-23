@@ -131,6 +131,19 @@ assert survey['expected_repository_sha']['required'] is True
 PY
   assert_precedes "$playbook" 'Read the placed revision when a candidate SHA is required' 'Manage secrets and template env file'
   assert_grep -qF 'that: _placed_revision.stdout == expected_repository_sha' "$playbook"
+  assert_grep -qF 'argv: [git, status, --porcelain, --untracked-files=all]' "$playbook"
+  python3 - "$playbook" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1]))
+tasks = {task['name']: task for play in plays for task in play['tasks']}
+for name in (
+    'Read the placed revision when a candidate SHA is required',
+    'Refuse a receiver checkout that differs from the reviewed candidate',
+):
+    assert 'not (local_mode | default(false) | bool)' in tasks[name]['when']
+PY
 }
 
 @test "o11y: an incorrect candidate SHA refuses before receiver placement" {
