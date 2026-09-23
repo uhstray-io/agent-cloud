@@ -64,6 +64,16 @@ OpenBao container; its API port refused connections from both Semaphore and the
 operator workstation. Starting OpenBao and checking the VM records are separate
 follow-up steps; neither was performed by this read-only inventory.
 
+2026-09-22 follow-up: the operator's existing Semaphore API token worked through
+the authenticated `/api/` route. Task 1115 ran the read-only Proxmox validation
+successfully (9 PASS, 0 FAIL): the target node, template, storage and bridge were
+ready, and VMID 204 was the first free ID in the 200–299 range. This confirms
+capacity, not an unallocated IP address. NetBox report task 1116 lacked a
+`netbox_url`; task 1117 reached OpenBao with an HTTPS URL but found no
+`automation_api_token` there. No address was allocated or reserved. The existing
+token-provisioning task requires separate authorization because it creates a
+persistent credential with view/add permissions.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of

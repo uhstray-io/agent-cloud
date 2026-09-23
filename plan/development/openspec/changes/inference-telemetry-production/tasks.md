@@ -34,12 +34,14 @@
       Grafana, proving scenario "Grafana reachable only through the front door"
 
 ## 2. Scrape the nodes, receive their logs
-- [ ] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;
+- [x] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;
       `templates/scrape-dgx-spark.yml.j2` rendered from inventory (`dgx_spark_nodes`,
       exporter ports, head API port) with `labels: {cluster: dgx-spark, env: prod}` and
-      per-target `node`; local profile renders no file
-- [ ] 2.2 `deploy-o11y.yml`: Prometheus `--web.enable-lifecycle` and a `POST /-/reload`
-      step after the scrape file changes
+      per-target `node`; local profile renders no file. Render and YAML tests passed
+      on 2026-09-22; production target reachability remains task 2.4.
+- [x] 2.2 `deploy-o11y.yml`: Prometheus `--web.enable-lifecycle` and a `POST /-/reload`
+      step after the scrape file changes. The flag was already present in compose;
+      the conditional reload and Ansible syntax check passed on 2026-09-22.
 - [ ] 2.3 Coordinate with dgx-spark task 1.3: hand over the o11y host address as
       `telemetry_scrape_src` and the Loki push URL as `telemetry_loki_url`
 - [ ] 2.4 Confirm every `dgx-spark` target `up == 1`; confirm

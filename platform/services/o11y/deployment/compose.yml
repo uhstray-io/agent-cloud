@@ -23,6 +23,7 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/scrape.d:/etc/prometheus/scrape.d:ro
       - prometheus-data:/prometheus
     ports:
       - "${O11Y_PROM_BIND:-127.0.0.1}:${O11Y_PROM_PORT:-9090}:9090"

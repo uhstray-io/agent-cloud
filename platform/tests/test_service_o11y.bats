@@ -77,6 +77,40 @@ setup() {
   grep -qE 'url: http://loki:3100' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
 }
 
+@test "o11y: DGX scrape jobs render from inventory with GPU optional" {
+  python3 - "$DEPLOY_DIR/templates/scrape-dgx-spark.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined)
+env.filters['to_json'] = json.dumps
+env.filters['bool'] = bool
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+values = {
+    'dgx_spark_nodes': [
+        {'name': 'spark-1', 'address': '192.0.2.1'},
+        {'name': 'spark-2', 'address': '192.0.2.2'},
+    ],
+    'dgx_spark_node_exporter_port': 9100,
+    'dgx_spark_gpu_exporter_port': 9400,
+    'dgx_spark_head_address': '192.0.2.1',
+    'dgx_spark_head_name': 'spark-1',
+    'dgx_spark_api_port': 8000,
+}
+for gpu in (False, True):
+    jobs = yaml.safe_load(template.render(**values, dgx_spark_gpu_exporter_enabled=gpu))
+    assert [job['job_name'] for job in jobs] == (
+        ['dgx-spark-node', 'dgx-spark-gpu', 'dgx-spark-vllm']
+        if gpu else ['dgx-spark-node', 'dgx-spark-vllm']
+    )
+    assert jobs[0]['static_configs'][1]['targets'] == ['192.0.2.2:9100']
+    assert jobs[-1]['static_configs'][0]['labels']['node'] == 'spark-1'
+PY
+}
+
 @test "o11y: starter dashboard is valid JSON with the expected uid" {
   local f="$DEPLOY_DIR/config/grafana/dashboards/agent-cloud-overview.json"
   [ -f "$f" ]
