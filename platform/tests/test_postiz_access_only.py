@@ -1,8 +1,9 @@
 """Run both seed playbooks' read-only access checks against a synthetic OpenBao.
 
-The check must never write, and must not pass on a GET 404 alone: OpenBao answers 404
-for a missing path AND for one the token cannot see (review of PR #205). The token's
-capabilities on the path decide (tasks/assert-bao-seed-access.yml).
+The check must never write, must not pass on a GET 404 alone (OpenBao answers 404 for a
+missing path AND for one the token cannot see), and must require the capability the real
+seed uses: `create` to POST a new path, `patch` to PATCH an existing one (reviews of
+PR #205). tasks/assert-bao-seed-access.yml is the shared implementation.
 """
 
 import json
@@ -29,7 +30,7 @@ def writes(requests):
     return [r for r in requests if r[0] in ("PATCH", "PUT") or (r[0] == "POST" and r[1].startswith("/v1/secret/"))]
 
 
-def run_access_check(tmp_path, which, capabilities, provider=""):
+def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
     playbook, path, extra_vars, _ = PLAYBOOKS[which]
     requests = []
 
@@ -55,6 +56,8 @@ def run_access_check(tmp_path, which, capabilities, provider=""):
 
         def do_GET(self):  # noqa: N802
             requests.append(("GET", self.path))
+            if exists:
+                return self.reply({"data": {"data": {"unrelated": "x"}, "metadata": {"version": 1}}})
             return self.reply({}, 404)  # a missing path, or one this token cannot see
 
         def do_PATCH(self):  # noqa: N802
@@ -87,9 +90,10 @@ def run_access_check(tmp_path, which, capabilities, provider=""):
 
 
 @pytest.mark.parametrize("which", sorted(PLAYBOOKS))
-@pytest.mark.parametrize("provider", ["", "synthetic-provider-value"])
-def test_access_check_passes_with_capabilities_and_never_writes(tmp_path, which, provider):
-    code, output, requests = run_access_check(tmp_path, which, ["read", "update"], provider)
+@pytest.mark.parametrize("exists,capabilities", [(False, ["read", "create"]), (True, ["read", "patch"]),
+                                                 (False, ["root"]), (True, ["root"])])
+def test_access_check_passes_with_the_capability_the_seed_uses(tmp_path, which, exists, capabilities):
+    code, output, requests = run_access_check(tmp_path, which, capabilities, exists=exists)
     assert code == 0, output
     assert PLAYBOOKS[which][3] in output
     assert ("POST", "/v1/sys/capabilities-self") in requests
@@ -97,11 +101,22 @@ def test_access_check_passes_with_capabilities_and_never_writes(tmp_path, which,
 
 
 @pytest.mark.parametrize("which", sorted(PLAYBOOKS))
-@pytest.mark.parametrize("capabilities", [["deny"], ["read"], ["update", "create"]])
-def test_access_check_refuses_a_404_without_the_capabilities(tmp_path, which, capabilities):
-    # The GET answers 404 in every case; only the token's capabilities differ.
-    code, output, requests = run_access_check(tmp_path, which, capabilities)
+def test_access_check_never_writes_even_with_a_staged_value(tmp_path, which):
+    code, output, requests = run_access_check(tmp_path, which, ["read", "create"], "synthetic-provider-value")
+    assert code == 0, output
+    assert writes(requests) == []
+
+
+@pytest.mark.parametrize("which", sorted(PLAYBOOKS))
+@pytest.mark.parametrize("exists,capabilities", [
+    (False, ["deny"]), (False, ["read"]),
+    (False, ["read", "update"]), (False, ["read", "patch"]),   # new path is POSTed: needs create
+    (True, ["read", "create"]), (True, ["read", "update"]),    # existing path is PATCHed: needs patch
+    (False, ["create"]),                                        # the seed reads first
+])
+def test_access_check_refuses_a_token_the_real_seed_would_be_denied(tmp_path, which, exists, capabilities):
+    code, output, requests = run_access_check(tmp_path, which, capabilities, exists=exists)
     assert code != 0, output
     assert PLAYBOOKS[which][3] not in output
-    assert "seeding needs read plus create, update or patch" in output
+    assert "seeding needs read plus" in output
     assert writes(requests) == []

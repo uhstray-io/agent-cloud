@@ -440,6 +440,22 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.writes), 1)
 
+    def test_scoped_create_of_an_isolated_seed_binds_its_declared_environment(self):
+        # Review of PR #205: scoped create skipped isolated-environment resolution, so
+        # the create body indexed environment IDs that were never resolved.
+        selected = ["Seed OpenBao Key (Dev)"]
+        bindings = {"semaphore_allow_scoped_create": True, "semaphore_project_id": 1,
+                    "semaphore_inventory_id": 37, "semaphore_environment_id": 42}
+        code, output = self.run_play(selection=selected, **bindings)
+        self.assertEqual(code, 0, output)
+        created = [r for r in self.records if r["name"] == selected[0]]
+        self.assertEqual(len(created), 1, output)
+        self.assertEqual([e["name"] for e in self.environments], ["OpenBao key seed inputs (Dev)"])
+        self.assertEqual(created[0]["environment_id"], self.environments[0]["id"])
+        self.assertNotEqual(created[0]["environment_id"], 42)
+        self.assertEqual(json.loads(self.environments[0]["json"] or "{}"), {})
+        self.assertEqual(self.environments[0]["secrets"], [])
+
     def test_scoped_create_needs_explicit_bindings_before_network(self):
         code, _ = self.run_play(selection=["Audit o11y Containers (Dev)"],
                                 semaphore_allow_scoped_create=True)

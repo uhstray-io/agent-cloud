@@ -264,10 +264,14 @@
           {{ (_selected_records.results | selectattr('json', 'defined') | map(attribute='json') | list)
              if (_scoped or (_bootstrap_survey_publisher | default(false))) else _existing.json }}
 
-    - name: "Ensure declared isolated environments before full publication"
+    # Full publication and scoped CREATE both build a template body that binds its
+    # declared isolated environment, so both resolve it here. Survey-only scoped
+    # publication does not: it keeps each existing template's live environment and
+    # never creates one (test_scoped_surveys_do_not_create_or_change_declared_environment).
+    - name: "Ensure declared isolated environments before full publication or scoped create"
       ansible.builtin.include_tasks: tasks/isolated-environments.yml
       when:
-        - not _scoped
+        - (not _scoped) or _allow_scoped_create
         - _selected_templates | selectattr('isolated_environment', 'defined') | list | length > 0
 
     - name: "Create or update each template"
@@ -401,13 +405,18 @@
           - _after.name == item._publish_name
           - _after.project_id | int == semaphore_project_id | int
           - _after.inventory_id | int == semaphore_inventory_id | int
-          - _after.environment_id | int == semaphore_environment_id | int
+          - _after.environment_id | int == _expected_environment | int
           - _after.repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
           - _after.playbook == item.playbook
           - item.survey_vars | default([]) | publication_matches(_after.survey_vars | default([]))
         fail_msg: "Scoped template creation readback failed for '{{ item._publish_name }}'."
       vars:
         _after: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | first }}"
+        # The environment the create body bound: the declared isolated one, else the
+        # approved shared one (same rule as _default_body above).
+        _expected_environment: >-
+          {{ _isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
+             if item.isolated_environment is defined else semaphore_environment_id }}
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"

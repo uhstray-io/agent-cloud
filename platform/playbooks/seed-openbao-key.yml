@@ -92,15 +92,12 @@
       register: _bao_auth
       no_log: true
 
-    # bao_verify_access_only=true proves this environment's AppRole can log in and is
-    # allowed to read the target path, then stops before any write, whether or not a
-    # value is staged. Run it once after provisioning an isolated seed environment,
-    # before the first real seed (scripts/semaphore-seed-input.py --verify-only).
-    # A GET alone cannot prove access: OpenBao answers 404 both for a missing path and
-    # for one the token cannot see, so a denied AppRole would pass for a NEW secret.
-    # The capabilities this token actually holds on the path decide; the GET then only
-    # confirms an existing path answers. The seed writes with PATCH (existing path) or
-    # POST (new path), so it needs read plus create, update or patch.
+    # bao_verify_access_only=true proves this environment's AppRole holds exactly the
+    # capabilities the real seed will use (read, plus create for a new path or patch
+    # for an existing one), then stops before any write, whether or not a value is
+    # staged. Run it once after provisioning an isolated seed environment, before the
+    # first real seed (scripts/semaphore-seed-input.py --verify-only). The reasoning
+    # and the OpenBao sources live in tasks/assert-bao-seed-access.yml.
     - name: "Prove this AppRole may seed the path (capabilities, no write)"
       ansible.builtin.include_tasks: tasks/assert-bao-seed-access.yml
       vars:
@@ -109,23 +106,11 @@
         _sa_path: "{{ bao_path }}"
       when: bao_verify_access_only | default(false) | bool
 
-    - name: "Read the target path with the AppRole token (access check)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200, 404]
-        follow_redirects: none
-      register: _bao_access
-      no_log: true
-      check_mode: false
-      when: bao_verify_access_only | default(false) | bool
-
     - name: "Report read-only access (no value read back, no write)"
       ansible.builtin.debug:
         msg: >-
-          Read-only access to secret/{{ bao_path }} verified (HTTP {{ _bao_access.status }});
-          no secret-store write requested.
+          Read-only access to secret/{{ bao_path }} verified; no secret-store write
+          requested.
       when: bao_verify_access_only | default(false) | bool
 
     - name: "End read-only verification before every secret-store write"

@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "35d5aaf4b4bc0e93829de7c325fc7591376e58ec",
-    "indexed_at": "2026-08-23T18:46:05Z",
-    "project": "agent-cloud",
-    "nodes": 7697,
-    "edges": 10381,
-    "original_size": 7798784,
-    "compressed_size": 1603956,
-    "compression_level": 9
+    "commit": "61ce04bd198917810cbcf9209d102e7e114a1538",
+    "indexed_at": "2026-09-23T17:47:19Z",
+    "project": "Users-stray-Documents-GitHub-agent-cloud-seed-envs",
+    "nodes": 8912,
+    "edges": 13181,
+    "original_size": 19136512,
+    "compressed_size": 2745839,
+    "compression_level": 3
 }
