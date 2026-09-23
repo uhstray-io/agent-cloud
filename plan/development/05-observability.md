@@ -160,11 +160,17 @@
 > provisioned. All-host validation tasks 1142 and 1143 stopped on an
 > unrelated unreachable NocoDB host before reaching NetBox; the accepted
 > Semaphore `params.limit` setting did not constrain the actual play.
-> PR #202 adds a NetBox-only, read-only container and HTTP audit plus the
-> diagnostic expression fix. Its protected push passed 596 BATS and 121
-> Python tests; the required CodeRabbit round is pending after a reported
-> review-quota delay. Do not run the regular NetBox deploy as an unexamined
-> recovery step: it pulls images, stops the stack, and rebuilds containers.
+> PR #202 passed a completed CodeRabbit review and final-head checks, then
+> merged to `dev` as `3af6bf58d06cd9e8b44cd3e469cceca5d9200f3c`. A
+> scoped Semaphore publication created only `Audit NetBox Runtime (Dev)` as
+> template 223. Its read-only production task 1148 succeeded at that exact
+> revision: the NetBox app, Postgres, and both Redis containers were exited
+> with code 255; Hydra was unhealthy, the reconciler was restarting, and
+> `/login/` was unreachable. It changed no host state. PR #204 extends this
+> audit with dependency OOM, restart, finish-time, policy, and host-boot
+> evidence; its CodeRabbit review is pending. Do not run the regular NetBox
+> deploy as an unexamined recovery step: it pulls images, stops the stack,
+> and rebuilds containers.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
