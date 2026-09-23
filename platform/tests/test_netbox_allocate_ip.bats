@@ -64,6 +64,13 @@ setup() {
   assert_grep -qF 'prefix_perm.users.add(user)' "$bootstrap"
 }
 
+@test "netbox-allocate: token bootstrap has a dev-bound Semaphore template" {
+  local templates="$BATS_TEST_DIRNAME/../semaphore/templates.yml"
+  local block
+  block=$(grep -A2 -F 'name: Provision NetBox Automation Token' "$templates")
+  assert_contains "$block" 'dev_variant: true'
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).
