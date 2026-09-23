@@ -28,12 +28,52 @@ compose_files() {
   [ "$(compose_files | wc -l)" -gt 10 ]
 }
 
-@test "restart policy: every declared policy is always or \"no\"" {
+@test "restart policy: every service's effective policy is always or \"no\"" {
+  # Parsed, not grepped: a service with NO restart key is Compose's default "no"
+  # restart — invisible to a line match — and anchors/merge keys and overlay files
+  # change what a service ends up with. Per directory, overlays (compose.*.yml,
+  # docker-compose.*.yml) apply over the base file, so a policy set only in the
+  # base still counts and a service an overlay adds must carry its own.
   # "no" is for one-shot init containers, which must not restart at all.
-  local bad
-  bad=$(compose_files | xargs grep -nE '^\s*restart:' \
-    | grep -vE 'restart:\s*(always|"no"|'"'"'no'"'"')\s*(#.*)?$' || true)
-  [ -z "$bad" ] || { echo "restart policy podman will not start at boot:"; echo "$bad"; false; }
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  run python3 - "$REPO_ROOT" <<'PY'
+import os, subprocess, sys, yaml
+root = sys.argv[1]
+class Loader(yaml.SafeLoader):
+    pass
+def any_tag(loader, suffix, node):  # compose tags such as !override / !reset
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    return loader.construct_scalar(node)
+Loader.add_multi_constructor('!', any_tag)
+files = subprocess.check_output(
+    ['git', '-C', root, 'ls-files', '--', 'platform/**/*compose*.yml', 'platform/**/*compose*.yaml',
+     'agents/**/*compose*.yml', 'agents/**/*compose*.yaml'], text=True).split()
+dirs = {}
+for f in files:
+    doc = yaml.load(open(os.path.join(root, f)), Loader=Loader)
+    if not isinstance(doc, dict) or not isinstance(doc.get('services'), dict):
+        continue  # not a compose file (e.g. an Ansible task list with "compose" in its name)
+    base = os.path.basename(f) in ('compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml')
+    dirs.setdefault(os.path.dirname(f), []).append((not base, f, doc['services']))
+bad = []
+for d, docs in sorted(dirs.items()):
+    effective = {}
+    for _, f, services in sorted(docs):  # base first, then overlays
+        for name, svc in services.items():
+            svc = svc or {}
+            if 'restart' in svc or name not in effective:
+                effective[name] = (svc.get('restart'), f)
+    for name, (policy, f) in sorted(effective.items()):
+        if policy not in ('always', 'no'):
+            bad.append(f"{f}: service {name}: restart={policy!r}")
+print('\n'.join(bad))
+sys.exit(1 if bad else 0)
+PY
+  [ "$status" -eq 0 ] || { echo "services podman will not start at boot:"; echo "$output"; false; }
 }
 
 @test "restart policy: no container is started with --restart unless-stopped" {

@@ -3,6 +3,7 @@ services:
   # NetBox core services
   # ═══════════════════════════════════════════════════════════════════
   netbox:
+    restart: always
     image: netbox:latest-plugins
     pull_policy: never
     build:
@@ -78,6 +79,7 @@ services:
   # Shared backing services
   # ═══════════════════════════════════════════════════════════════════
   postgres:
+    restart: always
     image: docker.io/postgres:18-alpine
     healthcheck:
       test: pg_isready -q -t 2 -d $$POSTGRES_DB -U $$POSTGRES_USER
@@ -91,6 +93,7 @@ services:
       - ./discovery/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro,z
 
   redis:
+    restart: always
     image: docker.io/valkey/valkey:9.0-alpine
     command:
       - sh
@@ -108,6 +111,7 @@ services:
       - netbox-redis-data:/data
 
   redis-cache:
+    restart: always
     image: docker.io/valkey/valkey:9.0-alpine
     command:
       - sh

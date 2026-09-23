@@ -2356,7 +2356,8 @@ three days. Two defects combined:
 1. The boot unit on the host runs `podman start --all --filter restart-policy=always`
    (read from `systemctl cat podman-restart.service`, podman 4.9.3). OpenBao's compose file
    declared `restart: unless-stopped`, so the unit skipped it. Twelve compose files and the
-   orb-agent `run` flag used that policy.
+   orb-agent `run` flag used that policy, and four NetBox services (the app, Postgres and
+   both Redis instances) declared no policy at all, which Compose treats as never restart.
 2. For rootless services, the linger task's header said lingering "in turn restarts the
    (rootless) containers". It does not. Linger starts the user's systemd instance, and the
    user copy of `podman-restart.service` ships `disabled` on the Ubuntu 24.04 image (read
@@ -2378,8 +2379,9 @@ the unit is enabled for the account that owns the containers. Declare `restart: 
 (or `"no"` for one-shot containers) in every compose file, and enable podman's user unit
 wherever rootless containers run.
 
-**Enforced by.** Test. `platform/tests/test_restart_policy.bats` refuses any other compose
-restart policy and any `--restart unless-stopped`, requires the shared deploy preamble to
+**Enforced by.** Test. `platform/tests/test_restart_policy.bats` parses every compose file
+and refuses any service whose effective policy (base file plus overlays, missing key
+included) is not `always` or `"no"`, refuses any `--restart unless-stopped`, requires the shared deploy preamble to
 include the linger task, and requires that task to link the user unit into
 `default.target.wants`. Both guards were mutated once and went red. An actual reboot
 test of a service host is still not exercised by any automation.
