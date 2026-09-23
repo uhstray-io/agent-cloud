@@ -121,6 +121,11 @@
 > target. The private production inventory still binds the gateway stats port
 > to loopback until the audited o11y receiver source and firewall path are
 > approved. This is code preparation, not a live agentgateway scrape receipt.
+> Production Semaphore deployments may use the reviewed `dev` branch under
+> the operator's 2026-09-23 direction. The `Deploy o11y (Dev)` template binds
+> to the declared Dev repository, defaults the target clone to `dev`, and
+> requires an exact commit SHA; the playbook checks both the controller and
+> receiver revisions before rendering secrets or starting containers.
 > Local candidate task 1147 refused a mistyped expected SHA before placing
 > files. Task 1148 then deployed the exact pushed commit
 > `22cc811782a8cfe511d01d595ca91d6ae4075998`; task 1149 verified a

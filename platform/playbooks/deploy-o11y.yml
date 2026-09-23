@@ -89,6 +89,20 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    - name: Read the placed revision when a candidate SHA is required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _placed_revision
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Refuse a receiver checkout that differs from the reviewed candidate
+      ansible.builtin.assert:
+        that: _placed_revision.stdout == expected_repository_sha
+        fail_msg: "Receiver checkout differs from the reviewed o11y candidate; no secrets or containers were changed."
+      when: expected_repository_sha is defined
+
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 

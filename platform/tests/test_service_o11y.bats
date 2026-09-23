@@ -114,6 +114,34 @@ YAML
   refute_contains "$output" "TASK [Place the monorepo"
 }
 
+@test "o11y: production Dev template pins both controller and receiver revisions" {
+  local playbook="$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
+  local templates="$REPO_ROOT/platform/semaphore/templates.yml"
+  python3 - "$templates" <<'PY'
+import sys
+import yaml
+
+items = yaml.safe_load(open(sys.argv[1]))['templates']
+template, = (item for item in items if item['name'] == 'Deploy o11y (Dev)')
+survey = {item['name']: item for item in template['survey_vars']}
+assert template['repository'] == 'agent-cloud dev'
+assert template['playbook'] == 'platform/playbooks/deploy-o11y.yml'
+assert survey['service_branch']['default_value'] == 'dev'
+assert survey['expected_repository_sha']['required'] is True
+PY
+  assert_precedes "$playbook" 'Read the placed revision when a candidate SHA is required' 'Manage secrets and template env file'
+  assert_grep -qF 'that: _placed_revision.stdout == expected_repository_sha' "$playbook"
+}
+
+@test "o11y: an incorrect candidate SHA refuses before receiver placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  run ansible-playbook "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    -e expected_repository_sha=0000000000000000000000000000000000000000
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Semaphore checked out a different revision; no o11y files were placed."
+  refute_contains "$output" "TASK [Place the monorepo"
+}
+
 @test "o11y: retention defaults reach Prometheus and Loki" {
   grep -q "O11Y_PROM_RETENTION={{ o11y_prom_retention | default('15d') }}" "$DEPLOY_DIR/templates/env.j2"
   grep -q "O11Y_LOKI_RETENTION={{ o11y_loki_retention | default('7d') }}" "$DEPLOY_DIR/templates/env.j2"

@@ -31,6 +31,24 @@ templates:
     playbook: platform/playbooks/audit-o11y-containers.yml
     dev_variant: true
 
+  # Production receiver rollout uses a reviewed dev checkout and clones that
+  # exact revision onto the target before rendering secrets or starting containers.
+  - name: Deploy o11y (Dev)
+    playbook: platform/playbooks/deploy-o11y.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact dev commit required on controller and receiver"
+        type: string
+        required: true
+
   - name: Verify o11y Service
     playbook: platform/playbooks/verify-o11y-service.yml
     dev_variant: true
