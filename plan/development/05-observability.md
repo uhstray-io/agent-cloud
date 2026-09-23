@@ -177,11 +177,19 @@
 > template 223. Its read-only production task 1148 succeeded at that exact
 > revision: the NetBox app, Postgres, and both Redis containers were exited
 > with code 255; Hydra was unhealthy, the reconciler was restarting, and
-> `/login/` was unreachable. It changed no host state. PR #204 extends this
+> `/login/` was unreachable. It changed no host state. PR #204 extended the
 > audit with dependency OOM, restart, finish-time, policy, and host-boot
-> evidence; its CodeRabbit review is pending. Do not run the regular NetBox
-> deploy as an unexamined recovery step: it pulls images, stops the stack,
-> and rebuilds containers.
+> evidence; CodeRabbit approved its exact head with green checks, and it
+> merged to `dev` as `440cfbd53696914ce222b89b23e3b53e93265e99`.
+> Dev-bound production task 1152 ran that merge and changed no host state.
+> The NetBox app, Postgres, and both Redis containers remained exited with
+> code 255, `oom=false`, zero restarts, and `policy=no`. Their finish times
+> clustered just after the host's 2026-09-19 boot. The committed compose
+> declares `restart: always` for these services, so runtime policy has not
+> converged. `/login/` remained unreachable. Recovery must use reviewed,
+> repeatable code from `dev` and verify the resulting policy and health.
+> Do not run the regular NetBox deploy as an unexamined recovery step: it
+> pulls images, stops the stack, and rebuilds containers.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
