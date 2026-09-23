@@ -120,8 +120,8 @@
 > `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
 > Receiver placement and production retention sizing remain gated on a
 > declared, reachable host and its storage audit.
-> The private production inventory also omits Grafana from Authentik's enabled
-> app list and has no managed Grafana Caddy route. The public o11y env template
+> At the task 1134 audit, the private production inventory omitted Grafana from
+> Authentik's enabled app list and had no managed Grafana Caddy route. The public o11y env template
 > now derives production browser and OIDC token URLs from a required production
 > DNS zone over HTTPS, preserving the local shared-container path only in
 > local-dev. A localhost-only refusal probe stopped before placement when the
@@ -275,8 +275,8 @@
 > OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
 > PR #18 merged the alert destination and Grafana browser URLs, but its
 > production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
-> runtime recovery workflow; production tasks 1188 and 1189 later ran its
-> reviewed Dev successors and restored the four core containers to healthy
+> runtime recovery workflow; production tasks 1188 and 1189 later ran the
+> reviewed Dev successors from PRs #222 and #224 and restored the four core containers to healthy
 > with `restart: always`. PR #214 merged
 > one-template Dev publication. Local Semaphore tasks 1292, 1293, and 1294
 > updated the publisher and created its webhook and fault-drill Dev templates
@@ -307,8 +307,10 @@
 > checks passing, 511 GB available on the target VM storage, and VMID 219
 > absent from the live cluster and private ledger. VMID 219 remains a candidate;
 > no VM was provisioned. The live Semaphore inventory matches the merged
-> private production inventory and still declares no `o11y_svc` host. Its
-> Grafana Authentik URLs have not been applied to the live IdP.
+> private production inventory and still declares no `o11y_svc` host. The
+> Grafana Authentik URLs from private site-config PRs #17 and #18 have not
+> been applied to the live IdP.
+>
 > **Rollout practice:** publish a single reviewed Dev template with its
 > intended bindings, run a read-only preflight, and keep the task ID and
 > read-back with each state-changing step. Reserve the exact address through
