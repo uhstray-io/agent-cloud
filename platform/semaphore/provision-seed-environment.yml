@@ -162,17 +162,11 @@
           - _target.json.id == _isolated_environment_ids[_environment_name]
           - _target.json.project_id | int == _project_id | int
           - _target.json.name == _environment_name
-          - _target.json.secrets is defined and _target.json.secrets | type_debug == 'list'
-          - (_target.json.env | default('{}', true) | from_json) == {}
-          - (_target.json.json | default('{}', true) | from_json).keys() | difference(['openbao_addr']) | length == 0
+          # The shared clean-environment rule (filter seed_environment_problems), the
+          # same one full publication applies before binding: no plaintext env vars,
+          # extra vars at most openbao_addr, and exactly the two AppRole inputs or none.
+          - _target.json | seed_environment_problems | length == 0
           - (_target.json.json | default('{}', true) | from_json).get('openbao_addr', _bao_url) == _bao_url
-          # A dedicated seed environment holds exactly the two AppRole inputs. Any other
-          # secret (a SEED_* provider value, a BAO_VALUE from an interrupted seed, ...) is a
-          # leftover a bound template would receive; reconcile it before binding.
-          - _target.json.secrets | rejectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0
-          - _auth | length in [0, 2]
-          - _auth | map(attribute='name') | unique | list | length == _auth | length
-          - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
           - _auth | selectattr('id', 'defined') | selectattr('id', 'integer') | list | length == _auth | length
           - _auth | map(attribute='id') | unique | list | length == _auth | length
         quiet: true

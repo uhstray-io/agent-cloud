@@ -244,7 +244,9 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.records[0]["environment_id"], 500)
         self.assertEqual(self.environments[0]["json"], "{}")
         self.assertEqual(self.environments[0]["secrets"], [])
-        self.environments[0]["secrets"] = [{"id": 70, "name": "BAO_SECRET_ID", "type": "env"}]
+        # A provisioned environment: both AppRole inputs (one alone is refused as unsafe).
+        self.environments[0]["secrets"] = [{"id": 70, "name": "BAO_SECRET_ID", "type": "env"},
+                                           {"id": 71, "name": "BAO_ROLE_ID", "type": "env"}]
         before = copy.deepcopy(self.environments)
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertEqual(code, 0, output)
@@ -255,7 +257,8 @@ class ScopedPublicationTests(unittest.TestCase):
     def test_isolated_environment_refuses_other_owner_and_active_work_before_writes(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
                        "isolated_environment": "Isolated inputs"}
-        type(self).environments = [{"id": 500, "name": "Isolated inputs"}]
+        type(self).environments = [{"id": 500, "project_id": 1, "name": "Isolated inputs",
+                                    "json": "{}", "env": "{}", "secrets": []}]
         self.records[1]["environment_id"] = 500
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)
@@ -272,6 +275,27 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("unfinished work", output)
         self.assertEqual(self.writes, [])
+
+    def test_full_publication_refuses_to_bind_an_isolated_environment_that_is_not_clean(self):
+        # Review of PR #205: an existing environment with the declared name was bound as-is.
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "isolated_environment": "Isolated inputs"}
+        cases = {
+            "leftover inputs: BAO_VALUE": [{"id": 1, "name": "BAO_VALUE", "type": "env"}],
+            "only one AppRole input": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"}],
+            "leftover inputs: SEED_X_API_KEY": [{"id": 1, "name": "SEED_X_API_KEY", "type": "env"}],
+        }
+        for message, secrets in cases.items():
+            with self.subTest(message=message):
+                self.setUp()
+                type(self).environments = [{"id": 500, "project_id": 1, "name": "Isolated inputs",
+                                            "json": "{}", "env": "{}", "secrets": secrets}]
+                before = copy.deepcopy(self.records)
+                code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+                self.assertNotEqual(code, 0, output)
+                self.assertIn(message, output)
+                self.assertEqual(self.writes, [])
+                self.assertEqual(self.records, before)
 
     def test_generated_variant_gets_distinct_declared_environment(self):
         declaration = {"name": "Seed fixture", "repository": "agent-cloud dev",
@@ -402,7 +426,7 @@ class ScopedPublicationTests(unittest.TestCase):
                                           "secrets": [{"id": 700, "name": name, "type": "env"}]})
                 code, output = self.run_play(provision=True)
                 self.assertNotEqual(code, 0)
-                self.assertIn("Validate the dedicated credential boundary", output)
+                self.assertIn("is not safe to bind", output)
                 self.assertIn(("GET", "/api/project/1/environment/501"), self.requests)
                 self.assertEqual(self.writes, [])
 
@@ -424,7 +448,7 @@ class ScopedPublicationTests(unittest.TestCase):
                                           "secrets": [{"id": 700, "name": leftover, "type": "env"}]})
                 code, output = self.run_play(provision=True, seed_template="Seed OpenBao Key")
                 self.assertNotEqual(code, 0, output)
-                self.assertIn("Validate the dedicated credential boundary", output)
+                self.assertIn(f"leftover inputs: {leftover}", output)
                 self.assertEqual(self.writes, [])
 
     def test_controller_provisioner_refuses_destination_override_before_auth(self):

@@ -63,6 +63,37 @@
   loop_control:
     label: "{{ item.name }}"
 
+# An environment that already carries the declared name is bound as-is below, so its
+# CONTENTS must pass the same rule the provisioner applies (filter
+# seed_environment_problems): a leftover BAO_VALUE or SEED_* input, or a lone AppRole
+# half, would otherwise reach the template the moment it is bound.
+- name: "Read existing isolated environments' contents (names checked, values never shown)"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ (_environments.json | selectattr('name', 'equalto', item.name) | first).id }}"
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+  register: _isolated_contents
+  no_log: true
+  when: _environments.json | selectattr('name', 'equalto', item.name) | list | length == 1
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Refuse binding a template to an isolated environment that is not clean"
+  ansible.builtin.assert:
+    that: _problems | length == 0
+    fail_msg: >-
+      Isolated environment '{{ item.item.name }}' is not safe to bind:
+      {{ _problems | join('; ') }}. Reconcile it before publishing.
+  vars:
+    _problems: "{{ item.json | seed_environment_problems }}"
+  when: item.json is defined
+  loop: "{{ _isolated_contents.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
 - name: "Read recent tasks before changing isolated bindings"
   ansible.builtin.uri:
     url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/tasks/last"
