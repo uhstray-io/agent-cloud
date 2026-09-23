@@ -230,30 +230,30 @@ The split enables: independent post-deploy retry (OAuth2 failure doesn't rebuild
 ```
 platform/playbooks/tasks/
   manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
-  manage-approle.yml       Create/update AppRole + policy, store credentials     
-  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials         
-  write-secret-metadata.yml     Write KV v2 custom metadata after secret store [PLANNED]   
-  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper [PLANNED]    
+  manage-approle.yml       Create/update AppRole + policy, store credentials  
+  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials  
+  write-secret-metadata.yml     Write KV v2 custom metadata after secret store [PLANNED]  
+  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper [PLANNED]  
   revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients [PLANNED]
-  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check           
-  clean-service.yml        Destroy containers, volumes, clone + runtime dir       
-  sparse-checkout.yml      Sparse-clone monorepo for specific service paths [PLANNED]       
-  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone [PLANNED]           
+  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check  
+  clean-service.yml        Destroy containers, volumes, clone + runtime dir  
+  sparse-checkout.yml      Sparse-clone monorepo for specific service paths [PLANNED]  
+  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone [PLANNED]  
   run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR) [PLANNED]  
-  verify-health.yml        Health check a service endpoint [PLANNED]                        
+  verify-health.yml        Health check a service endpoint [PLANNED]  
 
 platform/playbooks/
   deploy-<service>.yml     Composable: clone + secrets + deploy + verify            [NETBOX DONE]
   clean-deploy-<service>.yml  Wipe + fresh deploy                                  [NETBOX DONE]
-  check-secrets.yml        Read-only secret inventory from OpenBao                
-  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)            
-  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao                           
-  harden-ssh.yml           NOPASSWD sudo + sshd lockdown                          
-  install-docker.yml       Install Docker CE (standalone)                          
-  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)     
+  check-secrets.yml        Read-only secret inventory from OpenBao  
+  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)  
+  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao  
+  harden-ssh.yml           NOPASSWD sudo + sshd lockdown  
+  install-docker.yml       Install Docker CE (standalone)  
+  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)  
   rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API)  
-  rotate-ssh-keys.yml           Annual SSH key rotation                          
-  audit-credentials.yml         Weekly credential inventory + stale detection    
+  rotate-ssh-keys.yml           Annual SSH key rotation  
+  audit-credentials.yml         Weekly credential inventory + stale detection  
 ```
 
 `[PLANNED]` tasks are design targets that do **not** yet exist in `platform/playbooks/tasks/` — current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/00-foundation-local-dev.md` Phase 0A.
@@ -841,7 +841,7 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 5. **Reconcile the Composability half of this doc with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or keep it clearly marked as an unbuilt target.
 6. **Decompose bootstrap** (§4.8): control-plane containers → a `compose.bootstrap.yml`; Semaphore resources → an "ensure resources" reconcile play (or a provider). Keep only the identity/seal kernel imperative.
 7. **n8n workflows as managed declarative state:** export flows as JSON-in-repo, apply via an idempotent API task mirroring `setup-templates.yml`. Today they live only in n8n's DB — an unmanaged declarative surface.
-8. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split.
+8. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split. *Interim, landed 2026-09-22:* post-reboot start is carried by podman's own `podman-restart.service`, which also `start`s rather than `up`s, over `restart: always` containers (05-platform-infra §11). Crash restart and the Quadlet task remain planned.
 9. **[TARGET]/INVESTIGATE — scheduled CONFIG reconcile on the VM/Podman estate (PRINCIPLES.md Section 5, owner decision — NOT deferred to k8s):** build and prove "authored convergence on a timer" — a Semaphore-scheduled (or `ansible-pull`) deterministic re-apply of the **human-authored** Git desired-state, with drift detection + safe reversible-aware re-apply, on a non-customer service first. Rationale/AI-Invariant compatibility per §4.7.
 
 ---

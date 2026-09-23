@@ -15,7 +15,7 @@ services:
   prometheus:
     image: ${O11Y_PROM_IMAGE:-docker.io/prom/prometheus:v3.1.0}
     container_name: o11y-prometheus
-    restart: unless-stopped
+    restart: always
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -38,7 +38,7 @@ services:
   loki:
     image: ${O11Y_LOKI_IMAGE:-docker.io/grafana/loki:3.3.2}
     container_name: o11y-loki
-    restart: unless-stopped
+    restart: always
     command: ["-config.file=/etc/loki/config.yml", "-config.expand-env=true"]
     environment:
       O11Y_LOKI_RETENTION: ${O11Y_LOKI_RETENTION:-7d}
@@ -58,7 +58,7 @@ services:
   alloy:
     image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
     container_name: o11y-alloy
-    restart: unless-stopped
+    restart: always
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -82,7 +82,7 @@ services:
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
     container_name: o11y-grafana
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     environment:
