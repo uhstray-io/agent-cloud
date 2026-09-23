@@ -102,6 +102,7 @@ supersede it with a new entry and link both.
 | 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
 | 10.13 | `tofu validate` + `plan` passed a ruleset attribute the Cloudflare API rejects on create | Schema ≠ API acceptance | Convention |
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
+| 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -2344,6 +2345,46 @@ is a scheduled test with an announced outage window, not a landing.
 
 **Enforced by.** Convention. The mechanical form is the read-only task itself, added as a
 precondition to the deploy playbook when the route carries a source-address matcher.
+
+### 10.15 Reboot survival was asserted for podman containers and never exercised
+
+**What happened.** The production OpenBao host rebooted on 2026-09-19. Its container came
+back `Created`, not running, and stayed that way until an operator-authorized SSH session
+started it on 2026-09-22. Every Semaphore deploy that reads OpenBao was blocked for those
+three days. Two defects combined:
+
+1. The boot unit on the host runs `podman start --all --filter restart-policy=always`
+   (read from `systemctl cat podman-restart.service`, podman 4.9.3). OpenBao's compose file
+   declared `restart: unless-stopped`, so the unit skipped it. Twelve compose files and the
+   orb-agent `run` flag used that policy, and four NetBox services (the app, Postgres and
+   both Redis instances) declared no policy at all, which Compose treats as never restart.
+2. For rootless services, the linger task's header said lingering "in turn restarts the
+   (rootless) containers". It does not. Linger starts the user's systemd instance, and the
+   user copy of `podman-restart.service` ships `disabled` on the Ubuntu 24.04 image (read
+   with `systemctl --user is-enabled` on the OpenBao host). Nothing in that instance
+   starts a container. Only five of the fourteen composable deploys included the task at all.
+
+After starting, OpenBao was also sealed, because production has no auto-unseal. That gap
+was already recorded (plan/development/01, problem 2 and phase B2); this outage is its first
+measured cost.
+
+**Root cause.** A reboot-survival property was written down from how Docker behaves and
+never tested with a reboot. Podman's current upstream documentation says `unless-stopped`
+restarts at boot, which is true of newer releases and false of the unit installed here, so
+reading the docs instead of the host would not have caught it either.
+
+**The rule.** A claim that a service survives a reboot is verified on the target host's
+own boot unit, not on documentation: read the unit's `ExecStart` filter, and read whether
+the unit is enabled for the account that owns the containers. Declare `restart: always`
+(or `"no"` for one-shot containers) in every compose file, and enable podman's user unit
+wherever rootless containers run.
+
+**Enforced by.** Test. `platform/tests/test_restart_policy.bats` parses every compose file
+and refuses any service whose effective policy (base file plus overlays, missing key
+included) is not `always` or `"no"`, refuses any `--restart unless-stopped`, requires the shared deploy preamble to
+include the linger task, and requires that task to link the user unit into
+`default.target.wants`. Both guards were mutated once and went red. An actual reboot
+test of a service host is still not exercised by any automation.
 
 ## 11. The largest one
 

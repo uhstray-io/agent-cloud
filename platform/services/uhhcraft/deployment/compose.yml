@@ -15,7 +15,7 @@ services:
   postgres:
     image: docker.io/library/postgres:16-alpine
     container_name: uhhcraft-postgres
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -33,7 +33,7 @@ services:
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: uhhcraft-redis
-    restart: unless-stopped
+    restart: always
     command:
       - redis-server
       - --appendonly
@@ -55,7 +55,7 @@ services:
     # MINIO_IMAGE to bump deliberately.
     image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z}
     container_name: uhhcraft-minio
-    restart: unless-stopped
+    restart: always
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -78,7 +78,7 @@ services:
     # floating prod tag and should be overridden for reproducible deploys.
     image: ${UHHCRAFT_IMAGE:-ghcr.io/uhstray-io/uhhcraft:latest}
     container_name: uhhcraft-app
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     ports:

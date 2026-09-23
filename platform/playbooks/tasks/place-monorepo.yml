@@ -81,3 +81,10 @@
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file.
   ansible.builtin.include_tasks: install-podman-compose.yml
+
+- name: "Keep rootless containers running across a reboot"
+  # Every composable service gets linger + podman's user boot unit here, so no
+  # deploy has to remember to ask. Self-gates on local_mode and on hosts without
+  # podman's user unit. A dedicated service account (the CI runner) still
+  # includes it again with its own linger_user.
+  ansible.builtin.include_tasks: enable-linger.yml

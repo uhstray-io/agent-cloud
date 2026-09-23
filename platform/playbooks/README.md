@@ -213,7 +213,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
 | `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
 | `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble |
-| `tasks/enable-linger.yml` | Implemented | `loginctl enable-linger` so rootless containers survive a reboot; optional `linger_user` for a dedicated service account |
+| `tasks/enable-linger.yml` | Implemented | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot. Included by `place-monorepo.yml`; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
 | `tasks/site-config-clone.yml` | Implemented | Clone site-config into a scratch dir on a fresh `<prefix>-<UTC>-<6hex>` branch with the deploy key the caller read from OpenBao — written 0600 inside that dir, `IdentitiesOnly`, pinned GitHub host keys |

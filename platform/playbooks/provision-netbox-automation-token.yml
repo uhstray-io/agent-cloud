@@ -1,8 +1,9 @@
 ---
 # provision-netbox-automation-token.yml — one-time bootstrap for build #1.
 #
-# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml reads
-# at secret/services/netbox:automation_api_token, and stores it in OpenBao.
+# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml and
+# netbox-allocate-ip.yml read at secret/services/netbox:automation_api_token, and
+# stores it in OpenBao.
 # Idempotent: a no-op if the token already exists there. REST token creation needs
 # an existing token, so the first one is minted server-side via the NetBox Django
 # shell — same exec pattern as cleanup-netbox.yml.
@@ -27,6 +28,11 @@
     _user: "{{ netbox_automation_user | default('skynet-automation') }}"
 
   tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
@@ -51,6 +57,51 @@
       delegate_to: localhost
       no_log: true
 
+    # The `|` below is a Django QuerySet union inside Python, not a shell pipe.
+    - name: "Ensure NetBox automation user and scoped permissions"  # noqa: risky-shell-pipe
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import ObjectPermission
+        from core.models import ObjectType
+
+        user, changed = get_user_model().objects.get_or_create(
+            username="{{ _user }}",
+            defaults={"is_active": True, "is_staff": True},
+        )
+        scopes = [
+            (
+                "skynet-device-write", ["view", "add"],
+                ObjectType.objects.filter(
+                    app_label="dcim", model__in=["device", "site", "devicetype", "devicerole", "interface"]
+                ) | ObjectType.objects.filter(app_label="ipam", model="ipaddress")
+                  | ObjectType.objects.filter(app_label="extras", model="tag"),
+            ),
+            (
+                "skynet-ipam-prefix-view", ["view"],
+                ObjectType.objects.filter(app_label="ipam", model="prefix"),
+            ),
+        ]
+        for name, actions, types in scopes:
+            perm, created = ObjectPermission.objects.get_or_create(
+                name=name, defaults={"enabled": True, "actions": actions},
+            )
+            changed |= created
+            if not perm.enabled or perm.actions != actions:
+                perm.enabled, perm.actions = True, actions
+                perm.save(update_fields=["enabled", "actions"])
+                changed = True
+            if set(perm.object_types.values_list("pk", flat=True)) != set(types.values_list("pk", flat=True)):
+                perm.object_types.set(types)
+                changed = True
+            if not perm.users.filter(pk=user.pk).exists():
+                perm.users.add(user)
+                changed = True
+        print("changed" if changed else "unchanged")
+        PYSCRIPT
+      register: _permissions
+      changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
+
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data.automation_api_token | default('')) | length > 0
       block:
@@ -60,31 +111,13 @@
         - name: "End play"
           ansible.builtin.meta: end_play
 
-    # noqa risky-shell-pipe: the `|` is a Python queryset union inside the heredoc,
-    # not a shell pipe; the assert below catches a failed mint (pipefail N/A here).
-    - name: "Mint the dedicated scoped token via the NetBox Django shell"  # noqa: risky-shell-pipe
+    - name: "Mint the dedicated scoped token via the NetBox Django shell"
       ansible.builtin.shell: |
         {{ _manage }} << 'PYSCRIPT'
         from django.contrib.auth import get_user_model
-        from users.models import Token, ObjectPermission
-        from core.models import ObjectType
+        from users.models import Token
 
-        User = get_user_model()
-        user, _ = User.objects.get_or_create(
-            username="{{ _user }}",
-            defaults={"is_active": True, "is_staff": True},
-        )
-        perm, _ = ObjectPermission.objects.get_or_create(
-            name="skynet-device-write",
-            defaults={"enabled": True, "actions": ["view", "add"]},
-        )
-        types = ObjectType.objects.filter(
-            app_label="dcim", model__in=["device", "site", "devicetype", "devicerole", "interface"]
-        ) | ObjectType.objects.filter(app_label="ipam", model="ipaddress") \
-          | ObjectType.objects.filter(app_label="extras", model="tag")
-        perm.object_types.set(types)
-        perm.users.add(user)
-
+        user = get_user_model().objects.get(username="{{ _user }}")
         token = Token.objects.filter(user=user).first() or Token.objects.create(
             user=user, description="skynet build #1 automation (create-netbox-device)",
         )
