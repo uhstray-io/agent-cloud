@@ -8,6 +8,8 @@ The branch-bound local Semaphore verifier checked out `be5bbe8b3a0eafa3829a74baa
 
 At commit `3f9a9b97bf9e8362c0fdbe4924c89bc07dc63207`, local Semaphore task 1105 deployed all four healthy o11y components and task 1106 found a recent `caddy` Loki log plus one healthy Prometheus scrape. A direct local Prometheus read returned `up{service="caddy"}=1` at `caddy:2021`, 361 series labeled `service="caddy"`, and 1,049 active TSDB series. The earlier self-only baseline was 616 series. These are point-in-time local measurements; alert delivery, a current-head SSO pass, and production receipt remain open. The prior attempt at task 1101 exposed an Alloy v1.5.1 incompatibility and a missing collector health gate; receipt 1102 failed with zero scrapes. Both were corrected before task 1105.
 
+At `5bc22b8d54b2e7b0e2ca4985c3f7b34ddf1cc2b1`, local Semaphore task 1112 deployed a 1 GB Prometheus size cap and 2,000-sample Alloy scrape limit. Task 1113 verified the Caddy log and healthy scrape after that redeploy; read-back showed 1,100 active local series. Production keeps the size cap disabled pending its host/disk audit and an explicit inventory value.
+
 ## Goals / Non-Goals
 
 **Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.

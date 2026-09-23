@@ -26,6 +26,7 @@
         that:
           - groups.get('o11y_svc', []) | length > 0
           - expected_service | default('') is match('^[a-z][a-z0-9-]*$')
+          - expected_instance | default('') | length == 0 or expected_instance is match('^[a-zA-Z0-9.-]+:[0-9]+$')
           - expect_metrics | default('true') | string | lower in ['true', 'false']
         fail_msg: "Declare an o11y_svc receiver, a lowercase service name, and expect_metrics=true or false."
 
@@ -59,36 +60,8 @@
       vars:
         _logs_json: "{{ _service_logs.stdout | from_json }}"
 
-    - name: Query the service's Prometheus scrape results
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - exec
-          - o11y-grafana
-          - wget
-          - -q
-          - -O
-          - "-"
-          - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
-      register: _scrapes
-      changed_when: false
-      check_mode: false
-      when: expect_metrics | default('true') | bool
-
-    - name: Require a healthy named metrics target
-      ansible.builtin.assert:
-        that:
-          - _scrapes_json.status == 'success'
-          - _service_scrapes | length > 0
-          - _unhealthy_scrapes | length == 0
-        fail_msg: >-
-          Prometheus has no healthy {{ expected_service }} scrape:
-          failing instances={{ _unhealthy_scrapes | map(attribute='metric.instance') | list }};
-          scrapes found={{ _service_scrapes | length }}.
-      vars:
-        _scrapes_json: "{{ _scrapes.stdout | from_json }}"
-        _service_scrapes: "{{ _scrapes_json.data.result }}"
-        _unhealthy_scrapes: "{{ _service_scrapes | rejectattr('value.1', 'equalto', '1') | list }}"
+    - name: Verify the service's Prometheus scrape results
+      ansible.builtin.include_tasks: tasks/verify-o11y-metrics.yml
       when: expect_metrics | default('true') | bool
 
     - name: Report verified metrics and logs

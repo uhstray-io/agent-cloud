@@ -187,7 +187,7 @@ flowchart TD
 - [ ] Address all review findings, confirm checks pass
 - [ ] Merge the reviewed feature PR into `dev`, then deploy the `dev`-bound Semaphore template
 - [ ] Run validation templates (Validate All, Validate Secrets)
-- [ ] Capture the Semaphore observability verification task ID and output: a fresh Loki line with the service's `service` label; for a metrics-enabled service, its expected Prometheus target is present and `up == 1`. An absent or unreachable expected target fails onboarding.
+- [ ] Capture the Semaphore observability verification task ID and output: a fresh Loki line with the service's `service` label; for a metrics-enabled service, pass its declared `host:port` as `expected_instance` and require that exact Prometheus target at `up == 1`. An absent or unreachable expected target fails onboarding with the service and endpoint named; a healthy sibling target cannot mask it. Run the local unreachable-endpoint drill when changing the shared verification mechanism.
 - [ ] On pass: promote the reviewed change from `dev` to `main`
 - [ ] Re-deploy from main to confirm
 

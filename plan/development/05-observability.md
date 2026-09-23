@@ -43,6 +43,12 @@
 > The local TSDB read back `up{service="caddy"}=1`, 361 active Caddy series,
 > and 1,049 total active series, versus a prior self-only baseline of 616.
 > These are point-in-time local measurements, not production or alert proof.
+> At `5bc22b8d54b2e7b0e2ca4985c3f7b34ddf1cc2b1`, local Semaphore task
+> 1112 redeployed the stack with a 1 GB Prometheus retention-size cap and a
+> 2,000-sample Alloy scrape ceiling; task 1113 again verified Caddy metrics
+> and logs. Container read-back confirmed both limits, and the local TSDB
+> reported 1,100 active series. The production size cap stays disabled until
+> the existing receiver disk and retention are audited.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

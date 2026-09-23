@@ -1,0 +1,115 @@
+---
+# Local-only fault drill: a disposable opted-in container declares a metrics
+# port with no listener. The shared onboarding verifier must name that endpoint.
+- name: Verify the proposed revision before the fault drill
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no fault probe was started."
+
+- name: Prove a declared unreachable metrics endpoint fails visibly
+  hosts: o11y_svc
+  gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _probe: o11y-fault-probe
+    expected_service: o11y-fault-probe
+    expected_instance: o11y-fault-probe:65535
+  tasks:
+    - name: Require local mode before creating a disposable probe
+      ansible.builtin.assert:
+        that: local_mode | default(false) | bool
+        fail_msg: "The unreachable-endpoint drill is local-only."
+
+    - name: Exercise the declared unreachable endpoint
+      block:
+        - name: Refuse to adopt a pre-existing probe container
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", container, exists, "{{ _probe }}"]
+          register: _probe_exists
+          changed_when: false
+          failed_when: _probe_exists.rc not in [0, 1]
+
+        - name: Require an unused probe name
+          ansible.builtin.assert:
+            that: _probe_exists.rc == 1
+            fail_msg: "{{ _probe }} already exists; refusing to remove another task's container."
+
+        - name: Start the opted-in probe with no metrics listener
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - run
+              - --rm
+              - -d
+              - --network=local-dev
+              - --label=prometheus.io/scrape=true
+              - --label=prometheus.io/port=65535
+              - "--name={{ _probe }}"
+              - docker.io/library/alpine:3.20
+              - sh
+              - -c
+              - "echo o11y-fault-probe-ready; sleep 300"
+          register: _probe_run
+          changed_when: true
+
+        - name: Wait for Alloy to report the failed scrape
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+          register: _probe_scrapes
+          changed_when: false
+          retries: 12
+          delay: 5
+          until: >-
+            _probe_scrapes.rc == 0 and
+            ((_probe_scrapes.stdout | from_json).data.result |
+             selectattr('metric.instance', 'equalto', expected_instance) |
+             selectattr('value.1', 'equalto', '0') | list | length) == 1
+
+        - name: Require the onboarding verifier to refuse the named endpoint
+          block:
+            - name: Run the same metrics gate used by service onboarding
+              ansible.builtin.include_tasks: tasks/verify-o11y-metrics.yml
+
+            - name: Refuse a false-green verifier
+              ansible.builtin.fail:
+                msg: "The onboarding verifier accepted unreachable {{ expected_instance }}."
+          rescue:
+            - name: Require the refusal to name the unreachable endpoint
+              ansible.builtin.assert:
+                that:
+                  - expected_service in ansible_failed_result.msg
+                  - expected_instance in ansible_failed_result.msg
+                  - "'failing instances=' in ansible_failed_result.msg"
+                fail_msg: "The verifier failed without naming the unreachable service and endpoint."
+
+            - name: Report the expected verification failure
+              ansible.builtin.debug:
+                msg: "Verified refusal: {{ expected_service }} at {{ expected_instance }} reported up=0."
+      always:
+        - name: Remove only the probe started by this drill
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", rm, -f, "{{ _probe }}"]
+          when: _probe_run is defined and _probe_run.rc == 0
+          changed_when: true

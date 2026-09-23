@@ -8,7 +8,7 @@
 
 ## 2. Provisioned alerts and budgets
 
-- [ ] 2.1 Add inventory-controlled metric retention and series limits, with a local pilot measurement recorded before wider rollout.
+- [x] 2.1 Add inventory-controlled metric retention and per-scrape sample limits, with a local pilot measurement recorded before wider rollout; production size selection remains gated on its receiver audit.
 - [ ] 2.2 Provision service-down and missing-telemetry rules, a generic dashboard link, and a contact point whose credential is rendered from OpenBao by Ansible.
 - [ ] 2.3 Encode a reversible pilot fault drill through Semaphore and verify both rule firing and notification receipt without manual Grafana changes.
 - [ ] 2.4 Validation gate: a wipe/redeploy plus the drill prove spec scenarios "Rebuild restores views and rules" and "Failure reaches an operator".

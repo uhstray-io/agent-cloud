@@ -40,6 +40,11 @@ templates:
         description: "Lowercase service identity whose fresh logs and metrics must be present"
         type: string
         required: true
+      - name: expected_instance
+        title: "Metrics endpoint"
+        description: "Declared host:port to verify for a metrics-enabled service"
+        type: string
+        required: false
       - name: expect_metrics
         title: "Expect metrics"
         description: "true for a metrics-enabled service; false for a log-only service"
