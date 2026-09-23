@@ -1312,6 +1312,20 @@
       vars: *seed_specs
       no_log: true
 
+    # The controller's own API token, where production keeps it
+    # (secret/services/semaphore:api_token): in-controller playbooks that call the Semaphore
+    # API (the conformance collector, the survey publisher) read it there, never from the
+    # workstation state file below. Merge-patch, so other keys at the path survive.
+    - name: "Store the local controller's API token in local OpenBao"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url_host }}"
+        _bm_token: "{{ _bao_root_token }}"
+        _bm_path: services/semaphore
+        _bm_data:
+          api_token: "{{ _sem_token }}"
+      when: not ansible_check_mode
+
     # ── Stage 5: persist state for the wrapper ──────────────────────────
     - name: "Write local credentials state (0600, outside the repo)"
       no_log: true

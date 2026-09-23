@@ -589,6 +589,13 @@ templates:
         type: string
         required: true
 
+  # The workflow conformance collector: reads task history, writes each service's step status
+  # to NetBox (and Loki when collector_loki_url is set). The only writer of that status.
+  - name: Collect Service Conformance
+    playbook: platform/playbooks/collect-service-conformance.yml
+    schedule:
+      cron: "*/15 * * * *"
+
   # Workflow step systemd-enablement: every container of the service restarts on its own and,
   # for rootless podman, the deploying user has linger. Read-only.
   - name: Verify Service Persistence

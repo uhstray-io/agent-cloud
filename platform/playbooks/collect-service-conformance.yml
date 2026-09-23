@@ -1,0 +1,226 @@
+---
+# collect-service-conformance.yml — the service deployment workflow's conformance collector.
+#
+# Change service-deployment-workflow task 7.5; spec platform/service-onboarding-workflow,
+# "Per-service conformance is tracked and reported". Runs INSIDE the Semaphore controller on
+# a schedule and is the ONLY writer of the workflow status (single-writer test):
+#
+#   read   Semaphore task history + output (the step results each executor recorded)
+#   parse  workflows/service-onboarding/lib/step_results.py: latest result per service and
+#          step; a failed task with no result counts as `fail` with its last 20 lines
+#   write  NetBox custom fields on each service's VM (declared in
+#          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
+#          workflow-collector token (view/change VMs only); and, when collector_loki_url is
+#          set, one Loki line per step result labelled service, step, status
+#
+# A NetBox that is down or holds no VM for a service never fails the run: the collector
+# records what it could not write and tries again next interval (spec scenario "NetBox outage
+# does not block deployment"). Its own step result is not a workflow step, so it records the
+# aggregate with set_stats under `conformance` instead.
+#
+# Controller API: fixed loopback, like the survey publisher; the OpenBao-sourced token never
+# goes to a caller-chosen address. Dry run (--check): reads and parses, writes nothing.
+
+- name: "Collect service deployment workflow conformance"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
+    _pid: "{{ semaphore_project_id | default(1) }}"
+    _workflow: "{{ playbook_dir }}/../workflows/service-onboarding"
+    _registry: "{{ (lookup('file', _workflow ~ '/registry.yml') | from_yaml).steps }}"
+    _step_templates: >-
+      {{ ((_registry | map(attribute='executor') | list) + (_registry | selectattr('snapshot', 'defined') | map(attribute='snapshot') | list))
+         | reject('none') | reject('equalto', 'Deploy {service}') | list }}
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        that: (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "The collector may only use the controller's fixed loopback API."
+
+    - name: "Semaphore runtime access (injected token, or the controller AppRole)"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Read the template catalog"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _templates
+      check_mode: false
+      no_log: true
+
+    - name: "Read recent task history"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/last"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _history
+      check_mode: false
+      no_log: true
+
+    - name: "Keep the finished tasks of workflow templates"
+      ansible.builtin.set_fact:
+        _tpl_names: "{{ dict(_templates.json | map(attribute='id') | zip(_templates.json | map(attribute='name'))) }}"
+        _candidates: >-
+          {{ _history.json | selectattr('status', 'in', ['success', 'error'])
+             | selectattr('template_id', 'in', _templates.json
+                 | selectattr('name', 'regex', '^(' ~ (_step_templates | map('regex_escape') | join('|')) ~ '|Deploy .+)( \((Dev|Local)\))?$')
+                 | map(attribute='id') | list)
+             | list }}
+
+    - name: "Read each candidate task's output"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}/output"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      loop: "{{ _candidates }}"
+      loop_control:
+        label: "task {{ item.id }}"
+      register: _outputs
+      check_mode: false
+      no_log: true
+
+    - name: "One parser record per task (service taken from a per-service playbook name)"
+      ansible.builtin.set_fact:
+        _collected: >-
+          {{ (_collected | default([])) + [{
+               'id': item.item.id,
+               'status': item.item.status,
+               'end': item.item.end,
+               'template_name': _tpl_names[item.item.template_id] | default(''),
+               'service': ((item.item.tpl_playbook | basename | regex_replace('^deploy-|\\.yml$', ''))
+                           if (item.item.tpl_playbook | default('') | basename) is match('deploy-[a-z0-9-]+\\.yml$') else none),
+               'output': item.json | map(attribute='output') | map('regex_replace', '\\x1b\\[[0-9;]*m', '') | list
+             }] }}
+      loop: "{{ _outputs.results }}"
+      loop_control:
+        label: "task {{ item.item.id }}"
+      no_log: true
+
+    - name: "Aggregate: latest result per service and step"
+      ansible.builtin.command:
+        argv: [python3, "{{ _workflow }}/lib/step_results.py"]
+        stdin: "{{ {'registry': _registry, 'tasks': _collected | default([]), 'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}"
+      register: _aggregate_run
+      changed_when: false
+      check_mode: false
+
+    - name: "Hold the aggregate"
+      ansible.builtin.set_fact:
+        _agg: "{{ _aggregate_run.stdout | from_json }}"
+
+    - name: "Record the aggregate for the report and the dashboard"
+      ansible.builtin.set_stats:
+        data:
+          conformance: "{{ _agg }}"
+        per_host: false
+        aggregate: false
+
+    # ── NetBox ──────────────────────────────────────────────────────────────────────────
+    - name: "NetBox: read the collector token"
+      when: _netbox_url | length > 0
+      block:
+        - name: "Refuse a cleartext secret-store endpoint"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _bao_url }}"
+
+        - name: "Authenticate to OpenBao (AppRole)"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body:
+              role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+              secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+          register: _bao_auth
+          changed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: "Read the NetBox secret"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+          register: _nb_secret
+          check_mode: false
+          no_log: true
+
+        - name: "Set the NetBox auth header (Bearer for a v2 token, Token for v1)"
+          ansible.builtin.set_fact:
+            _collector_token: "{{ _nb_secret.json.data.data.collector_api_token | default('') }}"
+          no_log: true
+
+    - name: "NetBox: find each service's VM"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?name={{ (collector_vm_names | default({}))[item] | default(item) | urlencode }}"
+        headers:
+          Authorization: "{{ ('Bearer ' if (_collector_token is match('nbt_')) else 'Token ') ~ _collector_token }}"
+          Accept: application/json
+        status_code: [200]
+      loop: "{{ _agg.services.keys() | list }}"
+      register: _vms
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _netbox_url | length > 0
+        - (_collector_token | default('')) | length > 0
+
+    - name: "NetBox: write each service's workflow status"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.json.results[0].id }}/"
+        method: PATCH
+        headers:
+          Authorization: "{{ ('Bearer ' if (_collector_token is match('nbt_')) else 'Token ') ~ _collector_token }}"
+          Accept: application/json
+        body_format: json
+        body:
+          custom_fields:
+            ac_workflow_status: >-
+              {{ dict(_agg.services[item.item] | dict2items | map(attribute='key')
+                 | zip(_agg.services[item.item] | dict2items | map(attribute='value') | map(attribute='status'))) }}
+            ac_failed_steps: "{{ _agg.failed_steps[item.item] | join(',') }}"
+            ac_last_run: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+        status_code: [200]
+      loop: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | selectattr('json.count', 'gt', 0) | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: _nb_writes
+      changed_when: true
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    # ── Loki ────────────────────────────────────────────────────────────────────────────
+    - name: "Loki: one line per step result"
+      ansible.builtin.uri:
+        url: "{{ collector_loki_url }}/loki/api/v1/push"
+        method: POST
+        body_format: json
+        body:
+          streams: "{{ _agg.loki_streams }}"
+        status_code: [204]
+      register: _loki
+      changed_when: true
+      failed_when: false
+      when:
+        - not ansible_check_mode
+        - collector_loki_url is defined
+        - _agg.services | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          services: "{{ _agg.services.keys() | list }}"
+          failed_steps: "{{ _agg.failed_steps }}"
+          netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
+          netbox_no_vm: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
+          netbox_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
+          loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"

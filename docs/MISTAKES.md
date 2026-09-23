@@ -53,7 +53,7 @@ supersede it with a new entry and link both.
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
@@ -920,6 +920,8 @@ its previous form required the very construct that broke the runtime.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
+**Occurrences: 2** — 2026-08-28, 2026-09-22
+
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
 four filenames written into the test. While extending that list by one for a review
@@ -952,6 +954,26 @@ shrink, and shrinking it is visible work rather than a comment nobody reads.
 with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
 38 remaining plays is tracked as its own change — it touches live-service deploys
 and was deliberately not folded into the change that found it.
+
+**Occurrence 2 — 2026-09-22.** The check-mode contract (change
+`service-deployment-workflow`, "every playbook honours a dry-run flag") derived its
+population from the code, as the rule says, but from one directory:
+`platform/playbooks/**`. Its allowlist was empty and the claim was reported as met.
+`platform/semaphore/` holds four more Ansible files the claim covers:
+`setup-templates.yml`, `bootstrap-semaphore-repositories.yml`, `sync-inventory.yml` and
+the shared `tasks/runtime-access.yml`. None of them honoured `--check`. It surfaced
+when the conformance collector's first local dry run (Semaphore task 1018) failed
+inside the shared access task, because its OpenBao reads were skipped in check mode
+and the rescue reported "Runtime Semaphore access is unavailable". The rule did not
+prevent it because it names *where* the population comes from (the code) but not
+*how far* it extends. A glob rooted in the directory where the fix was written is a
+snapshot of where playbooks lived on that day. Widened rule: derive "every X" from
+the code, and root the derivation at the scope the claim names, not at the directory
+you happen to be working in. Enforced by `platform/tests/test_check_mode_contract.py`,
+which now scans `platform/semaphore/**` too. Widening it went red on all four files
+(mutation-checked: reverting the fix to `runtime-access.yml` fails the test), and all
+four were then retrofitted by hand. `setup-templates.yml --check` against local
+Semaphore reported changed=0, with templates and schedules byte-identical before and after.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 

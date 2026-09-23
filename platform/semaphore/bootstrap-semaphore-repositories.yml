@@ -69,6 +69,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _keys
+      check_mode: false
 
     - name: "Read existing repository records"
       ansible.builtin.uri:
@@ -78,6 +79,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _repos
+      check_mode: false
 
     # The "no key attached" entry is named differently per instance: this
     # production project has `local-none`, the local-dev bootstrap creates
@@ -142,7 +144,9 @@
       loop: "{{ _declared }}"
       loop_control:
         label: "{{ item.name }} ({{ item.git_branch }})"
-      when: (_repos.json | selectattr('name', 'equalto', item.name) | list | length) == 0
+      when:
+        - not ansible_check_mode
+        - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) == 0
 
     - name: "Correct records that drifted from the declaration"
       ansible.builtin.uri:
@@ -170,6 +174,7 @@
       vars:
         _existing: "{{ (_repos.json | selectattr('name', 'equalto', item.name) | list | first) | default({}) }}"
       when:
+        - not ansible_check_mode
         - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) > 0
         # ssh_key_id counts as drift too: if the declared key changes, or the
         # key-store entry is replaced and gets a new id, the record would keep a
@@ -190,6 +195,7 @@
         follow_redirects: none
       register: _repos_after
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

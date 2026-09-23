@@ -213,3 +213,10 @@ templates:
 
   - name: "Deploy Orb Agent (Local)"
     playbook: platform/playbooks/deploy-orb-agent.yml
+
+  - name: "Collect Service Conformance (Local)"
+    playbook: platform/playbooks/collect-service-conformance.yml
+    # Own schedule for the same reason as the tududi token refresh above: the base
+    # schedule runs `main`, which has no collector until promotion. Same cron.
+    schedule:
+      cron: "*/15 * * * *"

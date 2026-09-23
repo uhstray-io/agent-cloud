@@ -24,6 +24,8 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
+# Semaphore's own playbooks and shared tasks run under the same dry-run flag.
+SEMAPHORE = REPO / "platform/semaphore"
 ALLOWLIST = Path(__file__).with_name("check_mode_allowlist.txt")
 
 COMMANDS = {"command", "shell", "raw", "script"}
@@ -133,7 +135,7 @@ def violations_in(doc) -> list[str]:
 
 
 def _files() -> list[Path]:
-    return sorted(PLAYBOOKS.rglob("*.yml"))
+    return sorted([*PLAYBOOKS.rglob("*.yml"), *SEMAPHORE.rglob("*.yml")])
 
 
 def _allowlist() -> set[str]:

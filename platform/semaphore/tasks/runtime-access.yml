@@ -35,6 +35,8 @@
         follow_redirects: none
         status_code: [200]
       register: _runtime_login
+      changed_when: false
+      check_mode: false
       no_log: true
 
     - name: "Read only the Semaphore runtime secret"
@@ -46,6 +48,7 @@
         follow_redirects: none
         status_code: [200]
       register: _runtime_secret
+      check_mode: false
       no_log: true
 
     - name: "Hold the runtime token in Ansible memory"

@@ -119,3 +119,15 @@ def test_opa_allowlists_match_registry_ownership():
         assert set(entry["allowed_templates"]) == owned, role
         wants_prefix = any(s["owner"] == role and s.get("executor") == PER_SERVICE for s in STEPS)
         assert ("Deploy " in entry.get("allowed_template_prefixes", [])) == wants_prefix, role
+
+
+def test_only_the_collector_writes_workflow_status():
+    # Spec scenario "Only the collector writes status": the NetBox status fields and the Loki
+    # conformance stream have exactly one writer.
+    playbooks = REPO / "platform/playbooks"
+    writers = sorted(
+        str(p.relative_to(REPO))
+        for p in playbooks.rglob("*.yml")
+        if "ac_workflow_status" in p.read_text() or "/loki/api/v1/push" in p.read_text()
+    )
+    assert writers == ["platform/playbooks/collect-service-conformance.yml"]
