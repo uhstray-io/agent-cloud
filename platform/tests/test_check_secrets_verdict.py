@@ -35,6 +35,9 @@ def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, poli
              service="svc", vars_file=None, host_vars=None, deploy_raw=None):
     play = yaml.safe_load(PLAYBOOK.read_text())[0]
     record = next(t for t in play["tasks"] if t.get("name") == "Record the step result")
+    # The verdict is computed by the "Decide the secrets step" set_facts; lifted here as vars.
+    decided = {k: v for t in play["tasks"] if str(t.get("name", "")).startswith("Decide the secrets step")
+               for k, v in t["ansible.builtin.set_fact"].items()}
     pv = dict(play["vars"])
     # Stub the controller-side facts the real play reads from files.
     pv["_deploy_raw"] = _Unsafe(deploy_raw if deploy_raw is not None else (
@@ -47,8 +50,8 @@ def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, poli
         {"status": role, "json": {"data": {"token_policies": list(token_policies)}}},
         {"status": policy, "json": {}},
     ]}
-    rv = {k: v for k, v in record["vars"].items() if not k.startswith("step_result_")}
-    rv.update({k: record["vars"][k] for k in ("step_result_status", "step_result_error", "step_result_evidence")})
+    step = ("step_result_status", "step_result_error", "step_result_evidence")
+    rv = {**decided, **{k: record["vars"][k] for k in step}}
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**pv, **rv},
         **({"vars_files": [str(vars_file)]} if vars_file else {}),
@@ -103,6 +106,15 @@ def test_no_deploy_declaration_fails_closed(tmp_path):
 
 
 SECRETS_VARS = REPO / "platform/playbooks/vars/secret-declarations"
+
+
+def test_a_failed_step_fails_the_task():
+    # PR 203 Codex review: the step result said fail while Semaphore reported success.
+    tasks = yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]
+    names = [t.get("name") for t in tasks]
+    fail = tasks[-1]
+    assert names.index("Record the step result") < len(tasks) - 1
+    assert "ansible.builtin.fail" in fail and fail["when"] == "_errors | length > 0"
 
 
 def test_agentgateway_computed_declaration_still_requires_the_upstream_key(tmp_path):

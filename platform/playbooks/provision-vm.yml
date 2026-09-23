@@ -514,6 +514,23 @@
       register: pre_start
       check_mode: false
 
+    # A dry run does not start a stopped VM, so the SSH and runner checks below would wait for
+    # a state it never created (PR 203 Codex review).
+    - name: "Dry run, VM stopped: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) on {{ _node }} is {{ pre_start.json.data.status }}
+          and would be started; its SSH and runner checks need it running, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - pre_start.json.data.status != "running"
+
+    - name: "Dry run, VM stopped: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - pre_start.json.data.status != "running"
+
     - name: "Start VM"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"

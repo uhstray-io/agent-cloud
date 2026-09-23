@@ -108,9 +108,9 @@
             expiry: "none"
         status_code: [200]
       no_log: true
+      when: not ansible_check_mode
 
     # ---- verify against the public edge (proves the key authorizes the workspace) ----
-      when: not ansible_check_mode
     - name: "Verify: POST /v3/workspaces with the minted token"
       delegate_to: localhost
       ansible.builtin.uri:

@@ -374,12 +374,12 @@
       changed_when: "'registered' in (_configured.stdout | default(''))"
       failed_when: false
       no_log: true
+      when: not ansible_check_mode
 
     # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
     # no_log step that merely fails is undiagnosable. The script never echoes the token
     # and the runner's own configuration masks secrets it is given, so its output is safe
     # to surface — and surfacing it is what turns "failed" into something actionable.
-      when: not ansible_check_mode
     - name: "Report the registration outcome"
       ansible.builtin.debug:
         msg: >-

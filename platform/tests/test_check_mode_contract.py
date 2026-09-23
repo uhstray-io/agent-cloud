@@ -355,3 +355,16 @@ def test_an_argv_computed_in_jinja_is_read_as_words():
         "  changed_when: false\n"
     )
     assert found and "write" in found[0], found
+
+
+def test_no_task_key_is_stranded_under_the_next_tasks_comment():
+    # A `when:` between a comment and the next `- name:` belongs to the PREVIOUS task, but reads
+    # as the next one's guard; the check-mode retrofit left eight of them (PR 203 Codex review).
+    stranded = []
+    for path in sorted((REPO / "platform").rglob("*.yml")):
+        lines = path.read_text().split("\n")
+        for i in range(1, len(lines) - 1):
+            if (re.match(r"\s+when:", lines[i]) and lines[i - 1].strip().startswith("#")
+                    and lines[i + 1].strip().startswith("- name:")):
+                stranded.append(f"{path.relative_to(REPO)}:{i + 1}")
+    assert not stranded, stranded

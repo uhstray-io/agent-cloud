@@ -138,9 +138,9 @@
         podman network exists {{ _net }} || podman network create {{ _net }}
       register: _netres
       changed_when: "'created' in _netres.stdout | default('')"
+      when: not ansible_check_mode
 
     # ── Stage 1: OpenBao (persistent file storage) ──────────────────────
-      when: not ansible_check_mode
     - name: "Ensure local OpenBao config dir"
       # 0755 (not 0700): the container mounts this :ro and the unprivileged
       # in-container `openbao` user must traverse it to read openbao.hcl. The
@@ -360,6 +360,7 @@
         status_code: [200]
       register: _secret_id
       no_log: true
+      when: not ansible_check_mode
 
     # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
     # §12A: the secure foundation comes up directly here — dns → step-ca →
@@ -373,7 +374,6 @@
     #   * the genesis monorepo dir / workspace dir from the local-dev inventory.
     # No no_log here — deploys + their verify phases must stay diagnosable
     # (CLAUDE.md: scope no_log to credential tasks only).
-      when: not ansible_check_mode
     - name: "Locate podman-compose on the Mac (forces the compose provider)"  # noqa: command-instead-of-shell
       # shell (not command): `command -v` is a shell builtin. Genesis REQUIRES
       # podman-compose — without it detect_runtime falls back to `podman compose`
@@ -413,6 +413,7 @@
       loop: [dns, step-ca, caddy, authentik]
       register: _genesis
       changed_when: true
+      when: not ansible_check_mode
 
     # ── Stage 2: Semaphore — boots LAST, OIDC-secured (§12A) ────────────
     # The VM's rootful podman socket is mounted in so Semaphore-run deploy
@@ -424,7 +425,6 @@
     # must never be left unbootable). The local admin login is always retained
     # as the fallback (OIDC users are non-admin — Semaphore has no group->role
     # mapping; promote OIDC admins by hand).
-      when: not ansible_check_mode
     - name: "Detect OIDC dependencies (step-ca + authentik up)"
       ansible.builtin.shell: >-
         podman container exists {{ _stepca_name }} && podman container exists authentik-server
