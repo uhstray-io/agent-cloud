@@ -406,6 +406,27 @@ class ScopedPublicationTests(unittest.TestCase):
                 self.assertIn(("GET", "/api/project/1/environment/501"), self.requests)
                 self.assertEqual(self.writes, [])
 
+    def test_provisioner_refuses_a_leftover_seed_value_of_any_name(self):
+        # Review of PR #205: only SEED_* was refused, so an interrupted OpenBao-key seed's
+        # BAO_VALUE could stay in the environment the template is then bound to. A
+        # dedicated seed environment holds exactly the two AppRole inputs; anything else
+        # is a leftover.
+        for leftover in ["BAO_VALUE", "SOMETHING_ELSE"]:
+            with self.subTest(leftover=leftover):
+                self.setUp()
+                self.prepare_seed_template()
+                self.records[0].update(name="Seed OpenBao Key (Dev)",
+                                       playbook="platform/playbooks/seed-openbao-key.yml")
+                self.records[0]["survey_vars"] = [{"name": n, "type": "string", "values": None}
+                                                  for n in ("bao_path", "bao_key", "bao_verify_access_only")]
+                self.environments.append({"id": 501, "project_id": 1, "name": "OpenBao key seed inputs (Dev)",
+                                          "json": "{}", "env": "{}",
+                                          "secrets": [{"id": 700, "name": leftover, "type": "env"}]})
+                code, output = self.run_play(provision=True, seed_template="Seed OpenBao Key")
+                self.assertNotEqual(code, 0, output)
+                self.assertIn("Validate the dedicated credential boundary", output)
+                self.assertEqual(self.writes, [])
+
     def test_controller_provisioner_refuses_destination_override_before_auth(self):
         code, output = self.run_play(provision=True, provision_wrapper=True)
         self.assertNotEqual(code, 0)

@@ -166,7 +166,10 @@
           - (_target.json.env | default('{}', true) | from_json) == {}
           - (_target.json.json | default('{}', true) | from_json).keys() | difference(['openbao_addr']) | length == 0
           - (_target.json.json | default('{}', true) | from_json).get('openbao_addr', _bao_url) == _bao_url
-          - _target.json.secrets | selectattr('name', 'match', '^SEED_') | list | length == 0
+          # A dedicated seed environment holds exactly the two AppRole inputs. Any other
+          # secret (a SEED_* provider value, a BAO_VALUE from an interrupted seed, ...) is a
+          # leftover a bound template would receive; reconcile it before binding.
+          - _target.json.secrets | rejectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0
           - _auth | length in [0, 2]
           - _auth | map(attribute='name') | unique | list | length == _auth | length
           - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
