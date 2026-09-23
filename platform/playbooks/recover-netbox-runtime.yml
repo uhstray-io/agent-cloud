@@ -59,7 +59,6 @@
         that:
           - not (local_mode | default(false) | bool)
           - monorepo_deploy_path is defined
-          - not (netbox_source_apply | default(false) | bool) or monorepo_repo is defined
         fail_msg: "NetBox recovery needs the production NetBox inventory."
 
     - name: Read the host source revision before placement
@@ -69,17 +68,17 @@
       register: _host_revision
       changed_when: false
 
-    - name: Read host source changes without refreshing its Git index
+    - name: Read tracked host source changes without refreshing its Git index
       ansible.builtin.command:
-        argv: [git, --no-optional-locks, status, --porcelain, --untracked-files=all]
+        argv: [git, --no-optional-locks, status, --porcelain, --untracked-files=no]
         chdir: "{{ _monorepo_dir }}"
       register: _host_changes
       changed_when: false
 
-    - name: Refuse a dirty host source checkout
+    - name: Refuse tracked host source changes
       ansible.builtin.assert:
         that: _host_changes.stdout | length == 0
-        fail_msg: "NetBox host source has local changes; source placement and container recovery were not run. Paths: {{ _host_changes.stdout_lines }}"
+        fail_msg: "NetBox host source has tracked changes; source placement and container recovery were not run. Paths: {{ _host_changes.stdout_lines }}"
 
     - name: Require the audited starting revision before source placement
       ansible.builtin.assert:
@@ -89,15 +88,20 @@
         fail_msg: "Host revision differs from the audited starting revision; source placement and container recovery were not run."
       when: netbox_source_apply | default(false) | bool
 
-    - name: Place the exact reviewed dev revision without forcing local changes
-      # The explicit status guard above protects untracked paths: Ansible's git
-      # module still uses a forced checkout for a commit SHA with force=false.
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ hostvars['localhost']._controller_revision.stdout }}"
-        force: false
+    - name: Fetch reviewed dev source without changing the host checkout
+      ansible.builtin.command:
+        argv: [git, fetch, --quiet, origin, dev]
+        chdir: "{{ _monorepo_dir }}"
+      changed_when: false
       when: netbox_source_apply | default(false) | bool
+
+    - name: Place the exact reviewed dev revision without overwriting host files
+      ansible.builtin.command:
+        argv: [git, switch, --detach, --no-overwrite-ignore, "{{ hostvars['localhost']._controller_revision.stdout }}"]
+        chdir: "{{ _monorepo_dir }}"
+      when:
+        - netbox_source_apply | default(false) | bool
+        - _host_revision.stdout != hostvars['localhost']._controller_revision.stdout
 
     - name: Read the effective host source revision
       ansible.builtin.command:

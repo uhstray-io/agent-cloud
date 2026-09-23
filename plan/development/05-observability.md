@@ -206,8 +206,9 @@
 > required restart policies. The recovery preflight correctly refused that
 > mismatch before touching containers. Reconcile the host monorepo through
 > the Dev-bound recovery playbook as a separate, default-off source action:
-> require the audited starting commit and a clean checkout, place the exact
-> reviewed Dev commit through a guarded Git checkout, then verify its
+> require the audited starting commit and no tracked source changes, place the
+> exact reviewed Dev commit with a no-overwrite Git switch that preserves
+> unrelated untracked and ignored host files, then verify its
 > revision and Compose checksum. Run the container dry-run with runtime
 > apply still disabled;
 > only then choose the scoped backing-service and NetBox start/recreate actions.
