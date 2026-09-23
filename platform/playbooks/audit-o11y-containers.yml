@@ -2,7 +2,7 @@
 # Read-only production inventory for inference-telemetry-production task 0.2.
 # o11y/deployment/compose.yml pins every container name to o11y-*.
 - name: Audit production hosts for o11y containers
-  hosts: agent_cloud:virtualmachines
+  hosts: agent_cloud
   gather_facts: false
   tasks:
     - name: List rootless o11y Podman containers
@@ -19,6 +19,20 @@
       changed_when: false
       failed_when: false
 
+    - name: List rootless o11y Docker containers
+      ansible.builtin.command:
+        argv: [docker, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+      register: o11y_docker_rootless
+      changed_when: false
+      failed_when: false
+
+    - name: List rootful o11y Docker containers
+      ansible.builtin.command:
+        argv: [sudo, -n, docker, ps, -a, --filter, name=o11y-, --format, "{{ '{{.Names}}' }}"]
+      register: o11y_docker_rootful
+      changed_when: false
+      failed_when: false
+
     - name: Report candidates and access results
       ansible.builtin.debug:
         msg:
@@ -27,3 +41,7 @@
           rootless_containers: "{{ o11y_rootless.stdout_lines }}"
           rootful_rc: "{{ o11y_rootful.rc }}"
           rootful_containers: "{{ o11y_rootful.stdout_lines }}"
+          docker_rootless_rc: "{{ o11y_docker_rootless.rc }}"
+          docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines }}"
+          docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
+          docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines }}"
