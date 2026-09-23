@@ -1,0 +1,47 @@
+---
+# Read-only NetBox runtime report. Use this before choosing a recovery action.
+- name: Audit NetBox runtime
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: List NetBox containers and their state
+      ansible.builtin.command:
+        argv: [docker, ps, -a, --filter, name=netbox, --format, "{{ '{{.Names}} {{.Status}}' }}"]
+      register: _containers
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect NetBox application container state
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{.State.Status}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' }}", netbox-netbox-1]
+      register: _app
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Check the declared NetBox login endpoint
+      ansible.builtin.uri:
+        url: "{{ service_url | default('http://localhost:8000') }}/login/"
+        method: GET
+        follow_redirects: none
+        status_code: [200, 302]
+        timeout: 5
+      register: _http
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Report runtime state without secrets
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          containers_rc: "{{ _containers.rc }}"
+          containers: "{{ _containers.stdout_lines }}"
+          containers_error: "{{ _containers.stderr }}"
+          app_rc: "{{ _app.rc }}"
+          app_state: "{{ _app.stdout }}"
+          app_error: "{{ _app.stderr }}"
+          http_status: "{{ _http.status | default('unreachable') }}"
+          http_message: "{{ _http.msg | default('') }}"

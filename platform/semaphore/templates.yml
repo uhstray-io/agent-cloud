@@ -92,6 +92,10 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Audit NetBox Runtime
+    playbook: platform/playbooks/audit-netbox-runtime.yml
+    dev_variant: true
+
   # Build #1 (netbox-device-add): skynet requests "Create NetBox Device"; agent-cloud
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
