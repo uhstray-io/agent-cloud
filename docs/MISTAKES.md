@@ -76,6 +76,7 @@ supersede it with a new entry and link both.
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
+| 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -1517,6 +1518,23 @@ Mechanically enforceable via a permission rule denying `git push`/`gh pr create`
 `gh pr merge` without a prompt — the auto-mode classifier already prompts for some
 Semaphore-task dispatches; extending deny-by-default to these three git surfaces
 would close it.
+
+### 5.8 A required CI gate installed whatever upstream published last
+
+**What happened.** On 2026-09-23, the required TruffleHog scan selected v3.97.7
+before its Linux release asset was available. The installer returned HTTP 404,
+blocking unrelated PRs before a scan ran. The verified scan also used an action
+from `main` whose default container version was `latest`.
+
+**Root cause.** The gate depended on mutable upstream references, so its behavior
+changed without a commit in this repository.
+
+**The rule.** Required scanners use an exact release with a pinned artifact digest.
+Update the version and digest together in a reviewed commit.
+
+**Enforced by.** Both scans run one v3.97.6 binary whose release archive is checked
+against its published SHA256 before execution. A future CI rule could reject
+floating scanner references in workflow files.
 
 ---
 
