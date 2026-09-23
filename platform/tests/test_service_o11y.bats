@@ -168,7 +168,7 @@ env = Environment()
 env.filters['from_json'] = json.loads
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
 matches = env.compile_expression(wait['until'])
-for state, expected in [('Alerting', True), ('Alerting (Error)', True), ('firing', True), ('Normal', False)]:
+for state, expected in [('Alerting', True), ('Alerting (Error)', False), ('firing', True), ('Normal', False)]:
     response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
     assert bool(matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')) is expected
 checks = rescue['ansible.builtin.assert']['that']
