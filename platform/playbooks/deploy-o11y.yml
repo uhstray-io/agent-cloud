@@ -56,6 +56,27 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    - name: "Require complete DGX scrape settings when nodes are declared"
+      ansible.builtin.assert:
+        that:
+          - dgx_spark_head_address is defined
+          - dgx_spark_head_name is defined
+          - dgx_spark_node_exporter_port is defined
+          - dgx_spark_api_port is defined
+          - not (dgx_spark_gpu_exporter_enabled | default(false) | bool) or dgx_spark_gpu_exporter_port is defined
+        fail_msg: "DGX scrape inventory needs the head address/name and enabled collector ports."
+      when: dgx_spark_nodes | default([]) | length > 0
+
+    - name: "Require a complete declared agentgateway stats endpoint"
+      ansible.builtin.assert:
+        that:
+          - agentgateway_metrics_address | default('') is match('^[A-Za-z0-9.-]+$')
+          - agentgateway_metrics_port is defined
+          - agentgateway_metrics_port | int > 0
+          - agentgateway_metrics_port | int < 65536
+        fail_msg: "agentgateway metrics need a declared receiver-reachable address and port."
+      when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -90,17 +111,6 @@
         dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/contact.yml"
         mode: "0644"
 
-    - name: "Require complete DGX scrape settings when nodes are declared"
-      ansible.builtin.assert:
-        that:
-          - dgx_spark_head_address is defined
-          - dgx_spark_head_name is defined
-          - dgx_spark_node_exporter_port is defined
-          - dgx_spark_api_port is defined
-          - not (dgx_spark_gpu_exporter_enabled | default(false) | bool) or dgx_spark_gpu_exporter_port is defined
-        fail_msg: "DGX scrape inventory needs the head address/name and enabled collector ports."
-      when: dgx_spark_nodes | default([]) | length > 0
-
     - name: "Render DGX scrape targets only when inventory declares nodes"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-dgx-spark.yml.j2"
@@ -115,6 +125,21 @@
         state: absent
       register: _dgx_scrape_absent
       when: dgx_spark_nodes | default([]) | length == 0
+
+    - name: "Render the agentgateway scrape only when inventory declares it"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-agentgateway.yml.j2"
+        dest: "{{ _deploy_dir }}/config/scrape.d/agentgateway.yml"
+        mode: "0644"
+      register: _agentgateway_scrape
+      when: agentgateway_metrics_address is defined
+
+    - name: "Remove the agentgateway scrape when inventory does not declare it"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config/scrape.d/agentgateway.yml"
+        state: absent
+      register: _agentgateway_scrape_absent
+      when: agentgateway_metrics_address is not defined
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start o11y"
@@ -174,12 +199,16 @@
       delay: 5
       until: _alloy_health.rc == 0 and _alloy_health.stdout == 'healthy'
 
-    - name: "Reload Prometheus after the DGX scrape file changes"
+    - name: "Reload Prometheus after remote scrape files change"
       ansible.builtin.uri:
         url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"
         method: POST
         status_code: 200
-      when: (_dgx_scrape.changed | default(false)) or (_dgx_scrape_absent.changed | default(false))
+      when: >-
+        (_dgx_scrape.changed | default(false)) or
+        (_dgx_scrape_absent.changed | default(false)) or
+        (_agentgateway_scrape.changed | default(false)) or
+        (_agentgateway_scrape_absent.changed | default(false))
 
     - name: "Loki ready (/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"

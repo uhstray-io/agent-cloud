@@ -123,6 +123,30 @@ for gpu in (False, True):
 PY
 }
 
+@test "o11y: agentgateway scrape renders from a declared remote endpoint" {
+  python3 - "$DEPLOY_DIR/templates/scrape-agentgateway.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined)
+env.filters['to_json'] = json.dumps
+config = yaml.safe_load(env.from_string(open(sys.argv[1], encoding='utf-8').read()).render(
+    agentgateway_metrics_address='gateway.example.test',
+    agentgateway_metrics_port=19002,
+))
+job = config['scrape_configs'][0]
+assert job['job_name'] == 'agentgateway'
+assert job['metrics_path'] == '/metrics'
+assert job['static_configs'] == [{
+    'targets': ['gateway.example.test:19002'],
+    'labels': {'service': 'agentgateway', 'component': 'gateway', 'env': 'prod'},
+}]
+PY
+}
+
 @test "o11y: alert rules and contact point render for both rollout states" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$DEPLOY_DIR/templates/alert-contact.yml.j2" <<'PY'
 import sys

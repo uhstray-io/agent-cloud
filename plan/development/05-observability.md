@@ -99,6 +99,11 @@
 > therefore touch unrelated production configuration. The scoped publisher is
 > being extended to create one exact declared template with verified bindings.
 > No production audit task has been launched.
+> The receiver now has an inventory-gated agentgateway `/metrics` scrape
+> template with `service=agentgateway`; an absent declaration removes the
+> target. The private production inventory still binds the gateway stats port
+> to loopback until the audited o11y receiver source and firewall path are
+> approved. This is code preparation, not a live agentgateway scrape receipt.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
