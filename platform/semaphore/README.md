@@ -40,13 +40,6 @@ be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 the live step after the merge, not after the commit. Recorded 2026-09-14, when
 `ratelimit.tf` sat committed on its feature branch with nothing able to plan it.
 
-The local-dev controller has an additional, isolated validation path:
-`deploy-local-o11y-candidate.yml` registers a branch-specific repository and
-template without changing the shared `agent-cloud worktree` binding. It requires
-an explicit branch; a launch also requires the full expected commit SHA, which
-`deploy-o11y.yml` checks before placing files. This candidate exists only on the
-loopback local controller; it does not make a production feature branch visible.
-
 ## Launching a task from outside the controller (the API path)
 
 No workstation path to the production controller was verified in the 2026-09-14
