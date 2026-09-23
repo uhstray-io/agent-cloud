@@ -944,10 +944,28 @@ templates:
     dev_variant: true
     survey_vars:
       - name: semaphore_template_names_json
-        title: "Exact existing template names (JSON list)"
-        description: "Publishes selected declared surveys only; preserves target bindings and unrelated templates."
+        title: "Exact declared template names (JSON list)"
+        description: "Updates existing surveys; with scoped create enabled, creates one missing declared template."
         type: string
         required: true
+      - name: semaphore_allow_scoped_create
+        title: "Create one missing template"
+        description: "Default false. Requires one exact name and verified project, inventory, and variable-group IDs."
+        type: string
+        required: false
+        default_value: "false"
+      - name: semaphore_project_id
+        title: "Verified project ID for create"
+        type: string
+        required: false
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID for create"
+        type: string
+        required: false
+      - name: semaphore_environment_id
+        title: "Verified variable-group ID for create"
+        type: string
+        required: false
 
   # Initial installation remains an operator bootstrap. Once installed, the
   # publisher above uses the controller AppRole without exporting credentials.
