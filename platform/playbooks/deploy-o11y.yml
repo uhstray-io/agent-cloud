@@ -115,7 +115,7 @@
 
     - name: "Reload Prometheus after the DGX scrape file changes"
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ o11y_prom_port | default(9090) }}/-/reload"
+        url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"
         method: POST
         status_code: 200
       when: (_dgx_scrape.changed | default(false)) or (_dgx_scrape_absent.changed | default(false))
