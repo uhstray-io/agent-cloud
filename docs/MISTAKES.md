@@ -85,7 +85,7 @@ supersede it with a new entry and link both.
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
-| 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
+| 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
@@ -1877,6 +1877,8 @@ into tooling: the same person who wrote the rule broke it while the ink was wet.
 
 ### 8.2 Invented identifiers for tests that did not have them
 
+**Occurrences: 2** — original (undated), 2026-09-23
+
 **What happened.** The first draft of this file referenced tests as `M-1.1`,
 `M-2.1`, `M-5.1` and so on, as though those identifiers existed. No test in the
 repository carries them. A reader following the reference would have found
@@ -1890,6 +1892,13 @@ exists. If a naming scheme would be useful, add it to the artifacts first, then
 reference it.
 
 **Enforced by.** Convention. A doc-link checker in CI would catch it.
+
+**Occurrence 2 — 2026-09-23.** A pushed commit on PR 203 (5dd6fe3) credits the NetBox
+recovery playbook to "#214's series"; it arrived with #209. The number was written from
+the shape of the recent PR sequence, never looked up, and checked only after the push, so
+the message cannot be corrected without a force push. The rule was not recalled because a
+commit message did not register as "a reference to an artifact"; it is one. Look the
+number up (`git log --merges`, `gh pr list --search <sha>`) before writing it.
 
 ### 8.3 Two invocation errors reported as findings before being checked
 
