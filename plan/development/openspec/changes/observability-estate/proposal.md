@@ -27,7 +27,7 @@ None.
 ## Impact
 
 - Public repo: o11y compose/config/provisioning, composable validation tasks, onboarding documentation, and focused tests.
-- Private `site-config`: inventory values for retention, permitted network paths, and notification destination; no real addresses or credentials in this repository.
+- Private `site-config`: a separately managed receiver VM and inventory, retention, permitted network paths, and notification destination; no real addresses or credentials in this repository.
 - Live systems: deployments and verification only through Semaphore after code review and prerequisite checks.
 - Integration: the clean, committed `inference-telemetry-production` branch was merged into this isolated branch. The original branch/worktree remains untouched; this change owns the combined review and rollout. DGX Spark and agentgateway host-side collectors remain with their respective owners.
 

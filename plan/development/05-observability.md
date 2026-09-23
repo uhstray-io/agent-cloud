@@ -91,14 +91,24 @@
 > only as an encrypted environment secret, merges that one key into OpenBao,
 > and skips an unchanged value. It has not been run with a webhook; no alert
 > recipient has been approved or delivery observed.
-> A read-only production Semaphore API check on 2026-09-23 authenticated with
-> the existing operator token. The reviewed `dev` declaration includes both
-> `Audit o11y Containers` templates, but neither is registered there. A
-> declaration/live comparison found 129 matching templates whose success-alert
-> setting differs and 65 survey differences; full-catalog publication would
-> therefore touch unrelated production configuration. The scoped publisher is
-> being extended to create one exact declared template with verified bindings.
-> No production audit task has been launched.
+> A read-only production Semaphore API check on 2026-09-23 found the reviewed
+> `dev` audit declaration absent from the live template catalog. A full-catalog
+> publication would have touched unrelated settings on 129 existing templates
+> and surveys on 65, so PR #199 added a guarded one-template create path and
+> merged to `dev`. Semaphore task 1132 checked out that merge and created only
+> `Audit o11y Containers (Dev)` as template 218 with the verified Dev repository,
+> production inventory, and existing environment bindings.
+> Read-only audit task 1133 exposed an Ansible double-rendering error in the
+> Grafana-host container report. PR #200 fixed it, passed CodeRabbit review and
+> final-head checks, and merged to `dev`. Rerun task 1134 checked out merge
+> `b34acfd51bd65af36b21821c203c10085f093ae6` and reached every report
+> task without that error. Its reachable Agent Cloud hosts reported no
+> `o11y-*` containers. The task still ended in error because four inventory
+> hosts were unreachable, including the existing `grafanapodman` host; its
+> containers and data remain unexamined. The private inventory has no
+> `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
+> Receiver placement and production retention sizing remain gated on a
+> declared, reachable host and its storage audit.
 > The receiver now has an inventory-gated agentgateway `/metrics` scrape
 > template with `service=agentgateway`; an absent declaration removes the
 > target. The private production inventory still binds the gateway stats port
