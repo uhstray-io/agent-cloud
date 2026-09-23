@@ -142,10 +142,12 @@
     # none, and an empty key starts a gateway that is ready but answers every client
     # with the upstream's invalid_api_key. Refuse that unless the inventory declares
     # the upstream takes no key (agw_upstream_requires_key: false — LM Studio without
-    # authentication). Checks presence only; the value is never printed.
+    # authentication). Checks presence only; the value is never printed. Reads `_resolved`, the
+    # fact manage-secrets sets: `secrets` exists only inside its template task, so here it was
+    # undefined, defaulted to '' and refused every keyed upstream (Semaphore task 1177).
     - name: "Refuse to deploy without the upstream key when the upstream requires one"
       ansible.builtin.assert:
-        that: (secrets.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
+        that: (_resolved.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
         fail_msg: >-
           secret/services/{{ service_name }}:vllm_api_key is empty. Seed it (Seed OpenBao Key,
           value as the BAO_VALUE environment secret) before deploying, or set
