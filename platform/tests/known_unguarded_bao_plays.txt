@@ -40,7 +40,6 @@ deploy-wisbot.yml
 harden-ssh.yml
 mint-honcho-team-jwt.yml
 promote-semaphore-admins.yml
-provision-netbox-automation-token.yml
 provision-orb-agent-approle.yml
 provision-vm.yml
 proxmox-validate.yml

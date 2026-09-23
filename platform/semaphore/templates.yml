@@ -96,6 +96,7 @@ templates:
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
+    dev_variant: true
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
