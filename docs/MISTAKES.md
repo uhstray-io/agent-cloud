@@ -55,16 +55,20 @@ supersede it with a new entry and link both.
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
+| 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
+| 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -76,6 +80,7 @@ supersede it with a new entry and link both.
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
+| 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -982,6 +987,36 @@ case (`already_managed` reported, text unchanged) and the mixed case;
 `test_manage_caddy_sites_playbook.py` asserts the retire step's `changed_when`
 begins with the rc guard (mutation-proven: dropping the guard fails it).
 
+### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
+which has no pre-flight. Its first run through the local Semaphore (task 592) printed
+`skipping: no hosts matched` for all three plays and was recorded as `success`; zero
+containers existed afterwards. The group was absent because the local control plane's
+inventory is a static INI inside `bootstrap-local-dev.yml`, separate from
+`platform/inventory/local-dev.yml`, and only the latter had been edited. The exact
+incident is described, with the fix, in the header of `preflight-target-group.yml`
+(postiz, 2026-08-24) — and at the time of writing 24 of 26 `deploy-*.yml` playbooks still
+do not import it.
+
+**Root cause.** The guard exists but is opt-in per playbook, and the template new
+playbooks are copied from does not carry it. A rule that lives in one file's header does
+not reach a playbook written from a different file.
+
+**The rule.** Every deploy playbook whose plays target an inventory group imports
+`preflight-target-group.yml` as its first play, with the group passed twice
+(`preflight_group` and `preflight_group_expected`), before any `hosts: <group>` play.
+When adding a local-dev service, the group goes in BOTH inventories: the working
+`local-dev.yml(.example)` and the static INI in `bootstrap-local-dev.yml`.
+
+**Enforced by.** Test, for this playbook only: `test_service_agentgateway.bats` asserts the
+import and both vars. Fleet-wide, still `Convention` — the mechanical guard this entry
+proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
+a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
+allow-list that only shrinks.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -1083,6 +1118,62 @@ running `git ls-files --error-unmatch <path>` (tracked → do not delete) — an
 **Enforced by.** Convention. A mechanical guard exists in principle — a pre-commit
 check refusing a commit that deletes a `*.lock.hcl` / lockfile without a
 `chore(deps)`-style intent — but one occurrence does not yet justify it.
+
+### 3.5 A vmid allocated from an incomplete ledger, and a provisioner that adopted the collision
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** The agentgateway VM was allocated vmid 216 as "highest in `vm-specs.yml` plus
+one". Proxmox already ran `gh-runner-01` as 216 and `gh-runner-02` as 217, on alphacentauri,
+with no ledger entry. `provision-vm.yml` listed cluster resources, found 216, printed "already
+exists — skipping clone", and proceeded to "Configure VM resources and cloud-init" against
+`nodes/apollo/qemu-server/216.conf` (Semaphore task 1060). It failed only because the runner is
+on alphacentauri, not apollo. Had the nodes matched, the runner would have received
+agentgateway's cores, memory and cloud-init network.
+
+**Root cause.** Two assumptions. The ledger was treated as complete when it is one of three
+records (ledger, inventory `vm_*`, Proxmox itself) and the authority is Proxmox. And the
+playbook's "exists" branch meant "ours, resume" without checking that the existing VM IS the
+declared one.
+
+**The rule.** Allocate a vmid from the hypervisor's own listing (the range listing the playbook
+already prints), never from the ledger alone, and record every VM the listing shows that the
+ledger lacks. A provisioner that finds a VM at the declared vmid compares name AND node with the
+declaration and refuses on mismatch.
+
+**Enforced by.** Test — `platform/tests/test_provision_vm.bats` asserts the refusal guard exists
+and precedes the skip. The allocation half is `Convention` until the IPAM/ledger lookup recorded
+in `plan/architecture/02-service-onboarding.md` Known Gaps exists.
+
+### 3.6 A static address chosen from an incomplete inventory, applied to a new VM, that a live production host already held
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** With NetBox unavailable, the agentgateway VM's address was chosen as an
+undeclared value in `site-config/inventory/production.yml` (operator instruction, provenance
+noted). Provisioning configured VM 218 with it. Key distribution then failed with "connection
+refused" from the Semaphore runner while a workstation got an SSH banner from the same address;
+logging in with the platform management key showed the responder was `gh-runner-01`, up 25 days.
+The runners were never declared in the inventory (nor the ledger, see 3.5), so "not declared"
+meant nothing. The guest agent on 218 never came up, and no second MAC ever appeared for the
+address, so the collision did not go live — but the VM carries the conflicting cloud-init config.
+
+**Root cause.** The inventory records what was declared, not what exists; the authority for
+addresses is NetBox (down) or the network itself. A refusal-vs-banner disagreement between two
+vantages is the signature of an address conflict (see 1.6), and the runner's default-deny
+firewall turned the conflict into a misleading "refused".
+
+**The rule.** Before applying a static address to a new VM, prove it free from the network
+itself when the IPAM is unavailable: an ARP/ping sweep from at least two vantages, and a
+refusal to proceed if anything answers. When two vantages disagree about reachability, stop and
+identify the responder before retrying. Every VM the hypervisor lists must be declared in the
+inventory with its address before another allocation is made.
+
+**Enforced by.** Playbook guard + test, since PR #189 (same day): `provision-vm.yml` pings the
+declared address from the controller on the create path and refuses on any answer, fails closed
+when the probe cannot run (explicit `allow_unverified_address` override only), and
+`test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
+proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
 
 ## 4. Data handling
 
@@ -1239,6 +1330,29 @@ long-lived credential leaked the same way would have needed rotation.
 `backup-credentials-to-site-config.yml` never routes a value through stdout on any
 path, which is why the operator-side print flow is the stopgap and not the design.
 
+### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
+
+**Occurrences: 1** — 2026-09-18 (found in review 2026-09-22)
+
+**What happened.** Moving the agentgateway VM off an address that belonged to `gh-runner-01`
+(3.6), the private inventory was edited with a string replace of `vm_ip: <old address>` → new
+address. The replace was not scoped to the gateway's host block, and the runner's own `vm_ip`
+held the same old value, so both lines changed. The runner ended up declared at the gateway's
+new address while its `ansible_host` stayed correct. Nothing ran against it, so it never went
+live; CodeRabbit caught it on site-config PR 15.
+
+**Root cause.** An edit keyed on a VALUE rather than on the host that owns it, applied to a
+file where the same value legitimately appeared under two hosts (the collision this whole
+change was correcting).
+
+**The rule.** Edit a host's attribute by locating the host's block first and changing the
+attribute inside it; never by replacing a value file-wide. After any address change, list every
+inventory host's `ansible_host`/`vm_ip` and require each address to have exactly one claimant.
+
+**Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
+other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
+`test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
+
 ## 5. Duplication and process
 
 ### 5.1 A security rule copied per caller
@@ -1269,6 +1383,21 @@ Either separate them into two turns and read the result, or chain with `&&` so
 failure actually stops the commit. Printing a warning is not a gate.
 
 **Enforced by.** `.githooks/pre-push` — added 2026-08-24; see §5.6 for the mechanism, its fail-open rationale, and the red suite it caught on its first run.
+
+**Occurrence 2026-09-18 (agentgateway session).** Wrote a new BATS test into an existing file
+that does not `load assert_helpers`, ran the file, saw `not ok 9 ... assert_grep: command not
+found` in the same output, and the `git commit` in the same script ran anyway (`1d1e5b6`).
+Why the rule did not fire: the test run and the commit were chained in one script, exactly
+the shape §5.2 describes; the pre-push hook is the mechanical gate and it had not yet run.
+Fixed by amending the commit before any push. Counted here rather than as a new entry, per
+the repeat convention.
+
+**Occurrence 2026-09-18, second time this day.** Ran the full suite and `git commit` in one
+script again while adding `destroy-vm.yml`; the suite reported the new play unguarded by the
+OpenBao transport ratchet and the commit ran anyway. The pre-push hook then refused the push,
+which is the mechanical gate doing its job — but the rule that the commit must not follow a red
+suite in the same command still did not fire. Two occurrences in one day on the same shape:
+the commit MUST be a separate command issued after reading the suite result, never chained.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -1513,6 +1642,33 @@ stays censored (the pattern `provision-tududi-github-sync.yml` already used).
 provisions the thing it verifies.
 
 ---
+
+### 6.5 Deleted a blueprint file to retire its object, and the replacement blueprint took it over by name
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** The agentgateway operator UI was first gated with an Authentik forward_auth
+PROXY provider (`agentgateway-forward-auth.yaml`). When the design changed to the gateway's own
+OIDC login, that file was deleted and `agentgateway-oidc.yaml` created an OAuth2 provider with the
+same `name: agentgateway`. Authentik matched the identifier to the still-existing proxy provider
+and wrote the OAuth2 attributes onto it: `signing_key` stayed null, the JWKS endpoint returned
+`{}`, and the gateway crash-looped at startup ("failed to load oidc jwks ... missing field `keys`",
+792 restarts before it was noticed, local task 613). The Authentik API showed the "OAuth2" provider
+still carrying the outpost's callback redirect URIs.
+
+**Root cause.** Blueprints are append-only declarations: removing a file removes nothing.
+Retiring an object requires an explicit `state: absent` entry (the repo already does this for a
+stale policy binding in `zz-sso-bindings.yaml.j2`), and a replacement that reuses an identifier must
+be ordered after that tombstone.
+
+**The rule.** When a blueprint stops declaring an object, or an object changes model under the
+same name, the new blueprint carries a `state: absent` entry for the old model + identifier BEFORE
+the entry that reuses the name. Never rely on a deleted file to delete anything.
+
+**Enforced by.** `Convention`. The prod path has a partial mechanical guard: the Authentik
+deploy's post-apply VERIFY asserts the live OAuth2 provider's `redirect_uris` carry the declared
+`verify_redirect` value, which the hijacked proxy provider would have failed — but that check is
+prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIFY in local mode too.
 
 ## 7. Which of these OPA can carry
 

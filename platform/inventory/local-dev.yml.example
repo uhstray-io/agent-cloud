@@ -126,6 +126,9 @@ all:
             # exercised without a GPU box. Prod points the same shape at spark-1 via
             # site-config's caddy_managed_sites.
             - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # agentgateway operator UI — the gateway runs its own OIDC login against
+            # Authentik (ui.policies), so this is a plain proxy to its UI listener.
+            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -211,6 +214,38 @@ all:
           # is also the default — set this only if you map a project you own
           # through your OIDC login instead.
           tududi_sync_user_email: admin@agent-cloud.test
+    # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
+    # per-client API keys + limits) in front of the model API. Locally the
+    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
+    # key); prod points the same shape at vLLM on the DGX Spark head node via
+    # site-config. Deploy: make local-deploy-agentgateway.
+    # Change: plan/development/openspec/changes/inference-gateway-agentgateway
+    agentgateway_svc:
+      hosts:
+        agentgateway-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: agentgateway
+          monorepo_deploy_path: platform/services/agentgateway/deployment
+          container_engine: podman
+          # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
+          # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
+          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          agw_models:
+            # The name clients send -> the model id LM Studio serves.
+            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          # One API-key identity each; manage-secrets mints client_<name> once
+          # into secret/services/agentgateway and reuses it on every deploy.
+          agw_clients:
+            - dev-local
+          # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
+          # playground lists them as saved keys. Never set in prod inventory.
+          agw_plaintext_keys: true
+          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
+          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
+          # Prod leaves this unset (true = refuse an empty key).
+          agw_upstream_requires_key: false
+
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
