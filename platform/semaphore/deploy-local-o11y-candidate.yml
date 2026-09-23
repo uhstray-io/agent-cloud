@@ -205,16 +205,16 @@
           Authorization: "Bearer {{ _token }}"
         unredirected_headers: [Authorization]
         follow_redirects: none
-      register: _task
+      register: _candidate_result
       retries: 450
       delay: 4
-      until: _task.json.status in ['success', 'error', 'stopped']
+      until: _candidate_result.json.status in ['success', 'error', 'stopped']
       when: candidate_deploy | default(false) | bool
       no_log: true
 
     - name: Require the candidate deploy to succeed
       ansible.builtin.assert:
-        that: _task.json.status == 'success'
-        fail_msg: "Candidate task {{ _launch.json.id }} ended {{ _task.json.status }}; inspect its Semaphore output."
+        that: _candidate_result.json.status == 'success'
+        fail_msg: "Candidate task {{ _launch.json.id }} ended {{ _candidate_result.json.status }}; inspect its Semaphore output."
         success_msg: "Candidate task {{ _launch.json.id }} succeeded at commit {{ _expected_sha }}."
       when: candidate_deploy | default(false) | bool
