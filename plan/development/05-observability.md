@@ -168,10 +168,11 @@
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
-> firewall has no approved scrape source yet. Its current rule would also open
-> the optional GPU exporter port 9400 when a source is set, so that rule needs
-> a separate guard before production activation; GPU scraping remains disabled
-> until compatibility and an unloaded-window test are proven. The receiver
+> firewall has no approved scrape source yet. DGX PR #18 merged as
+> `efa8bc7013555ad40014a28cb20e070685c7a20b`; its declared rule now
+> opens only node exporter port 9100 and removes recorded legacy GPU ingress.
+> No live firewall rule was applied. GPU scraping remains disabled until
+> compatibility and an unloaded-window test are proven. The receiver
 > must publish its actual Loki push URL and admit both DGX source hosts before
 > log shipping can be enabled. No DGX telemetry receipt exists yet.
 
