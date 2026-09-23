@@ -79,6 +79,7 @@ supersede it with a new entry and link both.
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
 | 5.9 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
+| 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -1623,6 +1624,32 @@ running `stop`, `rm`, `kill`, `restart`, `start`, `run` (except `run --rm`), `pu
 `changed_when: false`, and a write under `check_mode: false` fails CI. An audit of every
 command marked read found two more writes (a pre-flight `pull`, a `mkdir`/`chmod`), now
 skipped under `--check`. Verb-free writes (`mv`, `sed -i`) are still only caught by review.
+
+### 5.10 Switched branches inside a checkout another task was using
+
+**What happened.** On 2026-09-23 I split PR #195 for CodeRabbit's 150-file limit, and did it
+in the one checkout the service-deployment-workflow task was running from:
+`git branch feat/workflow-check-mode-standard 187d787 && git switch ...`, then back with
+`git switch -q feat/service-deployment-workflow`, twice. Later I started a third switch
+(`git switch -q -c feat/agentgateway-vm-telemetry origin/dev`) for an unrelated plan edit.
+Joe denied it, because the repository rule is one worktree and branch per independent work
+item, with no branch switch under a running task. Nothing broke, but for the length of each
+switch the files under that checkout belonged to a different branch. So did the local
+Semaphore templates bound to it: the `agent-cloud worktree` repository record runs the path
+at HEAD (10.9).
+
+**Root cause.** I treated a branch as a cheap, reversible pointer move. A checkout is shared
+state: the worktree repository record, the running task's local Semaphore runs and every
+tool reading the working tree see whatever HEAD is at that moment. A switch that is quick
+and reverted is still a window in which the checkout holds the wrong code.
+
+**The rule.** Every independent work item gets its own `git worktree add -b <branch>
+<sibling-dir> <verified origin/dev sha>`. Never `git switch` or `git checkout <branch>` in a
+checkout another task owns. The checkout belongs to the task that is running in it.
+
+**Enforced by.** Convention, plus a user memory. Proposal: a PreToolUse hook that refuses
+`git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
+working directory is the signal.
 
 ## 6. Working from assumptions about files
 
