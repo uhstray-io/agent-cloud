@@ -27,7 +27,7 @@ load assert_helpers
 }
 
 @test "NetBox recovery publishes only a dev-bound template with preflight default" {
-  python3 - "$BATS_TEST_DIRNAME/../semaphore/templates.yml" <<'PY'
+  python3 - "$BATS_TEST_DIRNAME/../semaphore/templates.yml" "$BATS_TEST_DIRNAME/../playbooks/recover-netbox-runtime.yml" <<'PY'
 import sys
 import yaml
 
@@ -38,5 +38,11 @@ assert recovery[0]["name"] == "Recover NetBox Runtime (Dev)"
 assert recovery[0]["repository"] == "agent-cloud dev"
 assert not recovery[0].get("dev_variant", False)
 assert recovery[0]["survey_vars"][0]["default_value"] == "false"
+
+plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+tasks = plays[1]["tasks"]
+assert not any("ansible.builtin.git" in task for task in tasks)
+assert any("ansible.builtin.stat" in task and "checksum_algorithm" in task["ansible.builtin.stat"] for task in tasks)
+assert any("ansible.builtin.script" in task for task in tasks)
 PY
 }

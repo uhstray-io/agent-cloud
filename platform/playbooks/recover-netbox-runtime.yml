@@ -1,7 +1,7 @@
 ---
 # Reconcile only the four NetBox core containers after a stopped/no-restart
-# runtime, using the exact reviewed dev checkout. Both modes place that checkout
-# on the target; the default preflight makes no container or secret changes.
+# runtime, using the reviewed dev playbook/script and the matching Compose file
+# already on the target. The default preflight changes no runtime files or containers.
 - name: Require a reviewed dev checkout for NetBox recovery
   hosts: localhost
   connection: local
@@ -42,21 +42,26 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _runtime_state: "{{ _deploy_dir }}/runtime-state.py"
+    _runtime_script: "{{ playbook_dir }}/../services/netbox/deployment/runtime-state.py"
   tasks:
     - name: Refuse local mode and an undeclared NetBox source
       ansible.builtin.assert:
         that:
           - not (local_mode | default(false) | bool)
-          - monorepo_repo is defined
           - monorepo_deploy_path is defined
         fail_msg: "NetBox recovery needs the production NetBox inventory."
 
-    - name: Place the exact reviewed dev revision
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ hostvars['localhost']._controller_revision.stdout }}"
+    - name: Read the existing host Compose checksum
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/docker-compose.yml"
+        checksum_algorithm: sha256
+      register: _host_compose
+      changed_when: false
+
+    - name: Require the host Compose file to match reviewed dev
+      ansible.builtin.assert:
+        that: _host_compose.stat.checksum | default('') == (lookup('file', playbook_dir + '/../services/netbox/deployment/docker-compose.yml') | hash('sha256'))
+        fail_msg: "Host NetBox Compose differs from the reviewed dev declaration; no runtime files or containers were changed."
 
     - name: Check the existing Compose env and bind-mount secret files
       ansible.builtin.stat:
@@ -75,9 +80,10 @@
         fail_msg: "An existing NetBox env or bind-mount secret file is missing; use the OpenBao-backed deployment path."
 
     - name: Verify local images and named volumes against existing containers
-      ansible.builtin.command:
-        argv: [python3, "{{ _runtime_state }}"]
+      ansible.builtin.script:
+        cmd: "{{ _runtime_script }}"
         chdir: "{{ _deploy_dir }}"
+        executable: python3
       register: _before
       changed_when: false
 
@@ -140,9 +146,10 @@
       until: _login is succeeded
 
     - name: Verify the core still has the same images and volumes and now restarts
-      ansible.builtin.command:
-        argv: [python3, "{{ _runtime_state }}", --require-ready]
+      ansible.builtin.script:
+        cmd: "{{ _runtime_script }} --require-ready"
         chdir: "{{ _deploy_dir }}"
+        executable: python3
       register: _after
       changed_when: false
 

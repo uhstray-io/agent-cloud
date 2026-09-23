@@ -141,7 +141,7 @@ templates:
     survey_vars:
       - name: netbox_runtime_apply
         title: Apply recovery
-        description: "Both modes place the reviewed dev checkout; false = image and volume preflight only; true = reconcile the existing four core containers"
+        description: "false = inspect matching host Compose, images, and volumes without changing runtime files; true = also reconcile the existing four core containers"
         type: string
         required: false
         default_value: "false"
