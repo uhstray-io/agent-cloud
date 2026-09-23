@@ -210,7 +210,7 @@
               - docker.io/library/alpine:3.20
               - sh
               - -c
-              - "echo {{ _probe }}-ready; sleep 600"
+              - "echo {{ _probe }}-ready; sleep 900"
           register: _probe_run
           changed_when: true
 
