@@ -228,6 +228,16 @@
 > bearer value before IPAM allocation can resume. If the store fails after a
 > token is minted, its plaintext cannot be recovered; the bootstrap refuses by
 > default and offers a separately gated replacement of exactly one named orphan.
+> Dev-bound Semaphore task 1193 then minted the scoped v2 token into OpenBao.
+> The address report task 1195 reached NetBox but found no exact management
+> prefix, so it reserved nothing. Before selecting the o11y receiver address,
+> audit that site-config-declared network in NetBox; explicitly create only the
+> missing active global prefix through the reusable Semaphore prefix workflow,
+> verify its read-back, then rerun the address report and reserve one exact
+> address before declaring the receiver VM in private site-config.
+> A prefix created through the NetBox Django shell has no NetBox request
+> changelog entry; the versioned playbook and Semaphore task ID/output are its
+> audit record. Preserve that task record with the production rollout evidence.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
