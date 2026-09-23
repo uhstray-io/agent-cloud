@@ -1,6 +1,8 @@
 ---
 # Local-only fault drill: a disposable opted-in container declares a metrics
 # port with no listener. The shared onboarding verifier must name that endpoint.
+# With drill_expect_alert=true, also require Grafana's service-down rule to fire.
+# External notification receipt is a separate acceptance check.
 - name: Verify the proposed revision before the fault drill
   hosts: localhost
   connection: local
@@ -34,6 +36,33 @@
         that: local_mode | default(false) | bool
         fail_msg: "The unreachable-endpoint drill is local-only."
 
+    - name: Require alerting to be enabled for the alert drill
+      ansible.builtin.assert:
+        that: o11y_alerts_enabled | default(false) | bool
+        fail_msg: "Enable the OpenBao-backed local alert contact point before the alert drill."
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Read the provisioned service-down rule before the alert drill
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
+      register: _service_down_rule
+      changed_when: false
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Require an active provisioned rule before injecting the alert fault
+      ansible.builtin.assert:
+        that: not ((_service_down_rule.stdout | from_json).isPaused | bool)
+        fail_msg: "The provisioned service-down rule is paused; no alert fault was injected."
+      when: drill_expect_alert | default(false) | bool
+
     - name: Exercise the declared unreachable endpoint
       block:
         - name: Refuse to adopt a pre-existing probe container
@@ -62,7 +91,7 @@
               - docker.io/library/alpine:3.20
               - sh
               - -c
-              - "echo o11y-fault-probe-ready; sleep 300"
+              - "echo o11y-fault-probe-ready; sleep 600"
           register: _probe_run
           changed_when: true
 
@@ -107,6 +136,33 @@
             - name: Report the expected verification failure
               ansible.builtin.debug:
                 msg: "Verified refusal: {{ expected_service }} at {{ expected_instance }} reported up=0."
+
+        - name: Wait for Grafana's service-down rule to fire for the probe
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts
+          register: _firing_alerts
+          changed_when: false
+          retries: 36
+          delay: 10
+          until: >-
+            _firing_alerts.rc == 0 and
+            ((_firing_alerts.stdout | from_json).data.alerts |
+             selectattr('labels.service', 'equalto', expected_service) |
+             selectattr('state', 'equalto', 'firing') | list | length) > 0
+          when: drill_expect_alert | default(false) | bool
+
+        - name: Report the firing rule without claiming external delivery
+          ansible.builtin.debug:
+            msg: "Grafana fired the service-down rule for {{ expected_service }}; confirm receipt at the configured destination."
+          when: drill_expect_alert | default(false) | bool
       always:
         - name: Remove only the probe started by this drill
           ansible.builtin.command:
