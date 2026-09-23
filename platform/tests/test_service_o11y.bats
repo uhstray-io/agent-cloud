@@ -7,6 +7,8 @@
 #
 # Run: bats platform/tests/test_service_o11y.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/o11y/deployment"
@@ -108,8 +110,8 @@ YAML
   run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
     "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Production o11y needs its declared DNS zone"* ]]
-  [[ "$output" != *"TASK [Place the monorepo"* ]]
+  assert_contains "$output" "Production o11y needs its declared DNS zone"
+  refute_contains "$output" "TASK [Place the monorepo"
 }
 
 @test "o11y: retention defaults reach Prometheus and Loki" {
