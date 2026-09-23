@@ -93,6 +93,12 @@ templates:
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
 
+  # Converge the conformance collector's NetBox custom fields to their declaration
+  # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
+  # "Dry run" reports without writing.
+  - name: Provision NetBox Custom Fields
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml
+
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
   # (which records what is declared) or from eyeballing the network. Reserving is opt-in

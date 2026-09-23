@@ -199,3 +199,9 @@ templates:
         description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
         type: string
         required: true
+
+  - name: "Provision NetBox Automation Token (Local)"
+    playbook: platform/playbooks/provision-netbox-automation-token.yml
+
+  - name: "Provision NetBox Custom Fields (Local)"
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml

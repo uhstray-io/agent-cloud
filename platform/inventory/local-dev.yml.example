@@ -333,3 +333,8 @@ all:
           discovery_workers_enabled: false
           # The engine's seccomp profile for image builds (lib/common.sh build_netbox_image).
           netbox_build_seccomp_profile: /usr/share/containers/seccomp.json
+          # podman-compose names containers project_service_N (Docker Compose uses "-").
+          netbox_app_container: netbox_netbox_1
+          # The orb agent runs with host networking on the engine host: it reaches the local
+          # OpenBao on that host's loopback, not by the controller's container network name.
+          orb_agent_openbao_addr: "http://127.0.0.1:8200"

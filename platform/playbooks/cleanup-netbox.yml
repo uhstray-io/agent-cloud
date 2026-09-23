@@ -46,7 +46,7 @@
     migrate_rack_old: ""
     migrate_rack_new: ""
     delete_orphans: false
-    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
 
   tasks:
     # ── Snapshot ────────────────────────────────────────────────

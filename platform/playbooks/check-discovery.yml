@@ -33,7 +33,7 @@
     - name: Get NetBox device count via Django shell
       ansible.builtin.command:
         cmd: >-
-          docker exec netbox-netbox-1
+          {{ container_engine | default('docker') }} exec {{ netbox_app_container | default('netbox-netbox-1') }}
           /opt/netbox/netbox/manage.py shell -c
           "from dcim.models import Device; from ipam.models import IPAddress;
           devs = Device.objects.all();
@@ -59,7 +59,7 @@
     - name: Get VirtualMachine, Cluster, and primary_ip4 stats
       ansible.builtin.command:
         cmd: >-
-          docker exec netbox-netbox-1
+          {{ container_engine | default('docker') }} exec {{ netbox_app_container | default('netbox-netbox-1') }}
           /opt/netbox/netbox/manage.py shell -c
           "from virtualization.models import VirtualMachine, Cluster, ClusterType;
           from dcim.models import Device, Site;
@@ -92,7 +92,7 @@
 
     - name: Fix GPS coordinates on Site if still None
       ansible.builtin.shell: |
-        docker exec netbox-netbox-1 /opt/netbox/netbox/manage.py shell -c "
+        {{ container_engine | default('docker') }} exec {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell -c "
         from dcim.models import Site
         s = Site.objects.get(name='{{ discovery_site_name | default("Uhstray.io Datacenter") }}')
         lat = {{ discovery_site_latitude | default(0) }}
@@ -120,7 +120,7 @@
     - name: Check Phase B seed data (Region, Location, Rack, Tenant)
       ansible.builtin.command:
         cmd: >-
-          docker exec netbox-netbox-1
+          {{ container_engine | default('docker') }} exec {{ netbox_app_container | default('netbox-netbox-1') }}
           /opt/netbox/netbox/manage.py shell -c
           "from dcim.models import Region, Location, Rack, Site;
           from tenancy.models import Tenant;

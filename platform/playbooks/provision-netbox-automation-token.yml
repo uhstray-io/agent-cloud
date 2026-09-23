@@ -23,7 +23,7 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) | default('http://127.0.0.1:8200', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
     _user: "{{ netbox_automation_user | default('skynet-automation') }}"
 
   tasks:
@@ -75,7 +75,8 @@
         User = get_user_model()
         user, _ = User.objects.get_or_create(
             username="{{ _user }}",
-            defaults={"is_active": True, "is_staff": True},
+            # The NetBox 4.5 User model has no is_staff field (FieldError, 2026-09-22).
+            defaults={"is_active": True},
         )
         perm, _ = ObjectPermission.objects.get_or_create(
             name="skynet-device-write",
@@ -88,22 +89,29 @@
         perm.object_types.set(types)
         perm.users.add(user)
 
-        token = Token.objects.filter(user=user).first() or Token.objects.create(
+        # NetBox 4.5 v2 token: the secret exists ONLY at creation (hashed with the pepper,
+        # never stored), so an existing token cannot be recovered and a new one is minted.
+        # This task runs only when OpenBao holds no token (the skip above). The stored value
+        # is the full bearer credential the API expects: nbt_<key>.<token>.
+        minted = Token.objects.create(
             user=user, description="skynet build #1 automation (create-netbox-device)",
         )
-        print(token.key)
+        print(f"nbt_{minted.key}.{minted.token}" if getattr(minted, "version", 1) == 2 else minted.key)
         PYSCRIPT
       register: _mint
       changed_when: true
       no_log: true
       when: not ansible_check_mode
 
-    - name: "Sanity-check the minted token (NetBox keys are 40 chars)"
+    - name: "Sanity-check the minted token (v2 nbt_<12>.<40>, or a legacy 40-char v1)"
       ansible.builtin.assert:
         that:
           - (_mint.stdout_lines | default([]) | length) > 0
-          - (_mint.stdout_lines | last | trim | length) == 40
-        fail_msg: "NetBox Django shell did not return a 40-char token — mint failed; check the run."
+          - >-
+            (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]{12}\\.[A-Za-z0-9]{40}$')
+            or (_mint.stdout_lines | last | trim | length) == 40
+        fail_msg: "NetBox Django shell did not return a token of a known shape — mint failed; check the run."
+      no_log: true
 
     - name: "Store the token in OpenBao (patch, preserving other fields)"
       ansible.builtin.uri:

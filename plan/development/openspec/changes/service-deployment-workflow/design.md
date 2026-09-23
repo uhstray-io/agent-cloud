@@ -107,6 +107,11 @@ through worktree-bound `(Local)` templates, 2026-09-22.
 | `validate-all.yml` | pass (960) | pass (961) | identical output in both modes. **Finding for 7.1:** it reports success while four health checks never ran: `service_url` is undefined for four local hosts and `ignore_errors` hides it |
 | `deploy-authentik.yml` | not run (would redeploy local Authentik) | pass (962), `changed=4` | **Findings for 7.1:** the blueprint directory is reset every run, so the reset and every render after it report a change on a converged host; the `.env` render also reports a change, cause not yet diagnosed |
 
+| `deploy-netbox.yml` (Local) | pass (982) after four fixes | not run | first local NetBox through the controller: stale `openssl` check removed; a non-git `netbox-docker` copy moved aside; image build given the engine's seccomp profile (client 5.3.2 sent its own path to engine 5.8.2); the compose name separator detected (`_` under podman-compose, so the password sync had been skipped and Hydra could not log in). **Finding for 7.1:** every run reports changes by design (`deploy.sh`/`post-deploy.sh` always changed, fresh orb-agent credentials each deploy), so the registry's "second run reports no change" criterion for service-deploy cannot hold for any deploy built on the `deploy.sh` pattern; the criterion needs restating |
+
+| `provision-netbox-automation-token.yml` (Local) | pass (990) after two fixes | not run | **Latent production bug:** the mint script passed `is_staff`, which the NetBox 4.5 User model does not have (FieldError), and printed only the 12-character key of a v2 token. Plan 04 records the production token as absent; this may be why. Fixed: v2 tokens are stored as the full `nbt_<key>.<token>` credential, and every consumer sends `Bearer` or `Token` according to the stored value |
+| `provision-netbox-custom-fields.yml` (Local) | create (995), unchanged (998) | unchanged (997) | runs through the Django shell: the scoped automation token has no permission on custom fields (403), by design |
+
 Not runnable on local-dev: the Proxmox playbooks (`provision-template`, `provision-vm`,
 `resize-vm`, `snapshot-vm`, `destroy-vm`), the SSH host playbooks (`verify-host-access`,
 `distribute-ssh-keys`, `harden-ssh`, `apply-firewall`) and the site-config backups. The

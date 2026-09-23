@@ -2,135 +2,95 @@
 # provision-netbox-custom-fields.yml — converge NetBox's workflow custom fields to their
 # declaration (platform/workflows/service-onboarding/netbox-custom-fields.yml).
 #
-# Idempotent: a field that exists with the declared type and object types is left alone;
-# one that is missing is created; one whose object types differ is patched. A field with the
-# declared NAME but a different TYPE is refused, never changed: NetBox stores values by type,
-# and retyping would orphan every value already written.
+# Runs through the NetBox Django shell on the NetBox host, the same path as
+# provision-netbox-automation-token.yml, because custom fields are platform schema: the
+# scoped automation token deliberately has no permission on extras.customfield (403,
+# 2026-09-22), and widening a device-writing token to schema changes would break least
+# privilege.
 #
-# Dry run: --check (Semaphore "Dry run") reads and reports, writes nothing.
-# Auth: OpenBao AppRole -> secret/services/netbox:automation_api_token (provisioned by
-# provision-netbox-automation-token.yml). Only the credential tasks are no_log'd.
+# Idempotent: a field that exists with the declared type and object types is left alone; a
+# missing one is created; drifted object types, label, description or group are updated. A
+# field with the declared NAME but a different TYPE is refused, never retyped: NetBox stores
+# values by type and retyping would orphan every value already written.
+#
+# Dry run: --check (Semaphore "Dry run") computes and reports the difference, writes nothing.
 
 - name: "Converge NetBox workflow custom fields"
-  hosts: localhost
+  hosts: netbox_svc
   gather_facts: false
   become: false
   vars:
-    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
-    _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
     _declared: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/netbox-custom-fields.yml') | from_yaml).custom_fields }}"
+    # One script, two modes: APPLY=0 only reads and reports the difference.
+    _script: |
+      import json
+      from extras.models import CustomField
+      from core.models import ObjectType
+      APPLY = APPLY_FLAG
+      declared = json.loads(DECLARED_JSON)
+      out = {"create": [], "update": [], "unchanged": [], "refuse": []}
+      for d in declared:
+          types = [ObjectType.objects.get_by_natural_key(*t.split(".")) for t in d["object_types"]]
+          cf = CustomField.objects.filter(name=d["name"]).first()
+          if cf is not None and cf.type != d["type"]:
+              out["refuse"].append(d["name"] + ": exists as " + cf.type + ", declared " + d["type"])
+              continue
+          if cf is None:
+              out["create"].append(d["name"])
+              if APPLY:
+                  cf = CustomField.objects.create(name=d["name"], type=d["type"], label=d["label"],
+                                                  description=d["description"], group_name=d["group_name"])
+                  cf.object_types.set(types)
+              continue
+          have = sorted(o.app_label + "." + o.model for o in cf.object_types.all())
+          drift = (have != sorted(d["object_types"]) or cf.label != d["label"]
+                   or cf.description != d["description"] or cf.group_name != d["group_name"])
+          if not drift:
+              out["unchanged"].append(d["name"])
+              continue
+          out["update"].append(d["name"])
+          if APPLY:
+              cf.label, cf.description, cf.group_name = d["label"], d["description"], d["group_name"]
+              cf.save()
+              cf.object_types.set(types)
+      print("CF_RESULT " + json.dumps(out))
 
   tasks:
-    - name: "Require the NetBox and OpenBao addresses"
-      ansible.builtin.assert:
-        that:
-          - _netbox_url | length > 0
-          - _bao_url | length > 0
-        fail_msg: "Set netbox_url (or a netbox_svc host with service_url) and openbao_addr."
-
-    - name: "Refuse a cleartext secret-store endpoint"
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
-      vars:
-        _assert_bao_url: "{{ _bao_url }}"
-
-    - name: "Authenticate to OpenBao (AppRole)"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/auth/approle/login"
-        method: POST
-        body_format: json
-        body:
-          role_id: "{{ _bao_role_id }}"
-          secret_id: "{{ _bao_secret_id }}"
-        status_code: [200]
-      register: _bao_auth
-      no_log: true
+    - name: "Compute the difference against the declaration (read-only)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        {{ _script | replace('APPLY_FLAG', 'False') | replace('DECLARED_JSON', (_declared | to_json | to_json)) }}
+        PYSCRIPT
+      register: _cf_plan
       changed_when: false
       check_mode: false
 
-    - name: "Read the NetBox automation token from OpenBao"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200]
-      register: _nb_secret
-      no_log: true
-      check_mode: false
-
-    - name: "Set the NetBox auth header"
+    - name: "Parse the difference"
+      # Read the keys with brackets: `_cf.update` is the dict's own update() method in Jinja,
+      # not the key (the same trap manage-secrets.yml notes for `.keys`).
       ansible.builtin.set_fact:
-        _nb_headers:
-          Authorization: "Token {{ _nb_secret.json.data.data[_token_key] }}"
-          Accept: application/json
-      no_log: true
-
-    - name: "Read each declared field"
-      ansible.builtin.uri:
-        url: "{{ _netbox_url }}/api/extras/custom-fields/?name={{ item.name | urlencode }}"
-        method: GET
-        headers: "{{ _nb_headers }}"
-        status_code: [200]
-      loop: "{{ _declared }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: _cf_read
-      check_mode: false
+        _cf: "{{ (_cf_plan.stdout_lines | select('match', '^CF_RESULT ') | last)[10:] | from_json }}"
 
     - name: "Refuse a declared name that exists with a different type"
       ansible.builtin.assert:
-        that:
-          - (item.json.results | length == 0) or (item.json.results[0].type.value == item.item.type)
-        fail_msg: >-
-          custom field {{ item.item.name }} exists as type
-          {{ item.json.results[0].type.value | default('?') }}, declared {{ item.item.type }}.
-          Retyping would orphan stored values; resolve by hand.
-      loop: "{{ _cf_read.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
+        that: _cf['refuse'] | length == 0
+        fail_msg: "Retyping would orphan stored values; resolve by hand: {{ _cf['refuse'] | join('; ') }}"
 
-    - name: "Create each missing field"
-      ansible.builtin.uri:
-        url: "{{ _netbox_url }}/api/extras/custom-fields/"
-        method: POST
-        headers: "{{ _nb_headers }}"
-        body_format: json
-        body: "{{ item.item }}"
-        status_code: [201]
-      loop: "{{ _cf_read.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
+    - name: "Apply the difference"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        {{ _script | replace('APPLY_FLAG', 'True') | replace('DECLARED_JSON', (_declared | to_json | to_json)) }}
+        PYSCRIPT
+      register: _cf_apply
+      changed_when: true
       when:
         - not ansible_check_mode
-        - item.json.results | length == 0
-      register: _cf_created
-      changed_when: true
-
-    - name: "Patch object types that drifted"
-      ansible.builtin.uri:
-        url: "{{ _netbox_url }}/api/extras/custom-fields/{{ item.json.results[0].id }}/"
-        method: PATCH
-        headers: "{{ _nb_headers }}"
-        body_format: json
-        body:
-          object_types: "{{ item.item.object_types }}"
-        status_code: [200]
-      loop: "{{ _cf_read.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-      when:
-        - not ansible_check_mode
-        - item.json.results | length > 0
-        - (item.json.results[0].object_types | sort) != (item.item.object_types | sort)
-      changed_when: true
+        - (_cf['create'] | length > 0) or (_cf['update'] | length > 0)
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          {{ 'check mode: ' if ansible_check_mode else '' }}declared
-          {{ _declared | map(attribute='name') | join(', ') }};
-          missing before this run:
-          {{ _cf_read.results | selectattr('json.results', 'equalto', []) | map(attribute='item.name') | list | join(', ') or 'none' }}
+          {{ 'check mode: would ' if ansible_check_mode else '' }}create
+          {{ _cf['create'] | join(', ') or 'none' }}; update {{ _cf['update'] | join(', ') or 'none' }};
+          unchanged {{ _cf['unchanged'] | join(', ') or 'none' }}

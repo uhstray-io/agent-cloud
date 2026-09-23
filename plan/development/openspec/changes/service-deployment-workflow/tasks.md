@@ -150,13 +150,18 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 6. Local NetBox
 
-- [ ] 6.1 Execute plan 04's local-engine fix: app tier under podman through the local
-      controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik
+- [x] 6.1 Execute plan 04's local-engine fix: app tier under podman through the local
+      controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik.
+      2026-09-22: full stack (NetBox + Diode + Hydra) deployed through the local Semaphore,
+      tasks 982 and 985 (two consecutive successes); fixes recorded in design
 - [ ] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
       any declared target outside them and disables discovery when none are declared
 - [ ] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
       keep discovery disabled and record why
-- [ ] 6.4 NetBox custom fields for the collector created by a playbook, locally
+- [x] 6.4 NetBox custom fields for the collector created by a playbook, locally.
+      2026-09-22: via the Django shell (the scoped token has no schema permission, 403);
+      created in task 995, dry and real re-runs unchanged (997, 998). Also fixed the token
+      mint for NetBox 4.5 (no is_staff; v2 tokens stored as nbt_<key>.<token>, sent as Bearer)
 - [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
@@ -165,12 +170,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 - [ ] 7.1 D10 review of each existing executor against its registry criteria: idempotent
       rerun, result emitted, undo named; stamp `reviewed`
-- [ ] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`
+- [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
+      2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
+      systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
 - [ ] 7.3 New executors: inventory lookup, address validation against pfSense ARP and NetBox,
       NetBox VM record, host instrumentation (after `inference-telemetry-production` lands the
       OTLP receiver)
-- [ ] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
-      emitting one JSON document
+- [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
+      emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
+      check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
 - [ ] 7.5 Collector (scheduled), NetBox custom-field writes, Loki push, Grafana dashboard JSON,
       read-only report; single-writer test
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer

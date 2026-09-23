@@ -1118,7 +1118,10 @@
           [netbox_svc:vars]
           ansible_user=semaphore
           service_name=netbox
-          service_url=http://127.0.0.1:8000
+          # The controller container's own loopback is not the engine host's; podman maps
+          # host.containers.internal onto the host loopback NetBox publishes on (health
+          # check, custom fields, collector all reach it here).
+          service_url=http://host.containers.internal:8000
           monorepo_deploy_path=platform/services/netbox/deployment
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
@@ -1127,6 +1130,8 @@
           netbox_compose_overlays=["docker-compose.local-auth.yml"]
           discovery_workers_enabled=false
           netbox_build_seccomp_profile=/usr/share/containers/seccomp.json
+          netbox_app_container=netbox_netbox_1
+          orb_agent_openbao_addr=http://127.0.0.1:8200
           discovery_target_subnet={{ hostvars['netbox-local'].discovery_target_subnet | default('') }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy

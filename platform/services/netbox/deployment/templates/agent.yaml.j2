@@ -7,7 +7,9 @@ orb:
     active: vault
     sources:
       vault:
-        address: "{{ openbao_addr }}"
+        # The agent runs with host networking, so it needs an address reachable from the
+        # HOST (local-dev: the engine host's loopback), not the controller's network name.
+        address: "{{ orb_agent_openbao_addr | default(openbao_addr) }}"
         timeout: 30
         auth: "approle"
         auth_args:
