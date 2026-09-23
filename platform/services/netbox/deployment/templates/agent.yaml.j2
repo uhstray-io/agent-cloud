@@ -119,6 +119,9 @@ orb:
       # enabled; the pfSense worker's Device name is aligned to match sysName
       # so Diode merges rather than duplicates.
 
+{# pfSense and Proxmox workers reach real infrastructure APIs: off on local-dev
+   (discovery_workers_enabled: false), so a laptop never syncs production gear. #}
+{% if discovery_workers_enabled | default(true) | bool %}
     # ─── PFSENSE REST API SYNC (Worker) ────────────────────────────
     # Queries pfSense REST API for device, interfaces, IPs, ARP, gateways.
     # Runs every 15 minutes. Credentials from OpenBao vault.
@@ -163,3 +166,4 @@ orb:
           url: "${vault://secret/services/discovery/proxmox_api/url}"
           token_id: "${vault://secret/services/discovery/proxmox_api/token_id}"
           api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"
+{% endif %}

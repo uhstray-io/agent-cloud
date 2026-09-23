@@ -1,5 +1,6 @@
 # Upstream clone — do not commit into this repo
 netbox-docker/
+netbox-docker.stale-*/
 
 # Generated at deploy time by quickstart.sh (contains secrets)
 .env

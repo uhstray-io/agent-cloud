@@ -1,0 +1,63 @@
+---
+# assert-local-discovery-scope.yml — confine LOCAL NetBox discovery to local-dev.
+#
+# Change service-deployment-workflow, platform/netbox-local ("Discovery is confined to
+# local-dev targets"). A laptop's discovery must never write the production network into
+# its IPAM, and production's ranges live only in site-config, which the local controller
+# does not hold. So the allowlist is OBSERVED, not declared: the subnets of every network
+# on the local container engine, read live. Every declared target must sit inside one of
+# them (containment by lib/discovery_scope.py, stdlib ipaddress; no ipaddr on the runner).
+#
+# Inputs (inventory):
+#   discovery_target_subnet   the subnet the network and SNMP scans cover (optional)
+#   discovery_targets         extra targets (optional list)
+#   container_engine          the engine whose networks are the allowlist (podman)
+# Sets:
+#   _local_discovery_enabled  false when nothing is declared: discovery is skipped, loudly
+#
+# Read-only: every task runs under --check.
+
+- name: "Local discovery: collect the declared targets"
+  ansible.builtin.set_fact:
+    _local_discovery_targets: >-
+      {{ ([discovery_target_subnet] if (discovery_target_subnet | default('') | length > 0) else [])
+         + (discovery_targets | default([])) }}
+
+- name: "Local discovery: nothing declared means no discovery"
+  ansible.builtin.set_fact:
+    _local_discovery_enabled: "{{ _local_discovery_targets | length > 0 }}"
+
+- name: "Local discovery: say it is disabled"
+  ansible.builtin.debug:
+    msg: >-
+      Local NetBox discovery is DISABLED: no discovery_target_subnet or discovery_targets is
+      declared in the local inventory. Declare a local-dev subnet there to enable it.
+  when: not _local_discovery_enabled
+
+- name: "Local discovery: read the local engine's network subnets"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    names=$({{ container_engine | default('podman') }} network ls -q)
+    [ -n "$names" ] || { echo '[]'; exit 0; }
+    # shellcheck disable=SC2086
+    {{ container_engine | default('podman') }} network inspect $names
+  args:
+    executable: /bin/bash
+  register: _local_networks
+  changed_when: false
+  check_mode: false
+  when: _local_discovery_enabled
+
+- name: "Local discovery: refuse any target outside local-dev"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ discovery_scope_script | default(playbook_dir ~ '/../services/netbox/deployment/lib/discovery_scope.py') }}"
+      - >-
+        {{ _local_networks.stdout | from_json | map(attribute='subnets') | select('iterable')
+           | flatten | map(attribute='subnet') | list | to_json }}
+      - "{{ _local_discovery_targets | to_json }}"
+  register: _local_scope
+  changed_when: false
+  check_mode: false
+  when: _local_discovery_enabled

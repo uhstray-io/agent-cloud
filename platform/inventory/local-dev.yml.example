@@ -308,12 +308,28 @@ all:
     #       monorepo_deploy_path: platform/services/nocodb/deployment
     #       container_engine: podman
     #
-    # netbox_svc:   # root-requiring: Docker Desktop profile, app tier only
-    #   hosts:
-    #     netbox-local:
-    #       ansible_host: 127.0.0.1
-    #       ansible_connection: local
-    #       service_name: netbox
-    #       service_url: "http://127.0.0.1:8000"
-    #       monorepo_deploy_path: platform/services/netbox/deployment
-    #       container_engine: docker
+    # NetBox — IPAM authority, under PODMAN through the local Semaphore (plan 04 "NetBox
+    # Local Engine"; change service-deployment-workflow section 6). The forward_auth
+    # overlay makes Caddy's Authentik gate the only way in, and the app publishes on
+    # loopback only, because the overlay trusts X-authentik-* headers.
+    # Deploy: make local-deploy-netbox.
+    netbox_svc:
+      hosts:
+        netbox-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: netbox
+          service_url: "http://127.0.0.1:8000"
+          monorepo_deploy_path: platform/services/netbox/deployment
+          container_engine: podman
+          netbox_host_ip: 127.0.0.1
+          netbox_compose_overlays: [docker-compose.local-auth.yml]
+          # Discovery on local-dev only (platform/netbox-local): the pfSense/Proxmox
+          # workers reach real infrastructure APIs, so they are off here, and the scans
+          # run only on discovery_target_subnet / discovery_targets, each of which the
+          # deploy refuses unless it lies inside a network on the local engine. Unset
+          # means discovery is disabled. Set the subnet in local-dev.yml, never in the
+          # committed example (no private addresses in this repo).
+          discovery_workers_enabled: false
+          # The engine's seccomp profile for image builds (lib/common.sh build_netbox_image).
+          netbox_build_seccomp_profile: /usr/share/containers/seccomp.json

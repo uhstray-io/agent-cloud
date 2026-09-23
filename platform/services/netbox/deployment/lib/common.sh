@@ -46,7 +46,23 @@ if [ -z "${CONTAINER_ENGINE:-}" ]; then
     exit 1
   fi
 fi
-CONTAINER_SEP="-"
+# Separator compose puts between project, service and index in object names. It is NOT one
+# value: Docker Compose writes netbox-postgres-1, python podman-compose (the local Semaphore
+# runner, 1.6.0) writes netbox_postgres_1. Hardcoded "-" made postgres_volume_exists miss
+# the podman volume, so the password sync was skipped as a "first deploy" and hydra could
+# not log in (2026-09-22). An existing volume decides; otherwise the compose provider does.
+detect_container_sep() {
+  if "$CONTAINER_ENGINE" volume inspect netbox_netbox-postgres >/dev/null 2>&1; then
+    CONTAINER_SEP="_"
+  elif "$CONTAINER_ENGINE" volume inspect netbox-netbox-postgres >/dev/null 2>&1; then
+    CONTAINER_SEP="-"
+  elif "$CONTAINER_ENGINE" compose version 2>&1 | grep -qi 'podman-compose'; then
+    CONTAINER_SEP="_"
+  else
+    CONTAINER_SEP="-"
+  fi
+}
+[ -n "${CONTAINER_SEP:-}" ] || detect_container_sep
 
 # ─── Logging ──────────────────────────────────────────────────────
 info()  { echo "==> $*"; }
@@ -66,9 +82,16 @@ sedi() {
 # ─── Compose wrapper ─────────────────────────────────────────────
 # Wraps the detected container engine's compose with explicit project name and
 # compose file to avoid auto-discovery of override files and keep names stable.
+# NETBOX_COMPOSE_EXTRA: space-separated overlay files (relative to the deployment dir)
+# added after the base file, e.g. the LOCAL-ONLY forward_auth overlay
+# docker-compose.local-auth.yml. Unset in production, so prod runs the base file alone.
 compose() {
   local compose_dir="${ROOT_DIR:-${SCRIPT_DIR}}"
-  $CONTAINER_ENGINE compose --project-name "netbox" -f "${compose_dir}/docker-compose.yml" "$@"
+  local files=(-f "${compose_dir}/docker-compose.yml") overlay
+  for overlay in ${NETBOX_COMPOSE_EXTRA:-}; do
+    files+=(-f "${compose_dir}/${overlay}")
+  done
+  $CONTAINER_ENGINE compose --project-name "netbox" "${files[@]}" "$@"
 }
 
 # ─── Health / state waiters ───────────────────────────────────────
@@ -410,7 +433,14 @@ build_netbox_image() {
   version="${version:-v4.5-4.0.0}"
 
   info "Building NetBox image (VERSION=${version})..."
-  $CONTAINER_ENGINE build --no-cache \
+  # NETBOX_BUILD_SECCOMP: a seccomp profile path ON THE ENGINE. The local Semaphore's podman
+  # client (5.3.2) sends its own default /etc/containers/seccomp.json to the podman-machine
+  # engine (5.8.2), which has the profile only at /usr/share/containers/seccomp.json, so
+  # every RUN step failed "opening seccomp profile failed" (2026-09-22). Local inventory
+  # sets it; production (Docker) leaves it unset.
+  local sec=()
+  [ -n "${NETBOX_BUILD_SECCOMP:-}" ] && sec=(--security-opt "seccomp=${NETBOX_BUILD_SECCOMP}")
+  $CONTAINER_ENGINE build --no-cache ${sec[@]+"${sec[@]}"} \
     -t netbox:latest-plugins \
     -f "${compose_dir}/Dockerfile-Plugins" \
     --build-arg "VERSION=${version}" \

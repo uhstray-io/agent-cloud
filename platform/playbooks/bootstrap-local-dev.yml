@@ -1109,6 +1109,29 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # netbox — IPAM authority, podman, forward_auth overlay, loopback publish (see
+          # platform/inventory/local-dev.yml.example). Declared here too: this is the
+          # inventory the local Semaphore runs with (container paths).
+          [netbox_svc]
+          netbox-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [netbox_svc:vars]
+          ansible_user=semaphore
+          service_name=netbox
+          service_url=http://127.0.0.1:8000
+          monorepo_deploy_path=platform/services/netbox/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          netbox_host_ip=127.0.0.1
+          netbox_compose_overlays=["docker-compose.local-auth.yml"]
+          discovery_workers_enabled=false
+          netbox_build_seccomp_profile=/usr/share/containers/seccomp.json
+          discovery_target_subnet={{ hostvars['netbox-local'].discovery_target_subnet | default('') }}
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           # postiz — Tier-3, five containers (app + its Postgres and Redis + the
           # Temporal workflow engine + Temporal's own Postgres). Declared HERE and
           # not only in platform/inventory/local-dev.yml because the two are read
