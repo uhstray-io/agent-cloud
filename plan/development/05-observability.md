@@ -49,6 +49,12 @@
 > and logs. Container read-back confirmed both limits, and the local TSDB
 > reported 1,100 active series. The production size cap stays disabled until
 > the existing receiver disk and retention are audited.
+> At `725397df613d8e989990dcc0abc3fe482229c89b`, local Semaphore task
+> 1118 ran the reversible unreachable-endpoint drill. Alloy discovered an
+> opted-in disposable container at `o11y-fault-probe:65535`, Prometheus wrote
+> `up=0`, and the shared onboarding verifier refused it with that service and
+> endpoint named. The playbook removed its probe in `always`; a subsequent
+> container-existence check confirmed absence.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

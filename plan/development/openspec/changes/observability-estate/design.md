@@ -10,6 +10,8 @@ At commit `3f9a9b97bf9e8362c0fdbe4924c89bc07dc63207`, local Semaphore task 1105 
 
 At `5bc22b8d54b2e7b0e2ca4985c3f7b34ddf1cc2b1`, local Semaphore task 1112 deployed a 1 GB Prometheus size cap and 2,000-sample Alloy scrape limit. Task 1113 verified the Caddy log and healthy scrape after that redeploy; read-back showed 1,100 active local series. Production keeps the size cap disabled pending its host/disk audit and an explicit inventory value.
 
+At `725397df613d8e989990dcc0abc3fe482229c89b`, local Semaphore task 1118 proved the negative path: a disposable opted-in container declared `o11y-fault-probe:65535`, Alloy reported `up=0`, and the same metrics gate used by onboarding refused that service and endpoint. The drill cleaned up its container, and a subsequent check confirmed its absence. No production endpoint was touched.
+
 ## Goals / Non-Goals
 
 **Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.
