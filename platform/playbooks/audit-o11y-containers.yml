@@ -71,14 +71,14 @@
 
     - name: List all containers on the existing Grafana host
       ansible.builtin.command:
-        argv: "{{ item.argv }}"
+        argv: "{{ item.argv + ['--format', '{{.Names}} {{.Image}} {{.Status}}'] }}"
       vars:
         ansible_become: false
       loop:
-        - {name: podman-rootless, argv: [podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
-        - {name: podman-rootful, argv: [sudo, -n, podman, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
-        - {name: docker-rootless, argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
-        - {name: docker-rootful, argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --format, "{{ '{{.Names}} {{.Image}} {{.Status}}' }}"]}
+        - {name: podman-rootless, argv: [podman, ps, -a]}
+        - {name: podman-rootful, argv: [sudo, -n, podman, ps, -a]}
+        - {name: docker-rootless, argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a]}
+        - {name: docker-rootful, argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a]}
       loop_control:
         label: "{{ item.name }}"
       register: grafanapodman_containers
