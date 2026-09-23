@@ -13,6 +13,9 @@ def test_grafana_audit_formats_render_once():
         task for task in yaml.safe_load(playbook.read_text())[0]["tasks"]
         if task["name"] == "List all containers on the existing Grafana host"
     )
+    assert {item["name"] for item in task["loop"]} == {
+        "podman-rootless", "podman-rootful", "docker-rootless", "docker-rootful",
+    }
     for item in task["loop"]:
         assert "--format" not in item["argv"]
         rendered = Environment().from_string(task["ansible.builtin.command"]["argv"]).render(item=item)
