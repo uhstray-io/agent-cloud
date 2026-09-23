@@ -1,3 +1,4 @@
 # Rendered per-deploy from OpenBao by deploy-o11y.yml. Never committed.
 # (config/ IS committed — config-as-code; only the Grafana admin pw stays out.)
 .env
+config/scrape.d/*.yml
