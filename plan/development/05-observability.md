@@ -104,6 +104,13 @@
 > target. The private production inventory still binds the gateway stats port
 > to loopback until the audited o11y receiver source and firewall path are
 > approved. This is code preparation, not a live agentgateway scrape receipt.
+> Local candidate task 1147 refused a mistyped expected SHA before placing
+> files. Task 1148 then deployed the exact pushed commit
+> `22cc811782a8cfe511d01d595ca91d6ae4075998`; task 1149 verified a
+> recent Caddy log and healthy metrics. Prometheus read-back returned
+> `up{service="caddy"}=1` and no loaded `agentgateway` scrape job, as required
+> while the local inventory omits that remote endpoint. These receipts do not
+> prove agentgateway telemetry or any production receiver state.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
