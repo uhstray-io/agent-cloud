@@ -55,7 +55,18 @@ argv = env.compile_expression(backing['ansible.builtin.command']['argv'].strip('
 for action, force in (("recreate", True), ("start", False)):
     rendered = argv(_before={'stdout': json.dumps({'postgres': {'planned_action': action}})}, item='postgres')
     assert ('--force-recreate' in rendered) is force
+    assert ('--no-recreate' in rendered) is not force
     assert rendered[-1] == 'postgres' and '--pull' in rendered and 'never' in rendered
+app, = (task for task in tasks if task['name'] == 'Converge the existing NetBox app without pull or build')
+app_argv = env.compile_expression(app['ansible.builtin.command']['argv'].strip('{} '))
+for action, force in (("recreate", True), ("start", False)):
+    rendered = app_argv(_before={'stdout': json.dumps({'netbox': {'planned_action': action}})})
+    assert ('--force-recreate' in rendered) is force
+    assert ('--no-recreate' in rendered) is not force
+    assert rendered[-1] == 'netbox'
+assert "planned_action != 'noop'" in backing['when']
+assert "planned_action != 'noop'" in app['when']
+assert any(task['name'] == 'Require started and untouched containers to keep their identity' for task in tasks)
 PY
 }
 

@@ -114,6 +114,10 @@ def test_runtime_preflight_refuses_image_volume_bind_and_environment_drift(tmp_p
     containers["postgres"]["State"]["Status"] = "exited"
     assert inspect_state()["postgres"]["planned_action"] == "start"
     containers["postgres"]["State"]["Status"] = "running"
+    containers["postgres"]["State"]["Health"]["Status"] = "unhealthy"
+    with pytest.raises(ValueError, match="postgres: unsupported runtime state"):
+        inspect_state()
+    containers["postgres"]["State"]["Health"]["Status"] = "healthy"
     containers["postgres"]["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
     with pytest.raises(ValueError, match="postgres: unexpected restart policy"):
         inspect_state()

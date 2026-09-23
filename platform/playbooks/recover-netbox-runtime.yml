@@ -85,7 +85,7 @@
 
     - name: Converge existing backing services without pull or build
       ansible.builtin.command:
-        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json)[item].planned_action == 'recreate' else []) + [item] }}"
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json)[item].planned_action == 'recreate' else ['--no-recreate']) + [item] }}"
         chdir: "{{ _deploy_dir }}"
       loop: [postgres, redis, redis-cache]
       when: (_before.stdout | from_json)[item].planned_action != 'noop'
@@ -104,7 +104,7 @@
 
     - name: Converge the existing NetBox app without pull or build
       ansible.builtin.command:
-        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json).netbox.planned_action == 'recreate' else []) + ['netbox'] }}"
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json).netbox.planned_action == 'recreate' else ['--no-recreate']) + ['netbox'] }}"
         chdir: "{{ _deploy_dir }}"
       when: (_before.stdout | from_json).netbox.planned_action != 'noop'
       register: _netbox_up
@@ -139,6 +139,13 @@
         executable: python3
       register: _after
       changed_when: false
+
+    - name: Require started and untouched containers to keep their identity
+      ansible.builtin.assert:
+        that: (_before.stdout | from_json)[item].container_id == (_after.stdout | from_json)[item].container_id
+        fail_msg: "{{ item }} was recreated outside the declared preflight scope."
+      loop: [postgres, redis, redis-cache, netbox]
+      when: (_before.stdout | from_json)[item].planned_action in ['start', 'noop']
 
     - name: Report only actual container state changes
       ansible.builtin.set_fact:
