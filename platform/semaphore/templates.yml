@@ -31,6 +31,22 @@ templates:
     playbook: platform/playbooks/audit-o11y-containers.yml
     dev_variant: true
 
+  - name: Verify o11y Service
+    playbook: platform/playbooks/verify-o11y-service.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_service
+        title: "Service label"
+        description: "Lowercase service identity whose fresh logs and metrics must be present"
+        type: string
+        required: true
+      - name: expect_metrics
+        title: "Expect metrics"
+        description: "true for a metrics-enabled service; false for a log-only service"
+        type: string
+        required: false
+        default_value: "true"
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:
