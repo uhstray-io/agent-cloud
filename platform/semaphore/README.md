@@ -127,6 +127,45 @@ repository binding, publish the entire catalog, or extract credentials to bridge
 the gap. Any exceptional initial UI installation requires explicit scoped
 authorization and must match the committed declaration and verified bindings.
 
+## Seed a secret through an isolated environment
+
+A secret an operator holds, and no service generates, reaches OpenBao through a
+**seed template**: one that declares `isolated_environment` and `seed_inputs` in
+`templates.yml`. Seed OpenBao Key is the general one. The value travels as an
+encrypted environment input in that template's own environment. It is never a
+survey field or an extra var, because Semaphore persists both and returns them over
+its API. It is never staged in the shared environment, where every other template's
+task could receive it.
+
+1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
+   with `seed_template` set to the declared base name. It creates the environment,
+   gives it an encrypted copy of the controller AppRole, and binds only that template.
+2. **Once after provisioning:** prove the environment can log in and read, without
+   writing anything:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --url https://semaphore.uhstray.io --verify-only --apply < <token-file>
+   ```
+
+3. **Each seed:** put the value in a file, one line, then run a dry run without
+   `--apply`, then the real one:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --input BAO_VALUE=<value-file> --url https://semaphore.uhstray.io --apply < <token-file>
+   ```
+
+The CLI accepts only the input names the template declares and only its survey
+settings. It resolves the template and environment by name and refuses unless they
+are bound to each other. It refuses a leftover input from an earlier run, runs
+exactly one task, removes exactly the input it created, and never prints the value.
+An interrupted run leaves the encrypted input in place and names it, so it can be
+reconciled rather than silently retried. Postiz provider credentials use
+`scripts/postiz-seed-input.py`, which shares the same lifecycle code.
+
 ## Troubleshoot at the failing boundary
 
 | Evidence | Next check |

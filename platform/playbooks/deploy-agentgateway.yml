@@ -135,7 +135,7 @@
         that: (secrets.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
         fail_msg: >-
           secret/services/{{ service_name }}:vllm_api_key is empty. Seed it (Seed OpenBao Key,
-          value as the BAO_VALUE environment secret) before deploying, or set
+          value staged by scripts/semaphore-seed-input.py) before deploying, or set
           agw_upstream_requires_key: false for an upstream that takes no key.
         success_msg: "Upstream key present (or not required by this upstream)."
 

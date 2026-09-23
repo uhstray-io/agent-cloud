@@ -78,9 +78,10 @@ Use `scripts/postiz-seed-input.py --env-file <private-file>` for a presence-only
 check. It reads the file as data and selects provider fields from the committed
 seed declaration. It never imports signing, database, OIDC or deployment settings.
 
-First run the declared **Provision Postiz Seed Environment (Dev)** controller
-workflow with verified `semaphore_project_id`, `semaphore_inventory_id` and
-`semaphore_source_environment_id`; `postiz_seed_variant` selects `dev` or `main`.
+First run the declared **Provision Seed Environment (Dev)** controller workflow
+with `seed_template=Seed Postiz Secrets` and verified `semaphore_project_id`,
+`semaphore_inventory_id` and `semaphore_source_environment_id`; `seed_variant`
+selects `dev` or `main`.
 It creates the environment named in `templates.yml`, adds missing encrypted
 controller authentication inputs, and changes only the selected seed binding.
 Existing authentication is preserved, never rotated. The provisioner requires

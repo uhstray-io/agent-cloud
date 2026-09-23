@@ -191,8 +191,9 @@ class ScopedPublicationTests(unittest.TestCase):
             playbook = "platform/playbooks/publish-semaphore-templates.yml"
         if provision:
             directory = "playbooks" if provision_wrapper else "semaphore"
-            playbook = f"platform/{directory}/provision-postiz-seed-environment.yml"
+            playbook = f"platform/{directory}/provision-seed-environment.yml"
             extra.update(semaphore_project_id=1, semaphore_inventory_id=37, semaphore_source_environment_id=42)
+            extra.setdefault("seed_template", "Seed Postiz Secrets")
         result = subprocess.run(
             ["ansible-playbook", "-i", "localhost,", playbook,
              "-e", json.dumps(extra)],
@@ -313,6 +314,28 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, writes)
+
+    def test_provisioner_refuses_a_template_without_isolated_environment(self):
+        self.prepare_seed_template()
+        code, output = self.run_play(provision=True, seed_template="Deploy agentgateway")
+        self.assertNotEqual(code, 0)
+        self.assertIn("seed_template must name a templates.yml entry that declares", output)
+        self.assertEqual(self.writes, [])
+
+    def test_provisioner_isolates_the_openbao_key_seed(self):
+        self.prepare_seed_template()
+        self.records[0].update(name="Seed OpenBao Key (Dev)", playbook="platform/playbooks/seed-openbao-key.yml")
+        self.records[0]["survey_vars"] = [{"name": n, "type": "string", "values": None}
+                                          for n in ("bao_path", "bao_key", "bao_verify_access_only")]
+        source = copy.deepcopy(self.environments[0])
+        code, output = self.run_play(provision=True, seed_template="Seed OpenBao Key")
+        self.assertEqual(code, 0, output)
+        target = self.environments[1]
+        self.assertEqual(target["name"], "OpenBao key seed inputs (Dev)")
+        self.assertEqual(self.environments[0], source)
+        self.assertEqual(self.auth_values, {"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
+        self.assertEqual(self.records[0]["environment_id"], target["id"])
+        self.assertIn("bao_verify_access_only=true", output)
 
     def test_provisioner_preserves_auth_when_filling_missing_endpoint(self):
         self.prepare_seed_template()

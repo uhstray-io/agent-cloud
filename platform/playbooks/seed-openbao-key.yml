@@ -72,6 +72,7 @@
           Supply the value as the BAO_VALUE environment secret (Semaphore) or
           -e bao_value=<secret> (local run).
       no_log: true
+      when: not (bao_verify_access_only | default(false) | bool)
 
     # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
     # secret material over public cleartext. https is always allowed; http is
@@ -90,6 +91,35 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+
+    # bao_verify_access_only=true proves this environment's AppRole can log in and is
+    # allowed to read the target path, then stops before any write, whether or not a
+    # value is staged. Run it once after provisioning an isolated seed environment,
+    # before the first real seed (scripts/semaphore-seed-input.py --verify-only).
+    # 404 is a pass: the path may not exist yet, and a 404 is only returned to a token
+    # the policy allows to read it; a denied token gets 403.
+    - name: "Read the target path with the AppRole token (access check)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ bao_path }}"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+        follow_redirects: none
+      register: _bao_access
+      no_log: true
+      check_mode: false
+      when: bao_verify_access_only | default(false) | bool
+
+    - name: "Report read-only access (no value read back, no write)"
+      ansible.builtin.debug:
+        msg: >-
+          Read-only access to secret/{{ bao_path }} verified (HTTP {{ _bao_access.status }});
+          no secret-store write requested.
+      when: bao_verify_access_only | default(false) | bool
+
+    - name: "End read-only verification before every secret-store write"
+      ansible.builtin.meta: end_play
+      when: bao_verify_access_only | default(false) | bool
 
     - name: "Merge the key (shared write path: fetch, patch-or-create, verify)"
       # tasks/bao-merge-keys.yml is THE merge-patch implementation: GET for

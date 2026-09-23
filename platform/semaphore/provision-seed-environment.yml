@@ -1,18 +1,24 @@
 ---
 # Controller configuration operation. The public template uses the fixed-loopback
 # wrapper; this implementation also runs against disposable provider fixtures.
-- name: "Provision the declared Postiz seed environment"
+#
+# Generic over every seed template that declares `isolated_environment` in
+# templates.yml (Seed Postiz Secrets, Seed OpenBao Key, ...): `seed_template` names
+# the declared base template, `seed_variant` picks its dev or main instance. The
+# environment gets its own encrypted copy of the controller AppRole, so staged
+# secret inputs never sit in the environment every other template shares.
+- name: "Provision the declared isolated seed environment"
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
   vars:
     _project_id: "{{ semaphore_project_id | int }}"
-    _variant: "{{ postiz_seed_variant | default('dev') }}"
+    _variant: "{{ seed_variant | default('dev') }}"
+    _declared: "{{ (lookup('file', playbook_dir + '/templates.yml') | from_yaml).templates }}"
+    _seed_names: "{{ _declared | selectattr('isolated_environment', 'defined') | map(attribute='name') | list }}"
     _suffix: "{{ ' (Dev)' if _variant == 'dev' else '' }}"
-    _base: >-
-      {{ (lookup('file', playbook_dir + '/templates.yml') | from_yaml).templates
-         | selectattr('name', 'equalto', 'Seed Postiz Secrets') | first }}
+    _base: "{{ _declared | selectattr('name', 'equalto', seed_template | default('')) | first | default({}) }}"
     _target_name: "{{ _base.name ~ _suffix }}"
     _environment_name: "{{ _base.isolated_environment ~ _suffix }}"
     _repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') if _variant == 'dev' else _base.repository | default('agent-cloud') }}"
@@ -20,6 +26,13 @@
     _selected_templates: "{{ [_base | combine({'_publish_name': _target_name, '_generated': _variant == 'dev'})] }}"
 
   tasks:
+    - name: "Require a declared isolated seed template"
+      ansible.builtin.assert:
+        that: (seed_template | default('')) in _seed_names
+        fail_msg: >-
+          seed_template must name a templates.yml entry that declares
+          isolated_environment; declared: {{ _seed_names | join(', ') }}
+
     - name: "Require explicit reviewed bindings"
       ansible.builtin.assert:
         that:
@@ -298,5 +311,6 @@
       ansible.builtin.debug:
         msg: >-
           {{ _target_name }} ({{ _template.json.id }}) now uses {{ _environment_name }}
-          ({{ _target.json.id }}). Before provider import, run this seed template with
-          postiz_verify_access_only=true and require its read-only access success message.
+          ({{ _target.json.id }}). Before the first real seed, run this seed template with
+          {{ _base.seed_access_check | default('its read-only access check') }}=true and require
+          its read-only access success message.

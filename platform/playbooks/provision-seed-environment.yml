@@ -10,6 +10,6 @@
         fail_msg: "The seed environment provisioner requires the controller's fixed loopback API."
 
 - name: "Provision the declared isolated seed environment"
-  ansible.builtin.import_playbook: ../semaphore/provision-postiz-seed-environment.yml
+  ansible.builtin.import_playbook: ../semaphore/provision-seed-environment.yml
   vars:
     _semaphore_url: "http://127.0.0.1:3000"
