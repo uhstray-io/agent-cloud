@@ -709,6 +709,7 @@ templates:
 
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
+    dev_variant: true
 
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets
