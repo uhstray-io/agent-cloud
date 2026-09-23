@@ -138,6 +138,16 @@ deny_reasons contains "the step acts on a proposal and none was given" if {
 	not is_object(object.get(input, "proposal", null))
 }
 
+# Only a `converge` verdict runs an executor. `change-required` means a declared value must
+# change, and that lands through a pull request, never through an executor (verdict.json;
+# spec "Existing declared state is the default outcome"). A missing verdict fails closed.
+deny_reasons contains "the proposal's verdict is not converge" if {
+	_role_run_task
+	_proposal_step
+	is_object(object.get(input, "proposal", null))
+	object.get(object.get(input.proposal, "verdict", {}), "decision", "") != "converge"
+}
+
 # --- Workflow agents: proposal content --------------------------------------------------
 
 # Firewall: SSH must stay open to the orchestrator (Semaphore reaches every host over SSH),
@@ -172,6 +182,31 @@ deny_reasons contains "service proposal exceeds the tier's VM bounds" if {
 	_proposal_step == "service-assess"
 	not _within_tier_bounds
 }
+
+# Access: the proposed auth mode is the one the snapshot declares, and every Authentik group
+# the proposal names is one the snapshot declares. Missing context fails closed.
+deny_reasons contains "access proposal changes the declared auth mode" if {
+	_proposal_step == "access-assess"
+	not _access_mode_matches
+}
+
+_access_mode_matches if input.proposal.auth_mode == input.context.auth_mode
+
+deny_reasons contains "access proposal names an undeclared group" if {
+	_proposal_step == "access-assess"
+	not _access_groups_declared
+}
+
+_access_groups_declared if {
+	every group in _proposed_groups {
+		group in input.context.groups
+	}
+}
+
+# authentik_app is null for a service with no Authentik application.
+default _proposed_groups := []
+
+_proposed_groups := object.get(input.proposal.authentik_app, "groups", []) if is_object(input.proposal.authentik_app)
 
 # A helper negated as a whole, not `not a <= b`: with `b` undefined, OPA 1.0.0 evaluated
 # `some dim in [...]; not vm_spec[dim] <= tier_bounds[dim]` to NO result instead of true,

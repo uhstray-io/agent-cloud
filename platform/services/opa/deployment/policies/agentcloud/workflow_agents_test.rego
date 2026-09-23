@@ -26,10 +26,19 @@ _fw(allow_rules) := object.union(_run("security-agent", "Apply Firewall", "fw-ha
 	"context": _ctx,
 })
 
+_acc(mode, groups) := object.union(_run("security-agent", "Deploy Authentik", "oidc-config"), {
+	"proposal": {
+		"auth_mode": mode, "authentik_app": {"slug": "svc", "groups": groups},
+		"openbao_policy_paths": [], "opa_actions": {}, "findings": [],
+		"verdict": {"decision": "converge", "findings": []},
+	},
+	"context": {"auth_mode": "oidc", "groups": ["platform-admins", "platform-developers"]},
+})
+
 _ssh_from(src) := {"port": 22, "proto": "tcp", "source": src, "consumer": "semaphore", "justification": "orchestration"}
 
 _svc(spec, template) := object.union(_run("service-agent", "Deploy tududi", "service-deploy"), {
-	"proposal": {"vm_spec": spec, "deploy_template": template},
+	"proposal": {"vm_spec": spec, "deploy_template": template, "verdict": {"decision": "converge", "findings": []}},
 	"context": _ctx,
 })
 
@@ -171,4 +180,45 @@ test_legacy_nemoclaw_unscoped_run_task_unchanged if {
 		"action": "run_task",
 		"template_name": "Deploy tududi",
 	}
+}
+
+# A change-required verdict records a finding and launches no executor (PR 203 review).
+test_change_required_verdict_launches_no_executor if {
+	base := _fw([_ssh_from("192.0.2.10/32")])
+	inp := object.union(base, {"proposal": {"verdict": {"decision": "change-required", "findings": [{"summary": "s", "declared": 1, "proposed": 2}]}}})
+	d := agentcloud.decision with input as inp
+	not d.allowed
+	contains(d.reason, "the proposal's verdict is not converge")
+}
+
+test_a_proposal_without_a_verdict_fails_closed if {
+	not agentcloud.allow with input as object.union(_run("security-agent", "Apply Firewall", "fw-harden"), {
+		"proposal": {"allow": [_ssh_from("192.0.2.10/32")], "deny_egress": []},
+		"context": _ctx,
+	})
+}
+
+test_access_proposal_within_declared_state_allowed if {
+	agentcloud.allow with input as _acc("oidc", ["platform-admins"])
+}
+
+test_access_proposal_changing_auth_mode_denied if {
+	d := agentcloud.decision with input as _acc("forward_auth", ["platform-admins"])
+	not d.allowed
+	contains(d.reason, "access proposal changes the declared auth mode")
+}
+
+test_access_proposal_with_undeclared_group_denied if {
+	d := agentcloud.decision with input as _acc("oidc", ["platform-admins", "everyone"])
+	not d.allowed
+	contains(d.reason, "access proposal names an undeclared group")
+}
+
+test_access_proposal_without_context_fails_closed if {
+	not agentcloud.allow with input as object.remove(_acc("oidc", []), ["context"])
+}
+
+# Plan 15's first backfill pilot.
+test_service_agent_may_deploy_agentgateway if {
+	agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy agentgateway"), {"template_name": "Deploy agentgateway (Dev)"})
 }

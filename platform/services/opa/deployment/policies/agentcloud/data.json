@@ -133,10 +133,11 @@
       },
       "allowed_templates": [
         "Check Secrets",
-        "Validate All Services",
+        "Verify Service Health",
         "Manage Caddy Sites"
       ],
       "service_deploy_templates": [
+        "Deploy agentgateway",
         "Deploy n8n",
         "Deploy OpenHands",
         "Deploy tududi",
@@ -257,7 +258,7 @@
       "service-validate": {
         "owner": "service-agent",
         "templates": [
-          "Validate All Services"
+          "Verify Service Health"
         ],
         "per_service": false,
         "reviewed": false
