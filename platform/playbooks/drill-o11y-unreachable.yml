@@ -45,14 +45,25 @@
   gather_facts: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
-    _probe: o11y-fault-probe
-    expected_service: o11y-fault-probe
-    expected_instance: o11y-fault-probe:65535
+    expected_service: "{{ _probe }}"
+    expected_instance: "{{ _probe }}:65535"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
   tasks:
+    - name: Create a unique identity for this drill run
+      ansible.builtin.command:
+        argv: [python3, -c, "import uuid; print(uuid.uuid4().hex[:12])"]
+      register: _probe_nonce
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Name this run's disposable probe
+      ansible.builtin.set_fact:
+        _probe: "o11y-fault-probe-{{ _probe_nonce.stdout }}"
+
     - name: Require local mode before creating a disposable probe
       ansible.builtin.assert:
         that: local_mode | default(false) | bool
@@ -139,6 +150,7 @@
       ansible.builtin.assert:
         that:
           - _discord_secret.json.data.data.bot_token | default('') | length > 0
+          - not (_discord_secret.json.data.data.bot_token | default('')).startswith('REPLACE_WITH_')
           - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('hostname') == 'discord.com'
           - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('path') is match('^/api/webhooks/[0-9]{17,21}/[^/]+$')
         fail_msg: "Seed the bot token and the declared Discord webhook before the delivery drill."
@@ -156,7 +168,7 @@
         url: "https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=1"
         headers:
           Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
-          User-Agent: AgentCloudObservability/1.0
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _before_messages
       delegate_to: localhost
@@ -191,7 +203,7 @@
               - docker.io/library/alpine:3.20
               - sh
               - -c
-              - "echo o11y-fault-probe-ready; sleep 600"
+              - "echo {{ _probe }}-ready; sleep 600"
           register: _probe_run
           changed_when: true
 
@@ -265,18 +277,36 @@
               https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=100{{ '&after=' ~ _before_messages.json[0].id if _before_messages.json | length > 0 else '' }}
             headers:
               Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
-              User-Agent: AgentCloudObservability/1.0
+              User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
             status_code: [200]
           register: _discord_messages
           delegate_to: localhost
           retries: 60
           delay: 5
           until: >-
-            (_discord_messages.json |
+            (_discord_messages.json | default([]) |
              selectattr('webhook_id', 'defined') |
              selectattr('webhook_id', 'equalto', _webhook_id) |
-             list | to_json) is search(expected_service)
+             list | to_json) is search(_delivery_marker)
           no_log: true
+          ignore_errors: true
+          when: drill_expect_alert | default(false) | bool
+
+        - name: Require a readable firing receipt from the owned webhook
+          ansible.builtin.assert:
+            that: _discord_messages is succeeded
+            fail_msg: >-
+              Discord firing receipt absent after the wait: webhook messages={{
+              _discord_messages.json | default([]) |
+              selectattr('webhook_id', 'defined') |
+              selectattr('webhook_id', 'equalto', _webhook_id) |
+              list | length }}, readable messages={{
+              _discord_messages.json | default([]) |
+              selectattr('webhook_id', 'defined') |
+              selectattr('webhook_id', 'equalto', _webhook_id) |
+              selectattr('content', 'defined') |
+              rejectattr('content', 'equalto', '') |
+              list | length }}. Check bot message-history and message-content access.
           when: drill_expect_alert | default(false) | bool
 
         - name: Report the fired rule and confirmed Discord receipt

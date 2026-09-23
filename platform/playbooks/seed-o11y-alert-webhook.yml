@@ -11,21 +11,19 @@
         that: groups.get('o11y_svc', []) | length == 1
         fail_msg: "Declare exactly one o11y_svc receiver before provisioning alerts."
 
-    - name: Read the controller revision when required
+    - name: Read the controller revision
       ansible.builtin.command:
         argv: [git, rev-parse, HEAD]
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
-      when: expected_repository_sha is defined
 
     - name: Require the exact candidate revision
       ansible.builtin.assert:
         that:
-          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
         fail_msg: "Semaphore checked out a different revision; no webhook was provisioned."
-      when: expected_repository_sha is defined
 
     - name: Read candidate checkout changes
       ansible.builtin.command:
@@ -33,13 +31,11 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
-      when: expected_repository_sha is defined
 
     - name: Require a clean candidate checkout
       ansible.builtin.assert:
         that: _controller_changes.stdout | length == 0
         fail_msg: "Candidate checkout has uncommitted files; no webhook was provisioned."
-      when: expected_repository_sha is defined
 
 - name: Provision the o11y Discord alert destination
   hosts: o11y_svc
@@ -117,6 +113,7 @@
         url: "https://discord.com/api/v10/channels/{{ _channel_id }}"
         headers:
           Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _channel
       delegate_to: localhost
@@ -135,6 +132,7 @@
         url: https://discord.com/api/v10/users/@me
         headers:
           Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _bot
       delegate_to: localhost
@@ -145,6 +143,7 @@
         url: "https://discord.com/api/v10/channels/{{ _channel_id }}/webhooks"
         headers:
           Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _listed
       delegate_to: localhost
@@ -171,6 +170,7 @@
         method: POST
         headers:
           Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+          User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         body_format: json
         body:
           name: "{{ _webhook_name }}"

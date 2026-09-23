@@ -14,7 +14,7 @@ setup() {
   DEPLOY_DIR="$REPO_ROOT/platform/services/o11y/deployment"
 }
 
-@test "o11y: webhook provisioning refuses missing private channel IDs before OpenBao access" {
+@test "o11y: webhook provisioning requires an exact reviewed revision before OpenBao access" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   cp "$REPO_ROOT/platform/inventory/local-dev.yml.example" "$BATS_TEST_TMPDIR/inventory.yml"
   run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook \
@@ -22,7 +22,7 @@ setup() {
     "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
     -e openbao_addr=http://127.0.0.1:8200
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Declare Discord guild and text-channel IDs in private o11y inventory."* ]]
+  [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
 }
 
 @test "o11y: webhook credentials stay on the controller and out of task output" {
@@ -31,10 +31,14 @@ import sys
 import yaml
 
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+revision = plays[0]['tasks']
+assert all('when' not in task for task in revision if 'revision' in task['name'] or 'checkout changes' in task['name'] or 'clean candidate' in task['name'])
 tasks = plays[1]['tasks']
 uri_tasks = [task for task in tasks if 'ansible.builtin.uri' in task]
 assert uri_tasks
 assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True for task in uri_tasks)
+assert all(task['ansible.builtin.uri']['headers']['User-Agent'].startswith('DiscordBot (')
+           for task in uri_tasks if task['ansible.builtin.uri']['url'].startswith('https://discord.com/'))
 for task in tasks:
     if task.get('ansible.builtin.set_fact') and any(
         key in task['ansible.builtin.set_fact'] for key in ('_matching', '_webhook', '_webhook_url')
@@ -217,6 +221,10 @@ assert survey['expected_repository_sha']['required'] is True
 assert survey['drill_expect_alert']['default_value'] == 'false'
 drill = next(play for play in plays if play.get('name') == 'Prove a declared unreachable metrics endpoint fails visibly')
 tasks = drill['tasks'][-1]['block']
+assert any(task['name'] == "Name this run's disposable probe" for task in drill['tasks'])
+assert "{{ _probe }}" in drill['vars']['expected_service']
+assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True
+           for task in drill['tasks'] if 'ansible.builtin.uri' in task)
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
 env = Environment()
@@ -236,14 +244,17 @@ for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535'];
                       ("pilot at probe:65535: failing instances=['other', 'probe:65535']; scrapes found=2.", True)]:
     assert bool(instance_check(ansible_failed_result={'msg': msg}, expected_instance='probe:65535')) is expected
 receipt = next(t for t in tasks if t['name'] == 'Wait for the matching Discord webhook message')
-assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True
+assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True and receipt['ignore_errors'] is True
 received = env.compile_expression(receipt['until'])
-for webhook_id, service, expected in [('123', 'o11y-fault-probe', True),
-                                      ('456', 'o11y-fault-probe', False),
-                                      ('123', 'other-service', False)]:
-    messages = [{'webhook_id': webhook_id, 'embeds': [{'description': service}]}]
+marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
+for webhook_id, body, expected in [('123', marker, True),
+                                   ('456', marker, False),
+                                   ('123', 'o11y-delivery-status=resolved service=o11y-fault-probe-new', False),
+                                   ('123', 'o11y-delivery-status=firing service=o11y-fault-probe-old', False)]:
+    messages = [{'webhook_id': webhook_id, 'content': body}]
     assert bool(received(_discord_messages={'json': messages},
-                         _webhook_id='123', expected_service='o11y-fault-probe')) is expected
+                         _webhook_id='123', _delivery_marker=marker)) is expected
+assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt from the owned webhook')['ansible.builtin.assert']['fail_msg']
 PY
 }
 
@@ -358,6 +369,7 @@ for enabled in (False, True):
         receiver = contact['contactPoints'][0]['receivers'][0]
         assert receiver['type'] == 'discord'
         assert receiver['settings']['url'] == '$O11Y_ALERT_DISCORD_WEBHOOK_URL'
+        assert 'o11y-delivery-status=firing service=' in receiver['settings']['message']
     else:
         assert contact['deleteContactPoints'][0]['uid'] == 'o11y_ops_discord'
 local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rules']
