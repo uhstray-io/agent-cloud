@@ -1,0 +1,222 @@
+---
+# deploy-agentgateway.yml — the inference edge gateway (agentgateway) deploy
+# (composable).
+#
+# Phase 1: Place repo + manage-secrets (the upstream vLLM key is `existing` —
+#          seeded by a deliberate separate step, NEVER generated here; one
+#          per-client key per inventory identity, generated once into OpenBao
+#          and reused, rotated only by an explicit run) + render .env and
+#          config.yaml (identities as sha256 hashes, no plaintext key).
+# Phase 2: deploy.sh — container lifecycle (pull, up: db healthy then gateway ready).
+# Phase 3: Verify — readiness answers and an unenrolled request is 401 at the
+#          gateway. The keyed round-trip is not done here (a key on an exec argv is
+#          a token on a command line); it belongs to the conformance run (task 2).
+#
+# Change: plan/development/openspec/changes/inference-gateway-agentgateway
+# Design: identities/limits §4, no retry/timeouts §3, telemetry §6.
+#
+# Inventory (agentgateway_svc host):
+#   agw_upstream_base_url  e.g. http://<head>:8000/v1 (prod) or
+#                          http://host.containers.internal:1234/v1 (local LM Studio)
+#   agw_models             [{name, upstream_model?}] one entry per served name
+#   agw_clients            [names] one API-key identity each -> secret field client_<name>
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#                          rotate/revoke: manage-agentgateway-client-key.yml
+#   agw_rate_requests_per_minute_total  (optional) one global request bucket
+#   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
+#   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
+#                                        false makes the key optional (still sent when present)
+#   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
+#   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
+
+# ── Pre-flight: refuse to "succeed" against a group the inventory lacks ──────
+# Ansible treats a play whose hosts: matches nothing as a no-op and exits 0, so a
+# missing group looks exactly like a deploy that worked (preflight-target-group.yml
+# header; seen on this very playbook 2026-09-17: three "no hosts matched", task green,
+# zero containers).
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+# ── Phase 1: Place repo + secrets + rendered config ────────────────────────
+- name: "Phase 1: Place repo + manage agentgateway secrets"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # The upstream key is `existing`: surfaced to the templates, never invented.
+    # Client keys are `random`: generated ONCE per identity and reused on every
+    # later run, which is exactly "mint if absent, keep if present" (task 4.1);
+    # rotation is a deliberate separate run, never implicit in a deploy.
+    # Built with a Jinja loop rather than a collection filter so the play needs
+    # nothing beyond ansible-core (community.general is not a declared dependency).
+    _client_defs: >-
+      [{% for c in agw_clients | default([]) %}{"name": "client_{{ c }}", "type": "random", "length": 48}{{ "," if not loop.last }}{% endfor %}]
+    # agw_db_password: the gateway's own Postgres (budget usage only) — generated
+    # once, reused; a new value would orphan the existing data directory.
+    # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
+    # OIDC session cookie key — stable so UI sessions survive a redeploy.
+    _secret_definitions: >-
+      {{ [{'name': 'vllm_api_key', 'type': 'existing'},
+          {'name': 'agw_db_password', 'type': 'random', 'length': 32},
+          {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
+    # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
+    # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [agentgateway_oidc_client_secret] }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+      # 0644 on purpose: the gateway image runs as a non-root user and the file is
+      # rendered by the deploy user, so 0640 was "Permission denied" (task 594,
+      # 2026-09-17). Safe because the file holds sha256 hashes and identity names
+      # only — every credential is an env reference resolved from the 0600 .env.
+      - { src: config.yaml.j2, dest: config.yaml, mode: "0644" }
+
+  tasks:
+    - name: "Refuse to render a gateway with no upstream or no served model"
+      ansible.builtin.assert:
+        that:
+          - agw_upstream_base_url is defined
+          - agw_upstream_base_url | length > 0
+          - agw_models is defined
+          - agw_models | length > 0
+        fail_msg: >-
+          agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
+          list in inventory — an empty gateway would answer 404 for every model.
+
+    # Names are interpolated into YAML, JSON (the secret definitions) and a CEL
+    # string literal; restrict them to a charset that is inert in all three.
+    - name: "Refuse identity or group names outside the safe charset"
+      ansible.builtin.assert:
+        that:
+          - (agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+          - agw_ui_admin_group | default('platform-admins') is match('^[a-z0-9][a-z0-9-]*$')
+        fail_msg: >-
+          agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
+          (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # Plaintext keys in the rendered config are a LOCAL-DEV convenience only; the
+    # template ignores the flag outside local_mode, and this makes a prod
+    # inventory that sets it fail loudly instead of silently being ignored.
+    - name: "Refuse agw_plaintext_keys outside local_mode"
+      ansible.builtin.assert:
+        that: not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)
+        fail_msg: "agw_plaintext_keys renders raw client keys into config.yaml; it is only allowed with local_mode: true."
+
+    # The AppRole secret_id, the token OpenBao returns and every secret read cross
+    # this connection — refuse a public cleartext endpoint before any of it is sent.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # Rootless podman is daemonless — without user lingering the container stops
+    # for good on a VM reboot (05-platform-infra §11). enable-linger self-gates
+    # on local_mode (local-dev uses the developer's podman machine).
+    - name: "Enable rootless linger so the gateway survives a reboot"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+
+    - name: "Manage secrets and render env + config"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
+    # none, and an empty key starts a gateway that is ready but answers every client
+    # with the upstream's invalid_api_key. Refuse that unless the inventory declares
+    # the upstream takes no key (agw_upstream_requires_key: false — LM Studio without
+    # authentication). Checks presence only; the value is never printed.
+    - name: "Refuse to deploy without the upstream key when the upstream requires one"
+      ansible.builtin.assert:
+        that: (secrets.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
+        fail_msg: >-
+          secret/services/{{ service_name }}:vllm_api_key is empty. Seed it (Seed OpenBao Key,
+          value as the BAO_VALUE environment secret) before deploying, or set
+          agw_upstream_requires_key: false for an upstream that takes no key.
+        success_msg: "Upstream key present (or not required by this upstream)."
+
+    # The gateway's OIDC discovery/token calls reach the IdP at https://auth.<zone>:8443
+    # (step-ca-minted leaf) — distribute the trust bundle into ./certs; compose.local.yml
+    # mounts it and sets SSL_CERT_FILE. Local-only (prod IdP uses a public chain).
+    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start agentgateway"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the
+        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+        # leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy
+      changed_when: true
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+# Probes run from the SIBLING db container (busybox wget over the compose
+# network): the gateway image has no shell, and a loopback probe is wrong from
+# the local control plane, where this play executes inside the Semaphore
+# container rather than on the host that publishes the port. Same probe on
+# every path — local, prod VM — so the verify cannot pass for the wrong reason.
+# No keyed request here: a client key on an exec argv is a token on a command
+# line. The enrolled-identity proof is the conformance run (change task 2).
+- name: "Phase 3: Verify agentgateway"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+
+  tasks:
+    - name: "Readiness listener answers (via the compose network)"
+      ansible.builtin.command: "{{ _probe }} http://agentgateway:19001/healthz/ready"
+      # Single shot: deploy.sh already waited up to 90 s for exactly this and fails
+      # hard, so a retry here would only re-prove a fact in hand.
+      register: _ready
+      changed_when: false
+
+    - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
+      # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
+      # exits 1 on an HTTP error and prints the status on stderr.
+      ansible.builtin.command: "{{ _probe }} -S http://agentgateway:4000/v1/models"
+      register: _noauth
+      changed_when: false
+      failed_when: "'401' not in _noauth.stderr"
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          agentgateway ready — /healthz/ready answers on the compose network;
+          unauthenticated /v1/models is 401 at the gateway. The keyed round-trip and
+          conformance against the direct upstream are change task 2.

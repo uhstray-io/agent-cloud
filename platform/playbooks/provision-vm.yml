@@ -215,6 +215,31 @@
           declaration. Pick a free vmid (and record the existing one in the ledger).
       when: vm_exists | bool
 
+    # The inventory can contradict itself: an edit that rewrote every matching
+    # address line left a runner declared at the gateway's address (site-config
+    # PR 15 review, docs/MISTAKES.md 4.7). Refuse a declared address that ANY other
+    # inventory host claims as its ansible_host or vm_ip, on every run — before the
+    # network probe, which cannot see a host that is powered off.
+    - name: "Refuse a declared address claimed by another inventory host"
+      vars:
+        _claimants: >-
+          {{ hostvars | dict2items
+             | rejectattr('key', 'equalto', _decl_host)
+             | selectattr('value.ansible_host', 'defined')
+             | selectattr('value.ansible_host', 'equalto', _ip)
+             | map(attribute='key') | list
+           + (hostvars | dict2items
+             | rejectattr('key', 'equalto', _decl_host)
+             | selectattr('value.vm_ip', 'defined')
+             | selectattr('value.vm_ip', 'equalto', _ip)
+             | map(attribute='key') | list) }}
+      ansible.builtin.assert:
+        that: _claimants | length == 0
+        fail_msg: >-
+          {{ _ip }} is declared for '{{ _decl_host }}' but also claimed by
+          {{ _claimants | unique | join(', ') }} in the inventory. Refusing: two
+          declarations for one address is a conflict waiting for a provisioning run.
+
     - name: "Probe the declared address from the controller (ICMP)"
       ansible.builtin.command:
         argv: [ping, -c, "2", -W, "2", "{{ _ip }}"]

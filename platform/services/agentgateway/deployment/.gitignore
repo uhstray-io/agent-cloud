@@ -1,0 +1,5 @@
+# Rendered per-deploy by deploy-agentgateway.yml from OpenBao + inventory. Never committed.
+# .env carries the upstream key; config.yaml carries client-key HASHES and the
+# identity list, and is still rendered state, not source.
+.env
+config.yaml

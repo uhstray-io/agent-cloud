@@ -108,7 +108,7 @@ teardown() {
   [ -z "$(read_existing "missing" "$TEST_DIR/none.env" "MISSING")" ]
 }
 
-# ── compose object names (MISTAKES 6.5) ─────────────────────────────
+# ── compose object names (MISTAKES 6.6) ─────────────────────────────
 
 _stub_engine() {
   # A fake engine that knows ONE container, found only by compose's labels, and the

@@ -283,7 +283,10 @@ _committed_files() {
   # that change detection happens against that same dict inside the shared task.
   grep -qE '_bm_data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f"
   refute_grep -qE '_bm_data: "\{\{ \{bao_key: bao_value\} \}\}"' "$f"
-  grep -qE 'combine\(_bm_data\)\) != _bm_current' "$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
+  # (_bm_set IS the caller's _bm_data; the shared task also accepts a _bm_remove list.)
+  local bm="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
+  grep -qF '_bm_set: "{{ _bm_data | default({}) }}"' "$bm"
+  grep -qE 'combine\(_bm_set\)\) != _bm_current' "$bm"
   # The validation gate must test the resolved value too, or a run supplying only
   # the environment would fail the check it just satisfied.
   grep -qE '^\s+- _bao_value \| length > 0' "$f"

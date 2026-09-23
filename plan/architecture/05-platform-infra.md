@@ -266,6 +266,54 @@ consequences are settled and are not to be re-investigated on the next load test
 Deliberation and measurements: OpenSpec change
 `plan/development/openspec/changes/archive/2026-09-15-inference-edge-cloudflare-controls`.
 
+## Inference gateway: agentgateway alongside skynet (PROPOSED 2026-09-17, awaiting operator confirmation)
+
+Status: **Proposed.** Becomes Accepted when the operator confirms this text; until then it
+binds nothing. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.** Two gateways, two authorities, neither replaces the other:
+
+- **agentgateway is the inference edge** in front of the DGX Spark vLLM API (and any
+  later OpenAI-compatible upstream). It owns transport-level concerns for that API:
+  per-client identity (API keys today, OIDC/JWT later), per-identity request and token
+  limits, routing to one or more model backends, and request telemetry as the client
+  sees it. It runs as an Infrastructure-tier platform service on its own VM, behind
+  Caddy, which keeps TLS, the path allowlist and the Bearer shape check.
+- **skynet is the platform's own orchestrating model-serving gateway.** It is
+  purpose-built to interface with agent-cloud, owns placement and policy across the
+  model estate, and is the OPA-role-bearing orchestrator. skynet reaches the DGX Spark
+  model through agentgateway like any other client (default; open question in the
+  change), so every request is metered in one place and the node firewall can narrow
+  to one source.
+
+Plan 06 (`plan/development/06-inference-skynet.md`) is **amended, not superseded**: its
+"no separate gateway" line described the state before this decision and gains a dated
+pointer here when this record is accepted.
+
+**Alternatives rejected.**
+
+1. *agentgateway replaces skynet's gateway role.* Rejected: skynet is kept as the
+   platform's orchestration surface by operator decision (2026-09-14); agentgateway
+   carries no placement or policy logic.
+2. *skynet fronts vLLM directly and agentgateway is skipped.* Rejected: skynet is not
+   the surface OpenCode, pi and team SDK clients use today, and the ecosystem document's
+   request-telemetry and per-client-limit rows would stay empty.
+3. *Co-locate the gateway on the Caddy host.* Rejected: Caddy is the front door for every
+   platform hostname; a gateway fault or upgrade must not touch it.
+4. *Run the gateway on the head node.* Rejected: node memory is the binding constraint
+   and the boundary rule keeps non-vLLM software off the nodes.
+5. *Keep the single shared key at the gateway.* Rejected: per-client limits are the
+   reason the gateway exists. The shared key is enrolled as one identity for a dated
+   grace period, then retired and rotated at vLLM.
+
+**Consequences.** Client base URLs do not change; client keys do. The vLLM key becomes an
+internal credential the gateway alone holds. Rollback during the grace period is one
+inventory value (the Caddy upstream); after retirement it is the `rollback-inference-route`
+playbook, because vLLM cannot authenticate gateway-issued keys.
+
+Deliberation, verification log and the phased plan: OpenSpec change
+`plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
+
 ## Adding a New Service to the Proxy
 
 For a new service needing external HTTPS, follow these steps alongside the SERVICE-INTEGRATION-PLAN.md onboarding checklist.

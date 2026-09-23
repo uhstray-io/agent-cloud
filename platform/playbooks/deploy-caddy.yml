@@ -44,6 +44,14 @@
       vars:
         _mint_zone: "{{ caddy_internal_zone | default('agent-cloud.test') }}"
         _mint_dest_dir: "{{ _deploy_dir }}"
+        # One `*.<parent>` SAN per route host nested more than one label under the
+        # zone (admin.inference.<zone> -> *.inference.<zone>): a TLS wildcard matches
+        # a single label, so `*.<zone>` alone would fail those routes. Derived from
+        # the route table, so a new nested host needs no cert change.
+        _mint_extra_sans: >-
+          {{ caddy_routes | default([]) | map(attribute='host')
+             | select('search', '\.[^.]+\.' ~ (_mint_zone | regex_escape) ~ '$')
+             | map('regex_replace', '^[^.]+', '*') | unique | list }}
         _mint_engine: "{{ container_engine | default('podman') }}"
       when:
         - local_mode | default(false) | bool

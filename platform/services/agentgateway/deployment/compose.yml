@@ -1,0 +1,79 @@
+# agentgateway — the inference edge gateway in front of the OpenAI-compatible
+# model API (vLLM on the DGX Spark pair in prod; LM Studio on the Mac in local-dev).
+#
+# Two containers: the gateway and its OWN Postgres (agentgateway-db, internal
+# only). The database exists for ONE reason: v1.5.0 charges per-API-key token
+# budgets only when `config.database` is set (verified 2026-09-17: the binary
+# refuses budgets without it). It holds budget usage, nothing a client needs
+# back. Ansible's deploy-agentgateway.yml renders BOTH files the gateway reads
+# before this stack starts:
+#   .env         — VLLM_API_KEY (the upstream credential the gateway holds) +
+#                  compose substitution values. Gitignored, 0600.
+#   config.yaml  — the gateway's config-as-code. Carries NO plaintext credential:
+#                  the upstream key is referenced as $VLLM_API_KEY (expanded by
+#                  the gateway from its environment) and client keys are enrolled
+#                  as sha256 hashes. Gitignored because it is rendered per deploy.
+# deploy.sh is container lifecycle only — no secret generation.
+#
+# Ports (env-parameterized here; compose.local.yml replaces the whole list with
+# `!override` literals, which also drops the operator-UI publish locally):
+#   4000   the OpenAI-compatible /v1 listener (Caddy proxies in)
+#   19001  readiness — probed by deploy.sh and the verify play from the sibling
+#          agentgateway-db container over the compose network (the Chainguard
+#          glibc-dynamic gateway image has no shell, so no in-container healthcheck)
+#   19002  stats/metrics — Prometheus scrapes this from the o11y host in prod
+#   4001   operator UI — OIDC login run by the gateway itself (ui.policies); Caddy
+#          is a plain TLS proxy. Published for the Caddy host in prod;
+#          compose.local.yml !overrides it AWAY locally
+#   15000  admin — NOT published; pinned to the container loopback in config.yaml (design §1)
+#   5432   agentgateway-db — NOT published; compose network only
+# Change: plan/development/openspec/changes/inference-gateway-agentgateway
+
+name: agentgateway
+
+services:
+  agentgateway:
+    image: ${AGW_IMAGE:-cr.agentgateway.dev/agentgateway:v1.5.0}
+    container_name: agentgateway
+    restart: always
+    command: ["-f", "/config.yaml"]
+    env_file:
+      - .env
+    ports:
+      - "${AGW_BIND:-127.0.0.1}:${AGW_PORT:-4000}:4000"
+      - "${AGW_READY_BIND:-127.0.0.1}:${AGW_READY_PORT:-19001}:19001"
+      - "${AGW_STATS_BIND:-127.0.0.1}:${AGW_STATS_PORT:-19002}:19002"
+      - "${AGW_UI_BIND:-127.0.0.1}:${AGW_UI_PORT:-4001}:4001"
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    networks: [agentgateway]
+    depends_on:
+      agentgateway-db:
+        condition: service_healthy
+
+  agentgateway-db:
+    # The gateway's own Postgres for per-key budgets — internal to the compose
+    # network only (NO host port). Same pin family the platform already runs.
+    image: ${AGW_POSTGRES_IMAGE:-docker.io/library/postgres:16-alpine}
+    container_name: agentgateway-db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentgateway}
+      POSTGRES_USER: ${POSTGRES_USER:-agentgateway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - agentgateway-pg-data:/var/lib/postgresql/data
+    networks: [agentgateway]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+networks:
+  agentgateway:
+    driver: bridge
+
+volumes:
+  # Budget usage counters only. Losing it resets every identity's window to zero.
+  agentgateway-pg-data:

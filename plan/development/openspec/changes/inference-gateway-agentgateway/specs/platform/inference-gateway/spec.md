@@ -7,9 +7,11 @@ API, alongside skynet.
 
 ### Requirement: The gateway is a platform service on its own host
 agentgateway SHALL run as an Infrastructure-tier platform service on a dedicated VM,
-deployed and verified through Semaphore from committed compose and configuration
-templates, with its admin interface reachable only on the container loopback and its
-runtime credentials sourced from OpenBao.
+together with its own internal-only Postgres for budget usage, deployed and verified
+through Semaphore from committed compose and configuration templates, with its admin
+interface reachable only on the container loopback, its runtime credentials sourced from
+OpenBao, and no credential in any rendered configuration file (environment references
+and key hashes only).
 
 #### Scenario: Deploy converges
 - WHEN the gateway deploy template runs against the production inventory
@@ -18,6 +20,30 @@ runtime credentials sourced from OpenBao.
 
 #### Scenario: Admin interface is not exposed
 - WHEN a LAN host connects to the gateway VM on the admin port
+- THEN the connection is refused
+
+### Requirement: The operator UI is reachable only through SSO
+The gateway's built-in operator UI SHALL be served on its own listener, separate from
+the admin interface (which stays on the container loopback), and MUST authenticate
+browsers ITSELF with an OIDC policy against Authentik plus an authorization rule
+requiring the platform admin group, so that the gateway reports the UI as
+authenticated; Caddy SHALL be a plain TLS proxy in front, and the listener MUST NOT be
+reachable from any host other than the Caddy host.
+
+#### Scenario: UI requires an admin login
+- WHEN an unauthenticated browser opens the gateway's UI hostname
+- THEN the gateway redirects to Authentik's authorization endpoint, after an
+  admin-group login the UI renders, and the UI shows no "exposed without
+  authentication" warning
+
+#### Scenario: Playground completes a request through the UI origin
+- WHEN an admin, logged into the UI, sends a chat completion from the LLM Playground
+  with an enrolled client key
+- THEN the request reaches the gateway's `/v1` on the UI's own origin through Caddy,
+  is authenticated by the API-key policy, and the completion is returned
+
+#### Scenario: UI listener is not reachable around Caddy
+- WHEN a LAN host that is not the Caddy host connects to the UI listener's port
 - THEN the connection is refused
 
 ### Requirement: Client-visible contract is unchanged through the gateway
@@ -39,18 +65,37 @@ semantics or buffering the stream.
 
 ### Requirement: Every client has its own identity and limit
 The gateway SHALL authenticate `/v1` requests with per-client API keys stored in
-OpenBao, MUST apply a request-rate and a token-budget limit keyed on the client
-identity, and MUST accept the legacy shared key as one identity only during a dated
-grace period.
+OpenBao and enrolled as hashes, MUST apply a best-effort token budget per client identity
+(charged after each response from reported usage, so the crossing request completes and a
+response without usage is not charged) and a
+request-rate ceiling for the gateway as a whole (v1.5.0 offers no per-identity request
+bucket without the verbose route shape; revisit when a release ships the bucket key),
+and MUST accept the legacy shared key as one identity only during a dated grace period.
 
 #### Scenario: Unknown key is rejected
 - WHEN a request carries a key that is not enrolled
 - THEN the gateway returns 401 and the request never reaches vLLM
 
 #### Scenario: One client cannot exceed its share
-- WHEN one identity exceeds its request-rate limit within the fill interval
-- THEN its excess requests receive a 429 from the gateway while other identities are
-  served
+- WHEN one identity exhausts its hourly token budget
+- THEN its further requests are blocked by the gateway while other identities are
+  served, and the budget window resets on the UTC hour
+
+#### Scenario: Adding a client is an inventory change
+- WHEN a name is added to the gateway's client list in inventory and the deploy runs
+- THEN a key is generated once into OpenBao, enrolled as a hash, and reused unchanged on
+  every later deploy
+
+#### Scenario: Rotating a client key is explicit and never printed
+- WHEN the key-management playbook runs with `action=rotate` for a declared client
+- THEN a new value replaces the stored one, the gateway is re-rendered and reloaded, the
+  old key gets 401, and the task output carries the field name only; the value reaches
+  its owner through the site-config backup channel
+
+#### Scenario: Revoking requires the inventory to forget the client first
+- WHEN the playbook runs with `action=revoke` for a name still declared in inventory
+- THEN it refuses; once the name is removed, revoke deletes the stored field and the
+  reload drops the hash, so the key is rejected
 
 #### Scenario: Grace period ends
 - WHEN the dated grace period has passed
@@ -87,8 +132,10 @@ only at the gateway.
   the gateway is back in the path, the vLLM key is rotated and no published copy remains
 
 ### Requirement: Gateway telemetry lands in the platform stack
-The gateway SHALL export request metrics to Prometheus and traces over OTLP to the
-o11y host's collector, and the inference dashboard MUST show client-view first-token
+The gateway SHALL export request metrics to Prometheus (with the client identity as a
+label) and traces over OTLP to the o11y host's collector, SHALL record the identity on every
+access-log line (first-token latency is already a default field on streamed responses)
+without ever logging prompt or completion content, and the inference dashboard MUST show client-view first-token
 latency, request duration, failures and per-identity request counts from those signals.
 
 #### Scenario: Client-view latency on the dashboard
