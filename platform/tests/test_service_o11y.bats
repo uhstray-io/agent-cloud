@@ -200,17 +200,30 @@ YAML
 }
 
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
-  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" <<'PY'
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import json, re, sys, yaml
 from jinja2 import Environment
 
 plays = yaml.safe_load(open(sys.argv[1]))
-tasks = plays[1]['tasks'][-1]['block']
+assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
+assert plays[0]['vars']['preflight_group'] == plays[0]['vars']['preflight_group_expected'] == 'o11y_svc'
+revision = next(play for play in plays if play.get('name') == 'Verify the proposed revision before the fault drill')
+assert any(task['name'] == 'Require a clean candidate checkout' for task in revision['tasks'])
+templates = yaml.safe_load(open(sys.argv[2]))['templates']
+template, = (item for item in templates if item['name'] == 'Drill o11y Unreachable')
+assert template['dev_variant'] is True
+survey = {item['name']: item for item in template['survey_vars']}
+assert survey['expected_repository_sha']['required'] is True
+assert survey['drill_expect_alert']['default_value'] == 'false'
+drill = next(play for play in plays if play.get('name') == 'Prove a declared unreachable metrics endpoint fails visibly')
+tasks = drill['tasks'][-1]['block']
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
 env = Environment()
 env.filters['from_json'] = json.loads
+env.filters['to_json'] = json.dumps
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
+env.tests['search'] = lambda value, pattern: re.search(pattern, value) is not None
 matches = env.compile_expression(wait['until'])
 for state, expected in [('Alerting', True), ('Alerting (Error)', False), ('firing', True), ('Normal', False)]:
     response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
@@ -222,6 +235,15 @@ for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535'];
                       ("pilot at probe:65535: failing instances=['other']; scrapes found=1.", False),
                       ("pilot at probe:65535: failing instances=['other', 'probe:65535']; scrapes found=2.", True)]:
     assert bool(instance_check(ansible_failed_result={'msg': msg}, expected_instance='probe:65535')) is expected
+receipt = next(t for t in tasks if t['name'] == 'Wait for the matching Discord webhook message')
+assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True
+received = env.compile_expression(receipt['until'])
+for webhook_id, service, expected in [('123', 'o11y-fault-probe', True),
+                                      ('456', 'o11y-fault-probe', False),
+                                      ('123', 'other-service', False)]:
+    messages = [{'webhook_id': webhook_id, 'embeds': [{'description': service}]}]
+    assert bool(received(_discord_messages={'json': messages},
+                         _webhook_id='123', expected_service='o11y-fault-probe')) is expected
 PY
 }
 

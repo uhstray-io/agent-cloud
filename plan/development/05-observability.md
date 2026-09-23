@@ -98,6 +98,10 @@
 > belongs in private inventory. The webhook, alert drill, and delivery receipt
 > are still unverified; the earlier manual-webhook seed description above is
 > historical.
+> A read-only Discord API check with the supplied bot credential and a named
+> client header returned HTTP 200 for message history in the selected channel
+> on 2026-09-23. The Dev-bound fault drill now contains a message-receipt gate;
+> that gate has not yet run with enabled alerts, so delivery remains unverified.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

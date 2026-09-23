@@ -889,6 +889,22 @@ templates:
     # Reads the bot token from OpenBao and stores the webhook URL under o11y.
     # Run before enabling o11y alerts in inventory.
 
+  - name: Drill o11y Unreachable
+    playbook: platform/playbooks/drill-o11y-unreachable.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before the drill"
+        type: string
+        required: true
+      - name: drill_expect_alert
+        title: "Verify alert delivery"
+        description: "Set true after the OpenBao-backed Discord contact point is enabled"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
