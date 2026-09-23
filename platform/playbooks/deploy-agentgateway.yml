@@ -222,9 +222,98 @@
       changed_when: false
       failed_when: "'401' not in _noauth.stderr"
 
+    # The keyed round-trip: one enrolled identity lists the served models and completes one
+    # chat request, which the gateway can only answer by reaching agw_upstream_base_url. The
+    # key goes in on stdin (never argv, never a log): the two key-bearing probes are no_log and
+    # never fail themselves; the asserts after them carry the diagnosis (status, model names).
+    # A dry run skips them: it renders no new key and restarts nothing, so it has no gateway
+    # state of its own to prove.
+    - name: "Keyed probes: pick the verifying identity"
+      ansible.builtin.set_fact:
+        _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
+
+    - name: "An enrolled identity lists the served models"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - agentgateway-db
+          - sh
+          - -c
+          - 'read -r k; wget -q -O - -T 10 --header "authorization: Bearer $k" http://agentgateway:4000/v1/models'
+        stdin: "{{ _resolved['client_' ~ _verify_client] }}"
+      register: _keyed_models
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "Require every declared model in the keyed listing"
+      ansible.builtin.assert:
+        that:
+          - _keyed_models.rc == 0
+          - (agw_models | map(attribute='name') | list) is subset((_keyed_models.stdout | from_json).data | map(attribute='id') | list)
+        fail_msg: >-
+          Keyed /v1/models as {{ _verify_client }} failed: rc={{ _keyed_models.rc }}
+          {{ _keyed_models.stderr | default('') | trim }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "An enrolled identity completes one chat request through the upstream"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - agentgateway-db
+          - sh
+          - -c
+          - >-
+            read -r k; wget -q -O - -T 120
+            --header "authorization: Bearer $k" --header "content-type: application/json"
+            --post-data "$0" http://agentgateway:4000/v1/chat/completions
+          - >-
+            {{ {'model': agw_models[0].name, 'max_tokens': 64,
+                'messages': [{'role': 'user', 'content': 'Reply with one word: pong'}]} | to_json }}
+        stdin: "{{ _resolved['client_' ~ _verify_client] }}"
+      register: _keyed_chat
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "Require a completion the upstream produced"
+      # The gateway answers a completion only by reaching agw_upstream_base_url; `model` is the
+      # upstream's own served name (local-dev: openai/gpt-oss-20b), and usage is its count.
+      ansible.builtin.assert:
+        that:
+          - _keyed_chat.rc == 0
+          - (_keyed_chat.stdout | from_json).object == 'chat.completion'
+          - (_keyed_chat.stdout | from_json).choices | length > 0
+          - ((_keyed_chat.stdout | from_json).usage.completion_tokens | default(0) | int) > 0
+        fail_msg: >-
+          Keyed chat completion as {{ _verify_client }} for {{ agw_models[0].name }} failed:
+          rc={{ _keyed_chat.rc }} {{ _keyed_chat.stderr | default('') | trim }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          agentgateway ready — /healthz/ready answers on the compose network;
-          unauthenticated /v1/models is 401 at the gateway. The keyed round-trip and
-          conformance against the direct upstream are change task 2.
+          agentgateway ready — /healthz/ready answers on the compose network; unauthenticated
+          /v1/models is 401 at the gateway.
+          {% if ansible_check_mode %}Check mode: the keyed round-trip runs only in a real run.
+          {% elif _verify_client | length > 0 %}As {{ _verify_client }}: /v1/models lists
+          {{ agw_models | map(attribute='name') | join(', ') }}; one chat completion for
+          {{ agw_models[0].name }} came back from upstream model
+          {{ (_keyed_chat.stdout | from_json).model }} at {{ agw_upstream_base_url }}
+          ({{ (_keyed_chat.stdout | from_json).usage.completion_tokens }} completion tokens).
+          {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
+          run.{% endif %}

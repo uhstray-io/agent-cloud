@@ -214,9 +214,14 @@ setup() {
 }
 
 @test "agentgateway: playbook verifies over the compose network, asserts the 401, puts no key on an argv" {
-  # No secret-bearing step in this playbook at all, so no no_log outside manage-secrets.
-  refute_grep -q 'no_log: true' "$PLAYBOOK"
+  # Exactly the two keyed probes carry a key, and they are the only no_log tasks: the key
+  # reaches the probe on stdin, never an argv or a templated header.
+  [ "$(grep -c 'no_log: true' "$PLAYBOOK")" -eq 2 ]
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
+  [ "$(grep -cF "_resolved['client_" "$PLAYBOOK")" -eq 2 ]
+  [ "$(grep -F "_resolved['client_" "$PLAYBOOK" | grep -cE '^\s+stdin: ')" -eq 2 ]
+  refute_grep -qF 'Bearer {{' "$PLAYBOOK"
+  assert_grep -qF 'read -r k;' "$PLAYBOOK"
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
   assert_grep -q 'http://agentgateway:19001/healthz/ready' "$PLAYBOOK"
   assert_grep -qF "'401' not in _noauth.stderr" "$PLAYBOOK"
