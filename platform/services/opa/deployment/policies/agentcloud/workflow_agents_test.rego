@@ -61,6 +61,20 @@ test_service_deploy_list_covers_a_listed_service if {
 	agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": "Deploy tududi (Dev)"})
 }
 
+# An assessment of one service does not license launching another (PR 203 Codex review).
+test_service_deploy_must_launch_the_assessed_template if {
+	d := agentcloud.decision with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": "Deploy honcho"})
+	not d.allowed
+	contains(d.reason, "the launched template is not the proposal's deploy template")
+}
+
+test_service_deploy_without_a_deploy_template_is_denied if {
+	svc := _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi")
+	d := agentcloud.decision with input as object.union(object.remove(svc, ["proposal"]), {"proposal": object.remove(svc.proposal, ["deploy_template"])})
+	not d.allowed
+	contains(d.reason, "the launched template is not the proposal's deploy template")
+}
+
 test_service_deploy_list_never_reaches_another_roles_template if {
 	not agentcloud.allow with input as _run("service-agent", "Deploy Authentik", "service-deploy")
 }
@@ -153,7 +167,7 @@ test_firewall_proposal_without_context_fails_closed if {
 test_service_proposal_with_destructive_template_denied if {
 	d := agentcloud.decision with input as _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Clean Deploy tududi")
 	not d.allowed
-	d.reason == "service proposal names a destructive template"
+	contains(d.reason, "service proposal names a destructive template")
 }
 
 test_service_proposal_over_tier_bounds_denied if {

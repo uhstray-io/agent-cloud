@@ -178,6 +178,14 @@ deny_reasons contains "service proposal names a destructive template" if {
 	_destructive(input.proposal.deploy_template)
 }
 
+# The deploy that runs is the one the assessment chose: otherwise an assessment of one service
+# licenses launching another (PR 203 Codex review). A missing deploy_template fails closed.
+deny_reasons contains "the launched template is not the proposal's deploy template" if {
+	_proposal_step == "service-assess"
+	is_object(object.get(input, "proposal", null))
+	_base_template != trim_suffix(trim_suffix(object.get(input.proposal, "deploy_template", ""), " (Dev)"), " (Local)")
+}
+
 deny_reasons contains "service proposal exceeds the tier's VM bounds" if {
 	_proposal_step == "service-assess"
 	not _within_tier_bounds

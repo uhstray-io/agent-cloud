@@ -3,10 +3,11 @@
 # declared health path.
 #
 # Read-only, identical under --check. The service's inventory host declares the contract:
-# service_url, health_path and optionally health_status_codes (default [200]). A service with
-# no declared health path fails: the criterion is "answers through its declared path", and an
-# undeclared one cannot be checked. Validate All Services stays the fleet overview; it only
-# prints, so it cannot prove a step (PR 203 review).
+# service_url and health_path. The step's criterion is HTTP 200, so health_status_codes (which
+# admits e.g. OpenBao's sealed 503 for the fleet overview) is deliberately not read here (PR 203
+# Codex review). A service with no declared health path fails: the criterion is "answers through
+# its declared path", and an undeclared one cannot be checked. Validate All Services stays the
+# fleet overview; it only prints, so it cannot prove a step (PR 203 review).
 #
 # Usage (Semaphore): -e target_service=tududi_svc
 
@@ -16,7 +17,7 @@
   become: false
   tags: [verify]
   vars:
-    _codes: "{{ health_status_codes | default([200]) }}"
+    _codes: [200]
     _url: "{{ (service_url | default('')) ~ (health_path | default('')) }}"
 
   tasks:

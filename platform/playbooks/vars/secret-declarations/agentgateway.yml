@@ -27,3 +27,8 @@ _secret_definitions: >-
   {{ [{'name': 'vllm_api_key', 'type': 'existing'},
       {'name': 'agw_db_password', 'type': 'random', 'length': 32},
       {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
+# The upstream key must be present unless the inventory declares an upstream that takes none
+# (agw_upstream_requires_key: false, LM Studio without authentication). manage-secrets enforces
+# this list at deploy time and check-secrets reads it, so both agree with the deploy's own assert.
+_required_existing_secrets: >-
+  {{ ['vllm_api_key'] if agw_upstream_requires_key | default(true) | bool else [] }}

@@ -113,6 +113,15 @@ def test_agentgateway_computed_declaration_still_requires_the_upstream_key(tmp_p
     assert v["status"] == "fail" and v["evidence"]["missing"] == ["vllm_api_key"], v
 
 
+def test_a_keyless_agentgateway_upstream_does_not_require_the_key(tmp_path):
+    # PR 203 Codex review: local-dev declares agw_upstream_requires_key=false, which the deploy
+    # accepts, and the secrets step failed it anyway.
+    v = _verdict(tmp_path, service="agentgateway", vars_file=SECRETS_VARS / "agentgateway.yml",
+                 host_vars={"agw_clients": ["skynet"], "agw_upstream_requires_key": False},
+                 stored={"agw_db_password": "x"})
+    assert v["status"] == "pass", v
+
+
 def test_o11y_requires_the_alert_webhook_only_when_alerts_are_on(tmp_path):
     on = _verdict(tmp_path, service="o11y", vars_file=SECRETS_VARS / "o11y.yml",
                   host_vars={"o11y_alerts_enabled": True}, stored={"grafana_admin_password": "x"})
