@@ -59,10 +59,18 @@
       vars:
         _logs_json: "{{ _service_logs.stdout | from_json }}"
 
-    - name: Query active Prometheus targets
+    - name: Query the service's Prometheus scrape results
       ansible.builtin.command:
-        argv: ["{{ _engine }}", exec, o11y-grafana, wget, -q, -O, "-", "http://prometheus:9090/api/v1/targets?state=active"]
-      register: _targets
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+      register: _scrapes
       changed_when: false
       check_mode: false
       when: expect_metrics | default('true') | bool
@@ -70,27 +78,26 @@
     - name: Require a healthy named metrics target
       ansible.builtin.assert:
         that:
-          - _targets_json.status == 'success'
-          - _service_targets | length > 0
-          - _unhealthy_targets | length == 0
+          - _scrapes_json.status == 'success'
+          - _service_scrapes | length > 0
+          - _unhealthy_scrapes | length == 0
         fail_msg: >-
-          Prometheus {{ expected_service }} target missing or unhealthy:
-          {{ _unhealthy_targets | map(attribute='scrapeUrl') | list }};
-          errors={{ _unhealthy_targets | map(attribute='lastError') | list }};
-          targets found={{ _service_targets | length }}.
+          Prometheus has no healthy {{ expected_service }} scrape:
+          failing instances={{ _unhealthy_scrapes | map(attribute='metric.instance') | list }};
+          scrapes found={{ _service_scrapes | length }}.
       vars:
-        _targets_json: "{{ _targets.stdout | from_json }}"
-        _service_targets: "{{ _targets_json.data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
-        _unhealthy_targets: "{{ _service_targets | rejectattr('health', 'equalto', 'up') | list }}"
+        _scrapes_json: "{{ _scrapes.stdout | from_json }}"
+        _service_scrapes: "{{ _scrapes_json.data.result }}"
+        _unhealthy_scrapes: "{{ _service_scrapes | rejectattr('value.1', 'equalto', '1') | list }}"
       when: expect_metrics | default('true') | bool
 
     - name: Report verified metrics and logs
       ansible.builtin.debug:
         msg: >-
           {{ expected_service }} has a Loki log from the last 15 minutes and
-          {{ _service_targets | length }} healthy Prometheus target(s).
+          {{ _service_scrapes | length }} healthy Prometheus scrape(s).
       vars:
-        _service_targets: "{{ (_targets.stdout | from_json).data.activeTargets | selectattr('labels.service', 'defined') | selectattr('labels.service', 'equalto', expected_service) | list }}"
+        _service_scrapes: "{{ (_scrapes.stdout | from_json).data.result }}"
       when: expect_metrics | default('true') | bool
 
     - name: Report verified log-only collection

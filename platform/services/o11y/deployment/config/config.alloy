@@ -45,3 +45,73 @@ loki.write "default" {
     cluster = "agent-cloud-local",
   }
 }
+
+// Reuse Alloy's socket discovery for opted-in metrics. Prometheus has no socket.
+discovery.docker "metrics" {
+  host                = "unix:///var/run/docker.sock"
+  match_first_network = false
+}
+
+discovery.relabel "metrics" {
+  targets = discovery.docker.metrics.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_scrape"]
+    action        = "keep"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_port"]
+    action        = "keep"
+    regex         = "[0-9]+"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_high_churn"]
+    action        = "drop"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_network_name"]
+    action        = "keep"
+    regex         = sys.env("O11Y_METRICS_NETWORK")
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_port", "__meta_docker_network_ip"]
+    regex         = "([0-9]+);(.+)"
+    replacement   = "$2:$1"
+    target_label  = "__address__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_path"]
+    regex         = "(.+)"
+    target_label  = "__metrics_path__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "component"
+  }
+}
+
+prometheus.scrape "local_containers" {
+  targets         = discovery.relabel.metrics.output
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

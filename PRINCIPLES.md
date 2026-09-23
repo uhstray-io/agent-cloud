@@ -367,7 +367,8 @@ first** - the liveness loop and every honest secret-isolation claim depend on it
 
 **Observability is opt-in by declaration, never bespoke per service.** Logs are free (Alloy socket
 discovery); metrics are two compose labels (`prometheus.io/scrape`, `prometheus.io/port`) consumed by
-Prometheus docker_sd; traces are two env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
+Alloy's socket discovery and forwarded to Prometheus over the private o11y network; traces are two
+env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
 The container name is the canonical `service.name` joining all three. No per-service `prometheus.yml`
 edits; dashboards and alerts are provisioned as code.
 *Why: a new service must not land observability-blind. The single correlation key is what makes

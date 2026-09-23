@@ -11,6 +11,25 @@
 # Source of truth: plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 4 (Caddy local
 # profile); plan/architecture/CADDY-REVERSE-PROXY.md.
 
+- name: Verify a branch-bound Caddy candidate revision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; Caddy was not deployed."
+      when: expected_repository_sha is defined
+
 # ── Phase 1: Place repo + render config ─────────────────────────────────────
 - name: "Phase 1: Place repo + render Caddy config"
   hosts: caddy_svc

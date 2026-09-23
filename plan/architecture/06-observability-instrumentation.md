@@ -23,6 +23,16 @@
 > are production groundwork, not evidence that a production receiver exists
 > or receives telemetry.
 
+> **Collection design amendment, 2026-09-23:** Preserve the two-label opt-in
+> contract below, but use the existing Alloy Podman discovery for local metrics.
+> Alloy filters to the service network, scrapes the declared port, and forwards
+> samples to Prometheus's remote-write receiver on the private o11y network.
+> Prometheus does not mount the engine socket. The historical `docker_sd_configs`
+> snippets below record the original design and are superseded for local
+> collection. Remote VM targets still come from inventory-rendered Prometheus
+> scrape fragments. This amendment is proposed on the observability feature
+> branch; live pilot evidence and PR review remain required.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 

@@ -1,6 +1,7 @@
 ---
 # Register an additive, branch-bound local Semaphore template, then optionally
-# launch it. candidate_action=verify selects the service receipt check; the
+# launch it. candidate_action=verify selects the service receipt check, and
+# candidate_action=caddy deploys the pilot's local Caddy configuration; the
 # default deploy action and existing (Local) templates remain untouched.
 # Run with SEMAPHORE_URL/TOKEN from the local-dev runtime environment:
 #   ansible-playbook platform/semaphore/deploy-local-o11y-candidate.yml \
@@ -21,8 +22,9 @@
     _expected_sha: "{{ candidate_expected_sha | default('') }}"
     _candidate_suffix: "{{ (_branch | hash('sha256'))[:12] }}"
     _candidate_repo_name: "agent-cloud o11y candidate {{ _candidate_suffix }}"
-    _candidate_template_name: "{{ 'Verify o11y Service' if _action == 'verify' else 'Deploy o11y' }} (Candidate {{ _candidate_suffix }})"
-    _candidate_playbook: "{{ 'platform/playbooks/verify-o11y-service.yml' if _action == 'verify' else 'platform/playbooks/deploy-o11y.yml' }}"
+    _local_template_name: "{{ 'Deploy Caddy (Local)' if _action == 'caddy' else 'Deploy o11y (Local)' }}"
+    _candidate_template_name: "{{ {'verify': 'Verify o11y Service', 'caddy': 'Deploy Caddy', 'deploy': 'Deploy o11y'}.get(_action, '') }} (Candidate {{ _candidate_suffix }})"
+    _candidate_playbook: "{{ {'verify': 'platform/playbooks/verify-o11y-service.yml', 'caddy': 'platform/playbooks/deploy-caddy.yml', 'deploy': 'platform/playbooks/deploy-o11y.yml'}.get(_action, '') }}"
     _candidate_survey_vars: >-
       {{ [{'name': 'expected_repository_sha', 'title': 'Expected checkout commit',
            'description': 'Full commit SHA to verify before running.',
@@ -48,7 +50,7 @@
           - (_semaphore_url | urlsplit('hostname')) in ['localhost', '127.0.0.1', '::1']
           - _branch | length > 0
           - _branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
-          - _action in ['deploy', 'verify']
+          - _action in ['deploy', 'verify', 'caddy']
           - _project_id | int > 0
           - not (candidate_deploy | default(false) | bool) or _expected_sha is match('^[0-9a-f]{40}$')
           - not (candidate_deploy | default(false) | bool) or _action != 'verify' or candidate_service | default('') is match('^[a-z][a-z0-9-]*$')
@@ -74,7 +76,7 @@
       register: _bindings
       no_log: true
 
-    - name: Find the existing local o11y template and worktree repository
+    - name: Find the existing local template and worktree repository
       ansible.builtin.set_fact:
         _repos: "{{ _bindings.results[0].json }}"
         _templates: "{{ _bindings.results[1].json }}"
@@ -84,23 +86,23 @@
       ansible.builtin.assert:
         that:
           - _repos | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 1
-          - _templates | selectattr('name', 'equalto', 'Deploy o11y (Local)') | list | length == 1
+          - _templates | selectattr('name', 'equalto', _local_template_name) | list | length == 1
           - _repos | selectattr('name', 'equalto', _candidate_repo_name) | list | length <= 1
           - _templates | selectattr('name', 'equalto', _candidate_template_name) | list | length <= 1
-        fail_msg: "Local o11y bindings are missing or a candidate name is ambiguous."
+        fail_msg: "Local service bindings are missing or a candidate name is ambiguous."
 
     - name: Hold the local template and worktree repository
       ansible.builtin.set_fact:
         _local_repo: "{{ _repos | selectattr('name', 'equalto', 'agent-cloud worktree') | first }}"
-        _local_template: "{{ _templates | selectattr('name', 'equalto', 'Deploy o11y (Local)') | first }}"
+        _local_template: "{{ _templates | selectattr('name', 'equalto', _local_template_name) | first }}"
       no_log: true
 
-    - name: Require the existing local template to use the worktree and o11y playbook
+    - name: Require the existing local template to use the worktree and declared playbook
       ansible.builtin.assert:
         that:
           - _local_template.repository_id | int == _local_repo.id | int
-          - _local_template.playbook == 'platform/playbooks/deploy-o11y.yml'
-        fail_msg: "The local o11y template no longer has its declared worktree binding."
+          - _local_template.playbook == ('platform/playbooks/deploy-caddy.yml' if _action == 'caddy' else 'platform/playbooks/deploy-o11y.yml')
+        fail_msg: "The local service template no longer has its declared worktree binding."
 
     - name: Create the candidate repository if absent
       ansible.builtin.uri:
