@@ -1,0 +1,220 @@
+---
+# Register an additive, branch-bound local Semaphore template, then optionally
+# launch it. The existing worktree repository and (Local) templates are untouched.
+# Run with SEMAPHORE_URL/TOKEN from the local-dev runtime environment:
+#   ansible-playbook platform/semaphore/deploy-local-o11y-candidate.yml \
+#     -e candidate_branch=feat/example -e candidate_expected_sha=<40-hex-sha> \
+#     -e candidate_deploy=true
+
+- name: Deploy an isolated o11y candidate through local Semaphore
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
+    _project_id: "{{ semaphore_project_id | default(lookup('env', 'SEMAPHORE_PROJECT_ID'), true) }}"
+    _branch: "{{ candidate_branch | default('') }}"
+    _expected_sha: "{{ candidate_expected_sha | default('') }}"
+    _candidate_suffix: "{{ (_branch | hash('sha256'))[:12] }}"
+    _candidate_repo_name: "agent-cloud o11y candidate {{ _candidate_suffix }}"
+    _candidate_template_name: "Deploy o11y (Candidate {{ _candidate_suffix }})"
+    _candidate_repo_url: "https://github.com/uhstray-io/agent-cloud.git"
+
+  tasks:
+    - name: Require a local controller and an explicit branch
+      ansible.builtin.assert:
+        that:
+          - (_semaphore_url | urlsplit('hostname')) in ['localhost', '127.0.0.1', '::1']
+          - _branch | length > 0
+          - _branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
+          - _project_id | int > 0
+          - not (candidate_deploy | default(false) | bool) or _expected_sha is match('^[0-9a-f]{40}$')
+        fail_msg: "Use the local Semaphore URL, an explicit Git branch, and a full commit SHA when deploying."
+
+    - name: Validate the branch ref
+      ansible.builtin.command:
+        argv: [git, check-ref-format, --branch, "{{ _branch }}"]
+      changed_when: false
+
+    - name: Resolve approved Semaphore runtime access
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
+    - name: Read local repository and template bindings
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/{{ item }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      loop: [repositories, templates]
+      register: _bindings
+      no_log: true
+
+    - name: Find the existing local o11y template and worktree repository
+      ansible.builtin.set_fact:
+        _repos: "{{ _bindings.results[0].json }}"
+        _templates: "{{ _bindings.results[1].json }}"
+      no_log: true
+
+    - name: Require exactly one existing local binding and no candidate collision
+      ansible.builtin.assert:
+        that:
+          - _repos | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 1
+          - _templates | selectattr('name', 'equalto', 'Deploy o11y (Local)') | list | length == 1
+          - _repos | selectattr('name', 'equalto', _candidate_repo_name) | list | length <= 1
+          - _templates | selectattr('name', 'equalto', _candidate_template_name) | list | length <= 1
+        fail_msg: "Local o11y bindings are missing or a candidate name is ambiguous."
+
+    - name: Hold the local template and worktree repository
+      ansible.builtin.set_fact:
+        _local_repo: "{{ _repos | selectattr('name', 'equalto', 'agent-cloud worktree') | first }}"
+        _local_template: "{{ _templates | selectattr('name', 'equalto', 'Deploy o11y (Local)') | first }}"
+      no_log: true
+
+    - name: Require the existing local template to use the worktree and o11y playbook
+      ansible.builtin.assert:
+        that:
+          - _local_template.repository_id | int == _local_repo.id | int
+          - _local_template.playbook == 'platform/playbooks/deploy-o11y.yml'
+        fail_msg: "The local o11y template no longer has its declared worktree binding."
+
+    - name: Create the candidate repository if absent
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        body_format: json
+        body: >-
+          {{ {'name': _candidate_repo_name,
+              'project_id': _project_id | int,
+              'git_url': _candidate_repo_url,
+              'git_branch': _branch,
+              'ssh_key_id': _local_repo.ssh_key_id | int} | to_json }}
+        status_code: [201, 204]
+      when: _repos | selectattr('name', 'equalto', _candidate_repo_name) | list | length == 0
+      no_log: true
+
+    - name: Read back the candidate repository
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _repos_after
+      no_log: true
+
+    - name: Require an immutable branch binding
+      ansible.builtin.assert:
+        that:
+          - _matches | length == 1
+          - (_matches | first).git_url == _candidate_repo_url
+          - (_matches | first).git_branch == _branch
+          - (_matches | first).ssh_key_id | int == _local_repo.ssh_key_id | int
+        fail_msg: "Candidate repository binding differs; refusing to repoint a live branch record."
+      vars:
+        _matches: "{{ _repos_after.json | selectattr('name', 'equalto', _candidate_repo_name) | list }}"
+
+    - name: Hold the candidate repository id
+      ansible.builtin.set_fact:
+        _candidate_repo_id: "{{ (_repos_after.json | selectattr('name', 'equalto', _candidate_repo_name) | first).id | int }}"
+
+    - name: Create the candidate template if absent
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        body_format: json
+        body: >-
+          {{ {'name': _candidate_template_name,
+              'project_id': _project_id | int,
+              'inventory_id': _local_template.inventory_id | int,
+              'repository_id': _candidate_repo_id | int,
+              'environment_id': _local_template.environment_id | int,
+              'playbook': _local_template.playbook,
+              'app': 'ansible',
+              'autorun': false,
+              'suppress_success_alerts': true,
+              'survey_vars': [{'name': 'expected_repository_sha',
+                               'title': 'Expected checkout commit',
+                               'description': 'Full commit SHA to verify before deployment.',
+                               'type': 'string', 'required': true}]} | to_json }}
+        status_code: [200, 201, 204]
+      when: _templates | selectattr('name', 'equalto', _candidate_template_name) | list | length == 0
+      no_log: true
+
+    - name: Read back the candidate template
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _templates_after
+      no_log: true
+
+    - name: Require the candidate to retain local inventory and its own repository
+      ansible.builtin.assert:
+        that:
+          - _matches | length == 1
+          - (_matches | first).repository_id | int == _candidate_repo_id | int
+          - (_matches | first).inventory_id | int == _local_template.inventory_id | int
+          - (_matches | first).environment_id | int == _local_template.environment_id | int
+          - (_matches | first).playbook == _local_template.playbook
+        fail_msg: "Candidate template binding differs; refusing to run it."
+      vars:
+        _matches: "{{ _templates_after.json | selectattr('name', 'equalto', _candidate_template_name) | list }}"
+
+    - name: Report the isolated candidate binding
+      ansible.builtin.debug:
+        msg: "{{ _candidate_template_name }} runs {{ _branch }} with the local inventory; shared templates are unchanged."
+
+    - name: Launch the exact candidate revision through Semaphore
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/tasks"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        body_format: json
+        body: >-
+          {{ {'template_id': (_templates_after.json | selectattr('name', 'equalto', _candidate_template_name) | first).id | int,
+              'project_id': _project_id | int,
+              'environment': {'expected_repository_sha': _expected_sha} | to_json} | to_json }}
+        status_code: [200, 201]
+      register: _launch
+      when: candidate_deploy | default(false) | bool
+      no_log: true
+
+    - name: Report the launched task id
+      ansible.builtin.debug:
+        msg: "Candidate task {{ _launch.json.id }} is validating commit {{ _expected_sha }}."
+      when: candidate_deploy | default(false) | bool
+
+    - name: Wait for the candidate task to finish
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/tasks/{{ _launch.json.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _task
+      retries: 450
+      delay: 4
+      until: _task.json.status in ['success', 'error', 'stopped']
+      when: candidate_deploy | default(false) | bool
+      no_log: true
+
+    - name: Require the candidate deploy to succeed
+      ansible.builtin.assert:
+        that: _task.json.status == 'success'
+        fail_msg: "Candidate task {{ _launch.json.id }} ended {{ _task.json.status }}; inspect its Semaphore output."
+        success_msg: "Candidate task {{ _launch.json.id }} succeeded at commit {{ _expected_sha }}."
+      when: candidate_deploy | default(false) | bool

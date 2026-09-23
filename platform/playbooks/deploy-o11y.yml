@@ -10,6 +10,26 @@
 #
 # Plan: plan/development/O11Y-DEPLOYMENT.md.
 
+- name: Verify the controller checkout before a candidate deploy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision when a candidate SHA is required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact reviewed candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no o11y files were placed."
+        success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
+      when: expected_repository_sha is defined
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage o11y secrets"
   hosts: o11y_svc
