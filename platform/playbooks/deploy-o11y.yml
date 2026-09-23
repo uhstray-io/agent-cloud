@@ -121,7 +121,9 @@
         url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"
         method: POST
         status_code: 200
-      when: (_dgx_scrape.changed | default(false)) or (_dgx_scrape_absent.changed | default(false))
+      when:
+        - not ansible_check_mode
+        - (_dgx_scrape.changed | default(false)) or (_dgx_scrape_absent.changed | default(false))
 
     - name: "Loki ready (/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"
