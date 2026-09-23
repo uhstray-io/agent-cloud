@@ -63,23 +63,7 @@
         that: _host_compose.stat.checksum | default('') == (lookup('file', playbook_dir + '/../services/netbox/deployment/docker-compose.yml') | hash('sha256'))
         fail_msg: "Host NetBox Compose differs from the reviewed dev declaration; no runtime files or containers were changed."
 
-    - name: Check the existing Compose env and bind-mount secret files
-      ansible.builtin.stat:
-        path: "{{ _deploy_dir }}/{{ item }}"
-      loop:
-        - .env
-        - env/netbox.env
-        - env/postgres.env
-        - secrets/netbox_to_diode_client_secret.txt
-      register: _required_files
-      changed_when: false
-
-    - name: Refuse missing runtime inputs before touching containers
-      ansible.builtin.assert:
-        that: _required_files.results | selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') | list | length == 4
-        fail_msg: "An existing NetBox env or bind-mount secret file is missing; use the OpenBao-backed deployment path."
-
-    - name: Verify local images and named volumes against existing containers
+    - name: Verify image, mounts, environment, and policy before touching containers
       ansible.builtin.script:
         cmd: "{{ _runtime_script }}"
         chdir: "{{ _deploy_dir }}"
