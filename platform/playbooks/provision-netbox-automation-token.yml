@@ -100,7 +100,7 @@
         print("changed" if changed else "unchanged")
         PYSCRIPT
       register: _permissions
-      changed_when: _permissions.stdout_lines | last | trim == 'changed'
+      changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
 
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data.automation_api_token | default('')) | length > 0
