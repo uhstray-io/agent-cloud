@@ -2,6 +2,8 @@
 
 See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy were healthy at baseline. Local Semaphore candidate task 1065 checked out commit `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` and deployed o11y; its Grafana, Prometheus, and Loki checks passed. Grafana completed an Authentik login through the chain-verified TLS front door, and the signed-in dashboard loaded again after that deploy. Prometheus still scrapes only itself; Alloy ships local container logs with a `service` label. The clean production inference telemetry branch is merged here and provides inventory-rendered DGX scrape jobs, but no production receiver is verified. `plan/architecture/06-observability-instrumentation.md` describes the desired contract but contains historical as-built claims.
 
+On 2026-09-23, the local Prometheus v3.1.0 TSDB reported 616 active series, all under `job=prometheus`; this is a self-scrape baseline, not the service pilot measurement required by task 2.1. A read-only inventory listing confirmed that the declared `grafanapodman` host sits under `virtualmachines`, outside `agent_cloud`. The audit playbook now targets both, and `ansible-playbook --list-hosts` includes `grafanapodman`; no production container state has been observed yet.
+
 ## Goals / Non-Goals
 
 **Goals:** implement the contract in `specs/platform/observability-estate/spec.md` through composable config and Semaphore; prove local SSO and each signal on one pilot; review via PR to `dev`; deploy and verify a production receiver for agentgateway and DGX Spark telemetry.
