@@ -28,8 +28,10 @@ load assert_helpers
 
 @test "NetBox recovery publishes only a dev-bound template with preflight default" {
   python3 - "$BATS_TEST_DIRNAME/../semaphore/templates.yml" "$BATS_TEST_DIRNAME/../playbooks/recover-netbox-runtime.yml" <<'PY'
+import json
 import sys
 import yaml
+from jinja2 import Environment
 
 templates = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]
 recovery = [item for item in templates if item["playbook"] == "platform/playbooks/recover-netbox-runtime.yml"]
@@ -43,6 +45,36 @@ plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
 tasks = plays[1]["tasks"]
 assert not any("ansible.builtin.git" in task for task in tasks)
 assert any("ansible.builtin.stat" in task and "checksum_algorithm" in task["ansible.builtin.stat"] for task in tasks)
+checksum, = (task for task in tasks if task['name'] == 'Require the host Compose file to match reviewed dev')
+assert 'rstrip=false' in checksum['ansible.builtin.assert']['that']
 assert any("ansible.builtin.script" in task for task in tasks)
+env = Environment()
+env.filters["from_json"] = json.loads
+backing, = (task for task in tasks if task['name'] == 'Converge existing backing services without pull or build')
+argv = env.compile_expression(backing['ansible.builtin.command']['argv'].strip('{} '))
+for action, force in (("recreate", True), ("start", False)):
+    rendered = argv(_before={'stdout': json.dumps({'postgres': {'planned_action': action}})}, item='postgres')
+    assert ('--force-recreate' in rendered) is force
+    assert rendered[-1] == 'postgres' and '--pull' in rendered and 'never' in rendered
 PY
+}
+
+@test "NetBox recovery hashes the same Compose bytes on controller and host" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/checksum.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.stat:
+        path: "{{ source_compose }}"
+        checksum_algorithm: sha256
+      register: source_stat
+    - ansible.builtin.assert:
+        that: source_stat.stat.checksum == (lookup('file', source_compose, rstrip=false) | hash('sha256'))
+YAML
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook \
+    -i localhost, "$BATS_TEST_TMPDIR/checksum.yml" \
+    -e "source_compose=$BATS_TEST_DIRNAME/../services/netbox/deployment/docker-compose.yml"
+  [ "$status" -eq 0 ]
 }

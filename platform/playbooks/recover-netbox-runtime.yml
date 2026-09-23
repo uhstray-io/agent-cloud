@@ -7,7 +7,7 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Read controller branch and revision
+    - name: Read controller branch
       ansible.builtin.command:
         argv: [git, branch, --show-current]
         chdir: "{{ playbook_dir | dirname | dirname }}"
@@ -60,7 +60,7 @@
 
     - name: Require the host Compose file to match reviewed dev
       ansible.builtin.assert:
-        that: _host_compose.stat.checksum | default('') == (lookup('file', playbook_dir + '/../services/netbox/deployment/docker-compose.yml') | hash('sha256'))
+        that: _host_compose.stat.checksum | default('') == (lookup('file', playbook_dir + '/../services/netbox/deployment/docker-compose.yml', rstrip=false) | hash('sha256'))
         fail_msg: "Host NetBox Compose differs from the reviewed dev declaration; no runtime files or containers were changed."
 
     - name: Verify image, mounts, environment, and policy before touching containers
@@ -77,7 +77,7 @@
           revision: "{{ hostvars['localhost']._controller_revision.stdout }}"
           apply: "{{ netbox_runtime_apply | default(false) | bool }}"
           services: "{{ _before.stdout | from_json }}"
-          action: "Compose up for postgres, redis, redis-cache, then netbox; no pull, build, down, or volume deletion."
+          action: "Each service reports start, recreate, or noop; backing services converge before netbox. No pull, build, down, or volume deletion."
 
     - name: End after container preflight by default
       ansible.builtin.meta: end_play
@@ -85,8 +85,10 @@
 
     - name: Converge existing backing services without pull or build
       ansible.builtin.command:
-        argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d, --no-deps, --no-build, --pull, never, postgres, redis, redis-cache]
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json)[item].planned_action == 'recreate' else []) + [item] }}"
         chdir: "{{ _deploy_dir }}"
+      loop: [postgres, redis, redis-cache]
+      when: (_before.stdout | from_json)[item].planned_action != 'noop'
       register: _backing_up
       changed_when: false
 
@@ -102,8 +104,9 @@
 
     - name: Converge the existing NetBox app without pull or build
       ansible.builtin.command:
-        argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d, --no-deps, --no-build, --pull, never, netbox]
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json).netbox.planned_action == 'recreate' else []) + ['netbox'] }}"
         chdir: "{{ _deploy_dir }}"
+      when: (_before.stdout | from_json).netbox.planned_action != 'noop'
       register: _netbox_up
       changed_when: false
 

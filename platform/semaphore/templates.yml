@@ -141,7 +141,7 @@ templates:
     survey_vars:
       - name: netbox_runtime_apply
         title: Apply recovery
-        description: "false = inspect matching host Compose, images, and volumes without changing runtime files; true = also reconcile the existing four core containers"
+        description: "false = inspect and report each core container's start/recreate/noop action without changing it; true = also apply those actions"
         type: string
         required: false
         default_value: "false"

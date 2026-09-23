@@ -76,6 +76,7 @@ def test_runtime_preflight_refuses_image_volume_bind_and_environment_drift(tmp_p
     inspect_state.__globals__["read_json"] = fake_read_json
     report = inspect_state(require_ready=True)
     assert set(report) == set(services)
+    assert all(item["planned_action"] == "noop" for item in report.values())
     assert "must-not-appear" not in str(report)
     assert all("up" not in argv and "pull" not in argv for argv in commands)
 
@@ -106,9 +107,13 @@ def test_runtime_preflight_refuses_image_volume_bind_and_environment_drift(tmp_p
     containers["postgres"]["Config"]["Env"][1] = "DATABASE_PASSWORD=must-not-appear"
 
     containers["postgres"]["HostConfig"]["RestartPolicy"]["Name"] = "no"
-    inspect_state()
+    assert inspect_state()["postgres"]["planned_action"] == "recreate"
     with pytest.raises(ValueError, match="postgres: expected running, healthy container"):
         inspect_state(require_ready=True)
+    containers["postgres"]["HostConfig"]["RestartPolicy"]["Name"] = "always"
+    containers["postgres"]["State"]["Status"] = "exited"
+    assert inspect_state()["postgres"]["planned_action"] == "start"
+    containers["postgres"]["State"]["Status"] = "running"
     containers["postgres"]["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
     with pytest.raises(ValueError, match="postgres: unexpected restart policy"):
         inspect_state()

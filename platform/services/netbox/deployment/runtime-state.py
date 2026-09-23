@@ -100,11 +100,20 @@ def inspect_state(require_ready=False):
         health = state.get("Health", {}).get("Status", "none")
         if require_ready and (state["Status"] != "running" or policy != "always" or health not in ("healthy", "none")):
             raise ValueError(f"{service}: expected running, healthy container with restart policy always")
+        if policy == "no":
+            planned_action = "recreate"
+        elif state["Status"] == "running" and health in ("healthy", "none"):
+            planned_action = "noop"
+        elif state["Status"] in ("created", "exited"):
+            planned_action = "start"
+        else:
+            raise ValueError(f"{service}: unsupported runtime state")
         report[service] = {
             "container_id": container["Id"],
             "state": state["Status"],
             "health": health,
             "restart_policy": policy,
+            "planned_action": planned_action,
             "image_ref": image_ref,
             "image_id": container["Image"],
             "volumes": actual_volumes,
