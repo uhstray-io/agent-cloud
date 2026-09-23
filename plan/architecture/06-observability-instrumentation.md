@@ -44,6 +44,15 @@
 > plus two provisioned alert rules kept paused until an OpenBao-backed contact
 > point and notification drill are complete. These are local receipts only.
 
+> **Alert rollout guard, 2026-09-23:** `o11y_alerts_enabled` defaults off.
+> Enabling it requires a pre-existing
+> `secret/services/o11y:alert_discord_webhook_url`, validates a Discord HTTPS
+> webhook, and renders only the environment reference into Grafana's contact
+> point file. Rules route directly to that contact point when enabled, so the
+> shared notification policy tree is not replaced. A local Semaphore deploy
+> with the switch off verified two paused rules and zero o11y contact points;
+> no notification delivery has been claimed.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 

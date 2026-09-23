@@ -65,6 +65,19 @@
 > panels spanning Loki and Prometheus. Together with task 1118's named
 > unreachable-endpoint refusal, this closes the local collection gate;
 > notification delivery, trace ingestion, and production receipt remain open.
+> The optional Discord contact point path now reads
+> `secret/services/o11y:alert_discord_webhook_url` only when
+> `o11y_alerts_enabled` is true; a missing value is refused before any
+> OpenBao write, and the URL is carried in the mode-0600 environment file.
+> An initial local candidate task 1128 at
+> `ad97088421ea93ca4b0ad67b4205c24c187bcbf5` failed before Grafana
+> became healthy: Ansible's Jinja whitespace trimming joined two alert-rule
+> YAML lines. Task 1131 deployed the corrected template at
+> `fe925f0b1ddbdf4d2324000ca792e22be9b1184d`; Grafana health returned
+> OK, both rules remained paused, and no o11y contact point was active.
+> Task 1132 reverified the Caddy metrics/logs receipt. The render test now
+> uses Ansible's whitespace behavior. Alert notification receipt is not yet
+> proven, and the enabled branch still requires an approved webhook.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
