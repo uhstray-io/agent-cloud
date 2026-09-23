@@ -42,7 +42,12 @@ assert not recovery[0].get("dev_variant", False)
 assert recovery[0]["survey_vars"][0]["default_value"] == "false"
 
 plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
-tasks = plays[1]["tasks"]
+assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
+assert plays[0]['vars'] == {'preflight_group': 'netbox_svc', 'preflight_group_expected': 'netbox_svc'}
+controller_tasks = plays[1]['tasks']
+assert any(task.get('ansible.builtin.command', {}).get('argv') == ['git', 'rev-parse', 'refs/remotes/origin/dev'] for task in controller_tasks)
+assert any('_controller_revision.stdout == _dev_revision.stdout' in task.get('ansible.builtin.assert', {}).get('that', []) for task in controller_tasks)
+tasks = plays[2]["tasks"]
 assert not any("ansible.builtin.git" in task for task in tasks)
 assert any("ansible.builtin.stat" in task and "checksum_algorithm" in task["ansible.builtin.stat"] for task in tasks)
 checksum, = (task for task in tasks if task['name'] == 'Require the host Compose file to match reviewed dev')

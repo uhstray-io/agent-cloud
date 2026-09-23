@@ -2,16 +2,22 @@
 # Reconcile only the four NetBox core containers after a stopped/no-restart
 # runtime, using the reviewed dev playbook/script and the matching Compose file
 # already on the target. The default preflight changes no runtime files or containers.
+- name: Refuse an empty NetBox target group
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: netbox_svc
+    preflight_group_expected: netbox_svc
+
 - name: Require a reviewed dev checkout for NetBox recovery
   hosts: localhost
   connection: local
   gather_facts: false
   tasks:
-    - name: Read controller branch
+    - name: Read the fetched dev revision
       ansible.builtin.command:
-        argv: [git, branch, --show-current]
+        argv: [git, rev-parse, refs/remotes/origin/dev]
         chdir: "{{ playbook_dir | dirname | dirname }}"
-      register: _controller_branch
+      register: _dev_revision
       changed_when: false
 
     - name: Read controller revision
@@ -31,9 +37,9 @@
     - name: Refuse an unreviewed controller checkout
       ansible.builtin.assert:
         that:
-          - _controller_branch.stdout == 'dev'
+          - _controller_revision.stdout == _dev_revision.stdout
           - _controller_changes.stdout | length == 0
-        fail_msg: "NetBox recovery requires a clean dev checkout in Semaphore."
+        fail_msg: "NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore."
 
 - name: Preflight and recover the existing NetBox core
   hosts: netbox_svc
