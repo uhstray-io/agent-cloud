@@ -1,5 +1,6 @@
 ---
-# The controller may publish survey fields for explicit existing templates only.
+# The controller updates exact declared surveys; one missing Dev template may be
+# created only with explicit verified bindings.
 # No service deploy, repository rebind, inventory update or credential export.
 - name: "Require explicit controller publication scope"
   hosts: localhost
@@ -17,7 +18,24 @@
           - semaphore_template_names_json is defined
           - semaphore_template_names_json is string
           - semaphore_template_names_json | length > 0
-        fail_msg: "Supply a JSON list of exact existing template names. Full-catalog publication is unavailable here."
+        fail_msg: "Supply a JSON list of exact declared template names. Full-catalog publication is unavailable here."
+
+    - name: "Keep ordinary survey updates free of create-only bindings"
+      ansible.builtin.assert:
+        that:
+          - semaphore_project_id | default('') | string | trim | length == 0
+          - semaphore_inventory_id | default('') | string | trim | length == 0
+          - semaphore_environment_id | default('') | string | trim | length == 0
+        fail_msg: "Project, inventory, and variable-group IDs are accepted only for one-template creation."
+      when: not (semaphore_allow_scoped_create | default(false) | bool)
+
+    - name: "Limit controller-created templates to the Dev repository"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json | from_json | length == 1
+          - (semaphore_template_names_json | from_json | first) is match('^.+ \(Dev\)$')
+        fail_msg: "The controller may create one declared (Dev) template per run."
+      when: semaphore_allow_scoped_create | default(false) | bool
 
 - name: "Publish the selected declared surveys using controller runtime access"
   ansible.builtin.import_playbook: ../semaphore/setup-templates.yml

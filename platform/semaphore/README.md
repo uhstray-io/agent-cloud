@@ -82,7 +82,7 @@ token out of OpenBao from a workstation.
 
 The declared **Publish Semaphore Template Surveys (Dev)** template runs
 [`publish-semaphore-templates.yml`](../playbooks/publish-semaphore-templates.yml).
-Its only survey input is `semaphore_template_names_json`, for example:
+Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
 ["Store tududi API Token (Dev)"]
@@ -96,7 +96,15 @@ declared Semaphore controller container. A separate remote runner needs its own
 reviewed transport design; do not redirect this token with a launch argument.
 
 Normally, only exact, nonempty, unique names of existing declared templates are
-accepted. The guarded one-template creation described below is the sole exception.
+accepted. To create one missing declared template, set the optional
+`semaphore_allow_scoped_create` survey to `true` and enter verified numeric
+`semaphore_project_id`, `semaphore_inventory_id`, and
+`semaphore_environment_id` values. The default is `false`; the controller
+refuses create requests for names without the `(Dev)` suffix, lists with more
+than one name, or absent bindings. Leave all three ID fields blank for an
+ordinary survey update. The publisher can
+first update its own Dev template to expose these fields by selecting
+`["Publish Semaphore Template Surveys (Dev)"]` with the existing survey.
 Repository URL/branch and template repository/playbook bindings must match the
 declaration. The selected surveys are updated and read back; inventory,
 environment, arguments and operational settings are preserved. No schedules,

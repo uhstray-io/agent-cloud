@@ -253,6 +253,10 @@ for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535'];
     assert bool(instance_check(ansible_failed_result={'msg': msg}, expected_instance='probe:65535')) is expected
 receipt = next(t for t in tasks if t['name'] == 'Wait for the matching Discord webhook message')
 assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True and receipt['ignore_errors'] is True
+probe = next(t for t in tasks if t['name'] == 'Start the opted-in probe with no metrics listener')
+lifetime = int(re.search(r'sleep (\d+)', probe['ansible.builtin.command']['argv'][-1]).group(1))
+scrape = next(t for t in tasks if t['name'] == 'Wait for Alloy to report the failed scrape')
+assert lifetime > sum(t['retries'] * t['delay'] for t in (scrape, wait, receipt)) + 60
 received = env.compile_expression(receipt['until'])
 marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
 for webhook_id, body, expected in [('123', marker, True),
