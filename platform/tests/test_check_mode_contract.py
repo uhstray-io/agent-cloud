@@ -34,7 +34,8 @@ READ_METHODS = {"GET", "HEAD"}
 # retrofit trusted changed_when: false on "stop + rm the orb agent", and a dry run removed
 # the running agent (docs/MISTAKES.md 5.9).
 ENGINE_WRITE = re.compile(
-    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose\s+)?"
+    # Compose's own options may sit between `compose` and the verb (`compose -f x up`).
+    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+)?"
     r"(?:stop|rm|rmi|kill|restart|start|run|pull|up|down|create|login|logout|cp|tag|push|build|load|import|commit)\b"
 )
 # Host filesystem and service writes, whatever changed_when says (PR 203 review: `sudo mkdir`
@@ -89,7 +90,12 @@ def _command_text(args) -> str:
     if isinstance(args, str):
         return args
     if isinstance(args, dict):
-        return str(args.get("cmd") or " ".join(map(str, args.get("argv", []))))
+        argv = args.get("argv", [])
+        # An argv computed in Jinja is one string holding a list literal; read its words, not
+        # its characters (recover-netbox-runtime's `compose up` was classified as a read).
+        if isinstance(argv, str):
+            argv = re.sub(r"[\[\]',\"+]|\{\{|\}\}", " ", argv).split()
+        return str(args.get("cmd") or " ".join(map(str, argv)))
     return str(args or "")
 
 
@@ -331,3 +337,21 @@ def test_proven_skips_are_guards():
     for when in ('"not ansible_check_mode"', '"x and not ansible_check_mode"',
                  '"not ansible_check_mode and x"', '[x, "not ansible_check_mode"]'):
         assert not _tasks(f"- name: w\n  ansible.builtin.command: podman restart x\n  when: {when}\n"), when
+
+
+def test_compose_options_before_the_verb_are_still_a_write():
+    found = _tasks(
+        "- name: up\n  ansible.builtin.command:\n"
+        "    argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d]\n"
+        "  changed_when: false\n"
+    )
+    assert found and "write" in found[0], found
+
+
+def test_an_argv_computed_in_jinja_is_read_as_words():
+    found = _tasks(
+        "- name: up\n  ansible.builtin.command:\n"
+        "    argv: \"{{ ['docker', 'compose', '-f', 'x.yml', 'up', '-d'] + [item] }}\"\n"
+        "  changed_when: false\n"
+    )
+    assert found and "write" in found[0], found

@@ -19,6 +19,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _dev_revision
       changed_when: false
+      check_mode: false
 
     - name: Read controller revision
       ansible.builtin.command:
@@ -26,6 +27,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
 
     - name: Read controller checkout changes
       ansible.builtin.command:
@@ -33,6 +35,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
 
     - name: Refuse an unreviewed controller checkout
       ansible.builtin.assert:
@@ -63,6 +66,7 @@
         checksum_algorithm: sha256
       register: _host_compose
       changed_when: false
+      check_mode: false
 
     - name: Require the host Compose file to match reviewed dev
       ansible.builtin.assert:
@@ -76,6 +80,7 @@
         executable: python3
       register: _before
       changed_when: false
+      check_mode: false
 
     - name: Show the safe dry-run state and planned scope
       ansible.builtin.debug:
@@ -85,16 +90,17 @@
           services: "{{ _before.stdout | from_json }}"
           action: "Each service reports start, recreate, or noop; backing services converge before netbox. No pull, build, down, or volume deletion."
 
+    # The preflight above is also what --check shows; nothing below runs in a dry run.
     - name: End after container preflight by default
       ansible.builtin.meta: end_play
-      when: not (netbox_runtime_apply | default(false) | bool)
+      when: ansible_check_mode or not (netbox_runtime_apply | default(false) | bool)
 
     - name: Converge existing backing services without pull or build
       ansible.builtin.command:
         argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json)[item].planned_action == 'recreate' else ['--no-recreate']) + [item] }}"
         chdir: "{{ _deploy_dir }}"
       loop: [postgres, redis, redis-cache]
-      when: (_before.stdout | from_json)[item].planned_action != 'noop'
+      when: not ansible_check_mode and (_before.stdout | from_json)[item].planned_action != 'noop'
       register: _backing_up
       changed_when: false
 
@@ -104,6 +110,7 @@
       loop: [postgres, redis, redis-cache]
       register: _backing_health
       changed_when: false
+      when: not ansible_check_mode
       until: _backing_health.stdout == 'healthy'
       retries: 30
       delay: 10
@@ -112,7 +119,7 @@
       ansible.builtin.command:
         argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json).netbox.planned_action == 'recreate' else ['--no-recreate']) + ['netbox'] }}"
         chdir: "{{ _deploy_dir }}"
-      when: (_before.stdout | from_json).netbox.planned_action != 'noop'
+      when: not ansible_check_mode and (_before.stdout | from_json).netbox.planned_action != 'noop'
       register: _netbox_up
       changed_when: false
 
@@ -121,6 +128,7 @@
         argv: [docker, inspect, --format, "{{ '{{.State.Health.Status}}' }}", netbox-netbox-1]
       register: _netbox_health
       changed_when: false
+      when: not ansible_check_mode
       until: _netbox_health.stdout == 'healthy'
       retries: 60
       delay: 10
@@ -134,6 +142,7 @@
         timeout: 10
       register: _login
       changed_when: false
+      when: not ansible_check_mode
       retries: 5
       delay: 10
       until: _login is succeeded
@@ -145,6 +154,7 @@
         executable: python3
       register: _after
       changed_when: false
+      when: not ansible_check_mode
 
     - name: Require started and untouched containers to keep their identity
       ansible.builtin.assert:
