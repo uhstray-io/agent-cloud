@@ -82,5 +82,38 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Inference API (vLLM on the DGX Spark pair) — bypass the managed challenge
+    # for non-browser clients.
+    #
+    # Why: every OpenAI-SDK call, curl and health probe against this hostname
+    # was answered with `cf-mitigated: challenge` (HTTP 403) before the request
+    # reached Caddy — verified on the first production deploy of the route.
+    # This is a machine-only API; there is no browser flow to protect.
+    #
+    # Shaped like the honcho rule (path-only), NOT the Semaphore one: the
+    # Authorization-header condition is omitted on purpose. Authentication is
+    # enforced twice behind this edge — Caddy answers 401 to any /v1 request
+    # without `Bearer <credential>`, and vLLM's own --api-key validates the
+    # token — so a credential-less caller gets a cheap 401, not a challenge
+    # page, and `/health` (which never carries a token) stays probeable. The
+    # regional and AI-crawler BLOCK rules above still apply. Every other path on
+    # this host is a 404 at Caddy and is left under the challenge.
+    #
+    # Rate limiting for /v1/* lives in the http_ratelimit phase: ratelimit.tf
+    # (per-source ceiling, log twin + block; dgx-spark decision 2026-09).
+    {
+      ref         = "inference-api-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Inference API + health - bypass challenge for non-browser clients"
+      expression  = "(http.host eq \"inference.uhstray.io\" and (starts_with(http.request.uri.path, \"/v1/\") or http.request.uri.path eq \"/health\"))"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

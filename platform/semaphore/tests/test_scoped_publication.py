@@ -394,6 +394,35 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(self.requests, [])
 
+    def test_scoped_create_registers_only_one_declared_template_and_reruns_cleanly(self):
+        original = copy.deepcopy(self.records)
+        selected = ["Audit o11y Containers (Dev)"]
+        bindings = {
+            "semaphore_allow_scoped_create": True,
+            "semaphore_project_id": 1,
+            "semaphore_inventory_id": 37,
+            "semaphore_environment_id": 42,
+        }
+        code, output = self.run_play(selection=selected, **bindings)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [("POST", "/api/project/1/templates")])
+        self.assertEqual(self.records[:2], original)
+        created = self.records[2]
+        self.assertEqual(created["name"], selected[0])
+        self.assertEqual(created["repository_id"], 5)
+        self.assertEqual(created["inventory_id"], 37)
+        self.assertEqual(created["environment_id"], 42)
+        self.assertEqual(created["playbook"], "platform/playbooks/audit-o11y-containers.yml")
+        code, output = self.run_play(selection=selected, **bindings)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.writes), 1)
+
+    def test_scoped_create_needs_explicit_bindings_before_network(self):
+        code, _ = self.run_play(selection=["Audit o11y Containers (Dev)"],
+                                semaphore_allow_scoped_create=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.requests, [])
+
     def test_controller_publishes_one_survey_and_rerun_is_noop(self):
         self.records[0]["description"] = "preserve detail-only setting"
         original = copy.deepcopy(self.records)

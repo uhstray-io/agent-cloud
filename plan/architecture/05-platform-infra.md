@@ -72,7 +72,7 @@ flowchart LR
 Key properties:
 - **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
 - **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
-- **CloudFlare is DNS only.** Traffic does not proxy through CloudFlare; Caddy handles TLS directly with DNS-01 certs.
+- **CloudFlare is DNS-only for most hostnames.** Caddy handles TLS directly with DNS-01 certs. The exceptions are the proxied (orange-cloud) hostnames — the platform records adopted into `platform/infra/cloudflare/dns.tf` and `inference.uhstray.io` — where Cloudflare sits in the request path; see "Cloudflare-proxied hostnames" below for what that decides.
 - **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
@@ -234,6 +234,85 @@ sequenceDiagram
 The CloudFlare API key needs **Zone:DNS:Edit** for the target zone -- no account-level access or anything beyond DNS record management. Use a scoped API token (not a Global API Key).
 
 ---
+
+## Cloudflare-proxied hostnames: the inference edge (decided 2026-09-14)
+
+`inference.uhstray.io` fronts vLLM on the DGX Spark pair and is proxied through
+Cloudflare on purpose: the zone's WAF block rules, the challenge bypass for machine
+clients (`waf.tf`), and the per-source rate limit (`ratelimit.tf`) all live there. Three
+consequences are settled and are not to be re-investigated on the next load test:
+
+1. **The 125 s Proxy Read Timeout is accepted.** Cloudflare severs a non-streamed
+   response, or an idle stream, after 125 s with HTTP 524; only the Enterprise plan can
+   raise it (to 6,000 s) and a 30 s write timeout is fixed on every plan. The zone is
+   Pro. The fix is origin-side: vLLM's SSE heartbeat resets the timer from behind the
+   edge (dgx-spark change `inference-endpoint-reliability`). Two ways to remove the timer
+   were rejected. **Enterprise plan:** not a plan this project is on, and the timeout is
+   the only thing it would buy here. **Grey-clouding the hostname (DNS-only):** removes
+   the timer, and with it the WAF rules, the challenge bypass and the rate limit, and
+   publishes the origin address in DNS — the exact exposure the origin lockdown exists
+   to close.
+2. **Rate limiting is Cloudflare's, keyed on source address, action block.** One shared
+   bearer key means the key cannot be the bucket; `ip.src` is the one characteristic
+   every plan offers. Caddy has no rate limiter without a third-party module.
+3. **The origin is NOT locked to Cloudflare's ranges (decided 2026-09-15).** A `remote_ip`
+   allowlist over Cloudflare's published ranges was landed once and failed closed: the
+   production Caddy container does not see a Cloudflare peer address for proxied traffic,
+   so every request answered 404 until the revert. The operator's decision is that no
+   Cloudflare-range lockdown of the origin is pursued in any form, per route or at the host
+   firewall. A caller that reaches the origin directly meets the same Bearer check at Caddy
+   and vLLM's own `--api-key`; that is the accepted control.
+
+Deliberation and measurements: OpenSpec change
+`plan/development/openspec/changes/archive/2026-09-15-inference-edge-cloudflare-controls`.
+
+## Inference gateway: agentgateway alongside skynet (PROPOSED 2026-09-17, awaiting operator confirmation)
+
+Status: **Proposed.** Becomes Accepted when the operator confirms this text; until then it
+binds nothing. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.** Two gateways, two authorities, neither replaces the other:
+
+- **agentgateway is the inference edge** in front of the DGX Spark vLLM API (and any
+  later OpenAI-compatible upstream). It owns transport-level concerns for that API:
+  per-client identity (API keys today, OIDC/JWT later), per-identity request and token
+  limits, routing to one or more model backends, and request telemetry as the client
+  sees it. It runs as an Infrastructure-tier platform service on its own VM, behind
+  Caddy, which keeps TLS, the path allowlist and the Bearer shape check.
+- **skynet is the platform's own orchestrating model-serving gateway.** It is
+  purpose-built to interface with agent-cloud, owns placement and policy across the
+  model estate, and is the OPA-role-bearing orchestrator. skynet reaches the DGX Spark
+  model through agentgateway like any other client (default; open question in the
+  change), so every request is metered in one place and the node firewall can narrow
+  to one source.
+
+Plan 06 (`plan/development/06-inference-skynet.md`) is **amended, not superseded**: its
+"no separate gateway" line described the state before this decision and gains a dated
+pointer here when this record is accepted.
+
+**Alternatives rejected.**
+
+1. *agentgateway replaces skynet's gateway role.* Rejected: skynet is kept as the
+   platform's orchestration surface by operator decision (2026-09-14); agentgateway
+   carries no placement or policy logic.
+2. *skynet fronts vLLM directly and agentgateway is skipped.* Rejected: skynet is not
+   the surface OpenCode, pi and team SDK clients use today, and the ecosystem document's
+   request-telemetry and per-client-limit rows would stay empty.
+3. *Co-locate the gateway on the Caddy host.* Rejected: Caddy is the front door for every
+   platform hostname; a gateway fault or upgrade must not touch it.
+4. *Run the gateway on the head node.* Rejected: node memory is the binding constraint
+   and the boundary rule keeps non-vLLM software off the nodes.
+5. *Keep the single shared key at the gateway.* Rejected: per-client limits are the
+   reason the gateway exists. The shared key is enrolled as one identity for a dated
+   grace period, then retired and rotated at vLLM.
+
+**Consequences.** Client base URLs do not change; client keys do. The vLLM key becomes an
+internal credential the gateway alone holds. Rollback during the grace period is one
+inventory value (the Caddy upstream); after retirement it is the `rollback-inference-route`
+playbook, because vLLM cannot authenticate gateway-issued keys.
+
+Deliberation, verification log and the phased plan: OpenSpec change
+`plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
 
 ## Adding a New Service to the Proxy
 
@@ -901,49 +980,40 @@ Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true`. This ca
 
 ### The problem
 
-Docker containers with `restart: always` auto-restart when the daemon starts at boot. Podman is daemonless, so containers do not auto-restart after a host reboot.
+Docker's daemon restarts containers at boot. Podman has no daemon, so a container
+comes back only if a systemd unit starts it.
 
-### systemd integration
+### The mechanism in use
 
-Podman containers need systemd management for restart-after-reboot:
+Podman ships `podman-restart.service` in two copies. Both run the same command, read
+from the unit on the production OpenBao host (podman 4.9.3, Ubuntu 24.04):
 
-```bash
-# Generate systemd unit from running container
-podman generate systemd --new --name workflow-nocodb > \
-  ~/.config/systemd/user/container-workflow-nocodb.service
-
-# Enable with lingering (survives logout)
-loginctl enable-linger $USER
-systemctl --user enable container-workflow-nocodb.service
+```
+ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always
 ```
 
-### podman-compose + systemd
+| Containers | Unit | Enabled how |
+|------------|------|-------------|
+| Rootful (`sudo podman`) | system `podman-restart.service` | Shipped enabled on the image |
+| Rootless (the deploy user, or a dedicated account) | user `podman-restart.service` | Ships **disabled**. `tasks/enable-linger.yml` enables it and turns on linger so the user's systemd starts at boot |
 
-For compose-managed stacks, generate a systemd unit for the whole project:
+Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
 
-```bash
-# Option A: systemd unit that runs compose up/down
-cat > ~/.config/systemd/user/nocodb-stack.service << 'EOF'
-[Unit]
-Description=NocoDB Stack (podman-compose)
-After=network-online.target
+1. **Every compose service declares `restart: always`**, or `"no"` for a one-shot
+   container. On 4.9.3 the filter skips `unless-stopped`, whatever newer upstream
+   documentation says. Docker honours `always` as well, so one policy serves both engines.
+2. **Every composable deploy runs `tasks/enable-linger.yml`** through the shared
+   `tasks/place-monorepo.yml` preamble. Lingering alone is not enough: it starts an empty
+   user manager unless the user unit is enabled.
 
-[Service]
-Type=oneshot
-RemainAfterExit=true
-WorkingDirectory=/home/%u/services/nocodb
-ExecStart=/usr/bin/podman-compose -f compose.yml up -d
-ExecStop=/usr/bin/podman-compose -f compose.yml down
-TimeoutStartSec=300
+### What this does not cover
 
-[Install]
-WantedBy=default.target
-EOF
-```
-
-### Current state
-
-systemd integration is not yet automated in agent-cloud playbooks. After reboot, services restart by re-running the deploy playbook via Semaphore. A planned `configure-podman-systemd.yml` will automate systemd unit generation for all Podman services.
+- **OpenBao comes back sealed.** Production uses manual Shamir unseal, so a reboot still
+  needs a human. Transit auto-unseal is the planned fix
+  (`plan/development/01-secrets-credentials.md`, problem 2 and phase B2).
+- **A container created under the old policy keeps it.** The policy is fixed at create
+  time, so a service picks up `always` only when its deploy recreates the container.
+- **No automation reboots a host to prove any of this.** See `docs/MISTAKES.md` 10.15.
 
 ---
 
@@ -990,8 +1060,8 @@ pip3 install --upgrade podman-compose>=1.3.0
 | Top-level `volumes: name:` | Yes | IGNORED | Yes | Use `--project-name` instead |
 | `container_name:` | Yes | Yes | Yes | Always set explicitly |
 | `healthcheck:` definition | Yes | Yes | Yes | Runs but not enforced for deps |
-| `restart: always` | Yes | Yes | Yes | But no daemon restart (see sec 11) |
-| `restart: unless-stopped` | Yes | Yes | Yes | |
+| `restart: always` | Yes | Yes | Yes | Started at boot by `podman-restart.service` (see sec 11) |
+| `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. Not used (sec 11) |
 | `restart: "no"` | Yes | Yes | Yes | One-shot containers |
 | `env_file:` (simple KEY=VALUE) | Yes | Yes | Yes | |
 | `env_file:` (quoted values) | Yes | Partial | Partial | Avoid quotes |

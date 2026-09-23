@@ -20,8 +20,9 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 - **Composable, no fork.** `compose.yml` is env-parameterized; `compose.local.yml`
   is a slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches
   Grafana; mounts the podman socket so Alloy can discover container logs).
-  `deploy.sh` is container-lifecycle-only. (Prometheus scrapes only itself
-  today; Caddy/cAdvisor/agent targets are Phase 2 — see `config/prometheus.yml`.)
+  `deploy.sh` is container-lifecycle-only. The local profile scrapes only
+  Prometheus; production inventory can render static DGX Spark scrape jobs.
+  Caddy/cAdvisor/agent targets remain Phase 2 — see `config/prometheus.yml`.
 - **Config is code.** `config/` (Prometheus scrape, Loki, Alloy, Grafana
   datasource + dashboard provisioning) is committed and mounted read-only —
   provisioned on boot, reproducible on a wipe+redeploy. The ONLY secret is the

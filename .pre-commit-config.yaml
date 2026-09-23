@@ -196,8 +196,18 @@ repos:
         # and platform/tests/test_authentik_users.bats checks the semantics a
         # parser cannot — that every !Env is wired and every !Find names a group
         # that exists.
+        # agentgateway's compose.local.yml carries the compose-spec `!override` merge
+        # tag (podman-compose 1.6.0 honours it; it DROPS a base port publish locally).
+        # A strict constructor rejects the tag, so that ONE file is excluded here and
+        # syntax-checked by the --unsafe hook below instead of going unchecked.
         exclude: >-
-          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/)
+          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml)
+      - id: check-yaml
+        name: check yaml (syntax only, compose overlays with merge tags)
+        # --unsafe parses for syntax without constructing, so compose-spec tags
+        # (!override, !reset) are accepted while malformed YAML still fails.
+        args: [--unsafe]
+        files: ^platform/services/agentgateway/deployment/compose\.local\.yml$
       - id: check-added-large-files
         args: [--maxkb=500]
         # The codebase-memory graph artifact is a deliberately-committed

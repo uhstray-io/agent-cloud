@@ -163,28 +163,35 @@ def find_site(sites: list[dict], address: str) -> dict | None:
     return None
 
 
-def retire(text: str, addresses: list[str]) -> tuple[str, list[str]]:
-    """Remove hand-maintained blocks for `addresses`. Returns (new_text, removed).
+def retire(text: str, addresses: list[str]) -> tuple[str, list[str], list[str]]:
+    """Remove hand-maintained blocks for `addresses`.
 
-    Refuses to touch a block inside the managed region: that region is rewritten
-    wholesale by blockinfile, so deleting from it would be undone on the next run
-    and would mask the fact that the caller asked for the wrong thing.
+    Returns (new_text, removed, already_managed).
+
+    An address found only INSIDE the managed region is not an error: it is the
+    steady state after an adoption. The declaration that adopted it — the block
+    in caddy_managed_sites plus the name in caddy_retire_sites — is what every
+    later run carries too, so the same declaration has to converge, not refuse.
+    Such an address is left alone and reported under `already_managed`; nothing
+    is deleted from the managed region, which blockinfile rewrites wholesale
+    anyway. (An earlier version raised here. The first re-run after adopting a
+    route then failed on the production Caddy — rolled back, nothing served
+    wrong, but the run could not complete until the declaration was edited,
+    which is the opposite of idempotent.)
     """
     sites = parse_sites(text)
     lines = text.splitlines(keepends=True)
     drop: set[int] = set()
     removed: list[str] = []
+    already_managed: list[str] = []
 
     for addr in addresses:
         site = find_site(sites, addr)
         if site is None:
             continue
         if site["managed"]:
-            raise SystemExit(
-                f"refusing to retire '{addr}': it is inside the ANSIBLE MANAGED "
-                "region, which is rewritten from inventory on every run. Remove "
-                "it from caddy_managed_sites instead."
-            )
+            already_managed.append(addr)
+            continue
         if len(site["addresses"]) > 1:
             raise SystemExit(
                 f"refusing to retire '{addr}': its block also serves "
@@ -203,7 +210,7 @@ def retire(text: str, addresses: list[str]) -> tuple[str, list[str]]:
         if ln.strip() == "" and out and out[-1].strip() == "":
             continue
         out.append(ln)
-    return "".join(out), removed
+    return "".join(out), removed, already_managed
 
 
 def main() -> int:
@@ -223,11 +230,20 @@ def main() -> int:
         print(json.dumps(parse_sites(text), indent=2))
         return 0
 
-    new_text, removed = retire(text, args.address)
+    new_text, removed, already_managed = retire(text, args.address)
     if args.write and removed:
         with open(args.path, "w", encoding="utf-8") as fh:
             fh.write(new_text)
-    print(json.dumps({"removed": removed, "changed": bool(removed), "written": bool(args.write and removed)}))
+    print(
+        json.dumps(
+            {
+                "removed": removed,
+                "already_managed": already_managed,
+                "changed": bool(removed),
+                "written": bool(args.write and removed),
+            }
+        )
+    )
     return 0
 
 

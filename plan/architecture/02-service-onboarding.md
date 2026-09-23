@@ -339,3 +339,40 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 5. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
 6. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
 7. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.
+
+- **Provisioning does not consult IPAM for a free address (recorded 2026-09-17).** NetBox
+  is the address authority and `netbox-allocate-ip.yml` can report and reserve, but
+  Phase 1 still starts from a human reading `inventory/production.yml` and picking an
+  address that is not declared there. The agentgateway VM (first allocated as 216, which collided with a GitHub runner; provisioned as 218 on 2026-09-18) was addressed that way
+  because NetBox was unavailable at the time. The first address chosen that way
+  belonged to an undeclared GitHub runner (docs/MISTAKES.md 3.6); the VM now runs at a
+  network-swept address that carries an "ADDRESS PROVENANCE" note in site-config and is
+  still NOT reserved in NetBox, because the IPAM automation token cannot currently be
+  minted on the live instance. Reserve it when the IPAM is back. The
+  future feature: `provision-vm.yml` (or a preflight it imports) asks NetBox whether the
+  declared address is free or already reserved for this host, and refuses a declaration
+  the authority contradicts — so the ledger and the inventory cannot drift apart.
+
+- **Provisioning trusts vmid+name+node after its waits (recorded 2026-09-18).** `provision-vm.yml`
+  refuses a foreign VM at the declared vmid and re-checks name and node after the pre-migrate
+  wait (PR #188), but a concurrent actor that deleted and recreated the same vmid AND name on
+  the declared node during a wait would not be detected. The stronger form, raised in review
+  and deferred: capture the clone's `smbios1` UUID before the wait and require it after, and
+  send the config `digest` on every config PUT so a concurrent write is rejected. Deferred
+  because the platform has one sanctioned Proxmox writer (Semaphore) and the pair comes from a
+  committed declaration; revisit if a second writer ever exists.
+
+- **Proxmox API calls accept the cluster's self-signed certificate (recorded 2026-09-18).**
+  Every Proxmox play (`provision-vm.yml`, `destroy-vm.yml`, `proxmox-validate.yml`,
+  `resize-vm.yml`) sets `validate_certs: false`; the transport guard refuses cleartext but a
+  spoofed HTTPS endpoint on the path would not be detected. Raised in the PR #189 review. The
+  fix is platform-wide, not per play: pin the cluster CA (distribute it to the controller and
+  set `ca_path`), then flip `validate_certs` on everywhere at once.
+
+- **Compose `env_file` values reach the container runtime's argv (recorded 2026-09-22).**
+  podman-compose 1.6.0 expands `env_file` entries into `-e KEY=VALUE` arguments on the
+  `podman` command line, so every secret a service reads from its rendered `.env` is
+  briefly visible in the host's process table. It is not written to Semaphore output
+  (podman-compose logs the command only at verbose levels). Platform-wide, not
+  agentgateway-specific; the fix is a runtime-level one (a secrets mount or
+  `--env-file` passed through to podman) in one change for every service.

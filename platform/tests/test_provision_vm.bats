@@ -11,6 +11,8 @@
 # Structural only (grep asserts) — no live Proxmox calls.
 # Run: bats platform/tests/test_provision_vm.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks/provision-vm.yml"
@@ -123,4 +125,73 @@ setup() {
   wait_line=$(grep -n 'Wait for the clone lock to clear' "$PB" | head -1 | cut -d: -f1)
   cfg_line=$(grep -n 'Configure VM resources and cloud-init' "$PB" | head -1 | cut -d: -f1)
   [ "$wait_line" -lt "$cfg_line" ]
+}
+
+@test "provision-vm: a different VM at the declared vmid is a refusal, never an adoption" {
+  # MISTAKES 3.5: "exists" skipped the clone and the run went on to configure the
+  # foreign VM. The guard must compare name AND node and sit before the skip.
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  assert_grep -q 'Refuse to adopt a DIFFERENT VM' "$pb"
+  assert_grep -qF "(_existing.name | default('')) == _name" "$pb"
+  assert_grep -qF "(_existing.node | default('')) == _node" "$pb"
+  # An interrupted run (our name, still on the template's node) is RESUMED, not refused.
+  assert_grep -q '_ours_pending_migrate' "$pb"
+  local guard skip
+  guard=$(grep -n 'Refuse to adopt a DIFFERENT VM' "$pb" | cut -d: -f1)
+  skip=$(grep -n 'Skip clone if VM already exists' "$pb" | cut -d: -f1)
+  [ "$guard" -lt "$skip" ]
+}
+
+@test "provision-vm: clones on the template's node, then migrates offline when the declared node differs" {
+  # qm(1): --target is only allowed when the source is on SHARED storage; template
+  # 9000 is on local storage, so a cross-node --target clone is refused (task 1064).
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  # The clone body carries no `target:` any more.
+  refute_grep -qE '^\s+target: "\{\{ _node \}\}"$' <(sed -n '/name: "Clone template to new VM/,/register: clone_result/p' "$pb")
+  assert_grep -qE 'qemu/\{\{ _vmid \}\}/migrate' "$pb"
+  assert_grep -qE 'targetstorage: "\{\{ _storage \}\}"' "$pb"
+  assert_grep -q '_do_migrate' "$pb"
+  # The pre-migrate wait is cluster-wide (the VM may already have left the template's node).
+  assert_grep -qE 'cluster/resources\?type=vm' <(sed -n '/Wait until the VM is unlocked/,/Skip the migrate POST/p' "$pb")
+  assert_grep -q 'Skip the migrate POST when the VM already sits on the declared node' "$pb"
+  # After the wait the record is re-validated by name and permitted node (vmid reuse).
+  assert_grep -q "Re-validate the VM's identity after the wait" "$pb"
+  assert_grep -qF "in [_tmpl_node, _node]" "$pb"
+  # uri reports changed:false on a POST — nothing may gate on `is changed` (CodeRabbit, PR 188).
+  refute_grep -q 'is changed' "$pb"
+  [ "$(grep -c 'changed_when: .*json.data is defined' "$pb")" -eq 2 ]
+  # Migration is verified like the clone: task status polled, exitstatus asserted.
+  assert_grep -q 'Verify migrate succeeded' "$pb"
+}
+
+@test "provision-vm: refuses a declared address another inventory host claims (evaluated)" {
+  # docs/MISTAKES.md 4.7: an edit left a runner declared at the gateway's address.
+  # Extract the REAL guard and run it against a small inventory, both ways.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  python3 - "$pb" "$BATS_TEST_TMPDIR/claim.yml" <<'PY2'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+task = [t for p in plays for t in (p.get('tasks') or [])
+        if t.get('name') == 'Refuse a declared address claimed by another inventory host'][0]
+yaml.safe_dump([{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+                 'tasks': [task]}], open(sys.argv[2], 'w'))
+PY2
+  # RFC 5737 documentation addresses only.
+  cat > "$BATS_TEST_TMPDIR/inv.yml" <<'YAML'
+all:
+  hosts:
+    localhost: { ansible_connection: local }
+    gw: { ansible_host: 192.0.2.56, vm_ip: 192.0.2.56 }
+    runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.54 }
+YAML
+  # No conflict: gw's own address is not a claim against itself.
+  ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" \
+    -e _decl_host=gw -e _ip=192.0.2.56 >/dev/null 2>&1
+  # Conflict via another host's vm_ip (the real incident) and via its ansible_host.
+  sed -i.bak 's/runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.54 }/runner: { ansible_host: 192.0.2.54, vm_ip: 192.0.2.56 }/' "$BATS_TEST_TMPDIR/inv.yml"
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" -e _decl_host=gw -e _ip=192.0.2.56
+  [ "$status" -ne 0 ]
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" -e _decl_host=gw -e _ip=192.0.2.54
+  [ "$status" -ne 0 ]
 }
