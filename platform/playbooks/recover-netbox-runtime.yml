@@ -1,0 +1,157 @@
+---
+# Reconcile only the four NetBox core containers after a stopped/no-restart
+# runtime, using the exact reviewed dev checkout. Container dry run is default.
+- name: Require a reviewed dev checkout for NetBox recovery
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read controller branch and revision
+      ansible.builtin.command:
+        argv: [git, branch, --show-current]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_branch
+      changed_when: false
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+
+    - name: Refuse an unreviewed controller checkout
+      ansible.builtin.assert:
+        that:
+          - _controller_branch.stdout == 'dev'
+          - _controller_changes.stdout | length == 0
+        fail_msg: "NetBox recovery requires a clean dev checkout in Semaphore."
+
+- name: Preflight and recover the existing NetBox core
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _runtime_state: "{{ _deploy_dir }}/runtime-state.py"
+  tasks:
+    - name: Refuse local mode and an undeclared NetBox source
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+          - monorepo_repo is defined
+          - monorepo_deploy_path is defined
+        fail_msg: "NetBox recovery needs the production NetBox inventory."
+
+    - name: Place the exact reviewed dev revision
+      ansible.builtin.git:
+        repo: "{{ monorepo_repo }}"
+        dest: "{{ _monorepo_dir }}"
+        version: "{{ hostvars['localhost']._controller_revision.stdout }}"
+
+    - name: Check the existing Compose env and bind-mount secret files
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/{{ item }}"
+      loop:
+        - .env
+        - env/netbox.env
+        - env/postgres.env
+        - secrets/netbox_to_diode_client_secret.txt
+      register: _required_files
+      changed_when: false
+
+    - name: Refuse missing runtime inputs before touching containers
+      ansible.builtin.assert:
+        that: _required_files.results | selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') | list | length == 4
+        fail_msg: "An existing NetBox env or bind-mount secret file is missing; use the OpenBao-backed deployment path."
+
+    - name: Verify local images and named volumes against existing containers
+      ansible.builtin.command:
+        argv: [python3, "{{ _runtime_state }}"]
+        chdir: "{{ _deploy_dir }}"
+      register: _before
+      changed_when: false
+
+    - name: Show the safe dry-run state and planned scope
+      ansible.builtin.debug:
+        msg:
+          revision: "{{ hostvars['localhost']._controller_revision.stdout }}"
+          apply: "{{ netbox_runtime_apply | default(false) | bool }}"
+          services: "{{ _before.stdout | from_json }}"
+          action: "Compose up for postgres, redis, redis-cache, then netbox; no pull, build, down, or volume deletion."
+
+    - name: End after container preflight by default
+      ansible.builtin.meta: end_play
+      when: not (netbox_runtime_apply | default(false) | bool)
+
+    - name: Converge existing backing services without pull or build
+      ansible.builtin.command:
+        argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d, --no-deps, --no-build, --pull, never, postgres, redis, redis-cache]
+        chdir: "{{ _deploy_dir }}"
+      register: _backing_up
+      changed_when: false
+
+    - name: Wait for the three backing services to become healthy
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{.State.Health.Status}}' }}", "netbox-{{ item }}-1"]
+      loop: [postgres, redis, redis-cache]
+      register: _backing_health
+      changed_when: false
+      until: _backing_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+
+    - name: Converge the existing NetBox app without pull or build
+      ansible.builtin.command:
+        argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d, --no-deps, --no-build, --pull, never, netbox]
+        chdir: "{{ _deploy_dir }}"
+      register: _netbox_up
+      changed_when: false
+
+    - name: Wait for the NetBox app to become healthy
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{.State.Health.Status}}' }}", netbox-netbox-1]
+      register: _netbox_health
+      changed_when: false
+      until: _netbox_health.stdout == 'healthy'
+      retries: 60
+      delay: 10
+
+    - name: Verify NetBox login through the declared service URL
+      ansible.builtin.uri:
+        url: "{{ service_url | default('http://localhost:8000') }}/login/"
+        method: GET
+        follow_redirects: none
+        status_code: [200, 302]
+        timeout: 10
+      register: _login
+      changed_when: false
+      retries: 5
+      delay: 10
+      until: _login is succeeded
+
+    - name: Verify the core still has the same images and volumes and now restarts
+      ansible.builtin.command:
+        argv: [python3, "{{ _runtime_state }}", --require-ready]
+        chdir: "{{ _deploy_dir }}"
+      register: _after
+      changed_when: false
+
+    - name: Report only actual container state changes
+      ansible.builtin.set_fact:
+        netbox_runtime_state: "{{ _after.stdout | from_json }}"
+      changed_when: (_before.stdout | from_json) != (_after.stdout | from_json)
+
+    - name: Show verified core state
+      ansible.builtin.debug:
+        msg:
+          login_status: "{{ _login.status }}"
+          services: "{{ netbox_runtime_state }}"
