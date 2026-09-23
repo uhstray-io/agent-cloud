@@ -348,6 +348,10 @@ templates:
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -358,6 +362,10 @@ templates:
 
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: client
         title: "Client identity"
@@ -522,6 +530,10 @@ templates:
 
   - name: Clean Deploy agentgateway
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
