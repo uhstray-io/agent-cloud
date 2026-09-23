@@ -45,3 +45,25 @@
           docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines }}"
           docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
           docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines }}"
+
+- name: Check VM state when service hosts are unreachable
+  hosts: aquilarift
+  gather_facts: false
+  tasks:
+    - name: Read Proxmox VM inventory locally
+      ansible.builtin.command:
+        argv: [sudo, -n, pvesh, get, /cluster/resources, --type, vm, --output-format, json]
+      register: pve_resources
+      changed_when: false
+
+    - name: Require all three VM records
+      ansible.builtin.assert:
+        that:
+          - "(pve_resources.stdout | from_json | selectattr('vmid', 'in', [205, 207, 209]) | list | length) == 3"
+
+    - name: Report VM names and states
+      ansible.builtin.debug:
+        msg: "{{ item.vmid }} {{ item.name | default('?') }} {{ item.status | default('?') }} {{ item.node | default('?') }}"
+      loop: "{{ (pve_resources.stdout | from_json) | selectattr('vmid', 'in', [205, 207, 209]) | list }}"
+      loop_control:
+        label: "{{ item.vmid }}"
