@@ -113,7 +113,8 @@ def test_locate_requires_the_isolated_binding():
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
     api = FakeAPI()
     cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                       endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"}, extra={"bao_path": "services/x", "bao_key": "k"})
+                       endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"},
+                       extra={"bao_path": "services/x", "bao_key": "k"})
     submissions = [body for path, body in api.calls if path == "/tasks" and body]
     assert len(submissions) == 1
     assert json.loads(submissions[0]["environment"]) == {"bao_path": "services/x", "bao_key": "k"}

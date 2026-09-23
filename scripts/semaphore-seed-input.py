@@ -187,7 +187,8 @@ def main():
             return 0
         stage_and_seed(api, args.project, template_id, environment_id, values,
                        playbook=decl["playbook"], template_names={template_name}, extra=settings,
-                       endpoint=args.openbao_addr, bindings=bindings, message=f"Seed via {environment_name} (encrypted, removed after the task)")
+                       endpoint=args.openbao_addr, bindings=bindings,
+                       message=f"Seed via {environment_name} (encrypted, removed after the task)")
     except Refusal as error:
         print(str(error), file=sys.stderr)
         return 1

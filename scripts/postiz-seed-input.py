@@ -91,7 +91,8 @@ def main():
         print("Configured provider fields: " + ", ".join(providers))
         if args.apply:
             if not all((args.url, args.project, args.template, args.environment, args.openbao_addr)):
-                raise Refusal("Apply requires URL, project, template, expected environment and approved OpenBao endpoint")
+                raise Refusal("Apply requires URL, project, template, expected environment "
+                              "and approved OpenBao endpoint")
             api = API(args.url, args.project, sys.stdin.read().strip())
             stage_and_seed(api, args.project, args.template, args.environment, values, args.openbao_addr)
     except Refusal as error:
