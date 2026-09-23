@@ -144,9 +144,22 @@
 > `alphacentauri`, reported 511 GB available on its VM storage, and found VMID
 > 219 absent from both its live VM listing and the private allocation ledger.
 > That VMID is a candidate, not a reservation or a provisioned receiver.
-> PR #201 prepares the existing scoped NetBox token bootstrap and a Dev-bound
-> Semaphore template; it must pass final-head CodeRabbit review and checks
-> before the token is provisioned and the NetBox report is retried.
+> PR #201 passed its final-head CodeRabbit review and checks and merged to
+> `dev` as `47be7da0d6f0ba4633c348af82d964c5839968ab`. The scoped
+> `Provision NetBox Automation Token (Dev)` template was published as task
+> 1140 with the verified project, inventory, environment, and Dev repository
+> bindings. Bootstrap task 1141 stopped before minting a token because Docker
+> reported the `netbox-netbox-1` application container exists but is not
+> running. Its empty shell output also exposed a `changed_when` expression
+> that masked the Docker error. Neither the token nor an IP address was
+> provisioned. All-host validation tasks 1142 and 1143 stopped on an
+> unrelated unreachable NocoDB host before reaching NetBox; the accepted
+> Semaphore `params.limit` setting did not constrain the actual play.
+> PR #202 adds a NetBox-only, read-only container and HTTP audit plus the
+> diagnostic expression fix. Its protected push passed 596 BATS and 121
+> Python tests; the required CodeRabbit round is pending after a reported
+> review-quota delay. Do not run the regular NetBox deploy as an unexamined
+> recovery step: it pulls images, stops the stack, and rebuilds containers.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
