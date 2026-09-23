@@ -68,6 +68,7 @@ supersede it with a new entry and link both.
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -1328,6 +1329,29 @@ long-lived credential leaked the same way would have needed rotation.
 **Enforced by.** Convention. The mechanical fix is the one already built:
 `backup-credentials-to-site-config.yml` never routes a value through stdout on any
 path, which is why the operator-side print flow is the stopgap and not the design.
+
+### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
+
+**Occurrences: 1** — 2026-09-18 (found in review 2026-09-22)
+
+**What happened.** Moving the agentgateway VM off an address that belonged to `gh-runner-01`
+(3.6), the private inventory was edited with a string replace of `vm_ip: <old address>` → new
+address. The replace was not scoped to the gateway's host block, and the runner's own `vm_ip`
+held the same old value, so both lines changed. The runner ended up declared at the gateway's
+new address while its `ansible_host` stayed correct. Nothing ran against it, so it never went
+live; CodeRabbit caught it on site-config PR 15.
+
+**Root cause.** An edit keyed on a VALUE rather than on the host that owns it, applied to a
+file where the same value legitimately appeared under two hosts (the collision this whole
+change was correcting).
+
+**The rule.** Edit a host's attribute by locating the host's block first and changing the
+attribute inside it; never by replacing a value file-wide. After any address change, list every
+inventory host's `ansible_host`/`vm_ip` and require each address to have exactly one claimant.
+
+**Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
+other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
+`test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
 
 ## 5. Duplication and process
 
