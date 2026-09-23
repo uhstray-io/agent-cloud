@@ -1,8 +1,9 @@
 ---
 # provision-netbox-automation-token.yml — one-time bootstrap for build #1.
 #
-# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml reads
-# at secret/services/netbox:automation_api_token, and stores it in OpenBao.
+# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml and
+# netbox-allocate-ip.yml read at secret/services/netbox:automation_api_token, and
+# stores it in OpenBao.
 # Idempotent: a no-op if the token already exists there. REST token creation needs
 # an existing token, so the first one is minted server-side via the NetBox Django
 # shell — same exec pattern as cleanup-netbox.yml.
@@ -89,6 +90,15 @@
           | ObjectType.objects.filter(app_label="extras", model="tag")
         perm.object_types.set(types)
         perm.users.add(user)
+
+        # The IPAM report resolves a Prefix before it reads available IPs. Keep
+        # Prefix view separate from the device/IP-address add permission.
+        prefix_perm, _ = ObjectPermission.objects.get_or_create(
+            name="skynet-ipam-prefix-view",
+            defaults={"enabled": True, "actions": ["view"]},
+        )
+        prefix_perm.object_types.set(ObjectType.objects.filter(app_label="ipam", model="prefix"))
+        prefix_perm.users.add(user)
 
         token = Token.objects.filter(user=user).first() or Token.objects.create(
             user=user, description="skynet build #1 automation (create-netbox-device)",

@@ -56,6 +56,14 @@ setup() {
   grep -qF '(_pfx.json.results | default([])) | length == 1' "$PLAYBOOK"
 }
 
+@test "netbox-allocate: bootstrap token can view prefixes without adding them" {
+  local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
+  assert_grep -qF 'name="skynet-ipam-prefix-view"' "$bootstrap"
+  assert_grep -qF 'defaults={"enabled": True, "actions": ["view"]}' "$bootstrap"
+  assert_grep -qF 'app_label="ipam", model="prefix"' "$bootstrap"
+  assert_grep -qF 'prefix_perm.users.add(user)' "$bootstrap"
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).
