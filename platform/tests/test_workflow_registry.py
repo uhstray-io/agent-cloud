@@ -21,6 +21,10 @@ OPA_DATA = REPO / "platform/services/opa/deployment/policies/agentcloud/data.jso
 
 ROLES = {"infra-agent", "security-agent", "o11y-agent", "service-agent"}
 PER_SERVICE = "Deploy {service}"
+# The secret store, the orchestrator, the IPAM authority, the runner security boundary and the
+# all-services wrapper: never an agent's per-service deploy.
+FOUNDATION = {"Deploy OpenBao", "Deploy Semaphore", "Deploy NetBox", "Deploy GitHub Runner",
+              "Deploy All Services"}
 STEPS = yaml.safe_load(REGISTRY.read_text())["steps"]
 
 
@@ -117,5 +121,33 @@ def test_opa_allowlists_match_registry_ownership():
         }
         entry = catalog[role]
         assert set(entry["allowed_templates"]) == owned, role
-        wants_prefix = any(s["owner"] == role and s.get("executor") == PER_SERVICE for s in STEPS)
-        assert ("Deploy " in entry.get("allowed_template_prefixes", [])) == wants_prefix, role
+        wants_deploys = any(s["owner"] == role and s.get("executor") == PER_SERVICE for s in STEPS)
+        deploys = set(entry.get("service_deploy_templates", []))
+        assert bool(deploys) == wants_deploys, role
+        assert "allowed_template_prefixes" not in entry, f"{role}: prefix grants are open-ended"
+        names = _template_names()
+        claimed = {n for other, e in catalog.items() if other != role and isinstance(e, dict)
+                   for n in e.get("allowed_templates", [])}
+        for name in deploys:
+            assert name.startswith("Deploy ") and name in names, f"{role}: {name} is not a catalog deploy"
+            assert name not in claimed, f"{role}: {name} belongs to another role"
+        assert not deploys & FOUNDATION, f"{role} may not deploy the foundation: {deploys & FOUNDATION}"
+
+
+def test_opa_step_map_matches_the_registry():
+    # OPA cannot read the registry, so catalog.workflow_steps carries what the policy binds a
+    # task to: owner, executing templates, the proposal it acts on, review state. It must be
+    # exactly the registry's, or the policy judges tasks against a stale workflow.
+    feeders = {f: s["id"] for s in STEPS for f in (s.get("feeds") or [])}
+    want = {}
+    for s in STEPS:
+        entry = {
+            "owner": s["owner"],
+            "templates": [t for t in (s.get("executor"), s.get("snapshot")) if t and t != PER_SERVICE],
+            "per_service": s.get("executor") == PER_SERVICE,
+            "reviewed": bool(s.get("reviewed")),
+        }
+        if s["id"] in feeders:  # absent, not null: a null is TRUE in a Rego condition
+            entry["proposal_from"] = feeders[s["id"]]
+        want[s["id"]] = entry
+    assert json.loads(OPA_DATA.read_text())["catalog"]["workflow_steps"] == want

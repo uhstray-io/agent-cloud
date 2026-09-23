@@ -156,6 +156,170 @@
         "Clean Deploy ERPNext",
         "Wipe and Rebuild"
       ]
+    },
+    "workflow_steps": {
+      "vm-template": {
+        "owner": "infra-agent",
+        "templates": [
+          "Create VM Template"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "lookup-inventory": {
+        "owner": "infra-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "validate-address": {
+        "owner": "infra-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "provision-vm": {
+        "owner": "infra-agent",
+        "templates": [
+          "Provision VM"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "cloud-init": {
+        "owner": "infra-agent",
+        "templates": [
+          "Provision VM"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "ssh-keys": {
+        "owner": "infra-agent",
+        "templates": [
+          "Distribute SSH Keys"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "ssh-key-backup": {
+        "owner": "infra-agent",
+        "templates": [
+          "Back Up Service SSH Key"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "access-harden": {
+        "owner": "security-agent",
+        "templates": [
+          "Harden SSH"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "service-assess": {
+        "owner": "service-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "vm-rightsize": {
+        "owner": "infra-agent",
+        "templates": [
+          "Resize VM"
+        ],
+        "per_service": false,
+        "proposal_from": "service-assess",
+        "reviewed": false
+      },
+      "secrets-approle": {
+        "owner": "service-agent",
+        "templates": [
+          "Check Secrets"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "instrument-host": {
+        "owner": "o11y-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "service-deploy": {
+        "owner": "service-agent",
+        "templates": [],
+        "per_service": true,
+        "proposal_from": "service-assess",
+        "reviewed": false
+      },
+      "service-validate": {
+        "owner": "service-agent",
+        "templates": [
+          "Validate All Services"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "edge-route": {
+        "owner": "service-agent",
+        "templates": [
+          "Manage Caddy Sites"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "fw-assess": {
+        "owner": "security-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "fw-harden": {
+        "owner": "security-agent",
+        "templates": [
+          "Apply Firewall"
+        ],
+        "per_service": false,
+        "proposal_from": "fw-assess",
+        "reviewed": false
+      },
+      "instrument-service": {
+        "owner": "o11y-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "systemd-enablement": {
+        "owner": "infra-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "access-assess": {
+        "owner": "service-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "oidc-config": {
+        "owner": "security-agent",
+        "templates": [
+          "Deploy Authentik"
+        ],
+        "per_service": false,
+        "proposal_from": "access-assess",
+        "reviewed": false
+      },
+      "credential-backup": {
+        "owner": "security-agent",
+        "templates": [
+          "Back Up Credentials to site-config"
+        ],
+        "per_service": false,
+        "reviewed": false
+      }
     }
   }
 }
