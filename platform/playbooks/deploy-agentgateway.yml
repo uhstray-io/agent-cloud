@@ -177,6 +177,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -205,6 +206,9 @@
       # hard, so a retry here would only re-prove a fact in hand.
       register: _ready
       changed_when: false
+      check_mode: false
+      # Proves THIS run's container; a dry run started none, so there is nothing to prove.
+      when: not ansible_check_mode
 
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
@@ -212,6 +216,8 @@
       ansible.builtin.command: "{{ _probe }} -S http://agentgateway:4000/v1/models"
       register: _noauth
       changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
       failed_when: "'401' not in _noauth.stderr"
 
     - name: "Report"
