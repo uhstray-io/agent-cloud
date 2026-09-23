@@ -974,7 +974,7 @@ templates:
   # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
   # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
   # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
-  # These broader tools are NOT exposed as Semaphore templates. The survey-only
+  # These broader tools are NOT exposed as Semaphore templates. The scoped
   # controller publisher above is the bounded exception; see README.md.
   #
   # To run a template against `dev` instead of `main`, give it

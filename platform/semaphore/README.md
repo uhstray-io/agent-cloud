@@ -93,8 +93,10 @@ Normally, only exact, nonempty, unique names of existing declared templates are
 accepted. To create one missing declared template, set the optional
 `semaphore_allow_scoped_create` survey to `true` and enter verified numeric
 `semaphore_project_id`, `semaphore_inventory_id`, and
-`semaphore_environment_id` values. The default is `false`; the create path
-refuses a list with more than one name or absent bindings. The publisher can
+`semaphore_environment_id` values. The default is `false`; the controller
+refuses create requests for names without the `(Dev)` suffix, lists with more
+than one name, or absent bindings. Leave all three ID fields blank for an
+ordinary survey update. The publisher can
 first update its own Dev template to expose these fields by selecting
 `["Publish Semaphore Template Surveys (Dev)"]` with the existing survey.
 Repository URL/branch and template repository/playbook bindings must match the

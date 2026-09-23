@@ -206,10 +206,10 @@ class ScopedPublicationTests(unittest.TestCase):
         original = copy.deepcopy(self.records)
         selected = ["Audit o11y Containers (Dev)"]
         bindings = {
-            "semaphore_allow_scoped_create": True,
-            "semaphore_project_id": 1,
-            "semaphore_inventory_id": 37,
-            "semaphore_environment_id": 42,
+            "semaphore_allow_scoped_create": "true",
+            "semaphore_project_id": "1",
+            "semaphore_inventory_id": "37",
+            "semaphore_environment_id": "42",
         }
         code, output = self.run_play(selection=selected, **bindings)
         self.assertEqual(code, 0, output)
@@ -234,7 +234,8 @@ class ScopedPublicationTests(unittest.TestCase):
     def test_controller_publishes_one_survey_and_rerun_is_noop(self):
         self.records[0]["description"] = "preserve detail-only setting"
         original = copy.deepcopy(self.records)
-        code, output = self.run_play()
+        code, output = self.run_play(semaphore_project_id="", semaphore_inventory_id="",
+                                     semaphore_environment_id="")
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, [("PUT", "/api/project/1/templates/206")])
         self.assertEqual(self.records[1], original[1])
@@ -294,6 +295,20 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play(controller_wrapper=True, _semaphore_url="https://collector.example.test")
         self.assertNotEqual(code, 0)
         self.assertIn("fixed loopback API destination", output)
+        self.assertEqual(self.requests, [])
+
+    def test_controller_refuses_create_bindings_on_survey_update(self):
+        code, output = self.run_play(controller_wrapper=True, _semaphore_url="http://127.0.0.1:3000",
+                                     semaphore_allow_scoped_create="false", semaphore_project_id="2")
+        self.assertNotEqual(code, 0)
+        self.assertIn("accepted only for one-template creation", output)
+        self.assertEqual(self.requests, [])
+
+    def test_controller_refuses_main_bound_template_creation(self):
+        code, output = self.run_play(controller_wrapper=True, _semaphore_url="http://127.0.0.1:3000",
+                                     selection=["Deploy NetBox"], semaphore_allow_scoped_create="true")
+        self.assertNotEqual(code, 0)
+        self.assertIn("one declared (Dev) template", output)
         self.assertEqual(self.requests, [])
 
     def test_denied_runtime_read_is_named_and_secret_free(self):
