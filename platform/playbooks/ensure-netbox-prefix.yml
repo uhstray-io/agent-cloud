@@ -1,0 +1,57 @@
+---
+# Declare one exact IPAM prefix through Semaphore before allocating service VM IPs.
+# Default run reports the state; apply is explicit and never changes an existing prefix.
+- name: Refuse an empty NetBox target group
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: netbox_svc
+    preflight_group_expected: netbox_svc
+
+- name: Audit or declare one NetBox IPAM prefix
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _prefix: "{{ prefix | default('') }}"
+  tasks:
+    - name: Require one explicit IPv4 network and mask
+      ansible.builtin.assert:
+        that: _prefix is match('^([0-9]{1,3}\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$')
+        fail_msg: "Supply the exact IPv4 management prefix from private site configuration."
+
+    - name: Audit or create the exact global prefix in NetBox
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        import ipaddress
+        import json
+        from netaddr import IPNetwork
+        from ipam.models import Prefix
+
+        network = ipaddress.ip_network("{{ _prefix }}", strict=True)
+        records = list(Prefix.objects.filter(prefix=str(network)))
+        if len(records) > 1:
+            raise RuntimeError("Multiple NetBox records hold the requested prefix")
+        if records:
+            record = records[0]
+            if record.vrf_id is not None or record.status != "active":
+                raise RuntimeError("Existing prefix is not active in the global routing table")
+            action = "existing"
+        elif {{ 'True' if (prefix_apply | default(false) | bool) else 'False' }}:
+            record = Prefix(prefix=IPNetwork(str(network)), status="active", description="Agent Cloud management network")
+            record.full_clean()
+            record.save()
+            record = Prefix.objects.get(pk=record.pk)
+            if str(record.prefix) != str(network) or record.status != "active" or record.vrf_id is not None:
+                raise RuntimeError("Created NetBox prefix failed read-back verification")
+            action = "created"
+        else:
+            record = None
+            action = "would-create"
+        print(json.dumps({"action": action, "prefix": str(network), "id": record.pk if record else None}))
+        PYSCRIPT
+      register: _prefix_result
+      changed_when: (_prefix_result.stdout_lines | last | from_json).action == 'created'
+
+    - name: Show exact prefix outcome
+      ansible.builtin.debug:
+        msg: "{{ _prefix_result.stdout_lines | last | from_json }}"
