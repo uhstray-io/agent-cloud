@@ -173,6 +173,17 @@ templates:
   - name: "Deploy NetBox (Local)"
     playbook: platform/playbooks/deploy-netbox.yml
 
+  # Local NetBox answers the IPAM read; local inventory declares no vm_* spec, so a local
+  # run records the step's refusal, which is the path worth proving here.
+  - name: "Lookup Service Inventory (Local)"
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
   - name: "Verify Service Persistence (Local)"
     playbook: platform/playbooks/verify-service-persistence.yml
     survey_vars:

@@ -87,7 +87,9 @@
         "Distribute SSH Keys",
         "Back Up Service SSH Key",
         "Resize VM",
-        "Verify Service Persistence"
+        "Verify Service Persistence",
+        "Lookup Service Inventory",
+        "Validate Address Free"
       ]
     },
     "security-agent": {

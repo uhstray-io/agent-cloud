@@ -1,0 +1,35 @@
+---
+# declared-vm.yml — resolve one service's DECLARED VM, for the workflow's pre-provisioning
+# steps (lookup-service-inventory.yml, validate-address-free.yml). Loaded with vars_files
+# into a localhost play; every value is lazily templated, so nothing is read until used.
+#
+# Same precedence as provision-vm.yml, which is where these names come from:
+#   launch override  ->  the declaring inventory host's vm_* vars  ->  proxmox/vm-specs.yml
+# The declaring host is the one entry in <target_service>_svc (or -e target_host= when the
+# group declares more than one). provision-vm.yml still carries its own copy of this block;
+# moving it onto this file is the follow-up, kept out of this change so provision-vm's
+# evaluated tests stay untouched.
+
+_project_root: "{{ project_root | default(playbook_dir + '/..') }}"
+_specs_raw: "{{ lookup('file', _project_root + '/proxmox/vm-specs.yml', errors='ignore') | default('', true) }}"
+_specs: "{{ (_specs_raw | from_yaml) if (_specs_raw | length > 0) else {} }}"
+_svc: "{{ (_specs.vms | default({}))[target_service] | default({}) }}"
+_group_hosts: "{{ groups[target_service ~ '_svc'] | default([]) }}"
+_decl_host: "{{ target_host | default(_group_hosts | first | default('')) }}"
+_decl: "{{ hostvars[_decl_host] | default({}) }}"
+_vmid: "{{ target_vmid | default(_decl.vm_vmid | default(_svc.vmid | default(''))) }}"
+_name: "{{ _decl.vm_name | default(_svc.name | default(target_service)) }}"
+_node: "{{ target_node | default(_decl.vm_node | default(_svc.node | default(''))) }}"
+_cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
+_mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
+_disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
+_ip: "{{ _decl.vm_ip | default(_svc.ip | default('')) }}"
+# Every OTHER inventory host that claims the declared address as its ansible_host or vm_ip
+# (the rule provision-vm.yml enforces before any Proxmox write).
+_addr_claimants: >-
+  {{ ((hostvars | dict2items | rejectattr('key', 'equalto', _decl_host)
+       | selectattr('value.ansible_host', 'defined') | selectattr('value.ansible_host', 'equalto', _ip)
+       | map(attribute='key') | list)
+     + (hostvars | dict2items | rejectattr('key', 'equalto', _decl_host)
+       | selectattr('value.vm_ip', 'defined') | selectattr('value.vm_ip', 'equalto', _ip)
+       | map(attribute='key') | list)) | unique }}

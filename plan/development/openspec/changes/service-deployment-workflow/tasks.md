@@ -183,6 +183,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [ ] 7.3 New executors: inventory lookup, address validation against pfSense ARP and NetBox,
       NetBox VM record, host instrumentation (after `inference-telemetry-production` lands the
       OTLP receiver)
+      - 2026-09-23: `lookup-service-inventory.yml`, `validate-address-free.yml` (ARP + the
+        NetBox VM record, `vm-recorder` token profile) done. Local: token mint task 1184 (two
+        permissions read back exactly), lookup task 1185 records its refusal, collector 1186
+        reports it. The ARP and Proxmox reads can only run against production (local-dev has
+        neither), so they are proven by the evaluated BATS test and wait for a `(Dev)` dry run.
+        OPEN: `instrument-host-o11y.yml`, blocked on the OTLP receiver.
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`

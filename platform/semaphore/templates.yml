@@ -650,6 +650,28 @@ templates:
         type: string
         required: true
 
+  # Workflow step lookup-inventory: the declared VM spec is complete, NetBox records the
+  # declared address as reserved or active, and no other host claims it. Read-only.
+  - name: Lookup Service Inventory
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
+  # Workflow step validate-address: the address is not live in pfSense ARP (unless it is the
+  # service's own running VM), and the NetBox VM record exists (created planned if absent).
+  - name: Validate Address Free
+    playbook: platform/playbooks/validate-address-free.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
 

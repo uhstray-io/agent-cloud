@@ -42,6 +42,15 @@
         object_types: [virtualization.virtualmachine]
         field: collector_api_token
         description: service deployment workflow conformance collector
+      vm-recorder:
+        user: workflow-vm-recorder
+        permission: workflow-vm-record
+        actions: [view, add]
+        object_types: [virtualization.virtualmachine]
+        # read-only, a second permission: placing a VM needs its cluster, never adding one
+        view_object_types: [virtualization.cluster]
+        field: vm_recorder_api_token
+        description: service deployment workflow VM record (validate-address)
     _profile: "{{ _profiles[netbox_token_profile | default('device-writer')] }}"
     _user: "{{ _profile.user }}"
 
@@ -108,6 +117,13 @@
         )
         perm.object_types.set([ObjectType.objects.get_by_natural_key(*t.split(".")) for t in {{ _profile.object_types | to_json }}])
         perm.users.add(user)
+        view_types = {{ _profile.view_object_types | default([]) | to_json }}
+        if view_types:
+            view, _ = ObjectPermission.objects.get_or_create(
+                name="{{ _profile.permission }}-view", defaults={"enabled": True, "actions": ["view"]},
+            )
+            view.object_types.set([ObjectType.objects.get_by_natural_key(*t.split(".")) for t in view_types])
+            view.users.add(user)
 
         # NetBox 4.5 v2 token: the secret exists ONLY at creation (hashed with the pepper,
         # never stored), so an existing token cannot be recovered and a new one is minted.

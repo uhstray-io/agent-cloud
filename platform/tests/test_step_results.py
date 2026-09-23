@@ -144,3 +144,10 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
                 "fetched": [{"item": picked[0], "content": out, "status": 200}]})
     assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
     assert len(agg["loki_streams"]) == 1
+
+
+def test_target_service_may_name_the_service_or_its_group():
+    # Snapshots take the group (tududi_svc); provision-vm and the address steps the service.
+    rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "tududi"}'},
+            {"id": 2, "status": "error", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'}]
+    assert {t["id"]: t["service"] for t in step_results.pick([rows], GROUPS)} == {1: "tududi", 2: "step-ca"}

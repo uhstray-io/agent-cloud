@@ -79,15 +79,16 @@ def select(registry: list[dict], templates: list[dict], by_group: dict) -> list[
 
 
 def _service_of(task: dict, by_group: dict) -> str | None:
-    """The service a task ran for: the launch's target_service group, else the group a
-    per-service deploy playbook is named after. None when neither names an inventory group
-    (a phantom such as deploy-all.yml)."""
+    """The service a task ran for: the launch's target_service (a group such as tududi_svc,
+    or a service name such as tududi, as provision-vm and the address steps take it), else
+    the group a per-service deploy playbook is named after. None when neither names an
+    inventory group (a phantom such as deploy-all.yml)."""
     try:
         target = json.loads(task.get("environment") or "{}").get("target_service")
     except (ValueError, AttributeError):
         target = None
     if isinstance(target, str) and target:
-        return by_group.get(target)
+        return by_group.get(target) or by_group.get(target + "_svc")
     match = re.search(r"(?:^|/)deploy-([a-z0-9-]+)\.yml$", task.get("tpl_playbook") or "")
     return by_group.get(match.group(1).replace("-", "_") + "_svc") if match else None
 

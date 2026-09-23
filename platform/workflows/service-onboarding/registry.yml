@@ -44,8 +44,7 @@ steps:
     order: 2
     diagram_label: Lookup Inventory
     owner: infra-agent
-    executor: null
-    planned_executor: Lookup Service Inventory
+    executor: Lookup Service Inventory
     undo: none
     policy: required
     criteria:
@@ -59,8 +58,7 @@ steps:
     order: 3
     diagram_label: Validate against ARP
     owner: infra-agent
-    executor: null
-    planned_executor: Validate Address Free
+    executor: Validate Address Free
     undo: none
     policy: required
     criteria:
