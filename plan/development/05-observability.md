@@ -275,7 +275,9 @@
 > OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
 > PR #18 merged the alert destination and Grafana browser URLs, but its
 > production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
-> runtime recovery workflow; it has not been run on production. PR #214 merged
+> runtime recovery workflow; production tasks 1188 and 1189 later ran its
+> reviewed Dev successors and restored the four core containers to healthy
+> with `restart: always`. PR #214 merged
 > one-template Dev publication. Local Semaphore tasks 1292, 1293, and 1294
 > updated the publisher and created its webhook and fault-drill Dev templates
 > with verified local bindings. Task 1295 found the failed scrape only after its
@@ -284,9 +286,37 @@
 > merged revision `0b64a0c447e476a1ad02a39de4368f0bab5053d8`, saw the
 > unreachable target, proved the onboarding verifier refused it, and removed
 > the probe. Task 1300 ran with alert delivery disabled. Discord notification receipt,
-> production NetBox recovery, receiver placement, and production telemetry
-> remain unverified. As of 2026-09-23, this workstation's production Semaphore
+> receiver placement, and production telemetry remain unverified. As of
+> 2026-09-23, this workstation's production Semaphore
 > sign-in meets a Cloudflare challenge before the Authentik session opens.
+>
+> **Production receiver preflight, 2026-09-23:** PR #226 merged the exact-prefix
+> NetBox workflow to `dev` as `3390d40b6089dc4ed257871f1b8197e7ba240fa4`.
+> Semaphore task 1197 published only its Dev template; task 1198 reported
+> `would-create` without writing; task 1199 created and read back the single
+> site-config-declared active prefix. Tasks 1200 and 1201 then ran the IPAM
+> workflow in read-only mode. The proposed receiver address was absent from
+> NetBox and the private VM ledger, but no address was reserved. Confirm the
+> production DHCP allocation boundary before reserving an exact address;
+> NetBox's available-address report alone does not prove that DHCP cannot
+> assign it. Keep the private CIDR, host address, and DHCP details out of this
+> public plan.
+> PR #227 merged the scoped Dev-bound Proxmox validation template and
+> credential-safe API logging as `a6825f9da8a79daebf41e11905763f4c1506ef0c`.
+> Task 1202 published that template; read-only task 1203 succeeded with nine
+> checks passing, 511 GB available on the target VM storage, and VMID 219
+> absent from the live cluster and private ledger. VMID 219 remains a candidate;
+> no VM was provisioned. The live Semaphore inventory matches the merged
+> private production inventory and still declares no `o11y_svc` host. Its
+> Grafana Authentik URLs have not been applied to the live IdP.
+> **Rollout practice:** publish a single reviewed Dev template with its
+> intended bindings, run a read-only preflight, and keep the task ID and
+> read-back with each state-changing step. Reserve the exact address through
+> IPAM only after DHCP and ledger reconciliation, then declare the receiver in
+> private site-config and provision it through Semaphore. Verify the receiver
+> and alert delivery with the declared fault drill before enabling production
+> notifications. These gates preserve the config-as-code and authority rules
+> in `PRINCIPLES.md` and `plan/architecture/02-service-onboarding.md`.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
