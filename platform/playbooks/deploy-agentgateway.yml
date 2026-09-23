@@ -57,10 +57,20 @@
     # Client keys are `random`: generated ONCE per identity and reused on every
     # later run, which is exactly "mint if absent, keep if present" (task 4.1);
     # rotation is a deliberate separate run, never implicit in a deploy.
-    # Built with a Jinja loop rather than a collection filter so the play needs
-    # nothing beyond ansible-core (community.general is not a declared dependency).
+    # A native LIST, built in a statement block whose only output is the list itself (no
+    # community.general, which is not a declared dependency). The earlier
+    # `[{% for %}{"name": ...}{% endfor %}]` form produced TEXT, which ansible-core 2.16
+    # happened to convert but 2.19+ does not, so `[...] + _client_defs` failed with "can only
+    # concatenate list" on the production controller image (semaphore v2.19.11 ships
+    # ansible-core 2.20.8; reproduced 2026-09-23). No JSON and no escapes either: a JSON
+    # template with a regex backreference depends on how the engine unescapes `\1`.
+    # test_agentgateway_secret_defs.py evaluates it.
     _client_defs: >-
-      [{% for c in agw_clients | default([]) %}{"name": "client_{{ c }}", "type": "random", "length": 48}{{ "," if not loop.last }}{% endfor %}]
+      {%- set out = [] -%}
+      {%- for c in agw_clients | default([]) -%}
+        {%- if out.append({'name': 'client_' ~ c, 'type': 'random', 'length': 48}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
     # agw_db_password: the gateway's own Postgres (budget usage only) — generated
     # once, reused; a new value would orphan the existing data directory.
     # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
