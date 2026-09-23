@@ -628,7 +628,8 @@
         "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
       register: _share_mkdir
       changed_when: false
-      check_mode: false
+      # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
+      when: not ansible_check_mode
 
     - name: "Recreate Semaphore if any required mount or label=disable is missing"
       ansible.builtin.shell: |

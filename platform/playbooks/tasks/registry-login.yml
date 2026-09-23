@@ -58,7 +58,8 @@
   register: _reg_login
   changed_when: false
   no_log: true
-  check_mode: false
+  # A write (stores registry auth on the host): skipped under --check.
+  when: not ansible_check_mode
 
 - name: "Report the registry login (safe fields only)"
   ansible.builtin.debug:

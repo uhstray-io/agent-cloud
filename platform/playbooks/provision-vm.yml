@@ -469,6 +469,25 @@
       when: resize_result is failed
 
     # ── Start VM ──────────────────────────────────────────────────────────
+    # A dry run of a VM that does not exist yet skipped the clone, so every check below would
+    # ask Proxmox about a vmid it does not have (404; PR 203 review). Say what a real run would
+    # do and stop this host here; the cluster post-validate play still runs.
+    - name: "Dry run, VM not cloned yet: report what a real run would create"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) would be cloned from template {{ _tmpl_vmid }}
+          and configured on {{ _node }} ({{ _cores }} cores, {{ _mem }} MB, disk {{ _disk }},
+          {{ _ip }}); its start, SSH and runner checks need the VM, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - not (vm_exists | bool)
+
+    - name: "Dry run, VM not cloned yet: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - not (vm_exists | bool)
+
     - name: "Check VM status"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
@@ -564,7 +583,7 @@
         msg: |
           VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
             IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
-            Status: {{ 'running' if vm_running.json.data.status == 'running' else 'check' }}
+            Status: {{ (vm_running.json.data.status | default(pre_start.json.data.status | default('unknown'))) }}{{ ' (check mode: not started)' if ansible_check_mode else '' }}
             Agent: {{ 'ok' if (agent_ping is defined and agent_ping.status == 200) else 'pending' }}
             SSH: {{ 'ok' if ssh_ready is succeeded else 'pending' }}
             Runner: {{ 'configured' if (runner_setup is defined and runner_setup is succeeded) else 'skipped' }}

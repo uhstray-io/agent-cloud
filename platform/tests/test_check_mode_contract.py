@@ -16,6 +16,7 @@ check_mode_allowlist.txt; a listed file that has become clean fails the test unt
 removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4 and 2.4).
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,10 +24,25 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
+# Semaphore's own playbooks and shared tasks run under the same dry-run flag.
+SEMAPHORE = REPO / "platform/semaphore"
 ALLOWLIST = Path(__file__).with_name("check_mode_allowlist.txt")
 
 COMMANDS = {"command", "shell", "raw", "script"}
 READ_METHODS = {"GET", "HEAD"}
+# A container-engine lifecycle verb is a write whatever changed_when says. The check-mode
+# retrofit trusted changed_when: false on "stop + rm the orb agent", and a dry run removed
+# the running agent (docs/MISTAKES.md 5.9).
+ENGINE_WRITE = re.compile(
+    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose\s+)?"
+    r"(?:stop|rm|rmi|kill|restart|start|run|pull|up|down|create|login|logout|cp|tag|push|build|load|import|commit)\b"
+)
+# Host filesystem and service writes, whatever changed_when says (PR 203 review: `sudo mkdir`
+# + `chmod 1777` under check_mode: false changed a VM during a dry run).
+HOST_WRITE = re.compile(
+    r"(?:^|[\s;&|(])(?:sudo\s+)?(?:mkdir|chmod|chown|chgrp|mv|ln|tee|touch|install|truncate)\s"
+    r"|(?:^|[\s;&|(])(?:sudo\s+)?systemctl\s+(?:--user\s+)?(?:start|stop|restart|reload|enable|disable)\b"
+)
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
 
 
@@ -46,9 +62,22 @@ def _module(task: dict) -> tuple[str, object] | tuple[None, None]:
     return None, None
 
 
+_SKIP_TERM = re.compile(r"(?:^|\band\s+)\(?\s*not\s+ansible_check_mode\s*\)?(?:\s+and\b|$)")
+
+
 def _mentions_check_mode(when) -> bool:
+    """True only when the condition is PROVEN false under --check: `not ansible_check_mode`
+    as a whole list item (Ansible ANDs a list), or as a top-level `and` term of a string with
+    no `or`. A mere mention is not enough: `when: ansible_check_mode` runs only IN a dry run,
+    and `when: x or not ansible_check_mode` runs in one whenever x holds (PR 203 review)."""
     items = when if isinstance(when, list) else [when]
-    return any("ansible_check_mode" in str(item) for item in items)
+    for item in items:
+        text = " ".join(str(item).split())
+        if text == "not ansible_check_mode":
+            return True
+        if " or " not in f" {text} " and _SKIP_TERM.search(text):
+            return True
+    return False
 
 
 def _guarded(task: dict, inherited: bool) -> bool:
@@ -56,10 +85,32 @@ def _guarded(task: dict, inherited: bool) -> bool:
     return inherited or task.get("check_mode") is True or _mentions_check_mode(task.get("when"))
 
 
+def _command_text(args) -> str:
+    if isinstance(args, str):
+        return args
+    if isinstance(args, dict):
+        return str(args.get("cmd") or " ".join(map(str, args.get("argv", []))))
+    return str(args or "")
+
+
+def _sandboxed(text: str) -> bool:
+    """A command that makes its own `mktemp -d` root and removes it on EXIT (e.g. netplan
+    validated in an isolated root) writes only into that throwaway root."""
+    return bool(re.search(r"\broot=\$\(mktemp -d\)", text)) and "trap 'rm -rf \"$root\"' EXIT" in text
+
+
 def _classify(task: dict, module: str, args) -> str:
     # `changed_when: false` is the author's declaration that the task changes nothing, for a
     # command and for an HTTP call alike (an OpenBao AppRole login is a POST that only
-    # reads a token, and verification cannot run without it).
+    # reads a token, and verification cannot run without it), EXCEPT when the command runs
+    # a container-engine lifecycle verb: that is a write whatever the label says.
+    text = _command_text(args)
+    verb = ENGINE_WRITE.search(text)
+    # `run --rm` is a throwaway probe container (e.g. validating a config): it leaves nothing.
+    if module in COMMANDS and verb and not (verb.group(0).endswith("run") and "--rm" in text):
+        return "write"
+    if module in COMMANDS and HOST_WRITE.search(text) and not _sandboxed(text):
+        return "write"
     if task.get("changed_when") is False:
         return "read"
     if module == "uri":
@@ -111,7 +162,7 @@ def violations_in(doc) -> list[str]:
 
 
 def _files() -> list[Path]:
-    return sorted(PLAYBOOKS.rglob("*.yml"))
+    return sorted([*PLAYBOOKS.rglob("*.yml"), *SEMAPHORE.rglob("*.yml")])
 
 
 def _allowlist() -> set[str]:
@@ -226,3 +277,57 @@ def test_read_skipped_on_purpose_passes():
         "- name: anything to commit\n  ansible.builtin.command: git status --porcelain\n"
         "  changed_when: false\n  when: not ansible_check_mode\n"
     )
+
+
+def test_engine_lifecycle_marked_read_is_still_a_write():
+    # The exact shape that removed the local orb agent under --check.
+    found = _tasks(
+        "- name: stop agent\n  ansible.builtin.shell: |\n"
+        "    {{ container_engine | default('docker') }} stop netbox-orb-agent || true\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+    assert found == ["stop agent: shell write forced to run in check mode (check_mode: false)"]
+
+
+def test_engine_reads_stay_reads():
+    assert not _tasks(
+        "- name: inspect\n  ansible.builtin.command: podman inspect x --format x\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+
+
+def test_throwaway_probe_container_is_a_read():
+    assert not _tasks(
+        "- name: validate\n  ansible.builtin.command: podman run --rm caddy caddy validate\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+
+
+def test_registry_login_and_host_writes_are_writes():
+    # PR 203 review: `podman login` and `sudo mkdir` + `chmod` ran under --check.
+    for cmd in ("podman login ghcr.io -u x --password-stdin",
+                'podman machine ssh "sudo mkdir -p /d && sudo chmod 1777 /d"',
+                "{{ _engine }} cp /f c:/tmp/f"):
+        found = _tasks(f"- name: w\n  ansible.builtin.shell: {cmd!r}\n  changed_when: false\n  check_mode: false\n")
+        assert found == ["w: shell write forced to run in check mode (check_mode: false)"], cmd
+
+
+def test_a_command_that_writes_only_its_own_temp_root_is_a_read():
+    assert not _tasks(
+        "- name: validate\n  ansible.builtin.shell: |\n"
+        "    root=$(mktemp -d)\n    trap 'rm -rf \"$root\"' EXIT\n    mkdir -p \"$root/etc\"\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+
+
+def test_a_mention_of_check_mode_is_not_a_guard():
+    # Both of these still run the write in a dry run.
+    for when in ("ansible_check_mode", "allowed or not ansible_check_mode"):
+        found = _tasks(f"- name: w\n  ansible.builtin.command: podman restart x\n  when: {when}\n")
+        assert found == ["w: command write without a check-mode guard"], when
+
+
+def test_proven_skips_are_guards():
+    for when in ('"not ansible_check_mode"', '"x and not ansible_check_mode"',
+                 '"not ansible_check_mode and x"', '[x, "not ansible_check_mode"]'):
+        assert not _tasks(f"- name: w\n  ansible.builtin.command: podman restart x\n  when: {when}\n"), when

@@ -99,8 +99,9 @@
       register: _honcho_pull
       changed_when: false
       failed_when: false
-      when: not (local_mode | default(false) | bool)
-      check_mode: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: "Pre-flight: fall back to the local image store when the pull failed"
       ansible.builtin.command: "{{ _engine }} image exists {{ _honcho_image }}"
