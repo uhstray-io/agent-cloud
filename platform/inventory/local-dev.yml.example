@@ -162,6 +162,7 @@ all:
           o11y_scrape_sample_limit: 2000
           o11y_expected_metrics_targets:
             - { uid: o11y_missing_caddy, service: caddy, instance: "caddy:2021" }
+          o11y_alerts_enabled: false  # enable only after the OpenBao webhook is approved and seeded
           o11y_loki_port: 3100
 
     # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as

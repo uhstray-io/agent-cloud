@@ -1,5 +1,5 @@
-# Grafana-managed alerts. Kept paused until the OpenBao-backed receiver is
-# provisioned and a Semaphore fault drill has verified delivery.
+# Grafana-managed alerts. Inventory enables them only with the OpenBao-backed
+# Discord contact point; the notification drill is the rollout gate.
 apiVersion: 1
 
 groups:
@@ -44,7 +44,11 @@ groups:
           summary: A declared service metrics endpoint is unreachable.
           dashboard_url: /d/service-overview
         labels: { severity: critical }
-        isPaused: true
+        isPaused: {% if o11y_alerts_enabled | default(false) | bool %}false{% else %}true{% endif %}
+{% if o11y_alerts_enabled | default(false) | bool %}
+        notification_settings:
+          receiver: agent-cloud-ops
+{% endif %}
 {# The local inventory generated before this rollout still needs the Caddy pilot
    contract; a declared inventory list overrides this default. #}
 {% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
@@ -84,5 +88,9 @@ groups:
           summary: Expected metrics have disappeared for {{ target.service }}.
           dashboard_url: /d/service-overview
         labels: { severity: critical, service: '{{ target.service }}' }
-        isPaused: true
+        isPaused: {% if o11y_alerts_enabled | default(false) | bool %}false{% else %}true{% endif %}
+{% if o11y_alerts_enabled | default(false) | bool %}
+        notification_settings:
+          receiver: agent-cloud-ops
+{% endif %}
 {% endfor %}

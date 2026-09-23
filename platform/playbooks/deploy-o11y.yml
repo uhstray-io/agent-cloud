@@ -42,8 +42,12 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions:
-      - { name: grafana_admin_password, type: random, length: 32 }
+    _secret_definitions: >-
+      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
+         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
+          if o11y_alerts_enabled | default(false) | bool else []) }}
+    _required_existing_secrets: >-
+      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
     # OIDC client secret is owned by authentik (the IdP); read it here so
     # Grafana's generic_oauth secret matches the provider blueprint.
     _shared_reads:
@@ -58,6 +62,16 @@
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    - name: "Refuse an alert webhook outside Discord HTTPS"
+      ansible.builtin.fail:
+        msg: "OpenBao's o11y alert webhook must be a Discord HTTPS webhook URL."
+      when:
+        - o11y_alerts_enabled | default(false) | bool
+        - >-
+          (_resolved.alert_discord_webhook_url | urlsplit('scheme') != 'https') or
+          (_resolved.alert_discord_webhook_url | urlsplit('hostname') not in ['discord.com', 'discordapp.com']) or
+          (_resolved.alert_discord_webhook_url | urlsplit('path') is not match('^/api(/v[0-9]+)?/webhooks/'))
+
     - name: "Create Grafana alert provisioning directory"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting"
@@ -68,6 +82,12 @@
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"
         dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+        mode: "0644"
+
+    - name: "Render Discord contact point or its removal"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alert-contact.yml.j2"
+        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/contact.yml"
         mode: "0644"
 
     - name: "Require complete DGX scrape settings when nodes are declared"

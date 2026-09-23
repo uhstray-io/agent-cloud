@@ -114,8 +114,8 @@ for gpu in (False, True):
 PY
 }
 
-@test "o11y: paused alert rules cover down and vanished targets" {
-  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+@test "o11y: alert rules and contact point render for both rollout states" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$DEPLOY_DIR/templates/alert-contact.yml.j2" <<'PY'
 import sys
 
 import yaml
@@ -126,15 +126,25 @@ env.filters['bool'] = bool
 template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
 )
+contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
 targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy', 'instance': 'caddy:2021'}]
-for declared in ([], targets):
-    rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False))['groups'][0]['rules']
-    assert [rule['uid'] for rule in rules] == ['o11y_service_down'] + [target['uid'] for target in declared]
-    assert all(rule['isPaused'] is True for rule in rules)
-    assert all(rule['annotations']['dashboard_url'] == '/d/service-overview' for rule in rules)
-    assert 'up{service!=""} == 0' == rules[0]['data'][0]['model']['expr']
-    if declared:
-        assert 'absent_over_time(up{service="caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
+for enabled in (False, True):
+    for declared in ([], targets):
+        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False, o11y_alerts_enabled=enabled))['groups'][0]['rules']
+        assert [rule['uid'] for rule in rules] == ['o11y_service_down'] + [target['uid'] for target in declared]
+        assert all(rule['isPaused'] is not enabled for rule in rules)
+        assert all(rule['annotations']['dashboard_url'] == '/d/service-overview' for rule in rules)
+        assert all(('notification_settings' in rule) is enabled for rule in rules)
+        assert 'up{service!=""} == 0' == rules[0]['data'][0]['model']['expr']
+        if declared:
+            assert 'absent_over_time(up{service="caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
+    contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
+    if enabled:
+        receiver = contact['contactPoints'][0]['receivers'][0]
+        assert receiver['type'] == 'discord'
+        assert receiver['settings']['url'] == '$O11Y_ALERT_DISCORD_WEBHOOK_URL'
+    else:
+        assert contact['deleteContactPoints'][0]['uid'] == 'o11y_ops_discord'
 local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rules']
 assert local_rules[1]['uid'] == 'o11y_missing_caddy'
 PY
