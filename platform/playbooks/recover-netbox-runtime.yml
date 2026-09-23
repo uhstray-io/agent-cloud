@@ -39,7 +39,10 @@
         that:
           - _controller_revision.stdout == _dev_revision.stdout
           - _controller_changes.stdout | length == 0
-        fail_msg: "NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore."
+        fail_msg: >-
+          NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore.
+          Revision match: {{ _controller_revision.stdout == _dev_revision.stdout }}.
+          Dirty paths (git porcelain; names only): {{ _controller_changes.stdout_lines }}.
 
 - name: Preflight and recover the existing NetBox core
   hosts: netbox_svc
