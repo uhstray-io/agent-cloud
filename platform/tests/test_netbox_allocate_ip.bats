@@ -58,10 +58,11 @@ setup() {
 
 @test "netbox-allocate: bootstrap token can view prefixes without adding them" {
   local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
-  assert_grep -qF 'name="skynet-ipam-prefix-view"' "$bootstrap"
-  assert_grep -qF 'defaults={"enabled": True, "actions": ["view"]}' "$bootstrap"
+  assert_precedes "$bootstrap" 'Ensure NetBox automation user and scoped permissions' 'Already provisioned'
+  assert_grep -qF '"skynet-ipam-prefix-view", ["view"]' "$bootstrap"
   assert_grep -qF 'app_label="ipam", model="prefix"' "$bootstrap"
-  assert_grep -qF 'prefix_perm.users.add(user)' "$bootstrap"
+  assert_grep -qF 'perm.enabled, perm.actions = True, actions' "$bootstrap"
+  assert_grep -qF 'perm.users.add(user)' "$bootstrap"
 }
 
 @test "netbox-allocate: token bootstrap has a dev-bound Semaphore template" {
