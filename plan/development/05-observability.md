@@ -201,6 +201,22 @@
 > repeatable code from `dev` and verify the resulting policy and health.
 > Do not run the regular NetBox deploy as an unexamined recovery step: it
 > pulls images, stops the stack, and rebuilds containers.
+> A later read-only source audit found the host's tracked Compose file clean
+> at an older April commit, while the reviewed `dev` Compose declares the
+> required restart policies. The recovery preflight correctly refused that
+> mismatch before touching containers. Reconcile the host monorepo through
+> the Dev-bound recovery playbook as a separate, default-off source action:
+> require the audited starting commit and a clean checkout, place the exact
+> reviewed Dev commit through a guarded Git checkout, then verify its
+> revision and Compose checksum. Run the container dry-run with runtime
+> apply still disabled;
+> only then choose the scoped backing-service and NetBox start/recreate actions.
+> The host commit is on the unmerged April discovery debug branch (PR #186),
+> not an ancestor of `dev`. Its static-IP fallback was curated and merged to
+> `dev` in PR #223 with validation and without that branch's hardcoded site
+> coordinates or diagnostic logging. Source placement changes the worker
+> directory bind-mounted by orb-agent; verify discovery after NetBox recovers
+> and audit old synthetic `eth0` records before any cleanup.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter

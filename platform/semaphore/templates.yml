@@ -139,6 +139,18 @@ templates:
     playbook: platform/playbooks/recover-netbox-runtime.yml
     repository: agent-cloud dev
     survey_vars:
+      - name: netbox_source_apply
+        title: Place reviewed Dev source
+        description: "false = require the host to already run the reviewed Dev commit; true = place that exact commit before container preflight"
+        type: string
+        required: false
+        default_value: "false"
+      - name: expected_host_revision
+        title: Audited host commit
+        description: "Required when placing source; copy the full host commit SHA from Audit NetBox Runtime (Dev)"
+        type: string
+        required: false
+        default_value: ""
       - name: netbox_runtime_apply
         title: Apply recovery
         description: "false = inspect and report each core container's start/recreate/noop action without changing it; true = also apply those actions"
