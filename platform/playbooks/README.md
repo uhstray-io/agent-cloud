@@ -121,6 +121,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-n8n.yml` | Composable | Stateful-secret cutover guard, readiness-gated app/worker, verification and owner setup; use the service README for upgrades |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
+| `recover-netbox-runtime.yml` | Dev-bound recovery | Default preflight reports each core service's start/recreate/noop action; explicit apply converges only existing NetBox core containers through Compose and verifies health |
 | `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
 | `deploy-orb-agent.yml` | Composable | Deploy Orb Agent (standalone: Diode creds + agent.yaml + start) |
 | `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |

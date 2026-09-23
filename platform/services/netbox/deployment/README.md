@@ -39,6 +39,12 @@ Routine deployment preserves volumes but restarts containers and may migrate the
 database. **Clean Deploy NetBox destroys data**; it is not a troubleshooting
 shortcut. Do not run deployment scripts over an ad-hoc SSH session.
 
+For the stopped-core/restart-policy recovery, run **Recover NetBox Runtime (Dev)**
+in Semaphore with its default read-only preflight. The report names the planned
+action for each core container. An explicit apply uses the existing local images,
+Compose declaration, env files, and named volumes; it verifies health and login
+before reporting success. See [NetBox runtime convergence](../../../../plan/development/NETBOX-RUNTIME-CONVERGENCE.md).
+
 ## Deployment boundaries
 
 ```mermaid
