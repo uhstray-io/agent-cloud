@@ -12,9 +12,9 @@ contactPoints:
           url: $O11Y_ALERT_DISCORD_WEBHOOK_URL
           message: |
 {% raw %}
-            {{ template "default.message" . }}
             {{ range .Alerts.Firing }}o11y-delivery-status=firing service={{ index .Labels "service" }}
             {{ end }}
+            {{ template "default.message" . }}
 {% endraw %}
 {% else %}
 deleteContactPoints:

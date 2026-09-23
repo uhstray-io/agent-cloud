@@ -34,6 +34,8 @@ plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 revision = plays[0]['tasks']
 assert all('when' not in task for task in revision if 'revision' in task['name'] or 'checkout changes' in task['name'] or 'clean candidate' in task['name'])
 tasks = plays[1]['tasks']
+assert next(task for task in tasks if task['name'] == 'Require the private Discord destination and OpenBao access') == tasks[0]
+assert next(task for task in tasks if task['name'] == 'Authenticate to OpenBao') != tasks[0]
 uri_tasks = [task for task in tasks if 'ansible.builtin.uri' in task]
 assert uri_tasks
 assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True for task in uri_tasks)
@@ -225,6 +227,12 @@ assert any(task['name'] == "Name this run's disposable probe" for task in drill[
 assert "{{ _probe }}" in drill['vars']['expected_service']
 assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True
            for task in drill['tasks'] if 'ansible.builtin.uri' in task)
+assert all(task['ansible.builtin.uri']['headers']['User-Agent'].startswith('DiscordBot (')
+           for task in drill['tasks'] + tasks if 'ansible.builtin.uri' in task
+           and task['ansible.builtin.uri']['url'].startswith('https://discord.com/'))
+marker = next(task for task in drill['tasks'] if task['name'] == 'Mark the last Discord message before the probe')
+assert marker['ignore_errors'] is True
+assert any(task['name'] == 'Require Discord message-history access before the probe' for task in drill['tasks'])
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
 env = Environment()
@@ -370,6 +378,7 @@ for enabled in (False, True):
         assert receiver['type'] == 'discord'
         assert receiver['settings']['url'] == '$O11Y_ALERT_DISCORD_WEBHOOK_URL'
         assert 'o11y-delivery-status=firing service=' in receiver['settings']['message']
+        assert receiver['settings']['message'].index('o11y-delivery-status=firing service=') < receiver['settings']['message'].index('default.message')
     else:
         assert contact['deleteContactPoints'][0]['uid'] == 'o11y_ops_discord'
 local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rules']

@@ -173,6 +173,13 @@
       register: _before_messages
       delegate_to: localhost
       no_log: true
+      ignore_errors: true
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Require Discord message-history access before the probe
+      ansible.builtin.assert:
+        that: _before_messages is succeeded
+        fail_msg: "Discord message-history read failed with HTTP {{ _before_messages.status | default('unknown') }}; no fault probe was started."
       when: drill_expect_alert | default(false) | bool
 
     - name: Exercise the declared unreachable endpoint
