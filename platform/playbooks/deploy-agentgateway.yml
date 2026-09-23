@@ -265,6 +265,7 @@
           Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
         timeout: 10
         status_code: [200]
+        return_content: true
       register: _keyed_models
       failed_when: false
       no_log: true
@@ -272,13 +273,16 @@
         - not ansible_check_mode
         - _verify_client | length > 0
 
-    # A 429 is the gateway's own policy refusing the probe, not a routing failure: the request
-    # bucket answers 429 when spent (measured on local-dev, 2026-09-23; the budget refusal's
-    # status was not measured). A redeploy must not fail on it, and the report says the
-    # round-trip was not proven on this run.
+    # The gateway's own request bucket, when spent, answers 429 with the plain-text body
+    # `rate limit exceeded` (measured on local-dev, 2026-09-23). Only that refusal is the
+    # gateway's policy, not a routing fault: a redeploy does not fail on it, and the report says
+    # the round-trip was not proven on this run. Any other 429 (one relayed from the upstream,
+    # or a budget refusal, whose body was not measured) fails like any other status.
     - name: "Keyed probes: note a policy refusal"
       ansible.builtin.set_fact:
-        _verify_refused: "{{ (_keyed_models.status | default(-1)) == 429 }}"
+        _verify_refused: >-
+          {{ (_keyed_models.status | default(-1)) == 429
+             and (_keyed_models.content | default('') | trim) == 'rate limit exceeded' }}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -312,6 +316,7 @@
           messages: [{role: user, content: "Reply with one word: pong"}]
         timeout: 120
         status_code: [200]
+        return_content: true
       register: _keyed_chat
       failed_when: false
       no_log: true
@@ -322,7 +327,9 @@
 
     - name: "Keyed probes: note a policy refusal of the completion"
       ansible.builtin.set_fact:
-        _verify_refused: "{{ (_keyed_chat.status | default(-1)) == 429 }}"
+        _verify_refused: >-
+          {{ (_keyed_chat.status | default(-1)) == 429
+             and (_keyed_chat.content | default('') | trim) == 'rate limit exceeded' }}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -352,8 +359,8 @@
           /v1/models is 401 at the gateway.
           {% if ansible_check_mode %}Check mode: the keyed round-trip runs only in a real run.
           {% elif _verify_client | length > 0 and (_verify_refused | bool) %}WARNING: the keyed
-          round-trip was NOT proven on this run: the gateway's own rate or budget policy refused
-          {{ _verify_client }} with HTTP 429. Rerun the verify after the window, or set
+          round-trip was NOT proven on this run: the gateway's own request bucket refused
+          {{ _verify_client }} (HTTP 429, rate limit exceeded). Rerun the verify after the window, or set
           agw_verify_client to an identity with budget left.
           {% elif _verify_client | length > 0 %}As {{ _verify_client }}: /v1/models lists
           {{ _verify_models | join(', ') }}; one chat completion for

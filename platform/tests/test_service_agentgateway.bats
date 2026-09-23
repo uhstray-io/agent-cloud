@@ -243,6 +243,8 @@ PY
   assert_grep -qF '.allowed_models' "$PLAYBOOK"
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
   assert_grep -qF '(_keyed_models.status | default(-1)) == 429' "$PLAYBOOK"
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   # Local-dev's verify runs in the Semaphore container, on the gateway's network.
   assert_grep -qF 'agw_verify_base_url=http://agentgateway:4000' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
