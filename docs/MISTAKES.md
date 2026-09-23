@@ -2424,8 +2424,9 @@ executor's version, not a runtime observable, so 10.14's rule did not cover it.
 
 **The rule.** Widens 10.14: when a proof runs on an executor that differs from production's
 (controller image, ansible-core, engine), either run it on production's version too, or name the
-difference as an unproven precondition. For Ansible, build lists and dicts from filters, and
-parse JSON with `from_json`; never rely on template text being coerced.
+difference as an unproven precondition. For Ansible, build lists and dicts as native values:
+filters, or a statement block whose only output is the value itself. Never rely on template
+text being coerced, and never on JSON text assembled with escapes.
 
 **Enforced by.** Test: `platform/tests/test_agentgateway_secret_defs.py` evaluates the play's real
 `_client_defs` and `_secret_definitions` with `ansible-playbook`. CI installs the current
