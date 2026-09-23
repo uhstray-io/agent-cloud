@@ -157,6 +157,32 @@
       `type`); first week runs with loose figures tightened from observed rates
 - [ ] 3.3 Validation gate: one hour of traffic renders p50 and p95 first-token latency and
       per-identity counts, proving scenario "Client-view latency on the dashboard"
+- [ ] 3.4 VM side of the telemetry path (owned by the service-deployment-workflow session;
+      the receiver side, scrape and ingest, is `observability-estate` task 4.4). STAGED: nothing
+      here is set until that task hands over a verified receiver address and allowed source.
+      Until then prod keeps `agw_stats_bind` at its 127.0.0.1 default and no
+      `agw_otlp_endpoint`, so there is no exposure (site-config main, 2026-09-23). Everything
+      goes through site-config and Dev-bound Semaphore templates, with no host changes:
+      - Stats: site-config sets `agw_stats_bind` to the VM's service address (never
+        0.0.0.0) and an `Apply Firewall` rule for 19002/tcp from the handed-over source
+        only (`firewall_allow_rules`; `firewall_route_rules` if the host is rootful). Then
+        run `Deploy agentgateway (Dev)` and `Apply Firewall (Dev)`. The receiver reads the
+        same address as `agentgateway_metrics_address`/`_port`, and its job labels
+        `service=agentgateway, component=gateway, env=prod` (#206
+        `scrape-agentgateway.yml.j2`).
+      - Logs: the gateway logs to container stdout. A compose overlay
+        (`compose.telemetry.yml`) runs an Alloy agent on the same pinned image as the o11y
+        stack (`grafana/alloy:v1.5.1`). It reads the engine socket read-only, keeps only
+        this project's containers, labels them like the scrape job, and pushes to the
+        handed-over Loki URL (`telemetry_loki_url`, the dgx-spark handover name) through
+        the transport guard. It is gated by one inventory flag; unset means no overlay.
+      - Verify, in the deploy's own verify phase: `/metrics` answers from the service
+        address with the `identity` label. The firewall snapshot lists 19002 from the
+        allowed source only. Loki receipt is proven on the receiver (4.4).
+      - Undo: remove the vars and redeploy; the bind returns to loopback and the overlay is
+        dropped.
+      Report back to the observability task: the Semaphore task ids, the live `/metrics`
+      sample, and the label set.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
