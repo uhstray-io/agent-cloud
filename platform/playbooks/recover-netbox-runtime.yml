@@ -1,6 +1,7 @@
 ---
 # Reconcile only the four NetBox core containers after a stopped/no-restart
-# runtime, using the exact reviewed dev checkout. Container dry run is default.
+# runtime, using the exact reviewed dev checkout. Both modes place that checkout
+# on the target; the default preflight makes no container or secret changes.
 - name: Require a reviewed dev checkout for NetBox recovery
   hosts: localhost
   connection: local

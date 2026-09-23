@@ -25,3 +25,18 @@ load assert_helpers
   local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
   grep -qF "_permissions.stdout_lines | default([]) | last | default('')" "$bootstrap"
 }
+
+@test "NetBox recovery publishes only a dev-bound template with preflight default" {
+  python3 - "$BATS_TEST_DIRNAME/../semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+templates = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]
+recovery = [item for item in templates if item["playbook"] == "platform/playbooks/recover-netbox-runtime.yml"]
+assert len(recovery) == 1
+assert recovery[0]["name"] == "Recover NetBox Runtime (Dev)"
+assert recovery[0]["repository"] == "agent-cloud dev"
+assert not recovery[0].get("dev_variant", False)
+assert recovery[0]["survey_vars"][0]["default_value"] == "false"
+PY
+}

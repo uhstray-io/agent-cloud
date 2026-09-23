@@ -135,13 +135,13 @@ templates:
     playbook: platform/playbooks/audit-netbox-runtime.yml
     dev_variant: true
 
-  - name: Recover NetBox Runtime
+  - name: Recover NetBox Runtime (Dev)
     playbook: platform/playbooks/recover-netbox-runtime.yml
-    dev_variant: true
+    repository: agent-cloud dev
     survey_vars:
       - name: netbox_runtime_apply
         title: Apply recovery
-        description: "false = image and volume preflight only; true = reconcile the existing four core containers"
+        description: "Both modes place the reviewed dev checkout; false = image and volume preflight only; true = reconcile the existing four core containers"
         type: string
         required: false
         default_value: "false"
