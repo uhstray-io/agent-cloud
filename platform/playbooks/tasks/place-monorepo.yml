@@ -62,6 +62,9 @@
   # them) but are listed explicitly as belt-and-suspenders — a missing or edited
   # .gitignore must never leak host-only (.remember, mode 700), mode-600 secrets/
   # (creds come from OpenBao anyway), or the large netbox-docker/ upstream clone.
+  # Python build/ and *.egg-info/ are explicit too: rsync's .gitignore merge
+  # rules alone do not protect nested generated dirs during --delete, and old
+  # root-owned build artifacts can otherwise make every local deploy fail.
   # No -o/-g (like tar): ownership becomes this uid.
   ansible.builtin.shell: |
     set -euo pipefail
@@ -69,6 +72,7 @@
     rsync -rlpti --delete \
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
+      --exclude build/ --exclude '*.egg-info/' \
       "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"
   when: local_mode | default(false) | bool
   register: _rsync_result
