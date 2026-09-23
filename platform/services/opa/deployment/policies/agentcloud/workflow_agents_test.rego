@@ -49,12 +49,19 @@ test_generated_dev_suffix_matches_base_name if {
 	agentcloud.allow with input as _run("security-agent", "Apply Firewall (Dev)")
 }
 
-test_deploy_prefix_covers_any_service if {
-	agentcloud.allow with input as _run("service-agent", "Deploy tududi")
+test_service_deploy_list_covers_a_listed_service if {
+	agentcloud.allow with input as _run("service-agent", "Deploy tududi (Dev)")
 }
 
-test_deploy_prefix_never_reaches_another_roles_template if {
+test_service_deploy_list_never_reaches_another_roles_template if {
 	not agentcloud.allow with input as _run("service-agent", "Deploy Authentik")
+}
+
+# The "Deploy " prefix this list replaced reached the platform's foundation.
+test_service_agent_cannot_deploy_the_foundation if {
+	every t in ["Deploy OpenBao", "Deploy Semaphore", "Deploy All Services", "Deploy GitHub Runner", "Deploy NetBox"] {
+		not agentcloud.allow with input as _run("service-agent", t)
+	}
 }
 
 # Scenario "Destructive template still needs a human"

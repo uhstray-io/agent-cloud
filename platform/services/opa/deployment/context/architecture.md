@@ -51,7 +51,8 @@ supplied per-query in `input` — never stored in OPA.
 ### Workflow agents (service-deployment workflow)
 
 `infra-agent`, `security-agent`, `o11y-agent` and `service-agent` are **role-scoped**: each
-declares `allowed_templates` (and `service-agent` the prefix `Deploy `), which must equal the
+declares `allowed_templates` (and `service-agent` a closed `service_deploy_templates` list of
+application-service deploys, never the foundation), which must equal the
 templates the step registry (`platform/workflows/service-onboarding/registry.yml`) assigns
 it; `platform/tests/test_workflow_registry.py` fails when they drift. For a role-scoped
 agent, `run_task` is denied when the template is not its own, when the branch is `main`

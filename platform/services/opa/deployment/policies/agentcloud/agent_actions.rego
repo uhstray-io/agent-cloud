@@ -8,7 +8,7 @@
 #
 # Workflow agents (change service-deployment-workflow): an identity that declares
 # `allowed_templates` is ROLE-SCOPED. For it, run_task also needs the template on its list
-# (or matching one of its `allowed_template_prefixes`), a reviewed step before `main`, and —
+# (or on its closed `service_deploy_templates` list), a reviewed step before `main`, and —
 # when the input carries a reasoning-step proposal — a proposal whose content passes the
 # rules below. Extra input for those rules:
 #   git_branch     branch the task runs (Semaphore task `git_branch`); missing means main
@@ -82,18 +82,10 @@ _base_template := trim_suffix(trim_suffix(object.get(input, "template_name", "")
 
 _template_allowed if _base_template in data.agentcloud.catalog[input.agent].allowed_templates
 
-# A prefix ("Deploy " for "Deploy {service}") never reaches a template another role owns.
-_template_allowed if {
-	some prefix in object.get(data.agentcloud.catalog[input.agent], "allowed_template_prefixes", [])
-	startswith(_base_template, prefix)
-	not _owned_by_another_role
-}
-
-_owned_by_another_role if {
-	some agent, entry in data.agentcloud.catalog
-	agent != input.agent
-	_base_template in object.get(entry, "allowed_templates", [])
-}
+# The registry step "Deploy {service}" is granted as a CLOSED list of application-service
+# deploys, not a "Deploy " prefix: the prefix also reached Deploy OpenBao, Deploy Semaphore
+# and Deploy All Services (OPA-evaluated, 2026-09-22). A new service is added by name.
+_template_allowed if _base_template in object.get(data.agentcloud.catalog[input.agent], "service_deploy_templates", [])
 
 # --- Workflow agents: branch ------------------------------------------------------------
 

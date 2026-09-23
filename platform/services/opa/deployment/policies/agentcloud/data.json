@@ -140,8 +140,15 @@
         "Snapshot Service Assessment",
         "Snapshot Access"
       ],
-      "allowed_template_prefixes": [
-        "Deploy "
+      "service_deploy_templates": [
+        "Deploy n8n",
+        "Deploy OpenHands",
+        "Deploy tududi",
+        "Deploy honcho",
+        "Deploy Postiz",
+        "Deploy UhhCraft",
+        "Deploy ComfyUI Sidecar",
+        "Deploy Hunyuan3D Sidecar"
       ]
     },
     "semaphore": {
