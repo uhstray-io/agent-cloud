@@ -75,3 +75,22 @@ def test_loki_streams_label_every_result():
         "values": [["1700000000000000000", json.dumps(
             {"check_mode": None, "error": None, "task_id": 8}, sort_keys=True)]],
     }]
+
+
+def test_report_lists_failed_steps_with_their_context_and_unreviewed_steps():
+    # Spec: the report lists criteria not met, error context, undo and the task, and every
+    # unreviewed step for every service.
+    agg = step_results.aggregate(REGISTRY, [_task(9, "error", "Apply Firewall", ["denied"])])
+    entry = step_results.report(agg, REGISTRY)["tududi"]
+    fw = next(s for s in REGISTRY if s["id"] == "fw-harden")
+    assert entry["failed"] == [{"step": "fw-harden", "criteria": fw["criteria"], "error": "denied",
+                                "task_id": 9, "undo": fw["undo"]}]
+    assert entry["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
+
+
+def test_a_failed_snapshot_without_a_result_takes_its_service_from_the_target_group():
+    # A non-deploy template names no service in its playbook; the launch's extra vars do.
+    task = _task(10, "error", "Snapshot Access", ["no hosts matched"], service=None)
+    task["environment"] = json.dumps({"target_service": "tududi_svc"})
+    agg = step_results.aggregate(REGISTRY, [task])
+    assert agg["failed_steps"] == {"tududi": ["access-assess"]}

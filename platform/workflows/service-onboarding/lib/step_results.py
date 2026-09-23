@@ -11,10 +11,13 @@ A task that FAILED without recording one is still a result: the registry maps it
 to a step, and it is recorded as `fail` with the last twenty output lines as the error.
 
 stdin: {"registry": [<registry steps>],
-        "tasks": [{"id", "status", "end", "template_name", "service", "output": [lines]}]}
+        "tasks": [{"id", "status", "end", "template_name", "service", "output": [lines],
+                   "environment": <the task's extra vars as Semaphore stores them, a JSON string>}]}
         optional "now_ns": a timestamp in nanoseconds, to also emit Loki push streams
 stdout: {"services": {service: {step: {status, task_id, end, check_mode, error, evidence}}},
          "failed_steps": {service: [step, ...]},
+         "report": {service: {"failed": [{step, criteria, error, undo, task_id}],
+                              "unreviewed": [step, ...]}},
          "loki_streams": [...]  (only with now_ns; POST /loki/api/v1/push body "streams")}
 Only the LATEST result per (service, step) is kept, by task id.
 """
@@ -53,6 +56,18 @@ def _step_for(template: str, registry: list[dict]) -> str | None:
     return None
 
 
+def _service_of(task: dict) -> str | None:
+    """The service a task ran for: a per-service playbook's name, else the launch's
+    `target_service` group minus its `_svc` suffix (the inventory's group convention)."""
+    if task.get("service"):
+        return task["service"]
+    try:
+        target = json.loads(task.get("environment") or "{}").get("target_service")
+    except (ValueError, AttributeError):
+        return None
+    return re.sub(r"_svc$", "", target) if isinstance(target, str) and target else None
+
+
 def aggregate(registry: list[dict], tasks: list[dict]) -> dict:
     services: dict[str, dict] = {}
     for task in sorted(tasks, key=lambda t: t["id"]):
@@ -61,9 +76,10 @@ def aggregate(registry: list[dict], tasks: list[dict]) -> dict:
         results = results_in(task.get("output", []))
         if not results and task["status"] == "error":
             step = _step_for(task.get("template_name", ""), registry)
-            if step and task.get("service"):
+            service = _service_of(task)
+            if step and service:
                 results = [{
-                    "service": task["service"], "step": step, "status": "fail",
+                    "service": service, "step": step, "status": "fail",
                     "check_mode": False, "evidence": {},
                     "error": "\n".join(task.get("output", [])[-TAIL:]) or "task failed with no output",
                 }]
@@ -86,6 +102,24 @@ def aggregate(registry: list[dict], tasks: list[dict]) -> dict:
     return {"services": services, "failed_steps": failed}
 
 
+def report(agg: dict, registry: list[dict]) -> dict:
+    """The read-only failure report: per service, each failed step with the criteria it did
+    not meet, its error context, whether an undo exists and the Semaphore task, plus every
+    step whose review has not passed (spec scenario "Unreviewed step is visible")."""
+    steps = {s["id"]: s for s in registry}
+    unreviewed = [s["id"] for s in sorted(registry, key=lambda s: s["order"]) if not s.get("reviewed")]
+    out = {}
+    for service, results in sorted(agg["services"].items()):
+        failed = [
+            {"step": step, "criteria": steps.get(step, {}).get("criteria", []),
+             "error": results[step]["error"], "task_id": results[step]["task_id"],
+             "undo": steps.get(step, {}).get("undo") or "none"}
+            for step in agg["failed_steps"][service]
+        ]
+        out[service] = {"failed": failed, "unreviewed": unreviewed}
+    return out
+
+
 def loki_streams(agg: dict, now_ns: int) -> list[dict]:
     """One Loki stream per (service, step), labelled so the dashboard can filter on them."""
     streams = []
@@ -104,6 +138,7 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
 def main() -> int:
     data = json.load(sys.stdin)
     agg = aggregate(data["registry"], data["tasks"])
+    agg["report"] = report(agg, data["registry"])
     if data.get("now_ns"):
         agg["loki_streams"] = loki_streams(agg, int(data["now_ns"]))
     json.dump(agg, sys.stdout, sort_keys=True)

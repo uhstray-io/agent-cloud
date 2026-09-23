@@ -1,0 +1,218 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "schemaVersion": 39,
+  "tags": [
+    "agent-cloud",
+    "workflow"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timezone": "",
+  "title": "Service deployment conformance",
+  "uid": "service-conformance",
+  "version": 1,
+  "description": "Per-service status of every service deployment workflow step, as last recorded by Collect Service Conformance (the only writer). Plan 15; change service-deployment-workflow task 7.5.",
+  "panels": [
+    {
+      "title": "Failing steps",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "description": "(service, step) pairs whose latest recorded result is fail.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "count(sum by (service, step) (count_over_time({job=\"agent-cloud-conformance\", status=\"fail\"} [16m])))"
+        }
+      ]
+    },
+    {
+      "title": "Services tracked",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "count(sum by (service) (count_over_time({job=\"agent-cloud-conformance\"} [16m])))"
+        }
+      ]
+    },
+    {
+      "title": "Step status by service",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "description": "Rows are services, columns are workflow step ids. An empty cell means no executor has recorded that step for the service yet. If a manual collector run and a scheduled one both land inside 16 minutes with different results, the cell shows the later-sorted status; the failure report (the collector's dry run) is authoritative.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "cellOptions": {
+              "type": "color-background"
+            },
+            "align": "center"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "pass": {
+                  "color": "green",
+                  "index": 0
+                },
+                "fail": {
+                  "color": "red",
+                  "index": 1
+                },
+                "skip": {
+                  "color": "gray",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "sum by (service, step, status) (count_over_time({job=\"agent-cloud-conformance\"} [16m]))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "step",
+            "rowField": "service",
+            "valueField": "status",
+            "emptyValue": "empty"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Failures with context",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "description": "Each failing step's error and Semaphore task id, one line per collector run.",
+      "options": {
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}"
+        }
+      ]
+    }
+  ]
+}

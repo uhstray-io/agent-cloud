@@ -18,6 +18,10 @@
 # does not block deployment"). Its own step result is not a workflow step, so it records the
 # aggregate with set_stats under `conformance` instead.
 #
+# The read-only REPORT (spec: each failed step with its criteria not met, error context, undo
+# and task, plus every unreviewed step) is this playbook's dry run: `conformance.report` in
+# the task output, with nothing written anywhere.
+#
 # Controller API: fixed loopback, like the survey publisher; the OpenBao-sourced token never
 # goes to a caller-chosen address. Dry run (--check): reads and parses, writes nothing.
 
@@ -85,6 +89,18 @@
       check_mode: false
       no_log: true
 
+    - name: "Read each failed candidate's launch vars (its target service, when it recorded no result)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      loop: "{{ _candidates | selectattr('status', 'equalto', 'error') | list }}"
+      loop_control:
+        label: "task {{ item.id }}"
+      register: _details
+      check_mode: false
+      no_log: true
+
     - name: "One parser record per task (service taken from a per-service playbook name)"
       ansible.builtin.set_fact:
         _collected: >-
@@ -95,7 +111,9 @@
                'template_name': _tpl_names[item.item.template_id] | default(''),
                'service': ((item.item.tpl_playbook | basename | regex_replace('^deploy-|\\.yml$', ''))
                            if (item.item.tpl_playbook | default('') | basename) is match('deploy-[a-z0-9-]+\\.yml$') else none),
-               'output': item.json | map(attribute='output') | map('regex_replace', '\\x1b\\[[0-9;]*m', '') | list
+               'output': item.json | map(attribute='output') | map('regex_replace', '\\x1b\\[[0-9;]*m', '') | list,
+               'environment': (_details.results | selectattr('item.id', 'equalto', item.item.id)
+                               | map(attribute='json.environment') | first | default(''))
              }] }}
       loop: "{{ _outputs.results }}"
       loop_control:
@@ -218,8 +236,7 @@
     - name: "Report"
       ansible.builtin.debug:
         msg:
-          services: "{{ _agg.services.keys() | list }}"
-          failed_steps: "{{ _agg.failed_steps }}"
+          report: "{{ _agg.report }}"
           netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
           netbox_no_vm: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
           netbox_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"

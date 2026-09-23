@@ -188,6 +188,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
 - [ ] 7.5 Collector (scheduled), NetBox custom-field writes, Loki push, Grafana dashboard JSON,
       read-only report; single-writer test
+      - Local, 2026-09-22: collector tasks 1023 (dry run) → 1035. Loki push, the Grafana
+        dashboard (`service-conformance`, all four panel queries answered through Grafana)
+        and the report (the collector's dry run) are proven on a real failure (`dns`
+        secrets-approle, task 1034). OPEN: the NetBox write path has never run, because
+        local NetBox holds no VM record (needs 7.3's NetBox VM record executor). The table
+        transformations have been checked against Grafana 11.4 source but not viewed in a
+        browser.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [ ] 7.7 `agent-practices.md` for agentgateway

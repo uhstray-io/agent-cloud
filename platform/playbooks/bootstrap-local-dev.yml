@@ -933,7 +933,7 @@
         # evaluate the default argument eagerly (Jinja), so an undefined
         # ansible_user errors even when local_monorepo_dir is set.
         _inv_ini: |
-          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true
+          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true collector_loki_url=http://host.containers.internal:3100
 
           [dns_svc]
           dns-local ansible_host=127.0.0.1 ansible_connection=local
