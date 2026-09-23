@@ -17,7 +17,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: 'up{service!=""} == 0'
+              expr: 'up{service!=""}'
               instant: true
               range: false
               intervalMs: 1000
@@ -29,7 +29,7 @@ groups:
               expression: A
               type: threshold
               conditions:
-                - evaluator: { type: gt, params: [0.5] }
+                - evaluator: { type: lt, params: [0.5] }
                   operator: { type: and }
                   query: { params: [B] }
                   reducer: { type: last, params: [] }

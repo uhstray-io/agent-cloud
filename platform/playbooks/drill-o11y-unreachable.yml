@@ -129,8 +129,8 @@
               ansible.builtin.assert:
                 that:
                   - expected_service in ansible_failed_result.msg
-                  - expected_instance in ansible_failed_result.msg
                   - "'failing instances=' in ansible_failed_result.msg"
+                  - ("'" ~ expected_instance ~ "'") in (ansible_failed_result.msg.split('failing instances=', 1)[1].split(';', 1)[0])
                 fail_msg: "The verifier failed without naming the unreachable service and endpoint."
 
             - name: Report the expected verification failure
@@ -156,7 +156,7 @@
             _firing_alerts.rc == 0 and
             ((_firing_alerts.stdout | from_json).data.alerts |
              selectattr('labels.service', 'equalto', expected_service) |
-             selectattr('state', 'equalto', 'firing') | list | length) > 0
+             selectattr('state', 'match', '^(Alerting( .*)?|firing)$') | list | length) > 0
           when: drill_expect_alert | default(false) | bool
 
         - name: Report the firing rule without claiming external delivery

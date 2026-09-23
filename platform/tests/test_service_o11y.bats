@@ -155,6 +155,32 @@ PY
   refute_contains "$output" "TASK [Place the monorepo"
 }
 
+@test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" <<'PY'
+import json, re, sys, yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(open(sys.argv[1]))
+tasks = plays[1]['tasks'][-1]['block']
+wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
+rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
+env = Environment()
+env.filters['from_json'] = json.loads
+env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
+matches = env.compile_expression(wait['until'])
+for state, expected in [('Alerting', True), ('Alerting (Error)', True), ('firing', True), ('Normal', False)]:
+    response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
+    assert bool(matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')) is expected
+checks = rescue['ansible.builtin.assert']['that']
+instance_check = env.compile_expression(checks[-1])
+for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535']; scrapes found=1.", True),
+                      ("pilot at probe:65535: failing instances=[]; scrapes found=0.", False),
+                      ("pilot at probe:65535: failing instances=['other']; scrapes found=1.", False),
+                      ("pilot at probe:65535: failing instances=['other', 'probe:65535']; scrapes found=2.", True)]:
+    assert bool(instance_check(ansible_failed_result={'msg': msg}, expected_instance='probe:65535')) is expected
+PY
+}
+
 @test "o11y: retention defaults reach Prometheus and Loki" {
   grep -q "O11Y_PROM_RETENTION={{ o11y_prom_retention | default('15d') }}" "$DEPLOY_DIR/templates/env.j2"
   grep -q "O11Y_LOKI_RETENTION={{ o11y_loki_retention | default('7d') }}" "$DEPLOY_DIR/templates/env.j2"
@@ -257,7 +283,8 @@ for enabled in (False, True):
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(rule['annotations']['dashboard_url'] == '/d/service-overview' for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
-        assert 'up{service!=""} == 0' == rules[0]['data'][0]['model']['expr']
+        assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
+        assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
         if declared:
             assert 'absent_over_time(up{service="caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
