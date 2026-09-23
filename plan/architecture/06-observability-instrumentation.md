@@ -6,6 +6,17 @@
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
+> **As-built correction, 2026-09-22:** The "deployed" statements below are
+> historical design context, not a current deployment claim. On this branch,
+> `platform/services/o11y/deployment/compose.yml` defines the four containers;
+> `config/prometheus.yml` scrapes only itself; `config/config.alloy` ships
+> container logs and has no OTLP receiver. Dashboard JSON is provisioned from
+> the repo, but the generic service selector and alert rules described below
+> are not yet in the committed o11y config. Current local runtime and production
+> health were not verified in this task; the local Podman socket check failed
+> to connect. The `observability-estate` change tracks the shared contract,
+> while `inference-telemetry-production` owns production DGX Spark telemetry.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 

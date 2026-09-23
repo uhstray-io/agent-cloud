@@ -7,6 +7,16 @@
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
 
+> **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
+> committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
+> `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`
+> ships local container logs but has no OTLP receiver or OpenBao-audit tail.
+> This verifies repository configuration, not running health. A read-only
+> `podman ps --filter name=o11y` check could not connect to the local Podman
+> socket in this task, so current local deployment is unverified. Production
+> deployment is also unverified here; the separate
+> `inference-telemetry-production` change owns its production rollout.
+
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
