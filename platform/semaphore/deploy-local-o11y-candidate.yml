@@ -95,6 +95,7 @@
               'ssh_key_id': _local_repo.ssh_key_id | int} | to_json }}
         status_code: [201, 204]
       when: _repos | selectattr('name', 'equalto', _candidate_repo_name) | list | length == 0
+      changed_when: true
       no_log: true
 
     - name: Read back the candidate repository
@@ -147,6 +148,7 @@
                                'type': 'string', 'required': true}]} | to_json }}
         status_code: [200, 201, 204]
       when: _templates | selectattr('name', 'equalto', _candidate_template_name) | list | length == 0
+      changed_when: true
       no_log: true
 
     - name: Read back the candidate template
@@ -191,6 +193,7 @@
         status_code: [200, 201]
       register: _launch
       when: candidate_deploy | default(false) | bool
+      changed_when: true
       no_log: true
 
     - name: Report the launched task id

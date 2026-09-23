@@ -27,23 +27,30 @@ credential-visible sync workflow with `changed=0`; it did not verify task/issue
 correspondence. This proves that executor's access at the time of the run, not
 every credential's validity or ongoing AppRole health.
 
-## What Semaphore can see: `main` and `dev` only
+## Declared production repository records: `main` and `dev`
 
-The controller runs a template from one of the two repository records declared in
+The production templates use the two repository records declared in
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
 in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
-**A feature branch is invisible to the controller.** Code that a Semaphore task
+**No production feature-branch record is declared.** Code that a Semaphore task
 must execute — a new playbook, a new OpenTofu file, a changed template — has to
 be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 `(Dev)` variant can run it, and into `main` before the base template can. Plan
 the live step after the merge, not after the commit. Recorded 2026-09-14, when
 `ratelimit.tf` sat committed on its feature branch with nothing able to plan it.
 
+The local-dev controller has an additional, isolated validation path:
+`deploy-local-o11y-candidate.yml` registers a branch-specific repository and
+template without changing the shared `agent-cloud worktree` binding. It requires
+an explicit branch; a launch also requires the full expected commit SHA, which
+`deploy-o11y.yml` checks before placing files. This candidate exists only on the
+loopback local controller; it does not make a production feature branch visible.
+
 ## Launching a task from outside the controller (the API path)
 
-Nothing on a workstation talks to the controller today: no `SEMAPHORE_TOKEN` is
-set, the operating evidence above was produced from the UI, and an anonymous
+No workstation path to the production controller was verified in the 2026-09-14
+check: no `SEMAPHORE_TOKEN` was set, the operating evidence came from the UI, and an anonymous
 request to `https://semaphore.uhstray.io/api/ping` is answered by Cloudflare with
 `403` + `cf-mitigated: challenge` (verified 2026-09-14). The pieces of a
 scripted path exist and are recorded here so it is built once, deliberately:

@@ -10,14 +10,16 @@
 > historical design context, not a current deployment claim. On this branch,
 > `platform/services/o11y/deployment/compose.yml` defines the four containers;
 > `config/prometheus.yml` scrapes only itself; `config/config.alloy` ships
-> container logs and has no OTLP receiver. Dashboard JSON is provisioned from
-> the repo, but the generic service selector and alert rules described below
-> are not yet in the committed o11y config. A later read-only local check on
+> container logs and has no OTLP receiver. The generic Service Overview JSON
+> includes a `service` selector; alert rules remain absent. A read-only local check on
 > 2026-09-22 found all four containers healthy and their health/ready endpoints
 > returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
 > OIDC login and returned to the provisioned overview dashboard. The dashboard
-> showed local container logs and only the Prometheus self-target; a
-> feature-branch deploy remains unverified. The merged DGX scrape declarations
+> showed local container logs and only the Prometheus self-target. Local
+> Semaphore candidate task 1065 later verified commit
+> `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` before deploying o11y;
+> its Grafana, Prometheus, and Loki checks passed, and the signed-in dashboard
+> loaded after a browser reload. The merged DGX scrape declarations
 > are production groundwork, not evidence that a production receiver exists
 > or receives telemetry.
 

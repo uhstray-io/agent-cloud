@@ -1,6 +1,6 @@
 ## Context
 
-See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy are healthy; Grafana completed an Authentik login through the chain-verified TLS front door and returned to its overview dashboard. Branch-specific local deployment remains unverified. Prometheus scrapes itself; Alloy discovers container logs over the local Podman socket. The clean production inference telemetry branch is merged here and provides inventory-rendered DGX scrape jobs, but no production receiver is verified. `plan/architecture/06-observability-instrumentation.md` describes the desired contract but contains historical as-built claims.
+See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy were healthy at baseline. Local Semaphore candidate task 1065 checked out commit `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` and deployed o11y; its Grafana, Prometheus, and Loki checks passed. Grafana completed an Authentik login through the chain-verified TLS front door, and the signed-in dashboard loaded again after that deploy. Prometheus still scrapes only itself; Alloy ships local container logs with a `service` label. The clean production inference telemetry branch is merged here and provides inventory-rendered DGX scrape jobs, but no production receiver is verified. `plan/architecture/06-observability-instrumentation.md` describes the desired contract but contains historical as-built claims.
 
 ## Goals / Non-Goals
 

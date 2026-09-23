@@ -17,8 +17,12 @@
 > login route redirected to Authentik with PKCE. The browser completed that
 > login and returned to the provisioned overview dashboard, where the live
 > log panel listed local containers and the scrape panel showed only the
-> Prometheus self-target. Feature-branch deployment, new service target/log
-> queries, and production receipt remain unverified.
+> Prometheus self-target. Local Semaphore candidate task 1065 later checked out
+> commit `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` and deployed o11y;
+> Grafana, Prometheus, and Loki passed their service checks. A browser reload
+> returned to the signed-in dashboard. Loki then exposed local `service` label
+> values, while Prometheus still had only its self-target. New service metric
+> collection, alert delivery, and production receipt remain unverified.
 > The committed production inference telemetry groundwork is merged into this
 > branch; its scrape declarations do not prove a reachable receiver.
 
