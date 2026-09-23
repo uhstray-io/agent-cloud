@@ -21,6 +21,7 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}
       - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/scrape.d:/etc/prometheus/scrape.d:ro
