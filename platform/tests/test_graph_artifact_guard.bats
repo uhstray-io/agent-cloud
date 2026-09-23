@@ -9,6 +9,12 @@ load assert_helpers
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   GUARD="$REPO_ROOT/scripts/check-graph-artifact.sh"
+  # Git exports these to hooks. Under the pre-push hook they point every git
+  # command below at the REAL repository: on 2026-09-23 this setup's `git init`
+  # and `git config` set core.bare=true and a fake user.email in the shared
+  # .git/config. Clear them before touching any repo.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
   cd "$BATS_TEST_TMPDIR"
   git init -q repo && cd repo
   git config user.email t@example.invalid && git config user.name t

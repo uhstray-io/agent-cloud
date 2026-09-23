@@ -62,6 +62,7 @@ supersede it with a new entry and link both.
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
+| 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1176,6 +1177,33 @@ declared address from the controller on the create path and refuses on any answe
 when the probe cannot run (explicit `allow_unverified_address` override only), and
 `test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
 proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
+
+### 3.7 A test's scratch repository was the real one, because the hook exported `GIT_DIR`
+
+**What happened.** On 2026-09-23 I pushed a branch adding `test_graph_artifact_guard.bats`,
+whose setup ran `git init -q repo`, `git config user.email t@example.invalid` and
+`git config user.name t` inside `$BATS_TEST_TMPDIR`. It passed when run by hand. Under the
+pre-push hook, git had exported `GIT_DIR`, so those commands addressed the pushing
+repository: the shared `.git/config` gained `core.bare=true`, `user.email=t@example.invalid`
+and `user.name=t`. Every agent-cloud checkout, including another session's, then failed with
+"this operation must be run in a work tree", and any commit made in that window would have
+been authored by the fake identity. About 150 BATS tests failed and the push was refused.
+Repaired about ten minutes later (`core.bare=false`, local `user.*` removed); a
+`git log --all --author=t@example.invalid` search found no commit under that identity.
+
+**Root cause.** Git sets `GIT_DIR` and related variables in a hook's environment. The pre-push
+hook passed them straight to the suites, so a test's git commands were never isolated, and
+the only way a test could be safe was for its author to know that.
+
+**The rule.** A hook that runs tests clears git's repository variables first, so the suites
+run with the same clean git environment they get in CI. A test that creates a repository
+also clears them itself, because it may be run by another hook.
+
+**Enforced by.** `.githooks/pre-push` unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
+related variables after resolving the repository root.
+`platform/tests/test_pre_push_git_env.bats` runs the hook the way git does, pointed at a
+victim repository, with a fake `bats` that repeats the offending commands, and asserts the
+victim's config is unchanged. Mutation: removing the unset turns it red.
 
 ## 4. Data handling
 
