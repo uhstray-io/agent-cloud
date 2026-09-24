@@ -35,7 +35,8 @@ supersede it with a new entry and link both.
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
-| 1.9 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
+| 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
+| 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -81,6 +82,7 @@ supersede it with a new entry and link both.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
+| 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -363,7 +365,7 @@ pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
 
-### 1.9 A gate justified by a status-code claim nobody checked
+### 1.11 A gate justified by a status-code claim nobody checked
 
 **What happened.** On 2026-09-23 I added a read-only access check to `seed-openbao-key.yml`
 for isolated seed environments (PR #205). It accepted HTTP 200 or 404 from a GET on the
@@ -386,6 +388,28 @@ from another endpoint's status code.
 runs both seed playbooks against a synthetic OpenBao where every GET answers 404 and asserts
 that deny, read-only and write-only tokens are refused; forcing the assertion to pass turns
 six cases red. The citation rule itself is `Convention`.
+
+### 1.12 A hang reported from a timer that was not measuring the task
+
+**Occurrences: 1** — 2026-09-24
+
+**What happened.** Semaphore task 1215 (Deploy agentgateway (Dev)) was running while a
+background check-in fired. I told the deploy session the task had been running "30+
+minutes" against a normal ~3 and was hung. The 30 minutes was the check-in's own deferral
+interval, not the task's age. Checked a minute later against two real readings: the task
+entered `deploy.sh` at 03:27:47Z and the clock read 03:29:33Z, about two minutes, normal. I
+sent a correction before anyone stopped the task.
+
+**Root cause.** An elapsed-time claim was taken from the nearest number in view instead of
+being computed. A harness timer measures when I was scheduled to look, not how long a
+remote job has run.
+
+**The rule.** A duration is two timestamps from the thing being measured: the task's own
+start (the Semaphore API's `start` or the first output line) and `date -u` now. No
+timestamp pair, no duration. A "hang" claim that could lead someone to stop a live deploy
+gets that check before it is sent.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1662,6 +1686,27 @@ Update the version and digest together in a reviewed commit.
 **Enforced by.** Both scans run one v3.97.6 binary whose release archive is checked
 against its published SHA256 before execution. A future CI rule could reject
 floating scanner references in workflow files.
+
+### 5.11 A second push started while the first was still running
+
+**Occurrences: 1** — 2026-09-24
+
+**What happened.** My push of `feat/isolated-seed-environments` (#205) was still inside the
+pre-push hook's full suites, slowed by two other sessions' pushes running the same suites.
+I read its buffered output as finished and started another push of the same branch. I
+noticed within minutes and stopped the second; the first completed.
+
+**Root cause.** A backgrounded command's output file was treated as a completion signal.
+It is written in chunks; the only completion signals are the exit notification or the
+process being gone.
+
+**The rule.** Before re-running a push (or any command with side effects) that was
+backgrounded, confirm the first is finished from its exit status or the process table,
+never from how its output looks.
+
+**Enforced by.** Convention. Mechanical proposal: the pre-push hook takes a per-branch
+lock (`flock` on a file under `$(git rev-parse --git-common-dir)`) and refuses a second
+push of the same branch while one holds it.
 
 ---
 
