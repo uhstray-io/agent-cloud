@@ -71,7 +71,7 @@ def parse_inputs(text, fields):
 def stage_and_seed(api, project, template_id, expected_env, values, endpoint, timeout=600):
     return _stage_and_seed(
         api, project, template_id, expected_env, values, playbook=SEED_PLAYBOOK, endpoint=endpoint,
-        template_names={"Seed Postiz Secrets", "Seed Postiz Secrets (Dev)"}, staged_prefixes=("SEED_",),
+        template_names={"Seed Postiz Secrets", "Seed Postiz Secrets (Dev)"},
         message="Seed declared Postiz provider credentials via encrypted inputs", timeout=timeout)
 
 

@@ -198,3 +198,23 @@ def test_a_repository_record_that_drifted_from_its_declaration_is_refused(monkey
     api.repos[1]["git_branch"] = "feature/unreviewed"
     assert run_cli(monkeypatch, tmp_path, api, "--apply") == 1
     assert writes_of(api) == []
+
+
+def test_a_leftover_input_of_another_seed_refuses_the_seed_before_any_write():
+    # Review of PR #205: the preflight checked only this seed's input names, so an unrelated
+    # leftover (another seed's SEED_* value) let the seed launch with it present.
+    api = FakeAPI()
+    api.env["secrets"].append({"id": 8, "name": "SEED_X_API_KEY", "type": "env"})
+    with pytest.raises(cli.Refusal, match="leftover inputs: SEED_X_API_KEY"):
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
+                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+    assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
+
+
+def test_the_clean_environment_rule_checks_the_endpoint():
+    rule = cli.stage_and_seed.__globals__["seed_environment_problems"]
+    env = {"json": '{"openbao_addr":"https://elsewhere.example"}', "env": "{}", "secrets": []}
+    assert "OpenBao endpoint differs from the approved endpoint" in rule(env, ENDPOINT)
+    assert "OpenBao endpoint set but no approved endpoint to check it against" in rule(env)
+    assert rule(dict(env, json=f'{{"openbao_addr":"{ENDPOINT}"}}'), ENDPOINT) == []
+    assert rule(dict(env, json="{}")) == []

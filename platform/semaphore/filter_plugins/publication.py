@@ -35,16 +35,19 @@ def publication_settings(record):
 SEED_AUTH_INPUTS = ("BAO_ROLE_ID", "BAO_SECRET_ID")
 
 
-def seed_environment_problems(environment):
+def seed_environment_problems(environment, approved_endpoint=None):
     """Why a dedicated seed environment is not safe to bind a seed template to.
 
     The ONE definition of a clean isolated seed environment, shared by full publication
-    (tasks/isolated-environments.yml) and the provisioner (provision-seed-environment.yml):
-    before 2026-09-23 each had its own rule and they disagreed (reviews of PR #205).
-    Clean means: no plaintext env vars, extra-var JSON holding at most `openbao_addr`, and
+    (tasks/isolated-environments.yml), the provisioner (provision-seed-environment.yml) and
+    the seed CLIs' preflight (scripts/semaphore_seed.py): before 2026-09-23 each had its own
+    rule and they disagreed (reviews of PR #205).
+    Clean means: no plaintext env vars, extra-var JSON holding at most `openbao_addr`,
     encrypted inputs that are exactly the two AppRole inputs or none, each once, as env
-    type. Anything else (a leftover BAO_VALUE or SEED_* value, a lone AppRole half) would
-    reach a bound template. Returns names only, never values; empty means clean.
+    type, and an `openbao_addr`, when present, equal to the approved endpoint. Anything
+    else (a leftover BAO_VALUE or SEED_* value, a lone AppRole half, an address the AppRole
+    login would be sent to that nobody approved) would reach a bound template. Returns
+    names only, never values; empty means clean.
     """
     problems = []
 
@@ -61,6 +64,11 @@ def seed_environment_problems(environment):
         problems.append("plaintext env vars present")
     if extra is None or set(extra) - {"openbao_addr"}:
         problems.append("extra-var JSON beyond openbao_addr")
+    if extra and "openbao_addr" in extra:
+        if not approved_endpoint:
+            problems.append("OpenBao endpoint set but no approved endpoint to check it against")
+        elif extra["openbao_addr"] != approved_endpoint:
+            problems.append("OpenBao endpoint differs from the approved endpoint")
     secrets = environment.get("secrets")
     if not isinstance(secrets, list):
         return problems + ["no secrets list; contents cannot be established"]

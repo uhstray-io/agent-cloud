@@ -88,7 +88,11 @@
       Isolated environment '{{ item.item.name }}' is not safe to bind:
       {{ _problems | join('; ') }}. Reconcile it before publishing.
   vars:
-    _problems: "{{ item.json | seed_environment_problems }}"
+    # The approved endpoint is the controller's own OpenBao, as runtime access resolves it;
+    # an environment pointing elsewhere would receive the AppRole login (review of PR #205).
+    _problems: >-
+      {{ item.json | seed_environment_problems(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)
+                                               | default('', true)) }}
   when: item.json is defined
   loop: "{{ _isolated_contents.results }}"
   loop_control:

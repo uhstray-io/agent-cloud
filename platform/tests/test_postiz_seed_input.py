@@ -34,8 +34,11 @@ ENDPOINT = "https://bao.example:8200"
 
 class FakeAPI:
     def __init__(self, status="success"):
-        self.env = {"id": 2, "project_id": 1, "name": "dedicated-seed", "json": '{"openbao_addr":"https://bao.example:8200","keep":"unchanged"}',
-                    "env": '{"keep":"unchanged"}', "secrets": [{"id": 4, "name": "KEEP", "type": "env"}]}
+        # A provisioned dedicated environment: the two AppRole inputs and the approved endpoint.
+        self.env = {"id": 2, "project_id": 1, "name": "dedicated-seed",
+                    "json": '{"openbao_addr":"https://bao.example:8200"}', "env": "{}",
+                    "secrets": [{"id": 3, "name": "BAO_ROLE_ID", "type": "env"},
+                                {"id": 4, "name": "BAO_SECRET_ID", "type": "env"}]}
         self.template = {"id": 151, "name": "Seed Postiz Secrets", "playbook": seed.SEED_PLAYBOOK,
                          "environment_id": 2, "app": "ansible"}
         self.calls = []
@@ -70,7 +73,9 @@ class FakeAPI:
 def test_seed_cleans_only_created_inputs(capsys):
     api = FakeAPI()
     seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
-    assert api.env["secrets"] == [{"id": 4, "name": "KEEP", "type": "env"}]
+    # Only the staged input is removed; the environment's own AppRole inputs stay.
+    assert api.env["secrets"] == [{"id": 3, "name": "BAO_ROLE_ID", "type": "env"},
+                                  {"id": 4, "name": "BAO_SECRET_ID", "type": "env"}]
     assert "synthetic-value" not in capsys.readouterr().out
     assert all("synthetic-value" not in str(body) for path, body in api.calls if path == "/tasks")
 
@@ -86,7 +91,7 @@ def test_uncertain_submission_retains_inputs_and_never_retries():
 def test_collision_refuses_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 5, "name": "SEED_DISCORD_CLIENT_ID", "type": "env"})
-    with pytest.raises(seed.Refusal, match="Existing encrypted"):
+    with pytest.raises(seed.Refusal, match="reconciliation.*leftover inputs: SEED_DISCORD_CLIENT_ID"):
         seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert all(body is None for path, body in api.calls)
 

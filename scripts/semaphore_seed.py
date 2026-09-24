@@ -10,11 +10,22 @@ second, divergent copy of the trust-boundary checks.
 """
 
 import http.client
+import importlib.util
 import json
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+# The one clean-environment rule, shared with publication and the provisioner (an Ansible
+# filter module; loaded by path so there is a single definition).
+_RULE = importlib.util.spec_from_file_location(
+    "seed_environment_rule",
+    Path(__file__).resolve().parents[1] / "platform/semaphore/filter_plugins/publication.py")
+_rule = importlib.util.module_from_spec(_RULE)
+_RULE.loader.exec_module(_rule)
+seed_environment_problems = _rule.seed_environment_problems
 
 # v2.17.31 pkg/task_logger/task_logger.go, IsFinished (rejected is not finished).
 TERMINAL = {"success", "error", "stopped"}
@@ -61,8 +72,8 @@ def environment_body(env, operations):
     return {**env, "secrets": operations}
 
 
-def preflight(api, project, template_id, expected_env, input_names, *, playbook, template_names,
-              endpoint, staged_prefixes=(), bindings=None):
+def preflight(api, project, template_id, expected_env, *, playbook, template_names, endpoint,
+              bindings=None):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
@@ -97,18 +108,13 @@ def preflight(api, project, template_id, expected_env, input_names, *, playbook,
         configured = None
     if not endpoint or configured != endpoint:
         raise Refusal("Seed environment's OpenBao endpoint differs from the approved endpoint")
-    names = set(input_names)
-
-    # Refuse any leftover input of this seed's family, staged or plaintext: it means an
-    # earlier run did not finish, and its task may still need it.
-    def staged(name):
-        return name in names or (bool(staged_prefixes) and name.startswith(tuple(staged_prefixes)))
-    if any(staged(item.get("name", "")) for item in secrets):
-        raise Refusal("Existing encrypted seed inputs require reconciliation before staging")
-    for field in ("json", "env"):
-        existing = json.loads(before.get(field) or "{}")
-        if any(staged(key) or staged(key.upper()) for key in existing):
-            raise Refusal("Existing plaintext seed inputs require reconciliation before staging")
+    # Before anything is staged the environment must be CLEAN by the one shared rule: only
+    # the two AppRole inputs, no plaintext env vars, extra vars at most openbao_addr. A
+    # leftover of ANY name (this seed's, another seed's) means an earlier run did not
+    # finish, or something else writes here; its task may still need it (review of PR #205).
+    problems = seed_environment_problems(before, endpoint)
+    if problems:
+        raise Refusal("Seed environment requires reconciliation before staging: " + "; ".join(problems))
     templates = {item["id"]: item for item in api("/templates")}
     if any(item.get("environment_id") == expected_env and item.get("id") != template_id
            for item in templates.values()):
@@ -122,18 +128,16 @@ def preflight(api, project, template_id, expected_env, input_names, *, playbook,
 
 
 def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
-                   endpoint, staged_prefixes=(), extra=None, bindings=None,
+                   endpoint, extra=None, bindings=None,
                    message="Seed declared inputs via encrypted inputs", timeout=600):
     """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
     seed template, then remove exactly the inputs it created.
 
-    `staged_prefixes` widens the collision refusal to a whole name family (Postiz stages
-    SEED_*). `extra` is NON-SECRET launch configuration only: Semaphore persists it.
+    Refuses before any write unless the environment is clean by the shared rule (preflight).
+    `extra` is NON-SECRET launch configuration only: Semaphore persists it.
     """
-    template, before = preflight(api, project, template_id, expected_env, set(values), playbook=playbook,
-                                 endpoint=endpoint,
-                                 template_names=template_names, staged_prefixes=staged_prefixes,
-                                 bindings=bindings)
+    template, before = preflight(api, project, template_id, expected_env, playbook=playbook,
+                                 template_names=template_names, endpoint=endpoint, bindings=bindings)
     env_path = f"/environment/{expected_env}"
     # A fresh equality check catches changes made during preflight. It is not CAS.
     if api(env_path) != before:

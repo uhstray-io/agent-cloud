@@ -293,6 +293,21 @@ class ScopedPublicationTests(unittest.TestCase):
             "only one AppRole input": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"}],
             "leftover inputs: SEED_X_API_KEY": [{"id": 1, "name": "SEED_X_API_KEY", "type": "env"}],
         }
+        # The AppRole login would go to the environment's openbao_addr: an address other than
+        # the controller's own is refused before binding (review of PR #205).
+        endpoint_case = {"id": 500, "project_id": 1, "name": "Isolated inputs", "env": "{}",
+                         "json": '{"openbao_addr":"https://elsewhere.example:8200"}',
+                         "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
+                                     {"id": 2, "name": "BAO_SECRET_ID", "type": "env"}]}
+        with self.subTest(message="endpoint"):
+            self.setUp()
+            type(self).environments = [endpoint_case]
+            before = copy.deepcopy(self.records)
+            code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+            self.assertNotEqual(code, 0, output)
+            self.assertIn("OpenBao endpoint differs from the approved endpoint", output)
+            self.assertEqual(self.writes, [])
+            self.assertEqual(self.records, before)
         for message, secrets in cases.items():
             with self.subTest(message=message):
                 self.setUp()
@@ -391,7 +406,8 @@ class ScopedPublicationTests(unittest.TestCase):
         self.environments.append(copy.deepcopy(target))
         code, output = self.run_play(provision=True)
         self.assertNotEqual(code, 0)
-        self.assertIn("Validate the dedicated credential boundary", output)
+        # Refused by the shared clean-environment rule, before the provisioner's own check.
+        self.assertIn("OpenBao endpoint differs from the approved endpoint", output)
         self.assertEqual(self.environments[1], target)
         self.assertEqual(self.writes, [])
 

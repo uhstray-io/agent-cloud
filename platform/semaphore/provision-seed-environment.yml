@@ -165,8 +165,7 @@
           # The shared clean-environment rule (filter seed_environment_problems), the
           # same one full publication applies before binding: no plaintext env vars,
           # extra vars at most openbao_addr, and exactly the two AppRole inputs or none.
-          - _target.json | seed_environment_problems | length == 0
-          - (_target.json.json | default('{}', true) | from_json).get('openbao_addr', _bao_url) == _bao_url
+          - _target.json | seed_environment_problems(_bao_url) | length == 0
           - _auth | selectattr('id', 'defined') | selectattr('id', 'integer') | list | length == _auth | length
           - _auth | map(attribute='id') | unique | list | length == _auth | length
         quiet: true

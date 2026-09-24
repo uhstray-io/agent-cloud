@@ -174,7 +174,7 @@ def main():
                     "inventory_id": args.inventory}
 
         def check():
-            return preflight(api, args.project, template_id, environment_id, decl["seed_inputs"],
+            return preflight(api, args.project, template_id, environment_id,
                              playbook=decl["playbook"], template_names={template_name},
                              endpoint=args.openbao_addr, bindings=bindings)
         check()
