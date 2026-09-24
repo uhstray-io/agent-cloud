@@ -79,6 +79,15 @@ test_service_deploy_must_launch_the_assessed_template if {
 	contains(d.reason, "the launched template is not the proposal's deploy template")
 }
 
+# PR 203 Codex review: the service assessment also feeds vm-rightsize, whose executor is Resize VM,
+# not the proposal's deploy template.
+test_vm_rightsize_runs_resize_vm_on_the_service_assessment if {
+	agentcloud.allow with input as object.union(_run("infra-agent", "Resize VM", "vm-rightsize"), {
+		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy tududi", "verdict": {"decision": "converge", "findings": []}},
+		"context": _ctx,
+	})
+}
+
 test_service_deploy_without_a_deploy_template_is_denied if {
 	svc := _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi")
 	d := agentcloud.decision with input as object.union(object.remove(svc, ["proposal"]), {"proposal": object.remove(svc.proposal, ["deploy_template"])})
