@@ -1406,8 +1406,8 @@ in a variable), or carries `trufflehog:ignore` with its reason (see 4.3's "Relat
 pushing a new fixture, run the scan the way CI runs it (all detectors, not `--only-verified`).
 Every CI scan is scoped to the PR's own commits.
 
-**Enforced by.** CI: the all-detectors scan now passes `--branch "$HEAD_SHA"`. The fixture rule
-itself is Convention.
+**Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
+fix independently the same evening). The fixture rule itself is Convention.
 
 ## 5. Duplication and process
 
