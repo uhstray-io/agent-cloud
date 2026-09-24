@@ -145,7 +145,9 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
             if step and task.get("service"):
                 results = [{
                     "service": task["service"], "step": step, "status": "fail",
-                    "check_mode": False, "evidence": {},
+                    # From the row, the one run-mode signal: a dry run that failed before
+                    # recording a result is validation, not an anomaly (review of PR #229).
+                    "check_mode": is_check_mode(task), "evidence": {},
                     "error": "\n".join(lines[-TAIL:]) or "task failed with no output",
                 }]
         for result in results:

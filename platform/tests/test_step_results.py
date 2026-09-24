@@ -237,3 +237,19 @@ def test_the_collector_writes_every_tracked_service():
     assert 'loop: "{{ _agg.tracked }}"' in text
     assert "_agg.loki_streams | length > 0" in text
     assert "_agg.services.keys()" not in text
+
+
+def test_a_dry_run_failing_without_a_result_is_validation_not_an_anomaly():
+    # Review of PR #229: the synthesized failure takes its run mode from the row.
+    agg = _agg(_task(41, "error", 2, "boom", **DRY))
+    assert agg["status_by_service"] == {}
+    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "fail"
+    assert agg["anomalies"] == []
+
+
+def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
+    dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
+                               "service-conformance.json").read_text())
+    exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+    assert 'step!="none"' in exprs["Step status by service"]
+    assert 'status="no_history"' in exprs["Services not yet run"]

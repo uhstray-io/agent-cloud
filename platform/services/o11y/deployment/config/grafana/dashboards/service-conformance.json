@@ -107,6 +107,47 @@
       ]
     },
     {
+      "title": "Services not yet run",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "description": "Inventoried services with no workflow run yet (the collector's no_history marker). Like every panel here, a service can stay listed for up to one collector interval after its first run.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "sum by (service) (count_over_time({job=\"agent-cloud-conformance\", status=\"no_history\"} [16m]))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            }
+          }
+        }
+      ]
+    },
+    {
       "title": "Step status by service",
       "type": "table",
       "datasource": {
@@ -119,7 +160,7 @@
         "x": 0,
         "y": 5
       },
-      "description": "Rows are services, columns are workflow step ids. An empty cell means no executor has recorded that step for the service yet. If a manual collector run and a scheduled one both land inside 16 minutes with different results, the cell shows the later-sorted status; the failure report (the collector's dry run) is authoritative.",
+      "description": "Rows are services, columns are workflow step ids. An empty cell means no executor has recorded that step for the service yet. If a manual collector run and a scheduled one both land inside 16 minutes with different results, the cell shows the later-sorted status; the failure report (the collector's dry run) is authoritative. Services that have not run any step are listed in \"Services not yet run\", not here.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -158,7 +199,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "sum by (service, step, status) (count_over_time({job=\"agent-cloud-conformance\"} [16m]))"
+          "expr": "sum by (service, step, status) (count_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} [16m]))"
         }
       ],
       "transformations": [
