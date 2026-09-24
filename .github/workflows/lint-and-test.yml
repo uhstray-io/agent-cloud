@@ -128,8 +128,12 @@ jobs:
       - name: Secret scan - all detectors (trufflehog)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # --branch scopes the scan to this PR's commits, as the verified scan above does. Without
+        # it the full-history checkout let a flagged commit on ANY pushed branch fail every open
+        # PR's scan (docs/MISTAKES.md 4.8).
         run: |
-          trufflehog git file://. --since-commit "$BASE_SHA" --fail --no-update
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
 
       - name: RFC1918 IP address audit
         run: |

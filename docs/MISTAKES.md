@@ -70,6 +70,7 @@ supersede it with a new entry and link both.
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
+| 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -1384,6 +1385,29 @@ inventory host's `ansible_host`/`vm_ip` and require each address to have exactly
 **Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
 other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
 `test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
+
+
+### 4.8 A credential-shaped test fixture was pushed, and one branch failed every PR's scan
+
+**What happened.** On 2026-09-23 a new BATS file for container diagnostics (PR 230) fed its
+redaction test a literal Postgres connection string carrying a user and a password. CI's all-detectors TruffleHog
+scan flagged it as an unverified Postgres credential. Replacing the literal in a later commit
+did not clear it: the scan reads every commit since the base, so only a history rewrite could.
+The fix went onto a fresh single-commit branch (PR 231) instead of a force push. Meanwhile the
+same finding failed PR 203's scan, a branch that never contained the file.
+
+**Root cause.** Two things. The fixture used the exact shape a credential detector exists to
+catch. And the all-detectors scan ran `trufflehog git file://. --since-commit "$BASE_SHA"` with
+no `--branch`, over a `fetch-depth: 0` checkout, so it scanned every fetched branch. The
+verified scan beside it was already scoped with `--branch "$HEAD_SHA"`.
+
+**The rule.** A test that needs a credential-shaped string assembles it at run time (the scheme
+in a variable), or carries `trufflehog:ignore` with its reason (see 4.3's "Related"). Before
+pushing a new fixture, run the scan the way CI runs it (all detectors, not `--only-verified`).
+Every CI scan is scoped to the PR's own commits.
+
+**Enforced by.** CI: the all-detectors scan now passes `--branch "$HEAD_SHA"`. The fixture rule
+itself is Convention.
 
 ## 5. Duplication and process
 
