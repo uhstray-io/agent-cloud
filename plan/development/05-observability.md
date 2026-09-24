@@ -299,8 +299,12 @@
 > NetBox and the private VM ledger, but no address was reserved. Confirm the
 > production DHCP allocation boundary before reserving an exact address;
 > NetBox's available-address report alone does not prove that DHCP cannot
-> assign it. Keep the private CIDR, host address, and DHCP details out of this
-> public plan.
+> assign it. The current reservation playbook has no DHCP-boundary check, and
+> private site-config has no declared boundary for it to consume. Add the
+> boundary to private config and make the reviewed reservation workflow refuse
+> an address DHCP could assign, with a visible refusal receipt in Semaphore.
+> Until that gate exists and passes, do not reserve the candidate. Keep the
+> private CIDR, host address, and DHCP details out of this public plan.
 > PR #227 merged the scoped Dev-bound Proxmox validation template and
 > credential-safe API logging as `a6825f9da8a79daebf41e11905763f4c1506ef0c`.
 > Task 1202 published that template; read-only task 1203 succeeded with nine
@@ -314,7 +318,7 @@
 > **Rollout practice:** publish a single reviewed Dev template with its
 > intended bindings, run a read-only preflight, and keep the task ID and
 > read-back with each state-changing step. Reserve the exact address through
-> IPAM only after DHCP and ledger reconciliation, then declare the receiver in
+> IPAM only after the versioned DHCP gate and ledger reconciliation, then declare the receiver in
 > private site-config and provision it through Semaphore. Verify the receiver
 > and alert delivery with the declared fault drill before enabling production
 > notifications. These gates preserve the config-as-code and authority rules
