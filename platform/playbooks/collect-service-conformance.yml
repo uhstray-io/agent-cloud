@@ -29,6 +29,12 @@
 # Controller API: fixed loopback, like the survey publisher; the OpenBao-sourced token never
 # goes to a caller-chosen address. Dry run (--check): reads and parses, writes nothing.
 
+#
+# NOT YET: the spec's collector also reads Prometheus, as the evidence for the
+# instrument-host and instrument-service steps. Those steps have no executor yet
+# (registry `executor: null`), so there is nothing to observe; the Prometheus read lands
+# with them (tasks.md 7.5, review of PR #195). Until then those steps show no result,
+# never a pass.
 - name: "Collect service deployment workflow conformance"
   hosts: localhost
   connection: local
@@ -115,6 +121,7 @@
         stdin: >-
           {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json,
               'fetched': _outputs.results | default([]),
+              'groups': groups, 'host_services': _host_services | default({}),
               'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
       register: _aggregate_run
       changed_when: false

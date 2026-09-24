@@ -112,7 +112,7 @@ def test_loki_streams_label_every_result():
         "stream": {"job": "agent-cloud-conformance", "service": "tududi",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
-            {"check_mode": None, "error": None, "task_id": 8}, sort_keys=True)]],
+            {"check_mode": False, "error": None, "task_id": 8}, sort_keys=True)]],
     }]
 
 
@@ -151,3 +151,42 @@ def test_target_service_may_name_the_service_or_its_group():
     rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "tududi"}'},
             {"id": 2, "status": "error", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'}]
     assert {t["id"]: t["service"] for t in step_results.pick([rows], GROUPS)} == {1: "tududi", 2: "step-ca"}
+
+
+# ── check mode never sets conformance (review of PR #195) ─────────────────────
+
+DRY = {"params": {"dry_run": True, "diff": True}}
+
+
+def test_a_passing_check_after_a_failed_real_run_does_not_clear_the_failure():
+    failed_real = _task(20, "error", 2, "\n".join(f"line {i}" for i in range(5)))
+    passing_check = _task(21, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass", "check_mode": True}), **DRY)
+    agg = _agg(failed_real, passing_check)
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
+    assert agg["failed_steps"]["tududi"] == ["fw-harden"]
+    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "pass"
+    assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 21
+
+
+def test_a_result_marked_check_mode_is_validation_even_without_task_params():
+    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass", "check_mode": True})
+    agg = _agg(_task(22, "success", 1, out))
+    assert agg["status_by_service"] == {}
+    assert agg["validation"]["tududi"]["secrets-approle"]["check_mode"] is True
+
+
+def test_pick_never_lets_a_newer_check_run_supersede_the_real_run():
+    real = {"id": 30, "status": "error", "template_id": 2, "environment": '{"target_service": "tududi_svc"}'}
+    check = dict(real, id=31, status="success", **DRY)
+    older_check = dict(real, id=29, status="success", **DRY)
+    picked = step_results.pick([[real, check, older_check]], GROUPS)
+    assert [t["id"] for t in picked] == [30, 31]
+
+
+def test_an_inventoried_service_with_no_history_still_gets_a_report_row():
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "tududi"])
+    assert set(agg["report"]) == {"step-ca", "tududi"}
+    assert agg["report"]["step-ca"]["no_history"] is True
+    assert agg["report"]["step-ca"]["failed"] == []
+    assert agg["report"]["step-ca"]["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]

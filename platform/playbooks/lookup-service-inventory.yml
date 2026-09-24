@@ -64,13 +64,24 @@
              role_id=bao_role_id | default(lookup('env', 'BAO_ROLE_ID')),
              secret_id=bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))) }}
 
+    # The request carries the live automation token in _nb_headers, so it is no_log (review
+    # of PR #195). It never fails inside the censored task; the next task fails visibly on the
+    # status alone, which carries no credential.
     - name: "Ask the IPAM authority about the declared address"
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ _ip | urlencode }}"
         headers: "{{ _nb_headers }}"
         status_code: [200]
       register: _nb_ip
+      failed_when: false
+      no_log: true
       check_mode: false
+      when: _ip | length > 0
+
+    - name: "Require the IPAM lookup to have answered"
+      ansible.builtin.assert:
+        that: _nb_ip.status | default(-1) == 200
+        fail_msg: "NetBox address lookup answered HTTP {{ _nb_ip.status | default('no response') }}."
       when: _ip | length > 0
 
     - name: "Decide"
