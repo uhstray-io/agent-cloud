@@ -18,7 +18,7 @@ blocked on hardware.
 
 | # | Plan | Depends on | Status | Where it stands |
 |---|------|-----------|--------|-----------------|
-| 00 | Foundation & local-dev | — | `LIVE` (local) | `make` bootstraps the local stack; prod uses the same playbooks. Promotion-pipeline polish + the private `uhhcraft` image still open. |
+| 00 | Foundation & local-dev | — | `LOCAL` | `make` bootstraps the local stack; prod uses the same playbooks. Promotion-pipeline polish + the private `uhhcraft` image still open. |
 | 01 | Secrets & credentials (OpenBao) | 00 | `PARTIAL` | Single-node OpenBao live (local + prod), secrets flow working. **HA (Raft + auto-unseal + snapshots) not built** — biggest prod single-point-of-failure. |
 | 02 | SSO & auth (Authentik) | 00, 01 | `LIVE` (prod) | `auth.uhstray.io` live; Semaphore/OpenHands/tududi/honcho gated (OIDC + forward_auth). **Fleet not finished:** netbox/n8n/openbao still on `*.agent-cloud.test` orphans → see backlog P1. |
 | 03 | Guardrails & governance | 00, 01 | `PARTIAL` | OPA deployed (local); `protect-main` ruleset is config-as-code **in `evaluate`/dry-run** (not enforcing); source-of-truth ADR endorsed. |
@@ -27,7 +27,7 @@ blocked on hardware.
 | 06 | Inference plane (skynet) | 00, 01, 03 | `PLANNED` | Doc/catalog reframe only; no runtime. Gates honcho's real LLM (11/D3) + 08. |
 | 07 | WebSmith & UhhCraft | 00, 01, 02 | `PARKED` | Code committed (Phases 1–11); go-live blocked on GPU VMs / PCIe passthrough (Phase 10 smoke). |
 | 08 | ERPNext | 00, 01, 02, 05, (06) | `PLANNED` | Local slim tier code-complete (deploy pending image pull); most-gated plan. |
-| 09 | Service migrations & tooling | 00, 01 | `HELD` | NocoDB + n8n composable migration held pending live-OpenBao pre-seed of stateful secrets (PR #15). **Now unblockable** — the OpenBao-seed path works. |
+| 09 | Service migrations & tooling | 00, 01 | `HELD` | n8n has a guarded seed/cutover path on `dev`; NocoDB still needs equivalent stateful-secret validation before migration. |
 | 10 | Infrastructure & resilience | 00, 01 | `PLANNED` | Dev-Proxmox + DR runbooks are stubs. |
 | 11 | tududi & honcho | 00, 01, 02, (06) | `LIVE` (prod) | Both live: `todo.uhstray.io` + `memory.uhstray.io`, API + Authentik OIDC, hardened + firewalled. honcho's LLM on interim Gemini (config-only swap to skynet later). **Done.** |
 | 12 | RBAC user provisioning | 02 | `LIVE` (prod) | `wisward` (admin) + `andrew.godlewsky` (developer+business) provisioned in prod Authentik; `platform-business` group added. Per-service role-map refinement is the tail. |
@@ -53,6 +53,7 @@ flowchart TD
   02 --> 11[11 tududi/honcho]:::live
   02 --> 12[12 RBAC]:::live
   02 --> 13[13 cloudflare]:::partial
+  02 --> 08[08 erpnext]:::planned
   05 --> 08[08 erpnext]:::planned
   06 -.-> 08
   06 -.-> 11
@@ -78,7 +79,7 @@ capability. Each item names its plan + the concrete next action.
 5. **DR runbooks (10).** Write the concrete recovery procedures for the top failure modes (OpenBao sealed, Semaphore down, a service VM lost) — even before the dev-Proxmox cluster exists.
 
 ### P3 — Unblock capability
-6. **NocoDB + n8n composable migration (09).** Now unblockable: run the Task-0 pre-seed of the stateful secrets (`N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) into OpenBao via the working seed path, then cut over. Retires the last legacy-`deploy.sh` services. *(reconciles PR #15)*
+6. **NocoDB + n8n composable migration (09).** Preserve the existing stateful secrets (`N8N_ENCRYPTION_KEY`, NocoDB JWT, Postgres passwords) in OpenBao. For each existing service, require a Semaphore cutover playbook that fails before container restart if a stateful value is missing or differs from the live configuration; an operator's manual diff does not satisfy this gate. n8n has the idempotent seed and pre-restart comparison on `dev`; NocoDB still needs an equivalent guarded path before cutover. *(reconciles PR #15)*
 7. **Observability (05).** Stand up Grafana + Prometheus + Loki + Alloy via the composable pattern — ops visibility now, and it gates ERPNext.
 8. **Inference plane (06) → ERPNext (08).** skynet's `/v1` gateway unblocks honcho's real LLM (11/D3) and is a soft prereq for ERPNext; land 05 + 06, then 08.
 
