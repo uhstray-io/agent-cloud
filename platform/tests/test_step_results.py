@@ -68,7 +68,7 @@ def test_per_service_deploy_template_maps_to_service_deploy():
     assert "service-deploy" in _agg(_task(7, "error", 3, "x"))["services"]["tududi"]
 
 
-def test_pick_keeps_the_newest_finished_task_per_template_and_service():
+def test_pick_keeps_finished_tasks_per_template_and_service_oldest_first():
     rows = [
         {"id": 10, "status": "success", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
         {"id": 12, "status": "error", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
@@ -76,7 +76,14 @@ def test_pick_keeps_the_newest_finished_task_per_template_and_service():
         {"id": 11, "status": "success", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'},
     ]
     picked = step_results.pick([rows], GROUPS)
-    assert [(t["id"], t["service"]) for t in picked] == [(11, "step-ca"), (12, "tududi")]
+    # Unfinished tasks never; every finished one within the window, for aggregate to order.
+    assert [(t["id"], t["service"]) for t in picked] == [(10, "tududi"), (11, "step-ca"), (12, "tududi")]
+
+
+def test_aggregate_lets_the_newest_real_result_win():
+    older_pass = _task(10, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"}))
+    newer_fail = _task(12, "error", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "fail"}))
+    assert _agg(newer_fail, older_pass)["status_by_service"]["tududi"]["secrets-approle"] == "fail"
 
 
 def test_service_comes_from_inventory_not_string_surgery():
@@ -176,12 +183,27 @@ def test_a_result_marked_check_mode_is_validation_even_without_task_params():
     assert agg["validation"]["tududi"]["secrets-approle"]["check_mode"] is True
 
 
-def test_pick_never_lets_a_newer_check_run_supersede_the_real_run():
+def test_pick_keeps_the_real_run_behind_a_dry_run_whose_row_does_not_say_so():
+    # Review of PR #229: a check-mode task's history row may lack params.dry_run; only its
+    # output says so. pick must keep the older real run for aggregate to classify.
     real = {"id": 30, "status": "error", "template_id": 2, "environment": '{"target_service": "tududi_svc"}'}
-    check = dict(real, id=31, status="success", **DRY)
-    older_check = dict(real, id=29, status="success", **DRY)
-    picked = step_results.pick([[real, check, older_check]], GROUPS)
-    assert [t["id"] for t in picked] == [30, 31]
+    unmarked_check = dict(real, id=31, status="success")
+    assert [t["id"] for t in step_results.pick([[real, unmarked_check]], GROUPS)] == [30, 31]
+    failed_real = _task(30, "error", 2, "\n".join(f"line {i}" for i in range(5)))
+    passing_check = _task(31, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass", "check_mode": True}))
+    agg = _agg(failed_real, passing_check)
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
+    assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 31
+
+
+def test_pick_keeps_a_bounded_window_per_template_and_service():
+    rows = [{"id": i, "status": "success", "template_id": 2,
+             "environment": '{"target_service": "tududi_svc"}'} for i in range(1, 9)]
+    rows.append({"id": 50, "status": "running", "template_id": 2,
+                 "environment": '{"target_service": "tududi_svc"}'})
+    picked = [t["id"] for t in step_results.pick([rows], GROUPS)]
+    assert picked == list(range(9 - step_results.PICK_WINDOW, 9))
 
 
 def test_an_inventoried_service_with_no_history_still_gets_a_report_row():

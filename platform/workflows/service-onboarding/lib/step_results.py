@@ -18,8 +18,9 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              counts only when its service is in this inventory
   pick       {groups, host_services, histories: [[task rows]]}
                                                     -> {"tasks": [task rows + "service"]}
-             the newest finished REAL task per (template, service), plus a newer check-mode
-             task when there is one: a dry run never supersedes the real run before it
+             the newest PICK_WINDOW finished tasks per (template, service), newest first:
+             whether a task was check mode is only certain once its output is read, so the
+             real run behind a newer dry run is kept for aggregate to classify
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
               groups?, host_services?, now_ns?}
                                                     -> {services, validation, failed_steps,
@@ -47,6 +48,11 @@ VARIANT = re.compile(r" \((Dev|Local)\)$")
 PER_SERVICE = "Deploy {service}"
 FINISHED = {"success", "error"}
 TAIL = 20
+# How many finished tasks per (template, service) reach aggregate. A check-mode run is only
+# certain from its OUTPUT (a history row may lack params.dry_run), so pick cannot discard
+# older tasks; aggregate classifies them. ponytail: fixed window - a real run older than the
+# newest PICK_WINDOW tasks (all dry runs) drops out; raise it if that ever happens.
+PICK_WINDOW = 5
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -110,19 +116,18 @@ def is_check_mode(task: dict) -> bool:
 
 
 def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
-    """Newest finished task per (template, service) and per kind: the newest real run always
-    survives, and the newest check-mode run is kept only when it is newer than that."""
-    newest: dict[tuple, dict] = {}
+    """The newest PICK_WINDOW finished tasks per (template, service), oldest first. aggregate
+    reads each one's output and decides which were check mode; pick never discards the real
+    run behind a newer dry run, because a dry run's history row may not say it is one
+    (review of PR #229)."""
+    by_key: dict[tuple, list[dict]] = {}
     for history in histories:
         for task in history:
-            if task.get("status") not in FINISHED:
-                continue
-            key = (task["template_id"], _service_of(task, by_group), is_check_mode(task))
-            if key not in newest or task["id"] > newest[key]["id"]:
-                newest[key] = task
-    kept = {k: t for k, t in newest.items()
-            if not k[2] or t["id"] > newest.get((k[0], k[1], False), {"id": -1})["id"]}
-    return [dict(t, service=key[1]) for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
+            if task.get("status") in FINISHED:
+                by_key.setdefault((task["template_id"], _service_of(task, by_group)), []).append(task)
+    kept = [dict(t, service=key[1]) for key, tasks in by_key.items()
+            for t in sorted(tasks, key=lambda t: t["id"], reverse=True)[:PICK_WINDOW]]
+    return sorted(kept, key=lambda t: t["id"])
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
