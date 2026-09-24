@@ -169,7 +169,21 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
-| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses |
+| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
+
+For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
+and `pfsense_dhcp_interface`, selecting the router and interface that serve the
+requested prefix. The playbook reads that interface's DHCP configuration through
+the pfSense REST API on every reservation run; its API key comes from OpenBao's
+`secret/services/netbox:pfsense_api_key`. It refuses missing or malformed data,
+addresses in the primary or additional DHCP pools, and existing static mappings
+before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
+The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
+the singular DHCP endpoint selects the interface by `id` and checks the returned
+`id`; pfREST may render the `interface` field as a display name. A failed TLS or API read
+refuses the reservation. Verify that source with a read-only refusal run before
+reserving production addresses.
+Report mode does not contact pfSense and remains read-only.
 
 ### Infrastructure
 | Playbook | Purpose |

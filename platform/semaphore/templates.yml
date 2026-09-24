@@ -210,7 +210,7 @@ templates:
         default_value: "2"
       - name: reserve
         title: "Reserve"
-        description: "true = also CREATE the address records named in assignments"
+        description: "true = CREATE explicit static addresses after a live pfSense DHCP check (HTTPS router source required)"
         type: string
         required: false
         default_value: "false"
