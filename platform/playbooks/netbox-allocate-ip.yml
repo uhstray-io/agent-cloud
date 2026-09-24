@@ -109,13 +109,13 @@
         status_code: [200]
       register: _nb_secret
       no_log: true
+      check_mode: false
 
     # A no_log step that merely fails is undiagnosable, which is the failure mode
     # AGENTS.md calls out. The credential tasks above keep no_log; these two report only
     # SHAPES and VERDICTS — whether the auth succeeded, whether the path exists, and which
     # keys are present by NAME — so a missing key is distinguishable from a bad AppRole
     # without any value being emitted.
-      check_mode: false
     - name: "Classify the credential outcome (names and verdicts only)"
       ansible.builtin.set_fact:
         _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"

@@ -117,12 +117,12 @@
       retries: 12
       delay: 5
       until: _n8n.status == 200
+      check_mode: false
 
     # Community n8n has no SSO: forward_auth gates ACCESS, then n8n needs its own
     # owner account or it serves /setup. Seed agent-cloud-admin as the owner so an
     # SSO'd admin lands ready. Idempotent: only runs when n8n still wants setup,
     # so re-deploys never clobber an existing owner. Password from OpenBao.
-      check_mode: false
     - name: "Check whether n8n still needs owner setup"
       ansible.builtin.uri:
         url: "{{ _n8n_base }}/rest/settings"

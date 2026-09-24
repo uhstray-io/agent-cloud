@@ -132,6 +132,31 @@
           endpoints = { s3 = "{{ _r2_endpoint }}" }
       no_log: true
 
+    # A dry run only simulates writing backend.hcl, so in a fresh workspace `tofu init` would read
+    # a file that is not there (PR 203 Codex review). A real run with tofu_action=plan is the
+    # read-only preview, and needs no dry run.
+    - name: "Dry run: is the backend config already in the workspace?"
+      ansible.builtin.stat:
+        path: "{{ _tf_dir }}/backend.hcl"
+      register: _backend_hcl
+      check_mode: false
+
+    - name: "Dry run without a prepared workspace: point at the read-only plan"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: backend.hcl is not in this workspace yet, so OpenTofu cannot initialise in a
+          dry run. Run with tofu_action=plan instead: it writes only the runner's backend config
+          and changes nothing in Cloudflare.
+      when:
+        - ansible_check_mode
+        - not _backend_hcl.stat.exists
+
+    - name: "Dry run without a prepared workspace: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - not _backend_hcl.stat.exists
+
     - name: "OpenTofu init (R2 backend)"
       ansible.builtin.command:
         chdir: "{{ _tf_dir }}"
@@ -146,11 +171,11 @@
         AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
       register: _tf_init
       changed_when: false
+      check_mode: false
 
     # A dry run (--check, Semaphore "Dry run") is a `tofu plan` whatever tofu_action says;
     # apply runs only in a real run. Two tasks with two registers, because a skipped task
     # overwrites a shared register with its skip result (docs/MISTAKES.md 10.10).
-      check_mode: false
     - name: "OpenTofu plan"
       ansible.builtin.command:
         chdir: "{{ _tf_dir }}"

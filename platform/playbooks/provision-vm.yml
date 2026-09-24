@@ -247,13 +247,13 @@
       changed_when: false
       failed_when: false
       when: not (vm_exists | bool)
+      check_mode: false
 
     # Evidence, not proof: an answer is a certain refusal; silence is only as good
     # as ICMP on that network, and a missing `ping` binary is no evidence at all.
     # So: rc 0 -> refuse; probe could not run -> refuse (fail closed) unless the
     # launch carries the audited override; rc 1 -> proceed. The authoritative
     # check is the IPAM (02-service-onboarding Known Gaps).
-      check_mode: false
     - name: "Stop when something answered at the declared address, or when the probe could not run"
       ansible.builtin.assert:
         that:

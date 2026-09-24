@@ -253,6 +253,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     # ── diagnosing a credential failure without printing the credential ────
     # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
@@ -265,7 +266,6 @@
     # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
     # the helper's stderr is matched against its own known messages and only the verdict
     # is printed. Shapes, counts and verdicts are safe; values are not.
-      check_mode: false
     - name: "Classify the outcome without exposing any credential"
       ansible.builtin.set_fact:
         # Matches the PEM armour prefix WITHOUT spelling out the full header: the

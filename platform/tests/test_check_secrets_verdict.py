@@ -190,3 +190,26 @@ def test_no_deploy_playbook_computes_its_secret_declaration_inline():
             if isinstance(decl, str):
                 offenders.append(path.name)
     assert not offenders, offenders
+
+
+def test_the_local_controller_may_read_what_the_secrets_step_reads():
+    # PR 203 Codex review: Check Secrets (Local) read the service's AppRole and policy with a token
+    # whose policy granted only secret/*, so OpenBao answered 403 before a verdict.
+    play = yaml.safe_load(PLAYBOOK.read_text())[0]
+    probe = next(t for t in play["tasks"] if t.get("name", "").startswith("Read the service AppRole"))
+    bootstrap = yaml.safe_load((REPO / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]["tasks"]
+    write = next(t for t in bootstrap if t.get("name") == "Write local-semaphore policy")
+    policy = write["ansible.builtin.uri"]["body"]["policy"]
+    for prefix in probe["loop"]:
+        line = next((ln for ln in policy.splitlines() if ln.strip().startswith(f'path "{prefix}/*"')), "")
+        assert '"read"' in line, prefix
+
+
+def test_uhhcraft_requires_the_keys_its_app_panics_without(tmp_path):
+    # PR 203 Codex review: stripe_secret_key is `type: user`, so it was not required, and the step
+    # passed a service whose app panics on an empty STRIPE_SECRET_KEY (config.go requireEnv).
+    raw = (REPO / "platform/playbooks/deploy-uhhcraft.yml").read_text()
+    stored = {k: "v" for k in ("stripe_publishable_key", "stripe_webhook_secret", "resend_api_key",
+                               "discord_orders_webhook_url", "discord_ops_webhook_url")}
+    v = _verdict(tmp_path, service="uhhcraft", stored=stored, deploy_raw=raw)
+    assert v["status"] == "fail" and v["evidence"]["missing"] == ["stripe_secret_key"], v

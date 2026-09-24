@@ -121,6 +121,7 @@
       changed_when: false
       failed_when: false
       when: _reach.rc | default(1) == 0
+      check_mode: false
 
     # Resolve the target's connection parameters HERE, in a task that is NOT
     # delegated, and bake them as facts. Referencing `ansible_host` or
@@ -132,7 +133,6 @@
     #
     # The user falls back to whoever the working connection reported, since that
     # is by definition an account that can log in.
-      check_mode: false
     - name: "Resolve the target's connection parameters"
       ansible.builtin.set_fact:
         _target_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
@@ -334,9 +334,9 @@
       changed_when: false
       failed_when: false
       when: _reach.rc | default(1) == 0
+      check_mode: false
 
     # ── Is what harden-ssh needs actually in the secret store? ───────────────
-      check_mode: false
     - name: "Check the sudo password is available in the secret store"  # noqa: run-once[task]
       ansible.builtin.set_fact:
         _become_pw_present: >-

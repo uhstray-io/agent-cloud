@@ -217,10 +217,10 @@
       until: _bao_listen.status == 200
       retries: 30
       delay: 2
+      check_mode: false
 
     # _bao_listen.json (from the wait above) IS the seal-status body — reuse it
     # rather than re-GET the same endpoint; nothing mutates state in between.
-      check_mode: false
     - name: "Initialize OpenBao (first run only)"
       ansible.builtin.uri:
         url: "{{ _bao_url_host }}/v1/sys/init"
@@ -326,6 +326,10 @@
           policy: |
             path "secret/data/services/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
             path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+            # Check Secrets reads a service's AppRole and policy to prove the secrets step; read
+            # only, as production's semaphore-read.hcl grants (PR 203 Codex review).
+            path "auth/approle/role/*"        { capabilities = ["read"] }
+            path "sys/policies/acl/*"         { capabilities = ["read"] }
         status_code: [200, 204]
       changed_when: true
       when: not ansible_check_mode
@@ -869,6 +873,7 @@
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
         headers: *sem_hdr
       register: _repos
+      check_mode: false
 
     # The working-tree record gets its OWN NAME. The first version of this task
     # pointed the record named `agent-cloud` at the mount — and Stage: templates
@@ -880,7 +885,6 @@
     # `agent-cloud worktree` is claimed by no other declaration; templates-local
     # binds every (Local) template to it. HEAD = whatever branch the developer
     # has checked out, at its last commit — the thing local-dev exists to test.
-      check_mode: false
     - name: "Create the agent-cloud worktree repository record"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
