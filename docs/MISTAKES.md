@@ -62,6 +62,7 @@ supersede it with a new entry and link both.
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
+| 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
@@ -83,6 +84,7 @@ supersede it with a new entry and link both.
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
+| 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1180,6 +1182,33 @@ when the probe cannot run (explicit `allow_unverified_address` override only), a
 `test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
 proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
 
+### 3.7 A test's scratch repository was the real one, because the hook exported `GIT_DIR`
+
+**What happened.** On 2026-09-23 I pushed a branch adding `test_graph_artifact_guard.bats`,
+whose setup ran `git init -q repo`, `git config user.email t@example.invalid` and
+`git config user.name t` inside `$BATS_TEST_TMPDIR`. It passed when run by hand. Under the
+pre-push hook, git had exported `GIT_DIR`, so those commands addressed the pushing
+repository: the shared `.git/config` gained `core.bare=true`, `user.email=t@example.invalid`
+and `user.name=t`. Every agent-cloud checkout, including another session's, then failed with
+"this operation must be run in a work tree", and any commit made in that window would have
+been authored by the fake identity. About 150 BATS tests failed and the push was refused.
+Repaired about ten minutes later (`core.bare=false`, local `user.*` removed); a
+`git log --all --author=t@example.invalid` search found no commit under that identity.
+
+**Root cause.** Git sets `GIT_DIR` and related variables in a hook's environment. The pre-push
+hook passed them straight to the suites, so a test's git commands were never isolated, and
+the only way a test could be safe was for its author to know that.
+
+**The rule.** A hook that runs tests clears git's repository variables first, so the suites
+run with the same clean git environment they get in CI. A test that creates a repository
+also clears them itself, because it may be run by another hook.
+
+**Enforced by.** `.githooks/pre-push` unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
+related variables after resolving the repository root.
+`platform/tests/test_pre_push_git_env.bats` runs the hook the way git does, pointed at a
+victim repository, with a fake `bats` that repeats the offending commands, and asserts the
+victim's config is unchanged. Mutation: removing the unset turns it red.
+
 ### 3.8 A "dry run" that the orchestrator silently ran for real
 
 **What happened.** On 2026-09-23 I launched `Deploy agentgateway (Dev)` (template 220) against
@@ -1720,6 +1749,42 @@ the entry that reuses the name. Never rely on a deleted file to delete anything.
 deploy's post-apply VERIFY asserts the live OAuth2 provider's `redirect_uris` carry the declared
 `verify_redirect` value, which the hijacked proxy provider would have failed — but that check is
 prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIFY in local mode too.
+
+### 6.6 A generated artifact rewritten under the wrong identity, one `git add -A` from being committed
+
+**Occurrences: 2** — 2026-09-23, 2026-09-23
+
+**What happened.** On 2026-09-23 a Codex review of the main checkout found
+`.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
+9,250 nodes, written 11:35 local) and `.codebase-memory/graph.db.zst` deleted. `list_projects`
+showed two graph projects on the same root: the documented `agent-cloud` (7,697 nodes, matching
+the committed artifact) and a path-named one (9,474 nodes). codebase-memory-mcp 0.9.0 runs with
+`auto_index = true` and `auto_watch = true` and names projects after the checkout path. A second
+checkout (`agent-cloud-check-mode-standard`) carried the same path-derived ID. Nothing refused
+committing either state.
+
+**Root cause.** The graph artifact is generated, committed and named by convention (AGENTS.md
+"Memory & specs": project `agent-cloud`), but the tool's automatic path derives a different name,
+and nothing checked the committed pair. A commit of that working tree would have shipped metadata
+for a graph that no longer existed, under an ID no documented query uses.
+
+**The rule.** A committed generated artifact carries a check on what is committed, not only a
+convention for how to produce it. The graph metadata and the graph travel together, under the
+documented project ID, with a recorded size that matches the staged graph. To regenerate:
+`index_repository` with `name="agent-cloud"` and `persistence=true`.
+
+**Enforced by.** Pre-commit gate `graph-artifact-consistent` (`scripts/check-graph-artifact.sh`,
+reading the index) and `platform/tests/test_graph_artifact_guard.bats`, which replays the
+2026-09-23 state and was mutated red. The auto-index behaviour itself is not changed; it is
+machine configuration, not repository code.
+
+**Occurrence 2 — 2026-09-23.** The same day, in the PR #205 worktree, I committed and pushed
+the auto-index output (`aeeb951`: project `Users-stray-Documents-GitHub-agent-cloud-seed-envs`,
+graph grown from 1.6 MB to 2.7 MB) by staging with `git add -A` after a pre-commit hook had
+fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it because the
+gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;
+and a broad stage picked up files I had not touched. Stage named paths, never the whole tree,
+in any worktree the auto-indexer watches.
 
 ## 7. Which of these OPA can carry
 
