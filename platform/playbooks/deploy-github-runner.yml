@@ -32,6 +32,9 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # This deploy reads its one secret directly rather than through manage-secrets; declared so
+    # Check Secrets knows the deploy cannot run without it (PR 203 Codex review).
+    _required_existing_secrets: [app_private_key]
     _org: "{{ github_org | default('uhstray-io') }}"
     # The JWT issuer. Upstream recommends the App's CLIENT ID and accepts the app id;
     # both are opaque strings here, so either is taken and the client id wins when both

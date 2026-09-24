@@ -76,14 +76,20 @@
 - name: "Dry run: report what this merge would write (key names only)"
   # Under --check the writes below are skipped; this says what a real run would do. Only key
   # NAMES are printed, never values.
+  # Reads _bm_set/_bm_del, the defaulted forms: a remove-only merge (a key revoke) supplies no
+  # _bm_data (PR 203 Codex review).
   ansible.builtin.debug:
     msg: >-
       check mode: secret/{{ _bm_path }} would be
-      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would change:
-      {% for k, v in _bm_data.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %}
+      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would be set:
+      {% for k, v in _bm_set.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %};
+      keys that would be removed: {{ _bm_del | intersect(_bm_current.keys() | list) | join(', ') }}
   when:
     - ansible_check_mode
-    - _bm_existing.status == 404 or (_bm_current | combine(_bm_data)) != _bm_current
+    - >-
+      _bm_existing.status == 404
+      or ((_bm_current | combine(_bm_set)) != _bm_current)
+      or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
 
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
   # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a

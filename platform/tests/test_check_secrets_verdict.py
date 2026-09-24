@@ -213,3 +213,16 @@ def test_uhhcraft_requires_the_keys_its_app_panics_without(tmp_path):
                             "discord_orders_webhook_url", "discord_ops_webhook_url"), "v")
     v = _verdict(tmp_path, service="uhhcraft", stored=stored, deploy_raw=raw)
     assert v["status"] == "fail" and v["evidence"]["missing"] == ["stripe_secret_key"], v
+
+
+def test_a_deploy_with_no_secret_contract_fails_closed(tmp_path):
+    # PR 203 Codex review: github-runner read its key directly and declared nothing, so any stored
+    # sibling key made the step pass without checking the one the deploy needs.
+    v = _verdict(tmp_path, stored={"other": "x"}, deploy_raw=yaml.safe_dump([{"hosts": "x", "vars": {}}]))
+    assert v["status"] == "fail" and "declares no secret contract" in v["error"], v
+
+
+def test_github_runner_requires_its_app_key(tmp_path):
+    raw = (REPO / "platform/playbooks/deploy-github-runner.yml").read_text()
+    v = _verdict(tmp_path, service="github-runner", stored={"other": "x"}, deploy_raw=raw)
+    assert v["status"] == "fail" and v["evidence"]["missing"] == ["app_private_key"], v
