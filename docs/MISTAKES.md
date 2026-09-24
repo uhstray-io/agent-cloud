@@ -112,6 +112,8 @@ supersede it with a new entry and link both.
 | 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
+| 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
+| 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | Convention |
 
 ---
 
@@ -2662,3 +2664,98 @@ whitespace, not the tests.
 takes ~40 seconds, too slow per commit and well matched to the moment code leaves
 the machine. Still the repository owner's call, and still the clearest
 convention-to-gate conversion available here.
+
+
+---
+
+## 12. Host state invisible in an agent run, blamed on credentials
+
+Two entries, one root cause: Paperclip runs agents under a sandboxed `$HOME`, so
+host config and host credentials can be invisible inside a run. Each tool reports
+that invisibility in its own idiom — an invalid token, no available models, a
+provider that simply is not in the list — and none of those wordings says
+*missing visibility*, which is why the class gets chased as a credentials or
+config problem instead.
+The dangerous part of the class is that the suggested fix ("re-authenticate",
+"reconfigure the provider") acts on the wrong object and can overwrite the thing
+that was already correct.
+
+### 12.1 `gh` reported a valid token as invalid
+
+**What happened.** Inside an agent run, `gh` found the account entry in
+`hosts.yml`, found no token, and reported *"The token in default is invalid."*
+The token is fine — it was never the token. The run simply cannot see it, and
+the suggested remedy (`gh auth login`) would have overwritten a valid
+credential.
+
+**Root cause.** macOS resolves the *login* keychain from `$HOME`. Under a
+sandboxed `$HOME`, only `/Library/Keychains/System.keychain` remains in the
+search list, and `gh`'s token lives in the login keychain under service
+`gh:github.com`. Measured 2026-09-24: the same `security find-generic-password
+-s 'gh:github.com' -w` lookup succeeds with the host `$HOME` and fails (exit
+44) with a sandboxed one; with the host `hosts.yml` visible but the login
+keychain unreachable, `gh auth status` prints "The token in default is invalid"
+verbatim.
+
+**The fix.** Source the company's `gh-host-auth.sh` before any `gh`/`git` work
+in a run. It reads the secret from the login keychain by explicit path, unwraps
+go-keyring's `go-keyring-base64:` envelope, and exports `GH_TOKEN`. The
+non-obvious step is clearing the inherited `osxkeychain` credential helper (it
+comes from the system gitconfig, `/opt/homebrew/etc/gitconfig`): left in place,
+`git clone` authenticates successfully and *then* tries to cache the credential
+into a keychain it cannot reach. The script's header records that failure as
+`fatal: failed to store: -60008`. One honest caveat from re-verification the
+same day: with current git (2.55.0) the store attempt did not abort the clone at
+all, so the exact error text is version-dependent — the helper is cleared
+because it cannot reach its target, regardless of whether that currently aborts.
+The script derives the keychain path from `$HOME` unless
+`PAPERCLIP_GITHUB_HOST_HOME` is set, so under a fully clean sandboxed
+environment that variable must carry the host home.
+
+**The rule.** When a credential tool inside a sandboxed run reports a credential
+*invalid*, first ask whether the credential is *visible* — check what
+`$HOME`/keychain search list/config dir the tool is actually resolving against —
+before touching the credential itself.
+
+**Enforced by.** Convention — the helper script exists and must be sourced; no
+gate enforces it.
+
+### 12.2 Pi showed no models; OpenCode omitted its provider
+
+**What happened.** The same sandboxed `$HOME`, one layer up. Pi printed *"No
+models available. Use /login…"* even though the host's `~/.pi/agent/models.json`
+is correct. OpenCode silently dropped the entire custom provider — its model
+list carried no entry for a provider its host config declares — no error, just
+absence, because its config resolves from `$XDG_CONFIG_HOME` and its credentials
+from `$XDG_DATA_HOME`, both of which the sandbox can redirect.
+
+**Why OpenCode's shape is the worse one.** A loud "no models" prompts an
+investigation; a silently missing provider reads as "never configured" and
+invites reconfiguring something that was already right — which is how correct
+config gets overwritten.
+
+**The fix.** Pi: point `PI_CODING_AGENT_DIR` back at the host's
+`<host-home>/.pi/agent`. OpenCode: point `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+back at the host's `<host-home>/.config` and `<host-home>/.local/share`.
+(`<host-home>` is written as a placeholder deliberately — this repo is public
+and its own pre-push audit treats machine paths as username leaks: `AGENTS.md`,
+Mandatory Pre-Push Audit.) Both verified
+2026-09-24: `pi --list-models` under a sandboxed `$HOME` prints exactly "No
+models available" and works once the env var is set; an empty redirected
+`XDG_CONFIG_HOME` makes `opencode models` list no entry for the host-declared
+provider, while pointing it at the host `.config` lists it again.
+
+**Caveat, recorded as found.** Inside a Paperclip `opencode_local` run the
+symptom no longer reproduces with the run's own defaults, because the harness
+now seeds the host OpenCode config into the run-scoped `XDG_CONFIG_HOME`. The
+trap is still live for any redirect that does not carry the host config, so the
+entry documents the mechanism, not just the historic symptom.
+
+**The rule.** "No models available" and "provider not found" are visibility
+failures wearing authentication's clothes. Before re-logging-in or
+re-configuring, resolve where the tool actually looks — `$HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, tool-specific dirs — and confirm those paths
+contain the host config.
+
+**Enforced by.** Convention — the env corrections are known and applied by
+convention inside runs; nothing mechanical catches a run that forgets them.
