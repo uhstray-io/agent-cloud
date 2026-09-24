@@ -181,6 +181,7 @@
       failed_when: false
       no_log: true
       when: _reserve
+      check_mode: false
 
     - name: "Require a successful pfSense DHCP read"
       ansible.builtin.assert:
@@ -199,6 +200,7 @@
       failed_when: false
       no_log: true
       when: _reserve
+      check_mode: false
 
     - name: "Refuse an address pfSense could assign or an unknown boundary"
       ansible.builtin.assert:
