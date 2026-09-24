@@ -85,3 +85,17 @@ def test_the_local_inventory_declares_the_verified_health_urls():
     for group in ("step_ca_svc", "authentik_svc", "o11y_svc", "agentgateway_svc"):
         section = text.split(f"[{group}:vars]", 1)[1].split("\n          [", 1)[0]
         assert "health_url=http" in section, group
+
+
+def test_a_target_group_with_no_hosts_fails(tmp_path):
+    # PR 203 Codex review: a play whose hosts: matched nothing exited 0 with no step result.
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("[demo_svc]\ndemo ansible_connection=local\n")
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=typo_svc"],
+        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    )
+    assert done.returncode != 0
+    assert "matches no hosts in this inventory" in done.stdout

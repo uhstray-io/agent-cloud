@@ -352,9 +352,28 @@
       ansible.builtin.uri:
         url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/role-id"
         headers: *bao_root_hdr
+        # A dry run skipped creating the role, so on a fresh OpenBao it is absent (PR 203 Codex
+        # review); a real run requires it.
+        status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
       register: _role_id
       no_log: true
       check_mode: false
+
+    - name: "Dry run, AppRole not created yet: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the local-semaphore AppRole does not exist yet and would be created with
+          policy local-semaphore; the genesis deploys and Semaphore need its credentials, so the
+          dry run stops here.
+      when:
+        - ansible_check_mode
+        - _role_id.status == 404
+
+    - name: "Dry run, AppRole not created yet: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - _role_id.status == 404
 
     - name: "Generate AppRole secret-id"
       ansible.builtin.uri:

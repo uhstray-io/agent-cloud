@@ -25,6 +25,11 @@ class _Unsafe(str):
 
 yaml.SafeDumper.add_representer(_Unsafe, lambda d, v: d.represent_scalar("!unsafe", str(v)))
 
+def _secrets_play() -> dict:
+    """The play that checks the secrets (the first play only guards the target group)."""
+    return next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if str(p.get("name", "")).startswith("Check secrets"))
+
+
 DECLARED = [
     {"name": "svc_session", "type": "random", "length": 32},
     {"name": "svc_api_key", "type": "existing"},
@@ -35,7 +40,7 @@ REQUIRED = ["svc_api_key"]
 
 def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, policy=200, token_policies=("svc",),
              service="svc", vars_file=None, host_vars=None, deploy_raw=None):
-    play = yaml.safe_load(PLAYBOOK.read_text())[0]
+    play = _secrets_play()
     record = next(t for t in play["tasks"] if t.get("name") == "Record the step result")
     # The verdict is computed by the "Decide the secrets step" set_facts; lifted here as vars.
     decided = {k: v for t in play["tasks"] if str(t.get("name", "")).startswith("Decide the secrets step")
@@ -127,7 +132,7 @@ SECRETS_VARS = REPO / "platform/playbooks/vars/secret-declarations"
 
 def test_a_failed_step_fails_the_task():
     # PR 203 Codex review: the step result said fail while Semaphore reported success.
-    tasks = yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]
+    tasks = _secrets_play()["tasks"]
     names = [t.get("name") for t in tasks]
     fail = tasks[-1]
     assert names.index("Record the step result") < len(tasks) - 1
@@ -195,7 +200,7 @@ def test_no_deploy_playbook_computes_its_secret_declaration_inline():
 def test_the_local_controller_may_read_what_the_secrets_step_reads():
     # PR 203 Codex review: Check Secrets (Local) read the service's AppRole and policy with a token
     # whose policy granted only secret/*, so OpenBao answered 403 before a verdict.
-    play = yaml.safe_load(PLAYBOOK.read_text())[0]
+    play = _secrets_play()
     probe = next(t for t in play["tasks"] if t.get("name", "").startswith("Read the service AppRole"))
     bootstrap = yaml.safe_load((REPO / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]["tasks"]
     write = next(t for t in bootstrap if t.get("name") == "Write local-semaphore policy")
