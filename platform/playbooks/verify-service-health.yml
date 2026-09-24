@@ -3,7 +3,10 @@
 # declared health path.
 #
 # Read-only, identical under --check. The service's inventory host declares the contract:
-# service_url and health_path. The step's criterion is HTTP 200, so health_status_codes (which
+# service_url and health_path, or health_url when the health endpoint is not under the service
+# URL or is reached differently from the executor (local-dev: the Semaphore container reaches
+# services by container name on the local-dev network; health_url alone never touches the
+# service's stored secrets, which service_url is written into). The step's criterion is HTTP 200, so health_status_codes (which
 # admits e.g. OpenBao's sealed 503 for the fleet overview) is deliberately not read here (PR 203
 # Codex review). A service with no declared health path fails: the criterion is "answers through
 # its declared path", and an undeclared one cannot be checked. Validate All Services stays the
@@ -18,7 +21,10 @@
   tags: [verify]
   vars:
     _codes: [200]
-    _url: "{{ (service_url | default('')) ~ (health_path | default('')) }}"
+    _url: >-
+      {{ health_url | default('', true)
+         or ((service_url | default('') ~ health_path | default(''))
+             if (service_url | default('') | length > 0 and health_path | default('') | length > 0) else '') }}
 
   tasks:
     - name: "Probe the declared health path"
@@ -31,12 +37,12 @@
       failed_when: false
       check_mode: false
       delegate_to: localhost
-      when: (service_url | default('') | length > 0) and (health_path | default('') | length > 0)
+      when: _url | length > 0
 
     - name: "Decide"
       ansible.builtin.set_fact:
         _health_errors: >-
-          {{ (['no declared service_url + health_path for ' ~ inventory_hostname]
+          {{ (['no declared health_url or service_url + health_path for ' ~ inventory_hostname]
               if _health is skipped else [])
              + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
                  ~ (_codes | join(', '))] if (_health is not skipped and _health.status not in _codes) else []) }}

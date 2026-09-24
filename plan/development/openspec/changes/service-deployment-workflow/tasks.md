@@ -185,11 +185,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       earlier steps", "Failure appears within one interval", "NetBox outage does not block
       deployment", "Only the collector writes status", "Unreviewed step is visible" and
       "Regression blocks a prompt change" pass on local-dev
-- [ ] 7.9 Health contracts in the generated local inventory (`bootstrap-local-dev.yml`): a
+- [x] 7.9 Health contracts in the generated local inventory (`bootstrap-local-dev.yml`): a
       `service_url` + `health_path` per local service, each read from the service's own verify
       step and reachable from inside the local Semaphore container. Until then `Verify Service
       Health (Local)` fails closed with "no declared service_url + health_path" (PR 203 Codex
-      review)
+      review). Done for step-ca, Authentik, o11y and agentgateway as `health_url`, each
+      verified 200 from inside the local Semaphore container; Caddy, OpenBao and the other
+      local services remain undeclared and fail closed by name
 
 ## 8. Backfill agentgateway end to end
 
