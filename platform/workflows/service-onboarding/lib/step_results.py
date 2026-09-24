@@ -18,9 +18,9 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              counts only when its service is in this inventory
   pick       {groups, host_services, histories: [[task rows]]}
                                                     -> {"tasks": [task rows + "service"]}
-             the newest PICK_WINDOW finished tasks per (template, service), newest first:
-             whether a task was check mode is only certain once its output is read, so the
-             real run behind a newer dry run is kept for aggregate to classify
+             per (template, service): the newest finished REAL task, always, plus the newest
+             check-mode task when it is newer - however many dry runs follow a real run,
+             the real run survives
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
               groups?, host_services?, now_ns?}
                                                     -> {services, validation, failed_steps,
@@ -28,10 +28,14 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
                                                         loki_streams (only with now_ns)}
 
 Check mode never sets conformance (review of PR #195): a passing `--check` after a failed real
-run must not clear the failure, because nothing on the service changed. A task is check-mode
-when Semaphore recorded `params.dry_run` for it, or when its step result says so; its results
-land in `validation` as evidence, and `services` / `status_by_service` / `failed_steps` come
-only from real runs.
+run must not clear the failure, because nothing on the service changed. The run mode comes
+from ONE signal, the task row: Semaphore records `params.dry_run` whenever check mode is
+chosen (UI or API; v2.17 db/Task.go). It is the only way check mode reaches a task here: no
+template passes arguments or allows a per-task override (guarded by test_step_results.py), so
+the row is known before any output is read (reviews of PR #229). Check-mode results land in
+`validation`; `services` / `status_by_service` / `failed_steps` come only from real runs. A
+step result whose own check_mode contradicts its row is listed under `anomalies` and kept out
+of conformance, never trusted silently.
 
 An inventory group is mapped to its first host's service_name (groups + host_services, both
 plain data: hostvars themselves never cross), so a service is named the way its own step
@@ -48,11 +52,6 @@ VARIANT = re.compile(r" \((Dev|Local)\)$")
 PER_SERVICE = "Deploy {service}"
 FINISHED = {"success", "error"}
 TAIL = 20
-# How many finished tasks per (template, service) reach aggregate. A check-mode run is only
-# certain from its OUTPUT (a history row may lack params.dry_run), so pick cannot discard
-# older tasks; aggregate classifies them. ponytail: fixed window - a real run older than the
-# newest PICK_WINDOW tasks (all dry runs) drops out; raise it if that ever happens.
-PICK_WINDOW = 5
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -116,18 +115,20 @@ def is_check_mode(task: dict) -> bool:
 
 
 def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
-    """The newest PICK_WINDOW finished tasks per (template, service), oldest first. aggregate
-    reads each one's output and decides which were check mode; pick never discards the real
-    run behind a newer dry run, because a dry run's history row may not say it is one
-    (review of PR #229)."""
-    by_key: dict[tuple, list[dict]] = {}
+    """Per (template, service): the newest finished real task, always, and the newest
+    check-mode task when it is newer than that. The row says which is which (see module doc),
+    so no number of dry runs can push the last real run out."""
+    newest: dict[tuple, dict] = {}
     for history in histories:
         for task in history:
-            if task.get("status") in FINISHED:
-                by_key.setdefault((task["template_id"], _service_of(task, by_group)), []).append(task)
-    kept = [dict(t, service=key[1]) for key, tasks in by_key.items()
-            for t in sorted(tasks, key=lambda t: t["id"], reverse=True)[:PICK_WINDOW]]
-    return sorted(kept, key=lambda t: t["id"])
+            if task.get("status") not in FINISHED:
+                continue
+            key = (task["template_id"], _service_of(task, by_group), is_check_mode(task))
+            if key not in newest or task["id"] > newest[key]["id"]:
+                newest[key] = task
+    kept = {k: t for k, t in newest.items()
+            if not k[2] or t["id"] > newest.get((k[0], k[1], False), {"id": -1})["id"]}
+    return [dict(t, service=key[1]) for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
@@ -135,6 +136,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
+    anomalies: list[dict] = []
     for task in sorted(tasks, key=lambda t: t["id"]):
         lines = ANSI.sub("", task.get("output") or "").splitlines()
         results = results_in(lines)
@@ -150,7 +152,13 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
             service = result.get("service") or task.get("service")
             if not service or not result.get("step"):
                 continue
-            check = is_check_mode(task) or bool(result.get("check_mode"))
+            check = is_check_mode(task)
+            if bool(result.get("check_mode")) != check:
+                # The row is authoritative; a contradiction means check mode arrived by an
+                # unsupported path. Keep it out of conformance and make it visible.
+                anomalies.append({"task_id": task["id"], "service": service, "step": result["step"],
+                                  "row_check_mode": check, "result_check_mode": bool(result.get("check_mode"))})
+                check = True
             (validation if check else services).setdefault(service, {})[result["step"]] = {
                 "status": result.get("status"),
                 "task_id": task["id"],
@@ -164,8 +172,8 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
         for service, steps in services.items()
     }
     status = {s: {step: r["status"] for step, r in steps.items()} for s, steps in services.items()}
-    agg = {"services": services, "validation": validation, "failed_steps": failed,
-           "status_by_service": status}
+    agg = {"services": services, "validation": validation, "anomalies": anomalies,
+           "failed_steps": failed, "status_by_service": status}
     agg["report"] = report(agg, registry, inventory_services or [])
     return agg
 

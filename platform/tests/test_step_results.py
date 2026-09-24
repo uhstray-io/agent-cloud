@@ -68,7 +68,7 @@ def test_per_service_deploy_template_maps_to_service_deploy():
     assert "service-deploy" in _agg(_task(7, "error", 3, "x"))["services"]["tududi"]
 
 
-def test_pick_keeps_finished_tasks_per_template_and_service_oldest_first():
+def test_pick_keeps_the_newest_finished_task_per_template_and_service():
     rows = [
         {"id": 10, "status": "success", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
         {"id": 12, "status": "error", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
@@ -76,8 +76,7 @@ def test_pick_keeps_finished_tasks_per_template_and_service_oldest_first():
         {"id": 11, "status": "success", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'},
     ]
     picked = step_results.pick([rows], GROUPS)
-    # Unfinished tasks never; every finished one within the window, for aggregate to order.
-    assert [(t["id"], t["service"]) for t in picked] == [(10, "tududi"), (11, "step-ca"), (12, "tududi")]
+    assert [(t["id"], t["service"]) for t in picked] == [(11, "step-ca"), (12, "tududi")]
 
 
 def test_aggregate_lets_the_newest_real_result_win():
@@ -176,34 +175,41 @@ def test_a_passing_check_after_a_failed_real_run_does_not_clear_the_failure():
     assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 21
 
 
-def test_a_result_marked_check_mode_is_validation_even_without_task_params():
+def test_a_result_contradicting_its_row_is_an_anomaly_kept_out_of_conformance():
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass", "check_mode": True})
     agg = _agg(_task(22, "success", 1, out))
     assert agg["status_by_service"] == {}
     assert agg["validation"]["tududi"]["secrets-approle"]["check_mode"] is True
+    assert agg["anomalies"] == [{"task_id": 22, "service": "tududi", "step": "secrets-approle",
+                                 "row_check_mode": False, "result_check_mode": True}]
 
 
-def test_pick_keeps_the_real_run_behind_a_dry_run_whose_row_does_not_say_so():
-    # Review of PR #229: a check-mode task's history row may lack params.dry_run; only its
-    # output says so. pick must keep the older real run for aggregate to classify.
-    real = {"id": 30, "status": "error", "template_id": 2, "environment": '{"target_service": "tududi_svc"}'}
-    unmarked_check = dict(real, id=31, status="success")
-    assert [t["id"] for t in step_results.pick([[real, unmarked_check]], GROUPS)] == [30, 31]
-    failed_real = _task(30, "error", 2, "\n".join(f"line {i}" for i in range(5)))
-    passing_check = _task(31, "success", 2, _run_line(
-        {"service": "tududi", "step": "fw-harden", "status": "pass", "check_mode": True}))
-    agg = _agg(failed_real, passing_check)
+def test_the_last_real_run_survives_any_number_of_dry_runs():
+    # Review of PR #229: one real run, then five (or more) check-mode runs.
+    env = '{"target_service": "tududi_svc"}'
+    real = {"id": 30, "status": "error", "template_id": 2, "environment": env}
+    dry = [dict(real, id=31 + i, status="success", **DRY) for i in range(6)]
+    assert [t["id"] for t in step_results.pick([[real, *dry]], GROUPS)] == [30, 36]
+
+
+def test_a_real_row_failing_without_a_result_is_a_real_failure():
+    # The row is the run-mode signal: a real row's failure with no result is a real fail.
+    agg = _agg(_task(40, "error", 2, "boom"))
     assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
-    assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 31
+    assert agg["anomalies"] == []
 
 
-def test_pick_keeps_a_bounded_window_per_template_and_service():
-    rows = [{"id": i, "status": "success", "template_id": 2,
-             "environment": '{"target_service": "tududi_svc"}'} for i in range(1, 9)]
-    rows.append({"id": 50, "status": "running", "template_id": 2,
-                 "environment": '{"target_service": "tududi_svc"}'})
-    picked = [t["id"] for t in step_results.pick([rows], GROUPS)]
-    assert picked == list(range(9 - step_results.PICK_WINDOW, 9))
+def test_no_template_can_inject_check_mode_outside_the_task_row():
+    # The premise that makes the row authoritative: no template passes arguments (e.g.
+    # --check) and none allows a per-task argument override.
+    for name in ("templates.yml", "templates-local.yml"):
+        text = (REPO / "platform/semaphore" / name).read_text()
+        assert "--check" not in text, name
+        assert "allow_override_args_in_task" not in text, name
+        for t in yaml.safe_load(text).get("templates") or []:
+            assert "arguments" not in t, (name, t.get("name"))
+    setup = (REPO / "platform/semaphore/setup-templates.yml").read_text()
+    assert "allow_override_args_in_task" not in setup and "'arguments'" not in setup
 
 
 def test_an_inventoried_service_with_no_history_still_gets_a_report_row():
