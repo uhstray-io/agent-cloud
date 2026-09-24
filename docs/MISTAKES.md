@@ -63,6 +63,7 @@ supersede it with a new entry and link both.
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
+| 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -107,6 +108,7 @@ supersede it with a new entry and link both.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
+| 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -1206,6 +1208,35 @@ related variables after resolving the repository root.
 `platform/tests/test_pre_push_git_env.bats` runs the hook the way git does, pointed at a
 victim repository, with a fake `bats` that repeats the offending commands, and asserts the
 victim's config is unchanged. Mutation: removing the unset turns it red.
+
+### 3.8 A "dry run" that the orchestrator silently ran for real
+
+**What happened.** On 2026-09-23 I launched `Deploy agentgateway (Dev)` (template 220) against
+production through the Semaphore API, meaning to run it in check mode first. I sent
+`"dry_run": true` at the top level of the task body, from a read of the API spec that did not
+check where the field lives. Semaphore v2.17.31 carries Ansible's check and diff flags inside the
+task's `params` object (`db/Task.go`, `AnsibleTaskParams`); the top-level key was ignored. Task
+1177 ran for real: it placed the dev checkout and enabled linger on the VM, generated and stored
+the gateway's database password, cookie seed and four client keys in OpenBao, and rendered
+`.env` and `config.yaml`, then stopped at a failing guard before `deploy.sh`. No container
+started; the seeded upstream key was reused, not overwritten ("7 secrets managed"). Everything
+written is what the first real deploy writes, so nothing had to be undone, but it was not the
+check-mode run that was intended.
+
+**Root cause.** A safety flag was sent without confirming the server recorded it. The response
+was not read back for the flag, and a real run and a check-mode run look the same until the
+first write.
+
+**The rule.** When a launch depends on a safety flag (check mode, diff, limit), read the created
+task back and confirm the server recorded the flag before letting it run; stop the task if it did
+not. For Semaphore v2.17: `"params": {"dry_run": true, "diff": true}`.
+
+**Enforced by.** Test. `scripts/semaphore-launch.py` builds the body with the flags in `params`
+and refuses check mode on an unverified server version, before the task exists; a read-back
+after the POST stops the task if the server did not record check mode, as a tripwire only,
+since Semaphore starts a task on creation (review of PR #220).
+`platform/tests/test_semaphore_launch.py` fails if the flag is ever sent at the top level, and
+covers the version gate, undeclared survey fields, a busy template and the tripwire.
 
 ## 4. Data handling
 
@@ -2497,6 +2528,24 @@ text being coerced, and never on JSON text assembled with escapes.
 `_client_defs` and `_secret_definitions` with `ansible-playbook`. CI installs the current
 ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
 general case.
+
+### 10.17 A guard that could never pass in production, tested only where it is switched off
+
+**What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
+unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
+defines `secrets` only as a task-level variable on its template task; at play level the name
+does not exist, so the expression always resolved to empty and the guard failed every production
+deploy (task 1177, 2026-09-23), with the key present in OpenBao. Local-dev sets
+`agw_upstream_requires_key: false` for LM Studio, so every local proof skipped the guard.
+
+**Root cause.** The guard referenced a variable by the name the templates use, without checking
+that the name existed in the play's scope, and the only environments it ran in had it disabled.
+
+**The rule.** A guard is proven in a configuration where it is ENABLED and its input is present
+(it must pass) and absent (it must fail). The play-level fact manage-secrets sets is `_resolved`.
+
+**Enforced by.** The fix and its regression test land with the deploy session's keyed-verify
+change to the same playbook; until that PR merges, `Convention`.
 
 ## 11. The largest one
 
