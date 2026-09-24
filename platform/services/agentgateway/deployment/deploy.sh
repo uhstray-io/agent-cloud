@@ -73,6 +73,13 @@ step_wait_ready() {
     fi
     sleep 3; elapsed=$((elapsed + 3))
   done
+  # The loop's probe is quiet; say why it fails. Task 1213: the gateway logged itself ready on
+  # 0.0.0.0:19001 and the probe still never answered, so name resolution and the probe's own
+  # error are what the next run must show.
+  warn "Readiness probe, verbose, from agentgateway-db:"
+  $CONTAINER_ENGINE exec agentgateway-db sh -c \
+    'getent hosts agentgateway || echo "agentgateway does not resolve here"; cat /etc/resolv.conf; wget -S -O /dev/null -T 5 http://agentgateway:19001/healthz/ready' \
+    2>&1 | redact_secrets >&2 || true
   dump_container_diagnostics agentgateway
   dump_container_diagnostics agentgateway-db 20
   error "agentgateway readiness did not respond within 90s (diagnostics above)"

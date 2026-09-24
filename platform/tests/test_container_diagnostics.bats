@@ -63,4 +63,23 @@ redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
   assert_precedes "$BATS_TEST_TMPDIR/wfh.sh" 'dump_container_diagnostics ' 'did not become healthy'
   sed -n '/^step_wait_ready()/,/^}/p' "$REPO_ROOT/platform/services/agentgateway/deployment/deploy.sh" > "$BATS_TEST_TMPDIR/ready.sh"
   assert_precedes "$BATS_TEST_TMPDIR/ready.sh" 'dump_container_diagnostics agentgateway' 'readiness did not respond'
+  # Task 1213: a healthy gateway and a probe that never saw it; the verbose probe names why.
+  assert_precedes "$BATS_TEST_TMPDIR/ready.sh" 'Readiness probe, verbose' 'readiness did not respond'
+  assert_grep -qF 'getent hosts agentgateway' "$BATS_TEST_TMPDIR/ready.sh"
+}
+
+@test "dump_container_diagnostics: an engine without --timestamps still prints the log" {
+  cat > "$BATS_TEST_TMPDIR/oldengine" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "inspect "*) echo "state=running exit=0 restarts=0" ;;
+  "logs --timestamps") echo "unknown flag: --timestamps" >&2; exit 125 ;;
+  "logs --tail") echo "plain log line" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/oldengine"
+  run bash -c "source '$COMMON'; CONTAINER_ENGINE='$BATS_TEST_TMPDIR/oldengine'; dump_container_diagnostics x"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "plain log line"
 }
