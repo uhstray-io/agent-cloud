@@ -102,6 +102,36 @@ compose() {
 
 # ── Health Waiters ────────────────────────────────────────────────────────────
 
+# redact_secrets — filter stdin so a container log can go into a task log (Semaphore stores
+# task output). It does not try to find where a value ends, because a value can hold a space, a
+# comma or a quote (PR 231 Codex review): after an Authorization header or a password, passwd,
+# secret, token, api-key or bare key label (the last is how agentgateway's local-dev config
+# carries a client key), the REST OF THE LINE is blanked. A URL's userinfo is blanked up to its
+# last `@`, and a Bearer token wherever it appears. Over-redaction is the accepted cost. It is
+# still a best-effort filter, not a guarantee: an unlabelled secret passes through, so logs are
+# dumped only on failure.
+redact_secrets() {
+  sed -E \
+    -e 's#(://[^:/@[:space:]]+:)[^[:space:]]*@#\1***@#g' \
+    -e 's#([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+#\1***#g' \
+    -e 's#([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]["'"'"']?[[:space:]]*[:=]).*$#\1 ***#' \
+    -e 's#(^|[^[:alnum:]])(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Kk][Ee][Yy])["'"'"']?[[:space:]]*[:=]).*$#\1\2 ***#'
+}
+
+# dump_container_diagnostics <container_name> [lines]
+# On a failed wait, print the container's state and the tail of its log
+# (redacted), so a failed deploy says WHY in its own output instead of pointing
+# at a host nobody may log into. Never fails the caller.
+dump_container_diagnostics() {
+  local name="$1" lines="${2:-60}"
+  warn "Diagnostics for ${name}:"
+  $CONTAINER_ENGINE inspect --format \
+    'state={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' \
+    "$name" 2>&1 | redact_secrets >&2 || true
+  warn "Last ${lines} log lines of ${name} (redacted):"
+  $CONTAINER_ENGINE logs --tail "$lines" "$name" 2>&1 | redact_secrets >&2 || true
+}
+
 # wait_for_healthy <container_name> <timeout_seconds>
 # Polls container health status until healthy or timeout
 wait_for_healthy() {
@@ -118,6 +148,7 @@ wait_for_healthy() {
     sleep 2
     elapsed=$((elapsed + 2))
   done
+  dump_container_diagnostics "$name"
   error "${name} did not become healthy within ${timeout}s"
 }
 

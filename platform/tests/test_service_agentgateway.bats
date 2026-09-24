@@ -41,7 +41,9 @@ setup() {
   # Named gateways (llm.port is deprecated); LLM routes on BOTH so the UI playground
   # calls /v1 on its own origin through Caddy (no CORS, no extra browser port).
   assert_grep -qE '^\s*default:$' "$CONFIG"
-  assert_grep -qE '^\s*gateways: \[default, ui\]$' "$CONFIG"
+  # Conditional on agw_ui_enabled; the rendered `[default, ui]` is asserted by the
+  # "UI on by default" render test below.
+  assert_grep -qF "gateways: {{ '[default, ui]' if _ui else '[default]' }}" "$CONFIG"
   refute_grep -qE '^\s*port: 4000$' <(sed -n '/^llm:/,$p' "$CONFIG")
   # Auth is the gateway's own ui.policies (the UI ignores an external gate — banner
   # "UI is exposed without authentication", 2026-09-17): OIDC + admin-group rule.
@@ -212,9 +214,44 @@ setup() {
 }
 
 @test "agentgateway: playbook verifies over the compose network, asserts the 401, puts no key on an argv" {
-  # No secret-bearing step in this playbook at all, so no no_log outside manage-secrets.
-  refute_grep -q 'no_log: true' "$PLAYBOOK"
+  # The client key is a `uri` header in exactly two no_log tasks, and no command or shell task
+  # ever sees it: a shell probe put it on wget's argv (PR 221 Codex review).
+  python3 - "$PLAYBOOK" <<'PY'
+import sys, yaml
+def walk(tasks):
+    for t in tasks or []:
+        yield t
+        for k in ("block", "rescue", "always"):
+            yield from walk(t.get(k))
+keyed = []
+for play in yaml.safe_load(open(sys.argv[1])):
+    for t in walk(play.get("tasks")):
+        body = {k: v for k, v in t.items() if k not in ("name", "when")}
+        if "_resolved['client_" in str(body):
+            keyed.append(t)
+assert len(keyed) == 2, [t.get("name") for t in keyed]
+for t in keyed:
+    assert "ansible.builtin.uri" in t and t.get("no_log") is True, t.get("name")
+    assert "_resolved['client_" in t["ansible.builtin.uri"]["headers"]["Authorization"], t.get("name")
+    assert "_resolved['client_" not in str({k: v for k, v in t["ansible.builtin.uri"].items() if k != "headers"})
+PY
+  [ "$(grep -c 'no_log: true' "$PLAYBOOK")" -eq 2 ]
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
+  refute_grep -qF 'read -r k' "$PLAYBOOK"
+  # The identity is checked against, and asks for, only the models it may use; a 429 from the
+  # gateway's own policy is reported as unproven, not failed as a routing fault.
+  assert_grep -qF '.allowed_models' "$PLAYBOOK"
+  assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
+  assert_grep -qF '(_keyed_models.status | default(-1)) == 429' "$PLAYBOOK"
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
+  assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
+  # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
+  # runs before the completion assert it would otherwise skip.
+  assert_grep -qF "that: not (_verify_refused | bool) or (agw_verify_allow_unproven | default(false) | bool)" "$PLAYBOOK"
+  assert_precedes "$PLAYBOOK" 'Refuse to report success when the round-trip was not proven' 'Require a completion the upstream produced'
+  # Local-dev's verify runs in the Semaphore container, on the gateway's network.
+  assert_grep -qF 'agw_verify_base_url=http://agentgateway:4000' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
   assert_grep -q 'http://agentgateway:19001/healthz/ready' "$PLAYBOOK"
   assert_grep -qF "'401' not in _noauth.stderr" "$PLAYBOOK"
@@ -268,4 +305,56 @@ setup() {
   assert_grep -qF 'agw_client_policies' "$CONFIG"
   assert_grep -qF 'allowedModels: {{ _pol.allowed_models | to_json }}' "$CONFIG"
   assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
+}
+
+# ── agw_ui_enabled: /v1 can ship before the Authentik client exists ─────────
+# v1.5.0 fetches the OIDC discovery document when it loads config
+# (`--validate-only` on a UI-on render fails "failed to decode oidc discovery
+# response", 2026-09-22), so a UI-on gateway cannot even start before its
+# Authentik provider exists. The flag renders the gateway without any of it.
+_render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  local flag="" play="$BATS_TEST_TMPDIR/render.yml"
+  [ "$1" != unset ] && flag="agw_ui_enabled: $1"
+  cat >"$play" <<YML
+- hosts: localhost
+  gather_facts: false
+  vars:
+    $flag
+    agw_clients: [stray]
+    agw_models: [{name: m}]
+    agw_upstream_base_url: "http://upstream.invalid:8000/v1"
+    secrets: {client_stray: k, vllm_api_key: v, agw_db_password: p, agw_oidc_cookie_seed: s, agentgateway_oidc_client_secret: c}
+  tasks:
+    - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/config.yaml.j2", dest: "$BATS_TEST_TMPDIR/config.yaml", mode: "0644"}
+    - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/env.j2", dest: "$BATS_TEST_TMPDIR/env", mode: "0600"}
+YML
+  ansible-playbook -i localhost, -c local "$play" >/dev/null
+}
+
+@test "agentgateway: UI on by default — listener, OIDC policy, playground route, OIDC env" {
+  _render_ui unset
+  assert_grep -qE '^    port: 4001$' "$BATS_TEST_TMPDIR/config.yaml"
+  assert_grep -qE '^    oidc:$' "$BATS_TEST_TMPDIR/config.yaml"
+  assert_grep -qF 'gateways: [default, ui]' "$BATS_TEST_TMPDIR/config.yaml"
+  assert_grep -q '^AGW_OIDC_CLIENT_SECRET=' "$BATS_TEST_TMPDIR/env"
+  assert_grep -q '^OIDC_COOKIE_SECRET=' "$BATS_TEST_TMPDIR/env"
+}
+
+@test "agentgateway: agw_ui_enabled=false renders no UI listener, no OIDC, /v1 on default only" {
+  _render_ui false
+  refute_grep -q 'port: 4001' "$BATS_TEST_TMPDIR/config.yaml"
+  refute_grep -qE '^ui:|oidc:|jwt\.groups' "$BATS_TEST_TMPDIR/config.yaml"
+  assert_grep -qF 'gateways: [default]' "$BATS_TEST_TMPDIR/config.yaml"
+  # The API itself is untouched: still strict apiKey in front of the upstream.
+  assert_grep -qF 'mode: strict' "$BATS_TEST_TMPDIR/config.yaml"
+  assert_grep -qF 'baseUrl: http://upstream.invalid:8000/v1' "$BATS_TEST_TMPDIR/config.yaml"
+  refute_grep -q 'OIDC' "$BATS_TEST_TMPDIR/env"
+}
+
+@test "agentgateway: agw_ui_enabled=false drops the Authentik shared read from the deploy" {
+  local blk
+  blk=$(sed -n '/_shared_reads: >-/,/_env_templates:/p' "$PLAYBOOK")
+  assert_grep -qF "if (agw_ui_enabled | default(true) | bool) else []" <<<"$blk"
+  assert_grep -qF "'read_keys': ['agentgateway_oidc_client_secret']" <<<"$blk"
 }

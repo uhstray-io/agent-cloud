@@ -8,10 +8,11 @@
 # an existing token, so the first one is minted server-side via the NetBox Django
 # shell — same exec pattern as cleanup-netbox.yml.
 #
-# ponytail: the Django snippet targets NetBox v4 (users.models.{Token,ObjectPermission},
-# core.models.ObjectType). It runs via Semaphore against the live NetBox — not
-# testable in this repo — so verify those model paths on first run if the version
-# differs. The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
+# The Django snippet targets NetBox v4.5+ (users.models.{Token,ObjectPermission},
+# core.models.ObjectType). A v2 token's plaintext is available only at creation,
+# so an orphaned token is refused rather than storing its public key as a secret.
+# replace_unrecoverable_token=true explicitly revokes exactly one orphan before minting.
+# The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
 # objects the executor touches (not superuser); a stricter view-vs-add split is the
 # upgrade path if that over-grant ever matters.
 
@@ -67,7 +68,7 @@
 
         user, changed = get_user_model().objects.get_or_create(
             username="{{ _user }}",
-            defaults={"is_active": True, "is_staff": True},
+            defaults={"is_active": True},
         )
         scopes = [
             (
@@ -100,7 +101,7 @@
         print("changed" if changed else "unchanged")
         PYSCRIPT
       register: _permissions
-      changed_when: _permissions.stdout_lines | last | trim == 'changed'
+      changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
 
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data.automation_api_token | default('')) | length > 0
@@ -111,6 +112,45 @@
         - name: "End play"
           ansible.builtin.meta: end_play
 
+    - name: "Check for a dedicated token whose plaintext is absent from OpenBao"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token
+
+        user = get_user_model().objects.get(username="{{ _user }}")
+        print(Token.objects.filter(
+            user=user, description="skynet build #1 automation (create-netbox-device)",
+        ).count())
+        PYSCRIPT
+      register: _orphaned_token
+      changed_when: false
+
+    - name: "Refuse an unrecoverable dedicated token"
+      ansible.builtin.assert:
+        that: >-
+          (_orphaned_token.stdout_lines | last | trim | int) == 0 or
+          (replace_unrecoverable_token | default(false) | bool and
+           (_orphaned_token.stdout_lines | last | trim | int) == 1)
+        fail_msg: "NetBox has a dedicated token without its OpenBao bearer value; replacement requires replace_unrecoverable_token=true and exactly one matching token."
+
+    - name: "Revoke exactly one unrecoverable dedicated token when explicitly requested"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token
+
+        user = get_user_model().objects.get(username="{{ _user }}")
+        matches = Token.objects.filter(
+            user=user, description="skynet build #1 automation (create-netbox-device)",
+        )
+        if matches.count() != 1:
+            raise RuntimeError("Expected exactly one unrecoverable dedicated token")
+        matches.delete()
+        print("revoked")
+        PYSCRIPT
+      when: (_orphaned_token.stdout_lines | last | trim | int) == 1
+
     - name: "Mint the dedicated scoped token via the NetBox Django shell"
       ansible.builtin.shell: |
         {{ _manage }} << 'PYSCRIPT'
@@ -118,21 +158,23 @@
         from users.models import Token
 
         user = get_user_model().objects.get(username="{{ _user }}")
-        token = Token.objects.filter(user=user).first() or Token.objects.create(
-            user=user, description="skynet build #1 automation (create-netbox-device)",
+        issued = Token.objects.create(
+            user=user, version=2,
+            description="skynet build #1 automation (create-netbox-device)",
         )
-        print(token.key)
+        print(issued.get_auth_header_prefix().removeprefix("Bearer ") + issued.token)
         PYSCRIPT
       register: _mint
       changed_when: true
       no_log: true
 
-    - name: "Sanity-check the minted token (NetBox keys are 40 chars)"
+    - name: "Sanity-check the minted NetBox v2 bearer token"
       ansible.builtin.assert:
         that:
           - (_mint.stdout_lines | default([]) | length) > 0
-          - (_mint.stdout_lines | last | trim | length) == 40
-        fail_msg: "NetBox Django shell did not return a 40-char token — mint failed; check the run."
+          - (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]{12}\.[A-Za-z0-9]{40}$')
+        fail_msg: "NetBox Django shell did not return a v2 bearer token — mint failed; check the run."
+      no_log: true
 
     - name: "Store the token in OpenBao (patch, preserving other fields)"
       ansible.builtin.uri:

@@ -72,6 +72,28 @@ setup() {
   assert_contains "$block" 'dev_variant: true'
 }
 
+@test "NetBox API consumers share version-aware credential headers" {
+  python3 - "$BATS_TEST_DIRNAME/../playbooks" <<'PY'
+import pathlib
+import sys
+import yaml
+from jinja2 import Environment
+
+root = pathlib.Path(sys.argv[1])
+helper = yaml.safe_load((root / "tasks/netbox-api-headers.yml").read_text())[0]
+header = helper["ansible.builtin.set_fact"]["_nb_headers"]["Authorization"]
+env = Environment()
+assert env.from_string(header).render(_netbox_api_token="nbt_key.value") == "Bearer nbt_key.value"
+assert env.from_string(header).render(_netbox_api_token="legacyvalue") == "Token legacyvalue"
+assert helper["no_log"] is True
+for name in ("netbox-allocate-ip.yml", "create-netbox-device.yml"):
+    tasks = yaml.safe_load((root / name).read_text())[0]["tasks"]
+    auth, = (task for task in tasks if task["name"] in ("Set the NetBox auth header", "Set NetBox auth header"))
+    assert auth["ansible.builtin.include_tasks"] == "tasks/netbox-api-headers.yml"
+    assert auth["no_log"] is True
+PY
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).
@@ -81,16 +103,22 @@ setup() {
 
 @test "netbox-allocate: no_log is scoped to the credential boundary only" {
   # no_log on a deploy or a verification hides the failure and makes a Semaphore run
-  # undiagnosable. It belongs on auth, secret reads, and header construction — nowhere else.
-  # Four: OpenBao auth, the secret read, the header construction, and the
-  # classification step. The classification exists so that a no_log failure is still
-  # diagnosable — it emits key NAMES and verdicts, never a value — and it must itself be
-  # no_log because it touches the token to test whether the key is populated.
-  local nolog
-  nolog=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$nolog" -eq 4 ]
-  # The address operations must remain visible.
-  ! grep -A12 'available-ips' "$PLAYBOOK" | grep -q 'no_log: true'
+  # undiagnosable. Only tasks handling credentials or the raw router response are hidden.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+hidden = {task["name"] for task in tasks if task.get("no_log") is True}
+assert hidden == {
+    "Authenticate to OpenBao (AppRole)",
+    "Read the NetBox automation token from OpenBao",
+    "Classify the credential outcome (names and verdicts only)",
+    "Read the live pfSense DHCP server configuration",
+    "Check the live DHCP boundary before reserving",
+    "Set the NetBox auth header",
+}
+PY
 }
 
 @test "netbox-allocate: a sane ceiling on how many addresses one run can take" {

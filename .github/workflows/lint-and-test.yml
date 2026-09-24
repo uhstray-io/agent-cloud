@@ -109,17 +109,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install pinned TruffleHog
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/trufflehog.tar.gz" \
+            https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.6/trufflehog_3.97.6_linux_amd64.tar.gz
+          echo "a547c44cf653a1c89213b52490f44fbb0f7ee1363f7950606f28d066eabd4962  $RUNNER_TEMP/trufflehog.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/trufflehog.tar.gz" -C "$RUNNER_TEMP" trufflehog
+          sudo install -m 0755 "$RUNNER_TEMP/trufflehog" /usr/local/bin/trufflehog
+
       - name: Secret scan - verified (trufflehog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          extra_args: --only-verified
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update --github-actions --only-verified
 
       - name: Secret scan - all detectors (trufflehog)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
-          trufflehog git file://. --since-commit "$BASE_SHA" --fail --no-update
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
 
       - name: RFC1918 IP address audit
         run: |

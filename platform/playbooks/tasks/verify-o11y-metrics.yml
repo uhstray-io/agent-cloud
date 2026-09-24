@@ -1,0 +1,34 @@
+---
+# Shared positive verification and deliberate-failure drill gate.
+- name: Query the service's Prometheus scrape results
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+  register: _scrapes
+  changed_when: false
+  check_mode: false
+
+- name: Require a healthy named metrics target
+  ansible.builtin.assert:
+    that:
+      - _scrapes_json.status == 'success'
+      - _service_scrapes | length > 0
+      - _unhealthy_scrapes | length == 0
+      - expected_instance | default('') | length == 0 or
+        (_service_scrapes | selectattr('metric.instance', 'equalto', expected_instance) | list | length == 1)
+    fail_msg: >-
+      Prometheus cannot verify {{ expected_service }} at
+      {{ expected_instance | default('its declared endpoint') }}:
+      failing instances={{ _unhealthy_scrapes | map(attribute='metric.instance') | list }};
+      scrapes found={{ _service_scrapes | length }}.
+  vars:
+    _scrapes_json: "{{ _scrapes.stdout | from_json }}"
+    _service_scrapes: "{{ _scrapes_json.data.result }}"
+    _unhealthy_scrapes: "{{ _service_scrapes | rejectattr('value.1', 'equalto', '1') | list }}"

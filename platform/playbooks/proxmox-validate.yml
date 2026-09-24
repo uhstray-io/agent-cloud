@@ -45,15 +45,16 @@
         method: GET
         status_code: 200
       register: pve_version
+      no_log: true
       ignore_errors: true
 
     - name: "Record API check"
       ansible.builtin.set_fact:
-        validation_results: "{{ validation_results + [{'check': 'API Connectivity', 'status': 'PASS' if pve_version is succeeded else 'FAIL', 'detail': 'PVE ' + (pve_version.json.data.version | default('unknown')) if pve_version is succeeded else 'Cannot reach ' + pve_host}] }}"
+        validation_results: "{{ validation_results + [{'check': 'API Connectivity', 'status': 'PASS' if pve_version is succeeded else 'FAIL', 'detail': 'PVE ' + (pve_version.json.data.version | default('unknown')) if pve_version is succeeded else 'Cannot reach ' + _pve_host}] }}"
 
     - name: "Abort if API unreachable"
       ansible.builtin.fail:
-        msg: "Cannot reach Proxmox API at {{ pve_host }}"
+        msg: "Cannot reach Proxmox API at {{ _pve_host }}"
       when: pve_version is failed
 
     # ── 2. Target Node ───────────────────────────────────────────────────
@@ -64,6 +65,7 @@
 
 
       register: pve_nodes
+      no_log: true
 
     - name: "Check target node status"
       ansible.builtin.set_fact:
@@ -85,6 +87,7 @@
 
 
       register: pve_storage
+      no_log: true
 
     - name: "Check VM storage"
       ansible.builtin.set_fact:
@@ -110,6 +113,7 @@
 
 
       register: pve_isos
+      no_log: true
 
     - name: "Check Ubuntu ISO exists"
       ansible.builtin.set_fact:
@@ -127,6 +131,7 @@
 
 
       register: pve_vms
+      no_log: true
 
     - name: "Find VMs in target range"
       ansible.builtin.set_fact:
@@ -168,6 +173,7 @@
 
 
       register: tmpl_config
+      no_log: true
       ignore_errors: true
       when: tmpl_exists | bool
 
@@ -186,6 +192,7 @@
 
 
       register: pve_network
+      no_log: true
       ignore_errors: true
 
     - name: "Record network check"
@@ -221,6 +228,7 @@
 
 
       register: vm_health
+      no_log: true
       loop: "{{ check_vms | default([]) }}"
       loop_control:
         label: "{{ item.name }}"

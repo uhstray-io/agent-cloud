@@ -34,7 +34,7 @@
     _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     # Defaults match the production instance; the local-dev bootstrap overrides
     # them for the fresh local Semaphore (LOCAL-DEV-DEPLOYMENT.md Phase 0B).
-    _project_id: "{{ semaphore_project_id | default(1) }}"
+    _project_id: "{{ semaphore_project_id | default(1, true) }}"
     _template_config: "{{ lookup('file', playbook_dir + '/templates.yml') | from_yaml }}"
     # Local-only templates are merged ONLY when explicitly requested (the local
     # bootstrap sets this); the shared templates.yml stays prod-clean.
@@ -312,10 +312,10 @@
         _default_body: >-
           {{ {'name': _tpl_name,
               'project_id': (_project_id | int),
-              'inventory_id': (semaphore_inventory_id | default(2) | int),
+              'inventory_id': (semaphore_inventory_id | default(2, true) | int),
               'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
               'environment_id': ((_isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
-                                 if item.isolated_environment is defined else semaphore_environment_id | default(2)) | int),
+                                 if item.isolated_environment is defined else semaphore_environment_id | default(2, true)) | int),
               'playbook': item.playbook,
               'app': 'ansible',
               'autorun': false,

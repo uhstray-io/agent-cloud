@@ -46,6 +46,14 @@
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
 
+# Git exports its repository variables to hooks. Left set, they point every git command
+# a TEST runs at THIS repository, even from a scratch directory: on 2026-09-23 a BATS
+# setup's `git init` + `git config` wrote core.bare=true and a fake user.email into the
+# shared .git/config, breaking every checkout (docs/MISTAKES.md 3.7). The suites run with
+# a clean git environment, exactly as they do in CI. `root` is resolved above, first.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
+
 # A branch deletion pushes an all-zero local sha and has no code to test. Reading stdin
 # also drains it, which git expects.
 only_deletions=1

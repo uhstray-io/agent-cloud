@@ -6,6 +6,53 @@
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
+> **As-built correction, 2026-09-22:** The "deployed" statements below are
+> historical design context, not a current deployment claim. On this branch,
+> `platform/services/o11y/deployment/compose.yml` defines the four containers;
+> `config/prometheus.yml` scrapes only itself; `config/config.alloy` ships
+> container logs and has no OTLP receiver. The generic Service Overview JSON
+> includes a `service` selector; alert rules remain absent. A read-only local check on
+> 2026-09-22 found all four containers healthy and their health/ready endpoints
+> returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
+> OIDC login and returned to the provisioned overview dashboard. The dashboard
+> showed local container logs and only the Prometheus self-target. Local
+> Semaphore candidate task 1065 later verified commit
+> `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` before deploying o11y;
+> its Grafana, Prometheus, and Loki checks passed, and the signed-in dashboard
+> loaded after a browser reload. The merged DGX scrape declarations
+> are production groundwork, not evidence that a production receiver exists
+> or receives telemetry.
+
+> **Collection design amendment, 2026-09-23:** Preserve the two-label opt-in
+> contract below, but use the existing Alloy Podman discovery for local metrics.
+> Alloy joins the service network, scrapes the declared port, and forwards
+> samples to Prometheus's remote-write receiver on the private o11y network.
+> Prometheus does not mount the engine socket. The historical `docker_sd_configs`
+> snippets below record the original design and are superseded for local
+> collection. Remote VM targets still come from inventory-rendered Prometheus
+> scrape fragments. This amendment is proposed on the observability feature
+> branch; live pilot evidence and PR review remain required. Collector-only
+> scrape listeners remain private to their service network; human queries go
+> through Grafana behind Caddy and Authentik.
+
+> **Local collection gate, 2026-09-23:** The feature branch now has the Alloy
+> opt-in metrics pilot. Exact-head Semaphore task 1127 found a fresh Caddy log
+> in Loki and one healthy `caddy:2021` scrape in Prometheus. Task 1118 had
+> already shown an opted-in but unreachable endpoint with `up=0` and a named
+> refusal from the shared onboarding verifier. Grafana read-back at the same
+> deployed revision found a Service Overview with Loki and Prometheus panels,
+> plus two provisioned alert rules kept paused until an OpenBao-backed contact
+> point and notification drill are complete. These are local receipts only.
+
+> **Alert rollout guard, 2026-09-23:** `o11y_alerts_enabled` defaults off.
+> Enabling it requires a pre-existing
+> `secret/services/o11y:alert_discord_webhook_url`, validates a Discord HTTPS
+> webhook, and renders only the environment reference into Grafana's contact
+> point file. Rules route directly to that contact point when enabled, so the
+> shared notification policy tree is not replaced. A local Semaphore deploy
+> with the switch off verified two paused rules and zero o11y contact points;
+> no notification delivery has been claimed.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 

@@ -27,13 +27,13 @@ credential-visible sync workflow with `changed=0`; it did not verify task/issue
 correspondence. This proves that executor's access at the time of the run, not
 every credential's validity or ongoing AppRole health.
 
-## What Semaphore can see: `main` and `dev` only
+## Declared production repository records: `main` and `dev`
 
-The controller runs a template from one of the two repository records declared in
+The production templates use the two repository records declared in
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
 in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
-**A feature branch is invisible to the controller.** Code that a Semaphore task
+**No production feature-branch record is declared.** Code that a Semaphore task
 must execute — a new playbook, a new OpenTofu file, a changed template — has to
 be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 `(Dev)` variant can run it, and into `main` before the base template can. Plan
@@ -42,8 +42,8 @@ the live step after the merge, not after the commit. Recorded 2026-09-14, when
 
 ## Launching a task from outside the controller (the API path)
 
-Nothing on a workstation talks to the controller today: no `SEMAPHORE_TOKEN` is
-set, the operating evidence above was produced from the UI, and an anonymous
+No workstation path to the production controller was verified in the 2026-09-14
+check: no `SEMAPHORE_TOKEN` was set, the operating evidence came from the UI, and an anonymous
 request to `https://semaphore.uhstray.io/api/ping` is answered by Cloudflare with
 `403` + `cf-mitigated: challenge` (verified 2026-09-14). The pieces of a
 scripted path exist and are recorded here so it is built once, deliberately:
@@ -61,7 +61,17 @@ scripted path exist and are recorded here so it is built once, deliberately:
    into a repo, a survey parameter or a launch argument.
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
-   as a JSON string of the survey values; `GET /api/project/{project_id}/tasks/{task_id}`
+   as a JSON string of the survey values. **Check mode and diff go inside
+   `params`:** `"params": {"dry_run": true, "diff": true}` (v2.17.31 `db/Task.go`,
+   `AnsibleTaskParams`). A top-level `dry_run` is silently ignored and the task
+   runs for real (`docs/MISTAKES.md` 3.8). Semaphore starts a task the moment it is
+   created, so reading it back and stopping it cannot make a launch safe; the stop
+   can arrive after secrets are written. Launch with
+   [`scripts/semaphore-launch.py`](../../scripts/semaphore-launch.py): it builds the
+   body with the flags in `params`, refuses check mode on a server version whose
+   shape is unverified, allows only the template's declared survey fields, and
+   refuses while the template already has a running task, all before the POST.
+   Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
@@ -76,7 +86,7 @@ token out of OpenBao from a workstation.
 
 The declared **Publish Semaphore Template Surveys (Dev)** template runs
 [`publish-semaphore-templates.yml`](../playbooks/publish-semaphore-templates.yml).
-Its only survey input is `semaphore_template_names_json`, for example:
+Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
 ["Store tududi API Token (Dev)"]
@@ -90,7 +100,15 @@ declared Semaphore controller container. A separate remote runner needs its own
 reviewed transport design; do not redirect this token with a launch argument.
 
 Normally, only exact, nonempty, unique names of existing declared templates are
-accepted. The guarded one-template creation described below is the sole exception.
+accepted. To create one missing declared template, set the optional
+`semaphore_allow_scoped_create` survey to `true` and enter verified numeric
+`semaphore_project_id`, `semaphore_inventory_id`, and
+`semaphore_environment_id` values. The default is `false`; the controller
+refuses create requests for names without the `(Dev)` suffix, lists with more
+than one name, or absent bindings. Leave all three ID fields blank for an
+ordinary survey update. The publisher can
+first update its own Dev template to expose these fields by selecting
+`["Publish Semaphore Template Surveys (Dev)"]` with the existing survey.
 Repository URL/branch and template repository/playbook bindings must match the
 declaration. The selected surveys are updated and read back; inventory,
 environment, arguments and operational settings are preserved. No schedules,
@@ -124,8 +142,10 @@ executor has runtime access, report **initial publisher installation** as the
 specific gap. A controller AppRole may be healthy while this entry point is
 missing. Do not redeploy Semaphore, repurpose a service template, edit a shared
 repository binding, publish the entire catalog, or extract credentials to bridge
-the gap. Any exceptional initial UI installation requires explicit scoped
-authorization and must match the committed declaration and verified bindings.
+the gap. Create every template and automation through committed configuration
+and its installer, including the initial publisher. Manual UI creation is not
+an installation path. Resolve approved executor access before applying the
+bootstrap; do not substitute a manually configured template.
 
 ## Seed a secret through an isolated environment
 

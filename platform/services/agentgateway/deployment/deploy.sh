@@ -73,7 +73,9 @@ step_wait_ready() {
     fi
     sleep 3; elapsed=$((elapsed + 3))
   done
-  error "agentgateway readiness did not respond within 90s (${CONTAINER_ENGINE} logs agentgateway)"
+  dump_container_diagnostics agentgateway
+  dump_container_diagnostics agentgateway-db 20
+  error "agentgateway readiness did not respond within 90s (diagnostics above)"
 }
 
 main() {
