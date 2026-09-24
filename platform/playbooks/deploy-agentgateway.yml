@@ -198,8 +198,8 @@
 # the local control plane, where this play executes inside the Semaphore
 # container rather than on the host that publishes the port. Same probe on
 # every path — local, prod VM — so the verify cannot pass for the wrong reason.
-# No keyed request here: a client key on an exec argv is a token on a command
-# line. The enrolled-identity proof is the conformance run (change task 2).
+# The compose-network probes address the gateway by IP (gateway-addr.sh): by name,
+# a VM named `agentgateway` resolved it to the db container itself (task 1215).
 - name: "Phase 3: Verify agentgateway"
   hosts: agentgateway_svc
   gather_facts: false
@@ -207,10 +207,20 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
+    - name: "Find the gateway's address on its compose network"
+      ansible.builtin.command:
+        argv: ["{{ _deploy_dir }}/gateway-addr.sh"]
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+      register: _gw_addr
+      changed_when: false
+
     - name: "Readiness listener answers (via the compose network)"
-      ansible.builtin.command: "{{ _probe }} http://agentgateway:19001/healthz/ready"
+      ansible.builtin.command: "{{ _probe }} http://{{ _gw_addr.stdout }}:19001/healthz/ready"
       # Single shot: deploy.sh already waited up to 90 s for exactly this and fails
       # hard, so a retry here would only re-prove a fact in hand.
       register: _ready
@@ -219,7 +229,7 @@
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
       # exits 1 on an HTTP error and prints the status on stderr.
-      ansible.builtin.command: "{{ _probe }} -S http://agentgateway:4000/v1/models"
+      ansible.builtin.command: "{{ _probe }} -S http://{{ _gw_addr.stdout }}:4000/v1/models"
       register: _noauth
       changed_when: false
       failed_when: "'401' not in _noauth.stderr"
