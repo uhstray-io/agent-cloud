@@ -195,6 +195,7 @@
         CONTAINER_ENGINE: "{{ _engine }}"
       register: _gw_addr
       changed_when: false
+      check_mode: false
 
     - name: "Readiness listener answers (via the compose network)"
       ansible.builtin.command: "{{ _probe }} http://{{ _gw_addr.stdout }}:19001/healthz/ready"

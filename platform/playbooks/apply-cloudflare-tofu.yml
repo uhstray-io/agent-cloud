@@ -130,32 +130,28 @@
           bucket = "{{ _bucket }}"
           key    = "cloudflare/terraform.tfstate"
           endpoints = { s3 = "{{ _r2_endpoint }}" }
+      register: _backend_write
       no_log: true
 
-    # A dry run only simulates writing backend.hcl, so in a fresh workspace `tofu init` would read
-    # a file that is not there (PR 203 Codex review). A real run with tofu_action=plan is the
-    # read-only preview, and needs no dry run.
-    - name: "Dry run: is the backend config already in the workspace?"
-      ansible.builtin.stat:
-        path: "{{ _tf_dir }}/backend.hcl"
-      register: _backend_hcl
-      check_mode: false
-
-    - name: "Dry run without a prepared workspace: point at the read-only plan"
+    # A dry run only simulates this write, and copy reports it as a change when backend.hcl is
+    # missing OR differs from the configured bucket and endpoint. Either way `tofu init` would read
+    # the wrong file, or none (PR 203 Codex review), so the dry run stops rather than plan against
+    # stale state. A real run with tofu_action=plan is the read-only preview.
+    - name: "Dry run with a missing or stale backend config: point at the read-only plan"
       ansible.builtin.debug:
         msg: >-
-          check mode: backend.hcl is not in this workspace yet, so OpenTofu cannot initialise in a
-          dry run. Run with tofu_action=plan instead: it writes only the runner's backend config
-          and changes nothing in Cloudflare.
+          check mode: this workspace's backend.hcl is missing or differs from the configured R2
+          backend, so a dry-run plan would read the wrong state. Run with tofu_action=plan instead:
+          it writes only the runner's backend config and changes nothing in Cloudflare.
       when:
         - ansible_check_mode
-        - not _backend_hcl.stat.exists
+        - _backend_write is changed
 
-    - name: "Dry run without a prepared workspace: stop"
+    - name: "Dry run with a missing or stale backend config: stop"
       ansible.builtin.meta: end_play
       when:
         - ansible_check_mode
-        - not _backend_hcl.stat.exists
+        - _backend_write is changed
 
     - name: "OpenTofu init (R2 backend)"
       ansible.builtin.command:

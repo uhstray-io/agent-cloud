@@ -99,3 +99,29 @@ def test_a_target_group_with_no_hosts_fails(tmp_path):
     )
     assert done.returncode != 0
     assert "matches no hosts in this inventory" in done.stdout
+
+
+def test_one_failing_host_fails_the_recorded_result(tmp_path):
+    # PR 203 Codex review: emit-step-result records once per play, and recorded the first host's
+    # verdict; a healthy first host hid a failing second one.
+    good, bad = _serve(200), _serve(503)
+    try:
+        inventory = tmp_path / "inventory.ini"
+        inventory.write_text(
+            "[demo_svc]\n"
+            f"demo1 ansible_connection=local health_url=http://127.0.0.1:{good.server_port}/health\n"
+            f"demo2 ansible_connection=local health_url=http://127.0.0.1:{bad.server_port}/health\n"
+            "\n[demo_svc:vars]\nservice_name=demo\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+        env["ANSIBLE_NOCOLOR"] = "1"
+        done = subprocess.run(
+            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
+            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+        )
+    finally:
+        good.shutdown()
+        bad.shutdown()
+    assert done.returncode != 0
+    recorded = done.stdout.split("CUSTOM STATS", 1)[-1]
+    assert '"status": "fail"' in recorded and "answered 503" in recorded, recorded[-1500:]

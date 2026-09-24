@@ -61,14 +61,26 @@
              + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
                  ~ (_codes | join(', '))] if (_health is not skipped and _health.status not in _codes) else []) }}
 
+    # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
+    # whole target group: every host's errors, and a host that failed before its verdict counts as
+    # a failure rather than vanishing from ansible_play_hosts (PR 203 Codex review).
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- if out.extend(hostvars[h]._health_errors | default([h ~ ': no health verdict (the host failed before it)'])) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
         step_result_step: service-validate
-        step_result_status: "{{ 'pass' if (_health_errors | length == 0) else 'fail' }}"
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
         step_result_evidence:
           health_status: "{{ _health.status | default(none) }}"
-        step_result_error: "{{ _health_errors | join('; ') }}"
+        step_result_error: "{{ _group_errors | join('; ') }}"
 
     - name: "Fail when the service is not healthy on its declared path"
       ansible.builtin.fail:

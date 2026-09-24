@@ -59,7 +59,8 @@ def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, poli
         {"status": policy, "json": {}},
     ]}
     step = ("step_result_status", "step_result_error", "step_result_evidence")
-    rv = {**decided, **{k: record["vars"][k] for k in step}}
+    # The group aggregate over one host is that host's errors.
+    rv = {**decided, "_group_errors": "{{ _errors }}", **{k: record["vars"][k] for k in step}}
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**pv, **rv},
         **({"vars_files": [str(vars_file)]} if vars_file else {}),
