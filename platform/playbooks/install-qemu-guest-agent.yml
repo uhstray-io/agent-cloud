@@ -1,0 +1,49 @@
+---
+# Install the guest agent on existing VMs that predate the cloud-init package list.
+# Run through the Install QEMU Guest Agent Semaphore template with an explicit group.
+
+- name: Install QEMU guest agent on selected VMs
+  hosts: "{{ target_service | default('localhost', true) }}"
+  gather_facts: false
+
+  tasks:
+    - name: Require an explicit target inventory group
+      ansible.builtin.assert:
+        that:
+          - target_service is defined
+          - target_service | length > 0
+        fail_msg: "Set target_service to the VM inventory group before running this playbook."
+
+    - name: Resolve the sudo password before escalation
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: Ensure QEMU guest agent is installed
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+        update_cache: true
+      become: true
+
+    - name: Enable and start QEMU guest agent
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        enabled: true
+        state: started
+      become: true
+      when: not ansible_check_mode
+
+    - name: Verify QEMU guest agent is running
+      ansible.builtin.command: systemctl is-active qemu-guest-agent
+      register: _qga_status
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Report QEMU guest agent status
+      ansible.builtin.debug:
+        msg: "qemu-guest-agent on {{ inventory_hostname }}: {{ _qga_status.stdout }}"
+      when: not ansible_check_mode
+
+    - name: Report check-mode intent
+      ansible.builtin.debug:
+        msg: "Would ensure qemu-guest-agent is installed, enabled, and running on {{ inventory_hostname }}"
+      when: ansible_check_mode
