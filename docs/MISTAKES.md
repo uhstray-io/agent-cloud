@@ -64,6 +64,7 @@ supersede it with a new entry and link both.
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
+| 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -71,6 +72,7 @@ supersede it with a new entry and link both.
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
+| 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -109,8 +111,11 @@ supersede it with a new entry and link both.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
+| 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
+| 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
+| 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | Convention |
 
 ---
 
@@ -1237,6 +1242,35 @@ related variables after resolving the repository root.
 victim repository, with a fake `bats` that repeats the offending commands, and asserts the
 victim's config is unchanged. Mutation: removing the unset turns it red.
 
+### 3.8 A "dry run" that the orchestrator silently ran for real
+
+**What happened.** On 2026-09-23 I launched `Deploy agentgateway (Dev)` (template 220) against
+production through the Semaphore API, meaning to run it in check mode first. I sent
+`"dry_run": true` at the top level of the task body, from a read of the API spec that did not
+check where the field lives. Semaphore v2.17.31 carries Ansible's check and diff flags inside the
+task's `params` object (`db/Task.go`, `AnsibleTaskParams`); the top-level key was ignored. Task
+1177 ran for real: it placed the dev checkout and enabled linger on the VM, generated and stored
+the gateway's database password, cookie seed and four client keys in OpenBao, and rendered
+`.env` and `config.yaml`, then stopped at a failing guard before `deploy.sh`. No container
+started; the seeded upstream key was reused, not overwritten ("7 secrets managed"). Everything
+written is what the first real deploy writes, so nothing had to be undone, but it was not the
+check-mode run that was intended.
+
+**Root cause.** A safety flag was sent without confirming the server recorded it. The response
+was not read back for the flag, and a real run and a check-mode run look the same until the
+first write.
+
+**The rule.** When a launch depends on a safety flag (check mode, diff, limit), read the created
+task back and confirm the server recorded the flag before letting it run; stop the task if it did
+not. For Semaphore v2.17: `"params": {"dry_run": true, "diff": true}`.
+
+**Enforced by.** Test. `scripts/semaphore-launch.py` builds the body with the flags in `params`
+and refuses check mode on an unverified server version, before the task exists; a read-back
+after the POST stops the task if the server did not record check mode, as a tripwire only,
+since Semaphore starts a task on creation (review of PR #220).
+`platform/tests/test_semaphore_launch.py` fails if the flag is ever sent at the top level, and
+covers the version gate, undeclared survey fields, a busy template and the tripwire.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -1414,6 +1448,29 @@ inventory host's `ansible_host`/`vm_ip` and require each address to have exactly
 **Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
 other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
 `test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
+
+
+### 4.8 A credential-shaped test fixture was pushed, and one branch failed every PR's scan
+
+**What happened.** On 2026-09-23 a new BATS file for container diagnostics (PR 230) fed its
+redaction test a literal Postgres connection string carrying a user and a password. CI's all-detectors TruffleHog
+scan flagged it as an unverified Postgres credential. Replacing the literal in a later commit
+did not clear it: the scan reads every commit since the base, so only a history rewrite could.
+The fix went onto a fresh single-commit branch (PR 231) instead of a force push. Meanwhile the
+same finding failed PR 203's scan, a branch that never contained the file.
+
+**Root cause.** Two things. The fixture used the exact shape a credential detector exists to
+catch. And the all-detectors scan ran `trufflehog git file://. --since-commit "$BASE_SHA"` with
+no `--branch`, over a `fetch-depth: 0` checkout, so it scanned every fetched branch. The
+verified scan beside it was already scoped with `--branch "$HEAD_SHA"`.
+
+**The rule.** A test that needs a credential-shaped string assembles it at run time (the scheme
+in a variable), or carries `trufflehog:ignore` with its reason (see 4.3's "Related"). Before
+pushing a new fixture, run the scan the way CI runs it (all detectors, not `--only-verified`).
+Every CI scan is scoped to the PR's own commits.
+
+**Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
+fix independently the same evening). The fixture rule itself is Convention.
 
 ## 5. Duplication and process
 
@@ -2560,6 +2617,24 @@ text being coerced, and never on JSON text assembled with escapes.
 ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
 general case.
 
+### 10.17 A guard that could never pass in production, tested only where it is switched off
+
+**What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
+unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
+defines `secrets` only as a task-level variable on its template task; at play level the name
+does not exist, so the expression always resolved to empty and the guard failed every production
+deploy (task 1177, 2026-09-23), with the key present in OpenBao. Local-dev sets
+`agw_upstream_requires_key: false` for LM Studio, so every local proof skipped the guard.
+
+**Root cause.** The guard referenced a variable by the name the templates use, without checking
+that the name existed in the play's scope, and the only environments it ran in had it disabled.
+
+**The rule.** A guard is proven in a configuration where it is ENABLED and its input is present
+(it must pass) and absent (it must fail). The play-level fact manage-secrets sets is `_resolved`.
+
+**Enforced by.** The fix and its regression test land with the deploy session's keyed-verify
+change to the same playbook; until that PR merges, `Convention`.
+
 ## 11. The largest one
 
 ### 11.1 Seventy-six assertions that could not fail
@@ -2651,3 +2726,98 @@ whitespace, not the tests.
 takes ~40 seconds, too slow per commit and well matched to the moment code leaves
 the machine. Still the repository owner's call, and still the clearest
 convention-to-gate conversion available here.
+
+
+---
+
+## 12. Host state invisible in an agent run, blamed on credentials
+
+Two entries, one root cause: Paperclip runs agents under a sandboxed `$HOME`, so
+host config and host credentials can be invisible inside a run. Each tool reports
+that invisibility in its own idiom — an invalid token, no available models, a
+provider that simply is not in the list — and none of those wordings says
+*missing visibility*, which is why the class gets chased as a credentials or
+config problem instead.
+The dangerous part of the class is that the suggested fix ("re-authenticate",
+"reconfigure the provider") acts on the wrong object and can overwrite the thing
+that was already correct.
+
+### 12.1 `gh` reported a valid token as invalid
+
+**What happened.** Inside an agent run, `gh` found the account entry in
+`hosts.yml`, found no token, and reported *"The token in default is invalid."*
+The token is fine — it was never the token. The run simply cannot see it, and
+the suggested remedy (`gh auth login`) would have overwritten a valid
+credential.
+
+**Root cause.** macOS resolves the *login* keychain from `$HOME`. Under a
+sandboxed `$HOME`, only `/Library/Keychains/System.keychain` remains in the
+search list, and `gh`'s token lives in the login keychain under service
+`gh:github.com`. Measured 2026-09-24: the same `security find-generic-password
+-s 'gh:github.com' -w` lookup succeeds with the host `$HOME` and fails (exit
+44) with a sandboxed one; with the host `hosts.yml` visible but the login
+keychain unreachable, `gh auth status` prints "The token in default is invalid"
+verbatim.
+
+**The fix.** Source the company's `gh-host-auth.sh` before any `gh`/`git` work
+in a run. It reads the secret from the login keychain by explicit path, unwraps
+go-keyring's `go-keyring-base64:` envelope, and exports `GH_TOKEN`. The
+non-obvious step is clearing the inherited `osxkeychain` credential helper (it
+comes from the system gitconfig, `/opt/homebrew/etc/gitconfig`): left in place,
+`git clone` authenticates successfully and *then* tries to cache the credential
+into a keychain it cannot reach. The script's header records that failure as
+`fatal: failed to store: -60008`. One honest caveat from re-verification the
+same day: with current git (2.55.0) the store attempt did not abort the clone at
+all, so the exact error text is version-dependent — the helper is cleared
+because it cannot reach its target, regardless of whether that currently aborts.
+The script derives the keychain path from `$HOME` unless
+`PAPERCLIP_GITHUB_HOST_HOME` is set, so under a fully clean sandboxed
+environment that variable must carry the host home.
+
+**The rule.** When a credential tool inside a sandboxed run reports a credential
+*invalid*, first ask whether the credential is *visible* — check what
+`$HOME`/keychain search list/config dir the tool is actually resolving against —
+before touching the credential itself.
+
+**Enforced by.** Convention — the helper script exists and must be sourced; no
+gate enforces it.
+
+### 12.2 Pi showed no models; OpenCode omitted its provider
+
+**What happened.** The same sandboxed `$HOME`, one layer up. Pi printed *"No
+models available. Use /login…"* even though the host's `~/.pi/agent/models.json`
+is correct. OpenCode silently dropped the entire custom provider — its model
+list carried no entry for a provider its host config declares — no error, just
+absence, because its config resolves from `$XDG_CONFIG_HOME` and its credentials
+from `$XDG_DATA_HOME`, both of which the sandbox can redirect.
+
+**Why OpenCode's shape is the worse one.** A loud "no models" prompts an
+investigation; a silently missing provider reads as "never configured" and
+invites reconfiguring something that was already right — which is how correct
+config gets overwritten.
+
+**The fix.** Pi: point `PI_CODING_AGENT_DIR` back at the host's
+`<host-home>/.pi/agent`. OpenCode: point `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+back at the host's `<host-home>/.config` and `<host-home>/.local/share`.
+(`<host-home>` is written as a placeholder deliberately — this repo is public
+and its own pre-push audit treats machine paths as username leaks: `AGENTS.md`,
+Mandatory Pre-Push Audit.) Both verified
+2026-09-24: `pi --list-models` under a sandboxed `$HOME` prints exactly "No
+models available" and works once the env var is set; an empty redirected
+`XDG_CONFIG_HOME` makes `opencode models` list no entry for the host-declared
+provider, while pointing it at the host `.config` lists it again.
+
+**Caveat, recorded as found.** Inside a Paperclip `opencode_local` run the
+symptom no longer reproduces with the run's own defaults, because the harness
+now seeds the host OpenCode config into the run-scoped `XDG_CONFIG_HOME`. The
+trap is still live for any redirect that does not carry the host config, so the
+entry documents the mechanism, not just the historic symptom.
+
+**The rule.** "No models available" and "provider not found" are visibility
+failures wearing authentication's clothes. Before re-logging-in or
+re-configuring, resolve where the tool actually looks — `$HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, tool-specific dirs — and confirm those paths
+contain the host config.
+
+**Enforced by.** Convention — the env corrections are known and applied by
+convention inside runs; nothing mechanical catches a run that forgets them.

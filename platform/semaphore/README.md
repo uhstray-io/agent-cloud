@@ -67,7 +67,17 @@ scripted path exist and are recorded here so it is built once, deliberately:
    into a repo, a survey parameter or a launch argument.
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
-   as a JSON string of the survey values; `GET /api/project/{project_id}/tasks/{task_id}`
+   as a JSON string of the survey values. **Check mode and diff go inside
+   `params`:** `"params": {"dry_run": true, "diff": true}` (v2.17.31 `db/Task.go`,
+   `AnsibleTaskParams`). A top-level `dry_run` is silently ignored and the task
+   runs for real (`docs/MISTAKES.md` 3.8). Semaphore starts a task the moment it is
+   created, so reading it back and stopping it cannot make a launch safe; the stop
+   can arrive after secrets are written. Launch with
+   [`scripts/semaphore-launch.py`](../../scripts/semaphore-launch.py): it builds the
+   body with the flags in `params`, refuses check mode on a server version whose
+   shape is unverified, allows only the template's declared survey fields, and
+   refuses while the template already has a running task, all before the POST.
+   Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
