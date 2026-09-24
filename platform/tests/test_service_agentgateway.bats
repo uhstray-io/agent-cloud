@@ -214,9 +214,44 @@ setup() {
 }
 
 @test "agentgateway: playbook verifies over the compose network, asserts the 401, puts no key on an argv" {
-  # No secret-bearing step in this playbook at all, so no no_log outside manage-secrets.
-  refute_grep -q 'no_log: true' "$PLAYBOOK"
+  # The client key is a `uri` header in exactly two no_log tasks, and no command or shell task
+  # ever sees it: a shell probe put it on wget's argv (PR 221 Codex review).
+  python3 - "$PLAYBOOK" <<'PY'
+import sys, yaml
+def walk(tasks):
+    for t in tasks or []:
+        yield t
+        for k in ("block", "rescue", "always"):
+            yield from walk(t.get(k))
+keyed = []
+for play in yaml.safe_load(open(sys.argv[1])):
+    for t in walk(play.get("tasks")):
+        body = {k: v for k, v in t.items() if k not in ("name", "when")}
+        if "_resolved['client_" in str(body):
+            keyed.append(t)
+assert len(keyed) == 2, [t.get("name") for t in keyed]
+for t in keyed:
+    assert "ansible.builtin.uri" in t and t.get("no_log") is True, t.get("name")
+    assert "_resolved['client_" in t["ansible.builtin.uri"]["headers"]["Authorization"], t.get("name")
+    assert "_resolved['client_" not in str({k: v for k, v in t["ansible.builtin.uri"].items() if k != "headers"})
+PY
+  [ "$(grep -c 'no_log: true' "$PLAYBOOK")" -eq 2 ]
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
+  refute_grep -qF 'read -r k' "$PLAYBOOK"
+  # The identity is checked against, and asks for, only the models it may use; a 429 from the
+  # gateway's own policy is reported as unproven, not failed as a routing fault.
+  assert_grep -qF '.allowed_models' "$PLAYBOOK"
+  assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
+  assert_grep -qF '(_keyed_models.status | default(-1)) == 429' "$PLAYBOOK"
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
+  assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
+  # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
+  # runs before the completion assert it would otherwise skip.
+  assert_grep -qF "that: not (_verify_refused | bool) or (agw_verify_allow_unproven | default(false) | bool)" "$PLAYBOOK"
+  assert_precedes "$PLAYBOOK" 'Refuse to report success when the round-trip was not proven' 'Require a completion the upstream produced'
+  # Local-dev's verify runs in the Semaphore container, on the gateway's network.
+  assert_grep -qF 'agw_verify_base_url=http://agentgateway:4000' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
   assert_grep -q 'http://agentgateway:19001/healthz/ready' "$PLAYBOOK"
   assert_grep -qF "'401' not in _noauth.stderr" "$PLAYBOOK"

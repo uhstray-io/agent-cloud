@@ -1127,6 +1127,9 @@
           agw_clients=["dev-local"]
           agw_plaintext_keys=true
           agw_upstream_requires_key=false
+          # The keyed verify runs in this container, which shares the local-dev network with the
+          # gateway; its published loopback port is not reachable from here.
+          agw_verify_base_url=http://agentgateway:4000
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
