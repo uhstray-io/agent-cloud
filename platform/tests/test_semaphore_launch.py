@@ -17,9 +17,10 @@ class FakeAPI:
     project = 1
 
     def __init__(self, version="v2.17.31-02309ba-1774450250", records_params=True, busy=False,
-                 readback_fails=False):
+                 readback_fails=False, submit_fails=False):
         self.version, self.records_params, self.busy = version, records_params, busy
         self.readback_fails = readback_fails
+        self.submit_fails = submit_fails
         self.template = {"id": 220, "name": "Deploy agentgateway (Dev)",
                          "survey_vars": [{"name": "service_branch", "type": "string"}]}
         self.calls, self.created = [], None
@@ -35,6 +36,8 @@ class FakeAPI:
         if path == "/tasks/last":
             return [{"id": 9, "template_id": 220, "status": "running"}] if self.busy else []
         if path == "/tasks" and body:
+            if self.submit_fails:
+                raise launcher.Refusal("Semaphore request outcome unavailable on /tasks")
             self.created = body
             return {"id": 1200, "status": "waiting"}
         if path == "/tasks/1200":
@@ -107,3 +110,20 @@ def test_the_client_never_follows_a_redirect_with_the_token():
     assert handler.redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/") is None
     api = launcher.API("https://semaphore.example", 1, "synthetic-token")
     assert any(isinstance(h, launcher.NoRedirect) for h in api.open.__self__.handlers)
+
+
+def test_a_lost_submission_response_is_reported_as_uncertain_and_never_retried():
+    api = FakeAPI(submit_fails=True)
+    with pytest.raises(launcher.Refusal, match="outcome uncertain.*may be running"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert posts(api) == ["/tasks"]
+
+
+def test_a_network_error_becomes_a_refusal_not_a_traceback(monkeypatch):
+    api = launcher.API("https://semaphore.example", 1, "synthetic-token")
+
+    def unreachable(*_args, **_kwargs):
+        raise OSError("connection reset")
+    monkeypatch.setattr(api, "open", unreachable)
+    with pytest.raises(launcher.Refusal, match="outcome unavailable"):
+        api("/templates")

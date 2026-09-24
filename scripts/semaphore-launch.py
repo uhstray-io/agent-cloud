@@ -23,6 +23,7 @@ The operator token arrives on stdin (platform/semaphore/README.md, API path).
 """
 
 import argparse
+import http.client
 import json
 import sys
 import time
@@ -70,6 +71,8 @@ class API:
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as error:
             raise Refusal(f"Semaphore HTTP {error.code} on {path}; body suppressed") from None
+        except (OSError, ValueError, http.client.HTTPException):
+            raise Refusal(f"Semaphore request outcome unavailable on {path}") from None
 
 
 def parse_settings(pairs):
@@ -116,10 +119,18 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
         raise Refusal(f"{template_name!r} already has a running task: {busy}")
     body = build_task(template, api.project, settings, dry_run,
                       f"{'Check-mode run' if dry_run else 'Run'} via semaphore-launch.py")
-    task = api("/tasks", body)
-    task_id = task.get("id")
+    # The server may accept the POST and the response still be lost, so a failed submission
+    # means UNKNOWN, not "nothing started": a blind retry could run the deploy twice
+    # (review of PR #220).
+    try:
+        task = api("/tasks", body)
+    except Refusal as error:
+        raise Refusal(f"Task submission outcome uncertain ({error}). A task of {template_name!r} may be "
+                      "running: check the template's tasks in Semaphore before launching again") from None
+    task_id = (task or {}).get("id")
     if not isinstance(task_id, int):
-        raise Refusal("Task identity unavailable; check Semaphore before relaunching")
+        raise Refusal(f"Task submission outcome uncertain (no task id returned). A task of {template_name!r} "
+                      "may be running: check the template's tasks in Semaphore before launching again")
     # Printed at once: from here the task may be running, and this id is the only handle on it.
     print(f"Task {task_id} launched ({'check mode' if dry_run else 'real run'})", flush=True)
     if dry_run:
