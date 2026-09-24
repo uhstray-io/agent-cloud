@@ -32,7 +32,7 @@
   check_mode: false
 
 # With `read` confirmed below, a 404 here means the path does not exist yet.
-- name: "Read whether secret/data/{{ _sa_path }} exists (status only)"
+- name: "Read the status only of secret/data/{{ _sa_path }}"
   ansible.builtin.uri:
     url: "{{ _sa_url }}/v1/secret/data/{{ _sa_path }}"
     headers:

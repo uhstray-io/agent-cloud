@@ -70,7 +70,7 @@ supersede it with a new entry and link both.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
-| 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
@@ -1388,6 +1388,8 @@ first.
 
 ### 4.6 The error branch printed what the happy path protected
 
+**Occurrences: 2** — 2026-09-18, 2026-09-24
+
 **What happened.** A one-off script pulled two freshly generated passwords out of a
 Semaphore task's output to write them into site-config. Its regex did not match
 Semaphore's rendering (`msg: jacob -> …`, not JSON-quoted), so it fell into the
@@ -1418,6 +1420,21 @@ long-lived credential leaked the same way would have needed rotation.
 **Enforced by.** Convention. The mechanical fix is the one already built:
 `backup-credentials-to-site-config.yml` never routes a value through stdout on any
 path, which is why the operator-side print flow is the stopgap and not the design.
+
+**Occurrence 2 — 2026-09-24.** Same shape, in a playbook instead of a script. PR #205's
+publication play read each existing isolated environment with a `no_log` GET, then a
+VISIBLE assert looped over `_isolated_contents.results` to refuse an unclean one. Its
+`loop_control.label` made the summary line show only the environment name, so the success
+path looked clean. On the refusal path ansible-core 2.19 prints the failed item whole, and
+each item was the registered `uri` result — `invocation.module_args.headers` included, with
+the Semaphore `Authorization: Bearer` value. CI's `test_scoped_publication` caught it (its
+`assertNotIn(secret, output)` on every run); locally it passed because ansible-core 2.21
+does not print the item there. Why the rule did not fire: I read "`label` hides the item"
+as redaction; it only shortens the summary. The fix loops over the declared specs and
+indexes into the reads (`index_var`), so no failed item carries a request. Narrower rule
+this adds: a task without `no_log` never loops over, or prints, a registered result from a
+`no_log` task — derive the clean data first. Six pre-existing loops over registered
+results elsewhere on dev are unaudited against this rule.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 

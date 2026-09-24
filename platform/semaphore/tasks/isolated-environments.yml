@@ -85,18 +85,23 @@
   ansible.builtin.assert:
     that: _problems | length == 0
     fail_msg: >-
-      Isolated environment '{{ item.item.name }}' is not safe to bind:
+      Isolated environment '{{ item.name }}' is not safe to bind:
       {{ _problems | join('; ') }}. Reconcile it before publishing.
   vars:
+    # The loop is over the declared specs, never the registered reads: a failed loop item
+    # is printed whole (ansible-core 2.19), and a read's item carries its Authorization
+    # header - loop_control.label only shortens the summary line.
+    _content: "{{ _isolated_contents.results[_i] }}"
     # The approved endpoint is the controller's own OpenBao, as runtime access resolves it;
     # an environment pointing elsewhere would receive the AppRole login (review of PR #205).
     _problems: >-
-      {{ item.json | seed_environment_problems(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)
-                                               | default('', true)) }}
-  when: item.json is defined
-  loop: "{{ _isolated_contents.results }}"
+      {{ _content.json | seed_environment_problems(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)
+                                                   | default('', true)) }}
+  when: _isolated_contents.results[_i].json is defined
+  loop: "{{ _isolated_specs }}"
   loop_control:
-    label: "{{ item.item.name }}"
+    index_var: _i
+    label: "{{ item.name }}"
 
 - name: "Read recent tasks before changing isolated bindings"
   ansible.builtin.uri:
