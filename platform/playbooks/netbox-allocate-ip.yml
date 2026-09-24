@@ -82,7 +82,8 @@
         that:
           - _pfsense_url | length > 0
           - _pfsense_interface | length > 0
-        fail_msg: "Set pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
+          - _pfsense_url is match('^https://')
+        fail_msg: "Set an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
       when: _reserve
 
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -168,7 +169,7 @@
 
     - name: "Read the live pfSense DHCP server configuration"
       ansible.builtin.uri:
-        url: "{{ _pfsense_url }}/api/v2/services/dhcp_server?interface={{ _pfsense_interface | urlencode }}"
+        url: "{{ _pfsense_url }}/api/v2/services/dhcp_server?id={{ _pfsense_interface | urlencode }}"
         method: GET
         headers:
           X-API-Key: "{{ _nb_secret.json.data.data.pfsense_api_key }}"

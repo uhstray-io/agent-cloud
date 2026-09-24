@@ -177,6 +177,10 @@ the pfSense REST API on every reservation run; its API key comes from OpenBao's
 `secret/services/netbox:pfsense_api_key`. It refuses missing or malformed data,
 addresses in the primary or additional DHCP pools, and existing static mappings
 before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
+The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
+the singular DHCP endpoint selects the interface by `id`. A failed TLS or API read
+refuses the reservation. Verify that source with a read-only refusal run before
+reserving production addresses.
 Report mode does not contact pfSense and remains read-only.
 
 ### Infrastructure

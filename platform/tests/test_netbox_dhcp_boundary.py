@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 PLAYBOOKS = Path(__file__).resolve().parents[1] / "playbooks"
 SERVER = {
     "interface": "lan",
@@ -74,3 +73,6 @@ def test_router_check_precedes_netbox_write():
     assert read < check_task < refusal < write
     assert all(tasks[index]["when"] == "_reserve" for index in (read, check_task, refusal))
     assert tasks[read]["no_log"] and tasks[check_task]["no_log"]
+    assert "?id={{ _pfsense_interface | urlencode }}" in tasks[read]["ansible.builtin.uri"]["url"]
+    source = tasks[names.index("Require the pfSense DHCP source before reserving")]
+    assert "_pfsense_url is match('^https://')" in source["ansible.builtin.assert"]["that"]
