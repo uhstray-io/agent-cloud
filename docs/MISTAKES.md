@@ -113,7 +113,7 @@ supersede it with a new entry and link both.
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
-| 12.2 | Pi and OpenCode reported the configured model as unavailable because a sandboxed `$HOME`/XDG hid the config | Environment visibility | Convention |
+| 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | Convention |
 
 ---
 
@@ -2671,8 +2671,11 @@ convention-to-gate conversion available here.
 ## 12. Host state invisible in an agent run, blamed on credentials
 
 Two entries, one root cause: Paperclip runs agents under a sandboxed `$HOME`, so
-host config and host credentials are invisible inside a run — and every tool
-involved reported that as *bad credentials* rather than *missing visibility*.
+host config and host credentials can be invisible inside a run. Each tool reports
+that invisibility in its own idiom — an invalid token, no available models, a
+provider that simply is not in the list — and none of those wordings says
+*missing visibility*, which is why the class gets chased as a credentials or
+config problem instead.
 The dangerous part of the class is that the suggested fix ("re-authenticate",
 "reconfigure the provider") acts on the wrong object and can overwrite the thing
 that was already correct.
@@ -2717,7 +2720,7 @@ before touching the credential itself.
 **Enforced by.** Convention — the helper script exists and must be sourced; no
 gate enforces it.
 
-### 12.2 Pi and OpenCode reported the configured model as unavailable
+### 12.2 Pi showed no models; OpenCode omitted its provider
 
 **What happened.** The same sandboxed `$HOME`, one layer up. Pi printed *"No
 models available. Use /login…"* even though the host's `~/.pi/agent/models.json`
@@ -2735,7 +2738,8 @@ config gets overwritten.
 `<host-home>/.pi/agent`. OpenCode: point `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
 back at the host's `<host-home>/.config` and `<host-home>/.local/share`.
 (`<host-home>` is written as a placeholder deliberately — this repo is public
-and its own audit treats real home paths as username leaks, §4.3.) Both verified
+and its own pre-push audit treats machine paths as username leaks: `AGENTS.md`,
+Mandatory Pre-Push Audit.) Both verified
 2026-09-24: `pi --list-models` under a sandboxed `$HOME` prints exactly "No
 models available" and works once the env var is set; an empty redirected
 `XDG_CONFIG_HOME` makes `opencode models` list no entry for the host-declared
