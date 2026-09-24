@@ -64,7 +64,13 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
             requests.append(("PATCH", self.path))
             return self.reply({}, 403)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
+    # "Connection reset by peer" (see test_scoped_publication.py).
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 128
+        daemon_threads = True
+
+    server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

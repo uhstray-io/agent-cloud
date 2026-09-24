@@ -130,7 +130,15 @@ class ScopedPublicationTests(unittest.TestCase):
                     cls.records[0] = value
                 return self.reply({})
 
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # socketserver's default listen backlog is 5. A playbook issues requests in quick
+        # bursts, and on a loaded machine the sixth queued connect was reset ("Connection
+        # reset by peer"), failing a different test each run. A fixture must not be the
+        # flaky part of the test.
+        class Server(ThreadingHTTPServer):
+            request_queue_size = 128
+            daemon_threads = True
+
+        cls.server = Server(("127.0.0.1", 0), Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.endpoint = f"http://127.0.0.1:{cls.server.server_port}"
