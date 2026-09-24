@@ -128,9 +128,14 @@ template/declaration and redeploy rather than editing rendered `agent.yaml`.
 | Agent policy rejected | Check the committed template: `scope` and `config` are siblings; preserve backend-specific settings |
 | Local app works but production scans fail | App-tier readiness does not test raw network access, SNMP, upstream credentials or multi-host reachability |
 
-The existing `check-discovery.yml` is **not read-only**: it also updates site
-coordinates and tolerates some query failures. Its output is not an end-to-end
-recovery gate. Do not run it under a read-only authorization.
+`check-discovery.yml` now collects bounded read-only Docker incident evidence:
+mounted agent configuration metadata, container identities, zoned log summaries
+and aggregate counts in an explicitly read-only transaction. It requires a reviewed
+commit SHA and log window, and always refuses recovery acceptance. Missing history
+or reads remain visible; it does not restart, mint credentials or repair GPS.
+The older production-installed checker may still mutate GPS: verify the exact
+executing revision before running it. See the [execution evidence and remaining
+access gates](../../../../plan/development/openspec/changes/recover-netbox-discovery/diagnosis-request.md).
 
 ## References
 

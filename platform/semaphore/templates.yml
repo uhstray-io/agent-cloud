@@ -703,6 +703,31 @@ templates:
 
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
+    survey_vars:
+      - name: discovery_expected_revision
+        title: "Reviewed diagnostic revision"
+        description: "Full 40-character commit SHA; must match the executing controller checkout"
+        type: string
+        required: true
+      - name: discovery_log_since
+        title: "Log window start"
+        description: "ISO timestamp with explicit zone, e.g. 2026-08-01T00:00:00Z"
+        type: string
+        required: true
+      - name: discovery_log_until
+        title: "Log window end"
+        description: "ISO timestamp with explicit zone; collect historical evidence before redeployment"
+        type: string
+        required: true
+
+  - name: Inspect Discovery Metadata
+    playbook: platform/playbooks/inspect-discovery-metadata.yml
+    survey_vars:
+      - name: discovery_project_id
+        title: "Semaphore project ID"
+        description: "Explicit numeric project ID for read-only discovery binding inspection"
+        type: string
+        required: true
 
   - name: Cleanup NetBox
     playbook: platform/playbooks/cleanup-netbox.yml

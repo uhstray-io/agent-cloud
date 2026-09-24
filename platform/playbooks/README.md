@@ -162,7 +162,8 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Purpose |
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
-| `check-discovery.yml` | Mixed diagnostic/mutation workflow: queries logs/records, tolerates query errors and writes site coordinates. Not read-only or a full recovery gate |
+| `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
+| `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
