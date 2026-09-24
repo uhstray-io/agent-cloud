@@ -167,12 +167,15 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
                 "error": result.get("error") or None,
                 "evidence": result.get("evidence", {}),
             }
+    # Every inventoried service is tracked, run or not, so the report, the NetBox fields and
+    # the dashboard all show a service before its first step (review of PR #229).
+    tracked = sorted(set(services) | set(inventory_services or []))
     failed = {
-        service: sorted(step for step, r in steps.items() if r["status"] == "fail")
-        for service, steps in services.items()
+        service: sorted(step for step, r in services.get(service, {}).items() if r["status"] == "fail")
+        for service in tracked
     }
-    status = {s: {step: r["status"] for step, r in steps.items()} for s, steps in services.items()}
-    agg = {"services": services, "validation": validation, "anomalies": anomalies,
+    status = {s: {step: r["status"] for step, r in services.get(s, {}).items()} for s in tracked}
+    agg = {"services": services, "tracked": tracked, "validation": validation, "anomalies": anomalies,
            "failed_steps": failed, "status_by_service": status}
     agg["report"] = report(agg, registry, inventory_services or [])
     return agg
@@ -202,8 +205,12 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
 
 
 def loki_streams(agg: dict, now_ns: int) -> list[dict]:
-    """One Loki stream per (service, step), labelled so the dashboard can filter on them."""
-    streams = []
+    """One Loki stream per (service, step), labelled so the dashboard can filter on them, and
+    one `no_history` stream for a tracked service that has not run a step yet."""
+    streams = [{"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
+                           "status": "no_history"},
+                "values": [[str(now_ns), json.dumps({"no_history": True})]]}
+               for service in agg.get("tracked", []) if service not in agg["services"]]
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
             line = json.dumps({"task_id": result["task_id"], "error": result["error"],

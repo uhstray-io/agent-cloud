@@ -190,7 +190,8 @@
         url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?name={{ (collector_vm_names | default({}))[item] | default(item) | urlencode }}"
         headers: "{{ _nb_headers }}"
         status_code: [200]
-      loop: "{{ _agg.services.keys() | list }}"
+      # Every tracked service, including one that has not run a step yet (review of PR #229).
+      loop: "{{ _agg.tracked }}"
       register: _vms
       failed_when: false
       check_mode: false
@@ -241,7 +242,7 @@
       when:
         - not ansible_check_mode
         - collector_loki_url is defined
-        - _agg.services | length > 0
+        - _agg.loki_streams | length > 0
 
     - name: "Report"
       ansible.builtin.debug:

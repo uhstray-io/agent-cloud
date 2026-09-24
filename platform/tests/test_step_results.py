@@ -218,3 +218,22 @@ def test_an_inventoried_service_with_no_history_still_gets_a_report_row():
     assert agg["report"]["step-ca"]["no_history"] is True
     assert agg["report"]["step-ca"]["failed"] == []
     assert agg["report"]["step-ca"]["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
+
+
+def test_a_no_history_service_reaches_netbox_and_the_dashboard():
+    # Review of PR #229: the collector writes NetBox and Loki from the aggregate, so a
+    # tracked service with no run must appear there too, not only in the report.
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca"])
+    assert agg["tracked"] == ["step-ca"]
+    assert agg["status_by_service"] == {"step-ca": {}}
+    assert agg["failed_steps"] == {"step-ca": []}
+    streams = step_results.loki_streams(agg, 1)
+    assert streams == [{"stream": {"job": "agent-cloud-conformance", "service": "step-ca", "step": "none",
+                                   "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
+
+
+def test_the_collector_writes_every_tracked_service():
+    text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
+    assert 'loop: "{{ _agg.tracked }}"' in text
+    assert "_agg.loki_streams | length > 0" in text
+    assert "_agg.services.keys()" not in text
