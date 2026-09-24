@@ -23,19 +23,23 @@ STUB
 
 redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
 
-@test "redact_secrets: blanks URL passwords, Bearer tokens and labelled values" {
+@test "redact_secrets: blanks URL passwords, Authorization, Bearer tokens and labelled values" {
   local s=postgres
   [ "$(redact "${s}://agw:s3cr3t@db.invalid:5432/agw")" = "${s}://agw:***@db.invalid:5432/agw" ]
+  # A password containing '@' is blanked up to the last one.
+  [ "$(redact "${s}://agw:p@ss@db.invalid/agw")" = "${s}://agw:***@db.invalid/agw" ]
+  # Any Authorization scheme, any case, and a Bearer token wherever it appears.
+  [ "$(redact 'Authorization: Basic dXNlcjpwYXNz')" = 'Authorization: ***' ]
+  [ "$(redact 'authorization: BEARER abc')" = 'authorization: ***' ]
+  [ "$(redact '{"authorization": "Basic abc", "x": 1}')" = '{"authorization": ***' ]
+  [ "$(redact 'sent BEARER tok123 upstream')" = 'sent BEARER *** upstream' ]
+  # After a label the rest of the line goes: a value may hold spaces or commas (PR 231 Codex).
+  [ "$(redact 'password="two words"')" = 'password= ***' ]
+  [ "$(redact 'password=alpha,beta')" = 'password= ***' ]
+  [ "$(redact 'db API_KEY=k1, secret=abc}')" = 'db API_KEY= ***' ]
   # A bare key (agentgateway local-dev config), but not a word that merely ends in "key".
   [ "$(redact '      - key: sk-plaintext-client')" = '      - key: ***' ]
   [ "$(redact 'monkey: banana')" = 'monkey: banana' ]
-  [ "$(redact 'Authorization: Bearer abc.def-ghi')" = 'Authorization: ***' ]
-  # Any scheme, any case (PR 231 Codex review).
-  [ "$(redact 'Authorization: Basic dXNlcjpwYXNz')" = 'Authorization: ***' ]
-  [ "$(redact 'authorization: BEARER abc')" = 'authorization: ***' ]
-  [ "$(redact '{"authorization": "Basic abc", "x": 1}')" = '{"authorization": "***", "x": 1}' ]
-  [ "$(redact 'sent BEARER tok123 upstream')" = 'sent BEARER *** upstream' ]
-  [ "$(redact 'password=hunter2 token: "xyz" API_KEY=k1, secret=abc}')" = 'password=*** token: "***" API_KEY=***, secret=***}' ]
   [ "$(redact 'a harmless line')" = 'a harmless line' ]
 }
 
