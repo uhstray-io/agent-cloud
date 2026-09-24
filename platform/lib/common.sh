@@ -102,6 +102,31 @@ compose() {
 
 # ── Health Waiters ────────────────────────────────────────────────────────────
 
+# redact_secrets — filter stdin: blank a URL's password, a Bearer token and a
+# password/secret/token/key value, so a container log can go into a task log
+# (Semaphore stores task output). A best-effort filter for diagnostics, not a
+# guarantee: an unlabelled secret passes through, so dump logs only on failure.
+redact_secrets() {
+  sed -E \
+    -e 's#(://[^:/@[:space:]]+:)[^@[:space:]]+@#\1***@#g' \
+    -e 's#([Bb]earer[[:space:]]+)[^[:space:]"'"'"',]+#\1***#g' \
+    -e 's#(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy])["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?)[^"'"'"'[:space:],}]+#\1***#g'
+}
+
+# dump_container_diagnostics <container_name> [lines]
+# On a failed wait, print the container's state and the tail of its log
+# (redacted), so a failed deploy says WHY in its own output instead of pointing
+# at a host nobody may log into. Never fails the caller.
+dump_container_diagnostics() {
+  local name="$1" lines="${2:-60}"
+  warn "Diagnostics for ${name}:"
+  $CONTAINER_ENGINE inspect --format \
+    'state={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' \
+    "$name" 2>&1 | redact_secrets >&2 || true
+  warn "Last ${lines} log lines of ${name} (redacted):"
+  $CONTAINER_ENGINE logs --tail "$lines" "$name" 2>&1 | redact_secrets >&2 || true
+}
+
 # wait_for_healthy <container_name> <timeout_seconds>
 # Polls container health status until healthy or timeout
 wait_for_healthy() {
@@ -118,6 +143,7 @@ wait_for_healthy() {
     sleep 2
     elapsed=$((elapsed + 2))
   done
+  dump_container_diagnostics "$name"
   error "${name} did not become healthy within ${timeout}s"
 }
 
