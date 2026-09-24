@@ -617,6 +617,12 @@ operator has one, takes precedence — this is the repo-level default.
 | **`plan/architecture/`** (numbered docs) | Ratified architecture decisions — the repo's own record convention | Deliberation; anything a spec already states |
 | ~~`.claude/memory/`~~ | Retired from routing; kept as history | New knowledge — nothing routes here |
 
+**Regenerating the graph artifact:** `index_repository` with `name="agent-cloud"` and
+`persistence=true`, then stage `artifact.json` and `graph.db.zst` together. The tool's
+auto-index names projects after the checkout path; a pre-commit gate refuses a committed
+artifact with any other project ID, a missing graph, or a size that does not match
+(`docs/MISTAKES.md` 6.6).
+
 **One-time per clone: `make git-setup`.** It sets `merge.ours.driver=true` and
 `core.hooksPath=.githooks`. Both are repo-local git config, so neither can be committed.
 The first matters because `ours` is **not** a built-in merge driver — the `merge=ours`

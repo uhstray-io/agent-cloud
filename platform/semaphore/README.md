@@ -138,8 +138,10 @@ executor has runtime access, report **initial publisher installation** as the
 specific gap. A controller AppRole may be healthy while this entry point is
 missing. Do not redeploy Semaphore, repurpose a service template, edit a shared
 repository binding, publish the entire catalog, or extract credentials to bridge
-the gap. Any exceptional initial UI installation requires explicit scoped
-authorization and must match the committed declaration and verified bindings.
+the gap. Create every template and automation through committed configuration
+and its installer, including the initial publisher. Manual UI creation is not
+an installation path. Resolve approved executor access before applying the
+bootstrap; do not substitute a manually configured template.
 
 ## Troubleshoot at the failing boundary
 

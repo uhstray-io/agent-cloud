@@ -54,7 +54,9 @@ Failure cannot rotate, replace or revoke access. Initial mint requires both an
 absent stored token and no active labelled rows. An interrupted mint stops with
 a names-only diagnostic; it may leave a row requiring reconciliation. No deletion
 or revocation is authorized to clear that state. Semaphore defaults the token
-survey to proof-only; explicitly selecting false is an initial-provisioning action.
+survey to proof-only; the playbook also defaults to proof-only when an older
+published template omits that survey. Explicitly selecting false is an
+initial-provisioning action.
 
 The fixture suite executes the actual Ansible control flow against disposable
 loopback endpoints, including read-back failure, disabled re-runs, initial
@@ -84,8 +86,35 @@ These prove control flow, not deployed API compatibility or production readiness
    repository, inventory and variable-group bindings. Provision dev-test only.
 5. Prove both directions, shared visibility, quiet cycles, hierarchy, descriptions,
    priority and duplicate resistance; run the per-pair gate and observe successful
-   scheduled token refresh plus subsequent sync. Enable approved private pairs
-   individually, starting with huhhb. Public agent-cloud stays disabled.
+   scheduled token refresh plus subsequent sync for dev-test first. Then enable
+   agent-cloud as the second canary and repeat the actual GitHub issue/Tududi
+   task comparisons and per-pair gate. Only after both canaries pass may the
+   remaining intended configured pairs be enabled individually. The user
+   explicitly authorized non-destructive live testing in this order; preserve
+   existing records, owners, credentials and markers throughout.
+
+### Persisted canary gate prerequisite (not yet implemented)
+
+Before expanding beyond dev-test, implement and review a fail-closed gate in
+`provision-tududi-github-sync.yml`. Persist a separate result for dev-test and
+agent-cloud in the committed rollout evidence, referencing retained Semaphore
+verification, refresh and subsequent cycle task IDs plus the actual provider
+comparison evidence. Each result must identify the production instance, pair,
+public/private revisions, mapping and credential identity (never secret values),
+time and pass/fail outcome. An enabled flag or successful provisioning task is
+not a passed canary. Invalidate evidence when its relevant source, mapping,
+instance or identity changes; unrelated mapping additions must not invalidate
+unchanged canaries.
+
+Provisioning must reject agent-cloud without a valid dev-test pass, and reject
+any later pair without valid passes for both canaries, before credential or
+workflow writes. Missing, failed, mismatched or invalidated evidence must refuse
+activation; the preservation-only kill switch must remain available. Verify these
+refusals with disposable fixtures before rollout. The current verifier does not
+persist this gate and the current provisioner does not enforce it: this is an
+open implementation prerequisite, not a capability delivered by the token-default
+fix. Keep all pairs other than dev-test disabled until it is implemented and
+reviewed. No canary pass is claimed by this document.
 
 The verifier preserves provider business data but places helper scripts and mints
 an ephemeral GitHub token. Include those effects in the approved operation scope.
