@@ -139,6 +139,18 @@ templates:
     playbook: platform/playbooks/recover-netbox-runtime.yml
     repository: agent-cloud dev
     survey_vars:
+      - name: netbox_source_apply
+        title: Place reviewed Dev source
+        description: "false = require the host to already run the reviewed Dev commit; true = place that exact commit before container preflight"
+        type: string
+        required: false
+        default_value: "false"
+      - name: expected_host_revision
+        title: Audited host commit
+        description: "Required when placing source; copy the full host commit SHA from Audit NetBox Runtime (Dev)"
+        type: string
+        required: false
+        default_value: ""
       - name: netbox_runtime_apply
         title: Apply recovery
         description: "false = inspect and report each core container's start/recreate/noop action without changing it; true = also apply those actions"
@@ -151,6 +163,29 @@ templates:
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
     dev_variant: true
+    survey_vars:
+      - name: replace_unrecoverable_token
+        title: Replace unrecoverable token
+        description: "Default false. Only when NetBox has the dedicated token but OpenBao lost its value, revoke exactly one match and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Ensure NetBox Prefix
+    playbook: platform/playbooks/ensure-netbox-prefix.yml
+    dev_variant: true
+    survey_vars:
+      - name: prefix
+        title: IPv4 prefix (CIDR)
+        description: "Exact management network from private site configuration"
+        type: string
+        required: true
+      - name: prefix_apply
+        title: Create missing prefix
+        description: "false = report only; true = create exactly this active global prefix if absent"
+        type: string
+        required: false
+        default_value: "false"
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
@@ -685,6 +720,7 @@ templates:
 
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
+    dev_variant: true
 
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets

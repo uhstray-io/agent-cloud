@@ -72,6 +72,28 @@ setup() {
   assert_contains "$block" 'dev_variant: true'
 }
 
+@test "NetBox API consumers share version-aware credential headers" {
+  python3 - "$BATS_TEST_DIRNAME/../playbooks" <<'PY'
+import pathlib
+import sys
+import yaml
+from jinja2 import Environment
+
+root = pathlib.Path(sys.argv[1])
+helper = yaml.safe_load((root / "tasks/netbox-api-headers.yml").read_text())[0]
+header = helper["ansible.builtin.set_fact"]["_nb_headers"]["Authorization"]
+env = Environment()
+assert env.from_string(header).render(_netbox_api_token="nbt_key.value") == "Bearer nbt_key.value"
+assert env.from_string(header).render(_netbox_api_token="legacyvalue") == "Token legacyvalue"
+assert helper["no_log"] is True
+for name in ("netbox-allocate-ip.yml", "create-netbox-device.yml"):
+    tasks = yaml.safe_load((root / name).read_text())[0]["tasks"]
+    auth, = (task for task in tasks if task["name"] in ("Set the NetBox auth header", "Set NetBox auth header"))
+    assert auth["ansible.builtin.include_tasks"] == "tasks/netbox-api-headers.yml"
+    assert auth["no_log"] is True
+PY
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).

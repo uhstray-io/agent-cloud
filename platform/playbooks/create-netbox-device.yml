@@ -94,10 +94,9 @@
       check_mode: false
 
     - name: "Set NetBox auth header"
-      ansible.builtin.set_fact:
-        _nb_headers:
-          Authorization: "Token {{ _nb_secret.json.data.data[_token_key] }}"
-          Accept: "application/json"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+      vars:
+        _netbox_api_token: "{{ _nb_secret.json.data.data[_token_key] }}"
       no_log: true
 
     # ── resolve slugs -> ids ───────────────────────────────────────────────

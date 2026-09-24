@@ -2,6 +2,7 @@
 # Reconcile only the four NetBox core containers after a stopped/no-restart
 # runtime, using the reviewed dev playbook/script and the matching Compose file
 # already on the target. The default preflight changes no runtime files or containers.
+# Source placement is a separate, default-off action before container preflight.
 - name: Refuse an empty NetBox target group
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -42,7 +43,10 @@
         that:
           - _controller_revision.stdout == _dev_revision.stdout
           - _controller_changes.stdout | length == 0
-        fail_msg: "NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore."
+        fail_msg: >-
+          NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore.
+          Revision match: {{ _controller_revision.stdout == _dev_revision.stdout }}.
+          Dirty paths (git porcelain; names only): {{ _controller_changes.stdout_lines }}.
 
 - name: Preflight and recover the existing NetBox core
   hosts: netbox_svc
@@ -59,6 +63,64 @@
           - not (local_mode | default(false) | bool)
           - monorepo_deploy_path is defined
         fail_msg: "NetBox recovery needs the production NetBox inventory."
+
+    - name: Read the host source revision before placement
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _host_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Read tracked host source changes without refreshing its Git index
+      ansible.builtin.command:
+        argv: [git, --no-optional-locks, status, --porcelain, --untracked-files=no]
+        chdir: "{{ _monorepo_dir }}"
+      register: _host_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse tracked host source changes
+      ansible.builtin.assert:
+        that: _host_changes.stdout | length == 0
+        fail_msg: "NetBox host source has tracked changes; source placement and container recovery were not run. Paths: {{ _host_changes.stdout_lines }}"
+
+    - name: Require the audited starting revision before source placement
+      ansible.builtin.assert:
+        that:
+          - expected_host_revision | default('') is match('^[0-9a-f]{40}$')
+          - _host_revision.stdout in [expected_host_revision | default(''), hostvars['localhost']._controller_revision.stdout]
+        fail_msg: "Host revision differs from the audited starting revision; source placement and container recovery were not run."
+      when: netbox_source_apply | default(false) | bool
+
+    - name: Fetch reviewed dev source without changing the host checkout
+      ansible.builtin.command:
+        argv: [git, fetch, --quiet, origin, dev]
+        chdir: "{{ _monorepo_dir }}"
+      changed_when: false
+      when: not ansible_check_mode and netbox_source_apply | default(false) | bool
+
+    - name: Place the exact reviewed dev revision without overwriting host files
+      ansible.builtin.command:
+        argv: [git, switch, --detach, --no-overwrite-ignore, "{{ hostvars['localhost']._controller_revision.stdout }}"]
+        chdir: "{{ _monorepo_dir }}"
+      when:
+        - netbox_source_apply | default(false) | bool
+        - _host_revision.stdout != hostvars['localhost']._controller_revision.stdout
+        - not ansible_check_mode
+
+    - name: Read the effective host source revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _effective_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed dev revision before container preflight
+      ansible.builtin.assert:
+        that: _effective_revision.stdout == hostvars['localhost']._controller_revision.stdout
+        fail_msg: "NetBox host source is not the reviewed dev revision; no containers were changed."
 
     - name: Read the existing host Compose checksum
       ansible.builtin.stat:

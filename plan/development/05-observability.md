@@ -201,6 +201,43 @@
 > repeatable code from `dev` and verify the resulting policy and health.
 > Do not run the regular NetBox deploy as an unexamined recovery step: it
 > pulls images, stops the stack, and rebuilds containers.
+> A later read-only source audit found the host's tracked Compose file clean
+> at an older April commit, while the reviewed `dev` Compose declares the
+> required restart policies. The recovery preflight correctly refused that
+> mismatch before touching containers. Reconcile the host monorepo through
+> the Dev-bound recovery playbook as a separate, default-off source action:
+> require the audited starting commit and no tracked source changes, place the
+> exact reviewed Dev commit with a no-overwrite Git switch that preserves
+> unrelated untracked and ignored host files, then verify its
+> revision and Compose checksum. Run the container dry-run with runtime
+> apply still disabled;
+> only then choose the scoped backing-service and NetBox start/recreate actions.
+> The host commit is on the unmerged April discovery debug branch (PR #186),
+> not an ancestor of `dev`. Its static-IP fallback was curated and merged to
+> `dev` in PR #223 with validation and without that branch's hardcoded site
+> coordinates or diagnostic logging. Source placement changes the worker
+> directory bind-mounted by orb-agent; verify discovery after NetBox recovers
+> and audit old synthetic `eth0` records before any cleanup.
+> Dev PR #224 replaced a forced SHA checkout with a no-overwrite Git switch.
+> Production Semaphore task 1188 placed its merged Dev revision and passed the
+> Compose and runtime dry-run gates; task 1189 then recovered the four NetBox
+> core containers. All were healthy with `restart: always`, and `/login/`
+> returned HTTP 200. Task 1190 reached the token bootstrap but stopped before
+> token creation: NetBox removed `User.is_staff` and changed its default token
+> format to v2. The bootstrap must mint and store the complete one-time v2
+> bearer value before IPAM allocation can resume. If the store fails after a
+> token is minted, its plaintext cannot be recovered; the bootstrap refuses by
+> default and offers a separately gated replacement of exactly one named orphan.
+> Dev-bound Semaphore task 1193 then minted the scoped v2 token into OpenBao.
+> The address report task 1195 reached NetBox but found no exact management
+> prefix, so it reserved nothing. Before selecting the o11y receiver address,
+> audit that site-config-declared network in NetBox; explicitly create only the
+> missing active global prefix through the reusable Semaphore prefix workflow,
+> verify its read-back, then rerun the address report and reserve one exact
+> address before declaring the receiver VM in private site-config.
+> A prefix created through the NetBox Django shell has no NetBox request
+> changelog entry; the versioned playbook and Semaphore task ID/output are its
+> audit record. Preserve that task record with the production rollout evidence.
 > The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
 > exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
 > and the Loki shipper remains disabled with no receiver URL. The exporter
