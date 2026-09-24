@@ -34,7 +34,10 @@ import urllib.request
 # Exact server releases whose task body was read from source and whose check-mode flag was
 # confirmed recorded (task params.dry_run). Exact, not a series: another patch release may
 # read the flag differently, and a mis-read flag means a real run (review of PR #220).
-VERIFIED_DRY_RUN_VERSIONS = {"v2.17.31"}
+#   v2.17.31  source + live (production controller, task 1206 recorded params.dry_run)
+#   v2.18.12  source: db/Task.go AnsibleTaskParams.DryRun, Task.Params json:"params" (local-dev image)
+#   v2.19.11  source: same fields (the compose default in platform/services/semaphore)
+VERIFIED_DRY_RUN_VERSIONS = {"v2.17.31", "v2.18.12", "v2.19.11"}
 TERMINAL = {"success", "error", "stopped"}
 
 
@@ -134,22 +137,25 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
     # Printed at once: from here the task may be running, and this id is the only handle on it.
     print(f"Task {task_id} launched ({'check mode' if dry_run else 'real run'})", flush=True)
     if dry_run:
+        # Any read-back that does not positively show params.dry_run - a failed request, a
+        # null body, a non-object params - is an unverified mode on a live task: request a
+        # stop (best effort, a tripwire, not a guarantee) and say it may have run for real.
         try:
-            recorded = (api(f"/tasks/{task_id}").get("params") or {}).get("dry_run") is True
+            detail = api(f"/tasks/{task_id}")
+            params = detail.get("params") if isinstance(detail, dict) else None
+            recorded = isinstance(params, dict) and params.get("dry_run") is True
+            reason = "the server did not record check mode"
         except Refusal:
-            # Unknown mode on a live task: ask for a stop (best effort, a tripwire like the one
-            # below, not a guarantee) and say it may already have run for real.
+            recorded, reason = False, "its check mode could not be read back"
+        if not recorded:
             try:
                 api(f"/tasks/{task_id}/stop", {})
                 stop = "stop requested"
             except Refusal:
                 stop = "stop request also failed"
-            raise Refusal(f"Task {task_id}: launched, but its check mode could not be read back ({stop}). "
-                          f"Treat it as having run for real until task {task_id} is inspected") from None
-        if not recorded:
-            api(f"/tasks/{task_id}/stop", {})
-            raise Refusal(f"Task {task_id}: the server did not record check mode; stop requested. "
-                          "The server's task format changed - update this launcher before relaunching")
+            raise Refusal(f"Task {task_id}: launched, but {reason} ({stop}). Treat it as having run for "
+                          f"real until task {task_id} is inspected, and update this launcher if the "
+                          "server's task format changed")
     if not wait:
         return task_id, None
     deadline = time.monotonic() + timeout

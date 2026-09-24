@@ -17,10 +17,11 @@ class FakeAPI:
     project = 1
 
     def __init__(self, version="v2.17.31-02309ba-1774450250", records_params=True, busy=False,
-                 readback_fails=False, submit_fails=False):
+                 readback_fails=False, submit_fails=False, readback=None):
         self.version, self.records_params, self.busy = version, records_params, busy
         self.readback_fails = readback_fails
         self.submit_fails = submit_fails
+        self.readback = readback
         self.template = {"id": 220, "name": "Deploy agentgateway (Dev)",
                          "survey_vars": [{"name": "service_branch", "type": "string"}]}
         self.calls, self.created = [], None
@@ -43,6 +44,8 @@ class FakeAPI:
         if path == "/tasks/1200":
             if self.readback_fails:
                 raise launcher.Refusal("Semaphore HTTP 502 on /tasks/1200; body suppressed")
+            if self.readback is not None:
+                return self.readback()
             params = (self.created or {}).get("params") if self.records_params else None
             return {"id": 1200, "status": "success", "params": params}
         if path == "/tasks/1200/stop":
@@ -68,7 +71,7 @@ def test_a_real_run_carries_no_check_mode_flags():
     assert "params" not in api.created and "dry_run" not in api.created
 
 
-@pytest.mark.parametrize("version", ["v2.17.30-abc", "v2.17.32", "v2.18.0", "v3.0.0", "unknown"])
+@pytest.mark.parametrize("version", ["v2.17.30-abc", "v2.17.32", "v2.18.0", "v2.19.10", "v3.0.0", "unknown"])
 def test_check_mode_on_an_unverified_server_is_refused_before_any_task(version):
     api = FakeAPI(version=version)
     with pytest.raises(launcher.Refusal, match="unverified"):
@@ -92,7 +95,7 @@ def test_a_running_task_on_the_template_refuses_a_second():
 
 def test_tripwire_stops_a_task_whose_check_mode_the_server_did_not_record():
     api = FakeAPI(records_params=False)
-    with pytest.raises(launcher.Refusal, match="did not record check mode"):
+    with pytest.raises(launcher.Refusal, match="did not record check mode.*stop requested"):
         launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
     assert posts(api) == ["/tasks", "/tasks/1200/stop"]
 
@@ -128,3 +131,19 @@ def test_a_network_error_becomes_a_refusal_not_a_traceback(monkeypatch):
     monkeypatch.setattr(api, "open", unreachable)
     with pytest.raises(launcher.Refusal, match="outcome unavailable"):
         api("/templates")
+
+
+@pytest.mark.parametrize("version", ["v2.17.31-02309ba-1774450250", "v2.18.12", "v2.19.11-ansible2.16.5"])
+def test_the_source_verified_releases_may_launch_check_mode(version):
+    api = FakeAPI(version=version)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
+    assert api.created["params"] == {"dry_run": True, "diff": True}
+
+
+@pytest.mark.parametrize("shape", [lambda: None, lambda: {"id": 1200, "params": "dry_run"},
+                                   lambda: {"id": 1200, "params": ["dry_run"]}, list])
+def test_an_unexpected_read_back_shape_still_requests_a_stop(shape):
+    api = FakeAPI(readback=shape)
+    with pytest.raises(launcher.Refusal, match="Task 1200: launched, but"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
+    assert posts(api) == ["/tasks", "/tasks/1200/stop"]
