@@ -28,7 +28,9 @@ yaml.SafeDumper.add_representer(_Unsafe, lambda d, v: d.represent_scalar("!unsaf
 DECLARED = [
     {"name": "svc_session", "type": "random", "length": 32},
     {"name": "svc_api_key", "type": "existing"},
+    {"name": "svc_optional_integration", "type": "existing"},
 ]
+REQUIRED = ["svc_api_key"]
 
 
 def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, policy=200, token_policies=("svc",),
@@ -41,7 +43,8 @@ def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, poli
     pv = dict(play["vars"])
     # Stub the controller-side facts the real play reads from files.
     pv["_deploy_raw"] = _Unsafe(deploy_raw if deploy_raw is not None else (
-        yaml.safe_dump([{"vars": {"_secret_definitions": DECLARED}}]) if deploy else ""))
+        yaml.safe_dump([{"vars": {"_secret_definitions": DECLARED, "_required_existing_secrets": REQUIRED}}])
+        if deploy else ""))
     pv["_approle_declared"] = policy_file
     pv["service_name"] = service
     pv.update(host_vars or {})
@@ -79,6 +82,20 @@ def test_a_missing_required_key_fails(tmp_path):
     v = _verdict(tmp_path, stored={"unrelated": "x"})
     assert v["status"] == "fail"
     assert v["evidence"]["missing"] == ["svc_api_key"]
+
+
+def test_an_existing_key_the_deploy_does_not_require_is_optional(tmp_path):
+    # PR 203 Codex review: Postiz declares ~40 social-platform credentials as `existing` and
+    # leaves them empty until seeded; only _required_existing_secrets is the deploy's contract.
+    v = _verdict(tmp_path, stored={"svc_api_key": "k"})
+    assert v["status"] == "pass" and v["evidence"]["missing"] == [], v
+
+
+def test_a_computed_required_list_left_in_a_playbook_fails_closed(tmp_path):
+    play = [{"vars": {"_secret_definitions": DECLARED,
+                      "_required_existing_secrets": "{{ ['svc_api_key'] if x else [] }}"}}]
+    v = _verdict(tmp_path, stored={"svc_api_key": "k"}, deploy_raw=yaml.safe_dump(play))
+    assert v["status"] == "fail" and "cannot be evaluated here" in v["error"], v
 
 
 def test_a_generated_secret_absent_before_the_deploy_is_not_required(tmp_path):

@@ -6,11 +6,22 @@ import rego.v1
 
 import data.agentcloud
 
+# A workflow run on dev launches the template's generated " (Dev)" variant, the only kind bound
+# to the dev repository record; a test that names a suffixed template keeps its own suffix.
+_dev_name(t) := t if endswith(t, " (Dev)")
+
+_dev_name(t) := t if endswith(t, " (Local)")
+
+_dev_name(t) := concat("", [t, " (Dev)"]) if {
+	not endswith(t, " (Dev)")
+	not endswith(t, " (Local)")
+}
+
 _run(agent, template, step) := {
 	"agent": agent,
 	"service": "semaphore",
 	"action": "run_task",
-	"template_name": template,
+	"template_name": _dev_name(template),
 	"step": step,
 	"git_branch": "dev",
 }
@@ -121,7 +132,7 @@ test_destructive_template_denied_for_workflow_agent if {
 
 # Scenario "Unreviewed step cannot run from main"
 test_unreviewed_step_denied_on_main if {
-	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"git_branch": "main"})
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "main"})
 	not d.allowed
 	d.reason == "an unreviewed step cannot run from main"
 }
@@ -129,17 +140,27 @@ test_unreviewed_step_denied_on_main if {
 test_caller_supplied_review_state_is_ignored if {
 	not agentcloud.allow with input as object.union(
 		_run("security-agent", "Harden SSH", "access-harden"),
-		{"git_branch": "main", "step_reviewed": true},
+		{"template_name": "Harden SSH", "git_branch": "main", "step_reviewed": true},
 	)
 }
 
 test_missing_branch_means_main if {
-	not agentcloud.allow with input as object.remove(_run("security-agent", "Harden SSH", "access-harden"), ["git_branch"])
+	not agentcloud.allow with input as object.remove(
+		object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH"}),
+		["git_branch"],
+	)
 }
 
 test_reviewed_step_allowed_on_main if {
-	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"git_branch": "main"})
+	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "main"})
 		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as true
+}
+
+# PR 203 Codex review: a base template runs from main even when the caller claims dev.
+test_a_base_template_is_main_whatever_branch_is_claimed if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "dev"})
+	not d.allowed
+	contains(d.reason, "an unreviewed step cannot run from main")
 }
 
 # Scenario "Orchestrator keeps SSH"

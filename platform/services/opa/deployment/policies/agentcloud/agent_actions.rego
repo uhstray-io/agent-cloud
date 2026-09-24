@@ -13,7 +13,8 @@
 # word: catalog.workflow_steps (pinned to platform/workflows/service-onboarding/registry.yml
 # by test_workflow_registry.py) says which role owns it, which templates execute it, which
 # reasoning step's proposal it acts on, and whether its review has passed. Extra input:
-#   git_branch     branch the task runs (Semaphore task `git_branch`); missing means main
+#   git_branch     branch the task runs (Semaphore task `git_branch`); missing means main. It can
+#                  only add restriction: a base template runs from main whatever this says
 #   step           registry step id this task executes (fw-harden, service-deploy, ...)
 #   proposal       the proposal body of the reasoning step that feeds it, REQUIRED when it
 #                  has one (schemas beside platform/workflows/service-onboarding/)
@@ -118,10 +119,21 @@ _template_executes_step if {
 
 # --- Workflow agents: branch ------------------------------------------------------------
 
-# Review state is the registry's, not a boolean the caller supplies.
+# Review state is the registry's, not a boolean the caller supplies. So is the branch: a
+# template runs from the repository record it is bound to, and only the generated " (Dev)" and
+# " (Local)" variants are bound off main (templates.yml; setup-templates.yml), so a base
+# template is main whatever `git_branch` the caller sends (PR 203 Codex review).
+_off_main_template if endswith(object.get(input, "template_name", ""), " (Dev)")
+
+_off_main_template if endswith(object.get(input, "template_name", ""), " (Local)")
+
+_runs_from_main if not _off_main_template
+
+_runs_from_main if object.get(input, "git_branch", "main") == "main"
+
 deny_reasons contains "an unreviewed step cannot run from main" if {
 	_role_run_task
-	object.get(input, "git_branch", "main") == "main"
+	_runs_from_main
 	not _step.reviewed
 }
 
