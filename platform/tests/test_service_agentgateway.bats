@@ -246,6 +246,10 @@ PY
   # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
   [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
+  # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
+  # runs before the completion assert it would otherwise skip.
+  assert_grep -qF "that: not (_verify_refused | bool) or (agw_verify_allow_unproven | default(false) | bool)" "$PLAYBOOK"
+  assert_precedes "$PLAYBOOK" 'Refuse to report success when the round-trip was not proven' 'Require a completion the upstream produced'
   # Local-dev's verify runs in the Semaphore container, on the gateway's network.
   assert_grep -qF 'agw_verify_base_url=http://agentgateway:4000' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
