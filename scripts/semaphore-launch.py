@@ -137,8 +137,15 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
         try:
             recorded = (api(f"/tasks/{task_id}").get("params") or {}).get("dry_run") is True
         except Refusal:
-            raise Refusal(f"Task {task_id}: launched, but its check mode could not be read back. "
-                          f"Treat it as running for real until task {task_id} is inspected") from None
+            # Unknown mode on a live task: ask for a stop (best effort, a tripwire like the one
+            # below, not a guarantee) and say it may already have run for real.
+            try:
+                api(f"/tasks/{task_id}/stop", {})
+                stop = "stop requested"
+            except Refusal:
+                stop = "stop request also failed"
+            raise Refusal(f"Task {task_id}: launched, but its check mode could not be read back ({stop}). "
+                          f"Treat it as having run for real until task {task_id} is inspected") from None
         if not recorded:
             api(f"/tasks/{task_id}/stop", {})
             raise Refusal(f"Task {task_id}: the server did not record check mode; stop requested. "

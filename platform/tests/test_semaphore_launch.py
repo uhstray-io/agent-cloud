@@ -102,6 +102,7 @@ def test_a_failed_read_back_reports_the_task_id_as_possibly_running(capsys):
     with pytest.raises(launcher.Refusal, match="Task 1200: launched, but its check mode could not be read"):
         launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
     assert "Task 1200 launched" in capsys.readouterr().out
+    assert posts(api) == ["/tasks", "/tasks/1200/stop"]
 
 
 def test_the_client_never_follows_a_redirect_with_the_token():
