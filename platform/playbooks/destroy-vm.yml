@@ -186,6 +186,20 @@
       changed_when: _destroy.json.data is defined
       when: not ansible_check_mode
 
+    # A dry run destroyed nothing, so the wait, confirmation, volume sweep and report below
+    # would describe work that did not happen (PR 203 Codex review).
+    - name: "Dry run: report the planned destroy"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} on {{ _node }} would be destroyed (purge=1), then any volume
+          still tagged with vmid {{ _vmid }} on {{ _sweep_storages | join(', ') }} would be freed.
+          Nothing was changed.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop this host"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+
     - name: "Wait for the destroy task"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _destroy.json.data }}/status"
