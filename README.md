@@ -129,6 +129,7 @@ health. Verify the selected environment before relying on a service.
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
 | **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
 | **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
+| **agentgateway** | Inference edge gateway (Linux Foundation agentgateway v1.5.0) -- OpenAI-compatible `/v1` with per-client API keys and per-key hourly token budgets (own Postgres) in front of the model API; local-dev fronts LM Studio, prod will front vLLM on the DGX Spark head behind `inference.uhstray.io` (local-dev proving) |
 | **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
 | **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the five PRIVATE repos (`agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
 
@@ -277,6 +278,10 @@ INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
+
+Production DGX Spark scrape targets are rendered from private inventory by
+[`deploy-o11y.yml`](platform/playbooks/deploy-o11y.yml); see the
+[`o11y deployment notes`](platform/services/o11y/deployment/README.md).
 
 ## Related Repositories
 

@@ -87,15 +87,24 @@ task_block() {
   ' "$1"
 }
 
+# The first line matching <pattern_a> must come BEFORE the first line matching
+# <pattern_b>. Both patterns are ERE. Names the missing pattern or the two
+# line numbers on failure, instead of the bare `[ "" -lt "" ]` integer error a
+# hand-rolled comparison prints when a pattern stops matching.
+#   assert_precedes <file> <pattern_a> <pattern_b>
+assert_precedes() {
+  local a b
+  a=$(grep -nE "$2" "$1" | head -1 | cut -d: -f1)
+  b=$(grep -nE "$3" "$1" | head -1 | cut -d: -f1)
+  [ -n "$a" ] || { echo "assert_precedes: no match for '$2' in $1" >&2; return 1; }
+  [ -n "$b" ] || { echo "assert_precedes: no match for '$3' in $1" >&2; return 1; }
+  [ "$a" -lt "$b" ] || { echo "assert_precedes: '$2' (line $a) after '$3' (line $b) in $1" >&2; return 1; }
+}
+
 # The transport guard must run BEFORE the first request that carries a
 # credential — a guard placed after the AppRole login has already sent the
-# secret_id. Line-number comparison over the file.
+# secret_id.
 #   assert_guard_precedes_first_uri <file>
 assert_guard_precedes_first_uri() {
-  local g u
-  g=$(grep -nE 'include_tasks: tasks/assert-bao-transport\.yml' "$1" | head -1 | cut -d: -f1)
-  u=$(grep -nE '^[[:space:]]+ansible\.builtin\.uri:' "$1" | head -1 | cut -d: -f1)
-  [ -n "$g" ] || { echo "assert_guard_precedes_first_uri: no guard include in $1" >&2; return 1; }
-  [ -n "$u" ] || { echo "assert_guard_precedes_first_uri: no uri task in $1" >&2; return 1; }
-  [ "$g" -lt "$u" ] || { echo "assert_guard_precedes_first_uri: guard (line $g) after first uri (line $u) in $1" >&2; return 1; }
+  assert_precedes "$1" 'include_tasks: tasks/assert-bao-transport\.yml' '^[[:space:]]+ansible\.builtin\.uri:'
 }

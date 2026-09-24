@@ -63,3 +63,15 @@ def test_the_backup_is_taken_before_the_guarded_block(play):
     backup = next(i for i, n in enumerate(names) if "Back up the Caddyfile" in n)
     block = next(i for i, t in enumerate(play["tasks"]) if "block" in t)
     assert backup < block
+
+
+def test_the_retire_step_does_not_parse_stdout_when_the_tool_failed(guarded):
+    # The tool reports a refusal on stderr with an EMPTY stdout. An unguarded
+    # `(_retired.stdout | from_json)` in changed_when raised on that, and the
+    # run's only diagnostic became "Expecting value: line 1 column 1" — the
+    # tool's own message never reached the operator (seen on the first
+    # production re-run after adopting a route).
+    retire = next(t for t in guarded["block"] if "Retire" in t.get("name", ""))
+    cond = str(retire["changed_when"])
+    assert "from_json" in cond, "the parse is still expected on success"
+    assert cond.lstrip().startswith("_retired.rc == 0 and"), cond

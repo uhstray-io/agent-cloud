@@ -1,0 +1,189 @@
+{# agentgateway config-as-code — rendered by deploy-agentgateway.yml from
+   inventory + OpenBao. Schema: https://agentgateway.dev/schema/config (v1.5.0).
+
+   No credential is written here:
+   - the upstream key is the env reference $VLLM_API_KEY (the gateway expands it
+     from its environment; the value lives in the 0600 .env)
+   - every client key is enrolled as `keyHash: sha256:<hex>` of the OpenBao
+     value, so a reader of this file cannot use it to call the gateway — except
+     under the local-dev-only `agw_plaintext_keys` flag, which trades that for a
+     playground with saved keys
+   Identity = the key's `metadata.name`, surfaced to CEL as `apiKey.name`
+   (metadata is flattened onto the apiKey object — upstream
+   crates/agentgateway/src/http/apikey.rs `Claims`): the identity label on metrics
+   and logs. Per-identity limits are the token budgets attached to each key; the
+   request bucket is one global ceiling (v1.5.0 has no per-identity request bucket
+   under `llm.policies`).
+
+   Deliberately absent (design §3): `retry` (a retried partial stream repeats tool
+   side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
+   run past any fixed value; the upstream keep-alive owns idle).
+   Do NOT edit by hand — re-run the playbook. #}
+{# agw_ui_enabled (default true): false renders no UI listener and no OIDC block,
+   so /v1 can be deployed and proven before the Authentik client exists. The
+   admin listener still carries its own unauthenticated UI copy on the container
+   loopback, which is never published. #}
+{% set _ui = agw_ui_enabled | default(true) | bool %}
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+config:
+  # Bind on all container interfaces; compose publishes them on the host binds
+  # from .env (loopback by default). The admin listener (config dump, unauthenticated
+  # UI copy) is pinned to the container loopback explicitly rather than trusted to
+  # the upstream default, and is never published.
+  adminAddr: 127.0.0.1:15000
+  readinessAddr: 0.0.0.0:19001
+  statsAddr: 0.0.0.0:19002
+  # The gateway's own Postgres, for per-API-key token budgets only (v1.5.0
+  # refuses budgets without config.database). The URL carries the password, so
+  # it is an env reference expanded by the gateway, never written here.
+  database:
+    url: $AGW_DATABASE_URL
+  # Observability (upstream llm/observability): per-identity request and token
+  # series on the stats endpoint. `apiKey.name` is bounded by the enrolled
+  # identities, so the label cardinality is small and known.
+  metrics:
+    fields:
+      add:
+        identity: apiKey.name
+  # The default access log already carries gen_ai.request.model / response.model /
+  # usage.input_tokens / output_tokens / reasoning_tokens and, on streamed
+  # responses, agw.ai.time_to_first_token (read on the running container
+  # 2026-09-17). The one thing it lacks is WHO: add the identity. Never
+  # llm.prompt or llm.completion — content stays out of logs.
+  logging:
+    fields:
+      add:
+        identity: apiKey.name
+
+{% if agw_otlp_endpoint | default('') %}
+  tracing:
+    # Alloy's OTLP receiver on the o11y host (grpc). Sampled low: traces land in
+    # Loki as structured log lines until Tempo has an owner (design §6).
+    otlpEndpoint: {{ agw_otlp_endpoint }}
+    randomSampling: {{ agw_trace_sampling | default('0.05') }}
+{% endif %}
+
+# The built-in operator UI, on its OWN listener (:4001) instead of the admin
+# interface (which stays on the container loopback, unpublished), and
+# authenticated BY THE GATEWAY: an OIDC authorization-code flow against Authentik
+# in ui.policies (the documented "Secure the UI" path — the UI only recognises
+# its own policies; a Caddy forward_auth gate in front left it warning "UI is
+# exposed without authentication", 2026-09-17). Caddy is a plain TLS proxy.
+# Verified on v1.5.0: `/` -> 308 `/ui`, assets under /ui/assets, API under /ui/api;
+# discovery + token exchange trust the IdP via SSL_CERT_FILE (rustls-native-certs).
+gateways:
+  default:
+    port: 4000
+{% if _ui %}
+  ui:
+    port: 4001
+
+ui:
+  gateways: ui
+  policies:
+    oidc:
+      issuer: {{ agw_oidc_issuer | default('https://auth.agent-cloud.test:8443/application/o/agentgateway/') }}
+      clientId: agentgateway
+      # Env reference (OIDC_* values live in the 0600 .env); the same secret the
+      # Authentik blueprint injects, shared-read from secret/services/authentik.
+      clientSecret: $AGW_OIDC_CLIENT_SECRET
+      redirectURI: {{ agw_ui_redirect_uri | default('https://admin.inference.agent-cloud.test:8443/oidc/callback') }}
+      scopes: [profile, email]
+    # Admin tier, enforced here too: the ID token's `groups` claim (Authentik's
+    # profile scope) must carry the platform admin group.
+    authorization:
+      rules:
+        - allow: '"{{ agw_ui_admin_group | default('platform-admins') }}" in jwt.groups'
+{% endif %}
+
+frontendPolicies:
+  http:
+    # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the
+    # gateway, is the component that answers 413.
+    maxBufferSize: 20971520
+
+llm:
+  # Attached to BOTH gateways. On `default` (:4000) it is the API clients use. On
+  # `ui` (:4001) it makes the UI's LLM Playground work: the UI calls /v1 on its
+  # OWN origin when the LLM routes share its gateway (upstream ui/src/gatewayUrls.ts
+  # `sameOrigin`), i.e. https://admin.inference.<zone>/v1 through Caddy — no CORS,
+  # no second browser-reachable port. The OIDC policy above is scoped to the UI
+  # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
+  # 2026-09-17), so the playground needs an enrolled client key pasted in.
+  gateways: {{ '[default, ui]' if _ui else '[default]' }}
+  policies:
+    apiKey:
+      # strict: a request with no key or an unknown key is 401 here and never
+      # reaches the upstream (spec scenario "Unknown key is rejected").
+      mode: strict
+      location:
+        header:
+          name: authorization
+          prefix: 'Bearer '
+      keys:
+{% for c in agw_clients | default([]) %}
+{% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
+{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}
+      # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
+      # UI's playground can offer it as a saved key. Prod keeps hashes — the rendered
+      # config is then never a credential.
+      - key: {{ secrets['client_' ~ c] }}
+{% else %}
+      - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
+{% endif %}
+        metadata:
+          name: {{ c }}
+{% if _pol.allowed_models is defined %}
+        # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
+        allowedModels: {{ _pol.allowed_models | to_json }}
+{% endif %}
+        # Per-identity token budget, BEST-EFFORT: a rolling UTC-hour window charged
+        # AFTER each response from the upstream's reported usage (upstream docs,
+        # cost-controls/budget-limits: the request that crosses the limit completes,
+        # the NEXT one is rejected, and a response without usage is not charged at
+        # all — a stream without a usage chunk is free). It is a spend guard, not a
+        # hard cap; the hard admission control is the global request bucket below.
+        # Default figure from inventory (design §4); per-identity override in
+        # agw_client_policies.<name>.tokens_per_hour. The only per-identity control
+        # v1.5.0 offers, and the reason the db exists.
+        budgets:
+        - name: hourly-tokens
+          limit:
+            unit: Tokens
+            amount: {{ _pol.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
+          window:
+            rolling: 1h
+          onBudgetExceeded: Block
+{% endfor %}
+    # Request-rate ceiling for the gateway as a whole. v1.5.0 has no per-identity
+    # REQUEST bucket under the `llm` shortcut, verified against the binary
+    # 2026-09-17: localRateLimit `key` is on main only (unreleased; the published
+    # schema at agentgateway.dev tracks main) -> "unknown field `key`"; the
+    # `conditional` form is accepted only on binds[].listeners[].routes[]
+    # policies -> "expected a sequence". Per-identity control is the token
+    # budget on each key above (operator's choice 2026-09-17: add the db rather
+    # than wait for `key`); this ONE bucket protects the upstream's measured
+    # concurrency ceiling. Revisit when a release ships `key`.
+    localRateLimit:
+      - type: requests
+        maxTokens: {{ agw_rate_requests_per_minute_total | default(120) }}
+        tokensPerFill: {{ agw_rate_requests_per_minute_total | default(120) }}
+        fillInterval: 60s
+  models:
+{% for m in agw_models %}
+  # The gateway's model name equals the upstream's served name unless
+  # `upstream_model` remaps it (local-dev: gpt-oss-20b -> openai/gpt-oss-20b).
+  - name: {{ m.name }}
+    provider:
+      custom:
+        formats:
+        - type: completions
+    params:
+      baseUrl: {{ agw_upstream_base_url }}
+{% if m.upstream_model | default('') %}
+      model: {{ m.upstream_model }}
+{% endif %}
+{% if secrets.vllm_api_key | default('') %}
+      apiKey: $VLLM_API_KEY
+{% endif %}
+{% endfor %}

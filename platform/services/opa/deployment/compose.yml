@@ -12,7 +12,7 @@ services:
     # build; the plain tag is amd64-only and crashes under emulation.
     image: ${OPA_IMAGE:-openpolicyagent/opa:1.0.0-static}
     container_name: opa
-    restart: unless-stopped
+    restart: always
     command:
       - run
       - --server

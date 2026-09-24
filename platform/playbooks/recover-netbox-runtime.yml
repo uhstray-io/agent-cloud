@@ -1,0 +1,223 @@
+---
+# Reconcile only the four NetBox core containers after a stopped/no-restart
+# runtime, using the reviewed dev playbook/script and the matching Compose file
+# already on the target. The default preflight changes no runtime files or containers.
+# Source placement is a separate, default-off action before container preflight.
+- name: Refuse an empty NetBox target group
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: netbox_svc
+    preflight_group_expected: netbox_svc
+
+- name: Require a reviewed dev checkout for NetBox recovery
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the fetched dev revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, refs/remotes/origin/dev]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _dev_revision
+      changed_when: false
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+
+    - name: Refuse an unreviewed controller checkout
+      ansible.builtin.assert:
+        that:
+          - _controller_revision.stdout == _dev_revision.stdout
+          - _controller_changes.stdout | length == 0
+        fail_msg: >-
+          NetBox recovery requires a clean checkout at the fetched dev revision in Semaphore.
+          Revision match: {{ _controller_revision.stdout == _dev_revision.stdout }}.
+          Dirty paths (git porcelain; names only): {{ _controller_changes.stdout_lines }}.
+
+- name: Preflight and recover the existing NetBox core
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _runtime_script: "{{ playbook_dir }}/../services/netbox/deployment/runtime-state.py"
+  tasks:
+    - name: Refuse local mode and an undeclared NetBox source
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+          - monorepo_deploy_path is defined
+        fail_msg: "NetBox recovery needs the production NetBox inventory."
+
+    - name: Read the host source revision before placement
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _host_revision
+      changed_when: false
+
+    - name: Read tracked host source changes without refreshing its Git index
+      ansible.builtin.command:
+        argv: [git, --no-optional-locks, status, --porcelain, --untracked-files=no]
+        chdir: "{{ _monorepo_dir }}"
+      register: _host_changes
+      changed_when: false
+
+    - name: Refuse tracked host source changes
+      ansible.builtin.assert:
+        that: _host_changes.stdout | length == 0
+        fail_msg: "NetBox host source has tracked changes; source placement and container recovery were not run. Paths: {{ _host_changes.stdout_lines }}"
+
+    - name: Require the audited starting revision before source placement
+      ansible.builtin.assert:
+        that:
+          - expected_host_revision | default('') is match('^[0-9a-f]{40}$')
+          - _host_revision.stdout in [expected_host_revision | default(''), hostvars['localhost']._controller_revision.stdout]
+        fail_msg: "Host revision differs from the audited starting revision; source placement and container recovery were not run."
+      when: netbox_source_apply | default(false) | bool
+
+    - name: Fetch reviewed dev source without changing the host checkout
+      ansible.builtin.command:
+        argv: [git, fetch, --quiet, origin, dev]
+        chdir: "{{ _monorepo_dir }}"
+      changed_when: false
+      when: netbox_source_apply | default(false) | bool
+
+    - name: Place the exact reviewed dev revision without overwriting host files
+      ansible.builtin.command:
+        argv: [git, switch, --detach, --no-overwrite-ignore, "{{ hostvars['localhost']._controller_revision.stdout }}"]
+        chdir: "{{ _monorepo_dir }}"
+      when:
+        - netbox_source_apply | default(false) | bool
+        - _host_revision.stdout != hostvars['localhost']._controller_revision.stdout
+
+    - name: Read the effective host source revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _effective_revision
+      changed_when: false
+
+    - name: Require the reviewed dev revision before container preflight
+      ansible.builtin.assert:
+        that: _effective_revision.stdout == hostvars['localhost']._controller_revision.stdout
+        fail_msg: "NetBox host source is not the reviewed dev revision; no containers were changed."
+
+    - name: Read the existing host Compose checksum
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/docker-compose.yml"
+        checksum_algorithm: sha256
+      register: _host_compose
+      changed_when: false
+
+    - name: Require the host Compose file to match reviewed dev
+      ansible.builtin.assert:
+        that: _host_compose.stat.checksum | default('') == (lookup('file', playbook_dir + '/../services/netbox/deployment/docker-compose.yml', rstrip=false) | hash('sha256'))
+        fail_msg: "Host NetBox Compose differs from the reviewed dev declaration; no runtime files or containers were changed."
+
+    - name: Verify image, mounts, environment, and policy before touching containers
+      ansible.builtin.script:
+        cmd: "{{ _runtime_script }}"
+        chdir: "{{ _deploy_dir }}"
+        executable: python3
+      register: _before
+      changed_when: false
+
+    - name: Show the safe dry-run state and planned scope
+      ansible.builtin.debug:
+        msg:
+          revision: "{{ hostvars['localhost']._controller_revision.stdout }}"
+          apply: "{{ netbox_runtime_apply | default(false) | bool }}"
+          services: "{{ _before.stdout | from_json }}"
+          action: "Each service reports start, recreate, or noop; backing services converge before netbox. No pull, build, down, or volume deletion."
+
+    - name: End after container preflight by default
+      ansible.builtin.meta: end_play
+      when: not (netbox_runtime_apply | default(false) | bool)
+
+    - name: Converge existing backing services without pull or build
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json)[item].planned_action == 'recreate' else ['--no-recreate']) + [item] }}"
+        chdir: "{{ _deploy_dir }}"
+      loop: [postgres, redis, redis-cache]
+      when: (_before.stdout | from_json)[item].planned_action != 'noop'
+      register: _backing_up
+      changed_when: false
+
+    - name: Wait for the three backing services to become healthy
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{.State.Health.Status}}' }}", "netbox-{{ item }}-1"]
+      loop: [postgres, redis, redis-cache]
+      register: _backing_health
+      changed_when: false
+      until: _backing_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+
+    - name: Converge the existing NetBox app without pull or build
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'compose', '--project-name', 'netbox', '-f', 'docker-compose.yml', 'up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + (['--force-recreate'] if (_before.stdout | from_json).netbox.planned_action == 'recreate' else ['--no-recreate']) + ['netbox'] }}"
+        chdir: "{{ _deploy_dir }}"
+      when: (_before.stdout | from_json).netbox.planned_action != 'noop'
+      register: _netbox_up
+      changed_when: false
+
+    - name: Wait for the NetBox app to become healthy
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{.State.Health.Status}}' }}", netbox-netbox-1]
+      register: _netbox_health
+      changed_when: false
+      until: _netbox_health.stdout == 'healthy'
+      retries: 60
+      delay: 10
+
+    - name: Verify NetBox login through the declared service URL
+      ansible.builtin.uri:
+        url: "{{ service_url | default('http://localhost:8000') }}/login/"
+        method: GET
+        follow_redirects: none
+        status_code: [200, 302]
+        timeout: 10
+      register: _login
+      changed_when: false
+      retries: 5
+      delay: 10
+      until: _login is succeeded
+
+    - name: Verify the core still has the same images and volumes and now restarts
+      ansible.builtin.script:
+        cmd: "{{ _runtime_script }} --require-ready"
+        chdir: "{{ _deploy_dir }}"
+        executable: python3
+      register: _after
+      changed_when: false
+
+    - name: Require started and untouched containers to keep their identity
+      ansible.builtin.assert:
+        that: (_before.stdout | from_json)[item].container_id == (_after.stdout | from_json)[item].container_id
+        fail_msg: "{{ item }} was recreated outside the declared preflight scope."
+      loop: [postgres, redis, redis-cache, netbox]
+      when: (_before.stdout | from_json)[item].planned_action in ['start', 'noop']
+
+    - name: Report only actual container state changes
+      ansible.builtin.set_fact:
+        netbox_runtime_state: "{{ _after.stdout | from_json }}"
+      changed_when: (_before.stdout | from_json) != (_after.stdout | from_json)
+
+    - name: Show verified core state
+      ansible.builtin.debug:
+        msg:
+          login_status: "{{ _login.status }}"
+          services: "{{ netbox_runtime_state }}"

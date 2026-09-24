@@ -17,6 +17,9 @@ services:
   caddy:
     mem_limit: 256m
     cpus: 0.75
+    labels:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "2021"
     # The podman-machine VM enforces SELinux; reading the bind-mounted
     # Caddyfile/sites from a container needs this. Local-only.
     security_opt:

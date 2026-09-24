@@ -10,6 +10,46 @@
 #
 # Plan: plan/development/O11Y-DEPLOYMENT.md.
 
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the controller checkout before a candidate deploy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision when a candidate SHA is required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact reviewed candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no o11y files were placed."
+        success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
+      when: expected_repository_sha is defined
+
+    - name: Read candidate checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      when: expected_repository_sha is defined
+
+    - name: Require a clean candidate checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no o11y files were placed."
+      when: expected_repository_sha is defined
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage o11y secrets"
   hosts: o11y_svc
@@ -22,8 +62,12 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions:
-      - { name: grafana_admin_password, type: random, length: 32 }
+    _secret_definitions: >-
+      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
+         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
+          if o11y_alerts_enabled | default(false) | bool else []) }}
+    _required_existing_secrets: >-
+      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
     # OIDC client secret is owned by authentik (the IdP); read it here so
     # Grafana's generic_oauth secret matches the provider blueprint.
     _shared_reads:
@@ -32,11 +76,117 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    - name: "Require the production DNS zone before rendering Grafana OIDC"
+      ansible.builtin.assert:
+        that:
+          - o11y_zone is defined
+          - o11y_zone | default('') is match('^[a-z0-9.-]+$')
+          - o11y_zone != 'agent-cloud.test'
+        fail_msg: "Production o11y needs its declared DNS zone; local test URLs are refused."
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Require complete DGX scrape settings when nodes are declared"
+      ansible.builtin.assert:
+        that:
+          - dgx_spark_head_address is defined
+          - dgx_spark_head_name is defined
+          - dgx_spark_node_exporter_port is defined
+          - dgx_spark_api_port is defined
+          - not (dgx_spark_gpu_exporter_enabled | default(false) | bool) or dgx_spark_gpu_exporter_port is defined
+        fail_msg: "DGX scrape inventory needs the head address/name and enabled collector ports."
+      when: dgx_spark_nodes | default([]) | length > 0
+
+    - name: "Require a complete declared agentgateway stats endpoint"
+      ansible.builtin.assert:
+        that:
+          - agentgateway_metrics_address | default('') is match('^[A-Za-z0-9.-]+$')
+          - agentgateway_metrics_port is defined
+          - agentgateway_metrics_port | int > 0
+          - agentgateway_metrics_port | int < 65536
+        fail_msg: "agentgateway metrics need a declared receiver-reachable address and port."
+      when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    - name: Read the placed revision when a candidate SHA is required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _placed_revision
+      changed_when: false
+      when:
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
+
+    - name: Refuse a receiver checkout that differs from the reviewed candidate
+      ansible.builtin.assert:
+        that: _placed_revision.stdout == expected_repository_sha
+        fail_msg: "Receiver checkout differs from the reviewed o11y candidate; no secrets or containers were changed."
+      when:
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
+
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Refuse an alert webhook outside Discord HTTPS"
+      ansible.builtin.fail:
+        msg: "OpenBao's o11y alert webhook must be a Discord HTTPS webhook URL."
+      when:
+        - o11y_alerts_enabled | default(false) | bool
+        - >-
+          (_resolved.alert_discord_webhook_url | urlsplit('scheme') != 'https') or
+          (_resolved.alert_discord_webhook_url | urlsplit('hostname') not in ['discord.com', 'discordapp.com']) or
+          (_resolved.alert_discord_webhook_url | urlsplit('path') is not match('^/api(/v[0-9]+)?/webhooks/'))
+
+    - name: "Create Grafana alert provisioning directory"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting"
+        state: directory
+        mode: "0755"
+
+    - name: "Render declarative Grafana alert rules"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"
+        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+        mode: "0644"
+
+    - name: "Render Discord contact point or its removal"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alert-contact.yml.j2"
+        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/contact.yml"
+        mode: "0644"
+
+    - name: "Render DGX scrape targets only when inventory declares nodes"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-dgx-spark.yml.j2"
+        dest: "{{ _deploy_dir }}/config/scrape.d/dgx-spark.yml"
+        mode: "0644"
+      register: _dgx_scrape
+      when: dgx_spark_nodes | default([]) | length > 0
+
+    - name: "Remove DGX scrape targets when inventory declares no nodes"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config/scrape.d/dgx-spark.yml"
+        state: absent
+      register: _dgx_scrape_absent
+      when: dgx_spark_nodes | default([]) | length == 0
+
+    - name: "Render the agentgateway scrape only when inventory declares it"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-agentgateway.yml.j2"
+        dest: "{{ _deploy_dir }}/config/scrape.d/agentgateway.yml"
+        mode: "0644"
+      register: _agentgateway_scrape
+      when: agentgateway_metrics_address is defined
+
+    - name: "Remove the agentgateway scrape when inventory does not declare it"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config/scrape.d/agentgateway.yml"
+        state: absent
+      register: _agentgateway_scrape_absent
+      when: agentgateway_metrics_address is not defined
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start o11y"
@@ -86,6 +236,26 @@
       retries: 6
       delay: 5
       until: _prom.rc == 0
+
+    - name: "Alloy healthy (collector config loaded)"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{% raw %}{{.State.Health.Status}}{% endraw %}", o11y-alloy]
+      register: _alloy_health
+      changed_when: false
+      retries: 8
+      delay: 5
+      until: _alloy_health.rc == 0 and _alloy_health.stdout == 'healthy'
+
+    - name: "Reload Prometheus after remote scrape files change"
+      ansible.builtin.uri:
+        url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"
+        method: POST
+        status_code: 200
+      when: >-
+        (_dgx_scrape.changed | default(false)) or
+        (_dgx_scrape_absent.changed | default(false)) or
+        (_agentgateway_scrape.changed | default(false)) or
+        (_agentgateway_scrape_absent.changed | default(false))
 
     - name: "Loki ready (/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"

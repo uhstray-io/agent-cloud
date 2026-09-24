@@ -175,6 +175,23 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # The committed codebase-memory graph must stay loadable under its documented ID.
+  # Auto-index names projects after the checkout path and once shipped metadata
+  # for a deleted graph (docs/MISTAKES.md 6.6). Reads the index, not the tree.
+  - repo: local
+    hooks:
+      - id: graph-artifact-consistent
+        name: codebase-memory graph artifact is consistent
+        language: system
+        entry: sh scripts/check-graph-artifact.sh
+        # always_run, not `files:`: pre-commit leaves DELETED paths out of the file list
+        # it matches against, so a graph-only deletion (the 2026-09-23 incident) would
+        # skip a file-filtered hook. The script itself exits when nothing under
+        # .codebase-memory/ is staged.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -196,8 +213,18 @@ repos:
         # and platform/tests/test_authentik_users.bats checks the semantics a
         # parser cannot — that every !Env is wired and every !Find names a group
         # that exists.
+        # agentgateway's compose.local.yml carries the compose-spec `!override` merge
+        # tag (podman-compose 1.6.0 honours it; it DROPS a base port publish locally).
+        # A strict constructor rejects the tag, so that ONE file is excluded here and
+        # syntax-checked by the --unsafe hook below instead of going unchecked.
         exclude: >-
-          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/)
+          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml)
+      - id: check-yaml
+        name: check yaml (syntax only, compose overlays with merge tags)
+        # --unsafe parses for syntax without constructing, so compose-spec tags
+        # (!override, !reset) are accepted while malformed YAML still fails.
+        args: [--unsafe]
+        files: ^platform/services/agentgateway/deployment/compose\.local\.yml$
       - id: check-added-large-files
         args: [--maxkb=500]
         # The codebase-memory graph artifact is a deliberately-committed

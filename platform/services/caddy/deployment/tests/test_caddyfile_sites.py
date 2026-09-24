@@ -113,8 +113,9 @@ def test_placeholder_braces_do_not_desync_depth(sites):
 
 
 def test_retire_removes_only_the_named_block(sites):
-    out, removed = retire(CADDYFILE, ["devlog.example.io"])
+    out, removed, already_managed = retire(CADDYFILE, ["devlog.example.io"])
     assert removed == ["devlog.example.io"]
+    assert already_managed == []
     assert "devlog.example.io" not in out
     # Everything else survives, including the block that followed it.
     for keep in ("nocodb.example.io", "alpha.example.io", "canvas.example.io"):
@@ -123,17 +124,30 @@ def test_retire_removes_only_the_named_block(sites):
 
 
 def test_retire_is_idempotent():
-    once, _ = retire(CADDYFILE, ["devlog.example.io"])
-    twice, removed = retire(once, ["devlog.example.io"])
+    once, _, _ = retire(CADDYFILE, ["devlog.example.io"])
+    twice, removed, _ = retire(once, ["devlog.example.io"])
     assert removed == []
     assert once == twice
 
 
-def test_retire_refuses_a_managed_block():
-    # The managed region is rewritten from inventory every run, so deleting from
-    # it here would be silently undone.
-    with pytest.raises(SystemExit, match="ANSIBLE MANAGED"):
-        retire(CADDYFILE, ["canvas.example.io"])
+def test_retire_leaves_an_already_adopted_block_alone_and_says_so():
+    # The steady state after an adoption: the hostname sits INSIDE the managed
+    # region and caddy_retire_sites still names it. That declaration must
+    # converge on every later run — an earlier version raised here, and the
+    # first re-run after adopting a route failed on the production Caddy
+    # (rolled back, but unable to complete until the inventory was edited).
+    out, removed, already_managed = retire(CADDYFILE, ["canvas.example.io"])
+    assert removed == []
+    assert already_managed == ["canvas.example.io"]
+    assert out == CADDYFILE
+
+
+def test_retire_mixes_an_adopted_name_with_a_real_retirement():
+    out, removed, already_managed = retire(CADDYFILE, ["canvas.example.io", "devlog.example.io"])
+    assert removed == ["devlog.example.io"]
+    assert already_managed == ["canvas.example.io"]
+    assert "devlog.example.io" not in out
+    assert "canvas.example.io" in out
 
 
 def test_retire_refuses_a_shared_block():
@@ -143,7 +157,7 @@ def test_retire_refuses_a_shared_block():
 
 
 def test_retire_leaves_the_file_parseable():
-    out, _ = retire(CADDYFILE, ["devlog.example.io"])
+    out, _, _ = retire(CADDYFILE, ["devlog.example.io"])
     remaining = [a for s in parse_sites(out) for a in s["addresses"]]
     assert remaining == [
         "nocodb.example.io",
@@ -231,3 +245,29 @@ def test_hash_inside_a_quoted_token_is_literal():
 def test_a_real_trailing_comment_is_still_removed():
     assert _strip_comment("\treverse_proxy 192.0.2.1:80 # note") == "\treverse_proxy 192.0.2.1:80 "
     assert _strip_comment("# whole line") == ""
+
+
+def test_allowlist_site_with_nested_handle_blocks_reports_both_upstreams():
+    # The inference edge (vLLM security-guide shape): a named matcher, nested
+    # `handle` blocks each carrying a reverse_proxy — one with a sub-block — and
+    # a bare `handle { respond 404 }`. The `list` report the managed-sites
+    # playbook prints must attribute both upstreams to the ONE site, with the
+    # matcher tokens and braces skipped, or the drift report lies about it.
+    text = (
+        "inference.example.io {\n"
+        "\ttls {\n\t\tdns cloudflare {$CLOUDFLARE_API_KEY}\n\t}\n"
+        "\t@api path /v1/*\n"
+        "\thandle @api {\n"
+        '\t\t@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"\n'
+        "\t\trespond @noauth 401\n"
+        "\t\treverse_proxy 192.0.2.7:8000 {\n\t\t\tflush_interval -1\n\t\t}\n"
+        "\t}\n"
+        "\thandle /health {\n\t\treverse_proxy 192.0.2.7:8000\n\t}\n"
+        "\thandle {\n\t\trespond 404\n\t}\n"
+        "}\n"
+        "b.example.io {\n\treverse_proxy 192.0.2.2:80\n}\n"
+    )
+    sites = parse_sites(text)
+    assert [s["addresses"] for s in sites] == [["inference.example.io"], ["b.example.io"]]
+    assert sites[0]["upstreams"] == ["192.0.2.7:8000", "192.0.2.7:8000"]
+    assert sites[1]["upstreams"] == ["192.0.2.2:80"]

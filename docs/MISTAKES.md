@@ -34,6 +34,7 @@ supersede it with a new entry and link both.
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
+| 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -53,15 +54,22 @@ supersede it with a new entry and link both.
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
+| 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
+| 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | Convention |
+| 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
+| 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
+| 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
 | 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -69,10 +77,13 @@ supersede it with a new entry and link both.
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
+| 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
+| 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
+| 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -92,6 +103,10 @@ supersede it with a new entry and link both.
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
 | 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |
+| 10.13 | `tofu validate` + `plan` passed a ruleset attribute the Cloudflare API rejects on create | Schema ≠ API acceptance | Convention |
+| 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
+| 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
+| 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 
@@ -310,6 +325,38 @@ recorded as exactly that. The wider rule this earns: when a first explanation
 is falsified, the next confident-sounding pattern from the same thin evidence
 deserves more suspicion, not less — reaching for a second story is the same
 move as the first.
+
+### 1.8 Documented an inventory encoding as "verified" from a sample that lacked the value class that breaks it
+
+**What happened.** The local bootstrap emits the Caddy route table into
+Semaphore's static INI inventory with `| to_json`, above a comment stating that
+"ansible's ini inventory parses a JSON list value into a real list (verified
+against ansible-inventory)". Every route at the time held only strings and
+integers. The first route to carry a boolean (`inference_api: true`) rendered as
+JSON `true`; the local Semaphore deploy of Caddy then failed with
+`'str object' has no attribute 'host'` — the whole `caddy_routes` value had
+arrived as one string, and the template was iterating its characters.
+
+**Root cause.** The INI plugin does not parse JSON. It hands each value to
+Python's `ast.literal_eval` and keeps the raw string when that raises. JSON is
+accepted only for as long as it is also valid Python — `true`, `false` and
+`null` are not — so the "verification" had confirmed a coincidence over the
+sample at hand, not the mechanism. Reproduced on ansible-core 2.16.18 in the
+Semaphore image and on the host: `[{"flag": true}]` → `str`,
+`[{"flag": True}]` → `list`. Same shape as PR 136's parser lesson: a claim
+checked against a convenient sample instead of the authority (here, the
+plugin's own parsing rule) is wrong precisely where the sample is silent.
+
+**The rule.** When a comment asserts *how* another system parses a value, the
+assertion must name the mechanism (the function, the documented rule), and the
+check must cover every value class the type admits — a boolean, a null, a
+nested list — not only the classes present today. "Verified" over one sample
+earns the words "works for the current values", nothing stronger.
+
+**Enforced by.** Test — `platform/tests/test_local_dev_inventory.bats`
+("bootstrap: the INI route table is emitted as a Python literal, not JSON")
+pins the `| string` emission and refuses `| to_json` on that line. Mutation-
+proven by the failure itself: the `to_json` form is what broke.
 
 
 ## 2. Tests that would have passed for the wrong reason
@@ -908,6 +955,73 @@ and a 502 proves it did not.
 **Enforced by.** Test — `platform/tests/test_service_postiz.bats` pins the probe
 to `/api/` and refutes the bare-`/` form (mutation-proven).
 
+### 2.20 Idempotency proven on the wrong steady state, and the failure that revealed it was censored by its own `changed_when`
+
+**What happened.** The first production run of the read/retire/rescue version
+of the managed-sites playbook — landing the inference route — failed at the
+retire step and rolled back. The inventory declared `devlog` in
+`caddy_retire_sites`, as the adoption three weeks earlier required, and the
+route report two tasks up had just shown `devlog [managed by inventory]`. The
+tool refused: an address inside the managed region raised, by design, "refusing
+to retire … Remove it from caddy_managed_sites instead." The inventory comment
+beside the declaration promised the opposite: "Removing a name from here after
+its block is gone is a no-op — the retirement is idempotent." The run's only
+diagnostic was `Expecting value: line 1 column 1 (char 0)`.
+
+**Root cause.** Two, stacked. The tool's idempotency test removed a hand block
+twice and confirmed the second pass changed nothing — the steady state of a
+route that was *never* adopted. The steady state that every real declaration
+reaches — block inside the managed region, name still in the retire list — was
+the case the tool treated as caller error, so the declaration converged exactly
+once and refused forever after. Then `changed_when: (_retired.stdout |
+from_json).changed` parsed an empty stdout (the refusal went to stderr) and
+raised inside the conditional, and Ansible reported *that* exception instead of
+the tool's message. The playbook's own header had cited the postiz precedent —
+"A conditional cleanup gated on a later step's result is not a rollback" — and
+this is the diagnostic form of the same error: a conditional that assumes the
+success shape of the thing it inspects.
+
+**The rule.** An idempotency test must exercise the state a *successful* first
+run leaves behind, with the *same* declaration, and assert convergence — not the
+state of a run that never happened. And a `changed_when`/`failed_when` that
+parses a module's output must be guarded on the module's success (`rc == 0 and
+…`), or the parse error replaces the real one.
+
+**Enforced by.** Test — `test_caddyfile_sites.py` covers the adopted-into-managed
+case (`already_managed` reported, text unchanged) and the mixed case;
+`test_manage_caddy_sites_playbook.py` asserts the retire step's `changed_when`
+begins with the rc guard (mutation-proven: dropping the guard fails it).
+
+### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
+which has no pre-flight. Its first run through the local Semaphore (task 592) printed
+`skipping: no hosts matched` for all three plays and was recorded as `success`; zero
+containers existed afterwards. The group was absent because the local control plane's
+inventory is a static INI inside `bootstrap-local-dev.yml`, separate from
+`platform/inventory/local-dev.yml`, and only the latter had been edited. The exact
+incident is described, with the fix, in the header of `preflight-target-group.yml`
+(postiz, 2026-08-24) — and at the time of writing 24 of 26 `deploy-*.yml` playbooks still
+do not import it.
+
+**Root cause.** The guard exists but is opt-in per playbook, and the template new
+playbooks are copied from does not carry it. A rule that lives in one file's header does
+not reach a playbook written from a different file.
+
+**The rule.** Every deploy playbook whose plays target an inventory group imports
+`preflight-target-group.yml` as its first play, with the group passed twice
+(`preflight_group` and `preflight_group_expected`), before any `hosts: <group>` play.
+When adding a local-dev service, the group goes in BOTH inventories: the working
+`local-dev.yml(.example)` and the static INI in `bootstrap-local-dev.yml`.
+
+**Enforced by.** Test, for this playbook only: `test_service_agentgateway.bats` asserts the
+import and both vars. Fleet-wide, still `Convention` — the mechanical guard this entry
+proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
+a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
+allow-list that only shrinks.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -984,6 +1098,114 @@ from live availability remain convention, documented in the canonical
 [Semaphore operating guide](../platform/semaphore/README.md).
 
 ---
+
+### 3.4 A validation step's cleanup deleted a committed provider lock file
+
+**What happened.** To prove a new `ratelimit.tf` against the real provider schema
+without a local `tofu`, the check ran `tofu init -backend=false && tofu validate`
+in a container mounted on `platform/infra/cloudflare/`, then cleaned up with
+`rm -rf .terraform .terraform.lock.hcl` so the init left nothing behind. The lock
+file was already committed. `git status` showed it as deleted one step later; it was
+restored with `git checkout --` before anything was staged. Validation itself was
+worth having — it also caught nothing wrong — but it was one `git add -A` away from a
+commit that silently unpinned the provider.
+
+**Root cause.** The cleanup was written for a scratch directory and run inside the
+working tree. `rm -rf` on a name that a tool *creates* does not distinguish the copy
+the tool just created from the one the repository already tracked.
+
+**The rule.** Tooling that writes into the tree runs on a copy: `cp -R` the
+directory into the scratchpad first, or mount the scratchpad copy, and let the
+cleanup delete the copy. Inside the working tree, never `rm` a path without first
+running `git ls-files --error-unmatch <path>` (tracked → do not delete) — and read
+`git status` before `git add`, every time, which is what caught this one.
+
+**Enforced by.** Convention. A mechanical guard exists in principle — a pre-commit
+check refusing a commit that deletes a `*.lock.hcl` / lockfile without a
+`chore(deps)`-style intent — but one occurrence does not yet justify it.
+
+### 3.5 A vmid allocated from an incomplete ledger, and a provisioner that adopted the collision
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** The agentgateway VM was allocated vmid 216 as "highest in `vm-specs.yml` plus
+one". Proxmox already ran `gh-runner-01` as 216 and `gh-runner-02` as 217, on alphacentauri,
+with no ledger entry. `provision-vm.yml` listed cluster resources, found 216, printed "already
+exists — skipping clone", and proceeded to "Configure VM resources and cloud-init" against
+`nodes/apollo/qemu-server/216.conf` (Semaphore task 1060). It failed only because the runner is
+on alphacentauri, not apollo. Had the nodes matched, the runner would have received
+agentgateway's cores, memory and cloud-init network.
+
+**Root cause.** Two assumptions. The ledger was treated as complete when it is one of three
+records (ledger, inventory `vm_*`, Proxmox itself) and the authority is Proxmox. And the
+playbook's "exists" branch meant "ours, resume" without checking that the existing VM IS the
+declared one.
+
+**The rule.** Allocate a vmid from the hypervisor's own listing (the range listing the playbook
+already prints), never from the ledger alone, and record every VM the listing shows that the
+ledger lacks. A provisioner that finds a VM at the declared vmid compares name AND node with the
+declaration and refuses on mismatch.
+
+**Enforced by.** Test — `platform/tests/test_provision_vm.bats` asserts the refusal guard exists
+and precedes the skip. The allocation half is `Convention` until the IPAM/ledger lookup recorded
+in `plan/architecture/02-service-onboarding.md` Known Gaps exists.
+
+### 3.6 A static address chosen from an incomplete inventory, applied to a new VM, that a live production host already held
+
+**Occurrences: 1** — 2026-09-18
+
+**What happened.** With NetBox unavailable, the agentgateway VM's address was chosen as an
+undeclared value in `site-config/inventory/production.yml` (operator instruction, provenance
+noted). Provisioning configured VM 218 with it. Key distribution then failed with "connection
+refused" from the Semaphore runner while a workstation got an SSH banner from the same address;
+logging in with the platform management key showed the responder was `gh-runner-01`, up 25 days.
+The runners were never declared in the inventory (nor the ledger, see 3.5), so "not declared"
+meant nothing. The guest agent on 218 never came up, and no second MAC ever appeared for the
+address, so the collision did not go live — but the VM carries the conflicting cloud-init config.
+
+**Root cause.** The inventory records what was declared, not what exists; the authority for
+addresses is NetBox (down) or the network itself. A refusal-vs-banner disagreement between two
+vantages is the signature of an address conflict (see 1.6), and the runner's default-deny
+firewall turned the conflict into a misleading "refused".
+
+**The rule.** Before applying a static address to a new VM, prove it free from the network
+itself when the IPAM is unavailable: an ARP/ping sweep from at least two vantages, and a
+refusal to proceed if anything answers. When two vantages disagree about reachability, stop and
+identify the responder before retrying. Every VM the hypervisor lists must be declared in the
+inventory with its address before another allocation is made.
+
+**Enforced by.** Playbook guard + test, since PR #189 (same day): `provision-vm.yml` pings the
+declared address from the controller on the create path and refuses on any answer, fails closed
+when the probe cannot run (explicit `allow_unverified_address` override only), and
+`test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
+proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
+
+### 3.7 A test's scratch repository was the real one, because the hook exported `GIT_DIR`
+
+**What happened.** On 2026-09-23 I pushed a branch adding `test_graph_artifact_guard.bats`,
+whose setup ran `git init -q repo`, `git config user.email t@example.invalid` and
+`git config user.name t` inside `$BATS_TEST_TMPDIR`. It passed when run by hand. Under the
+pre-push hook, git had exported `GIT_DIR`, so those commands addressed the pushing
+repository: the shared `.git/config` gained `core.bare=true`, `user.email=t@example.invalid`
+and `user.name=t`. Every agent-cloud checkout, including another session's, then failed with
+"this operation must be run in a work tree", and any commit made in that window would have
+been authored by the fake identity. About 150 BATS tests failed and the push was refused.
+Repaired about ten minutes later (`core.bare=false`, local `user.*` removed); a
+`git log --all --author=t@example.invalid` search found no commit under that identity.
+
+**Root cause.** Git sets `GIT_DIR` and related variables in a hook's environment. The pre-push
+hook passed them straight to the suites, so a test's git commands were never isolated, and
+the only way a test could be safe was for its author to know that.
+
+**The rule.** A hook that runs tests clears git's repository variables first, so the suites
+run with the same clean git environment they get in CI. A test that creates a repository
+also clears them itself, because it may be run by another hook.
+
+**Enforced by.** `.githooks/pre-push` unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
+related variables after resolving the repository root.
+`platform/tests/test_pre_push_git_env.bats` runs the hook the way git does, pointed at a
+victim repository, with a fake `bats` that repeats the offending commands, and asserts the
+victim's config is unchanged. Mutation: removing the unset turns it red.
 
 ## 4. Data handling
 
@@ -1140,6 +1362,29 @@ long-lived credential leaked the same way would have needed rotation.
 `backup-credentials-to-site-config.yml` never routes a value through stdout on any
 path, which is why the operator-side print flow is the stopgap and not the design.
 
+### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
+
+**Occurrences: 1** — 2026-09-18 (found in review 2026-09-22)
+
+**What happened.** Moving the agentgateway VM off an address that belonged to `gh-runner-01`
+(3.6), the private inventory was edited with a string replace of `vm_ip: <old address>` → new
+address. The replace was not scoped to the gateway's host block, and the runner's own `vm_ip`
+held the same old value, so both lines changed. The runner ended up declared at the gateway's
+new address while its `ansible_host` stayed correct. Nothing ran against it, so it never went
+live; CodeRabbit caught it on site-config PR 15.
+
+**Root cause.** An edit keyed on a VALUE rather than on the host that owns it, applied to a
+file where the same value legitimately appeared under two hosts (the collision this whole
+change was correcting).
+
+**The rule.** Edit a host's attribute by locating the host's block first and changing the
+attribute inside it; never by replacing a value file-wide. After any address change, list every
+inventory host's `ansible_host`/`vm_ip` and require each address to have exactly one claimant.
+
+**Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
+other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
+`test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
+
 ## 5. Duplication and process
 
 ### 5.1 A security rule copied per caller
@@ -1170,6 +1415,21 @@ Either separate them into two turns and read the result, or chain with `&&` so
 failure actually stops the commit. Printing a warning is not a gate.
 
 **Enforced by.** `.githooks/pre-push` — added 2026-08-24; see §5.6 for the mechanism, its fail-open rationale, and the red suite it caught on its first run.
+
+**Occurrence 2026-09-18 (agentgateway session).** Wrote a new BATS test into an existing file
+that does not `load assert_helpers`, ran the file, saw `not ok 9 ... assert_grep: command not
+found` in the same output, and the `git commit` in the same script ran anyway (`1d1e5b6`).
+Why the rule did not fire: the test run and the commit were chained in one script, exactly
+the shape §5.2 describes; the pre-push hook is the mechanical gate and it had not yet run.
+Fixed by amending the commit before any push. Counted here rather than as a new entry, per
+the repeat convention.
+
+**Occurrence 2026-09-18, second time this day.** Ran the full suite and `git commit` in one
+script again while adding `destroy-vm.yml`; the suite reported the new play unguarded by the
+OpenBao transport ratchet and the commit ran anyway. The pre-push hook then refused the push,
+which is the mechanical gate doing its job — but the rule that the commit must not follow a red
+suite in the same command still did not fire. Two occurrences in one day on the same shape:
+the commit MUST be a separate command issued after reading the suite result, never chained.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -1288,6 +1548,23 @@ Mechanically enforceable via a permission rule denying `git push`/`gh pr create`
 `gh pr merge` without a prompt — the auto-mode classifier already prompts for some
 Semaphore-task dispatches; extending deny-by-default to these three git surfaces
 would close it.
+
+### 5.8 A required CI gate installed whatever upstream published last
+
+**What happened.** On 2026-09-23, the required TruffleHog scan selected v3.97.7
+before its Linux release asset was available. The installer returned HTTP 404,
+blocking unrelated PRs before a scan ran. The verified scan also used an action
+from `main` whose default container version was `latest`.
+
+**Root cause.** The gate depended on mutable upstream references, so its behavior
+changed without a commit in this repository.
+
+**The rule.** Required scanners use an exact release with a pinned artifact digest.
+Update the version and digest together in a reviewed commit.
+
+**Enforced by.** Both scans run one v3.97.6 binary whose release archive is checked
+against its published SHA256 before execution. A future CI rule could reject
+floating scanner references in workflow files.
 
 ---
 
@@ -1414,6 +1691,69 @@ stays censored (the pattern `provision-tududi-github-sync.yml` already used).
 provisions the thing it verifies.
 
 ---
+
+### 6.5 Deleted a blueprint file to retire its object, and the replacement blueprint took it over by name
+
+**Occurrences: 1** — 2026-09-17
+
+**What happened.** The agentgateway operator UI was first gated with an Authentik forward_auth
+PROXY provider (`agentgateway-forward-auth.yaml`). When the design changed to the gateway's own
+OIDC login, that file was deleted and `agentgateway-oidc.yaml` created an OAuth2 provider with the
+same `name: agentgateway`. Authentik matched the identifier to the still-existing proxy provider
+and wrote the OAuth2 attributes onto it: `signing_key` stayed null, the JWKS endpoint returned
+`{}`, and the gateway crash-looped at startup ("failed to load oidc jwks ... missing field `keys`",
+792 restarts before it was noticed, local task 613). The Authentik API showed the "OAuth2" provider
+still carrying the outpost's callback redirect URIs.
+
+**Root cause.** Blueprints are append-only declarations: removing a file removes nothing.
+Retiring an object requires an explicit `state: absent` entry (the repo already does this for a
+stale policy binding in `zz-sso-bindings.yaml.j2`), and a replacement that reuses an identifier must
+be ordered after that tombstone.
+
+**The rule.** When a blueprint stops declaring an object, or an object changes model under the
+same name, the new blueprint carries a `state: absent` entry for the old model + identifier BEFORE
+the entry that reuses the name. Never rely on a deleted file to delete anything.
+
+**Enforced by.** `Convention`. The prod path has a partial mechanical guard: the Authentik
+deploy's post-apply VERIFY asserts the live OAuth2 provider's `redirect_uris` carry the declared
+`verify_redirect` value, which the hijacked proxy provider would have failed — but that check is
+prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIFY in local mode too.
+
+### 6.6 A generated artifact rewritten under the wrong identity, one `git add -A` from being committed
+
+**Occurrences: 2** — 2026-09-23, 2026-09-23
+
+**What happened.** On 2026-09-23 a Codex review of the main checkout found
+`.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
+9,250 nodes, written 11:35 local) and `.codebase-memory/graph.db.zst` deleted. `list_projects`
+showed two graph projects on the same root: the documented `agent-cloud` (7,697 nodes, matching
+the committed artifact) and a path-named one (9,474 nodes). codebase-memory-mcp 0.9.0 runs with
+`auto_index = true` and `auto_watch = true` and names projects after the checkout path. A second
+checkout (`agent-cloud-check-mode-standard`) carried the same path-derived ID. Nothing refused
+committing either state.
+
+**Root cause.** The graph artifact is generated, committed and named by convention (AGENTS.md
+"Memory & specs": project `agent-cloud`), but the tool's automatic path derives a different name,
+and nothing checked the committed pair. A commit of that working tree would have shipped metadata
+for a graph that no longer existed, under an ID no documented query uses.
+
+**The rule.** A committed generated artifact carries a check on what is committed, not only a
+convention for how to produce it. The graph metadata and the graph travel together, under the
+documented project ID, with a recorded size that matches the staged graph. To regenerate:
+`index_repository` with `name="agent-cloud"` and `persistence=true`.
+
+**Enforced by.** Pre-commit gate `graph-artifact-consistent` (`scripts/check-graph-artifact.sh`,
+reading the index) and `platform/tests/test_graph_artifact_guard.bats`, which replays the
+2026-09-23 state and was mutated red. The auto-index behaviour itself is not changed; it is
+machine configuration, not repository code.
+
+**Occurrence 2 — 2026-09-23.** The same day, in the PR #205 worktree, I committed and pushed
+the auto-index output (`aeeb951`: project `Users-stray-Documents-GitHub-agent-cloud-seed-envs`,
+graph grown from 1.6 MB to 2.7 MB) by staging with `git add -A` after a pre-commit hook had
+fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it because the
+gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;
+and a broad stage picked up files I had not touched. Stage named paths, never the whole tree,
+in any worktree the auto-indexer watches.
 
 ## 7. Which of these OPA can carry
 
@@ -2037,6 +2377,126 @@ fires passes any test that only checks it can fire.
 **Enforced by.** Test — `core-scenarios.js` scenario 19(e2) passes the id as a
 string and asserts zero recovery errors, and 19(f) still asserts a genuinely
 wrong id refuses. Mutation-checked: removing the coercion turns 19(e2) red.
+
+### 10.13 `tofu validate` and `plan` passed an attribute the API rejects on create
+
+**What happened.** The first `http_ratelimit` ruleset copied `logging = { enabled = true }`
+from the adopted `http_request_firewall_custom` skip rules. `tofu fmt`, `tofu validate`
+against provider 5.x and a Semaphore `plan` (task 881: "1 to add") all passed. The `apply`
+(task 882) failed inside `Creating...` with HTTP 400, code 20018, "it can only be used with
+the skip action", pointer `/rules/0/logging/enabled`. Nothing was created; the phase
+entrypoint was still absent afterwards, so state stayed clean.
+
+**Root cause.** The provider schema declares `logging` on every rule because SOME actions
+accept it; which actions do is an API-side rule the schema does not encode. `validate`
+proves schema conformance and `plan` never calls the create endpoint for a new resource,
+so neither could see it. The attribute was copied from rules of a different action without
+checking its per-action validity.
+
+**The rule.** For a resource type's FIRST use in a new phase or with a new action, the
+apply IS the validation: expect and read the API error, and do not present a green `plan`
+as proof the create will succeed. When copying attributes between rules of different
+actions, check the API reference for that attribute's action restriction first.
+
+**Enforced by.** Convention. The apply path already fails loudly and leaves no partial
+state, so the cost of this class is one failed task, not damage.
+
+### 10.14 A source-address allowlist was proven only where it could not fail
+
+**What happened.** The inference route's `remote_ip` allowlist (Cloudflare's published
+ranges) was rendered, `caddy validate`d, BATS-tested and exercised locally — where the
+variable is `private_ranges` and the only peer is the podman gateway, so the matcher could
+not fail. The risk that the production container sees a rewritten peer address was named
+in the PR and the task list as a pre-check, but no sanctioned way to perform the check
+existed (no Semaphore task reads the container's network mode; workstation SSH is not a
+platform path), so the deploy went ahead as the test. `Manage Caddy Sites` (task 888)
+succeeded and the route answered 404 to everyone through Cloudflare until the revert
+(site-config #14) landed.
+
+**Root cause.** A control whose correctness depends on a runtime observable (the peer
+address the process sees) was validated only against configuration and against an
+environment where the observable had a different value. "Fails closed" was accepted as a
+safe property; it is safe for the origin and an outage for the users.
+
+**The rule.** Before deploying a control keyed on a runtime observable, make that
+observable readable through the sanctioned executor and read it FOR THE TRAFFIC THE
+CONTROL WILL JUDGE. The network mode and an arbitrary access-log line do not show which
+peer Caddy sees for a Cloudflare-proxied request to the route in question; a read-only
+Semaphore task must send a known request through Cloudflare to that hostname, record its
+host and timestamp, and print the matching access-log entry's peer address — that value,
+not a proxy for it, is the precondition. If the read cannot be built in time, the deploy
+is a scheduled test with an announced outage window, not a landing.
+
+**Enforced by.** Convention. The mechanical form is the read-only task itself, added as a
+precondition to the deploy playbook when the route carries a source-address matcher.
+
+### 10.15 Reboot survival was asserted for podman containers and never exercised
+
+**What happened.** The production OpenBao host rebooted on 2026-09-19. Its container came
+back `Created`, not running, and stayed that way until an operator-authorized SSH session
+started it on 2026-09-22. Every Semaphore deploy that reads OpenBao was blocked for those
+three days. Two defects combined:
+
+1. The boot unit on the host runs `podman start --all --filter restart-policy=always`
+   (read from `systemctl cat podman-restart.service`, podman 4.9.3). OpenBao's compose file
+   declared `restart: unless-stopped`, so the unit skipped it. Twelve compose files and the
+   orb-agent `run` flag used that policy, and four NetBox services (the app, Postgres and
+   both Redis instances) declared no policy at all, which Compose treats as never restart.
+2. For rootless services, the linger task's header said lingering "in turn restarts the
+   (rootless) containers". It does not. Linger starts the user's systemd instance, and the
+   user copy of `podman-restart.service` ships `disabled` on the Ubuntu 24.04 image (read
+   with `systemctl --user is-enabled` on the OpenBao host). Nothing in that instance
+   starts a container. Only five of the fourteen composable deploys included the task at all.
+
+After starting, OpenBao was also sealed, because production has no auto-unseal. That gap
+was already recorded (plan/development/01, problem 2 and phase B2); this outage is its first
+measured cost.
+
+**Root cause.** A reboot-survival property was written down from how Docker behaves and
+never tested with a reboot. Podman's current upstream documentation says `unless-stopped`
+restarts at boot, which is true of newer releases and false of the unit installed here, so
+reading the docs instead of the host would not have caught it either.
+
+**The rule.** A claim that a service survives a reboot is verified on the target host's
+own boot unit, not on documentation: read the unit's `ExecStart` filter, and read whether
+the unit is enabled for the account that owns the containers. Declare `restart: always`
+(or `"no"` for one-shot containers) in every compose file, and enable podman's user unit
+wherever rootless containers run.
+
+**Enforced by.** Test. `platform/tests/test_restart_policy.bats` parses every compose file
+and refuses any service whose effective policy (base file plus overlays, missing key
+included) is not `always` or `"no"`, refuses any `--restart unless-stopped`, requires the shared deploy preamble to
+include the linger task, and requires that task to link the user unit into
+`default.target.wants`. Both guards were mutated once and went red. An actual reboot
+test of a service host is still not exercised by any automation.
+
+### 10.16 The agentgateway deploy was proven only on an executor where its bug could not show
+
+**What happened.** `deploy-agentgateway.yml` built `_client_defs` as TEXT, a
+`[{% for c in agw_clients %}{"name": ...}{% endfor %}]` template, and then declared
+`_secret_definitions: [...] + _client_defs`. The deploy was proven repeatedly on the local
+controller (`semaphoreui/semaphore:v2.18.12-ansible2.16.5`, ansible-core 2.16.18). That version
+turns template text that looks like a list into a list, so the proof passed. On 2026-09-23, just
+before the first production run, a test harness on the workstation (ansible-core 2.21.0) failed
+with `can only concatenate list (not "_AnsibleTaggedStr") to list`. The production controller
+image `semaphoreui/semaphore:v2.19.11` ships ansible-core 2.20.8 and fails the same way. So
+`Deploy agentgateway (Dev)` would have failed at secret resolution on its first production run.
+
+**Root cause.** Two things combined. The expression depended on a coercion that ansible-core
+2.19's data tagging removed. And the only executor it was ever run on predated the removal. As in
+10.14, the proof ran where the defect could not appear. The varying factor here was the
+executor's version, not a runtime observable, so 10.14's rule did not cover it.
+
+**The rule.** Widens 10.14: when a proof runs on an executor that differs from production's
+(controller image, ansible-core, engine), either run it on production's version too, or name the
+difference as an unproven precondition. For Ansible, build lists and dicts as native values:
+filters, or a statement block whose only output is the value itself. Never rely on template
+text being coerced, and never on JSON text assembled with escapes.
+
+**Enforced by.** Test: `platform/tests/test_agentgateway_secret_defs.py` evaluates the play's real
+`_client_defs` and `_secret_definitions` with `ansible-playbook`. CI installs the current
+ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
+general case.
 
 ## 11. The largest one
 

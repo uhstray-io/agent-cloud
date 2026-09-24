@@ -1,0 +1,143 @@
+---
+# manage-agentgateway-client-key.yml — rotate or revoke ONE virtual key (client
+# identity) at the inference gateway, as code, then re-render and reload.
+#
+# The model (upstream docs llm/cost-controls/virtual-keys, llm/api-keys):
+#   - vLLM accepts ONE static --api-key. It cannot know clients apart, so the
+#     gateway owns the per-client layer: "virtual keys" checked by its apiKey
+#     policy, one identity per name in inventory `agw_clients`, each with its own
+#     token budget and its own metrics/log identity. The vLLM key is the gateway's
+#     internal upstream credential (`vllm_api_key`), rotated separately.
+#   - The deploy MINTS: manage-secrets generates `client_<name>` once per declared
+#     identity and reuses it. So "add a client" = add the name to `agw_clients`,
+#     deploy. This playbook covers the two operations a deploy must never do
+#     implicitly: ROTATE (new value for an existing identity) and REVOKE (remove
+#     the stored value after the name left the inventory).
+#   - Inventory is the source of WHO exists. rotate refuses a name that is not
+#     declared; revoke refuses a name that still is — remove it from `agw_clients`
+#     first, so the config and the store cannot disagree about an identity.
+#   - Enrolment is by sha256 hash in the rendered config; the value lives only in
+#     OpenBao. Handing a key to its owner is the existing channel:
+#       backup-credentials-to-site-config.yml -e credential_service=agentgateway
+#         -e credential_fields=client_<name>
+#     (site-config branch, names only in the task output). Nothing here prints a
+#     value, and the UI's "generate key" button is intentionally inert: the config
+#     is read-only inside the container, because configuration is code.
+#
+# Usage (Semaphore template "Manage agentgateway Client Key"):
+#   -e client=opencode -e action=rotate
+#   -e client=old-laptop -e action=revoke     # after removing it from agw_clients
+#
+# Every run ends by importing deploy-agentgateway.yml: it re-renders config.yaml
+# from the store (new hash in, revoked hash out) and force-recreates the gateway,
+# which is the reload. Idempotent: a repeated revoke finds nothing to remove; a
+# repeated rotate rotates again (that is its job — it is never run implicitly).
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+- name: "Rotate or revoke one agentgateway client key"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _client: "{{ client | default('') }}"
+    _action: "{{ action | default('') }}"
+    _field: "client_{{ _client }}"
+    _declared: "{{ agw_clients | default([]) }}"
+
+  tasks:
+    - name: "Require an explicit client and action"
+      ansible.builtin.assert:
+        that:
+          - _client | length > 0
+          - _client is match('^[a-z0-9][a-z0-9-]*$')
+          - _action in ['rotate', 'revoke']
+        fail_msg: >-
+          Pass -e client=<name> (lowercase letters, digits, dashes) and
+          -e action=rotate|revoke. Adding a client is not an action here: add the
+          name to agw_clients in inventory and deploy — the deploy mints it.
+
+    - name: "Rotate: the identity must be declared in inventory"
+      ansible.builtin.assert:
+        that: _client in _declared
+        fail_msg: >-
+          '{{ _client }}' is not in agw_clients ({{ _declared | join(', ') }}). Rotating
+          an undeclared identity would store a key no config ever enrols.
+      when: _action == 'rotate'
+
+    - name: "Revoke: the identity must already be gone from inventory"
+      ansible.builtin.assert:
+        that: _client not in _declared
+        fail_msg: >-
+          '{{ _client }}' is still in agw_clients. Remove it from the inventory first —
+          otherwise the next deploy would mint a fresh key for it and the revocation
+          would silently undo itself.
+      when: _action == 'revoke'
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Rotate: draw the new value ONCE"
+      # A lookup('password', /dev/null) templated inline re-evaluates on every
+      # reference — the merge task wrote one value and verified against another
+      # (local drill task 612, 2026-09-17). Pin it in a fact first.
+      ansible.builtin.set_fact:
+        _new_value: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=48') }}"
+      no_log: true
+      when: _action == 'rotate'
+
+    - name: "Rotate: merge the new value into the client field (siblings preserved, write verified)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_data: "{{ {_field: _new_value} }}"
+        _bm_on_missing: fail
+        _bm_missing_msg: "secret/services/{{ service_name }} does not exist yet — run the deploy first; it mints every declared identity."
+      when: _action == 'rotate'
+
+    - name: "Revoke: remove the client field (shared merge task, merge-patch null, absence verified)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_remove: ["{{ _field }}"]
+        _bm_on_missing: fail
+        _bm_missing_msg: "secret/services/{{ service_name }} does not exist — nothing to revoke."
+      when: _action == 'revoke'
+
+    - name: "Report (no values)"
+      vars:
+        _handout: >-
+          Hand out the new key with backup-credentials-to-site-config.yml
+          -e credential_service={{ service_name }} -e credential_fields={{ _field }}.
+        _revoked: "Clients holding the old key get 401 once the reload completes."
+      ansible.builtin.debug:
+        msg: >-
+          {{ _action }} of identity '{{ _client }}' recorded in OpenBao; re-rendering and
+          reloading the gateway next. {{ _handout if _action == 'rotate' else _revoked }}
+
+- name: "Re-render and reload the gateway"
+  import_playbook: deploy-agentgateway.yml

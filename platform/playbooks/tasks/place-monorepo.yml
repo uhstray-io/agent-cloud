@@ -5,17 +5,16 @@
 #
 # Two modes, selected by local_mode:
 #   prod  (unset/false): git clone/update from monorepo_repo at _branch.
-#   local (true):        copy the read-only working-tree mount
-#                        (local_workspace_dir) — local tasks must test
-#                        UNCOMMITTED changes, and the Semaphore container has no
-#                        sudo/apt. The same compose entrypoint is ensured either
-#                        way.
+#   local (true):        copy the checkout that supplied this playbook. For the
+#                        normal local template this is the read-only working-tree
+#                        mount, including uncommitted changes. A separately bound
+#                        branch template copies its own checkout instead.
+#                        The Semaphore container has no sudo/apt.
 #
 # Expects in the including play's scope:
 #   _monorepo_dir          — where the repo lands on the target
 #   _branch                — service_branch | default('main')  (prod clone)
 #   monorepo_repo          — clone URL                          (prod only)
-#   local_workspace_dir    — RO working-tree mount path         (local only)
 #   local_mode             — bool (inventory)
 #
 # DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
@@ -27,7 +26,6 @@
       - _monorepo_dir is defined
       - (_branch is defined) or (local_mode | default(false) | bool)
       - (monorepo_repo is defined) or (local_mode | default(false) | bool)
-      - (local_workspace_dir is defined) or not (local_mode | default(false) | bool)
     fail_msg: "Missing required variables for place-monorepo.yml"
 
 - name: "Install git if needed"
@@ -46,6 +44,9 @@
   when: not (local_mode | default(false) | bool)
 
 - name: "Copy working tree into place (local mode)"
+  # The playbook's checkout is the only source that can honestly support a
+  # branch-specific validation claim. An inventory path could point at a
+  # different checkout while Semaphore ran this playbook from the branch.
   # rsync --delete (not tar): tar is additive — it overlays the source but never
   # removes files deleted from it, so a removed deploy input (e.g. a retired
   # blueprint) rots in the clone forever and keeps getting applied. --delete
@@ -61,6 +62,9 @@
   # them) but are listed explicitly as belt-and-suspenders — a missing or edited
   # .gitignore must never leak host-only (.remember, mode 700), mode-600 secrets/
   # (creds come from OpenBao anyway), or the large netbox-docker/ upstream clone.
+  # Python build/ and *.egg-info/ are explicit too: rsync's .gitignore merge
+  # rules alone do not protect nested generated dirs during --delete, and old
+  # root-owned build artifacts can otherwise make every local deploy fail.
   # No -o/-g (like tar): ownership becomes this uid.
   ansible.builtin.shell: |
     set -euo pipefail
@@ -68,7 +72,8 @@
     rsync -rlpti --delete \
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
-      "{{ local_workspace_dir }}/" "{{ _monorepo_dir }}/"
+      --exclude build/ --exclude '*.egg-info/' \
+      "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"
   when: local_mode | default(false) | bool
   register: _rsync_result
   changed_when: _rsync_result.stdout | length > 0
@@ -76,3 +81,10 @@
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file.
   ansible.builtin.include_tasks: install-podman-compose.yml
+
+- name: "Keep rootless containers running across a reboot"
+  # Every composable service gets linger + podman's user boot unit here, so no
+  # deploy has to remember to ask. Self-gates on local_mode and on hosts without
+  # podman's user unit. A dedicated service account (the CI runner) still
+  # includes it again with its own linger_user.
+  ansible.builtin.include_tasks: enable-linger.yml

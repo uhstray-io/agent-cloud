@@ -119,6 +119,16 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
+            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
+            # prod). inference_api renders the /v1 + /health allowlist with an edge
+            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
+            # host (scripts/fake-inference-upstream.py) so the edge rules can be
+            # exercised without a GPU box. Prod points the same shape at spark-1 via
+            # site-config's caddy_managed_sites.
+            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # agentgateway operator UI — the gateway runs its own OIDC login against
+            # Authentik (ui.policies), so this is a plain proxy to its UI listener.
+            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -148,6 +158,11 @@ all:
           container_engine: podman
           o11y_grafana_port: 3002
           o11y_prom_port: 9090
+          o11y_prom_retention_size: 1GB  # local cap; production must size its own disk first
+          o11y_scrape_sample_limit: 2000
+          o11y_expected_metrics_targets:
+            - { uid: o11y_missing_caddy, service: caddy, instance: "caddy:2021" }
+          o11y_alerts_enabled: false  # enable only after the OpenBao webhook is approved and seeded
           o11y_loki_port: 3100
 
     # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as
@@ -204,6 +219,38 @@ all:
           # is also the default — set this only if you map a project you own
           # through your OIDC login instead.
           tududi_sync_user_email: admin@agent-cloud.test
+    # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
+    # per-client API keys + limits) in front of the model API. Locally the
+    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
+    # key); prod points the same shape at vLLM on the DGX Spark head node via
+    # site-config. Deploy: make local-deploy-agentgateway.
+    # Change: plan/development/openspec/changes/inference-gateway-agentgateway
+    agentgateway_svc:
+      hosts:
+        agentgateway-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: agentgateway
+          monorepo_deploy_path: platform/services/agentgateway/deployment
+          container_engine: podman
+          # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
+          # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
+          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          agw_models:
+            # The name clients send -> the model id LM Studio serves.
+            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          # One API-key identity each; manage-secrets mints client_<name> once
+          # into secret/services/agentgateway and reuses it on every deploy.
+          agw_clients:
+            - dev-local
+          # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
+          # playground lists them as saved keys. Never set in prod inventory.
+          agw_plaintext_keys: true
+          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
+          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
+          # Prod leaves this unset (true = refuse an empty key).
+          agw_upstream_requires_key: false
+
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs

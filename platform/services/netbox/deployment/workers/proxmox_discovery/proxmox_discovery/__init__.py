@@ -29,6 +29,7 @@ Example agent.yaml policy:
         api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"
 """
 
+import ipaddress
 import re
 import socket
 import sys
@@ -155,12 +156,39 @@ def _pick_primary_ipv4(ips):
         prefix = ip.get("prefix")
         if not addr or not prefix:
             continue
-        if ":" in addr:
+        try:
+            ipv4 = ipaddress.IPv4Address(addr)
+        except (TypeError, ValueError):
             continue
-        if addr.startswith(("127.", "169.254.")):
+        if ipv4.is_unspecified or ipv4.is_loopback or ipv4.is_link_local:
             continue
-        return addr, prefix
+        return str(ipv4), prefix
     return None, None
+
+
+def _configured_vm_ipv4(config):
+    """Use a static cloud-init IPv4 when the guest agent has no usable address."""
+    for iface_name in ("ipconfig0", "ipconfig1"):
+        raw = config.get(iface_name, "")
+        if not isinstance(raw, str):
+            continue
+        for field in raw.split(","):
+            key, separator, cidr = field.strip().partition("=")
+            if key != "ip" or not separator or "/" not in cidr:
+                continue
+            try:
+                address = ipaddress.IPv4Interface(cidr)
+            except ValueError:
+                continue
+            if (
+                address.network.prefixlen == 0
+                or address.ip.is_loopback
+                or address.ip.is_link_local
+                or address.ip.is_unspecified
+            ):
+                continue
+            return iface_name, {"address": str(address.ip), "prefix": address.network.prefixlen}
+    return None
 
 
 class ProxmoxDiscoveryBackend(_Backend):
@@ -653,6 +681,7 @@ class ProxmoxDiscoveryBackend(_Backend):
         disk_mb = 0
 
         vm_desc = ""
+        config = {}
         try:
             config = prox.nodes(node_name).qemu(vmid).config.get()
             vm_desc = config.get("description", "")
@@ -672,6 +701,7 @@ class ProxmoxDiscoveryBackend(_Backend):
                     except (ValueError, IndexError):
                         pass
         except Exception as e:
+            config = {}
             print(f"[proxmox-discovery] DEBUG: Failed to get config for VM {vmid}: {e}", file=sys.stderr)
 
         # Collect guest agent interfaces to determine primary IPv4
@@ -709,6 +739,12 @@ class ProxmoxDiscoveryBackend(_Backend):
                     print(f"[proxmox-discovery] DEBUG: No guest agent for VM {vm_name} ({vmid}): {e}", file=sys.stderr)
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
+        if primary_addr is None:
+            configured_ipv4 = _configured_vm_ipv4(config)
+            if configured_ipv4:
+                iface_name, ip = configured_ipv4
+                collected_ifaces.append((iface_name, None, [ip]))
+                primary_addr, primary_prefix = ip["address"], ip["prefix"]
         vm_desc = _sanitize_description(vm_desc)
 
         vm_kwargs = dict(

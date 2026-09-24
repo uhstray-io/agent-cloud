@@ -27,6 +27,49 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Audit o11y Containers
+    playbook: platform/playbooks/audit-o11y-containers.yml
+    dev_variant: true
+
+  # Production receiver rollout uses a reviewed dev checkout and clones that
+  # exact revision onto the target before rendering secrets or starting containers.
+  - name: Deploy o11y (Dev)
+    playbook: platform/playbooks/deploy-o11y.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact dev commit required on controller and receiver"
+        type: string
+        required: true
+
+  - name: Verify o11y Service
+    playbook: platform/playbooks/verify-o11y-service.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_service
+        title: "Service label"
+        description: "Lowercase service identity whose fresh logs and metrics must be present"
+        type: string
+        required: true
+      - name: expected_instance
+        title: "Metrics endpoint"
+        description: "Declared host:port to verify for a metrics-enabled service"
+        type: string
+        required: false
+      - name: expect_metrics
+        title: "Expect metrics"
+        description: "true for a metrics-enabled service; false for a log-only service"
+        type: string
+        required: false
+        default_value: "true"
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:
@@ -88,10 +131,61 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Audit NetBox Runtime
+    playbook: platform/playbooks/audit-netbox-runtime.yml
+    dev_variant: true
+
+  - name: Recover NetBox Runtime (Dev)
+    playbook: platform/playbooks/recover-netbox-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: netbox_source_apply
+        title: Place reviewed Dev source
+        description: "false = require the host to already run the reviewed Dev commit; true = place that exact commit before container preflight"
+        type: string
+        required: false
+        default_value: "false"
+      - name: expected_host_revision
+        title: Audited host commit
+        description: "Required when placing source; copy the full host commit SHA from Audit NetBox Runtime (Dev)"
+        type: string
+        required: false
+        default_value: ""
+      - name: netbox_runtime_apply
+        title: Apply recovery
+        description: "false = inspect and report each core container's start/recreate/noop action without changing it; true = also apply those actions"
+        type: string
+        required: false
+        default_value: "false"
+
   # Build #1 (netbox-device-add): skynet requests "Create NetBox Device"; agent-cloud
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
+    dev_variant: true
+    survey_vars:
+      - name: replace_unrecoverable_token
+        title: Replace unrecoverable token
+        description: "Default false. Only when NetBox has the dedicated token but OpenBao lost its value, revoke exactly one match and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Ensure NetBox Prefix
+    playbook: platform/playbooks/ensure-netbox-prefix.yml
+    dev_variant: true
+    survey_vars:
+      - name: prefix
+        title: IPv4 prefix (CIDR)
+        description: "Exact management network from private site configuration"
+        type: string
+        required: true
+      - name: prefix_apply
+        title: Create missing prefix
+        description: "false = report only; true = create exactly this active global prefix if absent"
+        type: string
+        required: false
+        default_value: "false"
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
@@ -341,6 +435,47 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy agentgateway
+    playbook: platform/playbooks/deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Manage agentgateway Client Key
+    playbook: platform/playbooks/manage-agentgateway-client-key.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: client
+        title: "Client identity"
+        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        type: string
+        required: true
+      - name: action
+        title: "Action"
+        description: "rotate = new key for a declared identity; revoke = remove a retired identity's key"
+        type: enum
+        required: true
+        values:
+          - { name: "rotate", value: "rotate" }
+          - { name: "revoke", value: "revoke" }
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     survey_vars:
@@ -482,6 +617,20 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy agentgateway
+    playbook: platform/playbooks/clean-deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy honcho
     playbook: platform/playbooks/clean-deploy-honcho.yml
     survey_vars:
@@ -554,12 +703,38 @@ templates:
 
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
+    survey_vars:
+      - name: discovery_expected_revision
+        title: "Reviewed diagnostic revision"
+        description: "Full 40-character commit SHA; must match the executing controller checkout"
+        type: string
+        required: true
+      - name: discovery_log_since
+        title: "Log window start"
+        description: "ISO timestamp with explicit zone, e.g. 2026-08-01T00:00:00Z"
+        type: string
+        required: true
+      - name: discovery_log_until
+        title: "Log window end"
+        description: "ISO timestamp with explicit zone; collect historical evidence before redeployment"
+        type: string
+        required: true
+
+  - name: Inspect Discovery Metadata
+    playbook: platform/playbooks/inspect-discovery-metadata.yml
+    survey_vars:
+      - name: discovery_project_id
+        title: "Semaphore project ID"
+        description: "Explicit numeric project ID for read-only discovery binding inspection"
+        type: string
+        required: true
 
   - name: Cleanup NetBox
     playbook: platform/playbooks/cleanup-netbox.yml
 
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
+    dev_variant: true
 
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets
@@ -657,6 +832,7 @@ templates:
 
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
+    dev_variant: true
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
     # honcho reads secret/services/nemoclaw:gemini_api_key).
@@ -802,6 +978,36 @@ templates:
     # Re-running with unchanged values writes nothing. Verify with Check
     # Secrets, then run Deploy Postiz.
 
+  - name: Seed o11y Alert Webhook
+    playbook: platform/playbooks/seed-o11y-alert-webhook.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact checkout revision required before Discord or OpenBao access"
+        type: string
+        required: true
+    # Reconciles a named webhook in the text channel declared by private
+    # o11y_alert_discord_guild_id/o11y_alert_discord_channel_id inventory vars.
+    # Reads the bot token from OpenBao and stores the webhook URL under o11y.
+    # Run before enabling o11y alerts in inventory.
+
+  - name: Drill o11y Unreachable
+    playbook: platform/playbooks/drill-o11y-unreachable.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before the drill"
+        type: string
+        required: true
+      - name: drill_expect_alert
+        title: "Verify alert delivery"
+        description: "Set true after the OpenBao-backed Discord contact point is enabled"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
@@ -830,10 +1036,28 @@ templates:
     dev_variant: true
     survey_vars:
       - name: semaphore_template_names_json
-        title: "Exact existing template names (JSON list)"
-        description: "Publishes selected declared surveys only; preserves target bindings and unrelated templates."
+        title: "Exact declared template names (JSON list)"
+        description: "Updates existing surveys; with scoped create enabled, creates one missing declared template."
         type: string
         required: true
+      - name: semaphore_allow_scoped_create
+        title: "Create one missing template"
+        description: "Default false. Requires one exact name and verified project, inventory, and variable-group IDs."
+        type: string
+        required: false
+        default_value: "false"
+      - name: semaphore_project_id
+        title: "Verified project ID for create"
+        type: string
+        required: false
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID for create"
+        type: string
+        required: false
+      - name: semaphore_environment_id
+        title: "Verified variable-group ID for create"
+        type: string
+        required: false
 
   # Initial installation remains an operator bootstrap. Once installed, the
   # publisher above uses the controller AppRole without exporting credentials.
@@ -842,7 +1066,7 @@ templates:
   # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
   # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
   # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
-  # These broader tools are NOT exposed as Semaphore templates. The survey-only
+  # These broader tools are NOT exposed as Semaphore templates. The scoped
   # controller publisher above is the bounded exception; see README.md.
   #
   # To run a template against `dev` instead of `main`, give it
@@ -918,6 +1142,10 @@ templates:
 
   - name: Manage Caddy Sites
     playbook: platform/playbooks/manage-caddy-sites.yml
+    # The read-report + retire + rescue version of this playbook lives on dev; main
+    # still carries the insert-only one. The (Dev) variant is how a prod route lands
+    # through the current code before promotion (same pattern as Seed n8n Secrets).
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Caddy group"
@@ -967,6 +1195,28 @@ templates:
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
+
+  - name: Destroy VM
+    playbook: platform/playbooks/destroy-vm.yml
+    # DESTRUCTIVE. Inventory-first like Provision VM; refuses unless the live VM matches
+    # the declaration on vmid+name+node AND the launch names the vmid in confirm_destroy.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. agentgateway)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host — REQUIRED when the group declares more than one"
+        type: string
+        required: false
+      - name: confirm_destroy
+        title: "Confirm: vmid to destroy"
+        description: "Type the declared vm_vmid. Anything else refuses. No default on purpose."
+        type: string
+        required: true
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
