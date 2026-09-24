@@ -26,6 +26,8 @@
 # apart reserve different addresses, and the declaration that follows would disagree with
 # the ledger. So the operator (or an earlier report run) names the addresses, and this
 # playbook records exactly those.
+# A reserve run reads the DHCP server on the configured pfSense interface and
+# refuses an unknown boundary or an address the router could assign.
 #
 # Auth: OpenBao AppRole -> secret/services/netbox:automation_api_token (provisioned by
 # provision-netbox-automation-token.yml). Only the credential tasks are no_log'd; the
@@ -48,6 +50,11 @@
     _count: "{{ (count | default(2)) | int }}"
     _reserve: "{{ reserve | default(false) | bool }}"
     _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
+    # Implicit localhost does not inherit inventory group vars. Site-specific
+    # router endpoint and interface live with the NetBox host in site-config.
+    _netbox_site: "{{ hostvars[groups['netbox_svc'][0]] if (groups['netbox_svc'] | default([]) | length > 0) else {} }}"
+    _pfsense_url: "{{ pfsense_dhcp_api_url | default(_netbox_site.pfsense_dhcp_api_url) | default('') }}"
+    _pfsense_interface: "{{ pfsense_dhcp_interface | default(_netbox_site.pfsense_dhcp_interface) | default('') }}"
 
   tasks:
     - name: "Validate inputs"
@@ -70,6 +77,15 @@
           in which every entry has an `address`.
         success_msg: "Querying {{ _prefix }} for {{ _count }} free address(es); mode={{ 'reserve' if _reserve else 'report' }}."
 
+    - name: "Require the pfSense DHCP source before reserving"
+      ansible.builtin.assert:
+        that:
+          - _pfsense_url | length > 0
+          - _pfsense_interface | length > 0
+          - _pfsense_url is match('^https://')
+        fail_msg: "Set an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
+      when: _reserve
+
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
@@ -84,6 +100,13 @@
       vars:
         _assert_bao_url: "{{ _netbox_url }}"
         _assert_url_label: "NetBox"
+
+    - name: "Refuse a cleartext pfSense endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pfsense_url }}"
+        _assert_url_label: "pfSense"
+      when: _reserve
 
     # ── credentials (no_log boundary) ──────────────────────────────────────
     - name: "Authenticate to OpenBao (AppRole)"
@@ -121,6 +144,7 @@
         _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
         _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
         _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
+        _pfsense_key_present: "{{ ((_nb_secret.json.data.data | default({})).pfsense_api_key | default('')) | length > 0 }}"
       no_log: true
 
     - name: "Report the credential outcome"
@@ -139,6 +163,49 @@
           present={{ _token_present }}, keys at that path: {{ _nb_keys }}.
           If the key is absent, mint it with provision-netbox-automation-token.yml
           rather than by hand.
+
+    - name: "Require the pfSense API key for reservations"
+      ansible.builtin.assert:
+        that: _pfsense_key_present | bool
+        fail_msg: "secret/services/netbox lacks pfsense_api_key; reservation is refused."
+      when: _reserve
+
+    - name: "Read the live pfSense DHCP server configuration"
+      ansible.builtin.uri:
+        url: "{{ _pfsense_url }}/api/v2/services/dhcp_server?id={{ _pfsense_interface | urlencode }}"
+        method: GET
+        headers:
+          X-API-Key: "{{ _nb_secret.json.data.data.pfsense_api_key }}"
+        status_code: [200]
+      register: _pfsense_dhcp
+      failed_when: false
+      no_log: true
+      when: _reserve
+
+    - name: "Require a successful pfSense DHCP read"
+      ansible.builtin.assert:
+        that: (_pfsense_dhcp.status | default(-1)) == 200
+        fail_msg: "pfSense DHCP read failed with HTTP status {{ _pfsense_dhcp.status | default('unavailable') }}; reservation is refused."
+      when: _reserve
+
+    - name: "Check the live DHCP boundary before reserving"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/netbox_dhcp_boundary.py"
+        stdin: "{{ {'prefix': _prefix, 'interface': _pfsense_interface, 'assignments': _assignments, 'response': _pfsense_dhcp.json} | to_json }}"
+      register: _dhcp_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: _reserve
+
+    - name: "Refuse an address pfSense could assign or an unknown boundary"
+      ansible.builtin.assert:
+        that: _dhcp_check.rc == 0
+        fail_msg: "DHCP boundary refused reservation: {{ _dhcp_check.stdout | default('invalid router response') }}"
+        success_msg: "{{ _dhcp_check.stdout }}"
+      when: _reserve
 
     - name: "Set the NetBox auth header"
       ansible.builtin.include_tasks: tasks/netbox-api-headers.yml

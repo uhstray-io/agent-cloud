@@ -103,16 +103,22 @@ PY
 
 @test "netbox-allocate: no_log is scoped to the credential boundary only" {
   # no_log on a deploy or a verification hides the failure and makes a Semaphore run
-  # undiagnosable. It belongs on auth, secret reads, and header construction — nowhere else.
-  # Four: OpenBao auth, the secret read, the header construction, and the
-  # classification step. The classification exists so that a no_log failure is still
-  # diagnosable — it emits key NAMES and verdicts, never a value — and it must itself be
-  # no_log because it touches the token to test whether the key is populated.
-  local nolog
-  nolog=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$nolog" -eq 4 ]
-  # The address operations must remain visible.
-  ! grep -A12 'available-ips' "$PLAYBOOK" | grep -q 'no_log: true'
+  # undiagnosable. Only tasks handling credentials or the raw router response are hidden.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+hidden = {task["name"] for task in tasks if task.get("no_log") is True}
+assert hidden == {
+    "Authenticate to OpenBao (AppRole)",
+    "Read the NetBox automation token from OpenBao",
+    "Classify the credential outcome (names and verdicts only)",
+    "Read the live pfSense DHCP server configuration",
+    "Check the live DHCP boundary before reserving",
+    "Set the NetBox auth header",
+}
+PY
 }
 
 @test "netbox-allocate: a sane ceiling on how many addresses one run can take" {
