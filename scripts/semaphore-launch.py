@@ -30,14 +30,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Server versions whose task body was read from source and whose check-mode flag was
-# confirmed recorded (task params.dry_run) - extend only after the same check.
-VERIFIED_DRY_RUN_VERSIONS = ("v2.17.",)
+# Exact server releases whose task body was read from source and whose check-mode flag was
+# confirmed recorded (task params.dry_run). Exact, not a series: another patch release may
+# read the flag differently, and a mis-read flag means a real run (review of PR #220).
+VERIFIED_DRY_RUN_VERSIONS = {"v2.17.31"}
 TERMINAL = {"success", "error", "stopped"}
 
 
 class Refusal(Exception):
     """A reason to stop, with no credential in it."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would copy the Authorization header to the new host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class API:
@@ -48,6 +56,7 @@ class API:
         if not token:
             raise Refusal("An operator token is required on stdin")
         self.base, self.project, self.token = url.rstrip("/"), project, token
+        self.open = urllib.request.build_opener(NoRedirect).open
 
     def __call__(self, path, body=None, project_scoped=True):
         prefix = f"/api/project/{self.project}" if project_scoped else "/api"
@@ -56,7 +65,7 @@ class API:
                                      headers={"Authorization": "Bearer " + self.token,
                                               "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with self.open(req, timeout=30) as response:
                 data = response.read()
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as error:
@@ -88,7 +97,8 @@ def build_task(template, project, settings, dry_run, message):
 
 
 def require_dry_run_support(version):
-    if not any(str(version).startswith(v) for v in VERIFIED_DRY_RUN_VERSIONS):
+    # Semaphore reports e.g. "v2.17.31-02309ba-1774450250": the release is the first field.
+    if str(version).split("-")[0] not in VERIFIED_DRY_RUN_VERSIONS:
         raise Refusal(f"Check mode is unverified for Semaphore {version}; confirm where it reads the "
                       "flag, then add the version to VERIFIED_DRY_RUN_VERSIONS")
 
@@ -110,11 +120,18 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
     task_id = task.get("id")
     if not isinstance(task_id, int):
         raise Refusal("Task identity unavailable; check Semaphore before relaunching")
-    if dry_run and (api(f"/tasks/{task_id}").get("params") or {}).get("dry_run") is not True:
-        api(f"/tasks/{task_id}/stop", {})
-        raise Refusal(f"Task {task_id}: the server did not record check mode; stop requested. "
-                      "The server's task format changed - update this launcher before relaunching")
+    # Printed at once: from here the task may be running, and this id is the only handle on it.
     print(f"Task {task_id} launched ({'check mode' if dry_run else 'real run'})", flush=True)
+    if dry_run:
+        try:
+            recorded = (api(f"/tasks/{task_id}").get("params") or {}).get("dry_run") is True
+        except Refusal:
+            raise Refusal(f"Task {task_id}: launched, but its check mode could not be read back. "
+                          f"Treat it as running for real until task {task_id} is inspected") from None
+        if not recorded:
+            api(f"/tasks/{task_id}/stop", {})
+            raise Refusal(f"Task {task_id}: the server did not record check mode; stop requested. "
+                          "The server's task format changed - update this launcher before relaunching")
     if not wait:
         return task_id, None
     deadline = time.monotonic() + timeout

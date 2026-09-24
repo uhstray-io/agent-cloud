@@ -16,8 +16,10 @@ SPEC.loader.exec_module(launcher)
 class FakeAPI:
     project = 1
 
-    def __init__(self, version="v2.17.31-02309ba", records_params=True, busy=False):
+    def __init__(self, version="v2.17.31-02309ba-1774450250", records_params=True, busy=False,
+                 readback_fails=False):
         self.version, self.records_params, self.busy = version, records_params, busy
+        self.readback_fails = readback_fails
         self.template = {"id": 220, "name": "Deploy agentgateway (Dev)",
                          "survey_vars": [{"name": "service_branch", "type": "string"}]}
         self.calls, self.created = [], None
@@ -36,6 +38,8 @@ class FakeAPI:
             self.created = body
             return {"id": 1200, "status": "waiting"}
         if path == "/tasks/1200":
+            if self.readback_fails:
+                raise launcher.Refusal("Semaphore HTTP 502 on /tasks/1200; body suppressed")
             params = (self.created or {}).get("params") if self.records_params else None
             return {"id": 1200, "status": "success", "params": params}
         if path == "/tasks/1200/stop":
@@ -61,7 +65,7 @@ def test_a_real_run_carries_no_check_mode_flags():
     assert "params" not in api.created and "dry_run" not in api.created
 
 
-@pytest.mark.parametrize("version", ["v2.18.0", "v3.0.0", "unknown"])
+@pytest.mark.parametrize("version", ["v2.17.30-abc", "v2.17.32", "v2.18.0", "v3.0.0", "unknown"])
 def test_check_mode_on_an_unverified_server_is_refused_before_any_task(version):
     api = FakeAPI(version=version)
     with pytest.raises(launcher.Refusal, match="unverified"):
@@ -88,3 +92,18 @@ def test_tripwire_stops_a_task_whose_check_mode_the_server_did_not_record():
     with pytest.raises(launcher.Refusal, match="did not record check mode"):
         launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
     assert posts(api) == ["/tasks", "/tasks/1200/stop"]
+
+
+def test_a_failed_read_back_reports_the_task_id_as_possibly_running(capsys):
+    api = FakeAPI(readback_fails=True)
+    with pytest.raises(launcher.Refusal, match="Task 1200: launched, but its check mode could not be read"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=True)
+    assert "Task 1200 launched" in capsys.readouterr().out
+
+
+def test_the_client_never_follows_a_redirect_with_the_token():
+    # urllib copies Authorization to a redirect target; the handler must refuse to follow.
+    handler = launcher.NoRedirect()
+    assert handler.redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/") is None
+    api = launcher.API("https://semaphore.example", 1, "synthetic-token")
+    assert any(isinstance(h, launcher.NoRedirect) for h in api.open.__self__.handlers)
