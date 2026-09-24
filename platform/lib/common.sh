@@ -102,7 +102,8 @@ compose() {
 
 # ── Health Waiters ────────────────────────────────────────────────────────────
 
-# redact_secrets — filter stdin: blank a URL's password, a Bearer token and a
+# redact_secrets — filter stdin: blank a URL's password, an Authorization header
+# value of any scheme, a Bearer token and a
 # password/secret/token/api-key/key value (a bare `key:` is how agentgateway's
 # local-dev config carries a client key), so a container log can go into a task log
 # (Semaphore stores task output). A best-effort filter for diagnostics, not a
@@ -110,7 +111,8 @@ compose() {
 redact_secrets() {
   sed -E \
     -e 's#(://[^:/@[:space:]]+:)[^@[:space:]]+@#\1***@#g' \
-    -e 's#([Bb]earer[[:space:]]+)[^[:space:]"'"'"',]+#\1***#g' \
+    -e 's#([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?)[^"'"'"',}]+#\1***#g' \
+    -e 's#([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]"'"'"',]+#\1***#g' \
     -e 's#(^|[^[:alnum:]])(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Kk][Ee][Yy])["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?)[^"'"'"'[:space:],}]+#\1\2***#g'
 }
 

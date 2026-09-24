@@ -29,7 +29,12 @@ redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
   # A bare key (agentgateway local-dev config), but not a word that merely ends in "key".
   [ "$(redact '      - key: sk-plaintext-client')" = '      - key: ***' ]
   [ "$(redact 'monkey: banana')" = 'monkey: banana' ]
-  [ "$(redact 'Authorization: Bearer abc.def-ghi')" = 'Authorization: Bearer ***' ]
+  [ "$(redact 'Authorization: Bearer abc.def-ghi')" = 'Authorization: ***' ]
+  # Any scheme, any case (PR 231 Codex review).
+  [ "$(redact 'Authorization: Basic dXNlcjpwYXNz')" = 'Authorization: ***' ]
+  [ "$(redact 'authorization: BEARER abc')" = 'authorization: ***' ]
+  [ "$(redact '{"authorization": "Basic abc", "x": 1}')" = '{"authorization": "***", "x": 1}' ]
+  [ "$(redact 'sent BEARER tok123 upstream')" = 'sent BEARER *** upstream' ]
   [ "$(redact 'password=hunter2 token: "xyz" API_KEY=k1, secret=abc}')" = 'password=*** token: "***" API_KEY=***, secret=***}' ]
   [ "$(redact 'a harmless line')" = 'a harmless line' ]
 }
