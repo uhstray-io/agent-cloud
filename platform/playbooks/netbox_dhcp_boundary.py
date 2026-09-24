@@ -18,7 +18,7 @@ def check_boundary(request):
     if not isinstance(response, dict) or response.get("code") != 200:
         raise ValueError("pfSense did not return a successful DHCP response")
     server = response.get("data")
-    if not isinstance(server, dict) or server.get("interface") != request["interface"]:
+    if not isinstance(server, dict) or server.get("id") != request["interface"]:
         raise ValueError("pfSense did not return the selected DHCP interface")
     if not isinstance(server.get("enable"), bool):
         raise ValueError("pfSense DHCP enabled state is unknown")

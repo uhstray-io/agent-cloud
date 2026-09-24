@@ -10,7 +10,8 @@ import yaml
 
 PLAYBOOKS = Path(__file__).resolve().parents[1] / "playbooks"
 SERVER = {
-    "interface": "lan",
+    "id": "lan",
+    "interface": "LAN",
     "enable": True,
     "range_from": "192.0.2.100",
     "range_to": "192.0.2.150",
@@ -56,7 +57,8 @@ def test_unknown_router_response_fails_closed():
     for server in (
         None,
         {**SERVER, "pool": None},
-        {**SERVER, "interface": "wan"},
+        {**SERVER, "id": "wan"},
+        {key: value for key, value in SERVER.items() if key != "id"},
         {**SERVER, "range_to": ""},
     ):
         assert check("192.0.2.219/24", server).returncode != 0
