@@ -209,7 +209,7 @@ def test_uhhcraft_requires_the_keys_its_app_panics_without(tmp_path):
     # PR 203 Codex review: stripe_secret_key is `type: user`, so it was not required, and the step
     # passed a service whose app panics on an empty STRIPE_SECRET_KEY (config.go requireEnv).
     raw = (REPO / "platform/playbooks/deploy-uhhcraft.yml").read_text()
-    stored = {k: "v" for k in ("stripe_publishable_key", "stripe_webhook_secret", "resend_api_key",
-                               "discord_orders_webhook_url", "discord_ops_webhook_url")}
+    stored = dict.fromkeys(("stripe_publishable_key", "stripe_webhook_secret", "resend_api_key",
+                            "discord_orders_webhook_url", "discord_ops_webhook_url"), "v")
     v = _verdict(tmp_path, service="uhhcraft", stored=stored, deploy_raw=raw)
     assert v["status"] == "fail" and v["evidence"]["missing"] == ["stripe_secret_key"], v
