@@ -128,8 +128,11 @@ dump_container_diagnostics() {
   $CONTAINER_ENGINE inspect --format \
     'state={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' \
     "$name" 2>&1 | redact_secrets >&2 || true
-  warn "Last ${lines} log lines of ${name} (redacted):"
-  $CONTAINER_ENGINE logs --tail "$lines" "$name" 2>&1 | redact_secrets >&2 || true
+  warn "Last ${lines} log lines of ${name} (redacted, engine timestamps):"
+  # Timestamps place the container's own events against the wait that timed out (task 1213:
+  # a healthy gateway, a probe that never saw it). An engine without the flag prints plain lines.
+  { $CONTAINER_ENGINE logs --timestamps --tail "$lines" "$name" 2>&1 \
+      || $CONTAINER_ENGINE logs --tail "$lines" "$name" 2>&1; } | redact_secrets >&2 || true
 }
 
 # wait_for_healthy <container_name> <timeout_seconds>
