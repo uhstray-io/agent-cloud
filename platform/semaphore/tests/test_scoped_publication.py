@@ -322,11 +322,9 @@ class ScopedPublicationTests(unittest.TestCase):
         # Review of PR #205: an existing environment with the declared name was bound as-is.
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
                        "isolated_environment": "Isolated inputs"}
-        cases = {
-            "leftover inputs: BAO_VALUE": [{"id": 1, "name": "BAO_VALUE", "type": "env"}],
-            "only one AppRole input": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"}],
-            "leftover inputs: SEED_X_API_KEY": [{"id": 1, "name": "SEED_X_API_KEY", "type": "env"}],
-        }
+        # One refusal per problem class proves publication applies the shared rule; every
+        # variant of the rule is tested directly in test_seed_environment_rule.py.
+        cases = {"leftover inputs: BAO_VALUE": [{"id": 1, "name": "BAO_VALUE", "type": "env"}]}
         # The AppRole login would go to the environment's openbao_addr: an address other than
         # the controller's own is refused before binding (review of PR #205).
         endpoint_case = {"id": 500, "project_id": 1, "name": "Isolated inputs", "env": "{}",
@@ -483,7 +481,8 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotIn(("PUT", "/api/project/1/templates/206"), self.writes)
 
     def test_provisioner_refuses_staged_or_partial_credentials_before_writes(self):
-        for name in ["SEED_X_API_KEY", "BAO_ROLE_ID"]:
+        # Wiring only: the variants are test_seed_environment_rule.py's.
+        for name in ["BAO_ROLE_ID"]:
             with self.subTest(name=name):
                 self.setUp()
                 self.prepare_seed_template()
@@ -510,7 +509,8 @@ class ScopedPublicationTests(unittest.TestCase):
         # BAO_VALUE could stay in the environment the template is then bound to. A
         # dedicated seed environment holds exactly the two AppRole inputs; anything else
         # is a leftover.
-        for leftover in ["BAO_VALUE", "SOMETHING_ELSE"]:
+        # Wiring only (the OpenBao-key template): other names are test_seed_environment_rule.py's.
+        for leftover in ["BAO_VALUE"]:
             with self.subTest(leftover=leftover):
                 self.setUp()
                 self.prepare_seed_template()
