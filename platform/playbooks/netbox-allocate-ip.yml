@@ -55,6 +55,9 @@
     _netbox_site: "{{ hostvars[groups['netbox_svc'][0]] if (groups['netbox_svc'] | default([]) | length > 0) else {} }}"
     _pfsense_url: "{{ pfsense_dhcp_api_url | default(_netbox_site.pfsense_dhcp_api_url) | default('') }}"
     _pfsense_interface: "{{ pfsense_dhcp_interface | default(_netbox_site.pfsense_dhcp_interface) | default('') }}"
+    # A site-specific router certificate exception must be declared in private
+    # inventory; every other site keeps verified TLS.
+    _pfsense_validate_certs: "{{ _netbox_site.pfsense_dhcp_validate_certs | default(true) | bool }}"
 
   tasks:
     - name: "Validate inputs"
@@ -189,6 +192,7 @@
         headers:
           X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"
         status_code: [200]
+        validate_certs: "{{ _pfsense_validate_certs }}"
       register: _pfsense_dhcp
       failed_when: false
       no_log: true

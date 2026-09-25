@@ -66,7 +66,8 @@ def test_unknown_router_response_fails_closed():
 
 def test_router_check_precedes_netbox_write():
     playbook = (PLAYBOOKS / "netbox-allocate-ip.yml").read_text()
-    tasks = yaml.safe_load(playbook)[0]["tasks"]
+    parsed = yaml.safe_load(playbook)[0]
+    tasks = parsed["tasks"]
     names = [task["name"] for task in tasks]
     read = names.index("Read the live pfSense DHCP server configuration")
     check_task = names.index("Check the live DHCP boundary before reserving")
@@ -76,5 +77,9 @@ def test_router_check_precedes_netbox_write():
     assert all(tasks[index]["when"] == "_reserve" for index in (read, check_task, refusal))
     assert tasks[read]["no_log"] and tasks[check_task]["no_log"]
     assert "?id={{ _pfsense_interface | urlencode }}" in tasks[read]["ansible.builtin.uri"]["url"]
+    assert parsed["vars"]["_pfsense_validate_certs"] == (
+        "{{ _netbox_site.pfsense_dhcp_validate_certs | default(true) | bool }}"
+    )
+    assert tasks[read]["ansible.builtin.uri"]["validate_certs"] == "{{ _pfsense_validate_certs }}"
     source = tasks[names.index("Require the pfSense DHCP source before reserving")]
     assert "_pfsense_url is match('^https://')" in source["ansible.builtin.assert"]["that"]
