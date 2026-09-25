@@ -29,7 +29,7 @@ supersede it with a new entry and link both.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
@@ -192,6 +192,8 @@ quoting and pass without it, including an unterminated final line.
 
 ### 1.3 A masked exit code reported as success
 
+**Occurrences: 2** — (first undated), 2026-09-25
+
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
 while `make` had exited 2. The bootstrap was reported as complete when Caddy had
@@ -205,6 +207,18 @@ and read it, or capture `${PIPESTATUS[0]}`. Applies especially to background
 jobs, where the exit code is the only signal that arrives unprompted.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** On PR #195 I ran `bats -j 4 platform/tests/ | grep -E
+'^not ok' | head`, saw no output, and reported "BATS: all 674 tests ran with no failures"
+— the 674 was `bats -c` counting the files, not a run. This machine has no GNU `parallel`,
+so `bats -j` executes **zero** tests (`Executed 0 instead of expected 5 tests`, bats-core
+1.13.0) and prints no `not ok`; the filter's silence was read as a pass. The pre-push hook,
+which runs `bats platform/tests/` serially, then refused the push on a real failure
+(`test_local_netbox.bats:76` pinned a literal the change had rewritten). Why the rule did
+not fire: it names exit codes, and this pipe also hid the one line that said nothing ran —
+a filter for failures cannot tell "none failed" from "none ran". Corollary: a test claim
+needs the run's own count of executed tests (`N passed`, the final `ok N`), never the
+absence of a failure line; and run BATS the way the hook does, without `-j`.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned

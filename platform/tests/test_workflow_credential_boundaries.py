@@ -45,11 +45,14 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
         {"item": "svc-a", "status": 200, "json": {"count": 1, "results": [{"id": 7}]},
          "invocation": {"module_args": {"headers": {"Authorization": "Bearer nbt_secret.value"}}}},
         {"item": "svc-b", "status": 200, "json": {"count": 0, "results": []}},
+        # same-named VMs in two clusters: never write the first (PR 195 Codex review)
+        {"item": "svc-c", "status": 200, "json": {"count": 2, "results": [{"id": 8}, {"id": 9}]}},
     ]
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_vms": {"results": results}},
-        "tasks": [sort, {"ansible.builtin.debug": {"msg": "FOUND {{ _vm_found | to_json }}"}}],
+        "tasks": [sort, {"ansible.builtin.debug": {"msg": "FOUND {{ _vm_found | to_json }}"}},
+                  {"ansible.builtin.debug": {"msg": "AMBIGUOUS {{ _vm_ambiguous | to_json }}"}}],
     }]
     path = tmp_path / "sort.yml"
     path.write_text(yaml.safe_dump(harness))
@@ -60,6 +63,7 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
     line = next(ln for ln in out.splitlines() if "FOUND " in ln)
     found = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("FOUND ", 1)[1])
     assert found == [{"item": "svc-a", "id": 7}]
+    assert '"AMBIGUOUS [\\"svc-c\\"]"' in out, out[-600:]
     assert "nbt_secret" not in out
 
 

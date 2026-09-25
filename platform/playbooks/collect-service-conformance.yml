@@ -218,11 +218,14 @@
         # headers, the collector token among them, and this fact is visible (PR 195 Codex review).
         _vm_found: >-
           {%- set out = [] -%}
-          {%- for r in _answered | selectattr('json.count', 'gt', 0) -%}
+          {%- for r in _answered | selectattr('json.count', 'equalto', 1) -%}
             {%- if out.append({'item': r.item, 'id': r.json.results[0].id}) -%}{%- endif -%}
           {%- endfor -%}
           {{ out }}
         _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
+        # The lookup filters by name only: same-named VMs in two clusters are reported, never
+        # guessed at by taking the first (PR 195 Codex review).
+        _vm_ambiguous: "{{ _answered | selectattr('json.count', 'gt', 1) | map(attribute='item') | list }}"
         _vm_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
       vars:
         _answered: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | list }}"
@@ -271,5 +274,6 @@
           report: "{{ _agg.report }}"
           netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
           netbox_no_vm: "{{ _vm_missing }}"
+          netbox_ambiguous_vm: "{{ _vm_ambiguous }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
           loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"

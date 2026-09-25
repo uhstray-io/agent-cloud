@@ -23,9 +23,9 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              the real run survives
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
               groups?, host_services?, now_ns?}
-                                                    -> {services, validation, failed_steps,
-                                                        status_by_service, report,
-                                                        loki_streams (only with now_ns)}
+                                                    -> {services, validation, inputs,
+                                                        failed_steps, status_by_service,
+                                                        report, loki_streams (only with now_ns)}
 
 Check mode never sets conformance (review of PR #195): a passing `--check` after a failed real
 run must not clear the failure, because nothing on the service changed. The run mode comes
@@ -36,6 +36,11 @@ the row is known before any output is read (reviews of PR #229). Check-mode resu
 `validation`; `services` / `status_by_service` / `failed_steps` come only from real runs. A
 step result whose own check_mode contradicts its row is listed under `anomalies` and kept out
 of conformance, never trusted silently.
+
+A snapshot template's `pass` means its reasoning step's INPUT was captured, not that the
+assessment passed: nothing has validated a proposal against the step's criteria yet. It lands
+in `inputs`, never in conformance; a snapshot that fails is still the step's failure, since the
+assessment then has no input (PR 195 Codex review).
 
 An inventory group is mapped to its first host's service_name (groups + host_services, both
 plain data: hostvars themselves never cross), so a service is named the way its own step
@@ -82,6 +87,13 @@ def _step_for(template: str, registry: list[dict], deploy_templates: frozenset =
         if step.get("executor") == PER_SERVICE and base in deploy_templates:
             return step["id"]
     return None
+
+
+def _is_snapshot(template: str, step_id: str, registry: list[dict]) -> bool:
+    """True when the template is the step's snapshot (its input), not its executor."""
+    base = VARIANT.sub("", template or "")
+    step = next((s for s in registry if s["id"] == step_id), {})
+    return base == step.get("snapshot") and base != step.get("executor")
 
 
 def select(registry: list[dict], templates: list[dict], by_group: dict,
@@ -141,6 +153,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
+    inputs: dict[str, dict] = {}
     anomalies: list[dict] = []
     for task in sorted(tasks, key=lambda t: t["id"]):
         lines = ANSI.sub("", task.get("output") or "").splitlines()
@@ -166,7 +179,11 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
                 anomalies.append({"task_id": task["id"], "service": service, "step": result["step"],
                                   "row_check_mode": check, "result_check_mode": bool(result.get("check_mode"))})
                 check = True
-            (validation if check else services).setdefault(service, {})[result["step"]] = {
+            bucket = validation if check else services
+            template = names.get(task["template_id"], "")
+            if result.get("status") == "pass" and _is_snapshot(template, result["step"], registry):
+                bucket = inputs
+            bucket.setdefault(service, {})[result["step"]] = {
                 "status": result.get("status"),
                 "task_id": task["id"],
                 "end": task.get("end"),
@@ -182,7 +199,8 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
         for service in tracked
     }
     status = {s: {step: r["status"] for step, r in services.get(s, {}).items()} for s in tracked}
-    agg = {"services": services, "tracked": tracked, "validation": validation, "anomalies": anomalies,
+    agg = {"services": services, "tracked": tracked, "validation": validation, "inputs": inputs,
+           "anomalies": anomalies,
            "failed_steps": failed, "status_by_service": status}
     agg["report"] = report(agg, registry, inventory_services or [])
     return agg

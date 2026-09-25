@@ -73,7 +73,7 @@ setup() {
   for f in verify-service-persistence snapshot-firewall snapshot-service-assessment; do
     assert_grep -qF 'include_tasks: tasks/list-service-containers.yml' "$PB/$f.yml"
   done
-  assert_grep -qF '_restart_ok: [always, unless-stopped]' "$pb"
+  assert_grep -qF "_restart_ok: \"{{ ['always'] if (_rootless_podman | bool) else ['always', 'unless-stopped'] }}\"" "$pb"
   assert_grep -qF 'step_result_step: systemd-enablement' "$pb"
   # an empty selection is a failure, never a vacuous pass
   assert_grep -qF 'no containers carry the compose working_dir label' "$pb"

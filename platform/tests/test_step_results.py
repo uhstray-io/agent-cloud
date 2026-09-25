@@ -109,6 +109,18 @@ def test_service_comes_from_inventory_not_string_surgery():
     assert got == {1: "step-ca", 2: "step-ca", 3: None}
 
 
+def test_a_passing_snapshot_is_an_input_never_the_assessment_passing():
+    # PR 195 Codex review: Snapshot Access recorded access-assess `pass` and the collector
+    # published it, though no proposal had been validated against the step's criteria.
+    out = _run_line({"service": "tududi", "step": "access-assess", "status": "pass"})
+    agg = _agg(_task(21, "success", 4, out))
+    assert agg["services"] == {} and agg["failed_steps"] == {}
+    assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+    # the same result from a template that is NOT the step's snapshot still counts
+    assert _agg(_task(22, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle",
+                                                     "status": "pass"})))["services"]
+
+
 def test_a_failed_snapshot_without_a_result_is_charged_to_its_service():
     row = {"id": 20, "status": "error", "template_id": 4, "end": "t", "environment": '{"target_service": "tududi_svc"}'}
     (picked,) = step_results.pick([[row]], GROUPS)
