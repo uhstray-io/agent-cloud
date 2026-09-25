@@ -265,7 +265,8 @@ _committed_files() {
   grep -qE "_bao_value:.*lookup\('env', *'BAO_VALUE'\) *\| *default\(bao_value" \
     "$pb/seed-openbao-key.yml"
   grep -qE "lookup\('env', *_env_name\) *$" "$pb/seed-postiz-secrets.yml"
-  grep -qE '_env_name: "SEED_\{\{ item \| upper \}\}"' "$pb/seed-postiz-secrets.yml"
+  grep -qE '_env_name: "\{\{ _seed_env\[item\] \}\}"' "$pb/seed-postiz-secrets.yml"
+  grep -qF "map('regex_replace', '^', 'SEED_')" "$pb/seed-postiz-secrets.yml"
 
   # The reverse order must not appear.
   ! grep -qE "_bao_value:.*bao_value *\| *default\(lookup" "$pb/seed-openbao-key.yml"

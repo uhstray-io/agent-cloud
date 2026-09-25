@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 # The one clean-environment rule, shared with publication and the provisioner (an Ansible
 # filter module; loaded by path so there is a single definition).
@@ -155,12 +156,33 @@ def locate(api, template_name, environment_name):
     return templates[0]["id"], envs[0]["id"]
 
 
+class Target(NamedTuple):
+    """Where one seed runs: resolved by name, with the bindings its preflight must still see."""
+    template_id: int
+    environment_id: int
+    template_name: str
+    environment_name: str
+    playbook: str
+    bindings: dict
+
+
+def seed_target(api, decl, variant, inventory):
+    """The template and environment for this declaration and variant, and the APPROVED
+    repository and inventory the template must still be bound to. Every seed CLI resolves
+    its target here, so none of them can skip or reorder a binding check."""
+    template_name, environment_name = resolve_names(decl, variant)
+    template_id, environment_id = locate(api, template_name, environment_name)
+    bindings = {"repository_id": resolve_repository(api, repository_name(decl, variant)),
+                "inventory_id": inventory}
+    return Target(template_id, environment_id, template_name, environment_name, decl["playbook"], bindings)
+
+
 def environment_body(env, operations):
     # Preserve ALL fields returned by the server, replacing only operation data.
     return {**env, "secrets": operations}
 
 
-def preflight(api, project, template_id, expected_env, *, playbook, template_names, bindings=None):
+def preflight(api, project, template_id, expected_env, *, playbook, template_name, bindings=None):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
@@ -172,7 +194,7 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     """
     template = api(f"/templates/{template_id}")
     if (template.get("playbook") != playbook
-            or template.get("name") not in set(template_names)
+            or template.get("name") != template_name
             or template.get("app") != "ansible"
             or template.get("arguments") not in (None, "[]", [])
             or template.get("environment_id") != expected_env):
@@ -207,7 +229,7 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     return template, before
 
 
-def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
+def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_name,
                    extra=None, bindings=None,
                    message="Seed declared inputs via encrypted inputs", timeout=600):
     """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
@@ -217,7 +239,7 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     `extra` is NON-SECRET launch configuration only: Semaphore persists it.
     """
     template, before = preflight(api, project, template_id, expected_env, playbook=playbook,
-                                 template_names=template_names, bindings=bindings)
+                                 template_name=template_name, bindings=bindings)
     env_path = f"/environment/{expected_env}"
     # A fresh equality check immediately before the first write. It is not CAS (v2.17 has
     # none); it refuses a change made since preflight read the environment (reviews of #249).

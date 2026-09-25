@@ -16,6 +16,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/postiz-seed-input.py"
 SPEC = importlib.util.spec_from_file_location("postiz_seed_input", SCRIPT)
 seed = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(seed)
+PLAYBOOK = seed.declaration(seed.TEMPLATE)["playbook"]
 
 
 def test_parser_is_literal_and_allowlisted():
@@ -31,8 +32,8 @@ def test_parser_is_literal_and_allowlisted():
 
 def stage(api, values):
     """The shared lifecycle core, called the way postiz-seed-input.py's --apply calls it."""
-    return seed.stage_and_seed(api, 1, 151, 2, values, playbook=seed.SEED_PLAYBOOK,
-                               template_names={"Seed Postiz Secrets"})
+    return seed.stage_and_seed(api, 1, 151, 2, values, playbook=PLAYBOOK,
+                               template_name="Seed Postiz Secrets")
 
 
 class FakeAPI:
@@ -42,7 +43,7 @@ class FakeAPI:
                     "json": "{}", "env": "{}",
                     "secrets": [{"id": 3, "name": "BAO_ROLE_ID", "type": "env"},
                                 {"id": 4, "name": "BAO_SECRET_ID", "type": "env"}]}
-        self.template = {"id": 151, "name": "Seed Postiz Secrets", "playbook": seed.SEED_PLAYBOOK,
+        self.template = {"id": 151, "name": "Seed Postiz Secrets", "playbook": PLAYBOOK,
                          "environment_id": 2, "app": "ansible"}
         self.calls = []
         self.status = status
