@@ -62,8 +62,8 @@
     # be code — it works, leaves no trace, and the next person cannot tell it
     # happened. A generated variant is declarative, reviewable, and additive.
     #
-    # Variants inherit everything from their base except the name and the repo,
-    # so they cannot drift from it.
+    # Variants inherit everything from their base except the name, repo, and
+    # service_branch guidance: a Dev controller must clone Dev onto the target.
     # `_generated` is an INTERNAL marker, not a templates.yml field. The suffix
     # keys off it rather than off `repository`, because `repository:` is also the
     # documented way to bind a base template directly to another record — keying
@@ -71,11 +71,21 @@
     # stopped finding the real record and left it stale. And a template setting
     # both `repository: agent-cloud dev` and `dev_variant: true` would have given
     # its base and its generated variant the same identity.
-    _dev_variants: >-
-      {{ _base_templates | selectattr('dev_variant', 'defined')
-         | selectattr('dev_variant')
-         | map('combine', {'repository': _dev_repo_name, 'dev_variant': false, '_generated': true})
-         | list }}
+    _dev_variants_json: >-
+      {% set variants = [] %}
+      {% for template in _base_templates | selectattr('dev_variant', 'defined') | selectattr('dev_variant') %}
+      {% set surveys = [] %}
+      {% for survey in template.survey_vars | default([]) %}
+      {% set _ = surveys.append(survey | combine({'default_value': 'dev', 'description': 'Target branch for this Dev-bound template (use dev for reviewed Dev code)'} if survey.name == 'service_branch' else {})) %}
+      {% endfor %}
+      {% set variant = template | combine({'repository': _dev_repo_name, 'dev_variant': false, '_generated': true}) %}
+      {% if template.survey_vars is defined %}
+      {% set variant = variant | combine({'survey_vars': surveys}) %}
+      {% endif %}
+      {% set _ = variants.append(variant) %}
+      {% endfor %}
+      {{ variants | to_json }}
+    _dev_variants: "{{ _dev_variants_json | from_json }}"
     _dev_repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') }}"
     _all_templates: "{{ _base_templates + (_dev_variants | map('combine', {}) | list) }}"
     _scoped: "{{ semaphore_template_names is defined }}"

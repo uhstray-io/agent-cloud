@@ -10,6 +10,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[3]
 NAME = "Store tududi API Token (Dev)"
 TEMPLATE = {
@@ -120,10 +122,12 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply({})
                 if self.path != "/api/project/1/templates/206":
                     return self.reply({}, 400)
+                cls.template_payloads.append(copy.deepcopy(value))
                 if not cls.ignore_write:
                     # Match SurveyVar's documented Go omitempty serialization.
                     value["survey_vars"] = [
-                        {k: v for k, v in survey.items() if v is not False and v != ""} | {"values": None}
+                        {k: v for k, v in survey.items() if v is not False and v != ""}
+                        | {"values": survey.get("values")}
                         for survey in value.get("survey_vars", [])
                     ]
                     if cls.drop_setting:
@@ -163,6 +167,7 @@ class ScopedPublicationTests(unittest.TestCase):
         ]
         cls.requests = []
         cls.writes = []
+        cls.template_payloads = []
         cls.schedules = []
         cls.ignore_write = False
         cls.drop_setting = False
@@ -364,6 +369,45 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.environments[0]["name"], "Isolated inputs (Dev)")
         self.assertEqual(self.records[-1]["environment_id"], self.environments[0]["id"])
+
+    def test_authentik_dev_variant_targets_dev_and_base_targets_main(self):
+        for name, repository_id, expected_branch in (
+            ("Deploy Authentik", 1, "main"),
+            ("Deploy Authentik (Dev)", 5, "dev"),
+        ):
+            with self.subTest(name=name):
+                self.setUp()
+                self.records[0].update(
+                    name=name, repository_id=repository_id,
+                    playbook="platform/playbooks/deploy-authentik.yml",
+                    survey_vars=[{"name": "service_branch", "type": "string", "default_value": "main"}],
+                )
+                code, output = self.run_play(selection=[name])
+                self.assertEqual(code, 0, output)
+                branch = next(v for v in self.records[0]["survey_vars"]
+                              if v["name"] == "service_branch")
+                self.assertEqual(branch["default_value"], expected_branch)
+
+    def test_all_generated_dev_branch_surveys_preserve_other_fields(self):
+        declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        for base in declarations:
+            surveys = base.get("survey_vars", [])
+            if not base.get("dev_variant") or not any(v["name"] == "service_branch" for v in surveys):
+                continue
+            with self.subTest(name=base["name"]):
+                self.setUp()
+                name = base["name"] + " (Dev)"
+                self.records[0].update(name=name, repository_id=5, playbook=base["playbook"],
+                                       survey_vars=copy.deepcopy(surveys))
+                expected = copy.deepcopy(surveys)
+                branch = next(v for v in expected if v["name"] == "service_branch")
+                self.assertEqual(branch["default_value"], "main")
+                branch.update(default_value="dev",
+                              description="Target branch for this Dev-bound template (use dev for reviewed Dev code)")
+                code, output = self.run_play(selection=[name])
+                self.assertEqual(code, 0, output)
+                self.assertEqual(len(self.template_payloads), 1)
+                self.assertEqual(self.template_payloads[0]["survey_vars"], expected)
 
     def test_scoped_surveys_do_not_create_or_change_declared_environment(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
