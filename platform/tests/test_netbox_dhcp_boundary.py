@@ -81,5 +81,12 @@ def test_router_check_precedes_netbox_write():
         "{{ _netbox_site.pfsense_dhcp_validate_certs | default(true) | bool }}"
     )
     assert tasks[read]["ansible.builtin.uri"]["validate_certs"] == "{{ _pfsense_validate_certs }}"
+    tls_guard = names.index("Require an inventory-owned boolean pfSense TLS setting")
+    assert tls_guard < names.index("Authenticate to OpenBao (AppRole)")
+    assert tasks[tls_guard]["when"] == "_reserve"
+    assert tasks[tls_guard]["ansible.builtin.assert"]["that"] == [
+        "pfsense_dhcp_validate_certs is not defined",
+        "(_netbox_site.pfsense_dhcp_validate_certs | default(true)) is boolean",
+    ]
     source = tasks[names.index("Require the pfSense DHCP source before reserving")]
     assert "_pfsense_url is match('^https://')" in source["ansible.builtin.assert"]["that"]

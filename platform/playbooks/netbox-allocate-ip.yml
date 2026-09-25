@@ -89,6 +89,14 @@
         fail_msg: "Set an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
       when: _reserve
 
+    - name: "Require an inventory-owned boolean pfSense TLS setting"
+      ansible.builtin.assert:
+        that:
+          - pfsense_dhcp_validate_certs is not defined
+          - (_netbox_site.pfsense_dhcp_validate_certs | default(true)) is boolean
+        fail_msg: "Declare pfsense_dhcp_validate_certs as a boolean on the private NetBox host; launch-time overrides are refused."
+      when: _reserve
+
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
