@@ -57,3 +57,16 @@ PY
   assert_grep -qF "_address_status in ['reserved', 'active']" "$LOOKUP"
   assert_grep -qF 'vars/declared-vm.yml' "$LOOKUP"
 }
+
+@test "lookup-inventory: the token-bearing NetBox request is no_log, and fails visibly on status" {
+  # Review of PR #195: _nb_headers carries the live automation token.
+  local blk
+  blk=$(task_block "$LOOKUP" 'Ask the IPAM authority about the declared address')
+  assert_grep -qF 'headers: "{{ _nb_headers }}"' <<<"$blk"
+  assert_grep -qF 'no_log: true' <<<"$blk"
+  assert_grep -qF 'failed_when: false' <<<"$blk"
+  blk=$(task_block "$LOOKUP" 'Require the IPAM lookup to have answered')
+  assert_grep -qF '_nb_ip.status | default(-1) == 200' <<<"$blk"
+  refute_grep -qF '_nb_headers' <<<"$blk"
+  assert_precedes "$LOOKUP" 'Require the IPAM lookup to have answered' 'name: "Decide"'
+}

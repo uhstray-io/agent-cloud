@@ -79,6 +79,12 @@ def test_pick_keeps_the_newest_finished_task_per_template_and_service():
     assert [(t["id"], t["service"]) for t in picked] == [(11, "step-ca"), (12, "tududi")]
 
 
+def test_aggregate_lets_the_newest_real_result_win():
+    older_pass = _task(10, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"}))
+    newer_fail = _task(12, "error", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "fail"}))
+    assert _agg(newer_fail, older_pass)["status_by_service"]["tududi"]["secrets-approle"] == "fail"
+
+
 def test_service_comes_from_inventory_not_string_surgery():
     # step_ca_svc's hosts are service_name step-ca: the name its own step results carry.
     deploy = {"id": 1, "status": "error", "template_id": 6, "tpl_playbook": "platform/playbooks/deploy-step-ca.yml"}
@@ -112,7 +118,7 @@ def test_loki_streams_label_every_result():
         "stream": {"job": "agent-cloud-conformance", "service": "tududi",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
-            {"check_mode": None, "error": None, "task_id": 8}, sort_keys=True)]],
+            {"check_mode": False, "error": None, "task_id": 8}, sort_keys=True)]],
     }]
 
 
@@ -151,3 +157,99 @@ def test_target_service_may_name_the_service_or_its_group():
     rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "tududi"}'},
             {"id": 2, "status": "error", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'}]
     assert {t["id"]: t["service"] for t in step_results.pick([rows], GROUPS)} == {1: "tududi", 2: "step-ca"}
+
+
+# ── check mode never sets conformance (review of PR #195) ─────────────────────
+
+DRY = {"params": {"dry_run": True, "diff": True}}
+
+
+def test_a_passing_check_after_a_failed_real_run_does_not_clear_the_failure():
+    failed_real = _task(20, "error", 2, "\n".join(f"line {i}" for i in range(5)))
+    passing_check = _task(21, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass", "check_mode": True}), **DRY)
+    agg = _agg(failed_real, passing_check)
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
+    assert agg["failed_steps"]["tududi"] == ["fw-harden"]
+    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "pass"
+    assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 21
+
+
+def test_a_result_contradicting_its_row_is_an_anomaly_kept_out_of_conformance():
+    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass", "check_mode": True})
+    agg = _agg(_task(22, "success", 1, out))
+    assert agg["status_by_service"] == {}
+    assert agg["validation"]["tududi"]["secrets-approle"]["check_mode"] is True
+    assert agg["anomalies"] == [{"task_id": 22, "service": "tududi", "step": "secrets-approle",
+                                 "row_check_mode": False, "result_check_mode": True}]
+
+
+def test_the_last_real_run_survives_any_number_of_dry_runs():
+    # Review of PR #229: one real run, then five (or more) check-mode runs.
+    env = '{"target_service": "tududi_svc"}'
+    real = {"id": 30, "status": "error", "template_id": 2, "environment": env}
+    dry = [dict(real, id=31 + i, status="success", **DRY) for i in range(6)]
+    assert [t["id"] for t in step_results.pick([[real, *dry]], GROUPS)] == [30, 36]
+
+
+def test_a_real_row_failing_without_a_result_is_a_real_failure():
+    # The row is the run-mode signal: a real row's failure with no result is a real fail.
+    agg = _agg(_task(40, "error", 2, "boom"))
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
+    assert agg["anomalies"] == []
+
+
+def test_no_template_can_inject_check_mode_outside_the_task_row():
+    # The premise that makes the row authoritative: no template passes arguments (e.g.
+    # --check) and none allows a per-task argument override.
+    for name in ("templates.yml", "templates-local.yml"):
+        text = (REPO / "platform/semaphore" / name).read_text()
+        assert "--check" not in text, name
+        assert "allow_override_args_in_task" not in text, name
+        for t in yaml.safe_load(text).get("templates") or []:
+            assert "arguments" not in t, (name, t.get("name"))
+    setup = (REPO / "platform/semaphore/setup-templates.yml").read_text()
+    assert "allow_override_args_in_task" not in setup and "'arguments'" not in setup
+
+
+def test_an_inventoried_service_with_no_history_still_gets_a_report_row():
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "tududi"])
+    assert set(agg["report"]) == {"step-ca", "tududi"}
+    assert agg["report"]["step-ca"]["no_history"] is True
+    assert agg["report"]["step-ca"]["failed"] == []
+    assert agg["report"]["step-ca"]["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
+
+
+def test_a_no_history_service_reaches_netbox_and_the_dashboard():
+    # Review of PR #229: the collector writes NetBox and Loki from the aggregate, so a
+    # tracked service with no run must appear there too, not only in the report.
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca"])
+    assert agg["tracked"] == ["step-ca"]
+    assert agg["status_by_service"] == {"step-ca": {}}
+    assert agg["failed_steps"] == {"step-ca": []}
+    streams = step_results.loki_streams(agg, 1)
+    assert streams == [{"stream": {"job": "agent-cloud-conformance", "service": "step-ca", "step": "none",
+                                   "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
+
+
+def test_the_collector_writes_every_tracked_service():
+    text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
+    assert 'loop: "{{ _agg.tracked }}"' in text
+    assert "_agg.loki_streams | length > 0" in text
+    assert "_agg.services.keys()" not in text
+
+
+def test_a_dry_run_failing_without_a_result_is_validation_not_an_anomaly():
+    # Review of PR #229: the synthesized failure takes its run mode from the row.
+    agg = _agg(_task(41, "error", 2, "boom", **DRY))
+    assert agg["status_by_service"] == {}
+    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "fail"
+    assert agg["anomalies"] == []
+
+
+def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
+    dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
+                               "service-conformance.json").read_text())
+    exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+    assert 'step!="none"' in exprs["Step status by service"]
+    assert 'status="no_history"' in exprs["Services not yet run"]

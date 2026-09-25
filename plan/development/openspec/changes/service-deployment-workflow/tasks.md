@@ -201,6 +201,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         local NetBox holds no VM record (needs 7.3's NetBox VM record executor). The table
         transformations have been checked against Grafana 11.4 source but not viewed in a
         browser.
+      - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
+        NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
+        implemented because the two steps it would evidence (`instrument-host`,
+        `instrument-service`, criteria "series present") have no executor yet (registry
+        `executor: null`). It lands with those executors; until then those steps show no
+        result, never a pass.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [ ] 7.7 `agent-practices.md` for agentgateway
