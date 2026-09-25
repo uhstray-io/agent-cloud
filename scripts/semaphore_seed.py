@@ -95,9 +95,6 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     before = api(env_path)
     if before.get("project_id") != project or before.get("id") != expected_env:
         raise Refusal("Environment identity differs")
-    secrets = before.get("secrets")
-    if not isinstance(secrets, list):
-        raise Refusal("Environment response has no secrets array; absence cannot be established")
     # The seed task logs in to OpenBao and writes the value at THIS address. Pinned to the
     # operator-approved endpoint: an environment whose address changed after provisioning
     # would otherwise receive the AppRole login and the staged value (review of PR #205).
@@ -115,6 +112,8 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     problems = seed_environment_problems(before, endpoint)
     if problems:
         raise Refusal("Seed environment requires reconciliation before staging: " + "; ".join(problems))
+    if {item["name"] for item in before.get("secrets", [])} != {"BAO_ROLE_ID", "BAO_SECRET_ID"}:
+        raise Refusal("Provision both AppRole inputs in the isolated environment before staging")
     templates = {item["id"]: item for item in api("/templates")}
     if any(item.get("environment_id") == expected_env and item.get("id") != template_id
            for item in templates.values()):

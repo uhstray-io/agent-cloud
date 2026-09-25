@@ -69,8 +69,9 @@ def seed_environment_problems(environment, approved_endpoint=None):
             problems.append("OpenBao endpoint set but no approved endpoint to check it against")
         elif extra["openbao_addr"] != approved_endpoint:
             problems.append("OpenBao endpoint differs from the approved endpoint")
-    # Semaphore v2.17.31 fills metadata before GET but omits an empty list from JSON.
-    # An explicit null or malformed list is still unknown and must fail closed.
+    # The single-environment GET fills metadata before returning, but v2.18.12 omits
+    # an empty list from JSON. Never pass a row from the environment LIST endpoint:
+    # that endpoint does not load secret metadata. Null or malformed lists still fail.
     secrets = environment.get("secrets", [])
     if not isinstance(secrets, list):
         return problems + ["no secrets list; contents cannot be established"]

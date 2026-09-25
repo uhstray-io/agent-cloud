@@ -1108,9 +1108,9 @@ allow-list that only shrinks.
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
 provisioner from `dev`, then refused its newly created isolated environment as
 unreadable. Its GET response omitted `secrets`; the fixture always returned
-`secrets: []` and passed. Semaphore v2.17.31
-[loads secret metadata on GET](https://github.com/semaphoreui/semaphore/blob/v2.17.31/api/projects/environment.go#L122-L145)
-but [serializes an empty list with `omitempty`](https://github.com/semaphoreui/semaphore/blob/v2.17.31/db/Environment.go),
+`secrets: []` and passed. The running Semaphore v2.18.12
+[loads secret metadata on single GET](https://github.com/semaphoreui/semaphore/blob/v2.18.12/api/projects/environment.go#L131-L176)
+but [serializes an empty list with `omitempty`](https://github.com/semaphoreui/semaphore/blob/v2.18.12/db/Environment.go),
 so both responses describe an empty environment.
 
 **Root cause.** The shared clean-environment rule treated absence as unknown,

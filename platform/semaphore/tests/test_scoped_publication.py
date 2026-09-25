@@ -61,7 +61,7 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply(cls.active_tasks)
                 for row in cls.environments:
                     if self.path == f"/api/project/1/environment/{row['id']}":
-                        # v2.17.31 omits an empty `secrets` slice on GET (omitempty).
+                        # v2.18.12 omits an empty `secrets` slice on single GET (omitempty).
                         return self.reply({k: v for k, v in row.items() if k != "secrets" or v})
                 if self.path.endswith("/templates"):
                     # List projections need not contain the complete writable record.
