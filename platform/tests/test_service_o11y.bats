@@ -316,9 +316,42 @@ for name in ('Drill o11y Alert Canary (Dev)', 'Restore o11y Alert Baseline (Dev)
     assert templates[name]['repository'] == 'agent-cloud dev'
     assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
 PY
-  grep -qxF 'config/grafana/provisioning/alerting/*.yml' "$DEPLOY_DIR/.gitignore"
-  grep -qF -- '--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/' \
-    "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
+  for name in observability.yml contact.yml; do
+    grep -qxF "config/grafana/provisioning/alerting/$name" "$DEPLOY_DIR/.gitignore"
+    grep -qF -- "--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/$name" \
+      "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
+  done
+}
+
+@test "o11y: shared local placement preserves rendered alerts and copies committed rules" {
+  command -v rsync >/dev/null 2>&1 || skip "rsync not available"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml" "$DEPLOY_DIR/.gitignore" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import yaml
+
+placement = yaml.safe_load(Path(sys.argv[1]).read_text())
+script = next(task['ansible.builtin.shell'] for task in placement
+              if task['name'] == 'Copy working tree into place (local mode)')
+assert '--delete-excluded' not in script
+rel = Path('platform/services/o11y/deployment/config/grafana/provisioning/alerting')
+with tempfile.TemporaryDirectory(prefix='o11y-placement-') as tmp:
+    source, target = Path(tmp) / 'source', Path(tmp) / 'target'
+    (source / rel).mkdir(parents=True)
+    (source / 'platform/services/o11y/deployment/.gitignore').write_text(Path(sys.argv[2]).read_text())
+    (source / rel / 'inference.yml').write_text('committed\n')
+    (target / rel).mkdir(parents=True)
+    for name in ('observability.yml', 'contact.yml'):
+        (target / rel / name).write_text('rendered\n')
+    rendered = script.replace('{{ _monorepo_dir }}', str(target)).replace(
+        '{{ playbook_dir | dirname | dirname }}', str(source))
+    subprocess.run(['bash', '-c', rendered], check=True, capture_output=True, text=True)
+    assert all((target / rel / name).read_text() == 'rendered\n'
+               for name in ('observability.yml', 'contact.yml'))
+    assert (target / rel / 'inference.yml').read_text() == 'committed\n'
+PY
 }
 
 @test "o11y: retention defaults reach Prometheus and Loki" {

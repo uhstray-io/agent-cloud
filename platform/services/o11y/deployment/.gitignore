@@ -2,6 +2,7 @@
 # (config/ IS committed — config-as-code; only the Grafana admin pw stays out.)
 .env
 config/scrape.d/*.yml
-# Grafana alert provisioning is rendered on the target, never committed.
-# place-monorepo.yml explicitly preserves it during local rsync --delete.
-config/grafana/provisioning/alerting/*.yml
+# These two Grafana alert files are rendered on the target, never committed.
+# Other alert rules in this directory may be committed as config-as-code.
+config/grafana/provisioning/alerting/observability.yml
+config/grafana/provisioning/alerting/contact.yml
