@@ -381,6 +381,17 @@
 > Dev-bound Semaphore template. The current Dev blueprint declares a legacy
 > account absent; the audit must establish whether that account is still live
 > before the deploy applies the private Grafana OIDC declaration.
+> Semaphore task 1305 published the read-only audit template from merged Dev
+> commit `bcaf82f173af5853045b75876ba1e8dea92a3007`; template 229 retains
+> the Dev repository, production inventory, and environment bindings. Task
+> 1306 reached the authenticated container query but returned rc 255 without
+> an account count. No Authentik deployment followed. The audit now checks
+> the same audit script with static, noncredentialed probe input first. Its
+> fixed readiness response proves container execution, script loading, and token
+> availability without querying accounts or revealing names or tokens. The
+> script reports only code-owned audit error labels; unexpected exception
+> details remain hidden. A successful account count remains the deployment
+> gate.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,
