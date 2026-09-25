@@ -896,7 +896,7 @@
     - name: "Refuse to erase a previously synced local alert destination"
       ansible.builtin.assert:
         that:
-          - _existing_o11y_inventory is not search('(?m)^o11y_alert_discord_(guild|channel)_id=')
+          - _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
         fail_msg: "Existing local alert destination lacks its private projection; rerun the reviewed sync"
         quiet: true
       vars:
@@ -908,10 +908,10 @@
       ansible.builtin.assert:
         that:
           - >-
-            _existing_o11y_inventory is not search('(?m)^o11y_alert_discord_(guild|channel)_id=')
+            _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
             or
-            (_existing_o11y_inventory is search('(?m)^o11y_alert_discord_guild_id=' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '$')
-             and _existing_o11y_inventory is search('(?m)^o11y_alert_discord_channel_id=' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '$'))
+            (_existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_guild_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '[ \t]*$')
+             and _existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_channel_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '[ \t]*$'))
         fail_msg: "Stored local alert destination differs from its private projection; rerun the reviewed sync"
         quiet: true
       vars:

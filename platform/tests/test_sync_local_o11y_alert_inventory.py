@@ -200,9 +200,14 @@ def test_bootstrap_refusals_evaluate_against_synthetic_inventory():
     assert accepts(missing, _existing_o11y_inventory=CURRENT)
     synced = sync.overlay(CURRENT, VALUES)
     assert not accepts(missing, _existing_o11y_inventory=synced)
+    spaced = synced.replace("o11y_alert_discord_guild_id=", "  o11y_alert_discord_guild_id = ")
+    spaced = spaced.replace("o11y_alert_discord_channel_id=", "o11y_alert_discord_channel_id = ")
+    assert not accepts(missing, _existing_o11y_inventory=spaced)
 
     stale = "Refuse a stale local alert projection"
     assert accepts(stale, _existing_o11y_inventory=CURRENT, _o11y_projection=good)
     assert accepts(stale, _existing_o11y_inventory=synced, _o11y_projection=good)
+    assert accepts(stale, _existing_o11y_inventory=spaced, _o11y_projection=good)
     changed = {**good, "o11y_alert_discord_channel_id": "3" * 19}
     assert not accepts(stale, _existing_o11y_inventory=synced, _o11y_projection=changed)
+    assert not accepts(stale, _existing_o11y_inventory=spaced, _o11y_projection=changed)
