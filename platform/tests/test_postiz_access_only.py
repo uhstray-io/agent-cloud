@@ -78,6 +78,7 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
                  "bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret", **extra_vars}
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("SEED_") and key != "BAO_VALUE"}
+        # Stock output on purpose: stricter than production's redact_requests (MISTAKES 4.6).
         env.update(SEED_X_API_KEY=provider, BAO_VALUE=provider, ANSIBLE_LOCAL_TEMP=str(tmp_path),
                    ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
         result = subprocess.run(
