@@ -300,6 +300,10 @@ assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
 assert recovery[-1]['tasks'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
 assert not any('manage-secrets.yml' in str(task) for task in restore)
+directory = next(i for i, task in enumerate(restore) if task['name'] == 'Recreate the generated Grafana alert provisioning directory')
+rules = next(i for i, task in enumerate(restore) if task['name'] == 'Render paused Grafana alert rules without OpenBao')
+assert directory < rules
+assert restore[directory]['ansible.builtin.file']['state'] == 'directory'
 assert any(task['name'] == 'Remove the canary webhook from the existing runtime environment' for task in restore)
 assert any(task.get('vars', {}).get('o11y_alerts_enabled') is False for task in restore)
 assert any(task['name'] == 'Require the service-down rule to be paused again' for task in restore)
