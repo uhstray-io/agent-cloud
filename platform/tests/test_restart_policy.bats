@@ -72,7 +72,8 @@ for d, docs in sorted(dirs.items()):
                 effective[name] = (svc.get('restart'), f)
             if 'labels' in svc:
                 raw = svc['labels'] or {}
-                labels[name] = raw if isinstance(raw, dict) else dict(x.split('=', 1) for x in raw)
+                # Compose merges labels by key across overlays; so does this (PR 253 CodeRabbit review).
+                labels.setdefault(name, {}).update(raw if isinstance(raw, dict) else dict(x.split('=', 1) for x in raw))
     for name, (policy, f) in sorted(effective.items()):
         if policy not in ('always', 'no'):
             bad.append(f"{f}: service {name}: restart={policy!r}")

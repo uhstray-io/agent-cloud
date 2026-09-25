@@ -48,6 +48,8 @@ PY
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   local arp='{"data":[{"ip":"192.0.2.60","mac":"bc:24:11:00:00:60"}]}'
   [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=True" ]
+  # ours, plus a second device answering for the same address (PR 253 CodeRabbit review)
+  [ "$(judge '{"data":[{"ip":"192.0.2.60","mac":"bc:24:11:00:00:60"},{"ip":"192.0.2.60","mac":"aa:bb:cc:dd:ee:ff"}]}' '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=2 own=False" ]
   # running and ours by id and name, but the ARP MAC is another device's (PR 195 Codex review)
   [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}' '{"data":{"net0":"virtio=BC:24:11:99:99:99,bridge=vmbr0"}}')" = "hits=1 own=False" ]
   # a DIFFERENT VM at the vmid, or ours by name at another vmid, owns nothing

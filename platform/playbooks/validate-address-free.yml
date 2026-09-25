@@ -117,7 +117,8 @@
 
     # A running VM with the declared id and name does not prove the ARP entry is ITS: another
     # device can answer for the address (PR 195 Codex review). Its NIC MACs, from its own config,
-    # must include the MAC the firewall saw.
+    # must include EVERY MAC the firewall saw for the address: one foreign entry beside the VM's
+    # own is a second device holding it (PR 253 CodeRabbit review).
     - name: "Read the running VM's network configuration"
       ansible.builtin.uri:
         url: "{{ _pve.url }}/api2/json/nodes/{{ _running_vm[0].node }}/qemu/{{ _vmid }}/config"
@@ -145,8 +146,8 @@
     - name: "Judge whether the ARP entry is the declared VM's own"
       ansible.builtin.set_fact:
         _own_vm: >-
-          {{ (_running_vm | length > 0)
-             and (_arp_hits | map(attribute='mac', default='') | map('lower') | intersect(_vm_macs) | length > 0) }}
+          {{ (_running_vm | length > 0) and (_arp_hits | length > 0)
+             and (_arp_hits | map(attribute='mac', default='') | map('lower') | difference(_vm_macs) | length == 0) }}
       vars:
         # Proxmox writes a NIC as net<N>: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0".
         _vm_macs: >-
