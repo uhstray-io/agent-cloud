@@ -361,6 +361,15 @@
 > through the Dev-bound Semaphore workflows. Read-only Dev-bound
 > task 1160 planned one unrelated DNS addition and one rate-limit update at
 > `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
+> Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
+> `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
+> refreshed the existing `o11y` DNS record without proposing a change to it,
+> but the full plan still proposed one unrelated `admin.inference` DNS addition
+> and one rate-limit ruleset update (1 add, 1 change, 0 destroy). The task
+> succeeded with no Cloudflare write. This supports the declared `o11y` record's
+> current state, not a zero-diff plan or a working production Caddy route;
+> reconcile the unrelated drift separately before using a zero-diff plan as a
+> production acceptance gate.
 > On 2026-09-23, PRs #208 and #210 merged the receiver guard and
 > OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
 > PR #18 merged the alert destination and Grafana browser URLs, but its
