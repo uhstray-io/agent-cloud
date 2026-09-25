@@ -228,6 +228,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | Playbook | Purpose |
 |----------|---------|
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
+| `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel |
 | `install-podman.yml` | Install Podman + podman-compose (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |

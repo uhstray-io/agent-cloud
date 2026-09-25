@@ -338,13 +338,18 @@ read through the Proxmox guest-agent API. The validated cloud-init address fallb
 already lives in the discovery worker; the old PR's coordinate repair and duplicate
 fallback must not be ported over it.
 
-1. Add a Semaphore playbook that selects an explicit VM inventory group, resolves
-   sudo access, ensures the package is present, and starts the service. A package
-   state check must use `apt` directly rather than the return code of `dpkg -l`.
+1. Add a Semaphore playbook that selects one explicit `<name>_svc` group (refusing
+   an empty group or a host pattern), refuses a VM without the guest-agent virtio
+   port, resolves sudo access, ensures the package is present, and starts the
+   service. A package state check must use `apt` directly rather than the return
+   code of `dpkg -l`.
 2. Publish a Dev template with a required `target_service` survey field so the
    operator chooses the target group before the task runs.
 3. Validate playbook syntax, template parsing, and a check-mode run before a live
-   Semaphore run. Production installation remains pending that live verification.
+   Semaphore run. Check mode is expected to refuse each VM without the port; enable
+   that VM's Proxmox `agent` option (`qm set <vmid> --agent 1`, as
+   `provision-vm.yml` does for new VMs) before installing. Production installation
+   remains pending that live verification.
 
 ---
 

@@ -1337,7 +1337,7 @@ templates:
     survey_vars:
       - name: target_service
         title: "Target VM group"
-        description: "Inventory group of existing VMs to install the guest agent on"
+        description: "One <name>_svc inventory group of existing QEMU VMs (e.g. netbox_svc)"
         type: string
         required: true
 

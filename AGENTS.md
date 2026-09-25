@@ -330,6 +330,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | Deploy keys from OpenBao, verify key auth |
 | Harden SSH | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown (after key verification) |
 | Install Docker | `install-docker.yml` | Docker CE from official repo (idempotent) |
+| Install QEMU Guest Agent | `install-qemu-guest-agent.yml` | Install + start `qemu-guest-agent` on ONE `<name>_svc` group of existing VMs that predate the cloud-init package list. Refuses an empty group or host pattern, and any VM without the guest-agent virtio port (enable the Proxmox `agent` option first) |
 | Preflight Target Group | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
 | Verify Host Access | `verify-host-access.yml` | Prove KEY-ONLY SSH works before `harden-ssh.yml` withdraws password auth. Refuses to pass on password auth — a false green here is the lockout it exists to prevent |
 | Provision VM | `provision-vm.yml` | Clone the template and provision a declared VM. Inventory-first; `-e target_host=` REQUIRED when the group declares more than one host |
