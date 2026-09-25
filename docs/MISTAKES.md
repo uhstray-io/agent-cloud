@@ -74,7 +74,7 @@ supersede it with a new entry and link both.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
-| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Test (static guard, `test_no_request_in_loop_items.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
@@ -1540,6 +1540,17 @@ indexes into the reads (`index_var`), so no failed item carries a request. Narro
 this adds: a task without `no_log` never loops over, or prints, a registered result from a
 `no_log` task — derive the clean data first. Six pre-existing loops over registered
 results elsewhere on dev are unaudited against this rule.
+
+**Audit and enforcement — 2026-09-25.** Two corrections to occurrence 2. It is not specific to
+2.19: the failed loop item prints the token at default verbosity on ansible-core 2.16.18,
+2.19.13 and 2.20.8, which the ledger records as the local and production controller cores (10.16),
+and only 2.21.0 withholds it (synthetic token, a failing assert over registered `uri` results;
+a `uri` that fails on its own does not print its headers on any of the four). Of the six loops,
+the `sync-secrets-to-openbao.yml` and `bootstrap-local-dev.yml` tasks are themselves `no_log`, so
+they are safe; three tasks in `netbox-allocate-ip.yml` and one in `create-netbox-device.yml` were
+the same leak with the NetBox token, on their failure paths. They now loop over clean input,
+and `test_no_request_in_loop_items.py` fails on the shape on any core. It flags all four
+original sites and the pre-fix #205 task.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 

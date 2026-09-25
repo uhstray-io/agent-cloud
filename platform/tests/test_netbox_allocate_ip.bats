@@ -38,7 +38,7 @@ setup() {
   # Reserving whatever is free AT RUN TIME is not reproducible: two runs a minute apart
   # reserve different addresses and the declaration that follows disagrees with the
   # ledger. The POST body must come from the operator's list, not from the free-IP query.
-  grep -qF 'address: "{{ item.item.address }}"' "$PLAYBOOK"
+  grep -qF 'address: "{{ item.address }}"' "$PLAYBOOK"
   ! grep -qE 'address: "\{\{ _free\.' "$PLAYBOOK"
 }
 
@@ -46,9 +46,9 @@ setup() {
   # NetBox permits duplicate addresses in some configurations, so a blind POST can
   # produce a second record and leave the ledger ambiguous about which is authoritative.
   grep -qF '/api/ipam/ip-addresses/?address=' "$PLAYBOOK"
-  grep -qF "(item.json.results | default([])) | length == 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length == 0" "$PLAYBOOK"
   # An address that already exists is left alone, not re-described.
-  grep -qF "(item.json.results | default([])) | length > 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length > 0" "$PLAYBOOK"
 }
 
 @test "netbox-allocate: the prefix must already exist in the authority" {
@@ -143,7 +143,7 @@ PY
   # itself, and an operator reading that would retry a reservation that had succeeded.
   assert_grep -qF 'Re-read each named address after any writes' "$PLAYBOOK"
   assert_grep -qF 'register: _final_state' "$PLAYBOOK"
-  assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
+  assert_grep -qF '_read: "{{ _final_state.results[_i] }}"' "$PLAYBOOK"
   # The report must NOT read the pre-create results any more.
   # Extract the report task to a file and assert on THAT. The previous form was a no-op
   # twice over: `grep -vq` succeeds when ANY line lacks the string, so it passed with

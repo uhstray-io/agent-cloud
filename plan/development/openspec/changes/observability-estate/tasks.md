@@ -10,7 +10,7 @@
 
 - [x] 2.1 Add inventory-controlled metric retention and per-scrape sample limits, with a local pilot measurement recorded before wider rollout; production size selection remains gated on its receiver audit.
 - [ ] 2.2 Provision service-down and missing-telemetry rules, a generic dashboard link, and a contact point whose credential is rendered from OpenBao by Ansible.
-- [ ] 2.3 Encode a reversible pilot fault drill through Semaphore and verify both rule firing and notification receipt without manual Grafana changes.
+- [ ] 2.3 Encode a Dev-bound, local-only pilot fault drill that temporarily activates OpenBao-backed provisioning, verifies both rule firing and Discord receipt, and always restores paused rules and removes the contact point before success. Keep persistent enablement separate.
 - [ ] 2.4 Validation gate: a wipe/redeploy plus the drill prove spec scenarios "Rebuild restores views and rules" and "Failure reaches an operator".
 
 ## 3. Trace ingestion after alert proof

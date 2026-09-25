@@ -219,6 +219,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 
 - **`no_log` is for credential tasks only.** Do **not** put it on deploys, waits, health checks, verification, or debug displays — there it hides failures and makes Semaphore runs undiagnosable (a past `deploy.sh` failure was censored exactly this way). The fix is *scoping* `no_log` to the credential boundary, not banning or blanket-applying it.
 - The reusable `tasks/manage-secrets.yml` is the reference: its auth/fetch/resolve/store/shared-read steps are `no_log`'d; `deploy.sh` and verification are not.
+- **A visible task never loops over a credential-bearing request's registered results.** A failed loop item is printed whole, and a `uri` result carries its request headers; `loop_control.label` only shortens the summary line (ansible-core 2.16–2.20; `docs/MISTAKES.md` 4.6). Loop over the clean input and index into the results with `index_var`. Enforced by `platform/tests/test_no_request_in_loop_items.py`.
 
 ### OpenBao Secrets Layout
 
