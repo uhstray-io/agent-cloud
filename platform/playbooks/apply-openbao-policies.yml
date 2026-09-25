@@ -38,6 +38,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Find all .hcl policy files"
       ansible.builtin.find:
@@ -58,6 +60,7 @@
       loop: "{{ _policy_files.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

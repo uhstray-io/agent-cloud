@@ -47,6 +47,7 @@
         OPA_PORT: "{{ opa_port | default('8281') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -71,6 +72,7 @@
       retries: 10
       delay: 3
       until: _opa_health.status == 200
+      check_mode: false
 
     - name: "Sample decision: nemoclaw read nocodb -> allow"
       ansible.builtin.uri:
@@ -82,6 +84,7 @@
         status_code: [200]
       register: _opa_allow
       failed_when: not (_opa_allow.json.result.allowed | default(false) | bool)
+      when: not ansible_check_mode
 
     - name: "Sample decision: unknown agent -> deny"
       ansible.builtin.uri:
@@ -93,11 +96,13 @@
         status_code: [200]
       register: _opa_deny
       failed_when: _opa_deny.json.result.allowed | default(true) | bool
+      when: not ansible_check_mode
 
     - name: "Run Rego unit tests (opa test /policies)"
       ansible.builtin.command: "{{ _engine }} exec opa /opa test /policies"
       register: _opa_test
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

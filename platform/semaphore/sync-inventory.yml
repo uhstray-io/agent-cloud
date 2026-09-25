@@ -98,6 +98,7 @@
         argv: [ansible-inventory, -i, "{{ inventory_source }}", --list]
       register: _inv_list
       changed_when: false
+      check_mode: false
 
     - name: "Count them"
       ansible.builtin.set_fact:
@@ -122,6 +123,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _invs
+      check_mode: false
 
     - name: "Locate the target record"
       ansible.builtin.set_fact:
@@ -164,7 +166,9 @@
           ssh_key_id: "{{ _match.ssh_key_id | default(_ssh_key_id) | int }}"
           become_key_id: "{{ _match.become_key_id | default(omit) }}"
         status_code: [200, 201, 204]
-      when: (_match.inventory | default('')) != _content
+      when:
+        - not ansible_check_mode
+        - (_match.inventory | default('')) != _content
       changed_when: true
 
     - name: "Re-read to confirm"
@@ -176,8 +180,11 @@
         follow_redirects: none
       register: _after
       changed_when: false
+      check_mode: false
 
     - name: "Verify the push actually landed"
+      # Dry run: nothing was pushed, so the stored record may still differ.
+      when: not ansible_check_mode
       ansible.builtin.assert:
         that:
           - (_after.json.inventory | default('')) == _content

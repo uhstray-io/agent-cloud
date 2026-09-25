@@ -64,6 +64,7 @@
       register: _compose_check
       changed_when: false
       become: false
+      check_mode: false
 
     - name: "Fail if no compose entrypoint after install"
       ansible.builtin.fail:

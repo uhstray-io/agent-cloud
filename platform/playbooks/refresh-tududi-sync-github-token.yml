@@ -65,6 +65,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the n8n API key (the engine's own credential path)"
       ansible.builtin.uri:
@@ -75,6 +77,7 @@
       register: _n8n_secret
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "Mint the installation token (shared task: stdin key, scope preflight)"
       ansible.builtin.include_tasks: tasks/mint-tududi-sync-github-token.yml
@@ -90,6 +93,7 @@
         status_code: [200]
       register: _creds
       no_log: true
+      check_mode: false
 
     - name: "Require the credential to exist (provisioning owns creation)"
       ansible.builtin.assert:
@@ -120,6 +124,7 @@
             allowedDomains: api.github.com
         status_code: [200]
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Report (names only — the token expires within the hour anyway)"
       ansible.builtin.debug:

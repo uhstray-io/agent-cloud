@@ -162,7 +162,8 @@ assert template['playbook'] == 'platform/playbooks/deploy-o11y.yml'
 assert survey['service_branch']['default_value'] == 'dev'
 assert survey['expected_repository_sha']['required'] is True
 PY
-  assert_precedes "$playbook" 'Read the placed revision when a candidate SHA is required' 'Manage secrets and template env file'
+  assert_precedes "$playbook" 'Read the placed revision when a candidate SHA is required' 'Configure o11y alert provisioning from OpenBao'
+  assert_grep -qF 'ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml' "$playbook"
   assert_grep -qF 'that: _placed_revision.stdout == expected_repository_sha' "$playbook"
   assert_grep -qF 'argv: [git, status, --porcelain, --untracked-files=all]' "$playbook"
   python3 - "$playbook" <<'PY'
@@ -206,9 +207,9 @@ YAML
 }
 
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
-  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" "$REPO_ROOT/platform/semaphore/templates.yml" "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-delivery-preflight.yml" <<'PY'
 import json, re, sys, yaml
-from jinja2 import Environment
+from jinja2 import Environment, StrictUndefined
 
 plays = yaml.safe_load(open(sys.argv[1]))
 assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
@@ -222,20 +223,25 @@ survey = {item['name']: item for item in template['survey_vars']}
 assert survey['expected_repository_sha']['required'] is True
 assert survey['drill_expect_alert']['default_value'] == 'false'
 drill = next(play for play in plays if play.get('name') == 'Prove a declared unreachable metrics endpoint fails visibly')
-tasks = drill['tasks'][-1]['block']
-assert any(task['name'] == "Name this run's disposable probe" for task in drill['tasks'])
+assert drill['tasks'][0]['ansible.builtin.include_tasks'] == 'tasks/assert-bao-transport.yml'
+assert drill['tasks'][1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-delivery-preflight.yml'
+assert drill['tasks'][2]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
+probe_tasks = yaml.safe_load(open(sys.argv[3]))
+preflight_tasks = yaml.safe_load(open(sys.argv[4]))
+tasks = probe_tasks[-1]['block']
+assert any(task['name'] == "Name this run's disposable probe" for task in probe_tasks)
 assert "{{ _probe }}" in drill['vars']['expected_service']
 assert all(task.get('delegate_to') == 'localhost' and task.get('no_log') is True
-           for task in drill['tasks'] if 'ansible.builtin.uri' in task)
+           for task in preflight_tasks if 'ansible.builtin.uri' in task)
 assert all(task['ansible.builtin.uri']['headers']['User-Agent'].startswith('DiscordBot (')
-           for task in drill['tasks'] + tasks if 'ansible.builtin.uri' in task
+           for task in preflight_tasks + tasks if 'ansible.builtin.uri' in task
            and task['ansible.builtin.uri']['url'].startswith('https://discord.com/'))
-marker = next(task for task in drill['tasks'] if task['name'] == 'Mark the last Discord message before the probe')
+marker = next(task for task in preflight_tasks if task['name'] == 'Mark the last Discord message before the probe')
 assert marker['ignore_errors'] is True
-assert any(task['name'] == 'Require Discord message-history access before the probe' for task in drill['tasks'])
+assert any(task['name'] == 'Require Discord message-history access before the probe' for task in preflight_tasks)
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
-env = Environment()
+env = Environment(undefined=StrictUndefined)
 env.filters['from_json'] = json.loads
 env.filters['to_json'] = json.dumps
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
@@ -244,6 +250,14 @@ matches = env.compile_expression(wait['until'])
 for state, expected in [('Alerting', True), ('Alerting (Error)', False), ('firing', True), ('Normal', False)]:
     response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
     assert bool(matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')) is expected
+response = {'data': {'alerts': [
+    {'state': 'Normal'},
+    {'labels': {'team': 'other'}, 'state': 'Alerting'},
+    {'labels': {'service': 'pilot'}, 'state': 'Alerting'},
+]}}
+assert matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
+response['data']['alerts'].pop()
+assert not matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
 checks = rescue['ansible.builtin.assert']['that']
 instance_check = env.compile_expression(checks[-1])
 for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535']; scrapes found=1.", True),
@@ -267,6 +281,84 @@ for webhook_id, body, expected in [('123', marker, True),
     assert bool(received(_discord_messages={'json': messages},
                          _webhook_id='123', _delivery_marker=marker)) is expected
 assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt from the owned webhook')['ansible.builtin.assert']['fail_msg']
+PY
+}
+
+@test "o11y: delivery canary restores paused rules through the shared task" {
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-alert-canary.yml" \
+    "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-restore-alert-baseline.yml" \
+    "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import posixpath
+import sys
+import yaml
+
+canary, recovery, restore, catalog = [yaml.safe_load(open(path)) for path in sys.argv[1:]]
+assert canary[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
+assert canary[1]['name'] == 'Verify the reviewed Dev checkout before the canary'
+assert canary[2]['name'] == 'Prove local alert delivery and restore the paused baseline'
+tasks = canary[2]['tasks']
+assert next(i for i, task in enumerate(tasks) if task['name'] == 'Refuse an already active service-down rule') < next(
+    i for i, task in enumerate(tasks) if 'block' in task)
+delivery = next(i for i, task in enumerate(tasks) if task['name'] == 'Verify Discord delivery prerequisites before activation')
+flight = next(task for task in tasks if 'block' in task)
+assert delivery < tasks.index(flight)
+assert flight['block'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-provision.yml'
+assert flight['block'][0]['vars']['o11y_alerts_enabled'] is True
+assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
+assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
+assert recovery[-1]['tasks'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
+assert not any('manage-secrets.yml' in str(task) for task in restore)
+directory = next(i for i, task in enumerate(restore) if task['name'] == 'Recreate the generated Grafana alert provisioning directory')
+rules = next(i for i, task in enumerate(restore) if task['name'] == 'Render paused Grafana alert rules without OpenBao')
+assert directory < rules
+assert restore[directory]['ansible.builtin.file']['state'] == 'directory'
+assert all(directory < i and posixpath.dirname(task['ansible.builtin.template']['dest']) == restore[directory]['ansible.builtin.file']['path']
+           for i, task in enumerate(restore) if 'ansible.builtin.template' in task)
+assert any(task['name'] == 'Remove the canary webhook from the existing runtime environment' for task in restore)
+assert any(task.get('vars', {}).get('o11y_alerts_enabled') is False for task in restore)
+assert any(task['name'] == 'Require the service-down rule to be paused again' for task in restore)
+assert any(task['name'] == 'Require the canary contact point to be absent again' for task in restore)
+templates = {item['name']: item for item in catalog['templates']}
+for name in ('Drill o11y Alert Canary (Dev)', 'Restore o11y Alert Baseline (Dev)'):
+    assert templates[name]['repository'] == 'agent-cloud dev'
+    assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
+PY
+  for name in observability.yml contact.yml; do
+    grep -qxF "config/grafana/provisioning/alerting/$name" "$DEPLOY_DIR/.gitignore"
+    grep -qF -- "--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/$name" \
+      "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
+  done
+}
+
+@test "o11y: shared local placement preserves rendered alerts and copies committed rules" {
+  command -v rsync >/dev/null 2>&1 || skip "rsync not available"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml" "$DEPLOY_DIR/.gitignore" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import yaml
+
+placement = yaml.safe_load(Path(sys.argv[1]).read_text())
+script = next(task['ansible.builtin.shell'] for task in placement
+              if task['name'] == 'Copy working tree into place (local mode)')
+assert '--delete-excluded' not in script
+rel = Path('platform/services/o11y/deployment/config/grafana/provisioning/alerting')
+with tempfile.TemporaryDirectory(prefix='o11y-placement-') as tmp:
+    source, target = Path(tmp) / 'source', Path(tmp) / 'target'
+    (source / rel).mkdir(parents=True)
+    (source / 'platform/services/o11y/deployment/.gitignore').write_text(Path(sys.argv[2]).read_text())
+    (source / rel / 'inference.yml').write_text('committed\n')
+    (target / rel).mkdir(parents=True)
+    for name in ('observability.yml', 'contact.yml'):
+        (target / rel / name).write_text('rendered\n')
+    rendered = script.replace('{{ _monorepo_dir }}', str(target)).replace(
+        '{{ playbook_dir | dirname | dirname }}', str(source))
+    subprocess.run(['bash', '-c', rendered], check=True, capture_output=True, text=True)
+    assert all((target / rel / name).read_text() == 'rendered\n'
+               for name in ('observability.yml', 'contact.yml'))
+    assert (target / rel / 'inference.yml').read_text() == 'committed\n'
 PY
 }
 
@@ -387,6 +479,12 @@ for enabled in (False, True):
         assert contact['deleteContactPoints'][0]['uid'] == 'o11y_ops_discord'
 local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rules']
 assert local_rules[1]['uid'] == 'o11y_missing_caddy'
+canary = 'o11y-fault-probe-' + 'a' * 12
+canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabled=True,
+                                              o11y_alert_canary_service=canary))['groups'][0]['rules']
+assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
+assert canary_rules[0]['isPaused'] is False
+assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
 PY
 }
 

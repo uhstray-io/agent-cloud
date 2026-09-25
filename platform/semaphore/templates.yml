@@ -187,6 +187,12 @@ templates:
         required: false
         default_value: "false"
 
+  # Converge the conformance collector's NetBox custom fields to their declaration
+  # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
+  # "Dry run" reports without writing.
+  - name: Provision NetBox Custom Fields
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml
+
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
   # (which records what is declared) or from eyeballing the network. Reserving is opt-in
@@ -210,7 +216,7 @@ templates:
         default_value: "2"
       - name: reserve
         title: "Reserve"
-        description: "true = also CREATE the address records named in assignments"
+        description: "true = CREATE explicit static addresses after a live pfSense DHCP check (HTTPS router source required)"
         type: string
         required: false
         default_value: "false"
@@ -261,6 +267,10 @@ templates:
         type: string
         required: false
         default_value: "main"
+
+  - name: Audit Authentik Retirements
+    playbook: platform/playbooks/audit-authentik-retirements.yml
+    dev_variant: true
 
   - name: Print User Credentials
     playbook: platform/playbooks/print-platform-user-credentials.yml
@@ -701,6 +711,88 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  # Workflow step fw-assess: the read-only snapshot that is the firewall assessment's only
+  # model input.
+  - name: Snapshot Firewall
+    playbook: platform/playbooks/snapshot-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow steps service-assess and access-assess: the read-only snapshots that are each
+  # assessment's only model input.
+  - name: Snapshot Service Assessment
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: Snapshot Access
+    playbook: platform/playbooks/snapshot-access.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # The workflow conformance collector: reads task history, writes each service's step status
+  # to NetBox (and Loki when collector_loki_url is set). The only writer of that status.
+  - name: Collect Service Conformance
+    playbook: platform/playbooks/collect-service-conformance.yml
+    schedule:
+      cron: "*/15 * * * *"
+
+  # Workflow step systemd-enablement: every container of the service restarts on its own and,
+  # for rootless podman, the deploying user has linger. Read-only.
+  - name: Verify Service Persistence
+    playbook: platform/playbooks/verify-service-persistence.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step service-validate: the service answers on its inventory-declared health
+  # path (service_url + health_path) with HTTP 200. Read-only.
+  - name: Verify Service Health
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step lookup-inventory: the declared VM spec is complete, NetBox records the
+  # declared address as reserved or active, and no other host claims it. Read-only.
+  - name: Lookup Service Inventory
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
+  # Workflow step validate-address: the address is not live in pfSense ARP (unless it is the
+  # service's own running VM), and the NetBox VM record exists (created planned if absent).
+  - name: Validate Address Free
+    playbook: platform/playbooks/validate-address-free.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
     survey_vars:
@@ -844,6 +936,16 @@ templates:
     # **environment secret** — encrypted at rest, value not returned by the API,
     # the same channel the AppRole credentials already use. The playbook prefers
     # the environment, so a stray -e bao_value= cannot override it.
+    #
+    # ISOLATED ENVIRONMENT: BAO_VALUE is staged only in this template's own
+    # environment, never in the shared one every template runs in, so no other
+    # task can receive it. scripts/semaphore-seed-input.py stages it, runs one
+    # task, and removes it; seed_inputs is its allowlist. First installation:
+    # run Provision Seed Environment for this template, then
+    # `scripts/semaphore-seed-input.py --verify-only` (the read-only access check).
+    isolated_environment: OpenBao key seed inputs
+    seed_inputs: [BAO_VALUE]
+    seed_access_check: bao_verify_access_only
     survey_vars:
       - name: bao_path
         title: "Secret path"
@@ -855,6 +957,18 @@ templates:
         description: "Field to set/update at that path (e.g. gemini_api_key)"
         type: string
         required: true
+      - name: bao_verify_access_only
+        title: "Verify access without writing"
+        description: "true = log in and read the path, then stop before any write"
+        type: string
+        default_value: "false"
+
+  - name: Reconcile pfSense API Key
+    playbook: platform/playbooks/reconcile-pfsense-api-key.yml
+    dev_variant: true
+    # Reads the fixed private site-config backup on the runner through the
+    # OpenBao-backed deploy key. A different live key is never overwritten.
+    # No credential-bearing survey or launch-time parameter is accepted.
 
   - name: Seed n8n Secrets
     playbook: platform/playbooks/seed-n8n-secrets.yml
@@ -908,9 +1022,49 @@ templates:
         type: string
         required: true
 
+  - name: Provision Seed Environment
+    playbook: platform/playbooks/provision-seed-environment.yml
+    # Gives ONE declared seed template (isolated_environment in this file) its own
+    # environment with an encrypted copy of the controller AppRole, then binds it.
+    dev_variant: true
+    survey_vars:
+      - name: seed_template
+        title: "Seed template"
+        description: "Declared base name, e.g. Seed OpenBao Key or Seed Postiz Secrets"
+        type: string
+        required: true
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified seed inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current seed environment ID"
+        type: string
+        required: true
+      - name: seed_variant
+        title: "Seed variant (dev or main)"
+        description: "Use dev until the seed access-verification code is promoted to main."
+        type: string
+        default_value: dev
+        required: true
+
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
     dev_variant: true
+    isolated_environment: Postiz seed inputs
+    seed_access_check: postiz_verify_access_only
+    survey_vars:
+      - name: postiz_verify_access_only
+        title: "Verify access without writing secrets"
+        type: string
+        description: "Set true to authenticate and read the fixed path without writing secrets."
+        default_value: "false"
+    # Full publication binds an empty environment on first installation.
+    # Run the provisioner, then the read-only survey check, before importing.
     # Places the operator's social-platform application credentials at
     # secret/services/postiz, additively (KV-v2 merge-patch), so the three
     # generated secrets already there survive. deploy-postiz.yml declares these
@@ -918,9 +1072,8 @@ templates:
     # generates them, because they are the operator's own credentials from each
     # platform's developer console.
     #
-    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
-    # database, so a credential typed into a survey field would be stored there
-    # indefinitely.
+    # The only survey is a non-secret read-only switch. Semaphore PERSISTS survey
+    # values, so credentials must never be declared as survey fields.
     #
     # LAUNCH-TIME EXTRA VARS ARE NOT THE ANSWER EITHER, and this comment used to
     # say they were. Semaphore persists a task's extra-var JSON the same way and
@@ -937,8 +1090,8 @@ templates:
     #   SEED_DISCORD_CLIENT_ID    SEED_DISCORD_CLIENT_SECRET
     #   SEED_DISCORD_BOT_TOKEN_ID
     #
-    #   Project -> Environment -> (the environment this template uses)
-    #     -> Secrets -> add each as type "environment variable"
+    # Use scripts/postiz-seed-input.py after provisioning and access verification;
+    # it stages encrypted inputs and removes only its own inputs after completion.
     #
     # The playbook prefers the environment over the matching seed_* extra var, so
     # a stray -e cannot override a configured secret. The extra-var form remains
@@ -976,6 +1129,28 @@ templates:
         type: string
         required: false
         default_value: "false"
+
+  - name: Drill o11y Alert Canary (Dev)
+    playbook: platform/playbooks/drill-o11y-alert-canary.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required before temporary alert activation"
+        type: string
+        required: true
+    # Local-only. Restores paused provisioning in an always block. If the
+    # controller is interrupted, run Restore o11y Alert Baseline (Dev).
+
+  - name: Restore o11y Alert Baseline (Dev)
+    playbook: platform/playbooks/restore-o11y-alert-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required for interruption recovery"
+        type: string
+        required: true
 
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
@@ -1273,6 +1448,12 @@ templates:
     # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the runner host (leave as 'main' for production)"
+        type: string
+        required: true
+        default_value: "main"
       - name: target_service
         title: "Target group"
         description: "Inventory group holding the runner hosts (github_runner_svc)"

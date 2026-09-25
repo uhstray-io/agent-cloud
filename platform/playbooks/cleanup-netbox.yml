@@ -46,7 +46,7 @@
     migrate_rack_old: ""
     migrate_rack_new: ""
     delete_orphans: false
-    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
 
   tasks:
     # ── Snapshot ────────────────────────────────────────────────
@@ -78,6 +78,7 @@
         PYSCRIPT
       register: _snapshot
       changed_when: false
+      check_mode: false
 
     - name: Show snapshot
       ansible.builtin.debug:
@@ -126,7 +127,9 @@
             print(f'Remaining devices: {Device.objects.count()}')
         PYSCRIPT
       register: _dupes_result
-      when: cleanup_duplicates | bool
+      when:
+        - not ansible_check_mode
+        - cleanup_duplicates | bool
       changed_when: "not (dry_run | bool) and 'Deleted 0' not in _dupes_result.stdout"
 
     - name: Duplicate cleanup results
@@ -159,7 +162,9 @@
             print(f'Remaining devices: {Device.objects.count()}')
         PYSCRIPT
       register: _vm_orphans_result
-      when: cleanup_vm_orphans | default(false) | bool
+      when:
+        - not ansible_check_mode
+        - cleanup_vm_orphans | default(false) | bool
       changed_when: "not (dry_run | bool) and 'Deleted 0' not in _vm_orphans_result.stdout"
 
     - name: VM orphan cleanup results
@@ -192,7 +197,9 @@
                 old_qs.delete()
         PYSCRIPT
       register: _replace_result
-      when: replace_device_old | length > 0 and replace_device_new | length > 0
+      when:
+        - not ansible_check_mode
+        - replace_device_old | length > 0 and replace_device_new | length > 0
       changed_when: "not (dry_run | bool) and 'DELETE:' in (_replace_result.stdout | default(''))"
 
     - name: Replace device result
@@ -237,7 +244,9 @@
                 print(f'WOULD DELETE: region "{OLD}" (no sites would reference it)')
         PYSCRIPT
       register: _region_result
-      when: migrate_region_old | length > 0 and migrate_region_new | length > 0
+      when:
+        - not ansible_check_mode
+        - migrate_region_old | length > 0 and migrate_region_new | length > 0
       changed_when: "not (dry_run | bool) and ('UPDATE:' in (_region_result.stdout | default('')) or 'DELETE:' in (_region_result.stdout | default('')))"
 
     - name: Region migration result
@@ -282,7 +291,9 @@
                 print(f'WOULD DELETE: rack "{OLD}" (would be empty)')
         PYSCRIPT
       register: _rack_result
-      when: migrate_rack_old | length > 0 and migrate_rack_new | length > 0
+      when:
+        - not ansible_check_mode
+        - migrate_rack_old | length > 0 and migrate_rack_new | length > 0
       changed_when: "not (dry_run | bool) and ('MOVE:' in (_rack_result.stdout | default('')) or 'DELETE:' in (_rack_result.stdout | default('')))"
 
     - name: Rack migration result
@@ -335,7 +346,9 @@
             print(f'{verb} {deleted} orphaned objects')
         PYSCRIPT
       register: _orphans_result
-      when: delete_orphans | bool
+      when:
+        - not ansible_check_mode
+        - delete_orphans | bool
       changed_when: "not (dry_run | bool) and 'Deleted' in (_orphans_result.stdout | default('')) and 'Deleted 0' not in (_orphans_result.stdout | default(''))"
 
     - name: Orphan cleanup results
@@ -370,6 +383,7 @@
       register: _final
       changed_when: false
       when: not (dry_run | bool)
+      check_mode: false
 
     - name: Show final state
       ansible.builtin.debug:

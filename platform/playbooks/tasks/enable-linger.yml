@@ -48,11 +48,13 @@
   # condition below (no `Linger=yes`) drive the enable.
   failed_when: false
   when: not (local_mode | default(false) | bool)
+  check_mode: false
 
 - name: "Enable lingering (rootless containers survive reboot) for {{ linger_user | default(ansible_user) }}"
   ansible.builtin.command: "loginctl enable-linger {{ linger_user | default(ansible_user) }}"
   become: true
   when:
+    - not ansible_check_mode
     - not (local_mode | default(false) | bool)
     - "'Linger=yes' not in (_linger_state.stdout | default(''))"
   changed_when: true

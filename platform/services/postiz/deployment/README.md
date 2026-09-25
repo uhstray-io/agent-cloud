@@ -78,12 +78,35 @@ Use `scripts/postiz-seed-input.py --env-file <private-file>` for a presence-only
 check. It reads the file as data and selects provider fields from the committed
 seed declaration. It never imports signing, database, OIDC or deployment settings.
 
-For seeding, provision a dedicated environment through code, bind only the seed
-template to it, reserve it against other work, verify its
-current IDs, and add `--apply --url <https-origin> --project <id> --template <id>
---environment <id>`. Supply the existing authorized operator API token on stdin;
-never put a token in an argument. The helper uses the existing Seed Postiz Secrets
-template and controller AppRole. It stages encrypted `SEED_` inputs, waits for
+First run the declared **Provision Seed Environment (Dev)** controller workflow
+with `seed_template=Seed Postiz Secrets` and verified `semaphore_project_id`,
+`semaphore_inventory_id` and `semaphore_source_environment_id`; `seed_variant`
+selects `dev` or `main`.
+It creates the environment named in `templates.yml`, adds missing encrypted
+controller authentication inputs, and changes only the selected seed binding.
+Existing authentication is preserved, never rotated. The provisioner requires
+single-environment ownership metadata; newer multi-environment API records are
+refused until their binding semantics are implemented and tested. The main variant requires
+the reviewed seed code to have reached `main` first.
+
+First full catalog publication binds empty named environments: seeding remains
+unavailable until provisioning and verification finish for the selected variant.
+Run the resulting seed template with its **Verify access without writing secrets**
+survey set to `true` (`postiz_verify_access_only=true`) and require
+its **Read-only Postiz access verified** message. This verifies the actual runner
+can authenticate; configuration read-back alone cannot prove that. The mode
+exits before writes even if provider inputs are present. No provider credentials
+are imported by provisioning or this check.
+
+For seeding, reserve the dedicated environment against other work and add
+`--apply --url <https-origin> --inventory <approved id> --openbao-addr <approved endpoint>`
+(`--variant main` for the main template; `dev` is the default). Supply the existing
+authorized operator API token on stdin; never put a token in an argument. The helper
+finds Seed Postiz Secrets and its isolated environment by name and runs the same
+read-only preflight as every seed CLI (`scripts/semaphore_seed.py`): the template must
+still run from its declared repository record and the approved inventory, and the
+environment must be clean and point at the approved OpenBao endpoint. It uses the
+controller AppRole. It stages encrypted `SEED_` inputs, waits for
 the seed task, and removes only its inputs after a terminal result. The seed
 playbook reads OpenBao back and compares every supplied value without logging it.
 
@@ -92,6 +115,14 @@ refusal. A request timeout is an uncertain result: do not rerun blindly. Inspect
 the named seed task and encrypted input metadata first; inputs remain encrypted
 until the outcome is resolved. Semaphore's environment API has no compare-and-swap,
 so an external reservation remains required. No template bindings are changed.
+
+Full template publication resolves the declared `isolated_environment` name,
+including a distinct generated Dev name; it cannot silently reset the seed to
+the shared default. Scoped survey publication still changes surveys only.
+Partial authentication inputs or uncertain writes require reviewed reconciliation
+before another import; do not overwrite them or retry a task blindly. Initial
+installation of the provisioner uses the code-managed controller configuration
+entrypoint, never UI template creation or a repurposed service job.
 
 Provider values remain unquoted in the mounted app configuration. The container
 reads each line with literal assignment (`export "$l"`); it does not evaluate

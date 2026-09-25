@@ -164,6 +164,12 @@ setup() {
   assert_grep -q 'Verify migrate succeeded' "$pb"
 }
 
+@test "provision-vm: the VM starts with its node (onboot), opt-out per host" {
+  # Change service-deployment-workflow task 7.2; registry step provision-vm requires onboot=1.
+  blk=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml")
+  printf '%s' "$blk" | grep -qF "onboot: \"{{ '1' if (vm_onboot | default(true) | bool) else '0' }}\""
+}
+
 @test "provision-vm: refuses a declared address another inventory host claims (evaluated)" {
   # docs/MISTAKES.md 4.7: an edit left a runner declared at the gateway's address.
   # Extract the REAL guard and run it against a small inventory, both ways.

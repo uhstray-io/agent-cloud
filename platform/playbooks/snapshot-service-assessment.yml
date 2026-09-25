@@ -1,0 +1,67 @@
+---
+# snapshot-service-assessment.yml — the ONE input to the service assessment (step
+# service-assess). Read-only, identical under --check (change service-deployment-workflow
+# task 7.4). Collects the declared VM spec, the service's compose services (image, ports),
+# its running containers, its agent practices and the registry entries for this step and the
+# steps it feeds, and records them with set_stats under `snapshot`. No credential values.
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Snapshot the service assessment inputs: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _svc_dir: "{{ playbook_dir }}/../services/{{ service_name }}/deployment"
+    _registry: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml).steps }}"
+    _compose_file: "{{ lookup('ansible.builtin.first_found', {'files': ['compose.yml', 'docker-compose.yml'], 'paths': [_svc_dir], 'skip': true}) }}"
+
+  tasks:
+    - name: "The service's containers and their state"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, Status]
+        _lsc_all: true
+
+    - name: "Read the committed compose file"
+      ansible.builtin.set_fact:
+        _compose: "{{ (lookup('file', _compose_file) | from_yaml) if _compose_file else {} }}"
+
+    - name: "Summarise each compose service (image and ports only; no environment)"
+      ansible.builtin.set_fact:
+        _compose_services: >-
+          {{ _compose_services | default({}) | combine({item.key: {
+               'image': item.value.image | default(''),
+               'ports': item.value.ports | default([])}}) }}
+      loop: "{{ (_compose.services | default({})) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: "Record the snapshot"
+      ansible.builtin.set_stats:
+        data:
+          snapshot:
+            schema: agentcloud/snapshot/v1
+            step: service-assess
+            service: "{{ service_name }}"
+            declared_vm_spec:
+              cores: "{{ vm_cores | default('') }}"
+              memory_mb: "{{ vm_memory | default('') }}"
+              disk: "{{ vm_disk | default('') }}"
+            runtime: "{{ _engine }}"
+            compose_services: "{{ _compose_services | default({}) }}"
+            running: "{{ _lsc.stdout_lines | default([]) }}"
+            practices: "{{ lookup('file', playbook_dir ~ '/../services/' ~ service_name ~ '/context/agent-practices.md', errors='ignore') | default('', true) }}"
+            registry: "{{ _registry | selectattr('id', 'in', ['service-assess', 'vm-rightsize', 'service-deploy']) | list }}"
+        per_host: false
+        aggregate: false
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: service-assess
+        step_result_status: pass
+        step_result_evidence:
+          compose_found: "{{ _compose_file | length > 0 }}"
+          running_count: "{{ _lsc.stdout_lines | default([]) | length }}"

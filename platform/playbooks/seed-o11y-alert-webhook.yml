@@ -17,6 +17,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
 
     - name: Require the exact candidate revision
       ansible.builtin.assert:
@@ -31,6 +32,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
 
     - name: Require a clean candidate checkout
       ansible.builtin.assert:
@@ -71,6 +73,8 @@
           secret_id: "{{ _bao_secret_id }}"
         status_code: [200]
       register: _bao_auth
+      changed_when: false
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -81,6 +85,7 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         status_code: [200, 404]
       register: _discord_secret
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -100,6 +105,7 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         status_code: [200, 404]
       register: _existing
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -116,6 +122,7 @@
           User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _channel
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -135,6 +142,7 @@
           User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _bot
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -146,6 +154,7 @@
           User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
         status_code: [200]
       register: _listed
+      check_mode: false
       delegate_to: localhost
       no_log: true
 
@@ -176,9 +185,26 @@
           name: "{{ _webhook_name }}"
         status_code: [200, 201]
       register: _created
-      when: _matching | length == 0
+      when:
+        - not ansible_check_mode
+        - _matching | length == 0
       delegate_to: localhost
       no_log: true
+
+    # A dry run creates no webhook, so with none to reuse there is no URL to compare against
+    # the store: report what a real run would do and stop this host.
+    - name: "Dry run, webhook not created yet: report"
+      ansible.builtin.debug:
+        msg: "check mode: webhook '{{ _webhook_name }}' would be created in the declared channel and stored in OpenBao."
+      when:
+        - ansible_check_mode
+        - _matching | length == 0
+
+    - name: "Dry run, webhook not created yet: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _matching | length == 0
 
     - name: Select the existing or new webhook
       ansible.builtin.set_fact:

@@ -62,8 +62,8 @@
     # be code — it works, leaves no trace, and the next person cannot tell it
     # happened. A generated variant is declarative, reviewable, and additive.
     #
-    # Variants inherit everything from their base except the name and the repo,
-    # so they cannot drift from it.
+    # Variants inherit everything from their base except the name, repo, and
+    # service_branch guidance: a Dev controller must clone Dev onto the target.
     # `_generated` is an INTERNAL marker, not a templates.yml field. The suffix
     # keys off it rather than off `repository`, because `repository:` is also the
     # documented way to bind a base template directly to another record — keying
@@ -71,11 +71,21 @@
     # stopped finding the real record and left it stale. And a template setting
     # both `repository: agent-cloud dev` and `dev_variant: true` would have given
     # its base and its generated variant the same identity.
-    _dev_variants: >-
-      {{ _base_templates | selectattr('dev_variant', 'defined')
-         | selectattr('dev_variant')
-         | map('combine', {'repository': _dev_repo_name, 'dev_variant': false, '_generated': true})
-         | list }}
+    _dev_variants_json: >-
+      {% set variants = [] %}
+      {% for template in _base_templates | selectattr('dev_variant', 'defined') | selectattr('dev_variant') %}
+      {% set surveys = [] %}
+      {% for survey in template.survey_vars | default([]) %}
+      {% set _ = surveys.append(survey | combine({'default_value': 'dev', 'description': 'Target branch for this Dev-bound template (use dev for reviewed Dev code)'} if survey.name == 'service_branch' else {})) %}
+      {% endfor %}
+      {% set variant = template | combine({'repository': _dev_repo_name, 'dev_variant': false, '_generated': true}) %}
+      {% if template.survey_vars is defined %}
+      {% set variant = variant | combine({'survey_vars': surveys}) %}
+      {% endif %}
+      {% set _ = variants.append(variant) %}
+      {% endfor %}
+      {{ variants | to_json }}
+    _dev_variants: "{{ _dev_variants_json | from_json }}"
     _dev_repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') }}"
     _all_templates: "{{ _base_templates + (_dev_variants | map('combine', {}) | list) }}"
     _scoped: "{{ semaphore_template_names is defined }}"
@@ -139,6 +149,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _repos
+      check_mode: false
 
     # Map every repository record name -> id, so a template can NAME the record
     # (and therefore the branch) it runs from. Declared in repositories.yml and
@@ -194,6 +205,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _existing
+      check_mode: false
 
     - name: "Refuse ambiguous bootstrap records"
       ansible.builtin.assert:
@@ -221,7 +233,7 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _scoped or (_bootstrap_survey_publisher | default(false))
+      when: _scoped or (_bootstrap_survey_publisher | default(false)) or item.isolated_environment is defined
 
     - name: "Require unambiguous existing bindings before scoped publication"
       ansible.builtin.assert:
@@ -251,6 +263,7 @@
       vars:
         _match: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | first }}"
       register: _selected_records
+      check_mode: false
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
@@ -263,6 +276,16 @@
         _merge_records: >-
           {{ (_selected_records.results | selectattr('json', 'defined') | map(attribute='json') | list)
              if (_scoped or (_bootstrap_survey_publisher | default(false))) else _existing.json }}
+
+    # Full publication and scoped CREATE both build a template body that binds its
+    # declared isolated environment, so both resolve it here. Survey-only scoped
+    # publication does not: it keeps each existing template's live environment and
+    # never creates one (test_scoped_surveys_do_not_create_or_change_declared_environment).
+    - name: "Ensure declared isolated environments before full publication or scoped create"
+      ansible.builtin.include_tasks: tasks/isolated-environments.yml
+      when:
+        - (not _scoped) or _allow_scoped_create
+        - _selected_templates | selectattr('isolated_environment', 'defined') | list | length > 0
 
     - name: "Create or update each template"
       ansible.builtin.uri:
@@ -290,9 +313,11 @@
         status_code: [200, 201, 204]
       register: _published
       changed_when: true
-      when: >-
-        (not _scoped and not (_bootstrap_survey_publisher | default(false)))
-        or (not (_tpl_body | publication_matches(_existing_template)))
+      when:
+        - not ansible_check_mode
+        - >-
+          (not _scoped and not (_bootstrap_survey_publisher | default(false)))
+          or (not (_tpl_body | publication_matches(_existing_template)))
       vars:
         _existing_template: "{{ (_merge_records | selectattr('name', 'equalto', _tpl_name) | list | first) | default({}) }}"
         _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
@@ -304,7 +329,8 @@
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2, true) | int),
               'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
-              'environment_id': (semaphore_environment_id | default(2, true) | int),
+              'environment_id': ((_isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
+                                 if item.isolated_environment is defined else semaphore_environment_id | default(2, true)) | int),
               'playbook': item.playbook,
               'app': 'ansible',
               'autorun': false,
@@ -337,6 +363,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _templates_after
+      check_mode: false
 
     - name: "Read complete selected records after publication"
       ansible.builtin.uri:
@@ -346,6 +373,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _selected_after
+      check_mode: false
       loop: >-
         {{ _templates_after.json
            | selectattr('name', 'in', _selected_templates | map(attribute='_publish_name') | list) | list }}
@@ -368,7 +396,10 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _bootstrap_survey_publisher | default(false)
+      # Dry run: nothing was published, so a readback can only show the old record.
+      when:
+        - not ansible_check_mode
+        - _bootstrap_survey_publisher | default(false)
 
     - name: "Verify scoped surveys and every preserved record setting"
       ansible.builtin.assert:
@@ -385,6 +416,7 @@
       loop_control:
         label: "{{ item._publish_name }}"
       when:
+        - not ansible_check_mode
         - _scoped
         - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 1
 
@@ -394,17 +426,23 @@
           - _after.name == item._publish_name
           - _after.project_id | int == semaphore_project_id | int
           - _after.inventory_id | int == semaphore_inventory_id | int
-          - _after.environment_id | int == semaphore_environment_id | int
+          - _after.environment_id | int == _expected_environment | int
           - _after.repository_id | int == _repo_ids[item.repository | default('agent-cloud')] | int
           - _after.playbook == item.playbook
           - item.survey_vars | default([]) | publication_matches(_after.survey_vars | default([]))
         fail_msg: "Scoped template creation readback failed for '{{ item._publish_name }}'."
       vars:
         _after: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | first }}"
+        # The environment the create body bound: the declared isolated one, else the
+        # approved shared one (same rule as _default_body above).
+        _expected_environment: >-
+          {{ _isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
+             if item.isolated_environment is defined else semaphore_environment_id }}
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
       when:
+        - not ansible_check_mode
         - _scoped
         - _allow_scoped_create
         - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 0
@@ -417,6 +455,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _schedules
+      check_mode: false
       when: not _scoped
 
     - name: "Create or update each declared schedule"
@@ -433,7 +472,9 @@
         body_format: json
         body: "{{ _sched_body | to_json }}"
         status_code: [200, 201, 204]
-      when: not _scoped
+      when:
+        - not ansible_check_mode
+        - not _scoped
       vars:
         _sched_ids: "{{ (_schedules.json | default([])) | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
         _tpl_id: "{{ (_templates_after.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first) }}"

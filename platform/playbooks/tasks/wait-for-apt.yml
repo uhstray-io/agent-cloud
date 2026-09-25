@@ -27,6 +27,7 @@
   timeout: 600
   failed_when: false
   become: true
+  check_mode: false
 
 - name: "Wait until the package manager will accept a lock"
   ansible.builtin.command: apt-get check
@@ -36,3 +37,4 @@
   delay: 5
   changed_when: false
   become: true
+  check_mode: false

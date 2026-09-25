@@ -446,8 +446,12 @@ for u in accept:
 for u in refuse:
     if re.match(pat, u): bad.append('should REFUSE: ' + u)
 # The local_mode branch's own pattern: single-label only, same trailing anchor.
-sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1']
+sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1',
+             'http://host.containers.internal:8000']   # podman's engine-host name, exact
 sl_refuse = [
+    'http://host.containers.internal.evil.example/',   # the exact name is not a prefix
+    'http://host.containers.internal@evil.example/',   # trufflehog:ignore — userinfo
+    'http://evil.containers.internal:8000',            # only the one host-gateway name
     'http://local-openbao@bao.evil.example/',   # trufflehog:ignore — userinfo
     'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space
     'https://anything',                          # wrong scheme for this branch
@@ -461,7 +465,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 26 cases correct"* ]]
+  [[ "$output" == *"all 30 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {
@@ -492,4 +496,23 @@ print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len
   [ -n "$blk" ]
   assert_grep -q 'method: PATCH' <<<"$blk"
   assert_grep -q 'merge-patch' <<<"$blk"
+}
+
+@test "seed-openbao-key: the read-only access check ends the play before any write" {
+  # Run once after Provision Seed Environment, before the first real seed: it must
+  # prove the seed's own capabilities and stop, even when a value is staged.
+  local f="$REPO_ROOT/platform/playbooks/seed-openbao-key.yml"
+  local t="$REPO_ROOT/platform/playbooks/tasks/assert-bao-seed-access.yml"
+  assert_precedes "$f" 'include_tasks: tasks/assert-bao-seed-access.yml' 'include_tasks: tasks/bao-merge-keys.yml'
+  assert_precedes "$f" 'ansible.builtin.meta: end_play' 'include_tasks: tasks/bao-merge-keys.yml'
+  local blk
+  blk=$(task_block "$f" 'End read-only verification before every secret-store write')
+  assert_grep -qF 'when: bao_verify_access_only | default(false) | bool' <<<"$blk"
+  # The value check is skipped only in access-check mode.
+  blk=$(task_block "$f" 'Validate the secret value is present')
+  assert_grep -qF 'when: not (bao_verify_access_only | default(false) | bool)' <<<"$blk"
+  # Capabilities decide, never a GET status alone; every token-bearing call is no_log.
+  assert_grep -qF '/v1/sys/capabilities-self' "$t"
+  assert_grep -qF "_write: \"{{ 'patch' if _exists | bool else 'create' }}\"" "$t"
+  [ "$(grep -c 'no_log: true' "$t")" -eq 2 ]
 }

@@ -139,7 +139,8 @@ setup() {
   grep -qE '^\s+rescue:' "$PB"
   grep -qE 'Recovery: bring a stopped guest back up' "$PB"
   # And it must only start a guest that is genuinely stopped.
-  grep -qE "when: \(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
+  # (a `when:` line, or an item of a `when:` list once check mode joined it)
+  grep -qE "(when: |- )\(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
 }
 
 @test "resize-vm: certificate verification is an inventory knob, not hardcoded" {

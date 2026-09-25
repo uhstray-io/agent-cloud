@@ -34,7 +34,10 @@ compose_files() {
   # change what a service ends up with. Per directory, overlays (compose.*.yml,
   # docker-compose.*.yml) apply over the base file, so a policy set only in the
   # base still counts and a service an overlay adds must carry its own.
-  # "no" is for one-shot init containers, which must not restart at all.
+  # "no" is for one-shot init containers, which must not restart at all, and each one must
+  # declare itself with the label agent-cloud.one-shot: "true": the persistence check
+  # (verify-service-persistence.yml) accepts "no" only from a labelled container that exited 0,
+  # since a long-running "no" container can exit 0 too.
   command -v python3 >/dev/null || skip "python3 not installed"
   python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
   run python3 - "$REPO_ROOT" <<'PY'
@@ -61,15 +64,21 @@ for f in files:
     dirs.setdefault(os.path.dirname(f), []).append((not base, f, doc['services']))
 bad = []
 for d, docs in sorted(dirs.items()):
-    effective = {}
+    effective, labels = {}, {}
     for _, f, services in sorted(docs):  # base first, then overlays
         for name, svc in services.items():
             svc = svc or {}
             if 'restart' in svc or name not in effective:
                 effective[name] = (svc.get('restart'), f)
+            if 'labels' in svc:
+                raw = svc['labels'] or {}
+                # Compose merges labels by key across overlays; so does this (PR 253 CodeRabbit review).
+                labels.setdefault(name, {}).update(raw if isinstance(raw, dict) else dict(x.split('=', 1) for x in raw))
     for name, (policy, f) in sorted(effective.items()):
         if policy not in ('always', 'no'):
             bad.append(f"{f}: service {name}: restart={policy!r}")
+        elif policy == 'no' and str(labels.get(name, {}).get('agent-cloud.one-shot')) != 'true':
+            bad.append(f"{f}: service {name}: restart 'no' without label agent-cloud.one-shot: \"true\"")
 print('\n'.join(bad))
 sys.exit(1 if bad else 0)
 PY

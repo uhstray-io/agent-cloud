@@ -1,0 +1,5 @@
+# Files not yet retrofitted for Ansible check mode (plan/architecture/08-ansible-automation-standards.md).
+# Seeded 2026-09-22 from every file that failed the check-mode contract; each line is removed as its
+# file is fixed (change service-deployment-workflow, section 2). The list may only shrink: a listed
+# file that becomes clean fails test_check_mode_contract.py until its line is deleted.
+# 2026-09-22: EMPTY. Every playbook and task file honours the contract; the list must stay empty.

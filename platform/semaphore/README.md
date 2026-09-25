@@ -33,7 +33,13 @@ The production templates use the two repository records declared in
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
 in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
-**No production feature-branch record is declared.** Code that a Semaphore task
+**No production feature-branch record is declared, and a production template cannot run a
+feature branch either.** On v2.19.11, the pinned production version, the runner applies a
+task's `git_branch` only when the template sets `allow_override_branch_in_task`
+(`services/tasks/local_executor.go:938`), and `setup-templates.yml` sets it on no template.
+v2.18.12 applied a task's branch unconditionally and checked the flag only in the web UI
+(`services/tasks/LocalJob.go:817`, `docs/MISTAKES.md` 1.9), so a controller still on that
+version runs any pushed branch an API token names. Code that a Semaphore task
 must execute — a new playbook, a new OpenTofu file, a changed template — has to
 be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 `(Dev)` variant can run it, and into `main` before the base template can. Plan
@@ -61,7 +67,17 @@ scripted path exist and are recorded here so it is built once, deliberately:
    into a repo, a survey parameter or a launch argument.
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
-   as a JSON string of the survey values; `GET /api/project/{project_id}/tasks/{task_id}`
+   as a JSON string of the survey values. **Check mode and diff go inside
+   `params`:** `"params": {"dry_run": true, "diff": true}` (v2.17.31 `db/Task.go`,
+   `AnsibleTaskParams`). A top-level `dry_run` is silently ignored and the task
+   runs for real (`docs/MISTAKES.md` 3.8). Semaphore starts a task the moment it is
+   created, so reading it back and stopping it cannot make a launch safe; the stop
+   can arrive after secrets are written. Launch with
+   [`scripts/semaphore-launch.py`](../../scripts/semaphore-launch.py): it builds the
+   body with the flags in `params`, refuses check mode on a server version whose
+   shape is unverified, allows only the template's declared survey fields, and
+   refuses while the template already has a running task, all before the POST.
+   Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
@@ -136,6 +152,78 @@ the gap. Create every template and automation through committed configuration
 and its installer, including the initial publisher. Manual UI creation is not
 an installation path. Resolve approved executor access before applying the
 bootstrap; do not substitute a manually configured template.
+
+## Seed a secret through an isolated environment
+
+A secret an operator holds, and no service generates, reaches OpenBao through a
+**seed template**: one that declares `isolated_environment` and `seed_inputs` in
+`templates.yml`. Seed OpenBao Key is the general one. The value travels as an
+encrypted environment input in that template's own environment. It is never a
+survey field or an extra var, because Semaphore persists both and returns them over
+its API. It is never staged in the shared environment, where every other template's
+task could receive it.
+
+The environment is checked when it is bound and again by every seed CLI preflight. The
+seed task itself also refuses, before it logs in to OpenBao, any seed input (`BAO_VALUE`,
+`SEED_*`) its template does not declare, so a leftover from another seed's interrupted
+run never reaches the login.
+
+1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
+   with `seed_template` set to the declared base name. It creates the environment,
+   gives it an encrypted copy of the controller AppRole, and binds only that template.
+2. **Once after provisioning:** prove the environment's AppRole may seed the path,
+   without writing anything. It checks the token's own capabilities on the path
+   (read plus create, update or patch); a GET alone cannot tell a missing path from
+   one the token cannot see:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --verify-only --apply < <token-file>
+   ```
+
+3. **Each seed:** put the value in a file, one line, then run a dry run without
+   `--apply`, then the real one:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --input BAO_VALUE=<value-file> --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --apply < <token-file>
+   ```
+
+The CLI accepts only the input names the template declares and only its survey
+settings. It resolves the template and environment by name and refuses unless they
+are bound to each other, the template still runs from its declared repository record
+(URL and branch checked against `repositories.yml`) and from the inventory you approve
+with `--inventory`, the environment still points at the OpenBao endpoint you approve with
+`--openbao-addr` (the seed task logs in and writes there), and it is an Ansible template with no extra arguments. Dry run,
+`--verify-only` and the real seed all run that same read-only preflight first, so a
+dry run fails on anything the seed would refuse. It refuses a leftover input from an earlier run, runs
+exactly one task, removes exactly the input it created, and never prints the value.
+An interrupted run leaves the encrypted input in place and names it, so it can be
+reconciled rather than silently retried. Postiz provider credentials use
+`scripts/postiz-seed-input.py`, which shares the same lookup, preflight and lifecycle code
+(`scripts/semaphore_seed.py`, also the Semaphore client `scripts/semaphore-launch.py` uses).
+
+## Publish the local observability alert destination
+
+[`sync-local-o11y-alert-inventory.py`](../../scripts/sync-local-o11y-alert-inventory.py)
+reads the two Discord destination IDs already declared under `o11y_svc.vars` in
+private site-config's production inventory. It changes only those entries in
+Semaphore's existing local static inventory and reads the record back. Run it
+from a clean checkout of reviewed, pushed `dev`, with an unchanged private
+production inventory file and exact `--expected-dev-sha` and `--site-config-sha`
+pins. Supply the
+local inventory ID, the verified Semaphore HTTPS origin, and the operator token
+on stdin. The default run previews names only; `--apply` performs the scoped,
+idempotent update. Do this before the Dev-bound webhook seed or fault drill;
+their channel IDs come from Semaphore's stored inventory, not from a survey.
+After a matching API readback, `--apply` also writes an owner-only projection
+at `~/.agent-cloud-local/o11y-alert-destination.json`. The local bootstrap
+reads that generated input when it rebuilds Semaphore inventory; it refuses
+to erase an already synced destination if the projection is missing. Refresh
+the projection by rerunning the sync after a reviewed private inventory change.
+The projection is a local copy, not a new source of truth.
 
 ## Troubleshoot at the failing boundary
 

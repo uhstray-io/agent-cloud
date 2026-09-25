@@ -43,7 +43,10 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _group: "{{ github_runner_group | default('uhstray-selfhosted') }}"
-    _dry_run: "{{ dry_run | default(true) | bool }}"
+    # Dry by default: nothing changes without -e dry_run=false, and check mode is always dry.
+    # Not deprecated here: the default is the safety interlock for a list that REPLACES
+    # the org's grants (plan/architecture/08).
+    _dry_run: "{{ (dry_run | default(true) | bool) or ansible_check_mode }}"
     # The declared access list. PRIVATE repositories only — see the proposal's rationale:
     # a fork of a public repository can propose workflow code, and these runners sit
     # inside the network perimeter.
@@ -82,6 +85,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the App private key from OpenBao"
       ansible.builtin.uri:
@@ -92,6 +97,7 @@
         status_code: [200]
       register: _app_secret
       no_log: true
+      check_mode: false
 
     - name: "Classify the credential outcome (names and verdicts only)"
       # A no_log step that merely fails is undiagnosable. Key NAMES and a presence
@@ -125,6 +131,7 @@
       register: _itok
       changed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Set the API auth header"
       ansible.builtin.set_fact:
@@ -154,6 +161,7 @@
       loop: "{{ _repos }}"
       loop_control:
         label: "{{ item }}"
+      check_mode: false
 
     - name: "Abort if any declared repository is public"
       ansible.builtin.assert:
@@ -175,6 +183,7 @@
         headers: "{{ _gh_headers }}"
         status_code: [200]
       register: _groups
+      check_mode: false
 
     - name: "Locate our group, if it already exists"
       ansible.builtin.set_fact:
@@ -206,6 +215,7 @@
         status_code: [201]
       register: _created
       when:
+        - not ansible_check_mode
         - not _dry_run
         - not _existing
 
@@ -221,6 +231,7 @@
           allows_public_repositories: false
         status_code: [200]
       when:
+        - not ansible_check_mode
         - not _dry_run
         - _existing | length > 0
 
@@ -235,7 +246,9 @@
         body:
           selected_repository_ids: "{{ _repo_lookup.results | map(attribute='json.id') | list }}"
         status_code: [204]
-      when: not _dry_run
+      when:
+        - not ansible_check_mode
+        - not _dry_run
 
     - name: "Verify the converged state"
       ansible.builtin.uri:
@@ -245,6 +258,7 @@
         status_code: [200]
       register: _final
       when: not _dry_run
+      check_mode: false
 
     - name: "Report the converged access list"
       ansible.builtin.debug:

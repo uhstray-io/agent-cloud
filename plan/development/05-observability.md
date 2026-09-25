@@ -102,6 +102,96 @@
 > client header returned HTTP 200 for message history in the selected channel
 > on 2026-09-23. The Dev-bound fault drill now contains a message-receipt gate;
 > that gate has not yet run with enabled alerts, so delivery remains unverified.
+> **Local alert credential receipt, 2026-09-25:** Reviewed PRs #238, #239,
+> and #240 corrected the shared Semaphore publisher, seed-environment
+> provisioner, and the running v2.18.12 API's omitted empty-secret projection.
+> Local task 1720 provisioned the isolated OpenBao seed environment from exact
+> `dev` merge `ffc1c797e770869ee95148645be378060f9498ef`. Read-only task
+> 1721 proved the AppRole access, then task 1722 seeded the operator-supplied
+> Discord bot token into local OpenBao from the same revision. Readback found
+> the key present without displaying it, and the temporary Semaphore input
+> was removed; the isolated environment retained only the AppRole pair. The
+> approved guild and channel IDs are already in private site-config. They
+> still need scoped publication into local Semaphore's stored inventory before
+> webhook creation or the alert-delivery drill. No webhook or delivery receipt
+> is claimed by these credential tasks.
+> **Local destination convergence:** The scoped publisher reads the two IDs
+> from a pinned, clean private inventory and writes only their local Semaphore
+> entries. On verified readback it keeps a mode-0600 projection in the local
+> bootstrap state directory. Bootstrap validates and consumes that projection
+> when rebuilding the static inventory, and refuses to erase a previously
+> published destination if the projection is missing. Public tests use
+> synthetic IDs. PR #241 later merged; its publication and webhook result
+> are recorded below. This step alone did not prove alert delivery.
+> A read-only check of the running local Semaphore v2.18.12 inventory list
+> on 2026-09-25 found the `local` record's inventory text present. The
+> bootstrap guard still refuses if a later API projection omits that text.
+> **Webhook receipt, 2026-09-25:** PR #241 merged to `dev` as
+> `a65f6a97d8d097d5c488a15be2727fc2d4ce830e` after final-head CI and
+> independent review. The scoped sync from that commit copied only the two
+> approved private destination IDs into local Semaphore inventory and wrote
+> a mode-0600 bootstrap projection; readback matched private site-config.
+> Dev-bound Semaphore task 1737 checked out the same merge, reconciled its
+> named Discord webhook, and verified the URL in OpenBao without printing it.
+> Alert rules remain paused and no message-delivery receipt is claimed.
+> The existing delivery drill requires an active rule, so the next change
+> stages alerting temporarily within a reversible Semaphore canary, proves
+> the Discord receipt, and restores the paused baseline before any persistent
+> alert-enable rollout.
+> **Canary review correction, 2026-09-25:** The PR #242 review found that
+> restoring paused files through `manage-secrets.yml` would fail if OpenBao
+> became unavailable after activation. The restore now renders the declarative
+> paused rules and contact-point deletion from the reviewed checkout, removes
+> the webhook line from the existing local `.env`, and verifies Grafana after
+> restart without a second OpenBao dependency. The same review moved bot,
+> webhook, and Discord history checks before temporary activation and bound
+> both new Semaphore templates only to the Dev repository. These are code
+> corrections, not a live delivery receipt.
+> **Restore rehearsal, 2026-09-25:** PR #242 merged to `dev` as
+> `1fe44fd88fe827733f15f8ae2c147487b4ae5e6e`; scoped local Semaphore
+> tasks 1756 and 1757 published the canary and restore templates with the
+> Dev repository, local inventory, and existing credential group. Restore
+> task 1758 verified that revision and the local paused gate, then failed
+> before restart because local repository placement removed the generated
+> Grafana `alerting/` directory. The normal deploy creates that directory,
+> but the OpenBao-free restore initially did not. No canary was started and
+> no alert delivery was claimed. The restore task now creates the directory
+> idempotently before templating. The deployment `.gitignore` keeps the two
+> rendered alert files out of Git; the shared `place-monorepo.yml` explicitly
+> preserves those exact files during `rsync --delete`, including when another
+> local service deploy places the repository. Future committed alert rules in
+> the same directory still copy normally. A local synthetic rsync check
+> confirmed that behavior before the live restore rerun.
+> **Canary live rehearsal, 2026-09-25:** PR #244 merged the restore fix to
+> `dev` as `1371ca32f5cb449f02e555541c73836b6b54e019`. Local Semaphore
+> restore task 1765 succeeded on that exact revision: it recreated the
+> generated directory and read back every o11y rule paused with no canary
+> contact point. Canary task 1768 passed the exact-revision gate, Discord
+> history preflight, failed-scrape detection, and expected onboarding
+> refusal. It then failed while checking Grafana alerts because the API
+> response included an alert without `labels.service`; the Ansible filter
+> dereferenced that absent label before considering the probe. Its `always`
+> cleanup removed the probe and verified paused rules and absent canary
+> contact point. No Discord delivery was proven. Filter out alerts without
+> the service label before matching the unique probe, then rerun the canary
+> from reviewed `dev`.
+>
+> **Local alert receipt, 2026-09-25:** PR #245 merged the label-filter fix
+> and a strict Jinja regression check to `dev` as
+> `98dd895c3fc7d71e1f5516edcd95b333ecfb1394`. Semaphore task 1779
+> checked out that exact clean revision, detected the disposable probe's
+> failed scrape, observed Grafana's service-down rule firing for it, and
+> confirmed a matching message from the owned Discord webhook. Its `always`
+> cleanup removed the probe, restarted the paused baseline, and read back
+> every o11y rule paused with the canary contact point absent. The task
+> finished successfully and reported the receipt after restoration. This
+> proves local alert delivery for one bounded canary run; production alert
+> delivery and the production receiver are still unverified. Keep the
+> baseline paused until a separately reviewed rollout enables alerts.
+> When testing alert-list filters, include unrelated alerts without the
+> expected labels and use strict undefined handling so local Jinja checks
+> reproduce Ansible's missing-attribute behavior.
+>
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
@@ -120,8 +210,8 @@
 > `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
 > Receiver placement and production retention sizing remain gated on a
 > declared, reachable host and its storage audit.
-> The private production inventory also omits Grafana from Authentik's enabled
-> app list and has no managed Grafana Caddy route. The public o11y env template
+> At the task 1134 audit, the private production inventory omitted Grafana from
+> Authentik's enabled app list and had no managed Grafana Caddy route. The public o11y env template
 > now derives production browser and OIDC token URLs from a required production
 > DNS zone over HTTPS, preserving the local shared-container path only in
 > local-dev. A localhost-only refusal probe stopped before placement when the
@@ -271,11 +361,53 @@
 > through the Dev-bound Semaphore workflows. Read-only Dev-bound
 > task 1160 planned one unrelated DNS addition and one rate-limit update at
 > `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
+> **Production SSO branch gate, 2026-09-25:** The live `Deploy Authentik (Dev)`
+> Semaphore template (179) is bound to the `dev` repository, but its
+> `service_branch` survey defaults to `main`. `deploy-authentik.yml` passes that
+> value to the shared target clone, so a launch accepting the default would run
+> reviewed Dev orchestration against Main service files. Before applying the
+> private Grafana app declaration, change the shared template publisher so
+> generated Dev variants default `service_branch` to `dev` while the base
+> templates retain `main`. Test both rendered variants, publish only the
+> Authentik Dev survey through Semaphore, verify its live default and bindings,
+> then launch with an explicit `service_branch=dev` API setting, verify the
+> target revision, and read back the Grafana app and OIDC path. Do not assume
+> an API launch fills omitted settings from survey defaults.
+> Semaphore task 1302 published only the `Deploy Authentik (Dev)` survey from
+> reviewed `dev` commit `edab33beea54ea06b468ce0ee986dbddb94c7f42` on
+> 2026-09-25. Live template 179 now defaults `service_branch` to `dev` and
+> retains repository 5, inventory 2, environment 2, and the Authentik playbook.
+> Before deploying Authentik, run the read-only retirement audit through its
+> Dev-bound Semaphore template. The current Dev blueprint declares a legacy
+> account absent; the audit must establish whether that account is still live
+> before the deploy applies the private Grafana OIDC declaration.
+> Semaphore task 1305 published the read-only audit template from merged Dev
+> commit `bcaf82f173af5853045b75876ba1e8dea92a3007`; template 229 retains
+> the Dev repository, production inventory, and environment bindings. Task
+> 1306 reached the authenticated container query but returned rc 255 without
+> an account count. No Authentik deployment followed. The audit now checks
+> the same audit script with static, noncredentialed probe input first. Its
+> fixed readiness response proves container execution, script loading, and token
+> availability without querying accounts or revealing names or tokens. The
+> script reports only code-owned audit error labels; unexpected exception
+> details remain hidden. A successful account count remains the deployment
+> gate.
+> Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
+> `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
+> refreshed the existing `o11y` DNS record without proposing a change to it,
+> but the full plan still proposed one unrelated `admin.inference` DNS addition
+> and one rate-limit ruleset update (1 add, 1 change, 0 destroy). The task
+> succeeded with no Cloudflare write. This supports the declared `o11y` record's
+> current state, not a zero-diff plan or a working production Caddy route;
+> reconcile the unrelated drift separately before using a zero-diff plan as a
+> production acceptance gate.
 > On 2026-09-23, PRs #208 and #210 merged the receiver guard and
 > OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
 > PR #18 merged the alert destination and Grafana browser URLs, but its
 > production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
-> runtime recovery workflow; it has not been run on production. PR #214 merged
+> runtime recovery workflow; production tasks 1188 and 1189 later ran the
+> reviewed Dev successors from PRs #222 and #224 and restored the four core containers to healthy
+> with `restart: always`. PR #214 merged
 > one-template Dev publication. Local Semaphore tasks 1292, 1293, and 1294
 > updated the publisher and created its webhook and fault-drill Dev templates
 > with verified local bindings. Task 1295 found the failed scrape only after its
@@ -284,9 +416,51 @@
 > merged revision `0b64a0c447e476a1ad02a39de4368f0bab5053d8`, saw the
 > unreachable target, proved the onboarding verifier refused it, and removed
 > the probe. Task 1300 ran with alert delivery disabled. Discord notification receipt,
-> production NetBox recovery, receiver placement, and production telemetry
-> remain unverified. As of 2026-09-23, this workstation's production Semaphore
+> receiver placement, and production telemetry remain unverified. As of
+> 2026-09-23, this workstation's production Semaphore
 > sign-in meets a Cloudflare challenge before the Authentik session opens.
+>
+> **Production receiver preflight, 2026-09-23:** PR #226 merged the exact-prefix
+> NetBox workflow to `dev` as `3390d40b6089dc4ed257871f1b8197e7ba240fa4`.
+> Semaphore task 1197 published only its Dev template; task 1198 reported
+> `would-create` without writing; task 1199 created and read back the single
+> site-config-declared active prefix. Tasks 1200 and 1201 then ran the IPAM
+> workflow in read-only mode. The proposed receiver address was absent from
+> NetBox and the private VM ledger, but no address was reserved. Confirm the
+> production DHCP allocation boundary before reserving an exact address;
+> NetBox's available-address report alone does not prove that DHCP cannot
+> assign it. PR #228 adds a fail-closed live pfSense DHCP check to the reservation
+> workflow. Private site-config must select the router API and the interface for
+> this prefix; OpenBao supplies the API key from the same discovery-owned
+> credential path used by the NetBox worker. Reconcile the private backup through
+> the Dev-bound Semaphore workflow before the DHCP test. That workflow checks
+> the private backup path before reading it and uses OpenBao version checks so
+> a different or concurrently rotated live key is never silently replaced.
+> The unused legacy NetBox key declaration is retired; the discovery-owned path
+> is authoritative. Run the reviewed Dev-bound workflow
+> first with a DHCP-assignable test candidate to capture its visible refusal in
+> Semaphore. Confirm the API response covers the interface's primary range,
+> additional pools, and static mappings. Until that live refusal gate passes,
+> do not reserve the receiver candidate. Keep the
+> private CIDR, host address, and DHCP details out of this public plan.
+> PR #227 merged the scoped Dev-bound Proxmox validation template and
+> credential-safe API logging as `a6825f9da8a79daebf41e11905763f4c1506ef0c`.
+> Task 1202 published that template; read-only task 1203 succeeded with nine
+> checks passing, 511 GB available on the target VM storage, and VMID 219
+> absent from the live cluster and private ledger. VMID 219 remains a candidate;
+> no VM was provisioned. The live Semaphore inventory matches the merged
+> private production inventory and still declares no `o11y_svc` host. The
+> Grafana Authentik URLs from private site-config PRs #17 and #18 have not
+> been applied to the live IdP.
+>
+> **Rollout practice:** publish a single reviewed Dev template with its
+> intended bindings, run a read-only preflight, and keep the task ID and
+> read-back with each state-changing step. Reserve the exact address through
+> IPAM only after the versioned live pfSense DHCP gate and ledger reconciliation, then declare the receiver in
+> private site-config and provision it through Semaphore. Verify the receiver
+> and alert delivery with the declared fault drill before enabling production
+> notifications. These gates preserve the config-as-code and authority rules
+> in `PRINCIPLES.md` and `plan/architecture/02-service-onboarding.md`.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

@@ -80,6 +80,7 @@
       register: _row
       changed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Parse what the database answered"
       ansible.builtin.set_fact:
@@ -120,6 +121,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Merge the key into the store (shared write path: fetch, refuse-missing, patch, verify)"
       # tasks/bao-merge-keys.yml is THE merge-patch implementation — fetch for

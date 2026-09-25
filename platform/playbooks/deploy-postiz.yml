@@ -196,6 +196,7 @@
         COMPOSE_OVERLAYS: "{{ 'compose.search.yml' if (postiz_temporal_search | default(true) | bool) else '' }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -226,6 +227,7 @@
       retries: 20
       delay: 15
       until: _postiz_health.rc == 0
+      check_mode: false
 
     - name: "Workflow engine reachable from the app's network"
       # Scheduled publishing is executed by the engine, so an app that is
@@ -252,6 +254,7 @@
       retries: 10
       delay: 10
       until: _temporal_health.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

@@ -34,6 +34,7 @@
   delegate_to: localhost
   run_once: true
   no_log: true
+  check_mode: false
 
 - name: "Require the App key and client id (seeded once, after App creation)"
   ansible.builtin.assert:
@@ -64,6 +65,7 @@
   run_once: true
   changed_when: false
   no_log: true
+  check_mode: false
 
 - name: "Take the token"
   ansible.builtin.set_fact:
@@ -81,6 +83,7 @@
   delegate_to: localhost
   run_once: true
   no_log: true
+  check_mode: false
 
 - name: "Require the installation to cover exactly the declared mapping"
   # Names only in the failure — the DECLARED set is public, the token is not.

@@ -283,3 +283,15 @@ PYTHON
     refute_contains "$output" 'TASK [Allow each DETECTED published port'
   done
 }
+
+@test "firewall: the orchestrator's SSH source must be one of the SSH CIDRs, checked BEFORE enable" {
+  # Change service-deployment-workflow task 4.6. Semaphore reaches every host over SSH; a
+  # firewall without its source orphans the host. Equality, like every CIDR check here.
+  pb="$PLAYBOOK"
+  assert_grep -qF 'firewall_controller_cidr in _ssh_cidrs' "$pb"
+  assert_line=$(grep -nF 'firewall_controller_cidr in _ssh_cidrs' "$pb" | head -1 | cut -d: -f1)
+  enable_line=$(grep -nF 'ufw --force enable' "$pb" | head -1 | cut -d: -f1)
+  [ "$assert_line" -lt "$enable_line" ]
+  ssh_allow_line=$(grep -nF 'Allow SSH (22/tcp) from each admin CIDR' "$pb" | head -1 | cut -d: -f1)
+  [ "$assert_line" -lt "$ssh_allow_line" ]
+}

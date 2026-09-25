@@ -2,27 +2,157 @@
   "catalog": {
     "nemoclaw": {
       "allowed_actions": {
-        "nocodb": ["read", "create", "update"],
-        "github": ["list_issues", "create_issue", "update_issue", "add_comment"],
-        "discord": ["send_message", "read_messages"],
-        "n8n": ["list_workflows", "trigger_workflow", "list_executions"],
-        "semaphore": ["list_projects", "list_templates", "run_task", "check_task"],
-        "netbox": ["read"]
-      }
+        "nocodb": [
+          "read",
+          "create",
+          "update"
+        ],
+        "github": [
+          "list_issues",
+          "create_issue",
+          "update_issue",
+          "add_comment"
+        ],
+        "discord": [
+          "send_message",
+          "read_messages"
+        ],
+        "n8n": [
+          "list_workflows",
+          "trigger_workflow",
+          "list_executions"
+        ],
+        "semaphore": [
+          "list_projects",
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "frozen": "2026-09-22: not a workflow agent; all agents are skynet roles (change service-deployment-workflow). Kept unchanged so existing callers keep their decisions."
     },
     "netclaw": {
       "allowed_actions": {
-        "netbox": ["read", "create", "update"],
-        "nocodb": ["read", "create", "update"],
-        "pfsense": ["read_config", "read_status"],
-        "snmp": ["poll"],
-        "nmap": ["scan_subnet"]
-      }
+        "netbox": [
+          "read",
+          "create",
+          "update"
+        ],
+        "nocodb": [
+          "read",
+          "create",
+          "update"
+        ],
+        "pfsense": [
+          "read_config",
+          "read_status"
+        ],
+        "snmp": [
+          "poll"
+        ],
+        "nmap": [
+          "scan_subnet"
+        ]
+      },
+      "frozen": "2026-09-22: not a workflow agent; all agents are skynet roles (change service-deployment-workflow). Kept unchanged so existing callers keep their decisions."
     },
     "skynet": {
       "allowed_actions": {
-        "semaphore": ["list_templates", "run_task", "check_task"]
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ]
       }
+    },
+    "infra-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read",
+          "create",
+          "update"
+        ]
+      },
+      "allowed_templates": [
+        "Create VM Template",
+        "Provision VM",
+        "Distribute SSH Keys",
+        "Back Up Service SSH Key",
+        "Resize VM",
+        "Verify Service Persistence",
+        "Lookup Service Inventory",
+        "Validate Address Free"
+      ]
+    },
+    "security-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Harden SSH",
+        "Apply Firewall",
+        "Deploy Authentik",
+        "Back Up Credentials to site-config",
+        "Snapshot Firewall"
+      ]
+    },
+    "o11y-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": []
+    },
+    "service-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Check Secrets",
+        "Verify Service Health",
+        "Manage Caddy Sites",
+        "Snapshot Service Assessment",
+        "Snapshot Access"
+      ],
+      "service_deploy_templates": [
+        "Deploy agentgateway",
+        "Deploy n8n",
+        "Deploy OpenHands",
+        "Deploy tududi",
+        "Deploy honcho",
+        "Deploy Postiz",
+        "Deploy UhhCraft",
+        "Deploy ComfyUI Sidecar",
+        "Deploy Hunyuan3D Sidecar"
+      ]
     },
     "semaphore": {
       "destructive_templates": [
@@ -33,6 +163,182 @@
         "Clean Deploy ERPNext",
         "Wipe and Rebuild"
       ]
+    },
+    "workflow_steps": {
+      "vm-template": {
+        "owner": "infra-agent",
+        "templates": [
+          "Create VM Template"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "lookup-inventory": {
+        "owner": "infra-agent",
+        "templates": [
+          "Lookup Service Inventory"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "validate-address": {
+        "owner": "infra-agent",
+        "templates": [
+          "Validate Address Free"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "provision-vm": {
+        "owner": "infra-agent",
+        "templates": [
+          "Provision VM"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "cloud-init": {
+        "owner": "infra-agent",
+        "templates": [
+          "Provision VM"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "ssh-keys": {
+        "owner": "infra-agent",
+        "templates": [
+          "Distribute SSH Keys"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "ssh-key-backup": {
+        "owner": "infra-agent",
+        "templates": [
+          "Back Up Service SSH Key"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "access-harden": {
+        "owner": "security-agent",
+        "templates": [
+          "Harden SSH"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "service-assess": {
+        "owner": "service-agent",
+        "templates": [
+          "Snapshot Service Assessment"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "vm-rightsize": {
+        "owner": "infra-agent",
+        "templates": [
+          "Resize VM"
+        ],
+        "per_service": false,
+        "proposal_from": "service-assess",
+        "reviewed": false
+      },
+      "secrets-approle": {
+        "owner": "service-agent",
+        "templates": [
+          "Check Secrets"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "instrument-host": {
+        "owner": "o11y-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "service-deploy": {
+        "owner": "service-agent",
+        "templates": [],
+        "per_service": true,
+        "proposal_from": "service-assess",
+        "reviewed": false
+      },
+      "service-validate": {
+        "owner": "service-agent",
+        "templates": [
+          "Verify Service Health"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "edge-route": {
+        "owner": "service-agent",
+        "templates": [
+          "Manage Caddy Sites"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "fw-assess": {
+        "owner": "security-agent",
+        "templates": [
+          "Snapshot Firewall"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "fw-harden": {
+        "owner": "security-agent",
+        "templates": [
+          "Apply Firewall"
+        ],
+        "per_service": false,
+        "proposal_from": "fw-assess",
+        "reviewed": false
+      },
+      "instrument-service": {
+        "owner": "o11y-agent",
+        "templates": [],
+        "per_service": false,
+        "reviewed": false
+      },
+      "systemd-enablement": {
+        "owner": "infra-agent",
+        "templates": [
+          "Verify Service Persistence"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "access-assess": {
+        "owner": "service-agent",
+        "templates": [
+          "Snapshot Access"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "oidc-config": {
+        "owner": "security-agent",
+        "templates": [
+          "Deploy Authentik"
+        ],
+        "per_service": false,
+        "proposal_from": "access-assess",
+        "reviewed": false
+      },
+      "credential-backup": {
+        "owner": "security-agent",
+        "templates": [
+          "Back Up Credentials to site-config"
+        ],
+        "per_service": false,
+        "reviewed": false
+      }
     }
   }
 }

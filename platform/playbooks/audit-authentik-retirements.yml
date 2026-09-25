@@ -1,0 +1,103 @@
+---
+# Read-only preflight for a Dev Authentik deployment that may retire accounts.
+# Uses the same env.j2 retirement declarations as deploy-authentik.yml. The query
+# runs inside authentik-server, where its existing bootstrap token is available.
+- name: Require one declared Authentik host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Refuse a missing or ambiguous target
+      ansible.builtin.assert:
+        that: "groups.get('authentik_svc', []) | length == 1"
+        fail_msg: "Declare exactly one authentik_svc host before auditing."
+
+- name: Audit declared Authentik retirements without changing live state
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _authentik_source: "{{ playbook_dir }}/../services/authentik/deployment"
+  tasks:
+    - name: Read retirement declarations from the deployed env template
+      ansible.builtin.set_fact:
+        _legacy_decls: >-
+          {{ lookup('file', _authentik_source ~ '/templates/env.j2')
+             | regex_findall("([A-Z0-9_]*LEGACY_USERNAME)=\{\{\s*([a-z0-9_]+)\s*\|\s*default\('([^']*)'\)") }}
+
+    - name: Refuse an empty retirement declaration parser
+      ansible.builtin.assert:
+        that: "_legacy_decls | length > 0"
+        fail_msg: "No retirement declarations found in env.j2; audit coverage is unknown."
+
+    - name: Resolve configured retirement usernames from private inventory
+      ansible.builtin.set_fact:
+        _legacy_entries: >-
+          {{ (_legacy_entries | default([]))
+             + [{'value': _resolved_name, 'configured': _resolved_name != item[2]}] }}
+      loop: "{{ _legacy_decls }}"
+      loop_control:
+        label: "{{ item[0] }}"
+      vars:
+        _resolved_name: "{{ lookup('vars', item[1], default=item[2]) | string | trim }}"
+
+    - name: Keep only retirements configured beyond harmless blueprint defaults
+      ansible.builtin.set_fact:
+        _audit_names: >-
+          {{ _legacy_entries | selectattr('configured') | map(attribute='value')
+             | reject('equalto', '') | list }}
+
+    - name: Refuse a vacuous retirement audit
+      ansible.builtin.assert:
+        that: "_audit_names | length > 0"
+        fail_msg: "No retirement username is configured in private inventory; this run would audit nothing."
+
+    - name: Check audit script loading without private usernames
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - exec
+          - -i
+          - authentik-server
+          - python
+          - -c
+          - "{{ lookup('file', _authentik_source ~ '/audit-users.py') }}"
+        stdin: audit-probe
+      register: _audit_runtime_probe
+      changed_when: false
+      check_mode: false
+      # The script checks its container-local token, then handles this fixed
+      # probe before any API request. Other results expose the safe command's
+      # runtime error and stop before private usernames are sent.
+      failed_when: >-
+        _audit_runtime_probe.rc != 0 or
+        _audit_runtime_probe.stdout | trim != 'authentik_retirement_audit_ready'
+
+    - name: Read exact account presence through the container-local Authentik API
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - exec
+          - -i
+          - authentik-server
+          - python
+          - -c
+          - "{{ lookup('file', _authentik_source ~ '/audit-users.py') }}"
+        # The fixed prefix keeps Ansible 2.16 from converting JSON-looking
+        # stdin back into a Python list before the command module writes it.
+        stdin: "audit:{{ _audit_names | to_json }}"
+      register: _audit_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      # The command enters the container's authenticated API context and its
+      # stdin carries private inventory usernames; only the count report follows.
+      no_log: true
+
+    - name: Require a successful authenticated read
+      ansible.builtin.assert:
+        that: "_audit_result.rc == 0"
+        fail_msg: "Authentik retirement audit failed (rc={{ _audit_result.rc }}; {{ _audit_result.stdout | default('no summary', true) }})."
+
+    - name: Report counts without private usernames
+      ansible.builtin.debug:
+        msg: "{{ _audit_result.stdout | from_json }}"

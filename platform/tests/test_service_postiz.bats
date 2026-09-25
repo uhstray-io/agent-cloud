@@ -408,16 +408,21 @@ setup() {
 }
 
 @test "postiz: seeding template stores no credential in Semaphore's database" {
-  local t="$REPO_ROOT/platform/semaphore/templates.yml"
-  # Semaphore PERSISTS survey values, so the nine credentials must be
-  # launch-time extra vars, never survey fields.
-  # Anchored to the real YAML key: the template's comment says "NO survey_vars,
-  # deliberately", so an unanchored match hits the prose explaining the rule.
-  # State-based range: stop at the NEXT template of any name, not the next
-  # non-'S' one — a later 'S'-prefixed template would otherwise extend the range
-  # and count its survey_vars as ours.
-  run bash -c "awk '/^  - name: Seed Postiz Secrets\$/{f=1;next} f&&/^  - name: /{exit} f' '$t' | grep -cE '^    survey_vars:'"
-  [ "$output" = "0" ]
+  # Semaphore persists surveys. Only the non-secret read-only switch is allowed;
+  # provider credentials must use temporary encrypted environment inputs.
+  run python3 - "$REPO_ROOT/platform/semaphore/templates.yml" <<'PYTHON'
+import sys
+import yaml
+with open(sys.argv[1]) as source:
+    templates = yaml.safe_load(source)["templates"]
+seed = next(item for item in templates if item["name"] == "Seed Postiz Secrets")
+survey = seed["survey_vars"]
+assert len(survey) == 1
+assert survey[0]["name"] == "postiz_verify_access_only"
+assert survey[0]["type"] == "string"
+assert survey[0]["default_value"] == "false"
+PYTHON
+  [ "$status" -eq 0 ]
 }
 
 @test "postiz: public inventory placeholder leaks no real address" {
@@ -439,10 +444,14 @@ setup() {
 
 @test "postiz: first-path secret creation is atomic (CAS 0)" {
   local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
+  local shared="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
   # Two runs racing a first-time seed both see 404; without CAS the later POST
-  # replaces the earlier writer's keys.
-  grep -qE 'cas: 0' "$f"
-  grep -qE 'Merge instead, when another run won the create race' "$f"
+  # replaces the earlier writer's keys. The seed writes through the shared merge task,
+  # which owns the CAS-0 create and the create-race merge (no second copy here).
+  assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$f"
+  refute_grep -qE 'method: (PATCH|POST)' <<<"$(sed -n '/Merge the supplied credentials/,$p' "$f")"
+  assert_grep -qE 'cas: 0' "$shared"
+  assert_grep -q 'Losing the create race means the path now exists' "$shared"
 }
 
 @test "postiz: the seed playbook uses the shared cleartext OpenBao guard" {

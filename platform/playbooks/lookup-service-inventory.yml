@@ -1,0 +1,116 @@
+---
+# lookup-service-inventory.yml — workflow step lookup-inventory (plan 15, step 2).
+#
+# Read-only, identical under --check (change service-deployment-workflow task 7.3). Proves the
+# service's VM is DECLARED completely and that the address authority agrees before anything
+# is provisioned:
+#   - the declared spec (vmid, node, cores, memory, disk, address) is complete, resolved the
+#     way provision-vm.yml resolves it (vars/declared-vm.yml);
+#   - NetBox, the IPAM authority, records the declared address as reserved or active;
+#   - no other inventory host claims that address.
+# It records one step result and fails when any of the three does not hold.
+#
+# Usage (Semaphore): -e target_service=<service> [-e target_host=<declaring host>]
+
+- name: "Look up the declared inventory for {{ target_service | default('(unset)') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars_files:
+    - vars/declared-vm.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+    _spec:
+      vmid: "{{ _vmid }}"
+      node: "{{ _node }}"
+      cores: "{{ _cores }}"
+      memory: "{{ _mem }}"
+      disk: "{{ _disk }}"
+      address: "{{ _ip }}"
+
+  tasks:
+    - name: "Require a target service that resolves to one declaring host"
+      ansible.builtin.assert:
+        that:
+          - target_service is defined and target_service | length > 0
+          - _group_hosts | length > 0
+          - _decl_host in _group_hosts
+          - target_host is defined or (_group_hosts | length == 1)
+        fail_msg: >-
+          Pass -e target_service=<service> whose <service>_svc group declares the VM
+          ({{ _group_hosts | join(', ') or 'no such group' }}); -e target_host= selects one
+          when the group declares more than one.
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext NetBox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+
+    - name: "Build the NetBox API headers (read-scoped automation token)"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+      vars:
+        _nb_token: >-
+          {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/netbox:automation_api_token',
+             url=_bao_url, auth_method='approle',
+             role_id=bao_role_id | default(lookup('env', 'BAO_ROLE_ID')),
+             secret_id=bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))) }}
+
+    # The request carries the live automation token in _nb_headers, so it is no_log (review
+    # of PR #195). It never fails inside the censored task; the next task fails visibly on the
+    # status alone, which carries no credential.
+    - name: "Ask the IPAM authority about the declared address"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ _ip | urlencode }}"
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _nb_ip
+      failed_when: false
+      no_log: true
+      check_mode: false
+      when: _ip | length > 0
+
+    - name: "Require the IPAM lookup to have answered"
+      ansible.builtin.assert:
+        that: _nb_ip.status | default(-1) == 200
+        fail_msg: "NetBox address lookup answered HTTP {{ _nb_ip.status | default('no response') }}."
+      when: _ip | length > 0
+
+    - name: "Decide"
+      ansible.builtin.set_fact:
+        _spec_missing: "{{ _spec | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | list }}"
+        _address_status: >-
+          {{ ((_nb_ip.json.results | default([]) | first | default({})).status | default({})).value
+             | default('absent') }}
+
+    - name: "Decide the failures"
+      ansible.builtin.set_fact:
+        _lookup_errors: >-
+          {{ (['declared spec is missing: ' ~ (_spec_missing | join(', '))] if _spec_missing else [])
+             + ([] if _address_status in ['reserved', 'active']
+                else ['NetBox records ' ~ (_ip or 'no address') ~ ' as ' ~ _address_status ~ ', not reserved or active'])
+             + (['address ' ~ _ip ~ ' is also claimed by ' ~ (_addr_claimants | join(', '))] if _addr_claimants else []) }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ target_service }}"
+        step_result_step: lookup-inventory
+        step_result_status: "{{ 'pass' if (_lookup_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          vm_spec: "{{ _spec }}"
+          address_status: "{{ _address_status }}"
+        step_result_error: "{{ _lookup_errors | join('; ') }}"
+
+    - name: "Fail when the declaration is not ready to provision"
+      ansible.builtin.fail:
+        msg: "{{ _lookup_errors | join('; ') }}"
+      when: _lookup_errors | length > 0

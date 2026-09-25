@@ -4,6 +4,22 @@ Ansible playbooks for deploying, updating, validating, and hardening agent-cloud
 
 ## Conventions
 
+### Dry run, verify and results
+
+Standard: [`plan/architecture/08-ansible-automation-standards.md`](../../plan/architecture/08-ansible-automation-standards.md).
+
+- **Dry run is Ansible check mode**: `ansible-playbook --check`, or Semaphore's "Dry run"
+  option, which passes `--check`. Do not add a `dry_run` variable. The three playbooks that
+  still accept `-e dry_run=true` (`create-netbox-device.yml`, `cleanup-netbox.yml`,
+  `manage-github-runner-group.yml`) are migrating to check mode.
+- **Every task is in one check-mode class.** Read-only probes on modules without full
+  check-mode support (`uri` GET, a reading `command`) carry `check_mode: false`; writes that
+  cannot simulate carry `when: not ansible_check_mode`; modules with full support need
+  nothing. Under `--check`, a `uri` task without `check_mode: false` is skipped.
+- **Verify is `--tags verify`**, and changes nothing.
+- **Machine-read results use `ansible.builtin.set_stats`** through
+  `tasks/emit-step-result.yml`, not `debug`.
+
 ### Thin Wrappers
 
 There are two deployment patterns in use:
@@ -113,6 +129,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
 | `store-postiz-api-key.yml` | Composable | Read the org's API key from postiz's own Postgres (minted by the app on the first authenticated request; the stored value IS the bearer token) and place it at `secret/services/postiz:postiz_api_key`, no_log throughout |
 | `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
+| `audit-authentik-retirements.yml` | Read-only | Count the live Authentik accounts named by private `*_legacy_username` declarations before a Dev blueprint deploy; prints counts, not usernames or credentials |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy |
 | `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 
@@ -169,7 +186,43 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
-| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses |
+| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
+
+For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
+and `pfsense_dhcp_interface`, selecting the router and interface that serve the
+requested prefix. The playbook reads that interface's DHCP configuration through
+the pfSense REST API on every reservation run; its API key comes from OpenBao's
+`secret/services/discovery/pfsense:api_key`, shared with the discovery worker.
+`reconcile-pfsense-api-key.yml` seeds that field from the fixed private
+`site-config` backup through a Dev-bound Semaphore task. It preserves a
+different live key until the replacement is verified, and never passes the
+backup value as a task parameter. The reservation refuses missing or malformed data,
+addresses in the primary or additional DHCP pools, and existing static mappings
+before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
+The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
+the singular DHCP endpoint selects the interface by `id` and checks the returned
+`id`; pfREST may render the `interface` field as a display name. A failed TLS or API read
+refuses the reservation. Verify that source with a read-only refusal run before
+reserving production addresses.
+Report mode does not contact pfSense and remains read-only.
+
+### Service Deployment Workflow
+
+Plan 15, change `service-deployment-workflow`. The step registry is
+`platform/workflows/service-onboarding/registry.yml`; each executor and snapshot records one
+step result through `tasks/emit-step-result.yml`. All of these run with `-e target_service=<group>`
+except the collector and the custom-fields converger, and all are read-only except where noted.
+
+| Playbook | Purpose |
+|----------|---------|
+| `lookup-service-inventory.yml` | Step lookup-inventory: the declared VM spec is complete, NetBox records the declared address as reserved or active, and no other host claims it. Takes `target_service` as the service name, like `provision-vm.yml` |
+| `validate-address-free.yml` | Step validate-address: the address is not live in the pfSense ARP table (`skip` when the ARP entry's MAC is on a NIC of the service's own running VM), and the NetBox VM record exists: exactly one, in a Proxmox cluster discovery maintains. It writes that record, `planned`, in the Proxmox cluster discovery maintains, with the scoped `vm-recorder` token |
+| `snapshot-service-assessment.yml` | The one input to the service assessment: the committed compose services (image and ports, no environment), running containers, practices |
+| `snapshot-firewall.yml` | The one input to the firewall assessment: listening sockets, ufw state, published container ports, the declared firewall vars |
+| `snapshot-access.yml` | The one input to the role and access assessment: Authentik app-catalog entries, blueprints and OpenBao policy files for the service |
+| `verify-service-persistence.yml` | Step systemd-enablement: every container restarts `always`/`unless-stopped`, and rootless podman has linger. Fails on an empty container selection |
+| `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields to their declaration through the Django shell. Writes, and refuses to retype a field |
+| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history → newest result per service and step → NetBox custom fields (scoped view/change-VM token) and Loki. Scheduled every 15 minutes. Its dry run is the read-only failure report |
 
 ### Infrastructure
 | Playbook | Purpose |
@@ -217,6 +270,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble |
 | `tasks/enable-linger.yml` | Implemented | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot. Included by `place-monorepo.yml`; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
+| `tasks/assert-seed-inputs-declared.yml` | Implemented | Refuse, before the AppRole login, a seed run whose environment carries a seed input (`BAO_VALUE`, `SEED_*`) its template does not declare. Lists variable names only. Included by both isolated seed playbooks |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
 | `tasks/site-config-clone.yml` | Implemented | Clone site-config into a scratch dir on a fresh `<prefix>-<UTC>-<6hex>` branch with the deploy key the caller read from OpenBao — written 0600 inside that dir, `IdentitiesOnly`, pinned GitHub host keys |
 | `tasks/site-config-push.yml` | Implemented | Stage ONE path, commit if changed, push the branch, report names and counts — never values. Pairs with the clone task; the caller wipes the scratch dir in an `always:` |
@@ -227,6 +281,11 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/manage-cloudflare-record.yml` | Implemented | Create/update one Cloudflare DNS record |
 | `tasks/registry-login.yml` | Implemented | Authenticate the container engine to a registry |
 | `tasks/resolve-become-password.yml` | Implemented | Resolve the bootstrap sudo password from OpenBao before privileged tasks; leave sanitized status visible |
+| `tasks/emit-step-result.yml` | Implemented | Record ONE workflow step result with `set_stats`; runs in check mode too |
+| `tasks/list-service-containers.yml` | Implemented | The containers one service's compose project created, by the compose `working_dir` label (project names are not stable per service). A read |
+| `tasks/netbox-api-headers.yml` | Implemented | NetBox API headers for a stored token: `Bearer` for a v2 `nbt_` token, `Token` for a legacy v1 one |
+| `tasks/assert-local-discovery-scope.yml` | Implemented | Confine discovery to local-dev: the target allowlist is observed from the engine's networks, and no targets means discovery is disabled |
+| `tasks/bao-merge-keys.yml` | Implemented | Merge keys into one OpenBao KV-v2 path with merge-patch (siblings preserved, create with CAS, write verified) |
 | `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`LOCAL-DEV-DEPLOYMENT.md` §11) |
 
 Planned tasks (not yet implemented):

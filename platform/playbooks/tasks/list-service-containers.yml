@@ -1,0 +1,31 @@
+---
+# list-service-containers.yml — the containers one service's compose project created.
+#
+# Selected by the compose label com.docker.compose.project.working_dir == the service's deploy
+# directory, because compose project names are not stable per service (n8n's project is
+# literally "deployment"). Both Docker Compose and podman-compose set that label.
+#
+# A read: runs in check mode too, and never fails the play; an empty result is the caller's
+# to judge (verify-service-persistence.yml fails on it, the snapshots record it).
+#
+# Caller passes:  _lsc_fields  container fields to print, e.g. [Names, Ports]
+#                 _lsc_all     include stopped containers (default false)
+# Registers:      _lsc         (read _lsc.stdout_lines: one line per container)
+# Also sets:      _deploy_dir, _engine (for the caller's own messages and snapshots)
+
+- name: "Resolve the service's deploy directory and engine"
+  ansible.builtin.set_fact:
+    _deploy_dir: >-
+      {{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}
+    _engine: "{{ container_engine | default('podman') }}"
+
+- name: "List the service's containers (by compose working directory)"
+  ansible.builtin.command:
+    argv: >-
+      {{ [_engine, 'ps'] + (['-a'] if (_lsc_all | default(false) | bool) else [])
+         + ['--filter', 'label=com.docker.compose.project.working_dir=' ~ _deploy_dir,
+            '--format', _lsc_fields | map('regex_replace', '^', '{{.') | map('regex_replace', '$', '}}') | join(' ')] }}
+  register: _lsc
+  changed_when: false
+  failed_when: false
+  check_mode: false

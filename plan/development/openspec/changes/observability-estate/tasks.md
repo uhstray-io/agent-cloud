@@ -9,8 +9,8 @@
 ## 2. Provisioned alerts and budgets
 
 - [x] 2.1 Add inventory-controlled metric retention and per-scrape sample limits, with a local pilot measurement recorded before wider rollout; production size selection remains gated on its receiver audit.
-- [ ] 2.2 Provision service-down and missing-telemetry rules, a generic dashboard link, and a contact point whose credential is rendered from OpenBao by Ansible.
-- [ ] 2.3 Encode a reversible pilot fault drill through Semaphore and verify both rule firing and notification receipt without manual Grafana changes.
+- [x] 2.2 Provision service-down and missing-telemetry rules, a generic dashboard link, and a contact point whose credential is rendered from OpenBao by Ansible.
+- [x] 2.3 Encode a Dev-bound, local-only pilot fault drill that temporarily activates OpenBao-backed provisioning, verifies both rule firing and Discord receipt, and always restores paused rules and removes the contact point before success. Keep persistent enablement separate.
 - [ ] 2.4 Validation gate: a wipe/redeploy plus the drill prove spec scenarios "Rebuild restores views and rules" and "Failure reaches an operator".
 
 ## 3. Trace ingestion after alert proof
@@ -24,5 +24,5 @@
 
 - [x] 4.1 Add an isolated, declarative local Semaphore binding for this branch; prove the executed revision and complete Grafana Authentik login through the TLS front door.
 - [x] 4.2 Merge the local metrics, logs, and SSO baseline PR to `dev` (PR #206, `3de6fe71`). Alerts remain disabled until their destination and drill pass. For each remaining PR, complete one review round (Claude is acceptable when CodeRabbit is rate limited), resolve actionable findings, and confirm all required checks are green on the final head; then merge under the user's standing authorization. Run subsequent local and production automation only from the exact reviewed `dev` revision.
-- [ ] 4.3 Record the unreachable legacy `grafanapodman` host without modifying its data; provision a separate receiver and private inventory through NetBox/Proxmox automation. Declare the Grafana Authentik app, Caddy route, and DNS through code, then deploy through Semaphore and verify TLS/SSO, health, retention, and access boundaries.
+- [ ] 4.3 Record the unreachable legacy `grafanapodman` host without modifying its data; reconcile the private pfSense API key into the discovery-owned OpenBao path through a Dev-bound Semaphore task, then prove the live DHCP boundary before reserving an address. Provision a separate receiver and private inventory through NetBox/Proxmox automation. Declare the Grafana Authentik app, Caddy route, and DNS through code, then deploy through Semaphore and verify TLS/SSO, health, retention, and access boundaries.
 - [ ] 4.4 Coordinate DGX Spark and agentgateway exporters with their owning tasks; verify named DGX node/vLLM series and Loki log receipt, and agentgateway telemetry, on the production receiver. Keep optional GPU scraping disabled until proven.

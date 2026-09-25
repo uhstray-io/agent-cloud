@@ -65,15 +65,28 @@ step_wait_ready() {
   # script runs inside the local control plane (Semaphore container) rather than
   # on the host publishing the port. Works identically on the prod VM.
   info "Step 5: Waiting for the readiness listener (via agentgateway-db on the compose network)..."
-  local elapsed=0
+  # By ADDRESS on the shared network, never by name: see gateway-addr.sh (task 1215, a VM
+  # named `agentgateway` made the name resolve to the db container itself).
+  local elapsed=0 addr=""
   while [ "$elapsed" -lt 90 ]; do
-    if $CONTAINER_ENGINE exec agentgateway-db wget -q -O /dev/null -T 3 http://agentgateway:19001/healthz/ready 2>/dev/null; then
+    addr=$(CONTAINER_ENGINE="$CONTAINER_ENGINE" "${SCRIPT_DIR}/gateway-addr.sh" 2>/dev/null) || addr=""
+    if [ -n "$addr" ] && $CONTAINER_ENGINE exec agentgateway-db wget -q -O /dev/null -T 3 "http://${addr}:19001/healthz/ready" 2>/dev/null; then
       info "agentgateway readiness is responding."
       return 0
     fi
     sleep 3; elapsed=$((elapsed + 3))
   done
-  error "agentgateway readiness did not respond within 90s (${CONTAINER_ENGINE} logs agentgateway)"
+  # The loop's probe is quiet; say why it fails. Task 1213: the gateway logged itself ready on
+  # 0.0.0.0:19001 and the probe still never answered, so name resolution and the probe's own
+  # error are what the next run must show.
+  warn "Readiness probe, verbose, from agentgateway-db (gateway address: ${addr:-none found}):"
+  CONTAINER_ENGINE="$CONTAINER_ENGINE" "${SCRIPT_DIR}/gateway-addr.sh" 2>&1 | redact_secrets >&2 || true
+  $CONTAINER_ENGINE exec agentgateway-db sh -c \
+    "getent hosts agentgateway || echo 'agentgateway does not resolve here'; cat /etc/resolv.conf; [ -n '${addr}' ] && wget -S -O /dev/null -T 5 http://${addr}:19001/healthz/ready" \
+    2>&1 | redact_secrets >&2 || true
+  dump_container_diagnostics agentgateway
+  dump_container_diagnostics agentgateway-db 20
+  error "agentgateway readiness did not respond within 90s (diagnostics above)"
 }
 
 main() {

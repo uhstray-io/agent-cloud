@@ -29,12 +29,17 @@ supersede it with a new entry and link both.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
+| 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | Convention |
+| 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
+| 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
+| 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -52,10 +57,12 @@ supersede it with a new entry and link both.
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
+| 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -63,29 +70,39 @@ supersede it with a new entry and link both.
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | Test (provision-vm guard) |
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
+| 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
-| 4.6 | A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
+| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
+| 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
+| 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
+| 5.9 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
+| 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
+| 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
+| 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
+| 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
+| 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
+| 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | Test (rootful case) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
-| 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
+| 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
@@ -107,8 +124,11 @@ supersede it with a new entry and link both.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
+| 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
+| 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
+| 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | Convention |
 
 ---
 
@@ -174,6 +194,8 @@ quoting and pass without it, including an unterminated final line.
 
 ### 1.3 A masked exit code reported as success
 
+**Occurrences: 2** — (first undated), 2026-09-25
+
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
 while `make` had exited 2. The bootstrap was reported as complete when Caddy had
@@ -187,6 +209,18 @@ and read it, or capture `${PIPESTATUS[0]}`. Applies especially to background
 jobs, where the exit code is the only signal that arrives unprompted.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** On PR #195 I ran `bats -j 4 platform/tests/ | grep -E
+'^not ok' | head`, saw no output, and reported "BATS: all 674 tests ran with no failures"
+— the 674 was `bats -c` counting the files, not a run. This machine has no GNU `parallel`,
+so `bats -j` executes **zero** tests (`Executed 0 instead of expected 5 tests`, bats-core
+1.13.0) and prints no `not ok`; the filter's silence was read as a pass. The pre-push hook,
+which runs `bats platform/tests/` serially, then refused the push on a real failure
+(`test_local_netbox.bats:76` pinned a literal the change had rewritten). Why the rule did
+not fire: it names exit codes, and this pipe also hid the one line that said nothing ran —
+a filter for failures cannot tell "none failed" from "none ran". Corollary: a test claim
+needs the run's own count of executed tests (`N passed`, the final `ok N`), never the
+absence of a failure line; and run BATS the way the hook does, without `-j`.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -358,6 +392,131 @@ earns the words "works for the current values", nothing stronger.
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
+
+### 1.9 "A feature branch is invisible to the controller" held only in the web UI
+
+**What happened.** `platform/semaphore/README.md` (section "What Semaphore can see",
+recorded 2026-09-14) stated that the controller can run only `main` and `dev` and that a
+feature branch is invisible to it. On 2026-09-22, while checking whether the `(Dev)` twins
+could be replaced by choosing the branch at launch, the Semaphore source at the commit the
+local controller runs (`v2.18.12^0-8a4dcf0`) showed `services/tasks/LocalJob.go:817-819`
+replacing the repository's branch with the task's `git_branch` unconditionally. The
+template flag `allow_override_branch_in_task` is read only by
+`web/src/components/TaskForm.vue:123`; the API validates the branch name's syntax and
+nothing else (`db/git_branch.go`).
+
+**Root cause.** The claim was derived from what the UI offers and from the two repository
+records, not from the API or the runner. A UI affordance was read as a server-side control.
+
+**The rule.** A statement that a system cannot do something must name the server-side code
+or live refusal that prevents it. What a UI does not offer is not a control.
+
+**Enforced by.** Convention. For agents, OPA's branch rule in change
+`service-deployment-workflow` (task 4.5) becomes the control; for human API tokens nothing
+server-side limits the branch.
+
+**Note — 2026-09-22, later the same day.** The finding is version-scoped. Semaphore
+v2.19.11, to which production was pinned the same day, applies a task's branch only when the
+template allows it (`services/tasks/local_executor.go:938`), so the server does enforce the
+flag there. The rule stands unchanged: the original claim still named no server-side
+control, and on v2.18.12 there was none.
+### 1.11 A gate justified by a status-code claim nobody checked
+
+**What happened.** On 2026-09-23 I added a read-only access check to `seed-openbao-key.yml`
+for isolated seed environments (PR #205). It accepted HTTP 200 or 404 from a GET on the
+target path, and its comment said: "a 404 is only returned to a token the policy allows to
+read it; a denied token gets 403." I wrote that from recall. The review cited the Vault API
+documentation: a 404 means the path is missing *or* the token cannot see it. For a brand-new
+secret, which is exactly when the check runs, a denied AppRole would have passed and reported
+"access verified". The Postiz seed's check, from PR #170, had the same hole.
+
+**Root cause.** The pass condition rested on API behaviour asserted from memory, and the
+tests used a fake server that returned what the claim predicted, so nothing could contradict it.
+
+**The rule.** A gate's pass condition cites where the behaviour it relies on is established:
+a docs URL, a read of the server code, or a run against the real service. For "may this token
+do X", ask the server for the token's capabilities (`sys/capabilities-self`), never infer it
+from another endpoint's status code.
+
+**Enforced by.** Test. `tasks/assert-bao-seed-access.yml` requires `read` plus `create`,
+`update` or `patch` from `sys/capabilities-self`. `platform/tests/test_postiz_access_only.py`
+runs both seed playbooks against a synthetic OpenBao where every GET answers 404 and asserts
+that deny, read-only and write-only tokens are refused; forcing the assertion to pass turns
+six cases red. The citation rule itself is `Convention`.
+
+### 1.12 A hang reported from a timer that was not measuring the task
+
+**Occurrences: 2** — 2026-09-24, 2026-09-25
+
+**What happened.** Semaphore task 1215 (Deploy agentgateway (Dev)) was running while a
+background check-in fired. I told the deploy session the task had been running "30+
+minutes" against a normal ~3 and was hung. The 30 minutes was the check-in's own deferral
+interval, not the task's age. Checked a minute later against two real readings: the task
+entered `deploy.sh` at 03:27:47Z and the clock read 03:29:33Z, about two minutes, normal. I
+sent a correction before anyone stopped the task.
+
+**Root cause.** An elapsed-time claim was taken from the nearest number in view instead of
+being computed. A harness timer measures when I was scheduled to look, not how long a
+remote job has run.
+
+**The rule.** A duration is two timestamps from the thing being measured: the task's own
+start (the Semaphore API's `start` or the first output line) and `date -u` now. No
+timestamp pair, no duration. A "hang" claim that could lead someone to stop a live deploy
+gets that check before it is sent.
+
+**Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** Told the user a `git push` "started about 30 minutes ago"
+and had not finished. The process table (`ps -o etime`) showed 2 min 34 s: the push had
+begun only when an earlier batch of tool calls finished, and I dated it from when I issued
+the command. Caught by checking the process before acting on it; the correction went out in
+the next message. Why the rule did not fire: it was worded around remote tasks and a
+harness timer; this was a local process dated from my own action log. The rule already
+covers it (two timestamps from the thing measured); it was not recalled.
+
+### 1.13 A single-environment API projection was mistaken for a second binding
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** The reviewed dev publisher stopped before creating the local
+OpenBao seed template. Semaphore returned both `environment_id: 1` and
+`environment_ids: [1]` for every template. The isolated-environment guard rejected
+the mere presence of `environment_ids`, although it named the same sole binding.
+
+**Root cause.** The guard assumed that a list field meant multiple environments
+without comparing its contents to the scalar field returned by this API version.
+
+**The rule.** Before changing isolated template bindings, require an integer
+environment ID. If the API also supplies a list, it must be exactly the
+one-element list containing that scalar ID. Refuse missing or divergent metadata.
+
+**Enforced by.** `platform/semaphore/tasks/isolated-environments.yml` and the
+focused single-binding/multiple-binding regression in
+`platform/semaphore/tests/test_scoped_publication.py`.
+
+**Review follow-up.** A failed Ansible loop item can print the whole template
+record, including free-form arguments. The ownership guard loops over numeric
+indexes, and the regression asserts a sentinel argument is absent from output.
+
+### 1.10 Reported that a review had started, from a keyword match on a comment I never read
+
+**What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
+PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
+included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
+Review rate limited". The test labelled two refusals (#205, site-config#16) "started", and
+I told Joe that one of the two deploy prerequisites was now under review. It was not.
+Twenty minutes later, a read of the full comments showed every one of the four had been
+refused.
+
+**Root cause.** A loose classifier stood between me and the evidence, and its label was
+reported as the fact. The refusal phrasing had never been checked against the patterns, and
+the "other" output that would have exposed the mismatch was not what got read.
+
+**The rule.** When a reply decides what to tell the user, read the reply, or match it
+against a pattern proven on that exact phrasing. Report a keyword classifier's label only
+as a guess, and treat an unmatched or surprising label as a reason to read the text.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -899,6 +1058,8 @@ its previous form required the very construct that broke the runtime.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
+**Occurrences: 2** — 2026-08-28, 2026-09-22
+
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
 four filenames written into the test. While extending that list by one for a review
@@ -931,6 +1092,26 @@ shrink, and shrinking it is visible work rather than a comment nobody reads.
 with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
 38 remaining plays is tracked as its own change — it touches live-service deploys
 and was deliberately not folded into the change that found it.
+
+**Occurrence 2 — 2026-09-22.** The check-mode contract (change
+`service-deployment-workflow`, "every playbook honours a dry-run flag") derived its
+population from the code, as the rule says, but from one directory:
+`platform/playbooks/**`. Its allowlist was empty and the claim was reported as met.
+`platform/semaphore/` holds four more Ansible files the claim covers:
+`setup-templates.yml`, `bootstrap-semaphore-repositories.yml`, `sync-inventory.yml` and
+the shared `tasks/runtime-access.yml`. None of them honoured `--check`. It surfaced
+when the conformance collector's first local dry run (Semaphore task 1018) failed
+inside the shared access task, because its OpenBao reads were skipped in check mode
+and the rescue reported "Runtime Semaphore access is unavailable". The rule did not
+prevent it because it names *where* the population comes from (the code) but not
+*how far* it extends. A glob rooted in the directory where the fix was written is a
+snapshot of where playbooks lived on that day. Widened rule: derive "every X" from
+the code, and root the derivation at the scope the claim names, not at the directory
+you happen to be working in. Enforced by `platform/tests/test_check_mode_contract.py`,
+which now scans `platform/semaphore/**` too. Widening it went red on all four files
+(mutation-checked: reverting the fix to `runtime-access.yml` fails the test), and all
+four were then retrofitted by hand. `setup-templates.yml --check` against local
+Semaphore reported changed=0, with templates and schedules byte-identical before and after.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -1021,6 +1202,50 @@ import and both vars. Fleet-wide, still `Convention` — the mechanical guard th
 proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
 a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
 allow-list that only shrinks.
+
+### 2.22 Fixture hid Semaphore's empty secret projection
+
+**What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
+provisioner from `dev`, then refused its newly created isolated environment as
+unreadable. Its GET response omitted `secrets`; the fixture always returned
+`secrets: []` and passed. The running Semaphore v2.18.12
+[loads secret metadata on single GET](https://github.com/semaphoreui/semaphore/blob/v2.18.12/api/projects/environment.go#L131-L176)
+but [serializes an empty list with `omitempty`](https://github.com/semaphoreui/semaphore/blob/v2.18.12/db/Environment.go),
+so both responses describe an empty environment.
+
+**Root cause.** The shared clean-environment rule treated absence as unknown,
+and the provisioner directly read `.secrets` even after the rule. The fixture
+modeled a plausible API shape, not the controller's actual empty response.
+
+**The rule.** Mirror the pinned provider's response shape in the fixture.
+Accept the omitted field only where that version guarantees it means an empty
+loaded list; continue to refuse explicit null or malformed secret metadata.
+
+**Enforced by.** `test_the_clean_environment_rule_checks_the_endpoint` and
+`test_provisioner_isolates_the_openbao_key_seed`, whose GET fixture now omits
+empty secret lists.
+
+### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
+
+**What happened.** PR #195 (commit 446bac9) made an ARP hit count as a VM's own only when one
+of that VM's NIC MACs matches, read from a new Proxmox config fetch. The BATS helper
+`judge()` in `platform/tests/test_address_steps.bats` gained a third argument for that config,
+defaulting to `{"data":{}}`: no NICs. The existing cases that assert `own=False` for a
+different vmid, a different name and a stopped VM kept calling it with two arguments, so they
+got no MACs and read `own=False` whatever the vmid, name or status filters did. Removing any of
+those three filters left the suite green. A `/simplify` review during a grounding checkpoint
+found it; nothing had failed.
+
+**Root cause.** The new condition is an AND with the old ones. A negative case proves a filter
+only if every OTHER term is true for it; adding a term that is false by default for the old
+fixtures satisfies every negative case at once.
+
+**The rule.** When a change adds a conjunct to the check under test, make the fixtures' default
+satisfy it, so each negative case can fail only on the term it is about, and mutate each term
+once to watch its case go red.
+
+**Enforced by.** Convention. This instance: the helper now defaults to a matching NIC, and
+removing the vmid, name or running filter each turns the suite red (mutation-checked).
 
 ## 3. Acting on live state
 
@@ -1207,6 +1432,35 @@ related variables after resolving the repository root.
 victim repository, with a fake `bats` that repeats the offending commands, and asserts the
 victim's config is unchanged. Mutation: removing the unset turns it red.
 
+### 3.8 A "dry run" that the orchestrator silently ran for real
+
+**What happened.** On 2026-09-23 I launched `Deploy agentgateway (Dev)` (template 220) against
+production through the Semaphore API, meaning to run it in check mode first. I sent
+`"dry_run": true` at the top level of the task body, from a read of the API spec that did not
+check where the field lives. Semaphore v2.17.31 carries Ansible's check and diff flags inside the
+task's `params` object (`db/Task.go`, `AnsibleTaskParams`); the top-level key was ignored. Task
+1177 ran for real: it placed the dev checkout and enabled linger on the VM, generated and stored
+the gateway's database password, cookie seed and four client keys in OpenBao, and rendered
+`.env` and `config.yaml`, then stopped at a failing guard before `deploy.sh`. No container
+started; the seeded upstream key was reused, not overwritten ("7 secrets managed"). Everything
+written is what the first real deploy writes, so nothing had to be undone, but it was not the
+check-mode run that was intended.
+
+**Root cause.** A safety flag was sent without confirming the server recorded it. The response
+was not read back for the flag, and a real run and a check-mode run look the same until the
+first write.
+
+**The rule.** When a launch depends on a safety flag (check mode, diff, limit), read the created
+task back and confirm the server recorded the flag before letting it run; stop the task if it did
+not. For Semaphore v2.17: `"params": {"dry_run": true, "diff": true}`.
+
+**Enforced by.** Test. `scripts/semaphore-launch.py` builds the body with the flags in `params`
+and refuses check mode on an unverified server version, before the task exists; a read-back
+after the POST stops the task if the server did not record check mode, as a tripwire only,
+since Semaphore starts a task on creation (review of PR #220).
+`platform/tests/test_semaphore_launch.py` fails if the flag is ever sent at the top level, and
+covers the version gate, undeclared survey fields, a busy template and the tripwire.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -1331,6 +1585,8 @@ first.
 
 ### 4.6 The error branch printed what the happy path protected
 
+**Occurrences: 2** — 2026-09-18, 2026-09-24
+
 **What happened.** A one-off script pulled two freshly generated passwords out of a
 Semaphore task's output to write them into site-config. Its regex did not match
 Semaphore's rendering (`msg: jacob -> …`, not JSON-quoted), so it fell into the
@@ -1362,6 +1618,41 @@ long-lived credential leaked the same way would have needed rotation.
 `backup-credentials-to-site-config.yml` never routes a value through stdout on any
 path, which is why the operator-side print flow is the stopgap and not the design.
 
+**Occurrence 2 — 2026-09-24.** Same shape, in a playbook instead of a script. PR #205's
+publication play read each existing isolated environment with a `no_log` GET, then a
+VISIBLE assert looped over `_isolated_contents.results` to refuse an unclean one. Its
+`loop_control.label` made the summary line show only the environment name, so the success
+path looked clean. On the refusal path ansible-core 2.19 prints the failed item whole, and
+each item was the registered `uri` result — `invocation.module_args.headers` included, with
+the Semaphore `Authorization: Bearer` value. CI's `test_scoped_publication` caught it (its
+`assertNotIn(secret, output)` on every run); locally it passed because ansible-core 2.21
+does not print the item there. Why the rule did not fire: I read "`label` hides the item"
+as redaction; it only shortens the summary. The fix loops over the declared specs and
+indexes into the reads (`index_var`), so no failed item carries a request. Narrower rule
+this adds: a task without `no_log` never loops over, or prints, a registered result from a
+`no_log` task — derive the clean data first. Six pre-existing loops over registered
+results elsewhere on dev are unaudited against this rule.
+
+**Audit and enforcement — 2026-09-25.** Two corrections to occurrence 2. It is not specific to
+2.19: the failed loop item prints the token at default verbosity on ansible-core 2.16.18,
+2.19.13 and 2.20.8, which the ledger records as the local and production controller cores (10.16),
+and only 2.21.0 withholds it (synthetic token, a failing assert over registered `uri` results;
+a `uri` that fails on its own does not print its headers on any of the four). Of the six loops,
+the `sync-secrets-to-openbao.yml` and `bootstrap-local-dev.yml` tasks are themselves `no_log`, so
+they are safe; three tasks in `netbox-allocate-ip.yml` and one in `create-netbox-device.yml` were
+the same leak with the NetBox token, on their failure paths. They now loop over clean input,
+and `test_no_request_in_loop_items.py` fails on the shape on any core. It flags all four
+original sites and the pre-fix #205 task.
+
+**Root fix — 2026-09-25.** The rewrites above were per-site. ansible-core strips `invocation` only
+from the top level of a result (`plugins/callback/__init__.py`, `_dump_results`, read on 2.19 and
+2.20.8), so any nested result keeps its request. The repository `ansible.cfg` now selects
+`callback_plugins/redact_requests.py`, the default callback minus every nested `invocation`, and
+Semaphore sets no stdout callback of its own (v2.17.31 `db_lib/AnsiblePlaybook.go`). Proven on
+2.16.18 and 2.20.8: the same play prints the token under `default` and not under the repository
+callback. The guard now protects any `no_log` source and whole-register debug prints, the rule as
+stated above; it found one more loop, the Proxmox VM health check, converted the same way.
+
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 
 **Occurrences: 1** — 2026-09-18 (found in review 2026-09-22)
@@ -1384,6 +1675,51 @@ inventory host's `ansible_host`/`vm_ip` and require each address to have exactly
 **Enforced by.** Playbook guard + test: `provision-vm.yml` refuses a declared address that any
 other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
 `test_provision_vm.bats` evaluates the real guard against a conflicting and a clean inventory.
+
+
+### 4.8 A credential-shaped test fixture was pushed, and one branch failed every PR's scan
+
+**What happened.** On 2026-09-23 a new BATS file for container diagnostics (PR 230) fed its
+redaction test a literal Postgres connection string carrying a user and a password. CI's all-detectors TruffleHog
+scan flagged it as an unverified Postgres credential. Replacing the literal in a later commit
+did not clear it: the scan reads every commit since the base, so only a history rewrite could.
+The fix went onto a fresh single-commit branch (PR 231) instead of a force push. Meanwhile the
+same finding failed PR 203's scan, a branch that never contained the file.
+
+**Root cause.** Two things. The fixture used the exact shape a credential detector exists to
+catch. And the all-detectors scan ran `trufflehog git file://. --since-commit "$BASE_SHA"` with
+no `--branch`, over a `fetch-depth: 0` checkout, so it scanned every fetched branch. The
+verified scan beside it was already scoped with `--branch "$HEAD_SHA"`.
+
+**The rule.** A test that needs a credential-shaped string assembles it at run time (the scheme
+in a variable), or carries `trufflehog:ignore` with its reason (see 4.3's "Related"). Before
+pushing a new fixture, run the scan the way CI runs it (all detectors, not `--only-verified`).
+Every CI scan is scoped to the PR's own commits.
+
+**Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
+fix independently the same evening). The fixture rule itself is Convention.
+
+### 4.9 Private Discord destination IDs in a public test fixture
+
+**What happened.** The first PR revision copied the real guild and channel IDs
+from private site-config into a public Python test. The values are destination
+identifiers, not the bot token, but the public repo still must not publish
+private configuration. They were found during review. The PR branch was
+rewritten to use synthetic IDs; the original commit had already been pushed,
+so a remote cache or direct commit URL may still retain it.
+
+**Root cause.** The fixture was copied from the authoritative private inventory
+instead of using synthetic values. The same change also assumed a scoped
+Semaphore update would survive bootstrap, but bootstrap regenerates the whole
+inventory.
+
+**The rule.** Public tests use synthetic identifiers even when the values
+being tested are not credentials. Before pushing a fixture derived from
+site-config, inspect the staged diff for copied private values. The sync
+records a private local projection that bootstrap consumes and validates.
+
+**Enforced by.** Convention and review. This sync's test constructs synthetic
+IDs, but no general mechanical scan can identify private destination IDs.
 
 ## 5. Duplication and process
 
@@ -1430,6 +1766,14 @@ OpenBao transport ratchet and the commit ran anyway. The pre-push hook then refu
 which is the mechanical gate doing its job — but the rule that the commit must not follow a red
 suite in the same command still did not fire. Two occurrences in one day on the same shape:
 the commit MUST be a separate command issued after reading the suite result, never chained.
+
+**Occurrence 2026-09-25 (merge, not commit).** Merged PR 229 into the #195 branch with
+`gh pr view 229 --json mergeable,mergeStateStatus ...; gh pr merge 229 --merge` in one command:
+the mergeability read and the merge were joined by `;`, so the merge would have run whatever
+the read said. It returned CLEAN, so nothing merged that should not have. Why the rule did not
+fire: it is written about commits and suites, and a merge after a state read did not register
+as the same shape; it is. Any action that a read is meant to decide is issued after reading
+it, in a separate command.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -1566,7 +1910,104 @@ Update the version and digest together in a reviewed commit.
 against its published SHA256 before execution. A future CI rule could reject
 floating scanner references in workflow files.
 
+### 5.11 A second push started while the first was still running
+
+**Occurrences: 1** — 2026-09-24
+
+**What happened.** My push of `feat/isolated-seed-environments` (#205) was still inside the
+pre-push hook's full suites, slowed by two other sessions' pushes running the same suites.
+I read its buffered output as finished and started another push of the same branch. I
+noticed within minutes and stopped the second; the first completed.
+
+**Root cause.** A backgrounded command's output file was treated as a completion signal.
+It is written in chunks; the only completion signals are the exit notification or the
+process being gone.
+
+**The rule.** Before re-running a push (or any command with side effects) that was
+backgrounded, confirm the first is finished from its exit status or the process table,
+never from how its output looks.
+
+**Enforced by.** Convention. Mechanical proposal: the pre-push hook takes a per-branch
+lock (`flock` on a file under `$(git rev-parse --git-common-dir)`) and refuses a second
+push of the same branch while one holds it.
+
 ---
+
+### 5.9 AI attribution trailers added to commits against the repo rule
+
+**What happened.** On 2026-09-22 the agent ended six commit messages with
+`Co-Authored-By: Claude …` and `Claude-Session: …` trailers, because its harness instructed
+it to. Root `AGENTS.md` (Git Conventions: "No AI attribution in commits") and the operator's
+standing preference forbid exactly that. The first commit (`f404ac4`, plan 15) was pushed
+to `docs/service-deployment-workflow-agents` before anyone noticed; the other five were
+local and were rebuilt with `git commit-tree` (same trees, authors and dates) before any
+push. The pushed branch still carries the trailer.
+
+**Root cause.** The harness's attribution instruction said itself that repo and user rules
+take precedence, and the agent still followed the harness without checking the repo's Git
+Conventions before its first commit. The rule existed only as prose, so nothing stopped it.
+
+**The rule.** A repository's commit conventions override any tool's default commit
+formatting. Read them before the first commit of a session; an attribution instruction from
+a harness is a default, not a permission.
+
+**Enforced by.** `.githooks/commit-msg` refuses assistant co-author trailers, session
+links, "Generated with" footers and the assistant noreply address; a human co-author still
+passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
+`core.hooksPath=.githooks` is set (`make git-setup`).
+
+### 5.12 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
+
+**What happened.** On 2026-09-22 wave 2 of the check-mode retrofit (commit `187d787`)
+classified 161 tasks from the guard's findings, treating every command marked
+`changed_when: false` as a read and giving it `check_mode: false`. One of them,
+`tasks/deploy-orb-agent.yml` "Stop existing orb-agent", runs `stop` and `rm` on the running
+agent: a write its author had labelled `changed_when: false` only so it would not report a
+change. Under `--check` it therefore ran for real, and the first local dry run of
+`deploy-orb-agent.yml` (Semaphore task 1008) stopped and removed the local orb agent.
+Local-dev only; a real deploy restored it.
+
+**Root cause.** A label that means "do not report a change" was read as "cannot change
+anything". The classification was automatic and was validated for normal runs (every guard is
+inert without `--check`) but not for check-mode runs, which is exactly where the label
+mattered.
+
+**The rule.** `changed_when` describes reporting, not effect. Before a task may run under
+check mode, what it DOES decides, never how it reports. A container-engine lifecycle verb is
+a write regardless of its label.
+
+**Enforced by.** `platform/tests/test_check_mode_contract.py` (`ENGINE_WRITE`): a command
+running `stop`, `rm`, `kill`, `restart`, `start`, `run` (except `run --rm`), `pull`, `up`,
+`down` or `create` on docker, podman or a templated engine is a write even when marked
+`changed_when: false`, and a write under `check_mode: false` fails CI. An audit of every
+command marked read found two more writes (a pre-flight `pull`, a `mkdir`/`chmod`), now
+skipped under `--check`. Verb-free writes (`mv`, `sed -i`) are still only caught by review.
+
+### 5.10 Switched branches inside a checkout another task was using
+
+**What happened.** On 2026-09-23 I split PR #195 for CodeRabbit's 150-file limit, and did it
+in the one checkout the service-deployment-workflow task was running from:
+`git branch feat/workflow-check-mode-standard 187d787 && git switch ...`, then back with
+`git switch -q feat/service-deployment-workflow`, twice. Later I started a third switch
+(`git switch -q -c feat/agentgateway-vm-telemetry origin/dev`) for an unrelated plan edit.
+Joe denied it, because the repository rule is one worktree and branch per independent work
+item, with no branch switch under a running task. Nothing broke, but for the length of each
+switch the files under that checkout belonged to a different branch. So did the local
+Semaphore templates bound to it: the `agent-cloud worktree` repository record runs the path
+at HEAD (10.9).
+
+**Root cause.** I treated a branch as a cheap, reversible pointer move. A checkout is shared
+state: the worktree repository record, the running task's local Semaphore runs and every
+tool reading the working tree see whatever HEAD is at that moment. A switch that is quick
+and reverted is still a window in which the checkout holds the wrong code.
+
+**The rule.** Every independent work item gets its own `git worktree add -b <branch>
+<sibling-dir> <verified origin/dev sha>`. Never `git switch` or `git checkout <branch>` in a
+checkout another task owns. The checkout belongs to the task that is running in it.
+
+**Enforced by.** Convention, plus a user memory. Proposal: a PreToolUse hook that refuses
+`git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
+working directory is the signal.
 
 ## 6. Working from assumptions about files
 
@@ -1755,6 +2196,82 @@ gate was only on this branch (#211), not yet on `dev`, so the #205 branch carrie
 and a broad stage picked up files I had not touched. Stage named paths, never the whole tree,
 in any worktree the auto-indexer watches.
 
+### 6.7 Task-local variable shadowing broke a lazy play expression
+
+**What happened.** The local Semaphore run of the reviewed seed-environment provisioner
+stopped at its repository identity check before changing the dedicated environment.
+The task named its repository declaration `_declared`, also the play-level name for
+template declarations.
+
+**Root cause.** Ansible resolves these variables lazily. The task-local
+`_declared` depends on the repository name, while the play-level `_declared`
+selects the template used to resolve that name. The `main` variant reliably
+reproduces the cycle in the fixture. Local Semaphore task 1702 was launched
+with `seed_variant=dev` and failed at this expression; the dev fixture tests
+passed against the old playbook, so that live/fixture difference is not yet
+explained. The original tests did not guard the reproducible main-variant cycle.
+
+**The rule.** Give task-local values distinct names when play variables depend on
+other play variables. Test the complete playbook through the same Ansible entry
+point used by Semaphore, since a static YAML check cannot catch lazy scoping.
+
+**Enforced by.** `test_provisioner_main_variant_resolves_repository_without_shadowing`
+runs the main variant against a disposable controller fixture.
+
+### 6.8 Took the volume separator for the container separator, and would have broken the production NetBox deploy
+
+**What happened.** Local NetBox under podman-compose 1.6.0 names its containers
+`netbox_postgres_1`, and its volume `netbox_netbox-postgres`. The shared lib had `-`
+hardcoded as a single `CONTAINER_SEP`, so the local password sync missed the volume and Hydra
+could not log in. The fix (commit fb2c121) derived that one separator from which volume
+existed: `netbox_netbox-postgres` meant `_`. Docker Compose also writes that volume name.
+`docker compose -p netbox config` renders `netbox_netbox-postgres`, while its containers use
+`-` (`pkg/api/api.go:833`, `Separator = "-"`). On the production Docker host the existing
+volume would therefore have set `_`. `wait_for_completed` would then have polled
+`netbox_hydra-migrate_1`, which does not exist, and timed out the deploy. The discovery
+restart would have silently restarted nothing. The local deploy passed, because on podman
+both names do use `_`. The altitude pass of the grounding review caught it before the branch
+was pushed.
+
+**Root cause.** Two naming rules, one for containers and one for volumes, were treated as
+one fact. The fact was then inferred from the one host where both rules happen to agree. The
+comment on the fix even stated the Docker container name correctly. What was never checked
+was how Docker names the volume that the detection keyed on.
+
+**The rule.** Do not derive an object's name from a naming convention when the tool that
+created it records its identity. Compose labels every container with its project and
+service, and both providers set the same labels, so look a container up by
+`com.docker.compose.project` / `com.docker.compose.service`. When a fix is proven on one
+runtime, name the other runtime it has to hold on, and check that one from its source or
+by running it before calling the fix done.
+
+**Enforced by.** Test: `platform/tests/test_netbox_common.bats` drives `container_of`,
+`postgres_volume_exists` and `wait_for_completed` against a stub engine that answers only
+label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
+failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
+
+### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
+
+**What happened.** The Codex review of ef4432b on PR #195 said rootless podman's boot unit
+starts only `restart: always` containers, so `verify-service-persistence.yml` must not pass
+`unless-stopped` there. I made `_restart_ok` `[always]` for rootless podman only and kept
+`[always, unless-stopped]` for everything else, including rootful podman, which is what local
+Semaphore uses. `platform/tests/test_restart_policy.bats:4-9` already said the boot unit, "system
+unit for rootful, user unit for rootless", starts ONLY `always` containers, and the compose
+guard in the same file allows only `always` or `"no"` everywhere. The fix merged; the grounding
+checkpoint's altitude review caught it.
+
+**Root cause.** The fix was scoped to the case the finding named rather than to the mechanism
+it described, and the file that documents that mechanism in this repo was not read.
+
+**The rule.** Before scoping a fix to the environment a finding names, search the repo for the
+mechanism itself (here `podman-restart`, `restart-policy`) and apply the rule the repo already
+holds. When a guard elsewhere enforces the same property, the check must accept the same set.
+
+**Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
+on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
+`"no"` pass (mutation-checked).
+
 ## 7. Which of these OPA can carry
 
 OPA sits in the Guardrail layer: an agent proposes an action, OPA authorises it,
@@ -1889,6 +2406,8 @@ into tooling: the same person who wrote the rule broke it while the ink was wet.
 
 ### 8.2 Invented identifiers for tests that did not have them
 
+**Occurrences: 2** — original (undated), 2026-09-23
+
 **What happened.** The first draft of this file referenced tests as `M-1.1`,
 `M-2.1`, `M-5.1` and so on, as though those identifiers existed. No test in the
 repository carries them. A reader following the reference would have found
@@ -1902,6 +2421,13 @@ exists. If a naming scheme would be useful, add it to the artifacts first, then
 reference it.
 
 **Enforced by.** Convention. A doc-link checker in CI would catch it.
+
+**Occurrence 2 — 2026-09-23.** A pushed commit on PR 203 (5dd6fe3) credits the NetBox
+recovery playbook to "#214's series"; it arrived with #209. The number was written from
+the shape of the recent PR sequence, never looked up, and checked only after the push, so
+the message cannot be corrected without a force push. The rule was not recalled because a
+commit message did not register as "a reference to an artifact"; it is one. Look the
+number up (`git log --merges`, `gh pr list --search <sha>`) before writing it.
 
 ### 8.3 Two invocation errors reported as findings before being checked
 
@@ -2498,6 +3024,24 @@ text being coerced, and never on JSON text assembled with escapes.
 ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
 general case.
 
+### 10.17 A guard that could never pass in production, tested only where it is switched off
+
+**What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
+unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
+defines `secrets` only as a task-level variable on its template task; at play level the name
+does not exist, so the expression always resolved to empty and the guard failed every production
+deploy (task 1177, 2026-09-23), with the key present in OpenBao. Local-dev sets
+`agw_upstream_requires_key: false` for LM Studio, so every local proof skipped the guard.
+
+**Root cause.** The guard referenced a variable by the name the templates use, without checking
+that the name existed in the play's scope, and the only environments it ran in had it disabled.
+
+**The rule.** A guard is proven in a configuration where it is ENABLED and its input is present
+(it must pass) and absent (it must fail). The play-level fact manage-secrets sets is `_resolved`.
+
+**Enforced by.** The fix and its regression test land with the deploy session's keyed-verify
+change to the same playbook; until that PR merges, `Convention`.
+
 ## 11. The largest one
 
 ### 11.1 Seventy-six assertions that could not fail
@@ -2589,3 +3133,98 @@ whitespace, not the tests.
 takes ~40 seconds, too slow per commit and well matched to the moment code leaves
 the machine. Still the repository owner's call, and still the clearest
 convention-to-gate conversion available here.
+
+
+---
+
+## 12. Host state invisible in an agent run, blamed on credentials
+
+Two entries, one root cause: Paperclip runs agents under a sandboxed `$HOME`, so
+host config and host credentials can be invisible inside a run. Each tool reports
+that invisibility in its own idiom — an invalid token, no available models, a
+provider that simply is not in the list — and none of those wordings says
+*missing visibility*, which is why the class gets chased as a credentials or
+config problem instead.
+The dangerous part of the class is that the suggested fix ("re-authenticate",
+"reconfigure the provider") acts on the wrong object and can overwrite the thing
+that was already correct.
+
+### 12.1 `gh` reported a valid token as invalid
+
+**What happened.** Inside an agent run, `gh` found the account entry in
+`hosts.yml`, found no token, and reported *"The token in default is invalid."*
+The token is fine — it was never the token. The run simply cannot see it, and
+the suggested remedy (`gh auth login`) would have overwritten a valid
+credential.
+
+**Root cause.** macOS resolves the *login* keychain from `$HOME`. Under a
+sandboxed `$HOME`, only `/Library/Keychains/System.keychain` remains in the
+search list, and `gh`'s token lives in the login keychain under service
+`gh:github.com`. Measured 2026-09-24: the same `security find-generic-password
+-s 'gh:github.com' -w` lookup succeeds with the host `$HOME` and fails (exit
+44) with a sandboxed one; with the host `hosts.yml` visible but the login
+keychain unreachable, `gh auth status` prints "The token in default is invalid"
+verbatim.
+
+**The fix.** Source the company's `gh-host-auth.sh` before any `gh`/`git` work
+in a run. It reads the secret from the login keychain by explicit path, unwraps
+go-keyring's `go-keyring-base64:` envelope, and exports `GH_TOKEN`. The
+non-obvious step is clearing the inherited `osxkeychain` credential helper (it
+comes from the system gitconfig, `/opt/homebrew/etc/gitconfig`): left in place,
+`git clone` authenticates successfully and *then* tries to cache the credential
+into a keychain it cannot reach. The script's header records that failure as
+`fatal: failed to store: -60008`. One honest caveat from re-verification the
+same day: with current git (2.55.0) the store attempt did not abort the clone at
+all, so the exact error text is version-dependent — the helper is cleared
+because it cannot reach its target, regardless of whether that currently aborts.
+The script derives the keychain path from `$HOME` unless
+`PAPERCLIP_GITHUB_HOST_HOME` is set, so under a fully clean sandboxed
+environment that variable must carry the host home.
+
+**The rule.** When a credential tool inside a sandboxed run reports a credential
+*invalid*, first ask whether the credential is *visible* — check what
+`$HOME`/keychain search list/config dir the tool is actually resolving against —
+before touching the credential itself.
+
+**Enforced by.** Convention — the helper script exists and must be sourced; no
+gate enforces it.
+
+### 12.2 Pi showed no models; OpenCode omitted its provider
+
+**What happened.** The same sandboxed `$HOME`, one layer up. Pi printed *"No
+models available. Use /login…"* even though the host's `~/.pi/agent/models.json`
+is correct. OpenCode silently dropped the entire custom provider — its model
+list carried no entry for a provider its host config declares — no error, just
+absence, because its config resolves from `$XDG_CONFIG_HOME` and its credentials
+from `$XDG_DATA_HOME`, both of which the sandbox can redirect.
+
+**Why OpenCode's shape is the worse one.** A loud "no models" prompts an
+investigation; a silently missing provider reads as "never configured" and
+invites reconfiguring something that was already right — which is how correct
+config gets overwritten.
+
+**The fix.** Pi: point `PI_CODING_AGENT_DIR` back at the host's
+`<host-home>/.pi/agent`. OpenCode: point `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+back at the host's `<host-home>/.config` and `<host-home>/.local/share`.
+(`<host-home>` is written as a placeholder deliberately — this repo is public
+and its own pre-push audit treats machine paths as username leaks: `AGENTS.md`,
+Mandatory Pre-Push Audit.) Both verified
+2026-09-24: `pi --list-models` under a sandboxed `$HOME` prints exactly "No
+models available" and works once the env var is set; an empty redirected
+`XDG_CONFIG_HOME` makes `opencode models` list no entry for the host-declared
+provider, while pointing it at the host `.config` lists it again.
+
+**Caveat, recorded as found.** Inside a Paperclip `opencode_local` run the
+symptom no longer reproduces with the run's own defaults, because the harness
+now seeds the host OpenCode config into the run-scoped `XDG_CONFIG_HOME`. The
+trap is still live for any redirect that does not carry the host config, so the
+entry documents the mechanism, not just the historic symptom.
+
+**The rule.** "No models available" and "provider not found" are visibility
+failures wearing authentication's clothes. Before re-logging-in or
+re-configuring, resolve where the tool actually looks — `$HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, tool-specific dirs — and confirm those paths
+contain the host config.
+
+**Enforced by.** Convention — the env corrections are known and applied by
+convention inside runs; nothing mechanical catches a run that forgets them.

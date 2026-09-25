@@ -39,7 +39,6 @@
       - { name: diode_ingest_client_secret, type: random, length: 32 }
       # User-managed (never auto-generated)
       - { name: snmp_community, type: user }
-      - { name: pfsense_api_key, type: user }
       - { name: orb_agent_client_id, type: user }
       - { name: orb_agent_client_secret, type: user }
       - { name: device_discovery_password, type: user }
@@ -52,18 +51,10 @@
       # agent.yaml is templated by deploy-orb-agent.yml (separate workflow)
 
   tasks:
-    - name: "Install git if needed"
-      ansible.builtin.apt:
-        name: git
-        state: present
-      become: true
-
-    - name: "Clone or update agent-cloud monorepo"
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ _branch }}"
-        force: true
+    - name: "Place the monorepo (clone in production, copy the working tree in local-dev)"
+      # The shared Phase-1 preamble; it installs podman only on podman hosts, so the
+      # production Docker host is left alone.
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Create convenience symlink"
       ansible.builtin.file:
@@ -76,6 +67,7 @@
         - _symlink_result is failed
         - _symlink_result.msg is defined
         - "'permission denied' in (_symlink_result.msg | lower)"
+      when: not (local_mode | default(false) | bool)
 
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
@@ -113,8 +105,15 @@
         bash deploy.sh {{ service_url | default('http://localhost:8000') }}
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('') }}"
+        # Local-dev: the forward_auth overlay (docker-compose.local-auth.yml) and a
+        # loopback publish, so Caddy's Authentik gate is the only way in. Both unset in
+        # production (inventory netbox_compose_overlays / netbox_host_ip).
+        COMPOSE_OVERLAYS: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
+        NETBOX_HOST_IP: "{{ netbox_host_ip | default('') }}"
+        NETBOX_BUILD_SECCOMP: "{{ netbox_build_seccomp_profile | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Infrastructure output"
       ansible.builtin.debug:
@@ -136,8 +135,14 @@
         bash post-deploy.sh {{ service_url | default('http://localhost:8000') }}
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('') }}"
+        # Local-dev: the forward_auth overlay (docker-compose.local-auth.yml) and a
+        # loopback publish, so Caddy's Authentik gate is the only way in. Both unset in
+        # production (inventory netbox_compose_overlays / netbox_host_ip).
+        COMPOSE_OVERLAYS: "{{ netbox_compose_overlays | default([]) | join(' ') }}"
+        NETBOX_HOST_IP: "{{ netbox_host_ip | default('') }}"
       register: _post_deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Post-deploy output"
       ansible.builtin.debug:
@@ -155,6 +160,7 @@
       register: _diode_secret_check
       changed_when: false
       failed_when: (_diode_secret_check.stdout | int) < 10
+      check_mode: false
 
     - name: "Bind-mount secret verified"
       ansible.builtin.debug:
@@ -193,6 +199,7 @@
       retries: 5
       delay: 10
       when: service_url is defined
+      check_mode: false
 
     - name: "NetBox deployed"
       ansible.builtin.debug:

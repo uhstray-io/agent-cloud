@@ -1,0 +1,24 @@
+---
+# NetBox custom fields the conformance collector writes on each service's VM object.
+# Declared once here: provision-netbox-custom-fields.yml converges NetBox to this list and
+# the collector reads the same names (change service-deployment-workflow, task 6.4 / 7.5).
+# NetBox 4.5: VirtualMachine carries custom fields (design Context, task 0.4).
+custom_fields:
+  - name: ac_workflow_status
+    label: Workflow status
+    type: json
+    description: Per-step status of the service deployment workflow (step id -> pass/fail/skip)
+    object_types: [virtualization.virtualmachine]
+    group_name: agent-cloud workflow
+  - name: ac_failed_steps
+    label: Failed steps
+    type: text
+    description: Comma-separated ids of the workflow steps that last failed
+    object_types: [virtualization.virtualmachine]
+    group_name: agent-cloud workflow
+  - name: ac_last_run
+    label: Last workflow run
+    type: datetime
+    description: When the conformance collector last wrote this record
+    object_types: [virtualization.virtualmachine]
+    group_name: agent-cloud workflow

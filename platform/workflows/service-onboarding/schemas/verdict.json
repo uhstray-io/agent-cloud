@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhstray.io/agent-cloud/schemas/verdict.json",
+  "title": "Reasoning-step verdict",
+  "description": "converge: the declared state is right, run the converge template. change-required: a declared value must change; the finding carries the difference and lands through a pull request, never through an executor (spec: Existing declared state is the default outcome).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "findings"],
+  "properties": {
+    "decision": {"enum": ["converge", "change-required"]},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "declared", "proposed"],
+        "properties": {
+          "summary": {"type": "string", "minLength": 1},
+          "declared": {"description": "The value as declared today."},
+          "proposed": {"description": "The value the assessment proposes."}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"decision": {"const": "change-required"}}},
+     "then": {"properties": {"findings": {"minItems": 1}}}}
+  ]
+}

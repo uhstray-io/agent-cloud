@@ -47,6 +47,7 @@
       register: pve_version
       no_log: true
       ignore_errors: true
+      check_mode: false
 
     - name: "Record API check"
       ansible.builtin.set_fact:
@@ -66,6 +67,7 @@
 
       register: pve_nodes
       no_log: true
+      check_mode: false
 
     - name: "Check target node status"
       ansible.builtin.set_fact:
@@ -88,6 +90,7 @@
 
       register: pve_storage
       no_log: true
+      check_mode: false
 
     - name: "Check VM storage"
       ansible.builtin.set_fact:
@@ -114,6 +117,7 @@
 
       register: pve_isos
       no_log: true
+      check_mode: false
 
     - name: "Check Ubuntu ISO exists"
       ansible.builtin.set_fact:
@@ -132,6 +136,7 @@
 
       register: pve_vms
       no_log: true
+      check_mode: false
 
     - name: "Find VMs in target range"
       ansible.builtin.set_fact:
@@ -176,6 +181,7 @@
       no_log: true
       ignore_errors: true
       when: tmpl_exists | bool
+      check_mode: false
 
     - name: "Record template check"
       ansible.builtin.set_fact:
@@ -194,6 +200,7 @@
       register: pve_network
       no_log: true
       ignore_errors: true
+      check_mode: false
 
     - name: "Record network check"
       ansible.builtin.set_fact:
@@ -234,16 +241,22 @@
         label: "{{ item.name }}"
       ignore_errors: true
       when: check_vms is defined and check_vms | length > 0
+      check_mode: false
 
     - name: "Record VM health checks"
       ansible.builtin.set_fact:
         validation_results: >-
-          {{ validation_results + [{'check': 'VM ' + item.item.name + ' (' + item.item.vmid | string + ')',
-          'status': 'PASS' if (item.json is defined and item.json.data.status | default('') == 'running') else 'FAIL',
-          'detail': (item.json.data.status | default('unknown')) if item.json is defined else 'unreachable'}] }}
-      loop: "{{ vm_health.results | default([]) }}"
+          {{ validation_results + [{'check': 'VM ' + item.name + ' (' + item.vmid | string + ')',
+          'status': 'PASS' if (_read.json is defined and _read.json.data.status | default('') == 'running') else 'FAIL',
+          'detail': (_read.json.data.status | default('unknown')) if _read.json is defined else 'unreachable'}] }}
+      # Loops over the declared VMs and indexes into the no_log reads, never over the reads
+      # themselves: a failed loop item is printed whole (docs/MISTAKES.md 4.6).
+      vars:
+        _read: "{{ vm_health.results[_i] | default({}) }}"
+      loop: "{{ check_vms | default([]) }}"
       loop_control:
-        label: "{{ item.item.name | default('unknown') }}"
+        index_var: _i
+        label: "{{ item.name | default('unknown') }}"
       when: check_vms is defined and check_vms | length > 0 and vm_health is defined
 
     # ── Summary ──────────────────────────────────────────────────────────

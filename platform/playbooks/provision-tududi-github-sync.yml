@@ -99,6 +99,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the n8n API key"
       ansible.builtin.uri:
@@ -109,6 +111,7 @@
       register: _n8n_secret
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "List the engine's workflows (upsert + deactivation read)"
       ansible.builtin.uri:
@@ -118,6 +121,7 @@
         status_code: [200]
       register: _workflows
       no_log: true
+      check_mode: false
 
     - name: "Require the complete workflow list before touching the engine"
       ansible.builtin.assert:
@@ -207,6 +211,7 @@
       register: _tududi_secret
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "Require the tududi token to exist (named)"
       ansible.builtin.assert:
@@ -227,6 +232,7 @@
       register: _tududi_probe
       failed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Refuse an unsuccessful tududi probe (named)"
       ansible.builtin.assert:
@@ -273,6 +279,7 @@
         status_code: [200]
       register: _creds
       no_log: true
+      check_mode: false
 
     - name: "Refuse incomplete or ambiguous credential reads before upserting"
       ansible.builtin.assert:
@@ -308,6 +315,7 @@
         _existing: "{{ _creds.json.data | selectattr('name', 'equalto', _tududi_cred_name) | list }}"
       register: _tududi_cred
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Upsert the GitHub credential"
       ansible.builtin.uri:
@@ -328,6 +336,7 @@
         _existing: "{{ _creds.json.data | selectattr('name', 'equalto', _github_cred_name) | list }}"
       register: _github_cred
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Resolve the credential ids (fresh read — create vs update agnostic)"
       ansible.builtin.uri:
@@ -337,6 +346,7 @@
         status_code: [200]
       register: _creds_after
       no_log: true
+      check_mode: false
 
     - name: "Require complete and unambiguous credential read-back"
       ansible.builtin.assert:
@@ -399,6 +409,7 @@
         _existing: "{{ _workflows.json.data | selectattr('name', 'equalto', _workflow_name) | list }}"
       register: _wf_upsert
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Activate the workflow (part of provisioning — design D1)"
       ansible.builtin.uri:
@@ -408,6 +419,7 @@
           X-N8N-API-KEY: "{{ _n8n_secret.json.data.data.n8n_api_key }}"
         status_code: [200]
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Report (names and counts only)"
       ansible.builtin.debug:

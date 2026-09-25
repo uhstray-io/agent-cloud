@@ -30,6 +30,7 @@
   vars:
     _bootstrap_play: true
     _state_dir: "{{ lookup('env', 'HOME') }}/.agent-cloud-local"
+    _o11y_projection_file: "{{ _state_dir }}/o11y-alert-destination.json"
     # Working inventory (committed example -> gitignored copy via `make local-init`).
     # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
     # this -i so they pick up the foundation host groups + genesis path vars.
@@ -125,6 +126,7 @@
       register: _machine
       changed_when: false
       failed_when: "'running' not in _machine.stdout"
+      check_mode: false
 
     - name: "Ensure state dir"
       ansible.builtin.file:
@@ -137,6 +139,7 @@
         podman network exists {{ _net }} || podman network create {{ _net }}
       register: _netres
       changed_when: "'created' in _netres.stdout | default('')"
+      when: not ansible_check_mode
 
     # ── Stage 1: OpenBao (persistent file storage) ──────────────────────
     - name: "Ensure local OpenBao config dir"
@@ -203,6 +206,34 @@
         fi
       register: _bao_start
       changed_when: "(_bao_start.stdout | trim) != 'running'"
+      when: not ansible_check_mode
+
+    # A dry run did not start OpenBao, so on a fresh machine the wait below would retry an
+    # endpoint that cannot answer (PR 203 Codex review): read the container's state, and stop the
+    # dry run when OpenBao is absent or stopped.
+    - name: "Dry run: is OpenBao already running?"
+      ansible.builtin.command:
+        argv: [podman, inspect, -f, "{{ '{{' }}.State.Status{{ '}}' }}", "{{ _bao_name }}"]
+      register: _bao_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, OpenBao not running: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ _bao_name }} is {{ (_bao_state.stdout | trim) or 'absent' }} and would be
+          started; everything after it needs a running OpenBao, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - (_bao_state.stdout | default('') | trim) != 'running'
+
+    - name: "Dry run, OpenBao not running: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - (_bao_state.stdout | default('') | trim) != 'running'
 
     - name: "Wait for OpenBao to accept API requests"
       # seal-status answers 200 even while uninitialized/sealed; /sys/health
@@ -214,6 +245,7 @@
       until: _bao_listen.status == 200
       retries: 30
       delay: 2
+      check_mode: false
 
     # _bao_listen.json (from the wait above) IS the seal-status body — reuse it
     # rather than re-GET the same endpoint; nothing mutates state in between.
@@ -224,7 +256,9 @@
         body_format: json
         body: { secret_shares: 1, secret_threshold: 1 }
       register: _bao_init
-      when: not _bao_listen.json.initialized
+      when:
+        - not ansible_check_mode
+        - not _bao_listen.json.initialized
       no_log: true
 
     - name: "Persist init material (root token + unseal key, 0600)"
@@ -279,7 +313,9 @@
       until: not _bao_unseal.json.sealed
       retries: 5
       delay: 2
-      when: _bao_listen.json.sealed
+      when:
+        - not ansible_check_mode
+        - _bao_listen.json.sealed
       no_log: true
 
     - name: "Enable KV v2 at secret/ (idempotent; dev mode auto-mounted this)"
@@ -293,6 +329,7 @@
         status_code: [200, 204, 400]   # 400 = already mounted
       register: _kv_enable
       changed_when: _kv_enable.status in [200, 204]
+      when: not ansible_check_mode
 
     - name: "Enable AppRole auth (idempotent)"
       ansible.builtin.uri:
@@ -305,6 +342,7 @@
         status_code: [200, 204, 400]   # 400 = already enabled
       register: _approle_enable
       changed_when: _approle_enable.status in [200, 204]
+      when: not ansible_check_mode
 
     - name: "Write local-semaphore policy"
       ansible.builtin.uri:
@@ -312,12 +350,14 @@
         method: PUT
         headers: *bao_root_hdr
         body_format: json
+        # The SAME policy the production Semaphore holds (one codebase, no forks). The inline
+        # copy this replaced lacked sys/policies/acl/* and auth/approle/role/*, so any local
+        # AppRole provisioning (provision-orb-agent-approle.yml) got 403 (2026-09-22).
         body:
-          policy: |
-            path "secret/data/services/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
-            path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+          policy: "{{ lookup('file', playbook_dir ~ '/../services/openbao/deployment/config/policies/semaphore-read.hcl') }}"
         status_code: [200, 204]
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Create local-semaphore AppRole"
       ansible.builtin.uri:
@@ -331,13 +371,34 @@
           token_max_ttl: 2h
         status_code: [200, 204]
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Read AppRole role-id"
       ansible.builtin.uri:
         url: "{{ _bao_url_host }}/v1/auth/approle/role/local-semaphore/role-id"
         headers: *bao_root_hdr
+        # A dry run skipped creating the role, so on a fresh OpenBao it is absent (PR 203 Codex
+        # review); a real run requires it.
+        status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
       register: _role_id
       no_log: true
+      check_mode: false
+
+    - name: "Dry run, AppRole not created yet: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the local-semaphore AppRole does not exist yet and would be created with
+          policy local-semaphore; the genesis deploys and Semaphore need its credentials, so the
+          dry run stops here.
+      when:
+        - ansible_check_mode
+        - _role_id.status == 404
+
+    - name: "Dry run, AppRole not created yet: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - _role_id.status == 404
 
     - name: "Generate AppRole secret-id"
       ansible.builtin.uri:
@@ -347,6 +408,7 @@
         status_code: [200]
       register: _secret_id
       no_log: true
+      when: not ansible_check_mode
 
     # ── Stage 1.5: genesis foundation deploys (Mac-direct, BEFORE Semaphore) ──
     # §12A: the secure foundation comes up directly here — dns → step-ca →
@@ -368,6 +430,7 @@
       register: _pc
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Require podman-compose for the Mac-direct genesis path"
       ansible.builtin.assert:
@@ -398,6 +461,7 @@
       loop: [dns, step-ca, caddy, authentik]
       register: _genesis
       changed_when: true
+      when: not ansible_check_mode
 
     # ── Stage 2: Semaphore — boots LAST, OIDC-secured (§12A) ────────────
     # The VM's rootful podman socket is mounted in so Semaphore-run deploy
@@ -415,6 +479,7 @@
         && echo ready || echo notready
       register: _oidc_deps
       changed_when: false
+      check_mode: false
 
     - name: "Read the Semaphore OIDC client secret from OpenBao"
       ansible.builtin.uri:
@@ -424,6 +489,7 @@
       register: _ak_secret
       when: _oidc_deps.stdout | trim == 'ready'
       no_log: true
+      check_mode: false
 
     - name: "Build SEMAPHORE_OIDC_PROVIDERS (inner-map JSON, keyed 'authentik')"
       # provider_url is the Authentik issuer for OIDC auto-discovery; redirect_url
@@ -458,6 +524,7 @@
       changed_when: false
       when: _sem_oidc_json is defined
       no_log: true
+      check_mode: false
 
     - name: "Mark OIDC ready (deps up + validated JSON present)"
       ansible.builtin.set_fact:
@@ -479,6 +546,7 @@
       register: _stepca_root
       changed_when: false
       when: _oidc_ready | bool
+      check_mode: false
 
     - name: "Enable the OpenBao oidc auth method (idempotent)"
       ansible.builtin.uri:
@@ -488,7 +556,9 @@
         body_format: json
         body: { type: oidc }
         status_code: [200, 204, 400]   # 400 = already enabled
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Write the OpenBao admin policy (platform-admin)"
@@ -501,7 +571,9 @@
           policy: |
             path "*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
         status_code: [200, 204]
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Configure OpenBao auth/oidc against Authentik (validates discovery)"
@@ -521,7 +593,9 @@
           default_role: platform-admins
         status_code: [200, 204]
       register: _bao_oidc_cfg
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       retries: 5
       delay: 6
       until: _bao_oidc_cfg.status is defined and _bao_oidc_cfg.status in [200, 204]
@@ -544,7 +618,9 @@
           token_policies: ["platform-admin"]
           token_ttl: 1h
         status_code: [200, 204]
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
       changed_when: true
 
     - name: "Build the Semaphore TLS trust bundle (system roots + step-ca root)"
@@ -567,7 +643,9 @@
         } > {{ _state_dir }}/step-ca-bundle.crt
       register: _bundle
       changed_when: true
-      when: _oidc_ready | bool
+      when:
+        - not ansible_check_mode
+        - _oidc_ready | bool
 
     - name: "Write the Semaphore OIDC env-file (0600) — avoids shell-quoting the JSON"
       ansible.builtin.copy:
@@ -598,6 +676,8 @@
         "sudo mkdir -p {{ _deploy_share }} && sudo chmod 1777 {{ _deploy_share }}"
       register: _share_mkdir
       changed_when: false
+      # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
+      when: not ansible_check_mode
 
     - name: "Recreate Semaphore if any required mount or label=disable is missing"
       ansible.builtin.shell: |
@@ -629,6 +709,7 @@
         WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
       register: _sem_recreate
       changed_when: "_sem_recreate.stdout | trim == 'recreated'"
+      when: not ansible_check_mode
 
     - name: "Start local Semaphore"
       ansible.builtin.shell: |
@@ -657,6 +738,34 @@
         fi
       register: _sem_start
       changed_when: "_sem_start.stdout | trim != 'running'"
+      when: not ansible_check_mode
+
+    # As for OpenBao above: a dry run did not start Semaphore, so on a partly bootstrapped machine the
+    # wait below would retry an endpoint that cannot answer (PR 203 Codex review).
+    - name: "Dry run: is Semaphore already running?"
+      ansible.builtin.command:
+        argv: [podman, inspect, -f, "{{ '{{' }}.State.Status{{ '}}' }}", "{{ _sem_name }}"]
+      register: _sem_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, Semaphore not running: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ _sem_name }} is {{ (_sem_state.stdout | trim) or 'absent' }} and would be
+          started; its API token, users, project and templates need it running, so the dry run
+          stops here.
+      when:
+        - ansible_check_mode
+        - (_sem_state.stdout | default('') | trim) != 'running'
+
+    - name: "Dry run, Semaphore not running: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - (_sem_state.stdout | default('') | trim) != 'running'
 
     - name: "Wait for Semaphore API"
       ansible.builtin.uri:
@@ -666,6 +775,7 @@
       until: _sem_ping.status == 200
       retries: 30
       delay: 2
+      check_mode: false
 
     - name: "Install task-execution deps inside Semaphore (hvac + collections)"
       # Check + install each dependency independently so a warm rerun after a
@@ -681,6 +791,7 @@
            { ansible-galaxy collection install ansible.posix; echo INSTALLED; }"
       register: _sem_deps
       changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
+      when: not ansible_check_mode
 
     - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
       ansible.builtin.command: >-
@@ -688,8 +799,11 @@
         "command -v podman >/dev/null || apk add --no-cache podman"
       register: _sem_podman
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
+      when: not ansible_check_mode
 
     # ── Stage 3: automatic API token ────────────────────────────────────
+    # The login only opens a session, so a dry run performs it: that proves the admin
+    # credentials work.
     - name: "Login to Semaphore (session cookie)"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/auth/login"
@@ -700,6 +814,8 @@
           password: "{{ _sem_admin_password }}"
         status_code: [204]
       register: _login
+      changed_when: false
+      check_mode: false
       no_log: true
 
     - name: "Create API token automatically"
@@ -711,6 +827,21 @@
         status_code: [201]
       register: _token_resp
       no_log: true
+      when: not ansible_check_mode
+
+    # Every later stage authenticates with the API token, and minting one is a write. A dry
+    # run therefore stops here instead of reading a token it never created (PR 203 Codex review).
+    - name: "Dry run: report the stages that need an API token"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: Semaphore answers and the admin login works. The admin user, project, key,
+          repository, inventory, environment, secret seeding and template registration need an
+          API token, which a dry run does not mint, so the dry run stops here.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop before the token-dependent stages"
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
 
     - name: "Set token fact"
       ansible.builtin.set_fact:
@@ -728,6 +859,7 @@
         headers:
           Authorization: "Bearer {{ _sem_token }}"
       register: _sem_users
+      check_mode: false
 
     - name: "Create agent-cloud-admin Semaphore admin user (idempotent)"
       ansible.builtin.uri:
@@ -743,7 +875,9 @@
           admin: true
           external: true
         status_code: [201, 204]
-      when: _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _sem_users.json | selectattr('username', 'equalto', 'agent-cloud-admin') | list | length == 0
       changed_when: true
 
     # ── Stage 4: project + resources (idempotent by name) ───────────────
@@ -753,6 +887,7 @@
         headers: &sem_hdr
           Authorization: "Bearer {{ _sem_token }}"
       register: _projects
+      check_mode: false
 
     - name: "Create agent-cloud project"
       ansible.builtin.uri:
@@ -762,7 +897,9 @@
         body_format: json
         body: { name: agent-cloud }
         status_code: [201]
-      when: _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _projects.json | selectattr('name', 'equalto', 'agent-cloud') | list | length == 0
       register: _proj_create
 
     - name: "Resolve project id"
@@ -770,6 +907,7 @@
         url: "{{ _sem_url }}/api/projects"
         headers: *sem_hdr
       register: _projects2
+      check_mode: false
 
     - name: "Set project id"
       ansible.builtin.set_fact:
@@ -780,6 +918,7 @@
         url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
         headers: *sem_hdr
       register: _keys
+      check_mode: false
 
     - name: "Create 'none' key"
       ansible.builtin.uri:
@@ -789,19 +928,23 @@
         body_format: json
         body: { name: none, type: none, project_id: "{{ _pid | int }}" }
         status_code: [201, 204]
-      when: _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _keys.json | selectattr('name', 'equalto', 'none') | list | length == 0
 
     - name: "Resolve key id"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/keys"
         headers: *sem_hdr
       register: _keys2
+      check_mode: false
 
     - name: "Ensure repository"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/repositories"
         headers: *sem_hdr
       register: _repos
+      check_mode: false
 
     # The working-tree record gets its OWN NAME. The first version of this task
     # pointed the record named `agent-cloud` at the mount — and Stage: templates
@@ -826,7 +969,9 @@
           git_branch: "{{ _repo_branch }}"
           ssh_key_id: "{{ _keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int }}"
         status_code: [201, 204]
-      when: _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 0
+      when:
+        - not ansible_check_mode
+        - _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length == 0
 
     - name: "Correct the worktree record if it drifted"
       ansible.builtin.uri:
@@ -845,6 +990,7 @@
       vars:
         _existing_repo: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | first }}"
       when:
+        - not ansible_check_mode
         - _repos.json | selectattr('name', 'equalto', 'agent-cloud worktree') | list | length > 0
         - _existing_repo.git_url != _repo_mount or _existing_repo.git_branch != _repo_branch
       changed_when: true
@@ -854,6 +1000,71 @@
         url: "{{ _sem_url }}/api/project/{{ _pid }}/inventory"
         headers: *sem_hdr
       register: _invs
+      check_mode: false
+
+    - name: "Require complete local inventory before replacing it"
+      ansible.builtin.assert:
+        that:
+          - _existing_local == {} or ('inventory' in _existing_local and _existing_local.inventory is string)
+        fail_msg: "Semaphore omitted the local inventory text; refusing replacement"
+        quiet: true
+      vars:
+        _existing_local: "{{ _invs.json | selectattr('name', 'equalto', 'local') | first | default({}) }}"
+
+    - name: "Check private local alert projection"
+      ansible.builtin.stat:
+        path: "{{ _o11y_projection_file }}"
+        follow: false
+      register: _o11y_projection_stat
+
+    - name: "Read private local alert projection"
+      ansible.builtin.slurp:
+        src: "{{ _o11y_projection_file }}"
+      register: _o11y_projection_raw
+      when: _o11y_projection_stat.stat.exists
+      no_log: true
+
+    - name: "Validate private local alert projection before inventory replacement"
+      ansible.builtin.assert:
+        that:
+          - _o11y_projection_stat.stat.isreg
+          - _o11y_projection_stat.stat.mode == '0600'
+          - _o11y_projection.keys() | list | sort == ['o11y_alert_discord_channel_id', 'o11y_alert_discord_guild_id', 'site_config_sha']
+          - _o11y_projection.site_config_sha is match('^[0-9a-f]{40}$')
+          - _o11y_projection.o11y_alert_discord_guild_id is match('^[0-9]{17,21}$')
+          - _o11y_projection.o11y_alert_discord_channel_id is match('^[0-9]{17,21}$')
+        fail_msg: "Private local alert projection is malformed or unsafe; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _o11y_projection: "{{ _o11y_projection_raw.content | b64decode | from_json }}"
+      when: _o11y_projection_stat.stat.exists
+
+    - name: "Refuse to erase a previously synced local alert destination"
+      ansible.builtin.assert:
+        that:
+          - _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
+        fail_msg: "Existing local alert destination lacks its private projection; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _existing_o11y_inventory: >-
+          {{ (_invs.json | selectattr('name', 'equalto', 'local') | first | default({})).inventory | default('') }}
+      when: not _o11y_projection_stat.stat.exists
+
+    - name: "Refuse a stale local alert projection"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
+            or
+            (_existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_guild_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '[ \t]*$')
+             and _existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_channel_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '[ \t]*$'))
+        fail_msg: "Stored local alert destination differs from its private projection; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _existing_o11y_inventory: >-
+          {{ (_invs.json | selectattr('name', 'equalto', 'local') | first | default({})).inventory | default('') }}
+        _o11y_projection: "{{ _o11y_projection_raw.content | b64decode | from_json }}"
+      when: _o11y_projection_stat.stat.exists
 
     - name: "Create or update local inventory"
       ansible.builtin.uri:
@@ -880,7 +1091,7 @@
         # evaluate the default argument eagerly (Jinja), so an undefined
         # ansible_user errors even when local_monorepo_dir is set.
         _inv_ini: |
-          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true
+          localhost ansible_connection=local ansible_user=semaphore openbao_addr={{ _bao_url_net }} local_mode=true collector_loki_url=http://host.containers.internal:3100
 
           [dns_svc]
           dns-local ansible_host=127.0.0.1 ansible_connection=local
@@ -905,6 +1116,9 @@
           step-ca-local ansible_host=127.0.0.1 ansible_connection=local
 
           [step_ca_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container (verified 200
+          # there, 2026-09-23).
+          health_url=https://step-ca:9000/health
           ansible_user=semaphore
           service_name=step-ca
           monorepo_deploy_path=platform/services/step-ca/deployment
@@ -947,6 +1161,9 @@
           authentik-local ansible_host=127.0.0.1 ansible_connection=local
 
           [authentik_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container (verified 200
+          # there, 2026-09-23).
+          health_url=http://authentik-server:9000/-/health/ready/
           ansible_user=semaphore
           service_name=authentik
           monorepo_deploy_path=platform/services/authentik/deployment
@@ -963,6 +1180,9 @@
           o11y-local ansible_host=127.0.0.1 ansible_connection=local
 
           [o11y_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container (verified 200
+          # there, 2026-09-23).
+          health_url=http://o11y-grafana:3000/api/health
           ansible_user=semaphore
           service_name=o11y
           monorepo_deploy_path=platform/services/o11y/deployment
@@ -972,6 +1192,10 @@
           o11y_grafana_port=3002
           o11y_prom_port=9090
           o11y_loki_port=3100
+          {% if _o11y_projection_stat.stat.exists %}
+          o11y_alert_discord_guild_id={{ (_o11y_projection_raw.content | b64decode | from_json).o11y_alert_discord_guild_id }}
+          o11y_alert_discord_channel_id={{ (_o11y_projection_raw.content | b64decode | from_json).o11y_alert_discord_channel_id }}
+          {% endif %}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1057,6 +1281,34 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # netbox — IPAM authority, podman, forward_auth overlay, loopback publish (see
+          # platform/inventory/local-dev.yml.example). Declared here too: this is the
+          # inventory the local Semaphore runs with (container paths).
+          [netbox_svc]
+          netbox-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [netbox_svc:vars]
+          ansible_user=semaphore
+          service_name=netbox
+          # The controller container's own loopback is not the engine host's; podman maps
+          # host.containers.internal onto the host loopback NetBox publishes on (health
+          # check, custom fields, collector all reach it here).
+          service_url=http://host.containers.internal:8000
+          monorepo_deploy_path=platform/services/netbox/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          netbox_host_ip=127.0.0.1
+          netbox_compose_overlays=["docker-compose.local-auth.yml"]
+          discovery_workers_enabled=false
+          netbox_build_seccomp_profile=/usr/share/containers/seccomp.json
+          netbox_app_container=netbox_netbox_1
+          orb_agent_openbao_addr=http://127.0.0.1:8200
+          discovery_target_subnet={{ hostvars['netbox-local'].discovery_target_subnet | default('') }}
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           # postiz — Tier-3, five containers (app + its Postgres and Redis + the
           # Temporal workflow engine + Temporal's own Postgres). Declared HERE and
           # not only in platform/inventory/local-dev.yml because the two are read
@@ -1116,6 +1368,9 @@
           agentgateway-local ansible_host=127.0.0.1 ansible_connection=local
 
           [agentgateway_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container (verified 200
+          # there, 2026-09-23).
+          health_url=http://agentgateway:19001/healthz/ready
           ansible_user=semaphore
           service_name=agentgateway
           monorepo_deploy_path=platform/services/agentgateway/deployment
@@ -1159,12 +1414,14 @@
               'inventory': _inv_ini}
              | combine({'id': (_existing_inv | first | int)} if (_existing_inv | length > 0) else {}) }}
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Ensure environment (AppRole injection, as in prod)"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/project/{{ _pid }}/environment"
         headers: *sem_hdr
       register: _envs
+      check_mode: false
 
     - name: "Create or update local-openbao environment"
       ansible.builtin.uri:
@@ -1195,6 +1452,7 @@
              | combine({'id': (_existing_env | first | int)} if (_existing_env | length > 0) else {}) }}
       changed_when: true
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Resolve inventory + environment ids"
       ansible.builtin.uri:
@@ -1202,6 +1460,7 @@
         headers: *sem_hdr
       register: _res
       loop: [inventory, environment]
+      check_mode: false
 
     - name: "Set resource ids"
       ansible.builtin.set_fact:
@@ -1232,6 +1491,7 @@
           # honcho shared-reads gemini_api_key from nemoclaw (deploy-honcho.yml).
           nemoclaw:
             gemini_api_key: LOCAL_FAKE_gemini_api_key
+      check_mode: false
 
     - name: "Seed LOCAL_FAKE secrets for absent services"
       ansible.builtin.uri:
@@ -1242,12 +1502,28 @@
         body:
           data: "{{ item.item.value }}"
         status_code: [200, 204]
-      when: item.status == 404
+      when:
+        - not ansible_check_mode
+        - item.status == 404
       loop: "{{ _seed_check.results }}"
       loop_control:
         label: "{{ item.item.key }}"
       vars: *seed_specs
       no_log: true
+
+    # The controller's own API token, where production keeps it
+    # (secret/services/semaphore:api_token): in-controller playbooks that call the Semaphore
+    # API (the conformance collector, the survey publisher) read it there, never from the
+    # workstation state file below. Merge-patch, so other keys at the path survive.
+    - name: "Store the local controller's API token in local OpenBao"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url_host }}"
+        _bm_token: "{{ _bao_root_token }}"
+        _bm_path: services/semaphore
+        _bm_data:
+          api_token: "{{ _sem_token }}"
+      when: not ansible_check_mode
 
     # ── Stage 5: persist state for the wrapper ──────────────────────────
     - name: "Write local credentials state (0600, outside the repo)"
@@ -1289,6 +1565,7 @@
         SEMAPHORE_URL: "{{ _sem_url }}"
         SEMAPHORE_TOKEN: "{{ _sem_token }}"
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Register templates (shared + local-only)"
       ansible.builtin.command:
@@ -1302,6 +1579,7 @@
         SEMAPHORE_URL: "{{ _sem_url }}"
         SEMAPHORE_TOKEN: "{{ _sem_token }}"
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Bootstrap complete"
       ansible.builtin.debug:

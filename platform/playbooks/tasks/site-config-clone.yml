@@ -64,6 +64,7 @@
     state: directory
     prefix: ".scbackup_"
   register: _sc_wd_result
+  when: not ansible_check_mode
 
 - name: "Freeze the branch name and the scratch paths for this run"
   # set_fact, NOT a play var. A `vars:` entry holding lookup('pipe', 'date') is
@@ -101,12 +102,14 @@
     cmd: "git clone --depth 1 {{ _sc_repo }} {{ _sc_clone }}"
   environment: "{{ _sc_git_env }}"
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Start a fresh branch for this backup"
   ansible.builtin.command:
     cmd: "git switch -c {{ _sc_branch }}"
     chdir: "{{ _sc_clone }}"
   changed_when: true
+  when: not ansible_check_mode
 
 - name: "Identify the commit"
   # argv, not cmd. `command` word-splits a cmd string, so a name with spaces
@@ -118,3 +121,4 @@
     - {k: "name", v: "Joseph A. Wisneski IV"}
     - {k: "email", v: "stray@uhstray.io"}
   changed_when: true
+  when: not ansible_check_mode

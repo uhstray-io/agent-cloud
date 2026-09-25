@@ -32,6 +32,9 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # This deploy reads its one secret directly rather than through manage-secrets; declared so
+    # Check Secrets knows the deploy cannot run without it (PR 203 Codex review).
+    _required_existing_secrets: [app_private_key]
     _org: "{{ github_org | default('uhstray-io') }}"
     # The JWT issuer. Upstream recommends the App's CLIENT ID and accepts the app id;
     # both are opaque strings here, so either is taken and the client id wins when both
@@ -142,6 +145,7 @@
       register: _sudocheck
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Refuse to proceed if the runner account can escalate"
       ansible.builtin.assert:
@@ -174,6 +178,7 @@
         label: "{{ item.repo }} v{{ item.ver }}"
       delegate_to: localhost
       become: false
+      check_mode: false
 
     - name: "Extract each artefact's published digest"
       # Both releases expose a per-asset `digest` field ("sha256:..."), so no release-body
@@ -207,6 +212,8 @@
       delegate_to: localhost
       become: false
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the App private key from OpenBao"
       ansible.builtin.uri:
@@ -219,6 +226,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     - name: "Mint a single-use runner registration token"
       # Runs on the CONTROLLER: the runner host is firewalled away from the secret store
@@ -248,6 +256,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     # ── diagnosing a credential failure without printing the credential ────
     # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
@@ -368,6 +377,7 @@
       changed_when: "'registered' in (_configured.stdout | default(''))"
       failed_when: false
       no_log: true
+      when: not ansible_check_mode
 
     # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
     # no_log step that merely fails is undiagnosable. The script never echoes the token
@@ -428,6 +438,7 @@
       # False for a dead runner and this gate passed it. The final verification reported
       # success for a runner serving nothing.
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

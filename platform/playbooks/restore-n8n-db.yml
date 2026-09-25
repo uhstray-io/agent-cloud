@@ -79,6 +79,7 @@
       register: _pg_state
       changed_when: false
       failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
+      check_mode: false
 
     - name: "Restore with the app stopped; ALWAYS start it back up"
       block:
@@ -86,6 +87,7 @@
           ansible.builtin.command:
             argv: "{{ [_engine, 'stop'] + _app_containers }}"
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Recreate the staging database (a --clean dump cannot cross schema generations)"
           # The dump's --clean statements drop objects one by one, which fails
@@ -112,6 +114,7 @@
               - "-c"
               - "CREATE DATABASE {{ _staging_db }} OWNER {{ _db_app_user }};"
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Restore the dump into staging (single transaction, stop on first error)"
           # stdin comes from the host file; the dump's content never enters the
@@ -125,6 +128,7 @@
             -v ON_ERROR_STOP=1 --single-transaction
             < {{ n8n_dump_file | quote }} > /dev/null
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Swap staging into place (prior live database kept as {{ _prev_db }})"
           # Only reached when the dump fully loaded. Renames are catalog
@@ -151,6 +155,7 @@
               - "-c"
               - "ALTER DATABASE {{ _staging_db }} RENAME TO {{ _db_name }};"
           changed_when: true
+          when: not ansible_check_mode
 
       always:
         # The app starts ALONE and the worker only after readiness: two n8n
@@ -163,6 +168,7 @@
           ansible.builtin.command:
             argv: ["{{ _engine }}", "start", "workflow-n8n"]
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Wait for readiness (migrations complete) before the worker starts"
           ansible.builtin.uri:
@@ -172,11 +178,13 @@
           retries: 60
           delay: 5
           until: _n8n_ready.status == 200
+          check_mode: false
 
         - name: "Start the n8n worker (migration chain already settled)"
           ansible.builtin.command:
             argv: ["{{ _engine }}", "start", "workflow-n8n-worker"]
           changed_when: true
+          when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

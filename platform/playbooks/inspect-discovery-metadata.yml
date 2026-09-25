@@ -29,6 +29,7 @@
         SEMAPHORE_PROJECT_ID: "{{ discovery_project_id }}"
       register: _discovery_metadata
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 

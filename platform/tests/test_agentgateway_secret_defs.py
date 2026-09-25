@@ -1,9 +1,9 @@
-"""deploy-agentgateway.yml's secret declaration evaluates to a list on current ansible-core.
+"""agentgateway's secret declaration evaluates to a list on current ansible-core.
 
 `_secret_definitions` is `[...] + _client_defs`. When `_client_defs` rendered as text, ansible-core
 2.16 converted it and 2.19+ did not, so the deploy failed on the production controller image
 (semaphore v2.19.11, ansible-core 2.20.8) with "can only concatenate list". CI installs the latest
-ansible-core, so this evaluates the play's real variables there.
+ansible-core, so this loads the declaration file there exactly as the deploy does (vars_files).
 """
 
 import json
@@ -16,17 +16,16 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
+DECLARATION = REPO / "platform/playbooks/vars/secret-declarations/agentgateway.yml"
 PLAYBOOK = REPO / "platform/playbooks/deploy-agentgateway.yml"
 
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 
 def _names(tmp_path, clients):
-    play = next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if "_secret_definitions" in (p.get("vars") or {}))
-    pv = {k: play["vars"][k] for k in ("_client_defs", "_secret_definitions")}
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {**pv, "agw_clients": clients},
+        "vars": {"agw_clients": clients}, "vars_files": [str(DECLARATION)],
         "tasks": [{"ansible.builtin.debug": {"msg": "DEFS {{ _secret_definitions | to_json }}"}}],
     }]
     path = tmp_path / "harness.yml"

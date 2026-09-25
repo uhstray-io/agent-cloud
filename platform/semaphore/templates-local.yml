@@ -152,3 +152,103 @@ templates:
 #         title: "Target group"
 #         type: string
 #         required: false
+
+  # Service-deployment workflow executors, bound to the working tree so a dry run
+  # (DRY_RUN=1 scripts/local-dev.sh run <playbook>) exercises the code being written, not
+  # GitHub's (MISTAKES 10.9). Change service-deployment-workflow, task 2.2.
+  - name: "Check Secrets (Local)"
+    playbook: platform/playbooks/check-secrets.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group whose secrets to inventory (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Validate All Services (Local)"
+    playbook: platform/playbooks/validate-all.yml
+
+  # NetBox under podman through the local controller (change service-deployment-workflow
+  # section 6). Replaces the Mac-driven scripts/local-netbox-up.sh path.
+  - name: "Deploy NetBox (Local)"
+    playbook: platform/playbooks/deploy-netbox.yml
+
+  # Local NetBox answers the IPAM read; local inventory declares no vm_* spec, so a local
+  # run records the step's refusal, which is the path worth proving here.
+  - name: "Lookup Service Inventory (Local)"
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
+  - name: "Verify Service Persistence (Local)"
+    playbook: platform/playbooks/verify-service-persistence.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Firewall (Local)"
+    playbook: platform/playbooks/snapshot-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Service Assessment (Local)"
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Snapshot Access (Local)"
+    playbook: platform/playbooks/snapshot-access.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Provision NetBox Automation Token (Local)"
+    playbook: platform/playbooks/provision-netbox-automation-token.yml
+
+  - name: "Provision NetBox Custom Fields (Local)"
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml
+
+  # Local discovery (platform/netbox-local): the orb agent's own scoped AppRole, then the
+  # agent itself, confined to local-dev networks by tasks/assert-local-discovery-scope.yml.
+  - name: "Provision AppRole - Orb Agent (Local)"
+    playbook: platform/playbooks/provision-orb-agent-approle.yml
+
+  - name: "Deploy Orb Agent (Local)"
+    playbook: platform/playbooks/deploy-orb-agent.yml
+
+  - name: "Collect Service Conformance (Local)"
+    playbook: platform/playbooks/collect-service-conformance.yml
+    # Own schedule for the same reason as the tududi token refresh above: the base
+    # schedule runs `main`, which has no collector until promotion. Same cron.
+    schedule:
+      cron: "*/15 * * * *"
+
+  # Workflow step service-validate's executor (PR 203 Codex review: the shared template
+  # alone runs GitHub's playbook on local-dev).
+  - name: "Verify Service Health (Local)"
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        # Only groups with a health_url in the generated local inventory can pass (task 7.9).
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc)
+        type: string
+        required: true
