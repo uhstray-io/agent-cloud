@@ -76,6 +76,7 @@ supersede it with a new entry and link both.
 | 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
+| 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -1556,6 +1557,28 @@ Every CI scan is scoped to the PR's own commits.
 
 **Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
 fix independently the same evening). The fixture rule itself is Convention.
+
+### 4.9 Private Discord destination IDs in a public test fixture
+
+**What happened.** The first PR revision copied the real guild and channel IDs
+from private site-config into a public Python test. The values are destination
+identifiers, not the bot token, but the public repo still must not publish
+private configuration. They were found during review. The PR branch was
+rewritten to use synthetic IDs; the original commit had already been pushed,
+so a remote cache or direct commit URL may still retain it.
+
+**Root cause.** The fixture was copied from the authoritative private inventory
+instead of using synthetic values. The same change also assumed a scoped
+Semaphore update would survive bootstrap, but bootstrap regenerates the whole
+inventory.
+
+**The rule.** Public tests use synthetic identifiers even when the values
+being tested are not credentials. Before pushing a fixture derived from
+site-config, inspect the staged diff for copied private values. The sync
+records a private local projection that bootstrap consumes and validates.
+
+**Enforced by.** Convention and review. This sync's test constructs synthetic
+IDs, but no general mechanical scan can identify private destination IDs.
 
 ## 5. Duplication and process
 

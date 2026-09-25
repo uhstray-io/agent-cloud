@@ -193,6 +193,26 @@ An interrupted run leaves the encrypted input in place and names it, so it can b
 reconciled rather than silently retried. Postiz provider credentials use
 `scripts/postiz-seed-input.py`, which shares the same lifecycle code.
 
+## Publish the local observability alert destination
+
+[`sync-local-o11y-alert-inventory.py`](../../scripts/sync-local-o11y-alert-inventory.py)
+reads the two Discord destination IDs already declared under `o11y_svc.vars` in
+private site-config's production inventory. It changes only those entries in
+Semaphore's existing local static inventory and reads the record back. Run it
+from a clean checkout of reviewed, pushed `dev`, with an unchanged private
+production inventory file and exact `--expected-dev-sha` and `--site-config-sha`
+pins. Supply the
+local inventory ID, the verified Semaphore HTTPS origin, and the operator token
+on stdin. The default run previews names only; `--apply` performs the scoped,
+idempotent update. Do this before the Dev-bound webhook seed or fault drill;
+their channel IDs come from Semaphore's stored inventory, not from a survey.
+After a matching API readback, `--apply` also writes an owner-only projection
+at `~/.agent-cloud-local/o11y-alert-destination.json`. The local bootstrap
+reads that generated input when it rebuilds Semaphore inventory; it refuses
+to erase an already synced destination if the projection is missing. Refresh
+the projection by rerunning the sync after a reviewed private inventory change.
+The projection is a local copy, not a new source of truth.
+
 ## Troubleshoot at the failing boundary
 
 | Evidence | Next check |
