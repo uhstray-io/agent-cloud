@@ -22,7 +22,9 @@
 #   undo             template that reverses the step, or the literal none
 #   policy           required (a fail halts the run) | advisory (recorded, run continues)
 #   criteria         pass conditions the executor proves
-#   evidence_keys    keys the executor's step result carries in `evidence`
+#   evidence_keys    keys the executor's step result carries in `evidence`; for a reasoning
+#                    step, its snapshot's (the verdict has its own schema). Pinned to the
+#                    emitting playbook by test_workflow_registry.py
 #   reviewed         date the step review passed (tasks 7.1), or null
 steps:
   - id: vm-template
@@ -42,8 +44,7 @@ steps:
     order: 2
     diagram_label: Lookup Inventory
     owner: infra-agent
-    executor: null
-    planned_executor: Lookup Service Inventory
+    executor: Lookup Service Inventory
     undo: none
     policy: required
     criteria:
@@ -57,8 +58,7 @@ steps:
     order: 3
     diagram_label: Validate against ARP
     owner: infra-agent
-    executor: null
-    planned_executor: Validate Address Free
+    executor: Validate Address Free
     undo: none
     policy: required
     criteria:
@@ -141,15 +141,14 @@ steps:
     owner: service-agent
     executor: null
     feeds: [vm-rightsize, service-deploy]
-    snapshot: null
-    planned_snapshot: Snapshot Service Assessment
+    snapshot: Snapshot Service Assessment
     schema: service-assessment.json
     undo: none
     policy: required
     criteria:
       - the proposal validates against its schema
       - it names an existing deploy template for an existing service
-    evidence_keys: [verdict]
+    evidence_keys: [compose_found, running_count]
     reviewed: null
 
   - id: vm-rightsize
@@ -238,8 +237,7 @@ steps:
     owner: security-agent
     executor: null
     feeds: [fw-harden]
-    snapshot: null
-    planned_snapshot: Snapshot Firewall
+    snapshot: Snapshot Firewall
     schema: firewall-policy.json
     undo: none
     policy: required
@@ -247,7 +245,7 @@ steps:
       - the proposal validates against its schema
       - every allow rule maps to a listening socket with a declared consumer
       - SSH stays open to the orchestrator and to no source outside the declared SSH sources
-    evidence_keys: [verdict]
+    evidence_keys: [host_applicable, published_count, has_practices]
     reviewed: null
 
   - id: fw-harden
@@ -281,14 +279,13 @@ steps:
     order: 19
     diagram_label: Systemd enablement
     owner: infra-agent
-    executor: null
-    planned_executor: Verify Service Persistence
+    executor: Verify Service Persistence
     undo: none
     policy: required
     criteria:
       - linger is enabled for the service user
       - every container restarts unless stopped, or is a systemd unit
-    evidence_keys: [linger, restart_policies]
+    evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
 
   - id: access-assess
@@ -297,8 +294,7 @@ steps:
     owner: service-agent
     executor: null
     feeds: [oidc-config]
-    snapshot: null
-    planned_snapshot: Snapshot Access
+    snapshot: Snapshot Access
     schema: access-policy.json
     undo: none
     policy: required
@@ -306,7 +302,7 @@ steps:
       - the proposal validates against its schema
       - the auth mode matches the service's agent practices
       - every named group exists
-    evidence_keys: [verdict]
+    evidence_keys: [catalog_entries, blueprint_count]
     reviewed: null
 
   - id: oidc-config

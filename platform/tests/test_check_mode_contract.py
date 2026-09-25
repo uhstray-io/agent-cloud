@@ -32,7 +32,7 @@ COMMANDS = {"command", "shell", "raw", "script"}
 READ_METHODS = {"GET", "HEAD"}
 # A container-engine lifecycle verb is a write whatever changed_when says. The check-mode
 # retrofit trusted changed_when: false on "stop + rm the orb agent", and a dry run removed
-# the running agent (docs/MISTAKES.md 5.9).
+# the running agent (docs/MISTAKES.md 5.12).
 ENGINE_WRITE = re.compile(
     # Compose's own options may sit between `compose` and the verb (`compose -f x up`).
     r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+)?"

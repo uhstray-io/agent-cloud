@@ -134,6 +134,53 @@ def test_opa_allowlists_match_registry_ownership():
         assert not deploys & FOUNDATION, f"{role} may not deploy the foundation: {deploys & FOUNDATION}"
 
 
+def test_only_the_collector_writes_workflow_status():
+    # Spec scenario "Only the collector writes status": the NetBox status fields and the Loki
+    # conformance stream have exactly one writer.
+    playbooks = REPO / "platform/playbooks"
+    writers = sorted(
+        str(p.relative_to(REPO))
+        for p in playbooks.rglob("*.yml")
+        if "ac_workflow_status" in p.read_text() or "/loki/api/v1/push" in p.read_text()
+    )
+    assert writers == ["platform/playbooks/collect-service-conformance.yml"]
+
+
+def _emitted_evidence() -> dict[str, set[str]]:
+    """step id -> evidence keys, for every playbook that records a step result."""
+    found: dict[str, set[str]] = {}
+
+    def walk(tasks):
+        for task in tasks or []:
+            if not isinstance(task, dict):
+                continue
+            for key in ("block", "rescue", "always"):
+                walk(task.get(key))
+            include = task.get("ansible.builtin.include_tasks") or ""
+            if isinstance(include, str) and include.endswith("emit-step-result.yml"):
+                v = task.get("vars", {})
+                assert isinstance(v.get("step_result_evidence"), dict), f"non-literal evidence for {v}"
+                found.setdefault(v["step_result_step"], set()).update(v["step_result_evidence"])
+
+    for path in (REPO / "platform/playbooks").glob("*.yml"):
+        doc = yaml.safe_load(path.read_text())
+        for play in doc if isinstance(doc, list) else []:
+            if isinstance(play, dict):
+                for key in ("pre_tasks", "tasks", "post_tasks"):
+                    walk(play.get(key))
+    return found
+
+
+def test_registry_evidence_keys_match_what_the_steps_emit():
+    # The registry is what an agent reads to know what a step proves; a key list that
+    # disagrees with the emitting playbook misleads it (four of five disagreed, 2026-09-22).
+    emitted = _emitted_evidence()
+    assert emitted, "no step-result emitters found: the scan is broken"
+    by_id = {s["id"]: s for s in STEPS}
+    for step, keys in emitted.items():
+        assert set(by_id[step]["evidence_keys"]) == keys, step
+
+
 def test_opa_step_map_matches_the_registry():
     # OPA cannot read the registry, so catalog.workflow_steps carries what the policy binds a
     # task to: owner, executing templates, the proposal it acts on, review state. It must be

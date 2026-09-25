@@ -86,8 +86,12 @@
   changed_when: _rsync_result.stdout | length > 0
 
 - name: "Ensure podman + compose entrypoint"
-  # Sibling task in this directory; resolves relative to this file.
+  # Sibling task in this directory; resolves relative to this file. Podman hosts only: a
+  # Docker host (NetBox in production, OpenHands) must not get podman installed beside
+  # it, which is why deploy-openhands.yml avoided this task entirely (its header, lines
+  # 4-5). Gating it here lets every Docker caller share the placement.
   ansible.builtin.include_tasks: install-podman-compose.yml
+  when: (container_engine | default('podman')) == 'podman'
 
 - name: "Keep rootless containers running across a reboot"
   # Every composable service gets linger + podman's user boot unit here, so no

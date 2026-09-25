@@ -1,0 +1,90 @@
+---
+# snapshot-firewall.yml — the ONE input to the firewall assessment (workflow step fw-assess).
+#
+# Read-only, identical under --check. Collects what the security agent may reason over and
+# nothing else (plan 15 "Snapshot templates"; change service-deployment-workflow task 7.4):
+#   host      listening sockets, ufw state, the service's published container ports
+#   declared  the inventory's firewall variables, including the orchestrator's SSH source
+#   practices the service's committed agent-practices.md, when it has one
+#   registry  the registry entries for this step and the step it feeds
+# and records it with set_stats under `snapshot`, beside the step result, so the
+# orchestrator reads both from one task output. Names and ports only: no credential value
+# reaches the snapshot.
+#
+# A local-connection host (local-dev) has no per-service Linux host to inspect, the same
+# reason apply-firewall.yml ends there, so host facts are reported as not applicable.
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Snapshot the firewall inputs: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _local: "{{ (ansible_connection | default('ssh')) == 'local' }}"
+    _registry: "{{ (lookup('file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml).steps }}"
+    _practices_path: "{{ playbook_dir }}/../services/{{ service_name }}/context/agent-practices.md"
+
+  tasks:
+    - name: "Host: listening TCP/UDP sockets"
+      ansible.builtin.command:
+        argv: [ss, -H, -ltnu]
+      register: _ss
+      changed_when: false
+      check_mode: false
+      when: not _local
+
+    - name: "Host: ufw state (numbered rules)"
+      ansible.builtin.command:
+        argv: [ufw, status, numbered]
+      become: true
+      register: _ufw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not _local
+
+    - name: "Host: the service's published container ports"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, Ports]
+
+    - name: "Assemble the snapshot"
+      ansible.builtin.set_fact:
+        _snapshot:
+          schema: agentcloud/snapshot/v1
+          step: fw-assess
+          service: "{{ service_name }}"
+          host:
+            applicable: "{{ not _local }}"
+            listening: "{{ _ss.stdout_lines | default([]) }}"
+            ufw: "{{ _ufw.stdout_lines | default([]) }}"
+            published: "{{ _lsc.stdout_lines | default([]) }}"
+          declared:
+            ssh_cidrs: "{{ firewall_ssh_cidrs | default([]) }}"
+            controller_cidr: "{{ firewall_controller_cidr | default('') }}"
+            allow_rules: "{{ firewall_allow_rules | default([]) }}"
+            route_rules: "{{ firewall_route_rules | default([]) }}"
+            upstream_source: "{{ firewall_upstream_source | default('') }}"
+            detect_ports: "{{ firewall_detect_ports | default(true) }}"
+            deny_egress: "{{ firewall_deny_egress | default([]) }}"
+          practices: "{{ lookup('file', _practices_path, errors='ignore') | default('', true) }}"
+          registry: "{{ _registry | selectattr('id', 'in', ['fw-assess', 'fw-harden']) | list }}"
+
+    - name: "Record the snapshot"
+      ansible.builtin.set_stats:
+        data:
+          snapshot: "{{ _snapshot }}"
+        per_host: false
+        aggregate: false
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: fw-assess
+        step_result_status: pass
+        step_result_evidence:
+          host_applicable: "{{ not _local }}"
+          published_count: "{{ _lsc.stdout_lines | default([]) | length }}"
+          has_practices: "{{ _snapshot.practices | length > 0 }}"

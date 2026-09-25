@@ -29,13 +29,14 @@ supersede it with a new entry and link both.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe | Unverified claim | Convention |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | Convention |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
@@ -56,7 +57,7 @@ supersede it with a new entry and link both.
 | 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded | Vacuous coverage | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
@@ -79,7 +80,7 @@ supersede it with a new entry and link both.
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | Pre-push hook |
@@ -87,7 +88,9 @@ supersede it with a new entry and link both.
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
 | 5.9 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
+| 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
+| 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -95,6 +98,7 @@ supersede it with a new entry and link both.
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
+| 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -188,6 +192,8 @@ quoting and pass without it, including an unterminated final line.
 
 ### 1.3 A masked exit code reported as success
 
+**Occurrences: 2** — (first undated), 2026-09-25
+
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
 while `make` had exited 2. The bootstrap was reported as complete when Caddy had
@@ -201,6 +207,18 @@ and read it, or capture `${PIPESTATUS[0]}`. Applies especially to background
 jobs, where the exit code is the only signal that arrives unprompted.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** On PR #195 I ran `bats -j 4 platform/tests/ | grep -E
+'^not ok' | head`, saw no output, and reported "BATS: all 674 tests ran with no failures"
+— the 674 was `bats -c` counting the files, not a run. This machine has no GNU `parallel`,
+so `bats -j` executes **zero** tests (`Executed 0 instead of expected 5 tests`, bats-core
+1.13.0) and prints no `not ok`; the filter's silence was read as a pass. The pre-push hook,
+which runs `bats platform/tests/` serially, then refused the push on a real failure
+(`test_local_netbox.bats:76` pinned a literal the change had rewritten). Why the rule did
+not fire: it names exit codes, and this pipe also hid the one line that said nothing ran —
+a filter for failures cannot tell "none failed" from "none ran". Corollary: a test claim
+needs the run's own count of executed tests (`N passed`, the final `ok N`), never the
+absence of a failure line; and run BATS the way the hook does, without `-j`.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -469,6 +487,26 @@ focused single-binding/multiple-binding regression in
 **Review follow-up.** A failed Ansible loop item can print the whole template
 record, including free-form arguments. The ownership guard loops over numeric
 indexes, and the regression asserts a sentinel argument is absent from output.
+
+### 1.10 Reported that a review had started, from a keyword match on a comment I never read
+
+**What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
+PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
+included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
+Review rate limited". The test labelled two refusals (#205, site-config#16) "started", and
+I told Joe that one of the two deploy prerequisites was now under review. It was not.
+Twenty minutes later, a read of the full comments showed every one of the four had been
+refused.
+
+**Root cause.** A loose classifier stood between me and the evidence, and its label was
+reported as the fact. The refusal phrasing had never been checked against the patterns, and
+the "other" output that would have exposed the mismatch was not what got read.
+
+**The rule.** When a reply decides what to tell the user, read the reply, or match it
+against a pattern proven on that exact phrasing. Report a keyword classifier's label only
+as a guess, and treat an unmatched or surprising label as a reason to read the text.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1010,6 +1048,8 @@ its previous form required the very construct that broke the runtime.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
+**Occurrences: 2** — 2026-08-28, 2026-09-22
+
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
 four filenames written into the test. While extending that list by one for a review
@@ -1042,6 +1082,26 @@ shrink, and shrinking it is visible work rather than a comment nobody reads.
 with `platform/tests/known_unguarded_bao_plays.txt` as the ratchet. Guarding the
 38 remaining plays is tracked as its own change — it touches live-service deploys
 and was deliberately not folded into the change that found it.
+
+**Occurrence 2 — 2026-09-22.** The check-mode contract (change
+`service-deployment-workflow`, "every playbook honours a dry-run flag") derived its
+population from the code, as the rule says, but from one directory:
+`platform/playbooks/**`. Its allowlist was empty and the claim was reported as met.
+`platform/semaphore/` holds four more Ansible files the claim covers:
+`setup-templates.yml`, `bootstrap-semaphore-repositories.yml`, `sync-inventory.yml` and
+the shared `tasks/runtime-access.yml`. None of them honoured `--check`. It surfaced
+when the conformance collector's first local dry run (Semaphore task 1018) failed
+inside the shared access task, because its OpenBao reads were skipped in check mode
+and the rescue reported "Runtime Semaphore access is unavailable". The rule did not
+prevent it because it names *where* the population comes from (the code) but not
+*how far* it extends. A glob rooted in the directory where the fix was written is a
+snapshot of where playbooks lived on that day. Widened rule: derive "every X" from
+the code, and root the derivation at the scope the claim names, not at the directory
+you happen to be working in. Enforced by `platform/tests/test_check_mode_contract.py`,
+which now scans `platform/semaphore/**` too. Widening it went red on all four files
+(mutation-checked: reverting the fix to `runtime-access.yml` fails the test), and all
+four were then retrofitted by hand. `setup-templates.yml --check` against local
+Semaphore reported changed=0, with templates and schedules byte-identical before and after.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -1675,6 +1735,14 @@ which is the mechanical gate doing its job — but the rule that the commit must
 suite in the same command still did not fire. Two occurrences in one day on the same shape:
 the commit MUST be a separate command issued after reading the suite result, never chained.
 
+**Occurrence 2026-09-25 (merge, not commit).** Merged PR 229 into the #195 branch with
+`gh pr view 229 --json mergeable,mergeStateStatus ...; gh pr merge 229 --merge` in one command:
+the mergeability read and the merge were joined by `;`, so the merge would have run whatever
+the read said. It returned CLEAN, so nothing merged that should not have. Why the rule did not
+fire: it is written about commits and suites, and a merge after a state read did not register
+as the same shape; it is. Any action that a read is meant to decide is issued after reading
+it, in a separate command.
+
 ### 5.3 Merging while the review was rate-limited
 
 **What happened.** Merged a pull request while the review bot reported
@@ -1855,6 +1923,59 @@ a harness is a default, not a permission.
 links, "Generated with" footers and the assistant noreply address; a human co-author still
 passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
 `core.hooksPath=.githooks` is set (`make git-setup`).
+
+### 5.12 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
+
+**What happened.** On 2026-09-22 wave 2 of the check-mode retrofit (commit `187d787`)
+classified 161 tasks from the guard's findings, treating every command marked
+`changed_when: false` as a read and giving it `check_mode: false`. One of them,
+`tasks/deploy-orb-agent.yml` "Stop existing orb-agent", runs `stop` and `rm` on the running
+agent: a write its author had labelled `changed_when: false` only so it would not report a
+change. Under `--check` it therefore ran for real, and the first local dry run of
+`deploy-orb-agent.yml` (Semaphore task 1008) stopped and removed the local orb agent.
+Local-dev only; a real deploy restored it.
+
+**Root cause.** A label that means "do not report a change" was read as "cannot change
+anything". The classification was automatic and was validated for normal runs (every guard is
+inert without `--check`) but not for check-mode runs, which is exactly where the label
+mattered.
+
+**The rule.** `changed_when` describes reporting, not effect. Before a task may run under
+check mode, what it DOES decides, never how it reports. A container-engine lifecycle verb is
+a write regardless of its label.
+
+**Enforced by.** `platform/tests/test_check_mode_contract.py` (`ENGINE_WRITE`): a command
+running `stop`, `rm`, `kill`, `restart`, `start`, `run` (except `run --rm`), `pull`, `up`,
+`down` or `create` on docker, podman or a templated engine is a write even when marked
+`changed_when: false`, and a write under `check_mode: false` fails CI. An audit of every
+command marked read found two more writes (a pre-flight `pull`, a `mkdir`/`chmod`), now
+skipped under `--check`. Verb-free writes (`mv`, `sed -i`) are still only caught by review.
+
+### 5.10 Switched branches inside a checkout another task was using
+
+**What happened.** On 2026-09-23 I split PR #195 for CodeRabbit's 150-file limit, and did it
+in the one checkout the service-deployment-workflow task was running from:
+`git branch feat/workflow-check-mode-standard 187d787 && git switch ...`, then back with
+`git switch -q feat/service-deployment-workflow`, twice. Later I started a third switch
+(`git switch -q -c feat/agentgateway-vm-telemetry origin/dev`) for an unrelated plan edit.
+Joe denied it, because the repository rule is one worktree and branch per independent work
+item, with no branch switch under a running task. Nothing broke, but for the length of each
+switch the files under that checkout belonged to a different branch. So did the local
+Semaphore templates bound to it: the `agent-cloud worktree` repository record runs the path
+at HEAD (10.9).
+
+**Root cause.** I treated a branch as a cheap, reversible pointer move. A checkout is shared
+state: the worktree repository record, the running task's local Semaphore runs and every
+tool reading the working tree see whatever HEAD is at that moment. A switch that is quick
+and reverted is still a window in which the checkout holds the wrong code.
+
+**The rule.** Every independent work item gets its own `git worktree add -b <branch>
+<sibling-dir> <verified origin/dev sha>`. Never `git switch` or `git checkout <branch>` in a
+checkout another task owns. The checkout belongs to the task that is running in it.
+
+**Enforced by.** Convention, plus a user memory. Proposal: a PreToolUse hook that refuses
+`git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
+working directory is the signal.
 
 ## 6. Working from assumptions about files
 
@@ -2064,6 +2185,38 @@ point used by Semaphore, since a static YAML check cannot catch lazy scoping.
 
 **Enforced by.** `test_provisioner_main_variant_resolves_repository_without_shadowing`
 runs the main variant against a disposable controller fixture.
+
+### 6.8 Took the volume separator for the container separator, and would have broken the production NetBox deploy
+
+**What happened.** Local NetBox under podman-compose 1.6.0 names its containers
+`netbox_postgres_1`, and its volume `netbox_netbox-postgres`. The shared lib had `-`
+hardcoded as a single `CONTAINER_SEP`, so the local password sync missed the volume and Hydra
+could not log in. The fix (commit fb2c121) derived that one separator from which volume
+existed: `netbox_netbox-postgres` meant `_`. Docker Compose also writes that volume name.
+`docker compose -p netbox config` renders `netbox_netbox-postgres`, while its containers use
+`-` (`pkg/api/api.go:833`, `Separator = "-"`). On the production Docker host the existing
+volume would therefore have set `_`. `wait_for_completed` would then have polled
+`netbox_hydra-migrate_1`, which does not exist, and timed out the deploy. The discovery
+restart would have silently restarted nothing. The local deploy passed, because on podman
+both names do use `_`. The altitude pass of the grounding review caught it before the branch
+was pushed.
+
+**Root cause.** Two naming rules, one for containers and one for volumes, were treated as
+one fact. The fact was then inferred from the one host where both rules happen to agree. The
+comment on the fix even stated the Docker container name correctly. What was never checked
+was how Docker names the volume that the detection keyed on.
+
+**The rule.** Do not derive an object's name from a naming convention when the tool that
+created it records its identity. Compose labels every container with its project and
+service, and both providers set the same labels, so look a container up by
+`com.docker.compose.project` / `com.docker.compose.service`. When a fix is proven on one
+runtime, name the other runtime it has to hold on, and check that one from its source or
+by running it before calling the fix done.
+
+**Enforced by.** Test: `platform/tests/test_netbox_common.bats` drives `container_of`,
+`postgres_volume_exists` and `wait_for_completed` against a stub engine that answers only
+label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
+failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
 
 ## 7. Which of these OPA can carry
 

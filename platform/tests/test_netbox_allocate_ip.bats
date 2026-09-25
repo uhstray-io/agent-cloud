@@ -59,8 +59,18 @@ setup() {
 @test "netbox-allocate: bootstrap token can view prefixes without adding them" {
   local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
   assert_precedes "$bootstrap" 'Ensure NetBox automation user and scoped permissions' 'Already provisioned'
-  assert_grep -qF '"skynet-ipam-prefix-view", ["view"]' "$bootstrap"
-  assert_grep -qF 'app_label="ipam", model="prefix"' "$bootstrap"
+  # The device-writer profile views prefixes through a separate view-only permission, and
+  # never adds them (the profiles came from the service deployment workflow's collector and
+  # VM-recorder identities).
+  python3 - "$bootstrap" <<'PY'
+import sys, yaml
+profile = yaml.safe_load(open(sys.argv[1]))[0]["vars"]["_profiles"]["device-writer"]
+assert profile["view_permission"] == "skynet-ipam-prefix-view", profile
+assert profile["view_object_types"] == ["ipam.prefix"], profile
+assert "ipam.prefix" not in profile["object_types"], profile
+PY
+  assert_grep -qF 'scopes.append(("{{ _profile.view_permission' "$bootstrap"
+  assert_grep -qF '["view"]' "$bootstrap"
   assert_grep -qF 'perm.enabled, perm.actions = True, actions' "$bootstrap"
   assert_grep -qF 'perm.users.add(user)' "$bootstrap"
 }

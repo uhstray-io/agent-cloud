@@ -187,6 +187,12 @@ templates:
         required: false
         default_value: "false"
 
+  # Converge the conformance collector's NetBox custom fields to their declaration
+  # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
+  # "Dry run" reports without writing.
+  - name: Provision NetBox Custom Fields
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml
+
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
   # (which records what is declared) or from eyeballing the network. Reserving is opt-in
@@ -701,6 +707,55 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  # Workflow step fw-assess: the read-only snapshot that is the firewall assessment's only
+  # model input.
+  - name: Snapshot Firewall
+    playbook: platform/playbooks/snapshot-firewall.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow steps service-assess and access-assess: the read-only snapshots that are each
+  # assessment's only model input.
+  - name: Snapshot Service Assessment
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: Snapshot Access
+    playbook: platform/playbooks/snapshot-access.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # The workflow conformance collector: reads task history, writes each service's step status
+  # to NetBox (and Loki when collector_loki_url is set). The only writer of that status.
+  - name: Collect Service Conformance
+    playbook: platform/playbooks/collect-service-conformance.yml
+    schedule:
+      cron: "*/15 * * * *"
+
+  # Workflow step systemd-enablement: every container of the service restarts on its own and,
+  # for rootless podman, the deploying user has linger. Read-only.
+  - name: Verify Service Persistence
+    playbook: platform/playbooks/verify-service-persistence.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
   # Workflow step service-validate: the service answers on its inventory-declared health
   # path (service_url + health_path) with HTTP 200. Read-only.
   - name: Verify Service Health
@@ -709,6 +764,28 @@ templates:
       - name: target_service
         title: Target group
         description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step lookup-inventory: the declared VM spec is complete, NetBox records the
+  # declared address as reserved or active, and no other host claims it. Read-only.
+  - name: Lookup Service Inventory
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
+  # Workflow step validate-address: the address is not live in pfSense ARP (unless it is the
+  # service's own running VM), and the NetBox VM record exists (created planned if absent).
+  - name: Validate Address Free
+    playbook: platform/playbooks/validate-address-free.yml
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
         type: string
         required: true
 

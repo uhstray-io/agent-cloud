@@ -12,7 +12,9 @@ from the local OpenBao, and MUST answer through the local Caddy behind Authentik
 
 #### Scenario: Local deploy is repeatable
 - **WHEN** the local NetBox deploy runs twice
-- **THEN** the second run reports no change and NetBox answers its health check
+- **THEN** the second run succeeds, NetBox answers its health check, and the only tasks that
+  report a change are the container lifecycle scripts and the orb-agent credential refresh,
+  which rotate by design
 
 ### Requirement: Discovery is confined to local-dev targets
 Local NetBox discovery SHALL scan only targets declared in the local inventory, and every

@@ -42,16 +42,9 @@
   delegate_to: localhost
   when: not ansible_check_mode
 
-- name: "Ensure AppRole auth is enabled"
-  ansible.builtin.uri:
-    url: "{{ _bao_url }}/v1/sys/auth"
-    method: GET
-    headers:
-      X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
-    status_code: [200]
-  register: _auth_methods
-  delegate_to: localhost
-  check_mode: false
+# No "is AppRole auth enabled?" check: the caller has just logged in through AppRole, which
+# proves it is, and the removed GET /v1/sys/auth needed a privilege no Semaphore policy
+# grants (403 on every run, 2026-09-22). Its result was never read.
 
 - name: "Create or update AppRole — {{ _approle_name }}"
   ansible.builtin.uri:

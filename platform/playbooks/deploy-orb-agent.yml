@@ -18,6 +18,32 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Local-dev: confine discovery to local networks (or disable it)"
+      # platform/netbox-local: a laptop never scans or syncs beyond local-dev.
+      ansible.builtin.include_tasks: tasks/assert-local-discovery-scope.yml
+      when: local_mode | default(false) | bool
+
+    # Disabling discovery converges to NO agent: one left from an earlier run with targets would
+    # keep scanning with its old configuration while this run reports discovery disabled
+    # (PR 195 Codex review). Local-only: production never takes this path.
+    - name: "Local-dev, discovery disabled: remove a previously started orb agent"
+      ansible.builtin.shell: |
+        if {{ container_engine | default('podman') }} container inspect netbox-orb-agent >/dev/null 2>&1; then
+          {{ container_engine | default('podman') }} rm -f netbox-orb-agent >/dev/null && echo removed
+        fi
+      register: _orb_removed
+      changed_when: "'removed' in _orb_removed.stdout"
+      when:
+        - not ansible_check_mode
+        - local_mode | default(false) | bool
+        - not (_local_discovery_enabled | default(false) | bool)
+
+    - name: "Local-dev: stop here when no local discovery target is declared"
+      ansible.builtin.meta: end_host
+      when:
+        - local_mode | default(false) | bool
+        - not (_local_discovery_enabled | default(false) | bool)
+
     - name: "Manage Diode orb-agent credentials"
       ansible.builtin.include_tasks: tasks/manage-diode-credentials.yml
 
@@ -32,13 +58,18 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
+    _branch: "{{ service_branch | default('main') }}"
+
   tasks:
-    - name: "Update monorepo to latest"
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ service_branch | default('main') }}"
-        force: true
+    - name: "Local-dev: stop here when local discovery is disabled (decided in play 1)"
+      ansible.builtin.meta: end_host
+      when:
+        - local_mode | default(false) | bool
+        - not (_local_discovery_enabled | default(false) | bool)
+
+    - name: "Place the monorepo (clone in production, copy the working tree in local-dev)"
+      # Was a bare git clone, which in local-dev would overwrite the placed working tree.
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:

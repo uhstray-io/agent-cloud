@@ -19,6 +19,12 @@
 # http://name@evil.example is refused: the name before @ is userinfo, and the
 # request would go to the public host after it.
 #
+# The same local_mode branch accepts exactly one dotted name: host.containers.internal, the
+# name podman gives a container for its engine host. A local controller reaches services
+# published on the engine's loopback through it (local NetBox, for the conformance collector).
+# The name is matched in full, with the same trailing delimiter, so it cannot be a prefix of
+# a public FQDN.
+#
 # Anchored on COMPLETE addresses with a trailing delimiter. A prefix match like
 # `http://10\.` also accepts http://10.evil.example/ — a public host whose name
 # merely starts with a private-looking octet.
@@ -59,7 +65,7 @@
     # scalar would join with spaces INSERTED INTO the pattern. The behavioural
     # table in test_credential_leaks.bats compiles both, exactly as decoded here.
     _pat_strict: '^(https://|http://(localhost|127(\.[0-9]{1,3}){3}|10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})(?::[0-9]{1,5})?(?:/|$))'
-    _pat_single_label: '^http://[A-Za-z][A-Za-z0-9-]*(?::[0-9]{1,5})?(?:/|$)'
+    _pat_single_label: '^http://([A-Za-z][A-Za-z0-9-]*|host\.containers\.internal)(?::[0-9]{1,5})?(?:/|$)'
   ansible.builtin.assert:
     that:
       - >-

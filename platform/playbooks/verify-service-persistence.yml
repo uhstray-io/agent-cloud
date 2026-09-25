@@ -1,0 +1,137 @@
+---
+# verify-service-persistence.yml — does the service come back after a reboot?
+#
+# Workflow step systemd-enablement (platform/workflows/service-onboarding/registry.yml),
+# change service-deployment-workflow task 7.2. Read-only: it changes nothing and runs
+# identically under --check.
+#
+# Proves, for every container of the service:
+#   - it restarts on its own (restart policy `always` or `unless-stopped`; only `always` on
+#     rootless podman, whose boot unit starts nothing else)
+# and, on a Linux host running rootless podman:
+#   - the deploying user has systemd linger, so its containers start without a login
+#     (tasks/enable-linger.yml is what sets it)
+#
+# The service's containers come from tasks/list-service-containers.yml (the compose
+# working_dir label, which says why).
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Verify the service survives a reboot: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    # podman-restart.service starts only `restart: always` containers at boot, so on rootless
+    # podman `unless-stopped` stays down after a reboot (PR 195 Codex review).
+    _rootless_podman: >-
+      {{ _engine == 'podman' and not (local_mode | default(false) | bool)
+         and not (podman_rootful | default(false) | bool) }}
+    _restart_ok: "{{ ['always'] if (_rootless_podman | bool) else ['always', 'unless-stopped'] }}"
+
+  tasks:
+    - name: "List the service's containers (by compose working directory)"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+
+    - name: "Read each container's restart policy"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          - "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}"
+          - "{{ item }}"
+      loop: "{{ _lsc.stdout_lines }}"
+      register: _policies
+      changed_when: false
+      check_mode: false
+
+    - name: "Rootless podman on Linux: read the service account's linger"
+      # Same account rule as tasks/enable-linger.yml: linger_user when a service runs under a
+      # dedicated account, else the connecting user.
+      ansible.builtin.command:
+        argv: [loginctl, show-user, "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}", --property=Linger]
+      register: _linger
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - not (local_mode | default(false) | bool)
+        - not (podman_rootful | default(false) | bool)
+
+    # Linger keeps the user's systemd running; podman's user boot unit is what starts the
+    # containers after a reboot (tasks/enable-linger.yml links it into default.target.wants).
+    # Linger without the unit leaves `restart: always` containers down (PR 195 Codex review).
+    - name: "Rootless podman on Linux: look up the service account's home"
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}"
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - not (local_mode | default(false) | bool)
+        - not (podman_rootful | default(false) | bool)
+
+    - name: "Rootless podman on Linux: is podman's user boot unit enabled?"
+      ansible.builtin.stat:
+        path: >-
+          {{ ansible_facts.getent_passwd[linger_user | default(ansible_user) | default(lookup('env', 'USER'))][4]
+             }}/.config/systemd/user/default.target.wants/podman-restart.service
+      register: _boot_unit
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - not (local_mode | default(false) | bool)
+        - not (podman_rootful | default(false) | bool)
+
+    - name: "Decide the result"
+      ansible.builtin.set_fact:
+        _restart_policies: "{{ _policies.results | items2dict(key_name='item', value_name='stdout') }}"
+        _linger_state: >-
+          {{ 'not-applicable' if (_linger is skipped)
+             else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
+        _boot_unit_state: >-
+          {{ 'not-applicable' if (_boot_unit is skipped)
+             else ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') }}
+
+    - name: "Decide the failures"
+      ansible.builtin.set_fact:
+        _persistence_errors: >-
+          {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir
+               ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
+              if (_lsc.stdout_lines | length == 0) else [])
+             + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok)
+                | map(attribute='key')
+                | map('regex_replace', '^', 'restart policy not always/unless-stopped: ') | list)
+             + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
+             + (['podman-restart.service is not enabled for the deploying user: containers will not start at boot']
+                if _boot_unit_state == 'disabled' else []) }}
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          containers: "{{ _restart_policies }}"
+          linger: "{{ _linger_state }}"
+          boot_unit: "{{ _boot_unit_state }}"
+          errors: "{{ _persistence_errors }}"
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: systemd-enablement
+        step_result_status: "{{ 'pass' if (_persistence_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          linger: "{{ _linger_state }}"
+          boot_unit: "{{ _boot_unit_state }}"
+          restart_policies: "{{ _restart_policies }}"
+        step_result_error: "{{ _persistence_errors | join('; ') }}"
+
+    - name: "Fail when the service would not survive a reboot"
+      ansible.builtin.fail:
+        msg: "{{ _persistence_errors | join('; ') }}"
+      when: _persistence_errors | length > 0

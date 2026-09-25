@@ -1,0 +1,230 @@
+---
+# validate-address-free.yml — workflow step validate-address (plan 15, step 3).
+#
+# Change service-deployment-workflow task 7.3. Before provisioning, the declared address must
+# not be live on the network, and NetBox must hold the service's VM record afterwards:
+#   read   the pfSense ARP table (the same REST route the discovery worker's
+#          get_arp_table() reads: /api/v2/diagnostics/arp_table, X-API-Key, credentials at
+#          secret/services/discovery/pfsense) and Proxmox's VM list
+#   judge  an address in ARP refuses the step, UNLESS the declared vmid already runs on
+#          Proxmox under the declared name AND one of its NICs carries the ARP entry's MAC:
+#          then the address is the service's own and the step is `skip` (already
+#          provisioned), never a false refusal on a backfill
+#   write  the NetBox VM record when absent: status planned, in the Proxmox cluster the
+#          discovery worker maintains (so discovery later reconciles the same object, by
+#          name, instead of creating a second one). Token: the vm-recorder profile
+#          (view/add virtual machines, view clusters) from provision-netbox-automation-token.
+#
+# Dry run (--check): every read runs and the verdict is recorded; the record is not created.
+#
+# Usage (Semaphore): -e target_service=<service> [-e target_host=<declaring host>]
+#                    [-e netbox_vm_cluster=<name>] when NetBox holds more than one cluster
+
+- name: "Validate the declared address is free: {{ target_service | default('(unset)') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/declared-vm.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_auth:
+      url: "{{ _bao_url }}"
+      auth_method: approle
+      role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+      secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+
+  tasks:
+    - name: "Require a target service that resolves to one declaring host with an address"
+      ansible.builtin.assert:
+        that:
+          - target_service is defined and target_service | length > 0
+          - _decl_host in _group_hosts
+          - target_host is defined or (_group_hosts | length == 1)
+          - _ip | length > 0
+          - _vmid | string | length > 0
+        fail_msg: "Pass -e target_service=<service> whose <service>_svc host declares vm_ip and vm_vmid."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext NetBox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+
+    - name: "Read the pfSense, Proxmox and NetBox credentials"
+      ansible.builtin.set_fact:
+        _pf: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/discovery/pfsense', **_bao_auth) }}"
+        _pve: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', **_bao_auth) }}"
+        _nb_token: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/netbox', **_bao_auth).vm_recorder_api_token | default('') }}"
+      no_log: true
+
+    - name: "Require the vm-recorder token"
+      ansible.builtin.assert:
+        that: _nb_token | length > 0
+        fail_msg: >-
+          secret/services/netbox has no vm_recorder_api_token. Mint it once with Provision
+          NetBox Automation Token, -e netbox_token_profile=vm-recorder.
+      no_log: true
+
+    - name: "Build the NetBox API headers"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+
+    # ── the network ─────────────────────────────────────────────────────────────────────
+    - name: "Read the pfSense ARP table"
+      ansible.builtin.uri:
+        url: "https://{{ _pf.host }}/api/v2/diagnostics/arp_table"
+        headers:
+          X-API-Key: "{{ _pf.api_key }}"
+        # The discovery worker's own setting (PFSENSE_VERIFY_SSL defaults false): the
+        # firewall serves its self-signed certificate.
+        validate_certs: false
+        status_code: [200]
+      register: _arp
+      check_mode: false
+      no_log: true
+
+    - name: "Read Proxmox's VM list"
+      ansible.builtin.uri:
+        url: "{{ _pve.url }}/api2/json/cluster/resources?type=vm"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+        validate_certs: false
+      register: _pve_vms
+      check_mode: false
+      no_log: true
+
+    - name: "Judge the address"
+      ansible.builtin.set_fact:
+        _arp_hits: "{{ _arp_entries | selectattr('ip', 'defined') | selectattr('ip', 'equalto', _ip) | list }}"
+        # The declared VM, when it RUNS: a stopped VM cannot answer ARP (PR 195 Codex review).
+        _running_vm: >-
+          {{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | selectattr('name', 'equalto', _name)
+             | selectattr('status', 'defined') | selectattr('status', 'equalto', 'running') | list }}
+      vars:
+        # pfrest v2 wraps its answer in `data`; the ARP table has come back as a list and as a
+        # dict keyed by index (the worker handled both, 1c3e6ea).
+        _arp_data: "{{ _arp.json.data | default(_arp.json) }}"
+        _arp_entries: "{{ (_arp_data.values() | list) if (_arp_data is mapping) else _arp_data }}"
+
+    # A running VM with the declared id and name does not prove the ARP entry is ITS: another
+    # device can answer for the address (PR 195 Codex review). Its NIC MACs, from its own config,
+    # must include the MAC the firewall saw.
+    - name: "Read the running VM's network configuration"
+      ansible.builtin.uri:
+        url: "{{ _pve.url }}/api2/json/nodes/{{ _running_vm[0].node }}/qemu/{{ _vmid }}/config"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+        validate_certs: false
+      register: _vm_config
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _arp_hits | length > 0
+        - _running_vm | length > 0
+
+    - name: "Judge whether the ARP entry is the declared VM's own"
+      ansible.builtin.set_fact:
+        _own_vm: >-
+          {{ (_running_vm | length > 0) and (_arp_hits | map(attribute='mac', default='') | map('lower')
+               | select('in', _vm_macs) | list | length > 0) }}
+      vars:
+        # Proxmox writes a NIC as net<N>: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0".
+        _vm_macs: >-
+          {{ ((_vm_config.json.data | default({})) if (_vm_config is not skipped) else {}) | dict2items
+             | selectattr('key', 'match', '^net[0-9]+$') | map(attribute='value')
+             | map('regex_search', '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | select | map('lower') | list }}
+
+    # ── the record ──────────────────────────────────────────────────────────────────────
+    - name: "NetBox: find the service's VM record and the Proxmox clusters"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/{{ item }}"
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      loop:
+        - "virtualization/virtual-machines/?name={{ _name | urlencode }}"
+        - "virtualization/clusters/?limit=1000{{ ('&name=' ~ (netbox_vm_cluster | urlencode)) if netbox_vm_cluster is defined else '' }}"
+      register: _nb
+      # The requests carry the vm-recorder token in their headers: a failed item would print
+      # them into Semaphore's retained output (PR 195 Codex review). The status is checked
+      # visibly below, without the request.
+      failed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Require both NetBox reads to answer"
+      ansible.builtin.assert:
+        that: (_nb.results | map(attribute='status', default=0) | list) == [200, 200]
+        fail_msg: >-
+          NetBox answered {{ _nb.results | map(attribute='status', default='no response') | list }}
+          to the VM-record and cluster reads (expected 200, 200).
+
+    - name: "Decide"
+      ansible.builtin.set_fact:
+        _vm_record: "{{ _nb.results[0].json.results | first | default({}) }}"
+        # The type the Proxmox discovery worker creates (CLUSTER_TYPE = "Proxmox VE").
+        _clusters: "{{ _nb.results[1].json.results | selectattr('type.name', 'equalto', 'Proxmox VE') | list }}"
+
+    # A second task: a set_fact cannot read a fact it is assigning in the same call, and the
+    # judgement below needs _clusters (PR 195 Codex review).
+    - name: "Decide: judge the address and the record placement"
+      ansible.builtin.set_fact:
+        _address_errors: >-
+          {{ ([] if (_arp_hits | length == 0) or _own_vm
+              else [_ip ~ ' answers ARP (' ~ (_arp_hits | map(attribute='mac', default='?') | join(', '))
+                    ~ ') and no running VM ' ~ _vmid ~ ' named ' ~ _name ~ ' has that MAC on Proxmox: the address is in use'])
+             + ([] if (_nb.results[0].json.count > 0) or (_clusters | length == 1)
+                else ['cannot place the NetBox VM record: ' ~ (_clusters | length)
+                      ~ ' Proxmox clusters match (discovery maintains them; pass -e netbox_vm_cluster=<name>)']) }}
+
+    - name: "NetBox: create the VM record (planned, in the Proxmox cluster)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/"
+        method: POST
+        headers: "{{ _nb_headers }}"
+        body_format: json
+        body:
+          name: "{{ _name }}"
+          status: planned
+          cluster: "{{ _clusters[0].id }}"
+          description: "Declared by the service deployment workflow (validate-address)"
+        status_code: [201]
+      register: _created
+      changed_when: true
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _address_errors | length == 0
+        - _vm_record | length == 0
+
+    - name: "Require the VM record to have been created"
+      ansible.builtin.assert:
+        that: _created.status | default(0) == 201
+        fail_msg: "NetBox answered {{ _created.status | default('no response') }} creating the VM record (expected 201)."
+      when: _created is not skipped
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ target_service }}"
+        step_result_step: validate-address
+        step_result_status: >-
+          {{ 'fail' if (_address_errors | length > 0)
+             else ('skip' if _own_vm else 'pass') }}
+        step_result_evidence:
+          arp_present: "{{ _arp_hits | length > 0 }}"
+          netbox_vm_id: "{{ _vm_record.id | default(_created.json.id | default(none)) }}"
+        step_result_error: "{{ _address_errors | join('; ') }}"
+
+    - name: "Fail when the address is not free or the record cannot be placed"
+      ansible.builtin.fail:
+        msg: "{{ _address_errors | join('; ') }}"
+      when: _address_errors | length > 0

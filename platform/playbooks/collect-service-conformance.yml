@@ -1,0 +1,279 @@
+---
+# collect-service-conformance.yml — the service deployment workflow's conformance collector.
+#
+# Change service-deployment-workflow task 7.5; spec platform/service-onboarding-workflow,
+# "Per-service conformance is tracked and reported". Runs INSIDE the Semaphore controller on
+# a schedule and is the ONLY writer of the workflow status (single-writer test):
+#
+#   read   each WORKFLOW template's own task history, then the raw output of only the newest
+#          finished task per (template, service). Reading per template, not the project-wide
+#          last-200, keeps a service visible however busy the project is (this collector
+#          alone runs 96 times a day), and older tasks are superseded anyway.
+#   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
+#          result per service and step; a failed task with no result counts as `fail` with
+#          its last 20 lines. A service is named by its inventory group's service_name.
+#   write  NetBox custom fields on each service's VM (declared in
+#          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
+#          workflow-collector token (view/change VMs only); and, when collector_loki_url is
+#          set, one Loki line per step result labelled service, step, status
+#
+# A NetBox that is down or holds no VM for a service never fails the run: the collector
+# records what it could not write and tries again next interval (spec scenario "NetBox outage
+# does not block deployment"). Its own step result is not a workflow step, so it records the
+# aggregate with set_stats under `conformance` instead.
+#
+# The read-only REPORT (spec: each failed step with its criteria not met, error context, undo
+# and task, plus every unreviewed step) is this playbook's dry run: `conformance.report` in
+# the task output, with nothing written anywhere.
+#
+# Controller API: fixed loopback, like the survey publisher; the OpenBao-sourced token never
+# goes to a caller-chosen address. Dry run (--check): reads and parses, writes nothing.
+
+#
+# NOT YET: the spec's collector also reads Prometheus, as the evidence for the
+# instrument-host and instrument-service steps. Those steps have no executor yet
+# (registry `executor: null`), so there is nothing to observe; the Prometheus read lands
+# with them (tasks.md 7.5, review of PR #195). Until then those steps show no result,
+# never a pass.
+- name: "Collect service deployment workflow conformance"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
+    _pid: "{{ semaphore_project_id | default(1) }}"
+    _workflow: "{{ playbook_dir }}/../workflows/service-onboarding"
+    _parser: "{{ _workflow }}/lib/step_results.py"
+    _registry: "{{ (lookup('file', _workflow ~ '/registry.yml') | from_yaml).steps }}"
+    # The closed per-service deploy list OPA grants: only these are the "Deploy {service}" step.
+    _deploy_templates: >-
+      {{ (lookup('file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json)
+         .catalog['service-agent'].service_deploy_templates }}
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        that: (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "The collector may only use the controller's fixed loopback API."
+
+    - name: "Semaphore runtime access (injected token, or the controller AppRole)"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Read the template catalog"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _templates
+      check_mode: false
+      no_log: true
+
+    - name: "Map each inventory host to its service name"
+      # Plain names only: hostvars themselves never go to the parser.
+      ansible.builtin.set_fact:
+        _host_services: "{{ _host_services | default({}) | combine({item: hostvars[item].service_name}) }}"
+      loop: "{{ groups['all'] }}"
+      when: hostvars[item].service_name is defined
+
+    - name: "Select the workflow templates"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'select', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
+              'groups': groups, 'host_services': _host_services | default({})} | to_json }}
+      register: _select
+      changed_when: false
+      check_mode: false
+
+    - name: "Read each workflow template's task history"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates/{{ item }}/tasks/last"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      loop: "{{ (_select.stdout | from_json).template_ids }}"
+      register: _histories
+      check_mode: false
+      no_log: true
+
+    - name: "Pick the newest finished task per template and service"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'pick', 'groups': groups, 'host_services': _host_services | default({}),
+              'histories': _histories.results | map(attribute='json') | list} | to_json }}
+      register: _pick
+      changed_when: false
+      check_mode: false
+
+    - name: "Read each picked task's output"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/{{ item.id }}/raw_output"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        return_content: true
+      loop: "{{ (_pick.stdout | from_json).tasks }}"
+      loop_control:
+        label: "task {{ item.id }}"
+      register: _outputs
+      check_mode: false
+      no_log: true
+
+    - name: "Aggregate: latest result per service and step"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
+              'fetched': _fetched,
+              'groups': groups, 'host_services': _host_services | default({}),
+              'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
+      register: _aggregate_run
+      changed_when: false
+      check_mode: false
+      vars:
+        # Only the picked task, the response body and its status: a registered uri result also
+        # carries the request, the Semaphore token in its headers, and a failed command prints
+        # its stdin (PR 195 Codex review).
+        _fetched: >-
+          {%- set out = [] -%}
+          {%- for r in _outputs.results | default([]) -%}
+            {%- if out.append({'item': r.item, 'content': r.content | default(''), 'status': r.status | default(0)}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Hold the aggregate"
+      ansible.builtin.set_fact:
+        _agg: "{{ _aggregate_run.stdout | from_json }}"
+
+    - name: "Record the aggregate for the report and the dashboard"
+      ansible.builtin.set_stats:
+        data:
+          conformance: "{{ _agg | dict2items | rejectattr('key', 'equalto', 'loki_streams') | items2dict }}"
+        per_host: false
+        aggregate: false
+
+    # ── NetBox ──────────────────────────────────────────────────────────────────────────
+    - name: "NetBox: read the collector token"
+      when: _netbox_url | length > 0
+      block:
+        - name: "Refuse a cleartext NetBox endpoint before any token goes to it"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _netbox_url }}"
+            _assert_url_label: "NetBox"
+
+        - name: "Refuse a cleartext secret-store endpoint"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _runtime_bao_url }}"
+
+        - name: "Authenticate to OpenBao (AppRole), unless runtime access already did"
+          ansible.builtin.uri:
+            url: "{{ _runtime_bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body:
+              role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+              secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+            follow_redirects: none
+          register: _bao_auth
+          when: _runtime_login.json is not defined
+          changed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: "Read the NetBox secret"
+          ansible.builtin.uri:
+            url: "{{ _runtime_bao_url }}/v1/secret/data/services/netbox"
+            headers:
+              X-Vault-Token: "{{ (_runtime_login.json | default(_bao_auth.json)).auth.client_token }}"
+            unredirected_headers: [X-Vault-Token]
+            follow_redirects: none
+          register: _nb_secret
+          check_mode: false
+          no_log: true
+
+        - name: "Build the NetBox API headers"
+          ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+          vars:
+            _nb_token: "{{ _nb_secret.json.data.data.collector_api_token | default('') }}"
+          when: (_nb_secret.json.data.data.collector_api_token | default('')) | length > 0
+
+    - name: "NetBox: find each service's VM"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?name={{ (collector_vm_names | default({}))[item] | default(item) | urlencode }}"
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      # Every tracked service, including one that has not run a step yet (review of PR #229).
+      loop: "{{ _agg.tracked }}"
+      register: _vms
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: _nb_headers is defined
+
+    - name: "NetBox: sort the lookups"
+      ansible.builtin.set_fact:
+        # Only the service name and the VM id: a registered uri result can carry the request's
+        # headers, the collector token among them, and this fact is visible (PR 195 Codex review).
+        _vm_found: >-
+          {%- set out = [] -%}
+          {%- for r in _answered | selectattr('json.count', 'equalto', 1) -%}
+            {%- if out.append({'item': r.item, 'id': r.json.results[0].id}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
+        # The lookup filters by name only: same-named VMs in two clusters are reported, never
+        # guessed at by taking the first (PR 195 Codex review).
+        _vm_ambiguous: "{{ _answered | selectattr('json.count', 'gt', 1) | map(attribute='item') | list }}"
+        _vm_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
+      vars:
+        _answered: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | list }}"
+
+    - name: "NetBox: write each service's workflow status"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.id }}/"
+        method: PATCH
+        headers: "{{ _nb_headers }}"
+        body_format: json
+        body:
+          custom_fields:
+            ac_workflow_status: "{{ _agg.status_by_service[item.item] }}"
+            ac_failed_steps: "{{ _agg.failed_steps[item.item] | join(',') }}"
+            ac_last_run: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+        status_code: [200]
+      loop: "{{ _vm_found }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: _nb_writes
+      changed_when: true
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    # ── Loki ────────────────────────────────────────────────────────────────────────────
+    - name: "Loki: one line per step result"
+      ansible.builtin.uri:
+        url: "{{ collector_loki_url }}/loki/api/v1/push"
+        method: POST
+        body_format: json
+        body:
+          streams: "{{ _agg.loki_streams }}"
+        status_code: [204]
+      register: _loki
+      changed_when: true
+      failed_when: false
+      when:
+        - not ansible_check_mode
+        - collector_loki_url is defined
+        - _agg.loki_streams | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          report: "{{ _agg.report }}"
+          netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
+          netbox_no_vm: "{{ _vm_missing }}"
+          netbox_ambiguous_vm: "{{ _vm_ambiguous }}"
+          netbox_unreachable: "{{ _vm_unreachable }}"
+          loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"

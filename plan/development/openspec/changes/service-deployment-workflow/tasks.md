@@ -154,13 +154,25 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 6. Local NetBox
 
-- [ ] 6.1 Execute plan 04's local-engine fix: app tier under podman through the local
-      controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik
-- [ ] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
-      any declared target outside them and disables discovery when none are declared
-- [ ] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
-      keep discovery disabled and record why
-- [ ] 6.4 NetBox custom fields for the collector created by a playbook, locally
+- [x] 6.1 Execute plan 04's local-engine fix: app tier under podman through the local
+      controller; `netbox_svc` in `local-dev.yml.example`; local Caddy route behind Authentik.
+      2026-09-22: full stack (NetBox + Diode + Hydra) deployed through the local Semaphore,
+      tasks 982 and 985 (two consecutive successes); fixes recorded in design
+- [x] 6.2 Discovery allowlist: the deploy reads the local podman networks' subnets, refuses
+      any declared target outside them and disables discovery when none are declared.
+      2026-09-22: `tasks/assert-local-discovery-scope.yml` + `lib/discovery_scope.py` (pytest);
+      against the live engine: in-scope enabled, out-of-scope refused naming the target, none
+      declared disabled; the live orb-agent deploy (1013) passed the check with a local target
+- [x] 6.3 Orb agent on the local rootful socket; if the capabilities it needs are refused,
+      keep discovery disabled and record why. 2026-09-22: runs privileged on the local socket
+      (1013), subnet_scan applied, pfSense/Proxmox workers off; its dry run leaves it running
+      (1014) after ledger 5.9. Needed: the local controller's policy is production's file
+      (the inline fork lacked AppRole management), and manage-approle's dead sys/auth check
+      is gone (it failed every run, production included)
+- [x] 6.4 NetBox custom fields for the collector created by a playbook, locally.
+      2026-09-22: via the Django shell (the scoped token has no schema permission, 403);
+      created in task 995, dry and real re-runs unchanged (997, 998). Also fixed the token
+      mint for NetBox 4.5 (no is_staff; v2 tokens stored as nbt_<key>.<token>, sent as Bearer)
 - [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
@@ -169,14 +181,36 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 - [ ] 7.1 D10 review of each existing executor against its registry criteria: idempotent
       rerun, result emitted, undo named; stamp `reviewed`
-- [ ] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`
+- [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
+      2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
+      systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
 - [ ] 7.3 New executors: inventory lookup, address validation against pfSense ARP and NetBox,
       NetBox VM record, host instrumentation (after `inference-telemetry-production` lands the
       OTLP receiver)
-- [ ] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
-      emitting one JSON document
+      - 2026-09-23: `lookup-service-inventory.yml`, `validate-address-free.yml` (ARP + the
+        NetBox VM record, `vm-recorder` token profile) done. Local: token mint task 1184 (two
+        permissions read back exactly), lookup task 1185 records its refusal, collector 1186
+        reports it. The ARP and Proxmox reads can only run against production (local-dev has
+        neither), so they are proven by the evaluated BATS test and wait for a `(Dev)` dry run.
+        OPEN: `instrument-host-o11y.yml`, blocked on the OTLP receiver.
+- [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
+      emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
+      check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
 - [ ] 7.5 Collector (scheduled), NetBox custom-field writes, Loki push, Grafana dashboard JSON,
       read-only report; single-writer test
+      - Local, 2026-09-22: collector tasks 1023 (dry run) → 1035. Loki push, the Grafana
+        dashboard (`service-conformance`, all four panel queries answered through Grafana)
+        and the report (the collector's dry run) are proven on a real failure (`dns`
+        secrets-approle, task 1034). OPEN: the NetBox write path has never run, because
+        local NetBox holds no VM record (needs 7.3's NetBox VM record executor). The table
+        transformations have been checked against Grafana 11.4 source but not viewed in a
+        browser.
+      - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
+        NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
+        implemented because the two steps it would evidence (`instrument-host`,
+        `instrument-service`, criteria "series present") have no executor yet (registry
+        `executor: null`). It lands with those executors; until then those steps show no
+        result, never a pass.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [ ] 7.7 `agent-practices.md` for agentgateway

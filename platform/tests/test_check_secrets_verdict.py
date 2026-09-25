@@ -6,6 +6,7 @@ exercises the verdict the playbook computes, not a copy of it. Requires ansible-
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -206,9 +207,13 @@ def test_the_local_controller_may_read_what_the_secrets_step_reads():
     bootstrap = yaml.safe_load((REPO / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]["tasks"]
     write = next(t for t in bootstrap if t.get("name") == "Write local-semaphore policy")
     policy = write["ansible.builtin.uri"]["body"]["policy"]
+    # The local policy may be production's own file, loaded by lookup (one source, not a copy).
+    loaded = re.search(r"lookup\('file', playbook_dir ~ '([^']+)'\)", policy)
+    if loaded:
+        policy = (REPO / "platform/playbooks" / loaded.group(1).lstrip("/")).resolve().read_text()
     for prefix in probe["loop"]:
-        line = next((ln for ln in policy.splitlines() if ln.strip().startswith(f'path "{prefix}/*"')), "")
-        assert '"read"' in line, prefix
+        block = re.search(rf'path "{re.escape(prefix)}/\*"\s*{{\s*capabilities\s*=\s*\[([^\]]*)\]', policy)
+        assert block and '"read"' in block.group(1), prefix
 
 
 def test_uhhcraft_requires_the_keys_its_app_panics_without(tmp_path):
