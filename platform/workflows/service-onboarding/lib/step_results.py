@@ -17,10 +17,13 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              the workflow templates whose history is worth reading: a per-service deploy
              counts only when its service is in this inventory
   pick       {groups, host_services, histories: [[task rows]]}
-                                                    -> {"tasks": [task rows + "service"]}
+                                                    -> {"tasks": [task rows + "service"],
+                                                        "window_full": [template ids]}
              per (template, service): the newest finished REAL task, always, plus the newest
              check-mode task when it is newer - however many dry runs follow a real run,
-             the real run survives
+             the real run survives. A history as long as HISTORY_WINDOW may have cut older
+             runs off, so its template is listed in window_full; the collector keeps a
+             service's last recorded status rather than erasing what it could not read
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
               groups?, host_services?, now_ns?}
                                                     -> {services, validation, inputs,
@@ -58,6 +61,10 @@ VARIANT = re.compile(r" \((Dev|Local)\)$")
 PER_SERVICE = "Deploy {service}"
 FINISHED = {"success", "error"}
 TAIL = 20
+# Semaphore's GET /project/{p}/templates/{t}/tasks returns the newest 1000 tasks by id
+# (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0 and
+# v2.19.11 alike. /tasks/last stops at 200.
+HISTORY_WINDOW = 1000
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -251,7 +258,9 @@ def main() -> int:
     if mode == "select":
         out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys)}
     elif mode == "pick":
-        out = {"tasks": pick(data["histories"], by_group)}
+        out = {"tasks": pick(data["histories"], by_group),
+               "window_full": sorted({h[0]["template_id"] for h in data["histories"]
+                                      if len(h) >= HISTORY_WINDOW})}
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
         out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys)

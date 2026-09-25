@@ -186,6 +186,24 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
     assert len(agg["loki_streams"]) == 1
 
 
+def test_pick_reports_a_template_whose_history_filled_the_window():
+    # PR 195 Codex review: runs older than the read window are invisible, so say which
+    # templates hit it instead of letting their services look history-less.
+    import subprocess
+    import sys
+    script = REPO / "platform/workflows/service-onboarding/lib/step_results.py"
+    full = [{"id": i, "status": "success", "template_id": 9} for i in range(step_results.HISTORY_WINDOW, 0, -1)]
+    short = [{"id": 5000, "status": "success", "template_id": 8}]
+    done = subprocess.run([sys.executable, str(script)], text=True, capture_output=True, check=True,
+                          input=json.dumps({"mode": "pick", "groups": {}, "host_services": {},
+                                            "histories": [full, short, []]}))
+    assert json.loads(done.stdout)["window_full"] == [9]
+    # HISTORY_WINDOW is the size of THIS endpoint's answer; /tasks/last answers 200
+    plays = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())
+    read = next(t for t in plays[0]["tasks"] if t.get("name") == "Read each workflow template's task history")
+    assert read["ansible.builtin.uri"]["url"].endswith("/templates/{{ item }}/tasks")
+
+
 def test_target_service_may_name_the_service_or_its_group():
     # Snapshots take the group (tududi_svc); provision-vm and the address steps the service.
     rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "tududi"}'},

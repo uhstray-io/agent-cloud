@@ -5,10 +5,13 @@
 # "Per-service conformance is tracked and reported". Runs INSIDE the Semaphore controller on
 # a schedule and is the ONLY writer of the workflow status (single-writer test):
 #
-#   read   each WORKFLOW template's own task history, then the raw output of only the newest
-#          finished task per (template, service). Reading per template, not the project-wide
-#          last-200, keeps a service visible however busy the project is (this collector
-#          alone runs 96 times a day), and older tasks are superseded anyway.
+#   read   each WORKFLOW template's own task history (its newest 1000 tasks), then the raw
+#          output of only the newest finished task per (template, service). Reading per
+#          template, not the project-wide list, keeps a service visible however busy the
+#          project is (this collector alone runs 96 times a day). A template whose history
+#          fills the window is reported (`history_window_full`), and a service's recorded
+#          status is MERGED with what this run found, so a result older than the window is
+#          kept, never erased (PR 195 Codex review).
 #   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
 #          result per service and step; a failed task with no result counts as `fail` with
 #          its last 20 lines. A service is named by its inventory group's service_name.
@@ -88,7 +91,7 @@
 
     - name: "Read each workflow template's task history"
       ansible.builtin.uri:
-        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates/{{ item }}/tasks/last"
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/templates/{{ item }}/tasks"
         headers:
           Authorization: "Bearer {{ _token }}"
       loop: "{{ (_select.stdout | from_json).template_ids }}"
@@ -219,7 +222,8 @@
         _vm_found: >-
           {%- set out = [] -%}
           {%- for r in _answered | selectattr('json.count', 'equalto', 1) -%}
-            {%- if out.append({'item': r.item, 'id': r.json.results[0].id}) -%}{%- endif -%}
+            {%- if out.append({'item': r.item, 'id': r.json.results[0].id,
+                               'status': (r.json.results[0].custom_fields | default({})).ac_workflow_status | default({}, true)}) -%}{%- endif -%}
           {%- endfor -%}
           {{ out }}
         _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
@@ -238,13 +242,17 @@
         body_format: json
         body:
           custom_fields:
-            ac_workflow_status: "{{ _agg.status_by_service[item.item] }}"
-            ac_failed_steps: "{{ _agg.failed_steps[item.item] | join(',') }}"
+            ac_workflow_status: "{{ _merged_status }}"
+            ac_failed_steps: "{{ _merged_status | dict2items | selectattr('value', 'equalto', 'fail') | map(attribute='key') | sort | join(',') }}"
             ac_last_run: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
         status_code: [200]
       loop: "{{ _vm_found }}"
       loop_control:
         label: "{{ item.item }}"
+      vars:
+        # What NetBox holds, updated by what this run found: a step whose last run fell out
+        # of the history window keeps its recorded status (PR 195 Codex review).
+        _merged_status: "{{ item.status | combine(_agg.status_by_service[item.item]) }}"
       register: _nb_writes
       changed_when: true
       failed_when: false
@@ -275,5 +283,7 @@
           netbox_written: "{{ _nb_writes.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | map(attribute='item.item') | list }}"
           netbox_no_vm: "{{ _vm_missing }}"
           netbox_ambiguous_vm: "{{ _vm_ambiguous }}"
+          # Templates whose history filled the read window: their older runs were not read.
+          history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
           loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"
