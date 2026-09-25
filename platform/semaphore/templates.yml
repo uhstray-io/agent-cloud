@@ -268,6 +268,10 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Audit Authentik Retirements
+    playbook: platform/playbooks/audit-authentik-retirements.yml
+    dev_variant: true
+
   - name: Print User Credentials
     playbook: platform/playbooks/print-platform-user-credentials.yml
     # GATED, and it PRINTS a live credential into this task's output. Exists so an
