@@ -27,6 +27,16 @@
   ansible.builtin.set_fact:
     _local_discovery_enabled: "{{ _local_discovery_targets | length > 0 }}"
 
+# agent.yaml.j2 renders discovery_target_subnet for both the network and the SNMP scan; extra
+# targets alone would enable discovery and then fail on an undefined subnet (PR 195 Codex review).
+- name: "Local discovery: extra targets need the subnet the scans cover"
+  ansible.builtin.assert:
+    that: discovery_target_subnet | default('') | length > 0
+    fail_msg: >-
+      discovery_targets is declared without discovery_target_subnet; the agent's network and
+      SNMP scans render that subnet. Declare the local-dev subnet as well.
+  when: _local_discovery_enabled
+
 - name: "Local discovery: say it is disabled"
   ansible.builtin.debug:
     msg: >-

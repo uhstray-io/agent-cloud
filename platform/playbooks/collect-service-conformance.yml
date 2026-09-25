@@ -200,7 +200,14 @@
 
     - name: "NetBox: sort the lookups"
       ansible.builtin.set_fact:
-        _vm_found: "{{ _answered | selectattr('json.count', 'gt', 0) | list }}"
+        # Only the service name and the VM id: a registered uri result can carry the request's
+        # headers, the collector token among them, and this fact is visible (PR 195 Codex review).
+        _vm_found: >-
+          {%- set out = [] -%}
+          {%- for r in _answered | selectattr('json.count', 'gt', 0) -%}
+            {%- if out.append({'item': r.item, 'id': r.json.results[0].id}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
         _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
         _vm_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
       vars:
@@ -208,7 +215,7 @@
 
     - name: "NetBox: write each service's workflow status"
       ansible.builtin.uri:
-        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.json.results[0].id }}/"
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.id }}/"
         method: PATCH
         headers: "{{ _nb_headers }}"
         body_format: json

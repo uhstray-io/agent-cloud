@@ -119,7 +119,19 @@
         - "virtualization/virtual-machines/?name={{ _name | urlencode }}"
         - "virtualization/clusters/?limit=1000{{ ('&name=' ~ (netbox_vm_cluster | urlencode)) if netbox_vm_cluster is defined else '' }}"
       register: _nb
+      # The requests carry the vm-recorder token in their headers: a failed item would print
+      # them into Semaphore's retained output (PR 195 Codex review). The status is checked
+      # visibly below, without the request.
+      failed_when: false
+      no_log: true
       check_mode: false
+
+    - name: "Require both NetBox reads to answer"
+      ansible.builtin.assert:
+        that: (_nb.results | map(attribute='status', default=0) | list) == [200, 200]
+        fail_msg: >-
+          NetBox answered {{ _nb.results | map(attribute='status', default='no response') | list }}
+          to the VM-record and cluster reads (expected 200, 200).
 
     - name: "Decide"
       ansible.builtin.set_fact:
@@ -148,10 +160,18 @@
         status_code: [201]
       register: _created
       changed_when: true
+      failed_when: false
+      no_log: true
       when:
         - not ansible_check_mode
         - _address_errors | length == 0
         - _vm_record | length == 0
+
+    - name: "Require the VM record to have been created"
+      ansible.builtin.assert:
+        that: _created.status | default(0) == 201
+        fail_msg: "NetBox answered {{ _created.status | default('no response') }} creating the VM record (expected 201)."
+      when: _created is not skipped
 
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
