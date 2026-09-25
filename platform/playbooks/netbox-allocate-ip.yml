@@ -134,6 +134,18 @@
       no_log: true
       check_mode: false
 
+    - name: "Read the pfSense discovery credential from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discovery/pfsense"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _pfsense_secret
+      no_log: true
+      when: _reserve
+      check_mode: false
+
     # A no_log step that merely fails is undiagnosable, which is the failure mode
     # AGENTS.md calls out. The credential tasks above keep no_log; these two report only
     # SHAPES and VERDICTS — whether the auth succeeded, whether the path exists, and which
@@ -144,7 +156,7 @@
         _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
         _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
         _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
-        _pfsense_key_present: "{{ ((_nb_secret.json.data.data | default({})).pfsense_api_key | default('')) | length > 0 }}"
+        _pfsense_key_present: "{{ (((((_pfsense_secret.json | default({})).get('data') or {}).get('data') or {}).get('api_key') or '') | length > 0) if _reserve else false }}"
       no_log: true
 
     - name: "Report the credential outcome"
@@ -167,7 +179,7 @@
     - name: "Require the pfSense API key for reservations"
       ansible.builtin.assert:
         that: _pfsense_key_present | bool
-        fail_msg: "secret/services/netbox lacks pfsense_api_key; reservation is refused."
+        fail_msg: "secret/services/discovery/pfsense lacks api_key; reservation is refused."
       when: _reserve
 
     - name: "Read the live pfSense DHCP server configuration"
@@ -175,7 +187,7 @@
         url: "{{ _pfsense_url }}/api/v2/services/dhcp_server?id={{ _pfsense_interface | urlencode }}"
         method: GET
         headers:
-          X-API-Key: "{{ _nb_secret.json.data.data.pfsense_api_key }}"
+          X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"
         status_code: [200]
       register: _pfsense_dhcp
       failed_when: false

@@ -1,0 +1,64 @@
+---
+# assert-bao-seed-access.yml — prove an OpenBao token may seed one KV-v2 path,
+# without reading a value back and without writing.
+#
+# Two facts decide, from OpenBao itself (docs/api/secret/kv/kv-v2.mdx, "Create/Update
+# secret" and "Patch secret"):
+#   - A GET cannot prove access: it answers 404 for a missing path AND for one the token
+#     cannot see. The token's own capabilities (sys/capabilities-self) are the evidence.
+#   - The capability a write needs depends on the path's state. The seeds POST to a
+#     missing path (needs `create`) and PATCH an existing one (needs `patch`). Accepting
+#     "any write capability" passed tokens whose actual seed would be denied (review of
+#     PR #205, 2026-09-23).
+# `read` is required either way: the seeds fetch first for idempotency.
+#
+# Required vars:
+#   _sa_url    OpenBao base URL (transport already asserted by the caller)
+#   _sa_token  the token to test (a no_log'd login result)
+#   _sa_path   KV-v2 path UNDER secret/data (e.g. services/agentgateway)
+
+- name: "Query the token's capabilities on secret/data/{{ _sa_path }}"
+  ansible.builtin.uri:
+    url: "{{ _sa_url }}/v1/sys/capabilities-self"
+    method: POST
+    body_format: json
+    body:
+      paths: ["secret/data/{{ _sa_path }}"]
+    headers:
+      X-Vault-Token: "{{ _sa_token }}"
+    follow_redirects: none
+  register: _sa_caps
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+# With `read` confirmed below, a 404 here means the path does not exist yet.
+- name: "Read the status only of secret/data/{{ _sa_path }}"
+  ansible.builtin.uri:
+    url: "{{ _sa_url }}/v1/secret/data/{{ _sa_path }}"
+    headers:
+      X-Vault-Token: "{{ _sa_token }}"
+    status_code: [200, 404]
+    follow_redirects: none
+  register: _sa_get
+  no_log: true
+  check_mode: false
+
+- name: "Require read plus the write this seed will actually make"
+  vars:
+    _caps: >-
+      {{ _sa_caps.json['secret/data/' ~ _sa_path]
+         | default(_sa_caps.json.capabilities | default([])) }}
+    _exists: "{{ _sa_get.status == 200 }}"
+    _write: "{{ 'patch' if _exists | bool else 'create' }}"
+  ansible.builtin.assert:
+    that:
+      - "'root' in _caps or ('read' in _caps and _write in _caps)"
+    fail_msg: >-
+      The AppRole holds {{ _caps | join(', ') or 'no capabilities' }} on
+      secret/data/{{ _sa_path }}, which {{ 'exists' if _exists | bool else 'does not exist yet' }};
+      seeding needs read plus {{ _write }}. Fix the policy through
+      apply-openbao-policies.yml, not by hand.
+    success_msg: >-
+      Capabilities on secret/data/{{ _sa_path }} ({{ 'existing' if _exists | bool else 'new' }} path):
+      {{ _caps | join(', ') }}

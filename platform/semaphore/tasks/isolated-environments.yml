@@ -1,0 +1,172 @@
+---
+# Declarative metadata only. A controller workflow separately supplies encrypted
+# authentication. Never clone a shared environment or its credential values.
+- name: "Start isolated environment resolution"
+  ansible.builtin.set_fact:
+    _isolated_specs: []
+
+- name: "Validate isolated environment declarations"
+  ansible.builtin.assert:
+    that:
+      - item.isolated_environment is string
+      - item.isolated_environment | trim | length > 0
+    fail_msg: "isolated_environment must name a nonempty dedicated environment."
+  loop: "{{ _selected_templates | selectattr('isolated_environment', 'defined') | list }}"
+  loop_control:
+    label: "{{ item._publish_name }}"
+
+- name: "Build declared isolated environment ownership"
+  ansible.builtin.set_fact:
+    _isolated_specs: >-
+      {{ _isolated_specs | default([]) +
+         [{'name': item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else ''),
+           'template': item._publish_name}] }}
+  loop: "{{ _selected_templates | selectattr('isolated_environment', 'defined') | list }}"
+  loop_control:
+    label: "{{ item._publish_name }}"
+
+- name: "Refuse shared isolated environment declarations"
+  ansible.builtin.assert:
+    that: _isolated_specs | map(attribute='name') | unique | list | length == _isolated_specs | length
+    fail_msg: "Each isolated environment must belong to exactly one template variant."
+
+- name: "Read existing environments without displaying their configuration"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment"
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+  register: _environments
+  no_log: true
+  check_mode: false
+
+- name: "Require complete single-environment ownership metadata"
+  ansible.builtin.assert:
+    that:
+      - _existing.json | selectattr('environment_id', 'defined') | list | length == _existing.json | length
+      - _existing.json | selectattr('environment_ids', 'defined') | list | length == 0
+    fail_msg: "Incomplete or multi-environment ownership metadata; refusing isolated binding changes."
+
+- name: "Refuse ambiguous or shared existing isolated environments"
+  ansible.builtin.assert:
+    that:
+      - _matches | length <= 1
+      - _other_owners | length == 0
+    fail_msg: "Declared isolated environment '{{ item.name }}' is ambiguous or used by another template."
+  vars:
+    _matches: "{{ _environments.json | selectattr('name', 'equalto', item.name) | list }}"
+    _other_owners: >-
+      {{ _existing.json | selectattr('environment_id', 'defined')
+         | selectattr('environment_id', 'in', _matches | map(attribute='id') | list)
+         | rejectattr('name', 'equalto', item.template) | list }}
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# An environment that already carries the declared name is bound as-is below, so its
+# CONTENTS must pass the same rule the provisioner applies (filter
+# seed_environment_problems): a leftover BAO_VALUE or SEED_* input, or a lone AppRole
+# half, would otherwise reach the template the moment it is bound.
+- name: "Read existing isolated environments' contents (names checked, values never shown)"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ (_environments.json | selectattr('name', 'equalto', item.name) | first).id }}"
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+  register: _isolated_contents
+  no_log: true
+  when: _environments.json | selectattr('name', 'equalto', item.name) | list | length == 1
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  check_mode: false
+
+- name: "Refuse binding a template to an isolated environment that is not clean"
+  ansible.builtin.assert:
+    that: _problems | length == 0
+    fail_msg: >-
+      Isolated environment '{{ item.name }}' is not safe to bind:
+      {{ _problems | join('; ') }}. Reconcile it before publishing.
+  vars:
+    # The loop is over the declared specs, never the registered reads: a failed loop item
+    # is printed whole (ansible-core 2.19), and a read's item carries its Authorization
+    # header - loop_control.label only shortens the summary line.
+    _content: "{{ _isolated_contents.results[_i] }}"
+    # The approved endpoint is the controller's own OpenBao, as runtime access resolves it;
+    # an environment pointing elsewhere would receive the AppRole login (review of PR #205).
+    _problems: >-
+      {{ _content.json | seed_environment_problems(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)
+                                                   | default('', true)) }}
+  when: _isolated_contents.results[_i].json is defined
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    index_var: _i
+    label: "{{ item.name }}"
+
+- name: "Read recent tasks before changing isolated bindings"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/tasks/last"
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+  register: _isolation_tasks
+  no_log: true
+  check_mode: false
+
+- name: "Refuse active work on selected seed templates"
+  ansible.builtin.assert:
+    that: _active | length == 0
+    fail_msg: "A selected isolated template has unfinished work; reserve it before publication."
+  vars:
+    _owned_ids: >-
+      {{ _existing.json | selectattr('name', 'in', _isolated_specs | map(attribute='template') | list)
+         | map(attribute='id') | list }}
+    _active: >-
+      {{ _isolation_tasks.json | selectattr('template_id', 'in', _owned_ids)
+         | rejectattr('status', 'in', ['success', 'error', 'stopped']) | list }}
+
+- name: "Create missing declared environments with no credentials"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+    body_format: json
+    body: "{{ {'project_id': _project_id | int, 'name': item.name, 'json': '{}', 'env': '{}', 'secrets': []} | to_json }}"
+    status_code: [200, 201, 204]
+  when: not ansible_check_mode and (_environments.json | selectattr('name', 'equalto', item.name) | list | length == 0)
+  changed_when: true
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Read back isolated environment identities"
+  ansible.builtin.uri:
+    url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment"
+    headers:
+      Authorization: "Bearer {{ _token }}"
+    unredirected_headers: [Authorization]
+    follow_redirects: none
+  register: _environments_after
+  no_log: true
+  check_mode: false
+
+- name: "Require unique isolated environment readback"
+  ansible.builtin.assert:
+    that: _environments_after.json | selectattr('name', 'equalto', item.name) | list | length == 1
+    fail_msg: "Isolated environment creation is unresolved; reconcile before retrying."
+  loop: "{{ _isolated_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Resolve declared environment IDs"
+  ansible.builtin.set_fact:
+    _isolated_environment_ids: >-
+      {{ dict(_environments_after.json | map(attribute='name')
+              | zip(_environments_after.json | map(attribute='id'))) }}
+  no_log: true

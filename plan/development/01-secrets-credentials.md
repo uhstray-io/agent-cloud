@@ -40,6 +40,26 @@
 | 7 | **Init/secret escrow gaps** | root token never revoked (`IMPLEMENTATION_PLAN.md:1666`); `site-config/secrets/openbao/` referenced but **absent**; no audit device (`:1670`) | Long-lived root token on VM; no audit trail; manual key backup |
 | 8 | **Storage-backend fork local↔prod** | local-dev = `file`; prod = `raft` | Local never exercises the Raft path prod runs (init/unseal/snapshot untested) |
 
+### Operator-held secrets reach OpenBao through isolated seed environments
+
+Some secrets are held by an operator, not generated: an upstream API key another
+system owns, a provider credential. They enter through a seed template that runs in
+its own Semaphore environment (`isolated_environment` in `templates.yml`), with the
+value staged as an encrypted input by `scripts/semaphore-seed-input.py` and removed
+after one task. Procedure: `platform/semaphore/README.md`, "Seed a secret through an
+isolated environment".
+
+Why: on 2026-09-23 the agentgateway upstream key was seeded by staging it in the
+environment every template shares, driven by a one-off script. It worked, and it
+left no reusable path: the next seed would have needed another script, and any task
+launched in that window could have received the value.
+
+**Open gap found on the way:** the shared environments hold the controller AppRole's
+`bao_role_id` and `bao_secret_id` as plain extra variables, which Semaphore returns
+over its API to anyone who can read the environment. Isolated seed environments
+already store their copy encrypted. Moving the shared environments to encrypted
+inputs is the follow-up; it touches every template and needs its own change.
+
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
 The production OpenBao host rebooted on 2026-09-19. The outage ran in two stages, and
@@ -311,6 +331,7 @@ flowchart LR
 |------|---------|
 | 2026-06-14 | Initial draft. A1 (persistent local file backend) landed; Tracks A/B and decision criteria authored from OpenBao docs + repo current-state assessment. |
 | 2026-09-22 | Recorded the 2026-09-19 reboot outage as the measured cost of problem 2. Its restart-policy stage is fixed; the sealed-after-restart stage stays open until B2. |
+| 2026-09-23 | Operator-held secrets move to isolated seed environments (generic provisioner and seed CLI); recorded the plaintext AppRole in shared environments as an open gap. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 

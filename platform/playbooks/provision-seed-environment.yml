@@ -1,0 +1,15 @@
+---
+- name: "Require the controller-local configuration endpoint"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Refuse a runtime token destination override"
+      ansible.builtin.assert:
+        that: (_semaphore_url | default('http://127.0.0.1:3000')) == 'http://127.0.0.1:3000'
+        fail_msg: "The seed environment provisioner requires the controller's fixed loopback API."
+
+- name: "Provision the declared isolated seed environment"
+  ansible.builtin.import_playbook: ../semaphore/provision-seed-environment.yml
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
