@@ -40,6 +40,7 @@ supersede it with a new entry and link both.
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
+| 1.14 | Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -515,6 +516,30 @@ the "other" output that would have exposed the mismatch was not what got read.
 **The rule.** When a reply decides what to tell the user, read the reply, or match it
 against a pattern proven on that exact phrasing. Report a keyword classifier's label only
 as a guess, and treat an unmatched or surprising label as a reason to read the text.
+
+**Enforced by.** Convention.
+
+### 1.14 A fact about the private inventory read from the public template
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** Writing the run-time endpoint gap for #251, I stated that the approved
+OpenBao address is "the inventory's `all.vars.openbao_addr`" and that the environment's extra
+var overrides it. I had read that from this repo's `platform/inventory/production.yml:122`,
+which is a template with placeholders. It went into a merged plan note and into the options I
+gave the user, who chose "use the inventory value" on that basis. Checked before implementing:
+the site-config inventory Semaphore runs declares `openbao_addr` under the `agent_cloud` group's
+vars (line 889), not `all.vars`, and a play on implicit `localhost` does not receive another
+group's vars (verified on 2.16.18, 2.20.8 and 2.21.0). So a seed run gets no inventory value at
+all, and the chosen option needs an inventory change first.
+
+**Root cause.** The public repo's inventory is a template of the private one, not a copy, and I
+treated its structure as the private file's. It even reads right: same variable, same value
+shape, a plausible `all.vars`.
+
+**The rule.** A claim about what production is configured with is checked in site-config (the
+file Semaphore syncs), never inferred from the public template inventory. When only the
+template was read, say so in the claim.
 
 **Enforced by.** Convention.
 

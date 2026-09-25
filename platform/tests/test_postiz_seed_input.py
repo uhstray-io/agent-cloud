@@ -29,20 +29,17 @@ def test_parser_is_literal_and_allowlisted():
             seed.parse_inputs(bad, fields)
 
 
-ENDPOINT = "https://bao.example:8200"
-
-
 def stage(api, values):
     """The shared lifecycle core, called the way postiz-seed-input.py's --apply calls it."""
     return seed.stage_and_seed(api, 1, 151, 2, values, playbook=seed.SEED_PLAYBOOK,
-                               template_names={"Seed Postiz Secrets"}, endpoint=ENDPOINT)
+                               template_names={"Seed Postiz Secrets"})
 
 
 class FakeAPI:
     def __init__(self, status="success"):
-        # A provisioned dedicated environment: the two AppRole inputs and the approved endpoint.
+        # A provisioned dedicated environment: the two AppRole inputs and no extra vars.
         self.env = {"id": 2, "project_id": 1, "name": "dedicated-seed",
-                    "json": '{"openbao_addr":"https://bao.example:8200"}', "env": "{}",
+                    "json": "{}", "env": "{}",
                     "secrets": [{"id": 3, "name": "BAO_ROLE_ID", "type": "env"},
                                 {"id": 4, "name": "BAO_SECRET_ID", "type": "env"}]}
         self.template = {"id": 151, "name": "Seed Postiz Secrets", "playbook": seed.SEED_PLAYBOOK,
@@ -168,13 +165,13 @@ def test_provider_config_survives_actual_loader(tmp_path, value, newline):
     assert {name: actual[name] for name in fields} == dict.fromkeys(fields, value or "")
 
 
-def test_a_changed_openbao_endpoint_refuses_before_any_write():
-    # Review of PR #205: the seed task logs in and writes at the environment's address, so
-    # an address changed after provisioning must stop the seed before anything is staged.
-    for configured in ('{"openbao_addr":"https://elsewhere.example:8200"}', "{}", "not json"):
+def test_an_address_pin_or_extra_var_refuses_before_any_write():
+    # The seed task takes its OpenBao address from the inventory; any extra var in the
+    # environment (an address pin included) would override it, so staging stops first.
+    for configured in ('{"openbao_addr":"https://elsewhere.example:8200"}', '{"other":1}', "not json"):
         api = FakeAPI()
         api.env["json"] = configured
-        with pytest.raises(seed.Refusal, match="endpoint"):
+        with pytest.raises(seed.Refusal, match="reconciliation"):
             stage(api, {"SEED_X_API_KEY": "synthetic-value"})
         assert not any(body for path, body in api.calls if path in ("/environment/2", "/tasks"))
 
@@ -208,7 +205,7 @@ def run_apply(monkeypatch, tmp_path, api):
     monkeypatch.setattr(seed, "API", lambda url, project, token: api)
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("synthetic-token"))
     monkeypatch.setattr("sys.argv", ["postiz-seed-input.py", "--env-file", str(env_file), "--apply",
-                                     "--inventory", "2", "--openbao-addr", ENDPOINT,
+                                     "--inventory", "2",
                                      "--url", "https://semaphore.example"])
     return seed.main()
 

@@ -102,11 +102,10 @@
     # is printed whole (ansible-core 2.19), and a read's item carries its Authorization
     # header - loop_control.label only shortens the summary line.
     _content: "{{ _isolated_contents.results[_i] }}"
-    # The approved endpoint is the controller's own OpenBao, as runtime access resolves it;
-    # an environment pointing elsewhere would receive the AppRole login (review of PR #205).
-    _problems: >-
-      {{ _content.json | seed_environment_problems(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)
-                                                   | default('', true)) }}
+    # No extra vars at all, an OpenBao address pin included: the seed run takes the address
+    # from the inventory and an environment value would override it (2026-09-25). The
+    # provisioner alone sets _isolated_legacy_pin_ok: it removes an earlier version's pin.
+    _problems: "{{ _content.json | seed_environment_problems(_isolated_legacy_pin_ok | default(false) | bool) }}"
   when: _isolated_contents.results[_i].json is defined
   loop: "{{ _isolated_specs }}"
   loop_control:

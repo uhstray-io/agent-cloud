@@ -35,7 +35,8 @@ def writes(requests):
     return [r for r in requests if r[0] in ("PATCH", "PUT") or (r[0] == "POST" and r[1].startswith("/v1/secret/"))]
 
 
-def run_access_check(tmp_path, which, capabilities, provider="", exists=False, foreign=None):
+def run_access_check(tmp_path, which, capabilities, provider="", exists=False, foreign=None,
+                     override=None, declare=True, env_addr=False, inject=None, declared_value=None):
     playbook, path, extra_vars, _, own_input = PLAYBOOKS[which]
     requests = []
 
@@ -79,8 +80,16 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False, f
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        extra = {"openbao_addr": f"http://127.0.0.1:{server.server_port}",
-                 "bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret", **extra_vars}
+        # The address comes from the inventory's all.vars, as in production; an extra var
+        # overriding it is what the seed refuses (tasks/assert-bao-addr-declared.yml).
+        inventory = tmp_path / "inventory.yml"
+        declared = {"all": {"vars": {"openbao_addr": declared_value or f"http://127.0.0.1:{server.server_port}",
+                                     # A templated declaration resolves to the synthetic store.
+                                     "openbao_host": f"127.0.0.1:{server.server_port}"}}}
+        inventory.write_text(json.dumps(declared if declare else {"all": {"hosts": {}}}))
+        extra = {"bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret", **extra_vars}
+        extra.update({"openbao_addr": override} if override else {})
+        extra.update(inject or {})
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("SEED_") and key != "BAO_VALUE"}
         # Only this template's declared input: the seed refuses any other (a leftover).
@@ -88,8 +97,10 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False, f
         env.update({foreign: "synthetic-leftover-value"} if foreign else {})
         # Stock output on purpose: stricter than production's redact_requests (MISTAKES 4.6).
         env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+        env.pop("OPENBAO_ADDR", None)
+        env.update({"OPENBAO_ADDR": f"http://127.0.0.1:{server.server_port}"} if env_addr else {})
         result = subprocess.run(
-            ["ansible-playbook", "-v", "-i", "localhost,", "-c", "local", playbook, "-e", json.dumps(extra)],
+            ["ansible-playbook", "-v", "-i", str(inventory), "-c", "local", playbook, "-e", json.dumps(extra)],
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=90,
         )
         output = result.stdout + result.stderr
@@ -149,3 +160,49 @@ def test_a_leftover_input_of_another_seed_is_refused_before_the_login(tmp_path, 
     assert code != 0, output
     assert f"does not declare: {foreign}" in output
     assert requests == []  # not even the AppRole login
+
+
+@pytest.mark.parametrize("which", sorted(PLAYBOOKS))
+def test_an_address_other_than_the_inventorys_is_refused_before_the_login(tmp_path, which):
+    # An environment edited after binding (or a -e) overrides the inventory's address.
+    code, output, requests = run_access_check(tmp_path, which, ["read", "create"],
+                                              override="http://127.0.0.1:9")
+    assert code != 0, output
+    assert "An extra var overrode it" in output
+    assert requests == []  # not even the AppRole login
+
+
+def test_an_inventory_without_the_address_is_refused_before_the_login(tmp_path):
+    # The playbooks fall back to the controller's OPENBAO_ADDR; unverifiable, so refused.
+    code, output, requests = run_access_check(tmp_path, WIRING, ["read", "create"], declare=False, env_addr=True)
+    assert code != 0, output
+    assert "declares no single all.vars.openbao_addr" in output
+    assert requests == []
+
+
+EVIL = "http://127.0.0.1:9"
+
+
+@pytest.mark.parametrize("inject", [
+    # Codex review of PR #256: forge the check's own inputs alongside the override.
+    {"openbao_addr": EVIL, "_ba_declared": [EVIL], "_ba_url": EVIL, "_ba_seen": [EVIL]},
+    {"_bao_url": EVIL},             # the login URL itself
+    {"_bm_url": EVIL},              # the merge target, set later by the playbook
+    {"_sa_url": EVIL},              # the access-check target
+], ids=["forged-check-inputs", "login-url", "merge-url", "access-url"])
+def test_injected_extra_vars_cannot_move_the_login_or_the_write(tmp_path, inject):
+    code, output, requests = run_access_check(tmp_path, "openbao-key", ["read", "create"], inject=inject)
+    assert code != 0, output
+    # The login task must never RUN: a run whose login went to the injected address also shows
+    # no request here and fails (nothing listens there), so an empty log alone proves nothing.
+    assert "TASK [Refuse an OpenBao address that is not the inventory's]" in output
+    assert "TASK [Authenticate to OpenBao (AppRole)]" not in output
+    assert requests == []
+
+
+def test_a_templated_declaration_is_refused_with_its_own_reason(tmp_path):
+    code, output, requests = run_access_check(tmp_path, WIRING, ["read", "create"],
+                                              declared_value="http://{{ openbao_host }}")
+    assert code != 0, output
+    assert "declares a templated all.vars.openbao_addr" in output
+    assert requests == []

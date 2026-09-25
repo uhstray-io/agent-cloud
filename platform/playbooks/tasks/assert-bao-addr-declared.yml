@@ -1,0 +1,65 @@
+---
+# assert-bao-addr-declared.yml — refuse, before the AppRole login, an OpenBao address that is
+# not the one the run's inventory declares under top-level all.vars.
+#
+# Why. A seed run sends its AppRole login, then the seeded value, to `_bao_url`. That comes
+# from the inventory's all.vars.openbao_addr (declared there for every host, localhost
+# included), and an extra var silently overrides it: an isolated environment edited after it
+# was bound, or a launch-time -e. The binding-time rule refuses an environment that carries
+# one, but the environment stays editable; the run is the one boundary every path passes
+# (plan 01-secrets-credentials, "the endpoint is not re-checked at run time", closed
+# 2026-09-25).
+#
+# How. The declaration is read from the inventory FILE the run was given:
+# ansible_inventory_sources is a magic variable an extra var cannot replace (checked on
+# ansible-core 2.16.18, 2.20.8, 2.21.0), and Semaphore v2.17.31 passes a static-yaml inventory
+# as -i <project tmp>/inventory_<id>.yml. It is read INLINE in each expression, never through
+# a named intermediate: extra vars outrank every variable, set_fact included, so a named
+# "declared" value could itself be supplied (Codex review of PR #256).
+#
+# Limit, stated plainly. Whoever can inject arbitrary extra vars can rename their way around
+# any run-time check that reads variables; this compares the one value the login uses and
+# refuses the two downstream URL variables being predefined, which closes address drift and
+# the obvious overrides. The boundary against a party who can edit the environment or launch
+# with arbitrary extra vars is Semaphore's edit and launch permissions plus the binding-time
+# rule, not this task.
+#
+# The caller's login URL must be `_bao_url` (both seed playbooks).
+
+- name: "Refuse an OpenBao address that is not the inventory's"
+  vars:
+    # For the message only; the assertion below reads the file inline.
+    _ba_seen: >-
+      {{ query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique | list }}
+  ansible.builtin.assert:
+    that:
+      # Exactly one literal declaration across the inventory sources.
+      - >-
+        (query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique
+         | reject('search', '[{][{]') | list | length) == 1
+      # The login address is that declaration.
+      - >-
+        _bao_url == (query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique | first)
+      # Set by the seed playbook at each include, so defined here only if injected.
+      - _bm_url is not defined
+      - _sa_url is not defined
+    fail_msg: >-
+      {{ 'The inventory this run was given declares no single all.vars.openbao_addr, so the
+      address cannot be verified; declare it there.' if _ba_seen | length != 1
+      else ('The inventory declares a templated all.vars.openbao_addr; declare a literal address
+      so the run can compare it.' if '{{' in (_ba_seen | first)
+      else ('A downstream OpenBao URL variable was supplied before its task set it (an extra
+      var); refusing.' if (_bm_url is defined or _sa_url is defined)
+      else 'This run would log in to ' ~ _bao_url ~ ', but its inventory declares '
+      ~ (_ba_seen | first) ~ '. An extra var overrode it (the seed environment or a -e); remove
+      it (Provision Seed Environment removes an environment pin).')) }}
+    quiet: true

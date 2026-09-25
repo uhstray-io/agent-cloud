@@ -28,9 +28,11 @@
 #   returned by the API). Do NOT pass -e bao_value=... under Semaphore: it
 #   persists the extra-var JSON and serves it back over its API. The extra-var
 #   form is for a LOCAL run only.
-#   -e openbao_addr=https://<bao>:8200   (AppRole creds injected by Semaphore env)
-# openbao_addr must be https, OR http only to a loopback/RFC1918 host (the
-# internal OpenBao VLAN) — the transport guard below refuses public cleartext.
+# The OpenBao address comes from the inventory's top-level all.vars.openbao_addr, never
+# from -e or the environment: the run refuses an address other than the one the inventory
+# file declares (tasks/assert-bao-addr-declared.yml). It must be https, OR http only to a
+# loopback/RFC1918 host (the internal OpenBao VLAN): the transport guard below refuses
+# public cleartext. AppRole creds are injected by the Semaphore environment.
 
 - name: "Seed a single key into an OpenBao KV-v2 secret path"
   hosts: localhost
@@ -81,6 +83,9 @@
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
+    - name: "Refuse an OpenBao address that is not the inventory's"
+      ansible.builtin.include_tasks: tasks/assert-bao-addr-declared.yml
+
     - name: "Refuse a seed input this template does not declare"
       ansible.builtin.include_tasks: tasks/assert-seed-inputs-declared.yml
       vars:

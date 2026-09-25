@@ -3,12 +3,13 @@
 
 Run without --apply for a provider-presence report. With --apply, read the existing operator
 token from stdin, find Seed Postiz Secrets and its isolated environment by name, check them
-the way every seed CLI does (template bindings, approved repository and inventory, approved
-OpenBao endpoint, a clean environment), stage encrypted inputs, run one task, then remove
-only the created inputs after a terminal result.
+the way every seed CLI does (template bindings, the approved repository and inventory, a
+clean environment), stage encrypted inputs, run one task, then remove only the created
+inputs after a terminal result. The approved inventory is also where the seed run takes its
+OpenBao address.
 
   scripts/postiz-seed-input.py --env-file providers.env --apply --inventory 2 \\
-      --openbao-addr https://bao.example:8200 --url https://semaphore.example <token-file
+      --url https://semaphore.example <token-file
 """
 
 import argparse
@@ -89,7 +90,6 @@ def main():
     parser.add_argument("--variant", default="dev", choices=["dev", "main"])
     parser.add_argument("--inventory", type=int,
                         help="the APPROVED inventory id the template must still be bound to")
-    parser.add_argument("--openbao-addr", help="the APPROVED OpenBao endpoint the seed environment must point at")
     parser.add_argument("--url")
     parser.add_argument("--project", type=int, default=1)
     args = parser.parse_args()
@@ -98,8 +98,8 @@ def main():
         providers = sorted({name.removeprefix("SEED_").split("_")[0] for name in values})
         print("Configured provider fields: " + ", ".join(providers))
         if args.apply:
-            if not all((args.url, args.inventory, args.openbao_addr)):
-                raise Refusal("Apply requires --url, --inventory and --openbao-addr")
+            if not all((args.url, args.inventory)):
+                raise Refusal("Apply requires --url and --inventory")
             decl = declaration(TEMPLATE)
             template_name, environment_name = resolve_names(decl, args.variant)
             api = API(args.url, args.project, sys.stdin.read().strip())
@@ -107,7 +107,7 @@ def main():
             bindings = {"repository_id": resolve_repository(api, repository_name(decl, args.variant)),
                         "inventory_id": args.inventory}
             stage_and_seed(api, args.project, template_id, environment_id, values, playbook=SEED_PLAYBOOK,
-                           template_names={template_name}, endpoint=args.openbao_addr, bindings=bindings,
+                           template_names={template_name}, bindings=bindings,
                            message="Seed declared Postiz provider credentials via encrypted inputs")
     except Refusal as error:
         print(str(error), file=sys.stderr)

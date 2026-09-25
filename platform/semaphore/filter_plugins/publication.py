@@ -35,19 +35,23 @@ def publication_settings(record):
 SEED_AUTH_INPUTS = ("BAO_ROLE_ID", "BAO_SECRET_ID")
 
 
-def seed_environment_problems(environment, approved_endpoint=None):
+def seed_environment_problems(environment, legacy_pin_ok=False):
     """Why a dedicated seed environment is not safe to bind a seed template to.
 
     The ONE definition of a clean isolated seed environment, shared by full publication
     (tasks/isolated-environments.yml), the provisioner (provision-seed-environment.yml) and
     the seed CLIs' preflight (scripts/semaphore_seed.py): before 2026-09-23 each had its own
     rule and they disagreed (reviews of PR #205).
-    Clean means: no plaintext env vars, extra-var JSON holding at most `openbao_addr`,
-    encrypted inputs that are exactly the two AppRole inputs or none, each once, as env
-    type, and an `openbao_addr`, when present, equal to the approved endpoint. Anything
-    else (a leftover BAO_VALUE or SEED_* value, a lone AppRole half, an address the AppRole
-    login would be sent to that nobody approved) would reach a bound template. Returns
-    names only, never values; empty means clean.
+    Clean means: no plaintext env vars, NO extra-var JSON, and encrypted inputs that are
+    exactly the two AppRole inputs or none, each once, as env type. Anything else (a
+    leftover BAO_VALUE or SEED_* value, a lone AppRole half) would reach a bound template.
+
+    No `openbao_addr` either (2026-09-25): the address comes from the inventory's
+    `all.vars`, and the seed run refuses one that differs from that declaration
+    (tasks/assert-bao-addr-declared.yml). An extra var in the environment would override
+    the inventory, so a pin is itself the problem. `legacy_pin_ok` lets the provisioner,
+    and only it, accept the pin earlier versions wrote, because it removes it.
+    Returns names only, never values; empty means clean.
     """
     problems = []
 
@@ -63,12 +67,10 @@ def seed_environment_problems(environment, approved_endpoint=None):
     if env_vars is None or env_vars:
         problems.append("plaintext env vars present")
     if extra is None or set(extra) - {"openbao_addr"}:
-        problems.append("extra-var JSON beyond openbao_addr")
-    if extra and "openbao_addr" in extra:
-        if not approved_endpoint:
-            problems.append("OpenBao endpoint set but no approved endpoint to check it against")
-        elif extra["openbao_addr"] != approved_endpoint:
-            problems.append("OpenBao endpoint differs from the approved endpoint")
+        problems.append("extra-var JSON present")
+    if extra and "openbao_addr" in extra and not legacy_pin_ok:
+        problems.append("OpenBao address pinned in the environment (it comes from the inventory); "
+                        "run Provision Seed Environment to remove the pin")
     # The single-environment GET fills metadata before returning, but v2.18.12 omits
     # an empty list from JSON. Never pass a row from the environment LIST endpoint:
     # that endpoint does not load secret metadata. Null or malformed lists still fail.
