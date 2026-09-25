@@ -191,6 +191,8 @@ class ScopedPublicationTests(unittest.TestCase):
             BAO_ADDR=self.endpoint,
             ANSIBLE_LOCAL_TEMP=self.scratch.name,
             ANSIBLE_REMOTE_TEMP=self.scratch.name,
+            # Stock output on purpose: stricter than production's redact_requests, so a play
+            # that loops over a secret-bearing result still fails here (MISTAKES 4.6).
             ANSIBLE_STDOUT_CALLBACK="default",
             ANSIBLE_NOCOLOR="1",
         )
