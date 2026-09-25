@@ -191,6 +191,7 @@
 > When testing alert-list filters, include unrelated alerts without the
 > expected labels and use strict undefined handling so local Jinja checks
 > reproduce Ansible's missing-attribute behavior.
+>
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
