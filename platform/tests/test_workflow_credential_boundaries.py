@@ -42,9 +42,13 @@ def _named(path: Path, name: str) -> dict:
 def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
     sort = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: sort the lookups")
     results = [
-        {"item": "svc-a", "status": 200, "json": {"count": 1, "results": [{"id": 7}]},
+        {"item": "svc-a", "status": 200,
+         "json": {"count": 1, "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"fw-harden": "pass"}}}]},
          "invocation": {"module_args": {"headers": {"Authorization": "Bearer nbt_secret.value"}}}},
         {"item": "svc-b", "status": 200, "json": {"count": 0, "results": []}},
+        # a record whose status field was never written reads as {}, not null
+        {"item": "svc-d", "status": 200,
+         "json": {"count": 1, "results": [{"id": 4, "custom_fields": {"ac_workflow_status": None}}]}},
         # same-named VMs in two clusters: never write the first (PR 195 Codex review)
         {"item": "svc-c", "status": 200, "json": {"count": 2, "results": [{"id": 8}, {"id": 9}]}},
     ]
@@ -62,7 +66,9 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
                          text=True, capture_output=True, check=True).stdout
     line = next(ln for ln in out.splitlines() if "FOUND " in ln)
     found = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("FOUND ", 1)[1])
-    assert found == [{"item": "svc-a", "id": 7}]
+    # the name, the id and the status NetBox already holds, which the write merges into
+    assert found == [{"item": "svc-a", "id": 7, "status": {"fw-harden": "pass"}},
+                     {"item": "svc-d", "id": 4, "status": {}}]
     assert '"AMBIGUOUS [\\"svc-c\\"]"' in out, out[-600:]
     assert "nbt_secret" not in out
 
@@ -173,3 +179,17 @@ def test_persistence_accepts_only_what_boots(tmp_path):
                         f'(label agent-cloud.one-shot=true) that exited 0: {c}' for c in "efg")]
     # the evidence keeps the policy alone
     assert policies == {k: v.split()[0] for k, v in inspected.items()}
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
+    # PR 258 Codex review: the parser merges NetBox's statuses so the report and Loki agree
+    # with the write; the collector hands it exactly {service: status} from the lookup.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "Aggregate: latest result per service and step")
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _retained }}"}, "vars": task["vars"]}
+    found = [{"item": "svc-a", "id": 7, "status": {"fw-harden": "fail"}}, {"item": "svc-d", "id": 4, "status": {}}]
+    got, _ = _run_tasks(tmp_path, [probe], {"_vm_found": found, "_outputs": {"results": []}}, "_got")
+    assert got == {"svc-a": {"fw-harden": "fail"}, "svc-d": {}}
+    write = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: write each service's workflow status")
+    fields = write["ansible.builtin.uri"]["body"]["custom_fields"]
+    assert fields["ac_workflow_status"] == "{{ _agg.status_by_service[item.item] }}"

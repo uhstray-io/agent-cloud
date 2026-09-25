@@ -254,6 +254,47 @@
           "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}"
         }
       ]
+    },
+    {
+      "title": "History incomplete",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "description": "Services whose workflow history the collector could not read in full: a template's history filled the 1000-task window, so a step missing here may be older, not absent. NetBox keeps that step's last recorded status.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "sum by (service) (count_over_time({job=\"agent-cloud-conformance\", status=\"history_incomplete\"} [16m]))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            }
+          }
+        }
+      ]
     }
   ]
 }
