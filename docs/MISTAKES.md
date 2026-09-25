@@ -74,7 +74,7 @@ supersede it with a new entry and link both.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | Convention |
-| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Test (static guard, `test_no_request_in_loop_items.py`) |
+| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
@@ -1551,6 +1551,15 @@ they are safe; three tasks in `netbox-allocate-ip.yml` and one in `create-netbox
 the same leak with the NetBox token, on their failure paths. They now loop over clean input,
 and `test_no_request_in_loop_items.py` fails on the shape on any core. It flags all four
 original sites and the pre-fix #205 task.
+
+**Root fix — 2026-09-25.** The rewrites above were per-site. ansible-core strips `invocation` only
+from the top level of a result (`plugins/callback/__init__.py`, `_dump_results`, read on 2.19 and
+2.20.8), so any nested result keeps its request. The repository `ansible.cfg` now selects
+`callback_plugins/redact_requests.py`, the default callback minus every nested `invocation`, and
+Semaphore sets no stdout callback of its own (v2.17.31 `db_lib/AnsiblePlaybook.go`). Proven on
+2.16.18 and 2.20.8: the same play prints the token under `default` and not under the repository
+callback. The guard now protects any `no_log` source and whole-register debug prints, the rule as
+stated above; it found one more loop, the Proxmox VM health check, converted the same way.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 
