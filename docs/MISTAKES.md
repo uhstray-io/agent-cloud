@@ -90,7 +90,7 @@ supersede it with a new entry and link both.
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
-| 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Existing provisioner integration test |
+| 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1930,15 +1930,21 @@ in any worktree the auto-indexer watches.
 **What happened.** The local Semaphore run of the reviewed seed-environment provisioner
 stopped at its repository identity check before changing the dedicated environment.
 The task named its repository declaration `_declared`, also the play-level name for
-template declarations. Resolving the repository name then evaluated the task-local
-value recursively instead of the play declaration.
+template declarations.
+
+**Root cause.** Ansible resolves these variables lazily. The task-local
+`_declared` depends on the repository name, while the play-level `_declared`
+selects the template used to resolve that name. The `main` variant reliably
+reproduces the cycle in the fixture; the live `dev` task also failed at this
+expression. The original fixture tests exercised only `dev` and passed, so
+they did not guard the shadowing failure.
 
 **The rule.** Give task-local values distinct names when play variables depend on
 other play variables. Test the complete playbook through the same Ansible entry
 point used by Semaphore, since a static YAML check cannot catch lazy scoping.
 
-**Enforced by.** The existing `test_provisioner_isolates_the_openbao_key_seed`
-integration test runs the provisioner against a disposable controller fixture.
+**Enforced by.** `test_provisioner_main_variant_resolves_repository_without_shadowing`
+runs the main variant against a disposable controller fixture.
 
 ## 7. Which of these OPA can carry
 
