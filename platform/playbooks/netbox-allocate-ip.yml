@@ -152,7 +152,7 @@
         _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
         _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
         _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
-        _pfsense_key_present: "{{ ((_pfsense_secret.json | default({})).get('data', {}).get('data', {}).get('api_key', '') | length > 0) if _reserve else false }}"
+        _pfsense_key_present: "{{ (((((_pfsense_secret.json | default({})).get('data') or {}).get('data') or {}).get('api_key') or '') | length > 0) if _reserve else false }}"
       no_log: true
 
     - name: "Report the credential outcome"

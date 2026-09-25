@@ -303,8 +303,11 @@
 > workflow. Private site-config must select the router API and the interface for
 > this prefix; OpenBao supplies the API key from the same discovery-owned
 > credential path used by the NetBox worker. Reconcile the private backup through
-> the Dev-bound Semaphore workflow before the DHCP test; a different live key
-> must be verified before it is replaced. Run the reviewed Dev-bound workflow
+> the Dev-bound Semaphore workflow before the DHCP test. That workflow checks
+> the private backup path before reading it and uses OpenBao version checks so
+> a different or concurrently rotated live key is never silently replaced.
+> The unused legacy NetBox key declaration is retired; the discovery-owned path
+> is authoritative. Run the reviewed Dev-bound workflow
 > first with a DHCP-assignable test candidate to capture its visible refusal in
 > Semaphore. Confirm the API response covers the interface's primary range,
 > additional pools, and static mappings. Until that live refusal gate passes,

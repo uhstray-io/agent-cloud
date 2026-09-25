@@ -64,7 +64,17 @@
             _sc_deploy_key: "{{ _site_config_ssh.json.data.data.private_key }}"
             _sc_branch_prefix: "read/pfsense-key"
 
-        - name: Read the pfSense API key backup
+        - name: Check the pfSense API key backup path
+          ansible.builtin.stat:
+            path: "{{ _sc_clone }}/netbox/secrets/pfsense_api_key.txt"
+          register: _site_config_key_stat
+
+        - name: Require the pfSense API key backup
+          ansible.builtin.assert:
+            that: _site_config_key_stat.stat.isreg | default(false)
+            fail_msg: "The private pfSense key backup is missing; no OpenBao write occurred."
+
+        - name: Load the pfSense API key backup
           ansible.builtin.slurp:
             src: "{{ _sc_clone }}/netbox/secrets/pfsense_api_key.txt"
           register: _site_config_key_file
@@ -97,8 +107,13 @@
 
         - name: Classify the current key without displaying it
           ansible.builtin.set_fact:
-            _pfsense_existing_key_present: "{{ (_pfsense_current.json | default({})).get('data', {}).get('data', {}).get('api_key', '') | length > 0 }}"
-            _pfsense_existing_key_matches: "{{ (_pfsense_current.json | default({})).get('data', {}).get('data', {}).get('api_key', '') == _pfsense_key }}"
+            _pfsense_existing_key: "{{ (((_pfsense_current.json | default({})).get('data') or {}).get('data') or {}) }}"
+          no_log: true
+
+        - name: Classify the current key value without displaying it
+          ansible.builtin.set_fact:
+            _pfsense_existing_key_present: "{{ (_pfsense_existing_key.get('api_key') | default('', true)) | length > 0 }}"
+            _pfsense_existing_key_matches: "{{ _pfsense_existing_key.get('api_key') == _pfsense_key }}"
           no_log: true
 
         - name: Preserve a different live key pending verification
@@ -114,6 +129,8 @@
             _bm_path: services/discovery/pfsense
             _bm_data: "{{ {'api_key': _pfsense_key} }}"
             _bm_on_missing: create
+            _bm_guard_key: api_key
+            _bm_guard_value: "{{ _pfsense_existing_key.get('api_key') }}"
 
       always:
         - name: Remove the private clone and deploy key
@@ -121,7 +138,6 @@
             path: "{{ _sc_wd | default(_sc_wd_result.path | default('')) }}"
             state: absent
           when: (_sc_wd | default(_sc_wd_result.path | default(''))) | length > 0
-          no_log: true
 
     - name: Report the credential outcome without its value
       ansible.builtin.debug:
