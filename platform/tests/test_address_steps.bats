@@ -11,18 +11,23 @@ setup() {
   LOOKUP="$REPO_ROOT/platform/playbooks/lookup-service-inventory.yml"
 }
 
-# judge <arp-json> <pve-json> -> prints "hits=<n> own=<bool>"
+# judge <arp-json> <pve-json> [vm-config-json] -> prints "hits=<n> own=<bool>"
+# The VM config stands in for the Proxmox read (its NIC MACs decide ownership).
 judge() {
-  python3 - "$VALIDATE" "$BATS_TEST_TMPDIR/judge.yml" "$1" "$2" <<'PY'
+  local cfg='{"data":{}}'
+  [ -z "${3:-}" ] || cfg=$3
+  python3 - "$VALIDATE" "$BATS_TEST_TMPDIR/judge.yml" "$1" "$2" "$cfg" <<'PY'
 import json, sys, yaml
 plays = yaml.safe_load(open(sys.argv[1]))
-task = [t for p in plays for t in p["tasks"] if t.get("name") == "Judge the address"][0]
+tasks = [t for p in plays for t in p["tasks"]
+         if t.get("name") in ("Judge the address", "Judge whether the ARP entry is the declared VM's own")]
 yaml.safe_dump([{
     "hosts": "localhost", "connection": "local", "gather_facts": False,
     # RFC 5737 documentation address only.
     "vars": {"_ip": "192.0.2.60", "_vmid": "260", "_name": "svc-vm",
-             "_arp": {"json": json.loads(sys.argv[3])}, "_pve_vms": {"json": json.loads(sys.argv[4])}},
-    "tasks": [task, {"ansible.builtin.debug": {"msg": "hits={{ _arp_hits | length }} own={{ _own_vm }}"}}],
+             "_arp": {"json": json.loads(sys.argv[3])}, "_pve_vms": {"json": json.loads(sys.argv[4])},
+             "_vm_config": {"json": json.loads(sys.argv[5])}},
+    "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "hits={{ _arp_hits | length }} own={{ _own_vm }}"}}],
 }], open(sys.argv[2], "w"))
 PY
   ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/judge.yml" 2>&1 | grep -oE 'hits=[0-9]+ own=(True|False)'
@@ -38,8 +43,11 @@ PY
 
 @test "validate-address: the service's own running VM owns its address (backfill is skip, not a refusal)" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  local arp='{"data":[{"ip":"192.0.2.60"}]}'
-  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=True" ]
+  local arp='{"data":[{"ip":"192.0.2.60","mac":"bc:24:11:00:00:60"}]}'
+  local ours='{"data":{"net0":"virtio=BC:24:11:00:00:60,bridge=vmbr0"}}'
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}' "$ours")" = "hits=1 own=True" ]
+  # running and ours by id and name, but the ARP MAC is another device's (PR 195 Codex review)
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}' '{"data":{"net0":"virtio=BC:24:11:99:99:99,bridge=vmbr0"}}')" = "hits=1 own=False" ]
   # a DIFFERENT VM at the vmid, or ours by name at another vmid, owns nothing
   [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"other","status":"running"}]}')" = "hits=1 own=False" ]
   [ "$(judge "$arp" '{"data":[{"vmid":261,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=False" ]
@@ -51,7 +59,7 @@ PY
 @test "validate-address: the one write is skipped under --check, and the reads run" {
   blk=$(sed -n '/name: "NetBox: create the VM record/,/_vm_record | length == 0/p' "$VALIDATE")
   assert_grep -qF 'not ansible_check_mode' <<<"$blk"
-  [ "$(grep -c 'check_mode: false' "$VALIDATE")" -eq 3 ]
+  [ "$(grep -c 'check_mode: false' "$VALIDATE")" -eq 4 ]
 }
 
 @test "lookup-inventory: read-only, and the address must be reserved or active in NetBox" {

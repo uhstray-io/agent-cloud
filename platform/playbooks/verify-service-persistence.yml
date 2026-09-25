@@ -6,7 +6,8 @@
 # identically under --check.
 #
 # Proves, for every container of the service:
-#   - it restarts on its own (restart policy `always` or `unless-stopped`)
+#   - it restarts on its own (restart policy `always` or `unless-stopped`; only `always` on
+#     rootless podman, whose boot unit starts nothing else)
 # and, on a Linux host running rootless podman:
 #   - the deploying user has systemd linger, so its containers start without a login
 #     (tasks/enable-linger.yml is what sets it)
@@ -22,7 +23,12 @@
   become: false
   tags: [verify]
   vars:
-    _restart_ok: [always, unless-stopped]
+    # podman-restart.service starts only `restart: always` containers at boot, so on rootless
+    # podman `unless-stopped` stays down after a reboot (PR 195 Codex review).
+    _rootless_podman: >-
+      {{ _engine == 'podman' and not (local_mode | default(false) | bool)
+         and not (podman_rootful | default(false) | bool) }}
+    _restart_ok: "{{ ['always'] if (_rootless_podman | bool) else ['always', 'unless-stopped'] }}"
 
   tasks:
     - name: "List the service's containers (by compose working directory)"

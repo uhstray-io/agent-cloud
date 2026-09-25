@@ -84,25 +84,22 @@ def test_local_discovery_requires_the_subnet_its_scans_render():
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-@pytest.mark.parametrize("status,own", [("running", True), ("stopped", False)])
-def test_an_arp_hit_is_the_services_own_only_while_its_vm_runs(tmp_path, status, own):
-    # PR 195 Codex review: a STOPPED VM with the declared id and name still made the ARP hit
-    # "its own", so an address another device held passed as free.
-    judge = _named(PLAYBOOKS / "validate-address-free.yml", "Judge the address")
-    harness = [{
-        "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {"_ip": "192.0.2.10", "_vmid": 101, "_name": "svc",
-                 "_arp": {"json": {"data": [{"ip": "192.0.2.10", "mac": "aa"}]}},
-                 "_pve_vms": {"json": {"data": [{"vmid": 101, "name": "svc", "status": status}]}}},
-        "tasks": [judge, {"ansible.builtin.debug": {"msg": "OWN {{ _own_vm | bool }}"}}],
-    }]
-    path = tmp_path / "judge.yml"
-    path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                         text=True, capture_output=True, check=True).stdout
-    assert f"OWN {own}" in out, out[-800:]
+@pytest.mark.parametrize("status,nic,own", [
+    ("running", "virtio=BC:24:11:00:00:0A,bridge=vmbr0", True),
+    ("stopped", "virtio=BC:24:11:00:00:0A,bridge=vmbr0", False),
+    ("running", "virtio=BC:24:11:99:99:99,bridge=vmbr0", False),
+])
+def test_an_arp_hit_is_the_services_own_only_from_its_running_vms_nic(tmp_path, status, nic, own):
+    # PR 195 Codex reviews: a STOPPED VM with the declared id and name still made the ARP hit
+    # "its own", and a running one did too when another device answered for the address.
+    path = PLAYBOOKS / "validate-address-free.yml"
+    tasks = [_named(path, "Judge the address"), _named(path, "Judge whether the ARP entry is the declared VM's own")]
+    variables = {"_ip": "192.0.2.10", "_vmid": 101, "_name": "svc",
+                 "_arp": {"json": {"data": [{"ip": "192.0.2.10", "mac": "bc:24:11:00:00:0a"}]}},
+                 "_pve_vms": {"json": {"data": [{"vmid": 101, "name": "svc", "status": status}]}},
+                 "_vm_config": {"json": {"data": {"net0": nic, "name": "svc"}}}}
+    got, out = _run_tasks(tmp_path, tasks, variables, "_own_vm | bool")
+    assert got is own, out[-800:]
 
 
 def _run_tasks(tmp_path, tasks, variables, probe):
@@ -156,3 +153,16 @@ def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expec
                  "_restart_ok": ["always", "unless-stopped"], "_deploy_dir": "/d"}
     got, _ = _run_tasks(tmp_path, tasks, variables, "_persistence_errors")
     assert any("podman-restart.service" in e for e in got) is expect_error, got
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("engine,local,ok", [
+    ("podman", False, ["always"]), ("podman", True, ["always", "unless-stopped"]),
+    ("docker", False, ["always", "unless-stopped"]),
+])
+def test_rootless_podman_persistence_accepts_only_always(tmp_path, engine, local, ok):
+    # PR 195 Codex review: podman-restart.service starts only `restart: always` containers.
+    play = yaml.safe_load((PLAYBOOKS / "verify-service-persistence.yml").read_text())[0]
+    variables = {**play["vars"], "_engine": engine, "local_mode": local}
+    got, _ = _run_tasks(tmp_path, [], variables, "_restart_ok")
+    assert got == ok

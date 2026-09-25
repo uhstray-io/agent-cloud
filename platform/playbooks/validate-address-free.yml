@@ -7,8 +7,9 @@
 #          get_arp_table() reads: /api/v2/diagnostics/arp_table, X-API-Key, credentials at
 #          secret/services/discovery/pfsense) and Proxmox's VM list
 #   judge  an address in ARP refuses the step, UNLESS the declared vmid already runs on
-#          Proxmox under the declared name: then the address is the service's own and the
-#          step is `skip` (already provisioned), never a false refusal on a backfill
+#          Proxmox under the declared name AND one of its NICs carries the ARP entry's MAC:
+#          then the address is the service's own and the step is `skip` (already
+#          provisioned), never a false refusal on a backfill
 #   write  the NetBox VM record when absent: status planned, in the Proxmox cluster the
 #          discovery worker maintains (so discovery later reconciles the same object, by
 #          name, instead of creating a second one). Token: the vm-recorder profile
@@ -102,16 +103,44 @@
     - name: "Judge the address"
       ansible.builtin.set_fact:
         _arp_hits: "{{ _arp_entries | selectattr('ip', 'defined') | selectattr('ip', 'equalto', _ip) | list }}"
-        # The ARP hit is the service's own only while that VM RUNS: a stopped VM cannot answer
-        # ARP, so another device holds the address (PR 195 Codex review).
-        _own_vm: >-
+        # The declared VM, when it RUNS: a stopped VM cannot answer ARP (PR 195 Codex review).
+        _running_vm: >-
           {{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | selectattr('name', 'equalto', _name)
-             | selectattr('status', 'defined') | selectattr('status', 'equalto', 'running') | list | length > 0 }}
+             | selectattr('status', 'defined') | selectattr('status', 'equalto', 'running') | list }}
       vars:
         # pfrest v2 wraps its answer in `data`; the ARP table has come back as a list and as a
         # dict keyed by index (the worker handled both, 1c3e6ea).
         _arp_data: "{{ _arp.json.data | default(_arp.json) }}"
         _arp_entries: "{{ (_arp_data.values() | list) if (_arp_data is mapping) else _arp_data }}"
+
+    # A running VM with the declared id and name does not prove the ARP entry is ITS: another
+    # device can answer for the address (PR 195 Codex review). Its NIC MACs, from its own config,
+    # must include the MAC the firewall saw.
+    - name: "Read the running VM's network configuration"
+      ansible.builtin.uri:
+        url: "{{ _pve.url }}/api2/json/nodes/{{ _running_vm[0].node }}/qemu/{{ _vmid }}/config"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+        validate_certs: false
+      register: _vm_config
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _arp_hits | length > 0
+        - _running_vm | length > 0
+
+    - name: "Judge whether the ARP entry is the declared VM's own"
+      ansible.builtin.set_fact:
+        _own_vm: >-
+          {{ (_running_vm | length > 0) and (_arp_hits | map(attribute='mac', default='') | map('lower')
+               | select('in', _vm_macs) | list | length > 0) }}
+      vars:
+        # Proxmox writes a NIC as net<N>: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0".
+        _vm_macs: >-
+          {{ ((_vm_config.json.data | default({})) if (_vm_config is not skipped) else {}) | dict2items
+             | selectattr('key', 'match', '^net[0-9]+$') | map(attribute='value')
+             | map('regex_search', '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | select | map('lower') | list }}
 
     # ── the record ──────────────────────────────────────────────────────────────────────
     - name: "NetBox: find the service's VM record and the Proxmox clusters"
@@ -150,7 +179,7 @@
         _address_errors: >-
           {{ ([] if (_arp_hits | length == 0) or _own_vm
               else [_ip ~ ' answers ARP (' ~ (_arp_hits | map(attribute='mac', default='?') | join(', '))
-                    ~ ') and no VM ' ~ _vmid ~ ' named ' ~ _name ~ ' runs on Proxmox: the address is in use'])
+                    ~ ') and no running VM ' ~ _vmid ~ ' named ' ~ _name ~ ' has that MAC on Proxmox: the address is in use'])
              + ([] if (_nb.results[0].json.count > 0) or (_clusters | length == 1)
                 else ['cannot place the NetBox VM record: ' ~ (_clusters | length)
                       ~ ' Proxmox clusters match (discovery maintains them; pass -e netbox_vm_cluster=<name>)']) }}
