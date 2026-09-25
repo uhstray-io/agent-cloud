@@ -197,7 +197,8 @@ dry run fails on anything the seed would refuse. It refuses a leftover input fro
 exactly one task, removes exactly the input it created, and never prints the value.
 An interrupted run leaves the encrypted input in place and names it, so it can be
 reconciled rather than silently retried. Postiz provider credentials use
-`scripts/postiz-seed-input.py`, which shares the same lifecycle code.
+`scripts/postiz-seed-input.py`, which shares the same lookup, preflight and lifecycle code
+(`scripts/semaphore_seed.py`, also the Semaphore client `scripts/semaphore-launch.py` uses).
 
 ## Publish the local observability alert destination
 

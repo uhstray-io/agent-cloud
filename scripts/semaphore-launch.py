@@ -23,13 +23,13 @@ The operator token arrives on stdin (platform/semaphore/README.md, API path).
 """
 
 import argparse
-import http.client
 import json
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The one Semaphore client and task lifecycle, shared with the seed CLIs (scripts/semaphore_seed.py).
+from semaphore_seed import API, TERMINAL, NoRedirect, Refusal, submit, wait  # noqa: E402,F401
 
 # Exact server releases whose task body was read from source and whose check-mode flag was
 # confirmed recorded (task params.dry_run). Exact, not a series: another patch release may
@@ -38,44 +38,6 @@ import urllib.request
 #   v2.18.12  source: db/Task.go AnsibleTaskParams.DryRun, Task.Params json:"params" (local-dev image)
 #   v2.19.11  source: same fields (the compose default in platform/services/semaphore)
 VERIFIED_DRY_RUN_VERSIONS = {"v2.17.31", "v2.18.12", "v2.19.11"}
-TERMINAL = {"success", "error", "stopped"}
-
-
-class Refusal(Exception):
-    """A reason to stop, with no credential in it."""
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Never follow a redirect: urllib would copy the Authorization header to the new host."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-class API:
-    def __init__(self, url, project, token):
-        parsed = urllib.parse.urlsplit(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.path not in ("", "/"):
-            raise Refusal("Semaphore URL must be a plain HTTPS origin")
-        if not token:
-            raise Refusal("An operator token is required on stdin")
-        self.base, self.project, self.token = url.rstrip("/"), project, token
-        self.open = urllib.request.build_opener(NoRedirect).open
-
-    def __call__(self, path, body=None, project_scoped=True):
-        prefix = f"/api/project/{self.project}" if project_scoped else "/api"
-        req = urllib.request.Request(self.base + prefix + path, method="GET" if body is None else "POST",
-                                     data=None if body is None else json.dumps(body).encode(),
-                                     headers={"Authorization": "Bearer " + self.token,
-                                              "Content-Type": "application/json"})
-        try:
-            with self.open(req, timeout=30) as response:
-                data = response.read()
-                return json.loads(data) if data else None
-        except urllib.error.HTTPError as error:
-            raise Refusal(f"Semaphore HTTP {error.code} on {path}; body suppressed") from None
-        except (OSError, ValueError, http.client.HTTPException):
-            raise Refusal(f"Semaphore request outcome unavailable on {path}") from None
 
 
 def parse_settings(pairs):
@@ -109,7 +71,7 @@ def require_dry_run_support(version):
                       "flag, then add the version to VERIFIED_DRY_RUN_VERSIONS")
 
 
-def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
+def launch(api, template_name, settings, dry_run, block=True, timeout=1800):
     matches = [t for t in api("/templates") if t.get("name") == template_name]
     if len(matches) != 1:
         raise Refusal(f"Expected one template named {template_name!r}")
@@ -122,18 +84,10 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
         raise Refusal(f"{template_name!r} already has a running task: {busy}")
     body = build_task(template, api.project, settings, dry_run,
                       f"{'Check-mode run' if dry_run else 'Run'} via semaphore-launch.py")
-    # The server may accept the POST and the response still be lost, so a failed submission
-    # means UNKNOWN, not "nothing started": a blind retry could run the deploy twice
-    # (review of PR #220).
-    try:
-        task = api("/tasks", body)
-    except Refusal as error:
-        raise Refusal(f"Task submission outcome uncertain ({error}). A task of {template_name!r} may be "
-                      "running: check the template's tasks in Semaphore before launching again") from None
-    task_id = (task or {}).get("id")
-    if not isinstance(task_id, int):
-        raise Refusal(f"Task submission outcome uncertain (no task id returned). A task of {template_name!r} "
-                      "may be running: check the template's tasks in Semaphore before launching again")
+    # A failed submission means UNKNOWN, not "nothing started": a blind retry could run the
+    # deploy twice (review of PR #220). submit() never retries.
+    task = submit(api, body, f"Task of {template_name!r}")
+    task_id = task["id"]
     # Printed at once: from here the task may be running, and this id is the only handle on it.
     print(f"Task {task_id} launched ({'check mode' if dry_run else 'real run'})", flush=True)
     if dry_run:
@@ -156,15 +110,9 @@ def launch(api, template_name, settings, dry_run, wait=True, timeout=1800):
             raise Refusal(f"Task {task_id}: launched, but {reason} ({stop}). Treat it as having run for "
                           f"real until task {task_id} is inspected, and update this launcher if the "
                           "server's task format changed")
-    if not wait:
+    if not block:
         return task_id, None
-    deadline = time.monotonic() + timeout
-    while task.get("status") not in TERMINAL:
-        if time.monotonic() > deadline:
-            raise Refusal(f"Task {task_id} still running after {timeout}s")
-        time.sleep(10)
-        task = api(f"/tasks/{task_id}")
-    return task_id, task["status"]
+    return task_id, wait(api, task, f"Task of {template_name!r}", timeout)["status"]
 
 
 def main():

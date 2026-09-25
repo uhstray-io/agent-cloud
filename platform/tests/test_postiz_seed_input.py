@@ -32,6 +32,12 @@ def test_parser_is_literal_and_allowlisted():
 ENDPOINT = "https://bao.example:8200"
 
 
+def stage(api, values):
+    """The shared lifecycle core, called the way postiz-seed-input.py's --apply calls it."""
+    return seed.stage_and_seed(api, 1, 151, 2, values, playbook=seed.SEED_PLAYBOOK,
+                               template_names={"Seed Postiz Secrets"}, endpoint=ENDPOINT)
+
+
 class FakeAPI:
     def __init__(self, status="success"):
         # A provisioned dedicated environment: the two AppRole inputs and the approved endpoint.
@@ -72,7 +78,7 @@ class FakeAPI:
 
 def test_seed_cleans_only_created_inputs(capsys):
     api = FakeAPI()
-    seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+    stage(api, {"SEED_X_API_KEY": "synthetic-value"})
     # Only the staged input is removed; the environment's own AppRole inputs stay.
     assert api.env["secrets"] == [{"id": 3, "name": "BAO_ROLE_ID", "type": "env"},
                                   {"id": 4, "name": "BAO_SECRET_ID", "type": "env"}]
@@ -83,7 +89,7 @@ def test_seed_cleans_only_created_inputs(capsys):
 def test_uncertain_submission_retains_inputs_and_never_retries():
     api = FakeAPI("uncertain")
     with pytest.raises(seed.Refusal, match="uncertain"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+        stage(api, {"SEED_X_API_KEY": "synthetic-value"})
     assert len([path for path, body in api.calls if path == "/tasks"]) == 1
     assert any(s["name"] == "SEED_X_API_KEY" for s in api.env["secrets"])
 
@@ -92,7 +98,7 @@ def test_collision_refuses_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 5, "name": "SEED_DISCORD_CLIENT_ID", "type": "env"})
     with pytest.raises(seed.Refusal, match="reconciliation.*leftover inputs: SEED_DISCORD_CLIENT_ID"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+        stage(api, {"SEED_X_API_KEY": "synthetic-value"})
     assert all(body is None for path, body in api.calls)
 
 
@@ -105,7 +111,7 @@ def test_shared_environment_refuses_before_any_write():
         return api(path, body)
 
     with pytest.raises(seed.Refusal, match="dedicated environment"):
-        seed.stage_and_seed(shared, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+        stage(shared, {"SEED_X_API_KEY": "synthetic-value"})
     assert all(body is None for path, body in api.calls)
 
 
@@ -113,7 +119,7 @@ def test_omitted_empty_secret_metadata_refuses_before_any_write():
     api = FakeAPI()
     del api.env["secrets"]
     with pytest.raises(seed.Refusal, match="Provision both AppRole inputs"):
-        seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+        stage(api, {"SEED_X_API_KEY": "synthetic-value"})
     assert all(body is None for path, body in api.calls)
 
 
@@ -169,5 +175,54 @@ def test_a_changed_openbao_endpoint_refuses_before_any_write():
         api = FakeAPI()
         api.env["json"] = configured
         with pytest.raises(seed.Refusal, match="endpoint"):
-            seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
+            stage(api, {"SEED_X_API_KEY": "synthetic-value"})
         assert not any(body for path, body in api.calls if path in ("/environment/2", "/tasks"))
+
+
+class NamedAPI(FakeAPI):
+    """The dev variant as --apply finds it: by name, with its repository and inventory."""
+
+    def __init__(self, repository_id=5, inventory_id=2):
+        super().__init__()
+        self.template.update(name="Seed Postiz Secrets (Dev)", repository_id=repository_id,
+                             inventory_id=inventory_id, arguments=None)
+        self.env["name"] = "Postiz seed inputs (Dev)"
+        declared = yaml.safe_load((seed.ROOT / "platform/semaphore/repositories.yml").read_text())["repositories"]
+        self.repos = [dict(r, id=5 if r["name"] == "agent-cloud dev" else 4) for r in declared]
+
+    def __call__(self, path, body=None):
+        if path == "/environment":
+            self.calls.append((path, None))
+            return [copy.deepcopy(self.env)]
+        if path == "/repositories":
+            self.calls.append((path, None))
+            return copy.deepcopy(self.repos)
+        return super().__call__(path, body)
+
+
+def run_apply(monkeypatch, tmp_path, api):
+    env_file = tmp_path / "providers.env"
+    field = next(iter(seed.provider_fields()))
+    group = [f for f in seed.provider_fields() if f.split("_")[0] == field.split("_")[0]]
+    env_file.write_text("".join(f"{f}=synthetic-{i}\n" for i, f in enumerate(group)))
+    monkeypatch.setattr(seed, "API", lambda url, project, token: api)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("synthetic-token"))
+    monkeypatch.setattr("sys.argv", ["postiz-seed-input.py", "--env-file", str(env_file), "--apply",
+                                     "--inventory", "2", "--openbao-addr", ENDPOINT,
+                                     "--url", "https://semaphore.example"])
+    return seed.main()
+
+
+def test_apply_finds_the_template_by_name_and_seeds_once(monkeypatch, tmp_path):
+    api = NamedAPI()
+    assert run_apply(monkeypatch, tmp_path, api) == 0
+    assert [p for p, b in api.calls if b is not None and p == "/tasks"] == ["/tasks"]
+
+
+@pytest.mark.parametrize("rebound", [{"repository_id": 4}, {"inventory_id": 3}])
+def test_apply_refuses_a_rebound_template_before_any_write(monkeypatch, tmp_path, capsys, rebound):
+    # The Postiz CLI used to take raw ids and pin neither (security review, 2026-09-25).
+    api = NamedAPI(**rebound)
+    assert run_apply(monkeypatch, tmp_path, api) == 1
+    assert "approved binding" in capsys.readouterr().err
+    assert not any(b for _, b in api.calls)
