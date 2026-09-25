@@ -59,6 +59,7 @@ supersede it with a new entry and link both.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -1101,6 +1102,28 @@ import and both vars. Fleet-wide, still `Convention` — the mechanical guard th
 proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
 a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
 allow-list that only shrinks.
+
+### 2.22 Fixture hid Semaphore's empty secret projection
+
+**What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
+provisioner from `dev`, then refused its newly created isolated environment as
+unreadable. Its GET response omitted `secrets`; the fixture always returned
+`secrets: []` and passed. Semaphore v2.17.31
+[loads secret metadata on GET](https://github.com/semaphoreui/semaphore/blob/v2.17.31/api/projects/environment.go#L122-L145)
+but [serializes an empty list with `omitempty`](https://github.com/semaphoreui/semaphore/blob/v2.17.31/db/Environment.go),
+so both responses describe an empty environment.
+
+**Root cause.** The shared clean-environment rule treated absence as unknown,
+and the provisioner directly read `.secrets` even after the rule. The fixture
+modeled a plausible API shape, not the controller's actual empty response.
+
+**The rule.** Mirror the pinned provider's response shape in the fixture.
+Accept the omitted field only where that version guarantees it means an empty
+loaded list; continue to refuse explicit null or malformed secret metadata.
+
+**Enforced by.** `test_the_clean_environment_rule_checks_the_endpoint` and
+`test_provisioner_isolates_the_openbao_key_seed`, whose GET fixture now omits
+empty secret lists.
 
 ## 3. Acting on live state
 

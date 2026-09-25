@@ -218,3 +218,5 @@ def test_the_clean_environment_rule_checks_the_endpoint():
     assert "OpenBao endpoint set but no approved endpoint to check it against" in rule(env)
     assert rule(dict(env, json=f'{{"openbao_addr":"{ENDPOINT}"}}'), ENDPOINT) == []
     assert rule(dict(env, json="{}")) == []
+    assert rule({"json": "{}", "env": "{}"}) == []  # upstream omits an empty secrets list
+    assert "no secrets list; contents cannot be established" in rule({"json": "{}", "env": "{}", "secrets": None})
