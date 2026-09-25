@@ -284,7 +284,7 @@ steps:
     policy: required
     criteria:
       - linger is enabled for the service user
-      - every container restarts unless stopped, or is a systemd unit
+      - every container has restart policy always (or "no" for a one-shot init container), or is a systemd unit
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
 

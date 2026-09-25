@@ -6,8 +6,8 @@
 # identically under --check.
 #
 # Proves, for every container of the service:
-#   - it restarts on its own (restart policy `always` or `unless-stopped`; only `always` on
-#     rootless podman, whose boot unit starts nothing else)
+#   - it restarts on its own: restart policy `always` (podman's boot unit starts nothing
+#     else), or "no" for a one-shot init container
 # and, on a Linux host running rootless podman:
 #   - the deploying user has systemd linger, so its containers start without a login
 #     (tasks/enable-linger.yml is what sets it)
@@ -23,12 +23,14 @@
   become: false
   tags: [verify]
   vars:
-    # podman-restart.service starts only `restart: always` containers at boot, so on rootless
-    # podman `unless-stopped` stays down after a reboot (PR 195 Codex review).
+    # The same set the compose guard enforces (test_restart_policy.bats): `always`, or "no" for
+    # a one-shot init container. podman-restart.service, rootful and rootless alike, starts
+    # only `always` containers at boot, so `unless-stopped` stays down after a reboot; Docker
+    # honours `always` too. Quoted: a bare no is YAML's false.
+    _restart_ok: [always, "no"]
     _rootless_podman: >-
       {{ _engine == 'podman' and not (local_mode | default(false) | bool)
          and not (podman_rootful | default(false) | bool) }}
-    _restart_ok: "{{ ['always'] if (_rootless_podman | bool) else ['always', 'unless-stopped'] }}"
 
   tasks:
     - name: "List the service's containers (by compose working directory)"
@@ -59,10 +61,7 @@
       changed_when: false
       failed_when: false
       check_mode: false
-      when:
-        - _engine == 'podman'
-        - not (local_mode | default(false) | bool)
-        - not (podman_rootful | default(false) | bool)
+      when: _rootless_podman | bool
 
     # Linger keeps the user's systemd running; podman's user boot unit is what starts the
     # containers after a reboot (tasks/enable-linger.yml links it into default.target.wants).
@@ -72,10 +71,7 @@
         database: passwd
         key: "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}"
       check_mode: false
-      when:
-        - _engine == 'podman'
-        - not (local_mode | default(false) | bool)
-        - not (podman_rootful | default(false) | bool)
+      when: _rootless_podman | bool
 
     - name: "Rootless podman on Linux: is podman's user boot unit enabled?"
       ansible.builtin.stat:
@@ -84,10 +80,7 @@
              }}/.config/systemd/user/default.target.wants/podman-restart.service
       register: _boot_unit
       check_mode: false
-      when:
-        - _engine == 'podman'
-        - not (local_mode | default(false) | bool)
-        - not (podman_rootful | default(false) | bool)
+      when: _rootless_podman | bool
 
     - name: "Decide the result"
       ansible.builtin.set_fact:
@@ -107,7 +100,7 @@
               if (_lsc.stdout_lines | length == 0) else [])
              + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok)
                 | map(attribute='key')
-                | map('regex_replace', '^', 'restart policy not always/unless-stopped: ') | list)
+                | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
              + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
              + (['podman-restart.service is not enabled for the deploying user: containers will not start at boot']
                 if _boot_unit_state == 'disabled' else []) }}

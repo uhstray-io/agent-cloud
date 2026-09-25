@@ -62,6 +62,7 @@ supersede it with a new entry and link both.
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
+| 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -99,6 +100,7 @@ supersede it with a new entry and link both.
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
+| 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | Test (rootful case) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -1215,6 +1217,28 @@ loaded list; continue to refuse explicit null or malformed secret metadata.
 `test_provisioner_isolates_the_openbao_key_seed`, whose GET fixture now omits
 empty secret lists.
 
+### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
+
+**What happened.** PR #195 (commit 446bac9) made an ARP hit count as a VM's own only when one
+of that VM's NIC MACs matches, read from a new Proxmox config fetch. The BATS helper
+`judge()` in `platform/tests/test_address_steps.bats` gained a third argument for that config,
+defaulting to `{"data":{}}`: no NICs. The existing cases that assert `own=False` for a
+different vmid, a different name and a stopped VM kept calling it with two arguments, so they
+got no MACs and read `own=False` whatever the vmid, name or status filters did. Removing any of
+those three filters left the suite green. A `/simplify` review during a grounding checkpoint
+found it; nothing had failed.
+
+**Root cause.** The new condition is an AND with the old ones. A negative case proves a filter
+only if every OTHER term is true for it; adding a term that is false by default for the old
+fixtures satisfies every negative case at once.
+
+**The rule.** When a change adds a conjunct to the check under test, make the fixtures' default
+satisfy it, so each negative case can fail only on the term it is about, and mutate each term
+once to watch its case go red.
+
+**Enforced by.** Convention. This instance: the helper now defaults to a matching NIC, and
+removing the vmid, name or running filter each turns the suite red (mutation-checked).
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -2217,6 +2241,28 @@ by running it before calling the fix done.
 `postgres_volume_exists` and `wait_for_completed` against a stub engine that answers only
 label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
 failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
+
+### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
+
+**What happened.** The Codex review of ef4432b on PR #195 said rootless podman's boot unit
+starts only `restart: always` containers, so `verify-service-persistence.yml` must not pass
+`unless-stopped` there. I made `_restart_ok` `[always]` for rootless podman only and kept
+`[always, unless-stopped]` for everything else, including rootful podman, which is what local
+Semaphore uses. `platform/tests/test_restart_policy.bats:4-9` already said the boot unit, "system
+unit for rootful, user unit for rootless", starts ONLY `always` containers, and the compose
+guard in the same file allows only `always` or `"no"` everywhere. The fix merged; the grounding
+checkpoint's altitude review caught it.
+
+**Root cause.** The fix was scoped to the case the finding named rather than to the mechanism
+it described, and the file that documents that mechanism in this repo was not read.
+
+**The rule.** Before scoping a fix to the environment a finding names, search the repo for the
+mechanism itself (here `podman-restart`, `restart-policy`) and apply the rule the repo already
+holds. When a guard elsewhere enforces the same property, the check must accept the same set.
+
+**Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
+on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
+`"no"` pass (mutation-checked).
 
 ## 7. Which of these OPA can carry
 

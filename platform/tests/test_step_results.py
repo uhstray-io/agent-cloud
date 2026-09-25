@@ -116,6 +116,9 @@ def test_a_passing_snapshot_is_an_input_never_the_assessment_passing():
     agg = _agg(_task(21, "success", 4, out))
     assert agg["services"] == {} and agg["failed_steps"] == {}
     assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+    # by the template's role, not the status: a snapshot's skip is not the assessment either
+    skip = _run_line({"service": "tududi", "step": "access-assess", "status": "skip"})
+    assert _agg(_task(23, "success", 4, skip))["services"] == {}
     # the same result from a template that is NOT the step's snapshot still counts
     assert _agg(_task(22, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle",
                                                      "status": "pass"})))["services"]

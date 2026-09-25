@@ -37,9 +37,10 @@ the row is known before any output is read (reviews of PR #229). Check-mode resu
 step result whose own check_mode contradicts its row is listed under `anomalies` and kept out
 of conformance, never trusted silently.
 
-A snapshot template's `pass` means its reasoning step's INPUT was captured, not that the
-assessment passed: nothing has validated a proposal against the step's criteria yet. It lands
-in `inputs`, never in conformance; a snapshot that fails is still the step's failure, since the
+A snapshot template's result means its reasoning step's INPUT was captured, not that the
+assessment passed: nothing has validated a proposal against the step's criteria yet. Routed by
+the template's role in the registry, not by status, a snapshot's pass or skip lands in `inputs`,
+never in conformance; a snapshot that fails is still the step's failure, since the
 assessment then has no input (PR 195 Codex review).
 
 An inventory group is mapped to its first host's service_name (groups + host_services, both
@@ -87,13 +88,6 @@ def _step_for(template: str, registry: list[dict], deploy_templates: frozenset =
         if step.get("executor") == PER_SERVICE and base in deploy_templates:
             return step["id"]
     return None
-
-
-def _is_snapshot(template: str, step_id: str, registry: list[dict]) -> bool:
-    """True when the template is the step's snapshot (its input), not its executor."""
-    base = VARIANT.sub("", template or "")
-    step = next((s for s in registry if s["id"] == step_id), {})
-    return base == step.get("snapshot") and base != step.get("executor")
 
 
 def select(registry: list[dict], templates: list[dict], by_group: dict,
@@ -154,12 +148,14 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
     inputs: dict[str, dict] = {}
+    snapshot_of = {s["id"]: s.get("snapshot") for s in registry}
     anomalies: list[dict] = []
     for task in sorted(tasks, key=lambda t: t["id"]):
+        template = names.get(task["template_id"], "")
         lines = ANSI.sub("", task.get("output") or "").splitlines()
         results = results_in(lines)
         if not results and task["status"] == "error":
-            step = _step_for(names.get(task["template_id"], ""), registry, deploy_templates)
+            step = _step_for(template, registry, deploy_templates)
             if step and task.get("service"):
                 results = [{
                     "service": task["service"], "step": step, "status": "fail",
@@ -180,8 +176,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
                                   "row_check_mode": check, "result_check_mode": bool(result.get("check_mode"))})
                 check = True
             bucket = validation if check else services
-            template = names.get(task["template_id"], "")
-            if result.get("status") == "pass" and _is_snapshot(template, result["step"], registry):
+            if result.get("status") != "fail" and VARIANT.sub("", template) == snapshot_of.get(result["step"]):
                 bucket = inputs
             bucket.setdefault(service, {})[result["step"]] = {
                 "status": result.get("status"),

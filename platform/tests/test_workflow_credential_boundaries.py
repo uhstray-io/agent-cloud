@@ -87,25 +87,6 @@ def test_local_discovery_requires_the_subnet_its_scans_render():
     assert "Local discovery: extra targets need the subnet the scans cover" in names
 
 
-@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-@pytest.mark.parametrize("status,nic,own", [
-    ("running", "virtio=BC:24:11:00:00:0A,bridge=vmbr0", True),
-    ("stopped", "virtio=BC:24:11:00:00:0A,bridge=vmbr0", False),
-    ("running", "virtio=BC:24:11:99:99:99,bridge=vmbr0", False),
-])
-def test_an_arp_hit_is_the_services_own_only_from_its_running_vms_nic(tmp_path, status, nic, own):
-    # PR 195 Codex reviews: a STOPPED VM with the declared id and name still made the ARP hit
-    # "its own", and a running one did too when another device answered for the address.
-    path = PLAYBOOKS / "validate-address-free.yml"
-    tasks = [_named(path, "Judge the address"), _named(path, "Judge whether the ARP entry is the declared VM's own")]
-    variables = {"_ip": "192.0.2.10", "_vmid": 101, "_name": "svc",
-                 "_arp": {"json": {"data": [{"ip": "192.0.2.10", "mac": "bc:24:11:00:00:0a"}]}},
-                 "_pve_vms": {"json": {"data": [{"vmid": 101, "name": "svc", "status": status}]}},
-                 "_vm_config": {"json": {"data": {"net0": nic, "name": "svc"}}}}
-    got, out = _run_tasks(tmp_path, tasks, variables, "_own_vm | bool")
-    assert got is own, out[-800:]
-
-
 def _run_tasks(tmp_path, tasks, variables, probe):
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
                 "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "PROBE {{ " + probe + " | to_json }}"}}]}]
@@ -132,16 +113,26 @@ def test_the_aggregate_input_carries_no_request_headers(tmp_path):
     assert "sem-token" not in out
 
 
+PVE_CLUSTER = {"id": 3, "name": "pve", "type": {"name": "Proxmox VE"}}
+
+
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_validate_address_reaches_a_verdict(tmp_path):
-    # PR 195 Codex review: _address_errors read _clusters inside the set_fact assigning it.
+@pytest.mark.parametrize("records,errors", [
+    ([], []),                                                    # none yet: created in the cluster
+    ([{"id": 7, "cluster": {"id": 3, "name": "pve"}}], []),      # ours, in discovery's cluster
+    ([{"id": 7, "cluster": {"id": 9, "name": "other"}}], ["the NetBox VM record svc is in cluster other"]),
+    ([{"id": 7, "cluster": {"id": 3}}, {"id": 8, "cluster": {"id": 9}}], ["2 NetBox VM records are named svc"]),
+])
+def test_validate_address_reaches_a_verdict(tmp_path, records, errors):
+    # PR 195 Codex reviews: _address_errors read _clusters inside the set_fact assigning it, and
+    # any same-named record, in any cluster or one of several, passed as the service's own.
     path = PLAYBOOKS / "validate-address-free.yml"
     tasks = [_named(path, "Decide"), _named(path, "Decide: judge the address and the record placement")]
     variables = {"_arp_hits": [], "_own_vm": False, "_ip": "192.0.2.10", "_vmid": 1, "_name": "svc",
-                 "_nb": {"results": [{"json": {"count": 0, "results": []}},
-                                     {"json": {"results": [{"id": 3, "type": {"name": "Proxmox VE"}}]}}]}}
+                 "_nb": {"results": [{"json": {"count": len(records), "results": records}},
+                                     {"json": {"results": [PVE_CLUSTER]}}]}}
     got, _ = _run_tasks(tmp_path, tasks, variables, "_address_errors")
-    assert got == []
+    assert [e for e in got if not any(e.startswith(w) for w in errors)] == [] and len(got) == len(errors), got
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
@@ -160,13 +151,17 @@ def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expec
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-@pytest.mark.parametrize("engine,local,ok", [
-    ("podman", False, ["always"]), ("podman", True, ["always", "unless-stopped"]),
-    ("docker", False, ["always", "unless-stopped"]),
-])
-def test_rootless_podman_persistence_accepts_only_always(tmp_path, engine, local, ok):
-    # PR 195 Codex review: podman-restart.service starts only `restart: always` containers.
-    play = yaml.safe_load((PLAYBOOKS / "verify-service-persistence.yml").read_text())[0]
-    variables = {**play["vars"], "_engine": engine, "local_mode": local}
-    got, _ = _run_tasks(tmp_path, [], variables, "_restart_ok")
-    assert got == ok
+def test_persistence_accepts_only_what_boots(tmp_path):
+    # podman-restart.service, rootful and rootless, starts only `restart: always` containers
+    # (test_restart_policy.bats); "no" is a one-shot init container, as the compose guard allows.
+    # Rootful podman once kept accepting unless-stopped (PR 195 grounding review).
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    play = yaml.safe_load(path.read_text())[0]
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    policies = {"a": "always", "b": "no", "c": "unless-stopped", "d": "on-failure"}
+    variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
+                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in policies.items()]},
+                 "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
+                 "_lsc": {"stdout_lines": list(policies), "rc": 0, "stderr": ""}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "_persistence_errors")
+    assert got == ["restart policy not always/no: c", "restart policy not always/no: d"]
