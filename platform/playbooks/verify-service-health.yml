@@ -22,6 +22,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  # Tagged so a verify-only run (--tags verify) keeps the guard (PR 203 Codex review).
+  tags: [verify]
   tasks:
     - name: "Require target_service to name a populated inventory group"
       ansible.builtin.assert:
