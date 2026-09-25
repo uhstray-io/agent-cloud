@@ -292,6 +292,12 @@ def test_a_retained_snapshot_failure_clears_when_the_snapshot_succeeds():
                                  retained={"tududi": {"access-assess": "fail", "fw-harden": "fail"}})
     assert agg["status_by_service"] == {"tududi": {"fw-harden": "fail"}}
     assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+    # a CHECK-MODE success clears nothing: no real run superseded the failure (PR 258 Codex review)
+    dry = _run_line({"service": "tududi", "step": "access-assess", "status": "pass", "check_mode": True})
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(31, "success", 4, dry, **DRY)], ["tududi"], DEPLOYS,
+                                 retained={"tududi": {"access-assess": "fail"}})
+    assert agg["status_by_service"] == {"tududi": {"access-assess": "fail"}}
+    assert agg["validation"]["tududi"]["access-assess"]["status"] == "pass" and agg["inputs"] == {}
 
 
 def test_a_full_window_marks_only_the_services_it_can_hide():

@@ -204,7 +204,10 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
                                   "row_check_mode": check, "result_check_mode": bool(result.get("check_mode"))})
                 check = True
             bucket = validation if check else services
-            if result.get("status") != "fail" and VARIANT.sub("", template) == snapshot_of.get(result["step"]):
+            # A real run only: a check-mode snapshot is validation like any dry run, and must
+            # not supersede anything a real run recorded (PR 258 Codex review).
+            is_snapshot = VARIANT.sub("", template) == snapshot_of.get(result["step"])
+            if not check and result.get("status") != "fail" and is_snapshot:
                 bucket = inputs
             bucket.setdefault(service, {})[result["step"]] = {
                 "status": result.get("status"),
