@@ -38,6 +38,7 @@ supersede it with a new entry and link both.
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
+| 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -59,6 +60,7 @@ supersede it with a new entry and link both.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -75,6 +77,7 @@ supersede it with a new entry and link both.
 | 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | Convention |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
+| 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -91,6 +94,7 @@ supersede it with a new entry and link both.
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
+| 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -441,6 +445,30 @@ timestamp pair, no duration. A "hang" claim that could lead someone to stop a li
 gets that check before it is sent.
 
 **Enforced by.** Convention.
+
+### 1.13 A single-environment API projection was mistaken for a second binding
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** The reviewed dev publisher stopped before creating the local
+OpenBao seed template. Semaphore returned both `environment_id: 1` and
+`environment_ids: [1]` for every template. The isolated-environment guard rejected
+the mere presence of `environment_ids`, although it named the same sole binding.
+
+**Root cause.** The guard assumed that a list field meant multiple environments
+without comparing its contents to the scalar field returned by this API version.
+
+**The rule.** Before changing isolated template bindings, require an integer
+environment ID. If the API also supplies a list, it must be exactly the
+one-element list containing that scalar ID. Refuse missing or divergent metadata.
+
+**Enforced by.** `platform/semaphore/tasks/isolated-environments.yml` and the
+focused single-binding/multiple-binding regression in
+`platform/semaphore/tests/test_scoped_publication.py`.
+
+**Review follow-up.** A failed Ansible loop item can print the whole template
+record, including free-form arguments. The ownership guard loops over numeric
+indexes, and the regression asserts a sentinel argument is absent from output.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1105,6 +1133,28 @@ proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose pla
 a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
 allow-list that only shrinks.
 
+### 2.22 Fixture hid Semaphore's empty secret projection
+
+**What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
+provisioner from `dev`, then refused its newly created isolated environment as
+unreadable. Its GET response omitted `secrets`; the fixture always returned
+`secrets: []` and passed. The running Semaphore v2.18.12
+[loads secret metadata on single GET](https://github.com/semaphoreui/semaphore/blob/v2.18.12/api/projects/environment.go#L131-L176)
+but [serializes an empty list with `omitempty`](https://github.com/semaphoreui/semaphore/blob/v2.18.12/db/Environment.go),
+so both responses describe an empty environment.
+
+**Root cause.** The shared clean-environment rule treated absence as unknown,
+and the provisioner directly read `.secrets` even after the rule. The fixture
+modeled a plausible API shape, not the controller's actual empty response.
+
+**The rule.** Mirror the pinned provider's response shape in the fixture.
+Accept the omitted field only where that version guarantees it means an empty
+loaded list; continue to refuse explicit null or malformed secret metadata.
+
+**Enforced by.** `test_the_clean_environment_rule_checks_the_endpoint` and
+`test_provisioner_isolates_the_openbao_key_seed`, whose GET fixture now omits
+empty secret lists.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -1537,6 +1587,28 @@ Every CI scan is scoped to the PR's own commits.
 **Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
 fix independently the same evening). The fixture rule itself is Convention.
 
+### 4.9 Private Discord destination IDs in a public test fixture
+
+**What happened.** The first PR revision copied the real guild and channel IDs
+from private site-config into a public Python test. The values are destination
+identifiers, not the bot token, but the public repo still must not publish
+private configuration. They were found during review. The PR branch was
+rewritten to use synthetic IDs; the original commit had already been pushed,
+so a remote cache or direct commit URL may still retain it.
+
+**Root cause.** The fixture was copied from the authoritative private inventory
+instead of using synthetic values. The same change also assumed a scoped
+Semaphore update would survive bootstrap, but bootstrap regenerates the whole
+inventory.
+
+**The rule.** Public tests use synthetic identifiers even when the values
+being tested are not credentials. Before pushing a fixture derived from
+site-config, inspect the staged diff for copied private values. The sync
+records a private local projection that bootstrap consumes and validates.
+
+**Enforced by.** Convention and review. This sync's test constructs synthetic
+IDs, but no general mechanical scan can identify private destination IDs.
+
 ## 5. Duplication and process
 
 ### 5.1 A security rule copied per caller
@@ -1950,6 +2022,28 @@ fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it 
 gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;
 and a broad stage picked up files I had not touched. Stage named paths, never the whole tree,
 in any worktree the auto-indexer watches.
+
+### 6.7 Task-local variable shadowing broke a lazy play expression
+
+**What happened.** The local Semaphore run of the reviewed seed-environment provisioner
+stopped at its repository identity check before changing the dedicated environment.
+The task named its repository declaration `_declared`, also the play-level name for
+template declarations.
+
+**Root cause.** Ansible resolves these variables lazily. The task-local
+`_declared` depends on the repository name, while the play-level `_declared`
+selects the template used to resolve that name. The `main` variant reliably
+reproduces the cycle in the fixture. Local Semaphore task 1702 was launched
+with `seed_variant=dev` and failed at this expression; the dev fixture tests
+passed against the old playbook, so that live/fixture difference is not yet
+explained. The original tests did not guard the reproducible main-variant cycle.
+
+**The rule.** Give task-local values distinct names when play variables depend on
+other play variables. Test the complete playbook through the same Ansible entry
+point used by Semaphore, since a static YAML check cannot catch lazy scoping.
+
+**Enforced by.** `test_provisioner_main_variant_resolves_repository_without_shadowing`
+runs the main variant against a disposable controller fixture.
 
 ## 7. Which of these OPA can carry
 

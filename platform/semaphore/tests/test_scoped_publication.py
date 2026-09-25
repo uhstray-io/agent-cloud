@@ -61,7 +61,8 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply(cls.active_tasks)
                 for row in cls.environments:
                     if self.path == f"/api/project/1/environment/{row['id']}":
-                        return self.reply(row)
+                        # v2.18.12 omits an empty `secrets` slice on single GET (omitempty).
+                        return self.reply({k: v for k, v in row.items() if k != "secrets" or v != []})
                 if self.path.endswith("/templates"):
                     # List projections need not contain the complete writable record.
                     return self.reply([{k: v for k, v in row.items() if k not in {"description", "survey_vars"}}
@@ -277,11 +278,44 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("Incomplete or multi-environment ownership metadata", output)
         self.assertEqual(self.writes, [])
+
         self.records[1]["environment_id"] = 0
         self.active_tasks.append({"template_id": 206, "status": "rejected"})
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)
         self.assertIn("unfinished work", output)
+        self.assertEqual(self.writes, [])
+
+    def test_isolated_environment_accepts_matching_list_and_refuses_multiple_bindings(self):
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "isolated_environment": "Isolated inputs"}
+        for row in self.records:
+            row["environment_ids"] = [row["environment_id"]]
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["environment_id"], self.environments[0]["id"])
+
+        self.setUp()
+        self.records[0]["environment_ids"] = [42, 500]
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
+        self.assertEqual(self.writes, [])
+
+        self.setUp()
+        self.records[0]["environment_ids"] = [43]
+        self.records[0]["arguments"] = "fixture-sensitive-arguments"
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
+        self.assertNotIn("fixture-sensitive-arguments", output)
+        self.assertEqual(self.writes, [])
+
+        self.setUp()
+        self.records[0]["environment_id"] = None
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
         self.assertEqual(self.writes, [])
 
     def test_full_publication_refuses_to_bind_an_isolated_environment_that_is_not_clean(self):
@@ -384,6 +418,14 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.records[0]["environment_id"], target["id"])
         self.assertIn("bao_verify_access_only=true", output)
 
+    def test_provisioner_main_variant_resolves_repository_without_shadowing(self):
+        self.prepare_seed_template()
+        self.records[0].update(name="Seed Postiz Secrets", repository_id=1)
+        code, output = self.run_play(provision=True, seed_variant="main")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["environment_id"], 501)
+        self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
+
     def test_provisioner_preserves_auth_when_filling_missing_endpoint(self):
         self.prepare_seed_template()
         secrets = [{"id": 700 + i, "name": name, "type": "env"}
@@ -453,6 +495,15 @@ class ScopedPublicationTests(unittest.TestCase):
                 self.assertIn("is not safe to bind", output)
                 self.assertIn(("GET", "/api/project/1/environment/501"), self.requests)
                 self.assertEqual(self.writes, [])
+
+    def test_provisioner_refuses_explicit_null_secret_metadata_before_writes(self):
+        self.prepare_seed_template()
+        self.environments.append({"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
+                                  "json": "{}", "env": "{}", "secrets": None})
+        code, output = self.run_play(provision=True)
+        self.assertNotEqual(code, 0)
+        self.assertIn("no secrets list; contents cannot be established", output)
+        self.assertEqual(self.writes, [])
 
     def test_provisioner_refuses_a_leftover_seed_value_of_any_name(self):
         # Review of PR #205: only SEED_* was refused, so an interrupted OpenBao-key seed's

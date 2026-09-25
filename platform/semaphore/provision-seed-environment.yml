@@ -80,13 +80,13 @@
       ansible.builtin.assert:
         that:
           - _live | length == 1
-          - _declared | length == 1
-          - (_live | first).git_url == (_declared | first).git_url
-          - (_live | first).git_branch == (_declared | first).git_branch
+          - _repository_declared | length == 1
+          - (_live | first).git_url == (_repository_declared | first).git_url
+          - (_live | first).git_branch == (_repository_declared | first).git_branch
         fail_msg: "The seed repository differs from its declaration."
       vars:
         _live: "{{ _repos.json | selectattr('name', 'equalto', _repo_name) | list }}"
-        _declared: >-
+        _repository_declared: >-
           {{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories
              | selectattr('name', 'equalto', _repo_name) | list }}
 
@@ -178,7 +178,7 @@
         quiet: true
         fail_msg: "Dedicated environment has conflicting configuration or inputs; reconcile without overwriting them."
       vars:
-        _auth: "{{ _target.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+        _auth: "{{ _target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
       no_log: true
 
     - name: "Prepare missing encrypted authentication inputs in memory"
@@ -188,7 +188,7 @@
                'secret': bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))},
               {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create',
                'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
-             if (_target.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
+             if (_target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
              else [] }}
         _desired_json: "{{ {'openbao_addr': _bao_url} | to_json }}"
       no_log: true
@@ -248,8 +248,8 @@
             _after.json | combine({'secrets': [], 'json': _desired_json}) ==
             _target.json | combine({'secrets': [], 'json': _desired_json})
           - (_after.json.json | from_json) == (_desired_json | from_json)
-          - _target.json.secrets | difference(_after.json.secrets) | length == 0
-          - _after.json.secrets | length == _target.json.secrets | length + _auth_operations | length
+          - _target.json.get('secrets', []) | difference(_after.json.get('secrets', [])) | length == 0
+          - _after.json.get('secrets', []) | length == _target.json.get('secrets', []) | length + _auth_operations | length
           - _auth | length == 2
           - _auth | map(attribute='name') | unique | list | length == 2
           - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
@@ -258,7 +258,7 @@
         quiet: true
         fail_msg: "Authentication metadata readback differs; binding was not changed."
       vars:
-        _auth: "{{ _after.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+        _auth: "{{ _after.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
       no_log: true
 
     - name: "Re-read the seed template before binding"
