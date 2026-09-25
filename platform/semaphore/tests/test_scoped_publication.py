@@ -417,6 +417,14 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.records[0]["environment_id"], target["id"])
         self.assertIn("bao_verify_access_only=true", output)
 
+    def test_provisioner_main_variant_resolves_repository_without_shadowing(self):
+        self.prepare_seed_template()
+        self.records[0].update(name="Seed Postiz Secrets", repository_id=1)
+        code, output = self.run_play(provision=True, seed_variant="main")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["environment_id"], 501)
+        self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
+
     def test_provisioner_preserves_auth_when_filling_missing_endpoint(self):
         self.prepare_seed_template()
         secrets = [{"id": 700 + i, "name": name, "type": "env"}

@@ -77,13 +77,13 @@
       ansible.builtin.assert:
         that:
           - _live | length == 1
-          - _declared | length == 1
-          - (_live | first).git_url == (_declared | first).git_url
-          - (_live | first).git_branch == (_declared | first).git_branch
+          - _repository_declared | length == 1
+          - (_live | first).git_url == (_repository_declared | first).git_url
+          - (_live | first).git_branch == (_repository_declared | first).git_branch
         fail_msg: "The seed repository differs from its declaration."
       vars:
         _live: "{{ _repos.json | selectattr('name', 'equalto', _repo_name) | list }}"
-        _declared: >-
+        _repository_declared: >-
           {{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories
              | selectattr('name', 'equalto', _repo_name) | list }}
 
