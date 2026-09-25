@@ -102,6 +102,19 @@
 > client header returned HTTP 200 for message history in the selected channel
 > on 2026-09-23. The Dev-bound fault drill now contains a message-receipt gate;
 > that gate has not yet run with enabled alerts, so delivery remains unverified.
+> **Local alert credential receipt, 2026-09-25:** Reviewed PRs #238, #239,
+> and #240 corrected the shared Semaphore publisher, seed-environment
+> provisioner, and the running v2.18.12 API's omitted empty-secret projection.
+> Local task 1720 provisioned the isolated OpenBao seed environment from exact
+> `dev` merge `ffc1c797e770869ee95148645be378060f9498ef`. Read-only task
+> 1721 proved the AppRole access, then task 1722 seeded the operator-supplied
+> Discord bot token into local OpenBao from the same revision. Readback found
+> the key present without displaying it, and the temporary Semaphore input
+> was removed; the isolated environment retained only the AppRole pair. The
+> approved guild and channel IDs are already in private site-config. They
+> still need scoped publication into local Semaphore's stored inventory before
+> webhook creation or the alert-delivery drill. No webhook or delivery receipt
+> is claimed by these credential tasks.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
