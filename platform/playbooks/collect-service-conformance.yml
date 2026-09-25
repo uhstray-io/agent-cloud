@@ -9,9 +9,10 @@
 #          output of only the newest finished task per (template, service). Reading per
 #          template, not the project-wide list, keeps a service visible however busy the
 #          project is (this collector alone runs 96 times a day). A template whose history
-#          fills the window is reported (`history_window_full`), and a service's recorded
-#          status is MERGED with what this run found, so a result older than the window is
-#          kept, never erased (PR 195 Codex review).
+#          fills the window is reported (`history_window_full`) and marks the services it can
+#          affect `history_incomplete`; each service's status already in NetBox is merged
+#          UNDER this run's results, so a result older than the window is kept in NetBox, the
+#          report and Loki alike, never erased (PR 195 and PR 258 Codex reviews).
 #   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
 #          result per service and step; a failed task with no result counts as `fail` with
 #          its last 20 lines. A service is named by its inventory group's service_name.
@@ -52,6 +53,7 @@
     _deploy_templates: >-
       {{ (lookup('file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json)
          .catalog['service-agent'].service_deploy_templates }}
+    _inventory_services: "{{ (_host_services | default({})).values() | unique | sort }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
 
   tasks:
@@ -122,39 +124,6 @@
       check_mode: false
       no_log: true
 
-    - name: "Aggregate: latest result per service and step"
-      ansible.builtin.command:
-        argv: [python3, "{{ _parser }}"]
-        stdin: >-
-          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
-              'fetched': _fetched, 'window_full': (_pick.stdout | from_json).window_full,
-              'groups': groups, 'host_services': _host_services | default({}),
-              'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
-      register: _aggregate_run
-      changed_when: false
-      check_mode: false
-      vars:
-        # Only the picked task, the response body and its status: a registered uri result also
-        # carries the request, the Semaphore token in its headers, and a failed command prints
-        # its stdin (PR 195 Codex review).
-        _fetched: >-
-          {%- set out = [] -%}
-          {%- for r in _outputs.results | default([]) -%}
-            {%- if out.append({'item': r.item, 'content': r.content | default(''), 'status': r.status | default(0)}) -%}{%- endif -%}
-          {%- endfor -%}
-          {{ out }}
-
-    - name: "Hold the aggregate"
-      ansible.builtin.set_fact:
-        _agg: "{{ _aggregate_run.stdout | from_json }}"
-
-    - name: "Record the aggregate for the report and the dashboard"
-      ansible.builtin.set_stats:
-        data:
-          conformance: "{{ _agg | dict2items | rejectattr('key', 'equalto', 'loki_streams') | items2dict }}"
-        per_host: false
-        aggregate: false
-
     # ── NetBox ──────────────────────────────────────────────────────────────────────────
     - name: "NetBox: read the collector token"
       when: _netbox_url | length > 0
@@ -207,8 +176,9 @@
         url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?name={{ (collector_vm_names | default({}))[item] | default(item) | urlencode }}"
         headers: "{{ _nb_headers }}"
         status_code: [200]
-      # Every tracked service, including one that has not run a step yet (review of PR #229).
-      loop: "{{ _agg.tracked }}"
+      # Every inventoried service, including one that has not run a step yet (review of PR
+      # #229). From the inventory, not the aggregate, which now runs after this read.
+      loop: "{{ _inventory_services }}"
       register: _vms
       failed_when: false
       check_mode: false
@@ -234,6 +204,44 @@
       vars:
         _answered: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | list }}"
 
+    # ── the aggregate: after the NetBox read, which supplies what it retains ────────────
+    - name: "Aggregate: latest result per service and step"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
+              'fetched': _fetched, 'window_full': (_pick.stdout | from_json).window_full, 'retained': _retained,
+              'groups': groups, 'host_services': _host_services | default({}),
+              'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
+      register: _aggregate_run
+      changed_when: false
+      check_mode: false
+      vars:
+        # The status each service's NetBox VM already holds: merged UNDER this run's results, so
+        # a step whose last run is older than the history window keeps its status in NetBox, the
+        # report and Loki alike (PR 258 Codex review). Empty when NetBox is not configured.
+        _retained: "{{ _vm_found | default([]) | items2dict(key_name='item', value_name='status') }}"
+        # Only the picked task, the response body and its status: a registered uri result also
+        # carries the request, the Semaphore token in its headers, and a failed command prints
+        # its stdin (PR 195 Codex review).
+        _fetched: >-
+          {%- set out = [] -%}
+          {%- for r in _outputs.results | default([]) -%}
+            {%- if out.append({'item': r.item, 'content': r.content | default(''), 'status': r.status | default(0)}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Hold the aggregate"
+      ansible.builtin.set_fact:
+        _agg: "{{ _aggregate_run.stdout | from_json }}"
+
+    - name: "Record the aggregate for the report and the dashboard"
+      ansible.builtin.set_stats:
+        data:
+          conformance: "{{ _agg | dict2items | rejectattr('key', 'equalto', 'loki_streams') | items2dict }}"
+        per_host: false
+        aggregate: false
+
     - name: "NetBox: write each service's workflow status"
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.id }}/"
@@ -242,17 +250,14 @@
         body_format: json
         body:
           custom_fields:
-            ac_workflow_status: "{{ _merged_status }}"
-            ac_failed_steps: "{{ _merged_status | dict2items | selectattr('value', 'equalto', 'fail') | map(attribute='key') | sort | join(',') }}"
+            # Already merged with what the VM held (the parser's `retained`).
+            ac_workflow_status: "{{ _agg.status_by_service[item.item] }}"
+            ac_failed_steps: "{{ _agg.failed_steps[item.item] | join(',') }}"
             ac_last_run: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
         status_code: [200]
       loop: "{{ _vm_found }}"
       loop_control:
         label: "{{ item.item }}"
-      vars:
-        # What NetBox holds, updated by what this run found: a step whose last run fell out
-        # of the history window keeps its recorded status (PR 195 Codex review).
-        _merged_status: "{{ item.status | combine(_agg.status_by_service[item.item]) }}"
       register: _nb_writes
       changed_when: true
       failed_when: false

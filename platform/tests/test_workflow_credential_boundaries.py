@@ -182,17 +182,14 @@ def test_persistence_accepts_only_what_boots(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_the_write_keeps_a_status_older_than_the_history_window(tmp_path):
-    # PR 195 Codex review: a step whose last run fell out of the read window vanished from the
-    # aggregate, and the PATCH replaced the stored status, erasing it.
-    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: write each service's workflow status")
-    body = task["ansible.builtin.uri"]["body"]["custom_fields"]
-    probe = {"ansible.builtin.set_fact": {"_got": {"status": body["ac_workflow_status"],
-                                                   "failed": body["ac_failed_steps"]}},
-             "vars": task["vars"]}
-    variables = {"item": {"item": "svc", "id": 7, "status": {"fw-harden": "fail", "vm-provision": "pass"}},
-                 "_agg": {"status_by_service": {"svc": {"vm-provision": "fail", "fw-assess": "pass"}}}}
-    got, _ = _run_tasks(tmp_path, [probe], variables, "_got")
-    # this run wins where it has a result; the older fw-harden result survives
-    assert got == {"status": {"fw-harden": "fail", "vm-provision": "fail", "fw-assess": "pass"},
-                   "failed": "fw-harden,vm-provision"}
+def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
+    # PR 258 Codex review: the parser merges NetBox's statuses so the report and Loki agree
+    # with the write; the collector hands it exactly {service: status} from the lookup.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "Aggregate: latest result per service and step")
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _retained }}"}, "vars": task["vars"]}
+    found = [{"item": "svc-a", "id": 7, "status": {"fw-harden": "fail"}}, {"item": "svc-d", "id": 4, "status": {}}]
+    got, _ = _run_tasks(tmp_path, [probe], {"_vm_found": found, "_outputs": {"results": []}}, "_got")
+    assert got == {"svc-a": {"fw-harden": "fail"}, "svc-d": {}}
+    write = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: write each service's workflow status")
+    fields = write["ansible.builtin.uri"]["body"]["custom_fields"]
+    assert fields["ac_workflow_status"] == "{{ _agg.status_by_service[item.item] }}"

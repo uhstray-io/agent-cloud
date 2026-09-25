@@ -25,7 +25,7 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              runs off, so its template is listed in window_full; the collector keeps a
              service's last recorded status rather than erasing what it could not read
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
-              groups?, host_services?, now_ns?, window_full?}
+              groups?, host_services?, now_ns?, window_full?, retained?}
                                                     -> {services, validation, inputs,
                                                         failed_steps, status_by_service,
                                                         report, loki_streams (only with now_ns)}
@@ -65,6 +65,7 @@ TAIL = 20
 # (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0 and
 # v2.19.11 alike. /tasks/last stops at 200.
 HISTORY_WINDOW = 1000
+RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -95,6 +96,24 @@ def _step_for(template: str, registry: list[dict], deploy_templates: frozenset =
         if step.get("executor") == PER_SERVICE and base in deploy_templates:
             return step["id"]
     return None
+
+
+def incomplete_services(window_full: list, templates: list[dict], registry: list[dict], by_group: dict,
+                        deploy_templates: frozenset = frozenset()) -> set:
+    """The services a full history window can hide runs of: a per-service deploy template's own
+    service, or every service for a template shared across them (PR 258 Codex review)."""
+    by_id = {t["id"]: t for t in templates}
+    steps = {s["id"]: s for s in registry}
+    out: set = set()
+    for tid in window_full:
+        tpl = by_id.get(tid, {})
+        step = _step_for(tpl.get("name", ""), registry, deploy_templates)
+        if step and steps[step].get("executor") == PER_SERVICE:
+            svc = _service_of({"tpl_playbook": tpl.get("playbook")}, by_group)
+            out |= {svc} if svc else set()
+        else:
+            out |= set(by_group.values())
+    return out
 
 
 def select(registry: list[dict], templates: list[dict], by_group: dict,
@@ -151,7 +170,8 @@ def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
               inventory_services: list[str] | None = None, deploy_templates: frozenset = frozenset(),
-              window_full: list | tuple = ()) -> dict:
+              window_full: list | tuple = (), retained: dict | None = None,
+              incomplete: frozenset | set = frozenset()) -> dict:
     names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
@@ -194,6 +214,16 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
                 "error": result.get("error") or None,
                 "evidence": result.get("evidence", {}),
             }
+    # What NetBox already holds, merged UNDER this run's results: a step whose last run is
+    # older than the history window keeps its status here, so NetBox, the report and Loki all
+    # agree (PR 258 Codex review). Only real-run statuses are ever written, so they are real.
+    for service, steps in (retained or {}).items():
+        for step, state in (steps or {}).items():
+            if step not in services.get(service, {}) and state in ("pass", "fail", "skip"):
+                services.setdefault(service, {})[step] = {
+                    "status": state, "task_id": None, "end": None, "check_mode": False,
+                    "error": RETAINED_ERROR if state == "fail" else None, "evidence": {}, "retained": True,
+                }
     # Every inventoried service is tracked, run or not, so the report, the NetBox fields and
     # the dashboard all show a service before its first step (review of PR #229).
     tracked = sorted(set(services) | set(inventory_services or []))
@@ -204,6 +234,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     status = {s: {step: r["status"] for step, r in services.get(s, {}).items()} for s in tracked}
     agg = {"services": services, "tracked": tracked, "validation": validation, "inputs": inputs,
            "anomalies": anomalies, "history_window_full": sorted(window_full),
+           "history_incomplete": sorted(set(incomplete) & set(tracked)),
            "failed_steps": failed, "status_by_service": status}
     agg["report"] = report(agg, registry, inventory_services or [])
     return agg
@@ -216,10 +247,9 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
 
     Every inventoried service gets a row, including one with no workflow history yet
     (`no_history: true`), so a service that has never run a step is visible rather than
-    absent (review of PR #195). When a template's history filled the read window, older runs
-    were not read: every row says `history_incomplete: true` and none claims `no_history`,
-    since the collector keeps NetBox's recorded status for what it could not see (PR 195
-    Codex review)."""
+    absent (review of PR #195). A service a full history window can affect is marked
+    `history_incomplete` and never claims `no_history`: its older runs were not read, and
+    what NetBox held for them is carried in as `retained` (PR 195 and PR 258 Codex reviews)."""
     steps = {s["id"]: s for s in registry}
     unreviewed = [s["id"] for s in registry if not s.get("reviewed")]
     out = {}
@@ -231,7 +261,7 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
              "undo": steps.get(step, {}).get("undo") or "none"}
             for step in agg["failed_steps"].get(service, [])
         ]
-        incomplete = bool(agg.get("history_window_full"))
+        incomplete = service in agg.get("history_incomplete", [])
         out[service] = {"failed": failed, "unreviewed": unreviewed,
                         "no_history": not results and not incomplete, "history_incomplete": incomplete}
     return out
@@ -239,19 +269,24 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
 
 def loki_streams(agg: dict, now_ns: int) -> list[dict]:
     """One Loki stream per (service, step), labelled so the dashboard can filter on them, and
-    one `no_history` stream for a tracked service that has not run a step yet. When a template's
-    history filled the read window, every tracked service gets a `history_incomplete` stream
-    instead: its missing steps may be older than the window, not absent."""
-    incomplete = bool(agg.get("history_window_full"))
-    marker = "history_incomplete" if incomplete else "no_history"
-    streams = [{"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
-                           "status": marker},
-                "values": [[str(now_ns), json.dumps({marker: True})]]}
-               for service in agg.get("tracked", []) if incomplete or service not in agg["services"]]
+    one `no_history` stream for a tracked service that has not run a step yet. A service a full
+    history window can affect gets a `history_incomplete` stream instead: its missing steps may
+    be older than the window, not absent. A retained status streams like any other, flagged."""
+    incomplete = set(agg.get("history_incomplete", []))
+    streams = []
+    for service in agg.get("tracked", []):
+        marker = "history_incomplete" if service in incomplete else (
+            "no_history" if service not in agg["services"] else None)
+        if marker:
+            streams.append({"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
+                                       "status": marker},
+                            "values": [[str(now_ns), json.dumps({marker: True})]]})
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
-            line = json.dumps({"task_id": result["task_id"], "error": result["error"],
-                               "check_mode": result["check_mode"]}, sort_keys=True)
+            payload = {"task_id": result["task_id"], "error": result["error"], "check_mode": result["check_mode"]}
+            if result.get("retained"):
+                payload["retained"] = True
+            line = json.dumps(payload, sort_keys=True)
             streams.append({
                 "stream": {"job": "agent-cloud-conformance", "service": service, "step": step,
                            "status": str(result["status"])},
@@ -273,8 +308,10 @@ def main() -> int:
                                       if len(h) >= HISTORY_WINDOW})}
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
+        full = data.get("window_full", [])
         out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys,
-                        data.get("window_full", []))
+                        full, data.get("retained") or {},
+                        incomplete_services(full, data["templates"], data["registry"], by_group, deploys))
         if data.get("now_ns"):
             out["loki_streams"] = loki_streams(out, int(data["now_ns"]))
     else:

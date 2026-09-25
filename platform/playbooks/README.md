@@ -222,7 +222,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `snapshot-access.yml` | The one input to the role and access assessment: Authentik app-catalog entries, blueprints and OpenBao policy files for the service |
 | `verify-service-persistence.yml` | Step systemd-enablement: every container restarts `always`/`unless-stopped`, and rootless podman has linger. Fails on an empty container selection |
 | `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields to their declaration through the Django shell. Writes, and refuses to retype a field |
-| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported) → newest result per service and step → NetBox custom fields (scoped view/change-VM token), merged into the stored status so an older result is kept, and Loki. Scheduled every 15 minutes. Its dry run is the read-only failure report |
+| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported, and marks the services it can hide) → newest result per service and step, with the status NetBox already holds merged underneath so an older result is kept everywhere → NetBox custom fields (scoped view/change-VM token) and Loki. Scheduled every 15 minutes. Its dry run is the read-only failure report |
 
 ### Infrastructure
 | Playbook | Purpose |

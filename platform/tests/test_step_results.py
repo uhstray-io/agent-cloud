@@ -284,35 +284,52 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
                                    "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
 
 
-def test_a_full_history_window_is_incomplete_history_never_no_history():
-    # PR 195 Codex review: NetBox keeps a status older than the read window, so the report
-    # and the dashboard must not say "no history" for it, nor go silent on a service that has
-    # other results; every tracked service is marked history_incomplete instead.
-    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "success", 1, out)], ["step-ca", "tududi"],
-                                 DEPLOYS, window_full=[4])
-    assert agg["history_window_full"] == [4]
-    assert agg["report"]["step-ca"]["no_history"] is False and agg["report"]["step-ca"]["history_incomplete"] is True
-    assert agg["report"]["tududi"]["history_incomplete"] is True
+def test_a_full_window_marks_only_the_services_it_can_hide():
+    # PR 258 Codex review: one full window marked every service incomplete and hid a new,
+    # unrelated service from "Services not yet run". A per-service deploy template can hide
+    # only its own service's runs; a shared template (Snapshot Access) any service's.
+    groups = {"tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+    assert step_results.incomplete_services([3], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"tududi"}
+    assert step_results.incomplete_services([4], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"tududi", "step-ca"}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "tududi"], DEPLOYS,
+                                 window_full=[3], incomplete={"tududi"})
+    assert agg["history_window_full"] == [3] and agg["history_incomplete"] == ["tududi"]
+    assert agg["report"]["tududi"]["no_history"] is False and agg["report"]["tududi"]["history_incomplete"] is True
+    row = agg["report"]["step-ca"]
+    assert row["no_history"] is True and row["history_incomplete"] is False
     markers = {(st["stream"]["service"], st["stream"]["status"]) for st in step_results.loki_streams(agg, 1)
                if st["stream"]["step"] == "none"}
-    assert markers == {("step-ca", "history_incomplete"), ("tududi", "history_incomplete")}
-    # an unfilled window keeps the plain no_history marker, for the service with no run only
-    plain = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "success", 1, out)], ["step-ca", "tududi"], DEPLOYS)
-    row = plain["report"]["step-ca"]
-    assert row["no_history"] is True and row["history_incomplete"] is False
-    assert {(st["stream"]["service"], st["stream"]["status"]) for st in step_results.loki_streams(plain, 1)
-            if st["stream"]["step"] == "none"} == {("step-ca", "no_history")}
+    assert markers == {("tududi", "history_incomplete"), ("step-ca", "no_history")}
+
+
+def test_a_status_older_than_the_window_is_reported_and_streamed_not_only_kept():
+    # PR 258 Codex review: NetBox kept a failure whose run fell out of the window, but the
+    # report and Loki dropped it. The retained status is merged UNDER this run's results.
+    out = _run_line({"service": "tududi", "step": "vm-provision", "status": "fail", "error": "new"})
+    retained = {"tududi": {"fw-harden": "fail", "vm-provision": "pass", "fw-assess": "bogus"}}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "error", 1, out)], ["tududi"], DEPLOYS,
+                                 retained=retained)
+    # this run wins where it has a result; the older failure survives; an unknown value is dropped
+    assert agg["status_by_service"] == {"tududi": {"vm-provision": "fail", "fw-harden": "fail"}}
+    assert agg["failed_steps"] == {"tududi": ["fw-harden", "vm-provision"]}
+    failed = {f["step"]: f for f in agg["report"]["tududi"]["failed"]}
+    assert failed["fw-harden"]["error"] == step_results.RETAINED_ERROR and failed["fw-harden"]["task_id"] is None
+    kept = [st for st in step_results.loki_streams(agg, 1) if st["stream"]["step"] == "fw-harden"]
+    assert kept[0]["stream"]["status"] == "fail" and json.loads(kept[0]["values"][0][1])["retained"] is True
+    assert agg["report"]["tududi"]["no_history"] is False
 
 
 def test_the_collector_passes_the_window_to_the_aggregate():
     text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
     assert "'window_full': (_pick.stdout | from_json).window_full" in text
+    assert "'retained': _retained" in text
+    # the aggregate runs after the NetBox read that supplies what it retains
+    assert text.index('name: "NetBox: sort the lookups"') < text.index('name: "Aggregate: latest result')
 
 
 def test_the_collector_writes_every_tracked_service():
     text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
-    assert 'loop: "{{ _agg.tracked }}"' in text
+    assert 'loop: "{{ _inventory_services }}"' in text
     assert "_agg.loki_streams | length > 0" in text
     assert "_agg.services.keys()" not in text
 
