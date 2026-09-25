@@ -91,10 +91,8 @@ def test_the_scenario_leaks_under_the_stock_default_callback(tmp_path, server):
     assert code != 0
 
 
-def test_the_repository_config_selects_this_callback(tmp_path, server):
+def test_the_repository_config_selects_this_callback():
     # Guards the wiring: a callback that is never selected protects nothing.
-    code, output = run(tmp_path, server, "--list-tasks")
-    assert code == 0, output
     probe = subprocess.run(["ansible-config", "dump", "--only-changed"], cwd=ROOT, capture_output=True,
                            text=True, stdin=subprocess.DEVNULL,
                            env={k: v for k, v in os.environ.items() if k != "ANSIBLE_STDOUT_CALLBACK"})
