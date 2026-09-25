@@ -37,7 +37,7 @@ supersede it with a new entry and link both.
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
-| 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
+| 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
@@ -426,7 +426,7 @@ six cases red. The citation rule itself is `Convention`.
 
 ### 1.12 A hang reported from a timer that was not measuring the task
 
-**Occurrences: 1** — 2026-09-24
+**Occurrences: 2** — 2026-09-24, 2026-09-25
 
 **What happened.** Semaphore task 1215 (Deploy agentgateway (Dev)) was running while a
 background check-in fired. I told the deploy session the task had been running "30+
@@ -445,6 +445,14 @@ timestamp pair, no duration. A "hang" claim that could lead someone to stop a li
 gets that check before it is sent.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** Told the user a `git push` "started about 30 minutes ago"
+and had not finished. The process table (`ps -o etime`) showed 2 min 34 s: the push had
+begun only when an earlier batch of tool calls finished, and I dated it from when I issued
+the command. Caught by checking the process before acting on it; the correction went out in
+the next message. Why the rule did not fire: it was worded around remote tasks and a
+harness timer; this was a local process dated from my own action log. The rule already
+covers it (two timestamps from the thing measured); it was not recalled.
 
 ### 1.13 A single-environment API projection was mistaken for a second binding
 
