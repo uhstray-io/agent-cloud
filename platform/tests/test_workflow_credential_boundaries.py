@@ -103,3 +103,56 @@ def test_an_arp_hit_is_the_services_own_only_while_its_vm_runs(tmp_path, status,
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
                          text=True, capture_output=True, check=True).stdout
     assert f"OWN {own}" in out, out[-800:]
+
+
+def _run_tasks(tmp_path, tasks, variables, probe):
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
+                "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "PROBE {{ " + probe + " | to_json }}"}}]}]
+    path = tmp_path / "h.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                         text=True, capture_output=True, check=True).stdout
+    line = next(ln for ln in out.splitlines() if "PROBE " in ln)
+    return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PROBE ", 1)[1]), out
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_aggregate_input_carries_no_request_headers(tmp_path):
+    # PR 195 Codex review: the aggregate command's stdin held whole registered uri results,
+    # the Semaphore token among their request headers, and a failed command prints its stdin.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "Aggregate: latest result per service and step")
+    outputs = {"results": [{"item": {"id": 5}, "content": "RUN: {}", "status": 200,
+                            "invocation": {"module_args": {"headers": {"Authorization": "Bearer sem-token"}}}}]}
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _fetched }}"}, "vars": task["vars"]}
+    got, out = _run_tasks(tmp_path, [probe], {"_outputs": outputs}, "_got")
+    assert got == [{"item": {"id": 5}, "content": "RUN: {}", "status": 200}]
+    assert "sem-token" not in out
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_validate_address_reaches_a_verdict(tmp_path):
+    # PR 195 Codex review: _address_errors read _clusters inside the set_fact assigning it.
+    path = PLAYBOOKS / "validate-address-free.yml"
+    tasks = [_named(path, "Decide"), _named(path, "Decide: judge the address and the record placement")]
+    variables = {"_arp_hits": [], "_own_vm": False, "_ip": "192.0.2.10", "_vmid": 1, "_name": "svc",
+                 "_nb": {"results": [{"json": {"count": 0, "results": []}},
+                                     {"json": {"results": [{"id": 3, "type": {"name": "Proxmox VE"}}]}}]}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "_address_errors")
+    assert got == []
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("enabled,expect_error", [(True, False), (False, True)])
+def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expect_error):
+    # PR 195 Codex review: linger without podman-restart.service passed, and the containers stay
+    # down after a reboot.
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    variables = {"_policies": {"results": [{"item": "c1", "stdout": "always"}]},
+                 "_linger": {"stdout": "Linger=yes"}, "_boot_unit": {"stat": {"exists": enabled}},
+                 "_lsc": {"stdout_lines": ["c1"], "rc": 0, "stderr": ""},
+                 "_restart_ok": ["always", "unless-stopped"], "_deploy_dir": "/d"}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "_persistence_errors")
+    assert any("podman-restart.service" in e for e in got) is expect_error, got

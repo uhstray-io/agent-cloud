@@ -285,7 +285,7 @@ steps:
     criteria:
       - linger is enabled for the service user
       - every container restarts unless stopped, or is a systemd unit
-    evidence_keys: [linger, restart_policies]
+    evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
 
   - id: access-assess

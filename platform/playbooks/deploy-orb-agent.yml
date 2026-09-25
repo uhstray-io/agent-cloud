@@ -23,6 +23,21 @@
       ansible.builtin.include_tasks: tasks/assert-local-discovery-scope.yml
       when: local_mode | default(false) | bool
 
+    # Disabling discovery converges to NO agent: one left from an earlier run with targets would
+    # keep scanning with its old configuration while this run reports discovery disabled
+    # (PR 195 Codex review). Local-only: production never takes this path.
+    - name: "Local-dev, discovery disabled: remove a previously started orb agent"
+      ansible.builtin.shell: |
+        if {{ container_engine | default('podman') }} container inspect netbox-orb-agent >/dev/null 2>&1; then
+          {{ container_engine | default('podman') }} rm -f netbox-orb-agent >/dev/null && echo removed
+        fi
+      register: _orb_removed
+      changed_when: "'removed' in _orb_removed.stdout"
+      when:
+        - not ansible_check_mode
+        - local_mode | default(false) | bool
+        - not (_local_discovery_enabled | default(false) | bool)
+
     - name: "Local-dev: stop here when no local discovery target is declared"
       ansible.builtin.meta: end_host
       when:

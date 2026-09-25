@@ -46,8 +46,11 @@ setup() {
   scope=$(grep -nF 'tasks/assert-local-discovery-scope.yml' "$pb" | head -1 | cut -d: -f1)
   creds=$(grep -nF 'tasks/manage-diode-credentials.yml' "$pb" | head -1 | cut -d: -f1)
   [ -n "$scope" ] && [ "$scope" -lt "$creds" ]
-  # both plays stop when local discovery is disabled
-  [ "$(grep -cF "not (_local_discovery_enabled | default(false) | bool)" "$pb")" -eq 2 ]
+  # both plays stop when local discovery is disabled, and the first removes an agent a previous
+  # run started before it stops (PR 195 Codex review): three uses of the condition
+  [ "$(grep -cF "not (_local_discovery_enabled | default(false) | bool)" "$pb")" -eq 3 ]
+  assert_precedes "$pb" 'remove a previously started orb agent' 'stop here when no local discovery target is declared'
+  assert_grep -qF 'rm -f netbox-orb-agent' "$pb"
   refute_grep -qE 'ansible\.builtin\.git:' "$pb"
 }
 

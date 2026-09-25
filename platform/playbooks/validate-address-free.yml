@@ -142,6 +142,11 @@
         _vm_record: "{{ _nb.results[0].json.results | first | default({}) }}"
         # The type the Proxmox discovery worker creates (CLUSTER_TYPE = "Proxmox VE").
         _clusters: "{{ _nb.results[1].json.results | selectattr('type.name', 'equalto', 'Proxmox VE') | list }}"
+
+    # A second task: a set_fact cannot read a fact it is assigning in the same call, and the
+    # judgement below needs _clusters (PR 195 Codex review).
+    - name: "Decide: judge the address and the record placement"
+      ansible.builtin.set_fact:
         _address_errors: >-
           {{ ([] if (_arp_hits | length == 0) or _own_vm
               else [_ip ~ ' answers ARP (' ~ (_arp_hits | map(attribute='mac', default='?') | join(', '))
