@@ -1935,9 +1935,10 @@ template declarations.
 **Root cause.** Ansible resolves these variables lazily. The task-local
 `_declared` depends on the repository name, while the play-level `_declared`
 selects the template used to resolve that name. The `main` variant reliably
-reproduces the cycle in the fixture; the live `dev` task also failed at this
-expression. The original fixture tests exercised only `dev` and passed, so
-they did not guard the shadowing failure.
+reproduces the cycle in the fixture. Local Semaphore task 1702 was launched
+with `seed_variant=dev` and failed at this expression; the dev fixture tests
+passed against the old playbook, so that live/fixture difference is not yet
+explained. The original tests did not guard the reproducible main-variant cycle.
 
 **The rule.** Give task-local values distinct names when play variables depend on
 other play variables. Test the complete playbook through the same Ansible entry
