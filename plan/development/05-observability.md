@@ -156,8 +156,12 @@
 > Grafana `alerting/` directory. The normal deploy creates that directory,
 > but the OpenBao-free restore initially did not. No canary was started and
 > no alert delivery was claimed. The restore task now creates the directory
-> idempotently before templating, so the same reviewed recovery path can be
-> run again without an operator-side directory repair.
+> idempotently before templating. The deployment `.gitignore` keeps rendered
+> alert files out of Git; the shared `place-monorepo.yml` now explicitly
+> preserves them during `rsync --delete`, including when another local
+> service deploy places the repository. The explicit rule was required after
+> the workstation's rsync deleted files despite the ignore merge filter.
+> Recovery needs no operator-side directory repair.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

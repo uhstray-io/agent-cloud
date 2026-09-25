@@ -281,6 +281,7 @@ PY
     "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-restore-alert-baseline.yml" \
     "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import posixpath
 import sys
 import yaml
 
@@ -304,6 +305,8 @@ directory = next(i for i, task in enumerate(restore) if task['name'] == 'Recreat
 rules = next(i for i, task in enumerate(restore) if task['name'] == 'Render paused Grafana alert rules without OpenBao')
 assert directory < rules
 assert restore[directory]['ansible.builtin.file']['state'] == 'directory'
+assert all(directory < i and posixpath.dirname(task['ansible.builtin.template']['dest']) == restore[directory]['ansible.builtin.file']['path']
+           for i, task in enumerate(restore) if 'ansible.builtin.template' in task)
 assert any(task['name'] == 'Remove the canary webhook from the existing runtime environment' for task in restore)
 assert any(task.get('vars', {}).get('o11y_alerts_enabled') is False for task in restore)
 assert any(task['name'] == 'Require the service-down rule to be paused again' for task in restore)
@@ -313,6 +316,9 @@ for name in ('Drill o11y Alert Canary (Dev)', 'Restore o11y Alert Baseline (Dev)
     assert templates[name]['repository'] == 'agent-cloud dev'
     assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
 PY
+  grep -qxF 'config/grafana/provisioning/alerting/*.yml' "$DEPLOY_DIR/.gitignore"
+  grep -qF -- '--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/' \
+    "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
 }
 
 @test "o11y: retention defaults reach Prometheus and Loki" {
