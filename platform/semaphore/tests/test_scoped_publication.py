@@ -277,6 +277,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("Incomplete or multi-environment ownership metadata", output)
         self.assertEqual(self.writes, [])
+
         self.records[1]["environment_id"] = 0
         self.active_tasks.append({"template_id": 206, "status": "rejected"})
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
@@ -295,6 +296,14 @@ class ScopedPublicationTests(unittest.TestCase):
 
         self.setUp()
         self.records[0]["environment_ids"] = [42, 500]
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
+        self.assertEqual(self.writes, [])
+
+        self.setUp()
+        self.records[0]["environment_id"] = None
+        self.records[0]["environment_ids"] = [None]
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)
         self.assertIn("Incomplete or multi-environment ownership metadata", output)

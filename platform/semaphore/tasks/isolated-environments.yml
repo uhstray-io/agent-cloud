@@ -46,6 +46,7 @@
   ansible.builtin.assert:
     that:
       - item.environment_id is defined
+      - item.environment_id | type_debug == 'int'
       - item.environment_ids is not defined or item.environment_ids == [item.environment_id]
     fail_msg: "Incomplete or multi-environment ownership metadata; refusing isolated binding changes."
   loop: "{{ _existing.json }}"

@@ -426,7 +426,7 @@ the mere presence of `environment_ids`, although it named the same sole binding.
 **Root cause.** The guard assumed that a list field meant multiple environments
 without comparing its contents to the scalar field returned by this API version.
 
-**The rule.** Before changing isolated template bindings, require a scalar
+**The rule.** Before changing isolated template bindings, require an integer
 environment ID. If the API also supplies a list, it must be exactly the
 one-element list containing that scalar ID. Refuse missing or divergent metadata.
 
