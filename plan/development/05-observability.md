@@ -386,9 +386,10 @@
 > the Dev repository, production inventory, and environment bindings. Task
 > 1306 reached the authenticated container query but returned rc 255 without
 > an account count. No Authentik deployment followed. The audit now checks
-> container execution and stdin with static, noncredentialed input first so
-> the next Dev-bound run can expose a runtime failure without revealing names
-> or tokens. A successful account count remains the deployment gate.
+> the same audit script with static, noncredentialed probe input first. Its
+> fixed readiness response proves container execution, script loading, and token
+> availability without querying accounts or revealing names or tokens. A
+> successful account count remains the deployment gate.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,

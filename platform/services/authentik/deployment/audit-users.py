@@ -62,6 +62,9 @@ def main():
         if not token:
             raise AuditError("bootstrap_token_unavailable")
         raw = sys.stdin.read().strip()
+        if raw == "audit-probe":
+            print("authentik_retirement_audit_ready")
+            return 0
         if not raw.startswith("audit:"):
             raise AuditError("invalid_audit_input")
         usernames = json.loads(raw[len("audit:"):])
