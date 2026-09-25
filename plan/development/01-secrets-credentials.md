@@ -87,7 +87,14 @@ caught by the next publication, provisioning or seed CLI preflight, not by the s
 4. Each seed playbook, before its AppRole login, reads `all.vars.openbao_addr` from the
    inventory file it was given (`ansible_inventory_sources`; Semaphore v2.17.31 passes a
    static-yaml inventory as `-i <project tmp>/inventory_<id>.yml`) and refuses any other
-   address (`tasks/assert-bao-addr-declared.yml`).
+   address (`tasks/assert-bao-addr-declared.yml`). The declaration is read inline, never
+   through a named variable, because extra vars outrank every variable; the check also
+   refuses the downstream store URLs being supplied before their tasks set them.
+
+Limit: whoever can inject arbitrary extra vars controls the run, so this check catches
+address drift and the obvious overrides, not an operator who can edit the environment or
+launch with arbitrary extra vars. That boundary is Semaphore's edit and launch permissions
+plus the binding-time rule.
 
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
