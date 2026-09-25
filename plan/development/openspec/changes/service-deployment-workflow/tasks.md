@@ -205,6 +205,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         local NetBox holds no VM record (needs 7.3's NetBox VM record executor). The table
         transformations have been checked against Grafana 11.4 source but not viewed in a
         browser.
+      - Changed after that run, not yet re-proven live (PRs #253, #258 and the grounding
+        follow-up): each template's history is read from `/templates/{id}/tasks` (newest 1000,
+        was `/tasks/last`, 200); the NetBox lookup runs BEFORE the aggregate, and each VM's
+        stored status is merged under this run's results as `retained` (registry step ids
+        only), so NetBox, the report and Loki agree; a full window marks the services it can
+        hide `history_incomplete` (dashboard panel "History incomplete"). OPEN: a local
+        Semaphore run of the collector, dry run first, to prove the new order end to end.
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,

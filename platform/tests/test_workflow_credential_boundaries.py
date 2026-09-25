@@ -193,3 +193,17 @@ def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
     write = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: write each service's workflow status")
     fields = write["ansible.builtin.uri"]["body"]["custom_fields"]
     assert fields["ac_workflow_status"] == "{{ _agg.status_by_service[item.item] }}"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_parser_gets_only_the_history_fields_it_reads(tmp_path):
+    # Grounding review of PR 258: up to 1000 whole task rows per template went through stdin
+    # every 15 minutes; pick and aggregate read seven fields.
+    pick = "Pick the newest finished task per template and service"
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", pick)
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _histories_rows }}"}, "vars": task["vars"]}
+    row = {"id": 5, "status": "success", "template_id": 1, "environment": "{}", "tpl_playbook": "p.yml",
+           "params": {"dry_run": True}, "end": "t", "message": "long", "user_name": "someone", "commit_hash": "abc"}
+    got, _ = _run_tasks(tmp_path, [probe], {"_histories": {"results": [{"json": [row]}, {"status": 500}]}}, "_got")
+    keep = ("id", "status", "template_id", "environment", "tpl_playbook", "params", "end")
+    assert got == [[{k: row[k] for k in keep}], []]

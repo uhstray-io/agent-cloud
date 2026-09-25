@@ -13,7 +13,8 @@ to a step, and it is recorded as `fail` with the last twenty output lines as the
 The collector calls this three times, one JSON object on stdin each, keyed by "mode":
 
   select     {registry, templates, groups, host_services}
-                                                    -> {"template_ids": [...]}
+                                                    -> {"template_ids": [...],
+                                                        "inventory_services": [...]}
              the workflow templates whose history is worth reading: a per-service deploy
              counts only when its service is in this inventory
   pick       {groups, host_services, histories: [[task rows]]}
@@ -98,18 +99,28 @@ def _step_for(template: str, registry: list[dict], deploy_templates: frozenset =
     return None
 
 
+def _template_scope(t: dict, registry: list[dict], by_group: dict,
+                    deploy_templates: frozenset = frozenset()) -> tuple[str | None, bool, str | None]:
+    """(step, per_service, service) for a template: the registry step it executes, whether that
+    step is the per-service deploy, and, if so, the one inventory service it deploys. The one
+    classification select and incomplete_services share (grounding review of PR 258)."""
+    step = _step_for(t.get("name", ""), registry, deploy_templates)
+    if step is None:
+        return None, False, None
+    per_service = next(s for s in registry if s["id"] == step).get("executor") == PER_SERVICE
+    svc = _service_of({"tpl_playbook": t.get("playbook")}, by_group) if per_service else None
+    return step, per_service, svc
+
+
 def incomplete_services(window_full: list, templates: list[dict], registry: list[dict], by_group: dict,
                         deploy_templates: frozenset = frozenset()) -> set:
     """The services a full history window can hide runs of: a per-service deploy template's own
     service, or every service for a template shared across them (PR 258 Codex review)."""
     by_id = {t["id"]: t for t in templates}
-    steps = {s["id"]: s for s in registry}
     out: set = set()
     for tid in window_full:
-        tpl = by_id.get(tid, {})
-        step = _step_for(tpl.get("name", ""), registry, deploy_templates)
-        if step and steps[step].get("executor") == PER_SERVICE:
-            svc = _service_of({"tpl_playbook": tpl.get("playbook")}, by_group)
+        step, per_service, svc = _template_scope(by_id.get(tid, {}), registry, by_group, deploy_templates)
+        if per_service:
             out |= {svc} if svc else set()
         else:
             out |= set(by_group.values())
@@ -119,11 +130,8 @@ def incomplete_services(window_full: list, templates: list[dict], registry: list
 def select(registry: list[dict], templates: list[dict], by_group: dict,
            deploy_templates: frozenset = frozenset()) -> list[int]:
     def wanted(t: dict) -> bool:
-        step = _step_for(t["name"], registry, deploy_templates)
-        if step is None:
-            return False
-        per_service = next(s for s in registry if s["id"] == step).get("executor") == PER_SERVICE
-        return not per_service or _service_of({"tpl_playbook": t.get("playbook")}, by_group) is not None
+        step, per_service, svc = _template_scope(t, registry, by_group, deploy_templates)
+        return step is not None and (not per_service or svc is not None)
     return [t["id"] for t in templates if wanted(t)]
 
 
@@ -223,9 +231,12 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     # A step whose snapshot succeeded in this run drops what was retained: the failure that
     # snapshot recorded before is superseded, though the success is still no assessment
     # (PR 258 Codex review).
+    # A step id the registry no longer holds is dropped, or a renamed or removed step's last
+    # status would come back from NetBox forever (grounding review of PR 258).
+    known = {s["id"] for s in registry}
     for service, steps in (retained or {}).items():
         for step, state in (steps or {}).items():
-            if step in services.get(service, {}) or step in inputs.get(service, {}):
+            if step not in known or step in services.get(service, {}) or step in inputs.get(service, {}):
                 continue
             if state in ("pass", "fail", "skip"):
                 services.setdefault(service, {})[step] = {
@@ -309,7 +320,10 @@ def main() -> int:
     by_group = group_services(data.get("groups", {}), data.get("host_services", {}))
     deploys = frozenset(data.get("deploy_templates", []))
     if mode == "select":
-        out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys)}
+        # The inventory's services, as the parser keys them: the collector's NetBox lookup loops
+        # this list, so a write can never reach a service the aggregate does not track.
+        out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys),
+               "inventory_services": sorted(set(by_group.values()))}
     elif mode == "pick":
         out = {"tasks": pick(data["histories"], by_group),
                "window_full": sorted({h[0]["template_id"] for h in data["histories"]
