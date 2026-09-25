@@ -392,6 +392,14 @@
 > script reports only code-owned audit error labels; unexpected exception
 > details remain hidden. A successful account count remains the deployment
 > gate.
+> Read-only Dev-bound Semaphore task 1309 ran merged commit
+> `2e0a19bd558b0c6e3e73aaeda2e9240c5a6a2a95` and stopped at the
+> noncredentialed probe: Podman returned rc 255 because `authentik-server` was
+> not running. It sent no retirement usernames, and no Authentik deploy was
+> launched. Inspect the service's existing container states through the
+> Dev-bound, read-only `Inspect Service Runtime (Dev)` workflow before selecting a
+> versioned recovery action. The retirement account count remains required
+> before applying the pending production Grafana SSO declaration.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,

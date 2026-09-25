@@ -1,0 +1,53 @@
+---
+# Read-only container state for one inventory-declared service. Include stopped
+# containers so a failed deployment can be diagnosed through Semaphore.
+- name: Refuse an undeclared service target
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require a populated target service group
+      ansible.builtin.assert:
+        that:
+          - "target_service | default('') is match('^[a-z0-9_]+_svc$')"
+          - "groups.get(target_service | default(''), []) | length > 0"
+        fail_msg: "target_service must name a populated *_svc inventory group."
+
+- name: Inspect service containers without changing runtime state
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: List all containers belonging to this service
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+
+    - name: Require a successful, nonempty container listing
+      ansible.builtin.assert:
+        that:
+          - _lsc.rc == 0
+          - _lsc.stdout_lines | length > 0
+        fail_msg: >-
+          Service container listing failed or was empty
+          (rc={{ _lsc.rc }}; stderr={{ _lsc.stderr | default('') | trim }}).
+
+    - name: Read state, exit code, and restart count
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.ExitCode{{ '}}' }} {{ '{{' }}.RestartCount{{ '}}' }}"
+          - "{{ item }}"
+      loop: "{{ _lsc.stdout_lines }}"
+      register: _runtime_states
+      changed_when: false
+      check_mode: false
+
+    - name: Report container state without environment or logs
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.stdout }}"
+      loop: "{{ _runtime_states.results }}"
+      loop_control:
+        label: "{{ item.item }}"

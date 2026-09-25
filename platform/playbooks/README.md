@@ -221,6 +221,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `snapshot-firewall.yml` | The one input to the firewall assessment: listening sockets, ufw state, published container ports, the declared firewall vars |
 | `snapshot-access.yml` | The one input to the role and access assessment: Authentik app-catalog entries, blueprints and OpenBao policy files for the service |
 | `verify-service-persistence.yml` | Step systemd-enablement: every container restarts `always`/`unless-stopped`, and rootless podman has linger. Fails on an empty container selection |
+| `inspect-service-runtime.yml` | Read-only Semaphore diagnostic for one populated `*_svc` inventory group; reports existing container names, states, exit codes, and restart counts, including stopped containers |
 | `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields to their declaration through the Django shell. Writes, and refuses to retype a field |
 | `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history → newest result per service and step → NetBox custom fields (scoped view/change-VM token) and Loki. Scheduled every 15 minutes. Its dry run is the read-only failure report |
 

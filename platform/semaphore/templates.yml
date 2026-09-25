@@ -760,6 +760,18 @@ templates:
         type: string
         required: true
 
+  # Read-only service diagnostics, including stopped containers. The Dev
+  # variant runs reviewed Dev playbook code against the production inventory.
+  - name: Inspect Service Runtime
+    playbook: platform/playbooks/inspect-service-runtime.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to inspect (e.g. authentik_svc)
+        type: string
+        required: true
+
   # Workflow step service-validate: the service answers on its inventory-declared health
   # path (service_url + health_path) with HTTP 200. Read-only.
   - name: Verify Service Health
