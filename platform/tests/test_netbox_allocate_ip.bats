@@ -113,12 +113,19 @@ hidden = {task["name"] for task in tasks if task.get("no_log") is True}
 assert hidden == {
     "Authenticate to OpenBao (AppRole)",
     "Read the NetBox automation token from OpenBao",
+    "Read the pfSense discovery credential from OpenBao",
     "Classify the credential outcome (names and verdicts only)",
     "Read the live pfSense DHCP server configuration",
     "Check the live DHCP boundary before reserving",
     "Set the NetBox auth header",
 }
 PY
+}
+
+@test "netbox-allocate: reservations use the discovery-owned pfSense key" {
+  grep -qF '/v1/secret/data/services/discovery/pfsense' "$PLAYBOOK"
+  grep -qF 'X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"' "$PLAYBOOK"
+  ! grep -qF '_nb_secret.json.data.data.pfsense_api_key' "$PLAYBOOK"
 }
 
 @test "netbox-allocate: a sane ceiling on how many addresses one run can take" {

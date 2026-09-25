@@ -175,7 +175,11 @@ For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
 and `pfsense_dhcp_interface`, selecting the router and interface that serve the
 requested prefix. The playbook reads that interface's DHCP configuration through
 the pfSense REST API on every reservation run; its API key comes from OpenBao's
-`secret/services/netbox:pfsense_api_key`. It refuses missing or malformed data,
+`secret/services/discovery/pfsense:api_key`, shared with the discovery worker.
+`reconcile-pfsense-api-key.yml` seeds that field from the fixed private
+`site-config` backup through a Dev-bound Semaphore task. It preserves a
+different live key until the replacement is verified, and never passes the
+backup value as a task parameter. The reservation refuses missing or malformed data,
 addresses in the primary or additional DHCP pools, and existing static mappings
 before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
 The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
