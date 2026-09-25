@@ -743,6 +743,33 @@
       changed_when: "_sem_start.stdout | trim != 'running'"
       when: not ansible_check_mode
 
+    # As for OpenBao above: a dry run did not start Semaphore, so on a partly bootstrapped machine the
+    # wait below would retry an endpoint that cannot answer (PR 203 Codex review).
+    - name: "Dry run: is Semaphore already running?"
+      ansible.builtin.command:
+        argv: [podman, inspect, -f, "{{ '{{' }}.State.Status{{ '}}' }}", "{{ _sem_name }}"]
+      register: _sem_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, Semaphore not running: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ _sem_name }} is {{ (_sem_state.stdout | trim) or 'absent' }} and would be
+          started; its API token, users, project and templates need it running, so the dry run
+          stops here.
+      when:
+        - ansible_check_mode
+        - (_sem_state.stdout | default('') | trim) != 'running'
+
+    - name: "Dry run, Semaphore not running: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - (_sem_state.stdout | default('') | trim) != 'running'
+
     - name: "Wait for Semaphore API"
       ansible.builtin.uri:
         url: "{{ _sem_url }}/api/ping"
