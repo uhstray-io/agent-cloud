@@ -51,7 +51,7 @@ fi
 # netbox_postgres_1. Volumes do NOT follow the container separator: both write
 # netbox_netbox-postgres (Docker Compose verified with `compose config`, 2026-09-22).
 # A single detected separator therefore got one of the two wrong on every host
-# (MISTAKES 6.6). Containers are found by the labels both providers set; the volume
+# (MISTAKES 6.8). Containers are found by the labels both providers set; the volume
 # name is fixed.
 NETBOX_PG_VOLUME="netbox_netbox-postgres"
 

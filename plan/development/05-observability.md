@@ -7,6 +7,404 @@
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
 
+> **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
+> committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
+> `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`
+> ships local container logs but has no OTLP receiver or OpenBao-audit tail.
+> A later read-only check on 2026-09-22 found all four local containers healthy.
+> Grafana `/api/health`, Prometheus `/-/ready`, and Loki `/ready` each returned
+> HTTP 200; the chain-verified Caddy URL returned Grafana health and its OIDC
+> login route redirected to Authentik with PKCE. The browser completed that
+> login and returned to the provisioned overview dashboard, where the live
+> log panel listed local containers and the scrape panel showed only the
+> Prometheus self-target. Local Semaphore candidate task 1065 later checked out
+> commit `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` and deployed o11y;
+> Grafana, Prometheus, and Loki passed their service checks. A browser reload
+> returned to the signed-in dashboard. Loki then exposed local `service` label
+> values, while Prometheus still had only its self-target. New service metric
+> collection, alert delivery, and production receipt remain unverified.
+> Local Semaphore verifier task 1079 checked out
+> `be5bbe8b3a0eafa3829a74baaccb72c0a8ae97e2` and found a fresh
+> `o11y-grafana` log in Loki. Metrics-required task 1080 on the same revision
+> failed with `targets found=0` for that service, as expected from the
+> self-only Prometheus target list. The metrics pilot is still pending.
+> The committed production inference telemetry groundwork is merged into this
+> branch; its scrape declarations do not prove a reachable receiver.
+
+> **Local metrics pilot, 2026-09-23:** Branch-bound Semaphore task 1100
+> deployed Caddy at `9c87ed6ccd56ea0c8f6c502248d9b66d7ed7ff35` and
+> verified its private `/metrics` listener. An initial o11y candidate task
+> 1101 reported healthy Grafana/Prometheus/Loki while Alloy rejected a
+> network-selection setting absent in pinned v1.5.1; receipt 1102 correctly
+> failed with no `caddy` scrape. The shared deploy now checks Alloy health.
+> Corrected candidate task 1105 and named receipt 1106 both succeeded at
+> `3f9a9b97bf9e8362c0fdbe4924c89bc07dc63207`: Loki had a `caddy` log
+> within 15 minutes and Prometheus had one healthy `caddy:2021` scrape.
+> The local TSDB read back `up{service="caddy"}=1`, 361 active Caddy series,
+> and 1,049 total active series, versus a prior self-only baseline of 616.
+> These are point-in-time local measurements, not production or alert proof.
+> At `5bc22b8d54b2e7b0e2ca4985c3f7b34ddf1cc2b1`, local Semaphore task
+> 1112 redeployed the stack with a 1 GB Prometheus retention-size cap and a
+> 2,000-sample Alloy scrape ceiling; task 1113 again verified Caddy metrics
+> and logs. Container read-back confirmed both limits, and the local TSDB
+> reported 1,100 active series. The production size cap stays disabled until
+> the existing receiver disk and retention are audited.
+> At `725397df613d8e989990dcc0abc3fe482229c89b`, local Semaphore task
+> 1118 ran the reversible unreachable-endpoint drill. Alloy discovered an
+> opted-in disposable container at `o11y-fault-probe:65535`, Prometheus wrote
+> `up=0`, and the shared onboarding verifier refused it with that service and
+> endpoint named. The playbook removed its probe in `always`; a subsequent
+> container-existence check confirmed absence.
+> At `21102b19bbafc294b3e46ef8cb7dcd93fc881a97`, local Semaphore task
+> 1126 redeployed the branch after provisioned alert rules were added. Grafana's
+> API reported `o11y_service_down` and `o11y_missing_caddy`, both paused while
+> the OpenBao-backed notification destination remains undecided. Its startup
+> log completed alert provisioning without a file-suffix warning. Task 1127
+> then found a Caddy log from the preceding 15 minutes and one healthy
+> Prometheus scrape. Grafana's API returned the Service Overview with three
+> panels spanning Loki and Prometheus. Together with task 1118's named
+> unreachable-endpoint refusal, this closes the local collection gate;
+> notification delivery, trace ingestion, and production receipt remain open.
+> The optional Discord contact point path now reads
+> `secret/services/o11y:alert_discord_webhook_url` only when
+> `o11y_alerts_enabled` is true; a missing value is refused before any
+> OpenBao write, and the URL is carried in the mode-0600 environment file.
+> An initial local candidate task 1128 at
+> `ad97088421ea93ca4b0ad67b4205c24c187bcbf5` failed before Grafana
+> became healthy: Ansible's Jinja whitespace trimming joined two alert-rule
+> YAML lines. Task 1131 deployed the corrected template at
+> `fe925f0b1ddbdf4d2324000ca792e22be9b1184d`; Grafana health returned
+> OK, both rules remained paused, and no o11y contact point was active.
+> Task 1132 reverified the Caddy metrics/logs receipt. The render test now
+> uses Ansible's whitespace behavior. Alert notification receipt is not yet
+> proven, and the enabled branch still requires an approved webhook.
+> At `ebff111f40105ae0c7437f732fcb768fa0162c8e`, separate branch-bound
+> local Semaphore templates were registered for alert enablement and the
+> alert drill without launching either during registration. Alert-drill task
+> 1137 then refused before probe creation because the provisioned service-down
+> rule was paused; a container-existence check confirmed no probe was made.
+> Ordinary unreachable-endpoint task 1138 still passed and removed its probe.
+> The enabled alert-firing and external notification paths remain untested.
+> A read-only local OpenBao check on 2026-09-23 found the o11y record but no
+> `alert_discord_webhook_url` key. The branch now includes a repeatable
+> `Seed o11y Alert Webhook` Semaphore playbook: it accepts the approved value
+> only as an encrypted environment secret, merges that one key into OpenBao,
+> and skips an unchanged value. It has not been run with a webhook; no alert
+> recipient has been approved or delivery observed.
+> On 2026-09-23 the operator selected the existing Discord operations channel
+> and supplied a bot credential. The revised Dev-bound seed workflow uses that
+> credential from OpenBao to reconcile one named webhook in a declared text
+> channel, then stores its URL under the o11y secret. The actual channel ID
+> belongs in private inventory. The webhook, alert drill, and delivery receipt
+> are still unverified; the earlier manual-webhook seed description above is
+> historical.
+> A read-only Discord API check with the supplied bot credential and a named
+> client header returned HTTP 200 for message history in the selected channel
+> on 2026-09-23. The Dev-bound fault drill now contains a message-receipt gate;
+> that gate has not yet run with enabled alerts, so delivery remains unverified.
+> **Local alert credential receipt, 2026-09-25:** Reviewed PRs #238, #239,
+> and #240 corrected the shared Semaphore publisher, seed-environment
+> provisioner, and the running v2.18.12 API's omitted empty-secret projection.
+> Local task 1720 provisioned the isolated OpenBao seed environment from exact
+> `dev` merge `ffc1c797e770869ee95148645be378060f9498ef`. Read-only task
+> 1721 proved the AppRole access, then task 1722 seeded the operator-supplied
+> Discord bot token into local OpenBao from the same revision. Readback found
+> the key present without displaying it, and the temporary Semaphore input
+> was removed; the isolated environment retained only the AppRole pair. The
+> approved guild and channel IDs are already in private site-config. They
+> still need scoped publication into local Semaphore's stored inventory before
+> webhook creation or the alert-delivery drill. No webhook or delivery receipt
+> is claimed by these credential tasks.
+> **Local destination convergence:** The scoped publisher reads the two IDs
+> from a pinned, clean private inventory and writes only their local Semaphore
+> entries. On verified readback it keeps a mode-0600 projection in the local
+> bootstrap state directory. Bootstrap validates and consumes that projection
+> when rebuilding the static inventory, and refuses to erase a previously
+> published destination if the projection is missing. Public tests use
+> synthetic IDs. PR #241 later merged; its publication and webhook result
+> are recorded below. This step alone did not prove alert delivery.
+> A read-only check of the running local Semaphore v2.18.12 inventory list
+> on 2026-09-25 found the `local` record's inventory text present. The
+> bootstrap guard still refuses if a later API projection omits that text.
+> **Webhook receipt, 2026-09-25:** PR #241 merged to `dev` as
+> `a65f6a97d8d097d5c488a15be2727fc2d4ce830e` after final-head CI and
+> independent review. The scoped sync from that commit copied only the two
+> approved private destination IDs into local Semaphore inventory and wrote
+> a mode-0600 bootstrap projection; readback matched private site-config.
+> Dev-bound Semaphore task 1737 checked out the same merge, reconciled its
+> named Discord webhook, and verified the URL in OpenBao without printing it.
+> Alert rules remain paused and no message-delivery receipt is claimed.
+> The existing delivery drill requires an active rule, so the next change
+> stages alerting temporarily within a reversible Semaphore canary, proves
+> the Discord receipt, and restores the paused baseline before any persistent
+> alert-enable rollout.
+> **Canary review correction, 2026-09-25:** The PR #242 review found that
+> restoring paused files through `manage-secrets.yml` would fail if OpenBao
+> became unavailable after activation. The restore now renders the declarative
+> paused rules and contact-point deletion from the reviewed checkout, removes
+> the webhook line from the existing local `.env`, and verifies Grafana after
+> restart without a second OpenBao dependency. The same review moved bot,
+> webhook, and Discord history checks before temporary activation and bound
+> both new Semaphore templates only to the Dev repository. These are code
+> corrections, not a live delivery receipt.
+> **Restore rehearsal, 2026-09-25:** PR #242 merged to `dev` as
+> `1fe44fd88fe827733f15f8ae2c147487b4ae5e6e`; scoped local Semaphore
+> tasks 1756 and 1757 published the canary and restore templates with the
+> Dev repository, local inventory, and existing credential group. Restore
+> task 1758 verified that revision and the local paused gate, then failed
+> before restart because local repository placement removed the generated
+> Grafana `alerting/` directory. The normal deploy creates that directory,
+> but the OpenBao-free restore initially did not. No canary was started and
+> no alert delivery was claimed. The restore task now creates the directory
+> idempotently before templating. The deployment `.gitignore` keeps the two
+> rendered alert files out of Git; the shared `place-monorepo.yml` explicitly
+> preserves those exact files during `rsync --delete`, including when another
+> local service deploy places the repository. Future committed alert rules in
+> the same directory still copy normally. A local synthetic rsync check
+> confirmed that behavior before the live restore rerun.
+> **Canary live rehearsal, 2026-09-25:** PR #244 merged the restore fix to
+> `dev` as `1371ca32f5cb449f02e555541c73836b6b54e019`. Local Semaphore
+> restore task 1765 succeeded on that exact revision: it recreated the
+> generated directory and read back every o11y rule paused with no canary
+> contact point. Canary task 1768 passed the exact-revision gate, Discord
+> history preflight, failed-scrape detection, and expected onboarding
+> refusal. It then failed while checking Grafana alerts because the API
+> response included an alert without `labels.service`; the Ansible filter
+> dereferenced that absent label before considering the probe. Its `always`
+> cleanup removed the probe and verified paused rules and absent canary
+> contact point. No Discord delivery was proven. Filter out alerts without
+> the service label before matching the unique probe, then rerun the canary
+> from reviewed `dev`.
+> A read-only production Semaphore API check on 2026-09-23 found the reviewed
+> `dev` audit declaration absent from the live template catalog. A full-catalog
+> publication would have touched unrelated settings on 129 existing templates
+> and surveys on 65, so PR #199 added a guarded one-template create path and
+> merged to `dev`. Semaphore task 1132 checked out that merge and created only
+> `Audit o11y Containers (Dev)` as template 218 with the verified Dev repository,
+> production inventory, and existing environment bindings.
+> Read-only audit task 1133 exposed an Ansible double-rendering error in the
+> Grafana-host container report. PR #200 fixed it, passed CodeRabbit review and
+> final-head checks, and merged to `dev`. Rerun task 1134 checked out merge
+> `b34acfd51bd65af36b21821c203c10085f093ae6` and reached every report
+> task without that error. Its reachable Agent Cloud hosts reported no
+> `o11y-*` containers. The task still ended in error because four inventory
+> hosts were unreachable, including the existing `grafanapodman` host; its
+> containers and data remain unexamined. The private inventory has no
+> `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
+> Receiver placement and production retention sizing remain gated on a
+> declared, reachable host and its storage audit.
+> At the task 1134 audit, the private production inventory omitted Grafana from
+> Authentik's enabled app list and had no managed Grafana Caddy route. The public o11y env template
+> now derives production browser and OIDC token URLs from a required production
+> DNS zone over HTTPS, preserving the local shared-container path only in
+> local-dev. A localhost-only refusal probe stopped before placement when the
+> zone was absent, and the local/production render test passed. The production
+> IdP app, Caddy route, DNS, and network path are not yet deployed or verified.
+> The receiver now has an inventory-gated agentgateway `/metrics` scrape
+> template with `service=agentgateway`; an absent declaration removes the
+> target. The private production inventory still binds the gateway stats port
+> to loopback until the audited o11y receiver source and firewall path are
+> approved. This is code preparation, not a live agentgateway scrape receipt.
+> Production Semaphore deployments may use the reviewed `dev` branch under
+> the operator's 2026-09-23 direction. The `Deploy o11y (Dev)` template binds
+> to the declared Dev repository, defaults the target clone to `dev`, and
+> requires an exact commit SHA; the playbook checks both the controller and
+> receiver revisions before rendering secrets or starting containers.
+> Local candidate task 1147 refused a mistyped expected SHA before placing
+> files. Task 1148 then deployed the exact pushed commit
+> `22cc811782a8cfe511d01d595ca91d6ae4075998`; task 1149 verified a
+> recent Caddy log and healthy metrics. Prometheus read-back returned
+> `up{service="caddy"}=1` and no loaded `agentgateway` scrape job, as required
+> while the local inventory omits that remote endpoint. These receipts do not
+> prove agentgateway telemetry or any production receiver state.
+> Local candidate deployment task 1166 and named verification task 1167 both
+> succeeded at `df8e8c58fc1083c9e8f6ef16318159e2e449bb4a`: Grafana,
+> Prometheus, Loki, and Alloy passed deployment checks, and the verifier found
+> a recent `caddy` log plus a healthy Caddy metrics scrape. A fresh browser
+> reload on 2026-09-23 returned to the signed-in Grafana Service Overview over
+> the local TLS front door and displayed the `caddy:2021` target. The six-hour
+> dashboard range also included the earlier disposable fault-probe series;
+> this historical series is not evidence of a currently running probe. These
+> checks validate the current local revision but do not prove alert delivery.
+> On 2026-09-23, the operator required subsequent Semaphore automation to run
+> code pushed to `dev`, without temporary recovery patches. A local candidate
+> task at `69aad0454daefa32b00217fa3cb2856f51254b37` first refused an
+> abbreviated SHA before placement. A full-SHA rerun then reached the local
+> placement check, which failed because the shared local copy deliberately
+> excludes `.git`. Commit `4572a20` makes the candidate controller checkout
+> clean-state check explicit, uses the successful local copy as its placement
+> evidence, and retains the receiver Git SHA check for production cloning.
+> The baseline now needs a reviewed PR into `dev`; the next local and
+> production Semaphore runs must use that exact merged revision. Alert rules
+> stay paused until an approved destination and a notification drill pass.
+> Production Semaphore task 1137 ran the NetBox free-address workflow in its
+> read-only mode and stopped before querying IPAM: OpenBao held the NetBox
+> service record but no `automation_api_token`. It reserved no address.
+> Separate read-only Proxmox validation task 1138 passed all nine checks on
+> `alphacentauri`, reported 511 GB available on its VM storage, and found VMID
+> 219 absent from both its live VM listing and the private allocation ledger.
+> That VMID is a candidate, not a reservation or a provisioned receiver.
+> PR #201 passed its final-head CodeRabbit review and checks and merged to
+> `dev` as `47be7da0d6f0ba4633c348af82d964c5839968ab`. The scoped
+> `Provision NetBox Automation Token (Dev)` template was published as task
+> 1140 with the verified project, inventory, environment, and Dev repository
+> bindings. Bootstrap task 1141 stopped before minting a token because Docker
+> reported the `netbox-netbox-1` application container exists but is not
+> running. Its empty shell output also exposed a `changed_when` expression
+> that masked the Docker error. Neither the token nor an IP address was
+> provisioned. All-host validation tasks 1142 and 1143 stopped on an
+> unrelated unreachable NocoDB host before reaching NetBox; the accepted
+> Semaphore `params.limit` setting did not constrain the actual play.
+> PR #202 passed a completed CodeRabbit review and final-head checks, then
+> merged to `dev` as `3af6bf58d06cd9e8b44cd3e469cceca5d9200f3c`. A
+> scoped Semaphore publication created only `Audit NetBox Runtime (Dev)` as
+> template 223. Its read-only production task 1148 succeeded at that exact
+> revision: the NetBox app, Postgres, and both Redis containers were exited
+> with code 255; Hydra was unhealthy, the reconciler was restarting, and
+> `/login/` was unreachable. It changed no host state. PR #204 extended the
+> audit with dependency OOM, restart, finish-time, policy, and host-boot
+> evidence; CodeRabbit approved its exact head with green checks, and it
+> merged to `dev` as `440cfbd53696914ce222b89b23e3b53e93265e99`.
+> Dev-bound production task 1152 ran that merge and changed no host state.
+> The NetBox app, Postgres, and both Redis containers remained exited with
+> code 255, `oom=false`, zero restarts, and `policy=no`. Their finish times
+> clustered just after the host's 2026-09-19 boot. The committed compose
+> declares `restart: always` for these services, so runtime policy has not
+> converged. `/login/` remained unreachable. Recovery must use reviewed,
+> repeatable code from `dev` and verify the resulting policy and health.
+> Do not run the regular NetBox deploy as an unexamined recovery step: it
+> pulls images, stops the stack, and rebuilds containers.
+> A later read-only source audit found the host's tracked Compose file clean
+> at an older April commit, while the reviewed `dev` Compose declares the
+> required restart policies. The recovery preflight correctly refused that
+> mismatch before touching containers. Reconcile the host monorepo through
+> the Dev-bound recovery playbook as a separate, default-off source action:
+> require the audited starting commit and no tracked source changes, place the
+> exact reviewed Dev commit with a no-overwrite Git switch that preserves
+> unrelated untracked and ignored host files, then verify its
+> revision and Compose checksum. Run the container dry-run with runtime
+> apply still disabled;
+> only then choose the scoped backing-service and NetBox start/recreate actions.
+> The host commit is on the unmerged April discovery debug branch (PR #186),
+> not an ancestor of `dev`. Its static-IP fallback was curated and merged to
+> `dev` in PR #223 with validation and without that branch's hardcoded site
+> coordinates or diagnostic logging. Source placement changes the worker
+> directory bind-mounted by orb-agent; verify discovery after NetBox recovers
+> and audit old synthetic `eth0` records before any cleanup.
+> Dev PR #224 replaced a forced SHA checkout with a no-overwrite Git switch.
+> Production Semaphore task 1188 placed its merged Dev revision and passed the
+> Compose and runtime dry-run gates; task 1189 then recovered the four NetBox
+> core containers. All were healthy with `restart: always`, and `/login/`
+> returned HTTP 200. Task 1190 reached the token bootstrap but stopped before
+> token creation: NetBox removed `User.is_staff` and changed its default token
+> format to v2. The bootstrap must mint and store the complete one-time v2
+> bearer value before IPAM allocation can resume. If the store fails after a
+> token is minted, its plaintext cannot be recovered; the bootstrap refuses by
+> default and offers a separately gated replacement of exactly one named orphan.
+> Dev-bound Semaphore task 1193 then minted the scoped v2 token into OpenBao.
+> The address report task 1195 reached NetBox but found no exact management
+> prefix, so it reserved nothing. Before selecting the o11y receiver address,
+> audit that site-config-declared network in NetBox; explicitly create only the
+> missing active global prefix through the reusable Semaphore prefix workflow,
+> verify its read-back, then rerun the address report and reserve one exact
+> address before declaring the receiver VM in private site-config.
+> A prefix created through the NetBox Django shell has no NetBox request
+> changelog entry; the versioned playbook and Semaphore task ID/output are its
+> audit record. Preserve that task record with the production rollout evidence.
+> The DGX Spark owner rechecked its telemetry state on 2026-09-23: both node
+> exporters are boot-enabled on port 9100, vLLM exposes metrics on port 8000,
+> and the Loki shipper remains disabled with no receiver URL. The exporter
+> firewall has no approved scrape source yet. DGX PR #18 merged as
+> `efa8bc7013555ad40014a28cb20e070685c7a20b`; its declared rule now
+> opens only node exporter port 9100 and removes recorded legacy GPU ingress.
+> No live firewall rule was applied. GPU scraping remains disabled until
+> compatibility and an unloaded-window test are proven. The receiver
+> must publish its actual Loki push URL and admit both DGX source hosts before
+> log shipping can be enabled. No DGX telemetry receipt exists yet.
+> PR #206 passed CodeRabbit review and final-head checks and merged the local
+> baseline to `dev` as `3de6fe71cd60efe2e2986922c08ab4c55bce0929`.
+> Local Dev-bound Semaphore task 1225 deployed that merge; task 1231 found a
+> Caddy log within 15 minutes and a healthy Caddy metrics scrape. A browser
+> sign-out followed by Grafana's Authentik sign-in returned to the signed-in
+> Grafana home over the local TLS front door using the existing Authentik
+> session. This proves the merged revision's SSO redirect and return path,
+> not a new password challenge or production SSO. Production Dev-bound task
+> 1156 published `Deploy o11y (Dev)` as template 224, but no production
+> receiver host is declared, so no production deployment has been launched.
+> The production Caddy inventory sets `caddy_composable: false`; its route
+> must be declared in private `site-config` as `caddy_managed_sites` and
+> applied through `manage-caddy-sites.yml`, rather than through a service
+> fragment. Private site-config PR #17 merged the Grafana Authentik app
+> declaration; PR #18 aligned its production browser URLs. Neither change
+> has been applied to live Authentik.
+> The production telemetry contract names `o11y.uhstray.io`, which already has
+> an OpenTofu-managed DNS record. The local front door remains
+> `grafana.agent-cloud.test`. Before production SSO, apply the private Grafana
+> Authentik redirect/launch URLs and Caddy route for `o11y.uhstray.io`
+> through the Dev-bound Semaphore workflows. Read-only Dev-bound
+> task 1160 planned one unrelated DNS addition and one rate-limit update at
+> `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
+> On 2026-09-23, PRs #208 and #210 merged the receiver guard and
+> OpenBao-sourced Discord webhook/drill mechanism to `dev`. Private site-config
+> PR #18 merged the alert destination and Grafana browser URLs, but its
+> production `o11y_svc` group remains empty. PR #209 merged a guarded NetBox
+> runtime recovery workflow; production tasks 1188 and 1189 later ran the
+> reviewed Dev successors from PRs #222 and #224 and restored the four core containers to healthy
+> with `restart: always`. PR #214 merged
+> one-template Dev publication. Local Semaphore tasks 1292, 1293, and 1294
+> updated the publisher and created its webhook and fault-drill Dev templates
+> with verified local bindings. Task 1295 found the failed scrape only after its
+> one-minute wait expired and cleaned up its probe. Reviewed PR #215 extended
+> that bounded wait and the probe lifetime; local Dev-bound task 1300 ran its
+> merged revision `0b64a0c447e476a1ad02a39de4368f0bab5053d8`, saw the
+> unreachable target, proved the onboarding verifier refused it, and removed
+> the probe. Task 1300 ran with alert delivery disabled. Discord notification receipt,
+> receiver placement, and production telemetry remain unverified. As of
+> 2026-09-23, this workstation's production Semaphore
+> sign-in meets a Cloudflare challenge before the Authentik session opens.
+>
+> **Production receiver preflight, 2026-09-23:** PR #226 merged the exact-prefix
+> NetBox workflow to `dev` as `3390d40b6089dc4ed257871f1b8197e7ba240fa4`.
+> Semaphore task 1197 published only its Dev template; task 1198 reported
+> `would-create` without writing; task 1199 created and read back the single
+> site-config-declared active prefix. Tasks 1200 and 1201 then ran the IPAM
+> workflow in read-only mode. The proposed receiver address was absent from
+> NetBox and the private VM ledger, but no address was reserved. Confirm the
+> production DHCP allocation boundary before reserving an exact address;
+> NetBox's available-address report alone does not prove that DHCP cannot
+> assign it. PR #228 adds a fail-closed live pfSense DHCP check to the reservation
+> workflow. Private site-config must select the router API and the interface for
+> this prefix; OpenBao supplies the API key from the same discovery-owned
+> credential path used by the NetBox worker. Reconcile the private backup through
+> the Dev-bound Semaphore workflow before the DHCP test. That workflow checks
+> the private backup path before reading it and uses OpenBao version checks so
+> a different or concurrently rotated live key is never silently replaced.
+> The unused legacy NetBox key declaration is retired; the discovery-owned path
+> is authoritative. Run the reviewed Dev-bound workflow
+> first with a DHCP-assignable test candidate to capture its visible refusal in
+> Semaphore. Confirm the API response covers the interface's primary range,
+> additional pools, and static mappings. Until that live refusal gate passes,
+> do not reserve the receiver candidate. Keep the
+> private CIDR, host address, and DHCP details out of this public plan.
+> PR #227 merged the scoped Dev-bound Proxmox validation template and
+> credential-safe API logging as `a6825f9da8a79daebf41e11905763f4c1506ef0c`.
+> Task 1202 published that template; read-only task 1203 succeeded with nine
+> checks passing, 511 GB available on the target VM storage, and VMID 219
+> absent from the live cluster and private ledger. VMID 219 remains a candidate;
+> no VM was provisioned. The live Semaphore inventory matches the merged
+> private production inventory and still declares no `o11y_svc` host. The
+> Grafana Authentik URLs from private site-config PRs #17 and #18 have not
+> been applied to the live IdP.
+>
+> **Rollout practice:** publish a single reviewed Dev template with its
+> intended bindings, run a read-only preflight, and keep the task ID and
+> read-back with each state-changing step. Reserve the exact address through
+> IPAM only after the versioned live pfSense DHCP gate and ledger reconciliation, then declare the receiver in
+> private site-config and provision it through Semaphore. Verify the receiver
+> and alert delivery with the declared fault drill before enabling production
+> notifications. These gates preserve the config-as-code and authority rules
+> in `PRINCIPLES.md` and `plan/architecture/02-service-onboarding.md`.
+
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

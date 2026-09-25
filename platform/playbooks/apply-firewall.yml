@@ -179,6 +179,24 @@
         name: ufw
         state: present
         update_cache: true
+      register: _ufw_pkg
+
+    # A dry run only simulates the install, so on a host without ufw every `ufw` command below
+    # (the forced-real status read included) would fail on a missing binary (PR 203 Codex review).
+    - name: "Dry run, ufw not installed: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: ufw is not installed on {{ inventory_hostname }} and would be installed; the
+          rules, default policies and enable need it, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - _ufw_pkg is changed
+
+    - name: "Dry run, ufw not installed: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _ufw_pkg is changed
 
     - name: "Allow SSH (22/tcp) from each admin CIDR — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw allow from {{ item }} to any port 22 proto tcp"
@@ -208,6 +226,7 @@
       loop: "{{ _route_rules }}"
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} (route, {{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
@@ -217,7 +236,6 @@
     # Docker containers belong to root (become:true) — querying them as the service
     # user finds NOTHING, so detection would silently yield no rules. Loopback-only
     # binds are skipped (not externally reachable). Container must be running.
-      when: not ansible_check_mode
     - name: "Detect published host ports + protocols of running containers"
       ansible.builtin.shell: |
         set -o pipefail
@@ -395,6 +413,7 @@
       ansible.builtin.command: "ufw --force enable"
       register: _en
       changed_when: "'active' in _en.stdout"
+      when: not ansible_check_mode
 
     # ── Anti-lockout verify: force a NEW SSH connection through the live firewall.
     # The task that ran `ufw enable` used an already-established (allowed)
@@ -402,7 +421,6 @@
     # meta: reset_connection cannot be conditional (Ansible ignores `when`), so it
     # always runs — harmless (just forces a reconnect on the next task). The
     # explicit verify below is what firewall_verify_ssh gates.
-      when: not ansible_check_mode
     - name: "Drop the SSH connection to force a fresh handshake"
       ansible.builtin.meta: reset_connection
 

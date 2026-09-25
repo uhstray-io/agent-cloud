@@ -1,0 +1,69 @@
+---
+# Local-only fault drill: a disposable opted-in container declares a metrics
+# port with no listener. The shared onboarding verifier must name that endpoint.
+# With drill_expect_alert=true, require both the provisioned Grafana rule and
+# a new matching message from its dedicated Discord webhook.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the proposed revision before the fault drill
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no fault probe was started."
+
+    - name: Read candidate checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean candidate checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no fault probe was started."
+
+- name: Prove a declared unreachable metrics endpoint fails visibly
+  hosts: o11y_svc
+  gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    expected_service: "{{ _probe }}"
+    expected_instance: "{{ _probe }}:65535"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+  tasks:
+    - name: Refuse a cleartext OpenBao endpoint before the fault drill
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Verify Discord delivery prerequisites before the fault drill
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+      when: drill_expect_alert | default(false) | bool
+
+    - name: Run the disposable o11y fault probe
+      ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml

@@ -38,7 +38,7 @@ setup() {
   # Reserving whatever is free AT RUN TIME is not reproducible: two runs a minute apart
   # reserve different addresses and the declaration that follows disagrees with the
   # ledger. The POST body must come from the operator's list, not from the free-IP query.
-  grep -qF 'address: "{{ item.item.address }}"' "$PLAYBOOK"
+  grep -qF 'address: "{{ item.address }}"' "$PLAYBOOK"
   ! grep -qE 'address: "\{\{ _free\.' "$PLAYBOOK"
 }
 
@@ -46,9 +46,9 @@ setup() {
   # NetBox permits duplicate addresses in some configurations, so a blind POST can
   # produce a second record and leave the ledger ambiguous about which is authoritative.
   grep -qF '/api/ipam/ip-addresses/?address=' "$PLAYBOOK"
-  grep -qF "(item.json.results | default([])) | length == 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length == 0" "$PLAYBOOK"
   # An address that already exists is left alone, not re-described.
-  grep -qF "(item.json.results | default([])) | length > 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length > 0" "$PLAYBOOK"
 }
 
 @test "netbox-allocate: the prefix must already exist in the authority" {
@@ -58,10 +58,19 @@ setup() {
 
 @test "netbox-allocate: bootstrap token can view prefixes without adding them" {
   local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
-  assert_precedes "$bootstrap" 'Converge the identity and its scoped permissions' 'Already provisioned'
-  assert_grep -qF 'view_permission: skynet-ipam-prefix-view' "$bootstrap"
-  assert_grep -qF 'view_object_types: [ipam.prefix]' "$bootstrap"
+  assert_precedes "$bootstrap" 'Ensure NetBox automation user and scoped permissions' 'Already provisioned'
+  # The device-writer profile views prefixes through a separate view-only permission, and
+  # never adds them (the profiles came from the service deployment workflow's collector and
+  # VM-recorder identities).
+  python3 - "$bootstrap" <<'PY'
+import sys, yaml
+profile = yaml.safe_load(open(sys.argv[1]))[0]["vars"]["_profiles"]["device-writer"]
+assert profile["view_permission"] == "skynet-ipam-prefix-view", profile
+assert profile["view_object_types"] == ["ipam.prefix"], profile
+assert "ipam.prefix" not in profile["object_types"], profile
+PY
   assert_grep -qF 'scopes.append(("{{ _profile.view_permission' "$bootstrap"
+  assert_grep -qF '["view"]' "$bootstrap"
   assert_grep -qF 'perm.enabled, perm.actions = True, actions' "$bootstrap"
   assert_grep -qF 'perm.users.add(user)' "$bootstrap"
 }
@@ -73,6 +82,28 @@ setup() {
   assert_contains "$block" 'dev_variant: true'
 }
 
+@test "NetBox API consumers share version-aware credential headers" {
+  python3 - "$BATS_TEST_DIRNAME/../playbooks" <<'PY'
+import pathlib
+import sys
+import yaml
+from jinja2 import Environment
+
+root = pathlib.Path(sys.argv[1])
+helper = yaml.safe_load((root / "tasks/netbox-api-headers.yml").read_text())[0]
+header = helper["ansible.builtin.set_fact"]["_nb_headers"]["Authorization"]
+env = Environment()
+assert env.from_string(header).render(_netbox_api_token="nbt_key.value") == "Bearer nbt_key.value"
+assert env.from_string(header).render(_netbox_api_token="legacyvalue") == "Token legacyvalue"
+assert helper["no_log"] is True
+for name in ("netbox-allocate-ip.yml", "create-netbox-device.yml"):
+    tasks = yaml.safe_load((root / name).read_text())[0]["tasks"]
+    auth, = (task for task in tasks if task["name"] in ("Set the NetBox auth header", "Set NetBox auth header"))
+    assert auth["ansible.builtin.include_tasks"] == "tasks/netbox-api-headers.yml"
+    assert auth["no_log"] is True
+PY
+}
+
 @test "netbox-allocate: the OpenBao transport guard is included" {
   # Every play that reaches OpenBao carries the shared cleartext guard — the rule lives
   # in one file precisely because six hand-written copies drifted (§5.1).
@@ -82,19 +113,29 @@ setup() {
 
 @test "netbox-allocate: no_log is scoped to the credential boundary only" {
   # no_log on a deploy or a verification hides the failure and makes a Semaphore run
-  # undiagnosable. It belongs on auth, secret reads, and header construction — nowhere else.
-  # Three here: OpenBao auth, the secret read, and the classification step. The
-  # classification exists so that a no_log failure is still diagnosable — it emits key
-  # NAMES and verdicts, never a value — and it must itself be no_log because it touches the
-  # token to test whether the key is populated. The header construction is the shared
-  # tasks/netbox-api-headers.yml, whose one task is no_log.
-  local nolog
-  nolog=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$nolog" -eq 3 ]
-  grep -qF 'include_tasks: tasks/netbox-api-headers.yml' "$PLAYBOOK"
-  [ "$(grep -c 'no_log: true' "$BATS_TEST_DIRNAME/../playbooks/tasks/netbox-api-headers.yml")" -eq 1 ]
-  # The address operations must remain visible.
-  ! grep -A12 'available-ips' "$PLAYBOOK" | grep -q 'no_log: true'
+  # undiagnosable. Only tasks handling credentials or the raw router response are hidden.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+hidden = {task["name"] for task in tasks if task.get("no_log") is True}
+assert hidden == {
+    "Authenticate to OpenBao (AppRole)",
+    "Read the NetBox automation token from OpenBao",
+    "Read the pfSense discovery credential from OpenBao",
+    "Classify the credential outcome (names and verdicts only)",
+    "Read the live pfSense DHCP server configuration",
+    "Check the live DHCP boundary before reserving",
+    "Set the NetBox auth header",
+}
+PY
+}
+
+@test "netbox-allocate: reservations use the discovery-owned pfSense key" {
+  grep -qF '/v1/secret/data/services/discovery/pfsense' "$PLAYBOOK"
+  grep -qF 'X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"' "$PLAYBOOK"
+  ! grep -qF '_nb_secret.json.data.data.pfsense_api_key' "$PLAYBOOK"
 }
 
 @test "netbox-allocate: a sane ceiling on how many addresses one run can take" {
@@ -112,7 +153,7 @@ setup() {
   # itself, and an operator reading that would retry a reservation that had succeeded.
   assert_grep -qF 'Re-read each named address after any writes' "$PLAYBOOK"
   assert_grep -qF 'register: _final_state' "$PLAYBOOK"
-  assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
+  assert_grep -qF '_read: "{{ _final_state.results[_i] }}"' "$PLAYBOOK"
   # The report must NOT read the pre-create results any more.
   # Extract the report task to a file and assert on THAT. The previous form was a no-op
   # twice over: `grep -vq` succeeds when ANY line lacks the string, so it passed with

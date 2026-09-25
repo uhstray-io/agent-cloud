@@ -1,0 +1,90 @@
+---
+# verify-service-health.yml — workflow step service-validate: the service answers on its
+# declared health path.
+#
+# Read-only, identical under --check. The service's inventory host declares the contract:
+# service_url and health_path, or health_url when the health endpoint is not under the service
+# URL or is reached differently from the executor (local-dev: the Semaphore container reaches
+# services by container name on the local-dev network; health_url alone never touches the
+# service's stored secrets, which service_url is written into). The step's criterion is HTTP 200, so health_status_codes (which
+# admits e.g. OpenBao's sealed 503 for the fleet overview) is deliberately not read here (PR 203
+# Codex review). A service with no declared health path fails: the criterion is "answers through
+# its declared path", and an undeclared one cannot be checked. Validate All Services stays the
+# fleet overview; it only prints, so it cannot prove a step (PR 203 review).
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Refuse a target group that matches no hosts"
+  # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass
+  # (PR 203 Codex review). preflight-target-group.yml refuses survey-driven groups because its
+  # subject could be redirected away from the work; here the guard and the work read the SAME
+  # target_service, so one override moves both, and the guard only proves the group is populated.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # Tagged so a verify-only run (--tags verify) keeps the guard (PR 203 Codex review).
+  tags: [verify]
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "target_service '{{ target_service | default('') }}' matches no hosts in this inventory: nothing would be checked."
+
+- name: "Verify the service answers on its declared health path: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    _codes: [200]
+    _url: >-
+      {{ health_url | default('', true)
+         or ((service_url | default('') ~ health_path | default(''))
+             if (service_url | default('') | length > 0 and health_path | default('') | length > 0) else '') }}
+
+  tasks:
+    - name: "Probe the declared health path"
+      ansible.builtin.uri:
+        url: "{{ _url }}"
+        method: GET
+        status_code: "{{ _codes }}"
+        timeout: 10
+      register: _health
+      failed_when: false
+      check_mode: false
+      delegate_to: localhost
+      when: _url | length > 0
+
+    - name: "Decide"
+      ansible.builtin.set_fact:
+        _health_errors: >-
+          {{ (['no declared health_url or service_url + health_path for ' ~ inventory_hostname]
+              if _health is skipped else [])
+             + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
+                 ~ (_codes | join(', '))] if (_health is not skipped and _health.status not in _codes) else []) }}
+
+    # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
+    # whole target group: every host's errors, and a host that failed before its verdict counts as
+    # a failure rather than vanishing from ansible_play_hosts (PR 203 Codex review).
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- if out.extend(hostvars[h]._health_errors | default([h ~ ': no health verdict (the host failed before it)'])) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: service-validate
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          health_status: "{{ _health.status | default(none) }}"
+        step_result_error: "{{ _group_errors | join('; ') }}"
+
+    - name: "Fail when the service is not healthy on its declared path"
+      ansible.builtin.fail:
+        msg: "{{ _health_errors | join('; ') }}"
+      when: _health_errors | length > 0

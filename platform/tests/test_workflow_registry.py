@@ -179,3 +179,38 @@ def test_registry_evidence_keys_match_what_the_steps_emit():
     by_id = {s["id"]: s for s in STEPS}
     for step, keys in emitted.items():
         assert set(by_id[step]["evidence_keys"]) == keys, step
+
+
+def test_opa_step_map_matches_the_registry():
+    # OPA cannot read the registry, so catalog.workflow_steps carries what the policy binds a
+    # task to: owner, executing templates, the proposal it acts on, review state. It must be
+    # exactly the registry's, or the policy judges tasks against a stale workflow.
+    feeders = {f: s["id"] for s in STEPS for f in (s.get("feeds") or [])}
+    want = {}
+    for s in STEPS:
+        entry = {
+            "owner": s["owner"],
+            "templates": [t for t in (s.get("executor"), s.get("snapshot")) if t and t != PER_SERVICE],
+            "per_service": s.get("executor") == PER_SERVICE,
+            "reviewed": bool(s.get("reviewed")),
+        }
+        if s["id"] in feeders:  # absent, not null: a null is TRUE in a Rego condition
+            entry["proposal_from"] = feeders[s["id"]]
+        want[s["id"]] = entry
+    assert json.loads(OPA_DATA.read_text())["catalog"]["workflow_steps"] == want
+
+
+# The read-only step checks a local dry run exercises. Each needs a (Local) twin, because only
+# templates-local.yml entries are bound to the working tree; the shared template runs GitHub's
+# copy (PR 203 Codex review; MISTAKES 10.9).
+LOCAL_DRY_RUN_EXECUTORS = {"Check Secrets", "Verify Service Health"}
+
+
+def test_local_dry_run_executors_have_a_working_tree_twin():
+    local = yaml.safe_load((REPO / "platform/semaphore/templates-local.yml").read_text())["templates"]
+    shared = {t["name"]: t["playbook"] for t in yaml.safe_load(CATALOG.read_text())["templates"]}
+    twins = {t["name"].removesuffix(" (Local)"): t["playbook"] for t in local}
+    executors = {s.get("executor") for s in STEPS}
+    assert executors >= LOCAL_DRY_RUN_EXECUTORS
+    for name in LOCAL_DRY_RUN_EXECUTORS:
+        assert twins.get(name) == shared[name], name

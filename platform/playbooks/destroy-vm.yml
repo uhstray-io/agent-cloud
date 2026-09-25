@@ -153,6 +153,7 @@
       retries: 30
       delay: 5
       changed_when: false
+      when: not ansible_check_mode
 
     # Proxmox's own --destroy-unreferenced-disks scan walks every ENABLED storage on
     # the node and aborts when a cluster-wide storage is absent there (apollo has no
@@ -161,7 +162,6 @@
     # node reports ACTIVE and image-capable are swept, and every volume still tagged
     # with this vmid after the destroy is freed. Same outcome — no dead disks wasting
     # space — without depending on every defined storage being mounted on the node.
-      when: not ansible_check_mode
     - name: "List the node's storages before destroying (active + image-capable ones get swept)"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
@@ -185,6 +185,20 @@
       register: _destroy
       changed_when: _destroy.json.data is defined
       when: not ansible_check_mode
+
+    # A dry run destroyed nothing, so the wait, confirmation, volume sweep and report below
+    # would describe work that did not happen (PR 203 Codex review).
+    - name: "Dry run: report the planned destroy"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} on {{ _node }} would be destroyed (purge=1), then any volume
+          still tagged with vmid {{ _vmid }} on {{ _sweep_storages | join(', ') }} would be freed.
+          Nothing was changed.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop this host"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
 
     - name: "Wait for the destroy task"
       ansible.builtin.uri:

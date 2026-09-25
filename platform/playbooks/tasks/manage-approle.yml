@@ -78,7 +78,8 @@
     method: GET
     headers:
       X-Vault-Token: "{{ _admin_auth.json.auth.client_token }}"
-    status_code: [200]
+    # A dry run skipped the create above, so a new role is legitimately absent (404).
+    status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
   register: _role_id_resp
   delegate_to: localhost
   check_mode: false
@@ -115,11 +116,21 @@
       (_existing_creds.status | default(404)) != 200
       or (_existing_creds.json.data.data.secret_id | default('')) | length == 0
 
+- name: "Dry run: what a real run would do to this AppRole (names only)"
+  ansible.builtin.debug:
+    msg: >-
+      check mode: AppRole {{ _approle_name }} {{ 'exists' if _role_id_resp.status == 200 else 'would be created' }}
+      with policy {{ _approle_name }}; its secret_id would be
+      {{ 'reused from OpenBao' if ((_existing_creds.json.data.data.secret_id | default('')) | length > 0)
+         else 'generated and stored at secret/services/approles/' ~ _approle_name }}.
+  when: ansible_check_mode
+
 - name: "Set AppRole credentials (reuse the stored secret_id when present)"
   ansible.builtin.set_fact:
     _new_role_id: "{{ _role_id_resp.json.data.role_id }}"
     _new_secret_id: "{{ _secret_id_resp.json.data.secret_id if (_secret_id_resp is not skipped) else _existing_creds.json.data.data.secret_id }}"
   no_log: true
+  when: not ansible_check_mode
 
 - name: "Store AppRole credentials in OpenBao (only when a new secret_id was generated)"
   ansible.builtin.uri:
@@ -142,3 +153,4 @@
 - name: "AppRole provisioned"
   ansible.builtin.debug:
     msg: "AppRole '{{ _approle_name }}' ready (secret_id reused if already present). Credentials at secret/services/approles/{{ _approle_name }}"
+  when: not ansible_check_mode

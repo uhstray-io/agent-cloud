@@ -121,6 +121,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-n8n.yml` | Composable | Stateful-secret cutover guard, readiness-gated app/worker, verification and owner setup; use the service README for upgrades |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
+| `recover-netbox-runtime.yml` | Dev-bound recovery | Default preflight reports each core service's start/recreate/noop action; explicit apply converges only existing NetBox core containers through Compose and verifies health |
 | `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
 | `deploy-orb-agent.yml` | Composable | Deploy Orb Agent (standalone: Diode creds + agent.yaml + start) |
 | `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |
@@ -177,13 +178,32 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Purpose |
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
-| `check-discovery.yml` | Mixed diagnostic/mutation workflow: queries logs/records, tolerates query errors and writes site coordinates. Not read-only or a full recovery gate |
+| `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
+| `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
-| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`, and reserving takes EXPLICIT addresses |
+| `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
+
+For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
+and `pfsense_dhcp_interface`, selecting the router and interface that serve the
+requested prefix. The playbook reads that interface's DHCP configuration through
+the pfSense REST API on every reservation run; its API key comes from OpenBao's
+`secret/services/discovery/pfsense:api_key`, shared with the discovery worker.
+`reconcile-pfsense-api-key.yml` seeds that field from the fixed private
+`site-config` backup through a Dev-bound Semaphore task. It preserves a
+different live key until the replacement is verified, and never passes the
+backup value as a task parameter. The reservation refuses missing or malformed data,
+addresses in the primary or additional DHCP pools, and existing static mappings
+before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
+The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
+the singular DHCP endpoint selects the interface by `id` and checks the returned
+`id`; pfREST may render the `interface` field as a display name. A failed TLS or API read
+refuses the reservation. Verify that source with a read-only refusal run before
+reserving production addresses.
+Report mode does not contact pfSense and remains read-only.
 
 ### Service Deployment Workflow
 

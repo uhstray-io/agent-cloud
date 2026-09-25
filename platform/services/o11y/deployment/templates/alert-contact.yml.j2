@@ -1,0 +1,23 @@
+# Grafana resolves this variable from its OpenBao-rendered .env at startup.
+# The webhook value never enters this provisioned file or the repository.
+apiVersion: 1
+{% if o11y_alerts_enabled | default(false) | bool %}
+contactPoints:
+  - orgId: 1
+    name: agent-cloud-ops
+    receivers:
+      - uid: o11y_ops_discord
+        type: discord
+        settings:
+          url: $O11Y_ALERT_DISCORD_WEBHOOK_URL
+          message: |
+{% raw %}
+            {{ range .Alerts.Firing }}o11y-delivery-status=firing service={{ index .Labels "service" }}
+            {{ end }}
+            {{ template "default.message" . }}
+{% endraw %}
+{% else %}
+deleteContactPoints:
+  - orgId: 1
+    uid: o11y_ops_discord
+{% endif %}

@@ -39,7 +39,6 @@
       - { name: diode_ingest_client_secret, type: random, length: 32 }
       # User-managed (never auto-generated)
       - { name: snmp_community, type: user }
-      - { name: pfsense_api_key, type: user }
       - { name: orb_agent_client_id, type: user }
       - { name: orb_agent_client_secret, type: user }
       - { name: device_discovery_password, type: user }

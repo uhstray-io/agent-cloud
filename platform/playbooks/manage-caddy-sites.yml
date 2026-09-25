@@ -135,25 +135,30 @@
           # file-mount inode) — otherwise validation passes against old content.
           ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
           changed_when: false
-          check_mode: false
+          # A write into the running container, and under --check the edit above was only
+          # simulated: validating would read the OLD file and give a false green for the
+          # proposed change. So copy and validate run only for real (PR 203 review).
+          when: not ansible_check_mode
 
         - name: "Validate the updated Caddyfile"
           ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
           register: _val
           changed_when: false
           failed_when: false
+          when: not ansible_check_mode
 
         # Restores the PRE-EDIT copy, not blockinfile's, so a retire is undone too.
         # Also no longer gated on _bi.changed: a retire alone can invalidate the file
         # without blockinfile reporting a change, and that case previously fell
         # through to the failure below with the broken file left in place.
-          check_mode: false
         - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
           ansible.builtin.fail:
             msg: >-
               Caddy rejected the updated Caddyfile; rolled back. validate output:
               {{ _val.stderr | default(_val.stdout) | default('(none)') }}
-          when: _val.rc != 0
+          when:
+            - not ansible_check_mode
+            - _val.rc != 0
       rescue:
         - name: "Roll the Caddyfile back to its pre-edit state"
           ansible.builtin.copy:
@@ -205,7 +210,20 @@
         that: caddy_probe_host in (_post.stdout | default(_running.stdout) | default(''))
         fail_msg: "{{ caddy_probe_host }} is not in Caddy's running config after load."
         success_msg: "{{ caddy_probe_host }} is served by Caddy."
-      when: caddy_probe_host | default('') | length > 0
+      # A dry run loaded nothing, so the live config can only show the OLD routes: asserting a
+      # newly proposed host against it would fail a valid change (PR 203 Codex review).
+      when:
+        - not ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
+
+    - name: "Dry run: whether the managed host is served now, and what a real run would do"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ caddy_probe_host }} is
+          {{ 'already served' if caddy_probe_host in (_running.stdout | default('')) else 'not yet served; a real run would load it' }}.
+      when:
+        - ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
 
     - name: "Report"
       ansible.builtin.debug:

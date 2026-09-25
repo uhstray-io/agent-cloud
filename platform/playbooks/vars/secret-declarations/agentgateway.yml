@@ -1,0 +1,34 @@
+---
+# The agentgateway deploy's secret declaration, in its own file so every reader evaluates the SAME
+# declaration against its own host: deploy-agentgateway.yml loads it with vars_files, check-secrets.yml
+# with include_vars. It is computed (Jinja over inventory), and a computed value read out of a
+# playbook as text is only a string, which hid the required `existing` key from the secrets
+# step (PR 203 Codex review). test_check_secrets_verdict.py refuses a computed declaration left in a
+# playbook's own vars.
+
+# The upstream key is `existing`: surfaced to the templates, never invented.
+# Client keys are `random`: generated ONCE per identity and reused on every
+# later run, which is exactly "mint if absent, keep if present" (task 4.1);
+# rotation is a deliberate separate run, never implicit in a deploy.
+# A native LIST, built in a statement block whose only output is the list itself (no
+# community.general, which is not a declared dependency). Text-built JSON broke on ansible-core
+# 2.19+ (PR 213; MISTAKES 10.16).
+_client_defs: >-
+  {%- set out = [] -%}
+  {%- for c in agw_clients | default([]) -%}
+    {%- if out.append({'name': 'client_' ~ c, 'type': 'random', 'length': 48}) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+# agw_db_password: the gateway's own Postgres (budget usage only) — generated
+# once, reused; a new value would orphan the existing data directory.
+# agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
+# OIDC session cookie key — stable so UI sessions survive a redeploy.
+_secret_definitions: >-
+  {{ [{'name': 'vllm_api_key', 'type': 'existing'},
+      {'name': 'agw_db_password', 'type': 'random', 'length': 32},
+      {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
+# The upstream key must be present unless the inventory declares an upstream that takes none
+# (agw_upstream_requires_key: false, LM Studio without authentication). manage-secrets enforces
+# this list at deploy time and check-secrets reads it, so both agree with the deploy's own assert.
+_required_existing_secrets: >-
+  {{ ['vllm_api_key'] if agw_upstream_requires_key | default(true) | bool else [] }}

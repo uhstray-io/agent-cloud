@@ -1,9 +1,8 @@
 # Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
 # Images/ports are env-parameterized in the BASE (.env). This overlay carries
 # memory caps, the SELinux opt (the podman-machine VM enforces SELinux on bind
-# mounts + the socket), the extra networks so Prometheus can scrape caddy:2019
-# and Caddy can reach grafana:3000 by name, and the engine socket Alloy needs to
-# discover container logs.
+# mounts + the socket), and the extra networks so Alloy can scrape opted-in
+# local services and Caddy can reach Grafana by name.
 
 networks:
   # podman-compose requires every referenced network declared, incl. default.
@@ -19,7 +18,6 @@ services:
     networks:
       - o11y
       - default
-      - local-dev
   loki:
     mem_limit: 256m
     security_opt:
@@ -28,6 +26,9 @@ services:
     mem_limit: 192m
     security_opt:
       - label=disable
+    networks:
+      - o11y
+      - local-dev
     # Container-log discovery over the VM's rootful podman socket (docker-API
     # compatible). Read-only; label=disable for the VM SELinux.
     volumes:

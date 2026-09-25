@@ -1,0 +1,48 @@
+---
+# Controller-only metadata read. No VM access, template publication or token mint.
+- name: "Inspect declared discovery access on the Semaphore controller"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
+  tasks:
+    - name: "Require fixed token destination and explicit project before authentication"
+      ansible.builtin.assert:
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - discovery_project_id | default('') | string is match('^[1-9][0-9]{0,8}$')
+        fail_msg: "discovery_metadata_scope_invalid: fixed controller destination and project ID required."
+
+    - name: "Resolve existing controller runtime authentication"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Read only the allowlisted metadata endpoints"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../semaphore/inspect-discovery-metadata.py"
+      environment:
+        SEMAPHORE_URL: "http://127.0.0.1:3000"
+        SEMAPHORE_CONTROLLER_LOCAL: "1"
+        SEMAPHORE_TOKEN: "{{ _token }}"
+        SEMAPHORE_PROJECT_ID: "{{ discovery_project_id }}"
+      register: _discovery_metadata
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: "Report the sanitized metadata verdict"
+      ansible.builtin.debug:
+        msg: >-
+          {{ (_discovery_metadata.stdout | from_json)
+             if (_discovery_metadata.stdout | default('')) is match('^\s*\{')
+             else {'status': 'blocked', 'reason': 'metadata_collector_unavailable',
+                   'exit_code': _discovery_metadata.rc | default(-1),
+                   'stderr_present': (_discovery_metadata.stderr | default('') | length > 0)} }}
+
+    - name: "Refuse incomplete metadata reads"
+      ansible.builtin.assert:
+        that: _discovery_metadata.rc == 0
+        fail_msg: "discovery_metadata_read_failed: resolve the reported controller read failure."

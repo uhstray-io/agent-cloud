@@ -96,7 +96,8 @@
     - name: "Set NetBox auth header"
       ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
       vars:
-        _nb_token: "{{ _nb_secret.json.data.data[_token_key] }}"
+        _netbox_api_token: "{{ _nb_secret.json.data.data[_token_key] }}"
+      no_log: true
 
     # ── resolve slugs -> ids ───────────────────────────────────────────────
     - name: "Resolve site / device_type / device_role by slug"
@@ -118,11 +119,16 @@
       ansible.builtin.set_fact:
         _ids: >-
           {{ _ids | default({}) | combine({
-            item.item.field: (item.json.results[0].id if (item.json.count | int) > 0 else None)
+            _read.item.field: (_read.json.results[0].id if (_read.json.count | int) > 0 else None)
           }) }}
-      loop: "{{ _lookups.results }}"
+      # Indexes into the lookups instead of looping over them: a failed loop item is printed
+      # whole, and each lookup carries the NetBox token in its request headers
+      # (docs/MISTAKES.md 4.6).
+      vars:
+        _read: "{{ _lookups.results[item] }}"
+      loop: "{{ range(_lookups.results | length) | list }}"
       loop_control:
-        label: "{{ item.item.field }}"
+        label: "{{ _read.item.field }}"
 
     - name: "Assert all references resolved"
       ansible.builtin.assert:

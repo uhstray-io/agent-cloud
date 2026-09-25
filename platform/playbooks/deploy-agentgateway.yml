@@ -28,6 +28,7 @@
 #                                        false makes the key optional (still sent when present)
 #   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
+#   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 
 # ── Pre-flight: refuse to "succeed" against a group the inventory lacks ──────
 # Ansible treats a play whose hosts: matches nothing as a no-op and exits 0, so a
@@ -45,6 +46,8 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -52,26 +55,12 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # The upstream key is `existing`: surfaced to the templates, never invented.
-    # Client keys are `random`: generated ONCE per identity and reused on every
-    # later run, which is exactly "mint if absent, keep if present" (task 4.1);
-    # rotation is a deliberate separate run, never implicit in a deploy.
-    # Built with a Jinja loop rather than a collection filter so the play needs
-    # nothing beyond ansible-core (community.general is not a declared dependency).
-    _client_defs: >-
-      [{% for c in agw_clients | default([]) %}{"name": "client_{{ c }}", "type": "random", "length": 48}{{ "," if not loop.last }}{% endfor %}]
-    # agw_db_password: the gateway's own Postgres (budget usage only) — generated
-    # once, reused; a new value would orphan the existing data directory.
-    # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
-    # OIDC session cookie key — stable so UI sessions survive a redeploy.
-    _secret_definitions: >-
-      {{ [{'name': 'vllm_api_key', 'type': 'existing'},
-          {'name': 'agw_db_password', 'type': 'random', 'length': 32},
-          {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
     # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
-    _shared_reads:
-      - { from_service: authentik, read_keys: [agentgateway_oidc_client_secret] }
+    # Skipped with agw_ui_enabled: false, so /v1 deploys before that client exists.
+    _shared_reads: >-
+      {{ [{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
+         if (agw_ui_enabled | default(true) | bool) else [] }}
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
       # 0644 on purpose: the gateway image runs as a non-root user and the file is
@@ -129,13 +118,15 @@
     # none, and an empty key starts a gateway that is ready but answers every client
     # with the upstream's invalid_api_key. Refuse that unless the inventory declares
     # the upstream takes no key (agw_upstream_requires_key: false — LM Studio without
-    # authentication). Checks presence only; the value is never printed.
+    # authentication). Checks presence only; the value is never printed. Reads `_resolved`, the
+    # fact manage-secrets sets: `secrets` exists only inside its template task, so here it was
+    # undefined, defaulted to '' and refused every keyed upstream (Semaphore task 1177).
     - name: "Refuse to deploy without the upstream key when the upstream requires one"
       ansible.builtin.assert:
-        that: (secrets.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
+        that: (_resolved.vllm_api_key | default('') | length > 0) or not (agw_upstream_requires_key | default(true) | bool)
         fail_msg: >-
           secret/services/{{ service_name }}:vllm_api_key is empty. Seed it (Seed OpenBao Key,
-          value as the BAO_VALUE environment secret) before deploying, or set
+          value staged by scripts/semaphore-seed-input.py) before deploying, or set
           agw_upstream_requires_key: false for an upstream that takes no key.
         success_msg: "Upstream key present (or not required by this upstream)."
 
@@ -184,8 +175,8 @@
 # the local control plane, where this play executes inside the Semaphore
 # container rather than on the host that publishes the port. Same probe on
 # every path — local, prod VM — so the verify cannot pass for the wrong reason.
-# No keyed request here: a client key on an exec argv is a token on a command
-# line. The enrolled-identity proof is the conformance run (change task 2).
+# The compose-network probes address the gateway by IP (gateway-addr.sh): by name,
+# a VM named `agentgateway` resolved it to the db container itself (task 1215).
 - name: "Phase 3: Verify agentgateway"
   hosts: agentgateway_svc
   gather_facts: false
@@ -193,10 +184,45 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
+    # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
+    # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
+    - name: "Dry run: does agentgateway exist yet?"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "agentgateway"]
+      register: _dry_container
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, agentgateway not deployed yet: report"
+      ansible.builtin.debug:
+        msg: "check mode: agentgateway does not exist on this host yet; its verification (readiness, the 401, the keyed round-trip) needs a real deploy."
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0
+
+    - name: "Dry run, agentgateway not deployed yet: stop"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0
+
+    - name: "Find the gateway's address on its compose network"
+      ansible.builtin.command:
+        argv: ["{{ _deploy_dir }}/gateway-addr.sh"]
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+      register: _gw_addr
+      changed_when: false
+      check_mode: false
+
     - name: "Readiness listener answers (via the compose network)"
-      ansible.builtin.command: "{{ _probe }} http://agentgateway:19001/healthz/ready"
+      ansible.builtin.command: "{{ _probe }} http://{{ _gw_addr.stdout }}:19001/healthz/ready"
       # Single shot: deploy.sh already waited up to 90 s for exactly this and fails
       # hard, so a retry here would only re-prove a fact in hand.
       register: _ready
@@ -208,16 +234,169 @@
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
       # exits 1 on an HTTP error and prints the status on stderr.
-      ansible.builtin.command: "{{ _probe }} -S http://agentgateway:4000/v1/models"
+      ansible.builtin.command: "{{ _probe }} -S http://{{ _gw_addr.stdout }}:4000/v1/models"
       register: _noauth
       changed_when: false
       check_mode: false
       when: not ansible_check_mode
       failed_when: "'401' not in _noauth.stderr"
 
+    # The keyed round-trip: one enrolled identity lists the served models and completes one
+    # chat request, which the gateway can only answer by reaching agw_upstream_base_url. The
+    # probes are `uri` calls from the target to the gateway's published port, so the key is a
+    # module argument, never any process's argv: a shell probe in the db container put it on
+    # wget's command line (PR 221 Codex review). The two key-bearing probes are no_log and never
+    # fail themselves; the asserts after them carry the diagnosis (status, model names). A dry
+    # run skips them: it renders no new key and restarts nothing, so it has no gateway state of
+    # its own to prove.
+    #
+    # The identity may be restricted to some models (agw_client_policies.<name>.allowed_models):
+    # it is checked against, and asks for, only models it may use. The URL is the published
+    # port (an unspecified bind is reached on loopback); local-dev, where the target is the
+    # Semaphore container, declares agw_verify_base_url.
+    - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
+      ansible.builtin.set_fact:
+        _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
+        _verify_models: >-
+          {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
+              | default({})).allowed_models
+             | default(agw_models | map(attribute='name') | list)
+             | intersect(agw_models | map(attribute='name') | list) }}
+        _verify_url: >-
+          {{ agw_verify_base_url | default('http://'
+             ~ ('127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1'))
+             ~ ':' ~ (agw_port | default('4000'))) }}
+
+    - name: "Keyed probes: the identity may use at least one declared model"
+      ansible.builtin.assert:
+        that: _verify_models | length > 0
+        fail_msg: "{{ _verify_client }} is allowed none of the declared agw_models; set agw_verify_client to one that is."
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "An enrolled identity lists the served models"
+      ansible.builtin.uri:
+        url: "{{ _verify_url }}/v1/models"
+        headers:
+          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
+        timeout: 10
+        status_code: [200]
+        return_content: true
+      register: _keyed_models
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    # The gateway's own request bucket, when spent, answers 429 with the plain-text body
+    # `rate limit exceeded` (measured on local-dev, 2026-09-23). Only that refusal is the
+    # gateway's policy, not a routing fault: a redeploy does not fail on it, and the report says
+    # the round-trip was not proven on this run, so the deploy FAILS on it unless the operator
+    # accepts an unproven redeploy with -e agw_verify_allow_unproven=true. Any other 429 (one
+    # relayed from the upstream, or a budget refusal, whose body was not measured) fails like any
+    # other status, flag or not.
+    - name: "Keyed probes: note a policy refusal"
+      ansible.builtin.set_fact:
+        _verify_refused: >-
+          {{ (_keyed_models.status | default(-1)) == 429
+             and (_keyed_models.content | default('') | trim) == 'rate limit exceeded' }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "Require every model this identity may use in the keyed listing"
+      ansible.builtin.assert:
+        that:
+          - _keyed_models.status == 200
+          - _verify_models is subset(_keyed_models.json.data | map(attribute='id') | list)
+        fail_msg: >-
+          Keyed /v1/models as {{ _verify_client }} at {{ _verify_url }}: expected
+          {{ _verify_models | join(', ') }};
+          {% if _keyed_models.status == 200 %}listed
+          {{ _keyed_models.json.data | map(attribute='id') | join(', ') }}{% else %}HTTP
+          {{ _keyed_models.status }} {{ _keyed_models.msg | default('') }}{% endif %}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+
+    - name: "An enrolled identity completes one chat request through the upstream"
+      ansible.builtin.uri:
+        url: "{{ _verify_url }}/v1/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
+        body_format: json
+        body:
+          model: "{{ _verify_models[0] }}"
+          max_tokens: 64
+          messages: [{role: user, content: "Reply with one word: pong"}]
+        timeout: 120
+        status_code: [200]
+        return_content: true
+      register: _keyed_chat
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+
+    - name: "Keyed probes: note a policy refusal of the completion"
+      ansible.builtin.set_fact:
+        _verify_refused: >-
+          {{ (_keyed_chat.status | default(-1)) == 429
+             and (_keyed_chat.content | default('') | trim) == 'rate limit exceeded' }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - _keyed_chat is not skipped
+
+    - name: "Refuse to report success when the round-trip was not proven"
+      ansible.builtin.assert:
+        that: not (_verify_refused | bool) or (agw_verify_allow_unproven | default(false) | bool)
+        fail_msg: >-
+          The gateway's own request bucket refused {{ _verify_client }} (HTTP 429, rate limit
+          exceeded), so this run did not prove the gateway reaches {{ agw_upstream_base_url }}.
+          Rerun after the window, or -e agw_verify_allow_unproven=true to accept an unproven
+          redeploy.
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "Require a completion the upstream produced"
+      # The gateway answers a completion only by reaching agw_upstream_base_url; `model` is the
+      # upstream's own served name (local-dev: openai/gpt-oss-20b), and usage is its count.
+      ansible.builtin.assert:
+        that:
+          - _keyed_chat.status == 200
+          - _keyed_chat.json.object == 'chat.completion'
+          - _keyed_chat.json.choices | length > 0
+          - (_keyed_chat.json.usage.completion_tokens | default(0) | int) > 0
+        fail_msg: >-
+          Keyed chat completion as {{ _verify_client }} for {{ _verify_models[0] }} failed:
+          HTTP {{ _keyed_chat.status }} {{ _keyed_chat.msg | default('') }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          agentgateway ready — /healthz/ready answers on the compose network;
-          unauthenticated /v1/models is 401 at the gateway. The keyed round-trip and
-          conformance against the direct upstream are change task 2.
+          agentgateway ready — /healthz/ready answers on the compose network; unauthenticated
+          /v1/models is 401 at the gateway.
+          {% if ansible_check_mode %}Check mode: the keyed round-trip runs only in a real run.
+          {% elif _verify_client | length > 0 and (_verify_refused | bool) %}WARNING: the keyed
+          round-trip was NOT proven on this run: the gateway's own request bucket refused
+          {{ _verify_client }} (HTTP 429, rate limit exceeded); accepted by
+          agw_verify_allow_unproven=true. Rerun the verify after the window.
+          {% elif _verify_client | length > 0 %}As {{ _verify_client }}: /v1/models lists
+          {{ _verify_models | join(', ') }}; one chat completion for
+          {{ _verify_models[0] }} came back from upstream model
+          {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
+          ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
+          {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
+          run.{% endif %}

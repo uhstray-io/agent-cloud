@@ -240,3 +240,15 @@ templates:
     # schedule runs `main`, which has no collector until promotion. Same cron.
     schedule:
       cron: "*/15 * * * *"
+
+  # Workflow step service-validate's executor (PR 203 Codex review: the shared template
+  # alone runs GitHub's playbook on local-dev).
+  - name: "Verify Service Health (Local)"
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        # Only groups with a health_url in the generated local inventory can pass (task 7.9).
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc)
+        type: string
+        required: true

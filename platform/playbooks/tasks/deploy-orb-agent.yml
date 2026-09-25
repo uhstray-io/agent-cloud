@@ -34,7 +34,7 @@
       become: "{{ not (local_mode | default(false) | bool) }}"
       # A WRITE: it stops and removes the running agent. It was labelled changed_when: false,
       # which made the check-mode retrofit treat it as a read and run it under --check, and a
-      # dry run removed the local agent (docs/MISTAKES.md 5.9).
+      # dry run removed the local agent (docs/MISTAKES.md 5.12).
       changed_when: true
       when: not ansible_check_mode
 

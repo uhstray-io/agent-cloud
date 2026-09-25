@@ -343,6 +343,7 @@
       retries: 20
       delay: 6
       until: _ak_outpost.rc == 0
+      check_mode: false
 
     # ── Promotion VERIFY: live OIDC config matches intent ────────────────────
     # Query the live Authentik API and FAIL the deploy if any enabled OIDC
@@ -351,7 +352,6 @@
     # local default that a content-unchanged blueprint never re-applied (the exact
     # semaphore failure). Runs inside authentik-server so the script reads the
     # bootstrap token from the container env (nothing secret on the command line).
-      check_mode: false
     - name: "Promotion verify (prod): render the live-OIDC checker"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-oidc.py.j2"

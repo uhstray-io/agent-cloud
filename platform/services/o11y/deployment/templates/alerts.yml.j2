@@ -1,0 +1,100 @@
+# Grafana-managed alerts. Inventory enables them only with the OpenBao-backed
+# Discord contact point; the notification drill is the rollout gate.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: service-telemetry
+    folder: agent-cloud
+    interval: 60s
+    rules:
+      - uid: o11y_service_down
+        title: Service metrics endpoint down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+{% if o11y_alert_canary_service is defined %}
+              expr: 'up{service="{{ o11y_alert_canary_service }}"}'
+{% else %}
+              expr: 'up{service!=""}'
+{% endif %}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: lt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        executionErrorState: Alerting
+        for: 2m
+        annotations:
+          summary: A declared service metrics endpoint is unreachable.
+          dashboard_url: /d/service-overview
+        labels: { severity: critical }
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool %}
+        notification_settings:
+          receiver: agent-cloud-ops
+{% endif %}
+{# The local inventory generated before this rollout still needs the Caddy pilot
+   contract; a declared inventory list overrides this default. #}
+{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
+      - uid: {{ target.uid }}
+        title: Missing telemetry for {{ target.service }} at {{ target.instance }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        executionErrorState: Alerting
+        for: 2m
+        annotations:
+          summary: Expected metrics have disappeared for {{ target.service }}.
+          dashboard_url: /d/service-overview
+        labels: { severity: critical, service: '{{ target.service }}' }
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+        notification_settings:
+          receiver: agent-cloud-ops
+{% endif %}
+{% endfor %}

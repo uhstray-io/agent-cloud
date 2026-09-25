@@ -24,6 +24,9 @@
 #                    _bm_remove must be non-empty. Removing from an absent path is a
 #                    no-op, never a create. Verified by the same read-back: every
 #                    merged key holds AND no removed key remains.
+#   _bm_guard_key / _bm_guard_value  optional compare-and-swap protection for
+#                    one key. A changed value or concurrent version change fails
+#                    closed instead of overwriting a rotation. Set-only merges.
 #
 # Sets for the caller:
 #   _bm_changed      whether anything was written
@@ -76,14 +79,28 @@
 - name: "Dry run: report what this merge would write (key names only)"
   # Under --check the writes below are skipped; this says what a real run would do. Only key
   # NAMES are printed, never values.
+  # Reads _bm_set/_bm_del, the defaulted forms: a remove-only merge (a key revoke) supplies no
+  # _bm_data (PR 203 Codex review).
   ansible.builtin.debug:
     msg: >-
       check mode: secret/{{ _bm_path }} would be
-      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would change:
-      {% for k, v in _bm_data.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %}
+      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would be set:
+      {% for k, v in _bm_set.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %};
+      keys that would be removed: {{ _bm_del | intersect(_bm_current.keys() | list) | join(', ') }}
   when:
     - ansible_check_mode
-    - _bm_existing.status == 404 or (_bm_current | combine(_bm_data)) != _bm_current
+    - >-
+      _bm_existing.status == 404
+      or ((_bm_current | combine(_bm_set)) != _bm_current)
+      or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
+
+- name: "Require the guarded key to be unchanged"
+  ansible.builtin.assert:
+    that:
+      - _bm_del | length == 0
+      - (_bm_current.get(_bm_guard_key) or none) == _bm_guard_value
+    fail_msg: "The guarded OpenBao key changed before reconciliation; no write occurred."
+  when: _bm_guard_key is defined
 
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
   # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a
@@ -101,6 +118,7 @@
   when:
     - not ansible_check_mode
     - _bm_existing.status == 200
+    - _bm_guard_key is not defined
     - ((_bm_current | combine(_bm_set)) != _bm_current) or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
   register: _bm_patch
   # uri does not mark a POST/PATCH as changed on its own — measured: a PATCH that
@@ -110,6 +128,34 @@
   changed_when: true
   delegate_to: localhost
   no_log: true
+
+- name: "Write a guarded update at the version just read"
+  ansible.builtin.uri:
+    url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ _bm_token }}"
+    body_format: json
+    body:
+      data: "{{ _bm_current | combine(_bm_set) }}"
+      options:
+        cas: "{{ _bm_existing.json.data.metadata.version }}"
+    status_code: [200, 400]
+  when:
+    - not ansible_check_mode
+    - _bm_guard_key is defined
+    - _bm_existing.status == 200
+    - (_bm_current | combine(_bm_set)) != _bm_current
+  register: _bm_guarded
+  changed_when: _bm_guarded.status | default(0) == 200
+  delegate_to: localhost
+  no_log: true
+
+- name: "Refuse a concurrent guarded update"
+  ansible.builtin.assert:
+    that: _bm_guarded.status == 200
+    fail_msg: "OpenBao rejected the version-guarded update; retry after checking the live key."
+  when: _bm_guarded is not skipped
 
 - name: "Create the new path (nothing to preserve — and prove it with CAS)"
   # options.cas: 0 makes the create atomic: it succeeds ONLY if no version
@@ -153,15 +199,24 @@
   when:
     - not ansible_check_mode
     - (_bm_create.status | default(0)) == 400
+    - _bm_guard_key is not defined
   register: _bm_patch_after_race
   changed_when: true
   delegate_to: localhost
   no_log: true
 
+- name: "Refuse a concurrent guarded creation"
+  ansible.builtin.assert:
+    that: _bm_create.status == 200
+    fail_msg: "OpenBao rejected the version-guarded creation; retry after checking the live key."
+  when:
+    - _bm_guard_key is defined
+    - _bm_create is not skipped
+
 - name: "Record whether anything was written"
   ansible.builtin.set_fact:
     _bm_changed: >-
-      {{ (_bm_patch is changed) or (_bm_create is changed)
+      {{ (_bm_patch is changed) or (_bm_guarded is changed) or (_bm_create is changed)
          or (_bm_patch_after_race is changed) }}
 
 - name: "Verify the merged keys (only after an actual write)"

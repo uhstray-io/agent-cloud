@@ -32,10 +32,17 @@ COMMANDS = {"command", "shell", "raw", "script"}
 READ_METHODS = {"GET", "HEAD"}
 # A container-engine lifecycle verb is a write whatever changed_when says. The check-mode
 # retrofit trusted changed_when: false on "stop + rm the orb agent", and a dry run removed
-# the running agent (docs/MISTAKES.md 5.9).
+# the running agent (docs/MISTAKES.md 5.12).
 ENGINE_WRITE = re.compile(
-    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose\s+)?"
-    r"(?:stop|rm|rmi|kill|restart|start|run|pull|up|down|create)\b"
+    # Compose's own options may sit between `compose` and the verb (`compose -f x up`).
+    r"(?:\bdocker|\bpodman|\{\{[^}]*engine[^}]*\}\})\s+(?:compose(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+)?"
+    r"(?:stop|rm|rmi|kill|restart|start|run|pull|up|down|create|login|logout|cp|tag|push|build|load|import|commit)\b"
+)
+# Host filesystem and service writes, whatever changed_when says (PR 203 review: `sudo mkdir`
+# + `chmod 1777` under check_mode: false changed a VM during a dry run).
+HOST_WRITE = re.compile(
+    r"(?:^|[\s;&|(])(?:sudo\s+)?(?:mkdir|chmod|chown|chgrp|mv|ln|tee|touch|install|truncate)\s"
+    r"|(?:^|[\s;&|(])(?:sudo\s+)?systemctl\s+(?:--user\s+)?(?:start|stop|restart|reload|enable|disable)\b"
 )
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
 
@@ -56,9 +63,22 @@ def _module(task: dict) -> tuple[str, object] | tuple[None, None]:
     return None, None
 
 
+_SKIP_TERM = re.compile(r"(?:^|\band\s+)\(?\s*not\s+ansible_check_mode\s*\)?(?:\s+and\b|$)")
+
+
 def _mentions_check_mode(when) -> bool:
+    """True only when the condition is PROVEN false under --check: `not ansible_check_mode`
+    as a whole list item (Ansible ANDs a list), or as a top-level `and` term of a string with
+    no `or`. A mere mention is not enough: `when: ansible_check_mode` runs only IN a dry run,
+    and `when: x or not ansible_check_mode` runs in one whenever x holds (PR 203 review)."""
     items = when if isinstance(when, list) else [when]
-    return any("ansible_check_mode" in str(item) for item in items)
+    for item in items:
+        text = " ".join(str(item).split())
+        if text == "not ansible_check_mode":
+            return True
+        if " or " not in f" {text} " and _SKIP_TERM.search(text):
+            return True
+    return False
 
 
 def _guarded(task: dict, inherited: bool) -> bool:
@@ -70,8 +90,19 @@ def _command_text(args) -> str:
     if isinstance(args, str):
         return args
     if isinstance(args, dict):
-        return str(args.get("cmd") or " ".join(map(str, args.get("argv", []))))
+        argv = args.get("argv", [])
+        # An argv computed in Jinja is one string holding a list literal; read its words, not
+        # its characters (recover-netbox-runtime's `compose up` was classified as a read).
+        if isinstance(argv, str):
+            argv = re.sub(r"[\[\]',\"+]|\{\{|\}\}", " ", argv).split()
+        return str(args.get("cmd") or " ".join(map(str, argv)))
     return str(args or "")
+
+
+def _sandboxed(text: str) -> bool:
+    """A command that makes its own `mktemp -d` root and removes it on EXIT (e.g. netplan
+    validated in an isolated root) writes only into that throwaway root."""
+    return bool(re.search(r"\broot=\$\(mktemp -d\)", text)) and "trap 'rm -rf \"$root\"' EXIT" in text
 
 
 def _classify(task: dict, module: str, args) -> str:
@@ -83,6 +114,8 @@ def _classify(task: dict, module: str, args) -> str:
     verb = ENGINE_WRITE.search(text)
     # `run --rm` is a throwaway probe container (e.g. validating a config): it leaves nothing.
     if module in COMMANDS and verb and not (verb.group(0).endswith("run") and "--rm" in text):
+        return "write"
+    if module in COMMANDS and HOST_WRITE.search(text) and not _sandboxed(text):
         return "write"
     if task.get("changed_when") is False:
         return "read"
@@ -274,3 +307,70 @@ def test_throwaway_probe_container_is_a_read():
         "- name: validate\n  ansible.builtin.command: podman run --rm caddy caddy validate\n"
         "  changed_when: false\n  check_mode: false\n"
     )
+
+
+def test_registry_login_and_host_writes_are_writes():
+    # PR 203 review: `podman login` and `sudo mkdir` + `chmod` ran under --check.
+    for cmd in ("podman login ghcr.io -u x --password-stdin",
+                'podman machine ssh "sudo mkdir -p /d && sudo chmod 1777 /d"',
+                "{{ _engine }} cp /f c:/tmp/f"):
+        found = _tasks(f"- name: w\n  ansible.builtin.shell: {cmd!r}\n  changed_when: false\n  check_mode: false\n")
+        assert found == ["w: shell write forced to run in check mode (check_mode: false)"], cmd
+
+
+def test_a_command_that_writes_only_its_own_temp_root_is_a_read():
+    assert not _tasks(
+        "- name: validate\n  ansible.builtin.shell: |\n"
+        "    root=$(mktemp -d)\n    trap 'rm -rf \"$root\"' EXIT\n    mkdir -p \"$root/etc\"\n"
+        "  changed_when: false\n  check_mode: false\n"
+    )
+
+
+def test_a_mention_of_check_mode_is_not_a_guard():
+    # Both of these still run the write in a dry run.
+    for when in ("ansible_check_mode", "allowed or not ansible_check_mode"):
+        found = _tasks(f"- name: w\n  ansible.builtin.command: podman restart x\n  when: {when}\n")
+        assert found == ["w: command write without a check-mode guard"], when
+
+
+def test_proven_skips_are_guards():
+    for when in ('"not ansible_check_mode"', '"x and not ansible_check_mode"',
+                 '"not ansible_check_mode and x"', '[x, "not ansible_check_mode"]'):
+        assert not _tasks(f"- name: w\n  ansible.builtin.command: podman restart x\n  when: {when}\n"), when
+
+
+def test_compose_options_before_the_verb_are_still_a_write():
+    found = _tasks(
+        "- name: up\n  ansible.builtin.command:\n"
+        "    argv: [docker, compose, --project-name, netbox, -f, docker-compose.yml, up, -d]\n"
+        "  changed_when: false\n"
+    )
+    assert found and "write" in found[0], found
+
+
+def test_an_argv_computed_in_jinja_is_read_as_words():
+    found = _tasks(
+        "- name: up\n  ansible.builtin.command:\n"
+        "    argv: \"{{ ['docker', 'compose', '-f', 'x.yml', 'up', '-d'] + [item] }}\"\n"
+        "  changed_when: false\n"
+    )
+    assert found and "write" in found[0], found
+
+
+# Task keywords that, placed between a comment and the next `- name:`, belong to the PREVIOUS
+# task while reading as the next one's.
+_TASK_KEY = re.compile(r"\s+(when|check_mode|changed_when|failed_when|no_log|register|delegate_to|"
+                       r"become|ignore_errors|until|retries|delay|loop|tags):")
+
+
+def test_no_task_key_is_stranded_under_the_next_tasks_comment():
+    # The check-mode retrofit left eight `when:` guards and a `check_mode: false` stranded that way
+    # (PR 203 Codex review).
+    stranded = []
+    for path in sorted((REPO / "platform").rglob("*.yml")):
+        lines = path.read_text().split("\n")
+        for i in range(1, len(lines) - 1):
+            if (_TASK_KEY.match(lines[i]) and lines[i - 1].strip().startswith("#")
+                    and lines[i + 1].strip().startswith("- name:")):
+                stranded.append(f"{path.relative_to(REPO)}:{i + 1}")
+    assert not stranded, stranded

@@ -457,7 +457,9 @@
           - >-
             {{ 'Config unchanged — already matched the declared spec.'
                if (_cfg_changes | length == 0) and (_disk_put is skipped)
-               else 'Converged.' }}
+               else ('check mode: NOT applied. The config above is the current one; a real run
+                      would change ' ~ (_cfg_changes | join(', ') or 'the disk') ~ '.'
+                     if ansible_check_mode else 'Converged.') }}
           - >-
             {{ 'Guest was restarted, so cores/memory are live.'
                if (_needs_restart | bool) and (_allow_reboot | bool)

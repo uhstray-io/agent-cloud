@@ -32,6 +32,9 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # This deploy reads its one secret directly rather than through manage-secrets; declared so
+    # Check Secrets knows the deploy cannot run without it (PR 203 Codex review).
+    _required_existing_secrets: [app_private_key]
     _org: "{{ github_org | default('uhstray-io') }}"
     # The JWT issuer. Upstream recommends the App's CLIENT ID and accepts the app id;
     # both are opaque strings here, so either is taken and the client id wins when both
@@ -253,6 +256,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     # ── diagnosing a credential failure without printing the credential ────
     # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
@@ -265,7 +269,6 @@
     # calls out. The resolution is not to widen no_log but to emit a CLASSIFICATION:
     # the helper's stderr is matched against its own known messages and only the verdict
     # is printed. Shapes, counts and verdicts are safe; values are not.
-      check_mode: false
     - name: "Classify the outcome without exposing any credential"
       ansible.builtin.set_fact:
         # Matches the PEM armour prefix WITHOUT spelling out the full header: the
@@ -374,12 +377,12 @@
       changed_when: "'registered' in (_configured.stdout | default(''))"
       failed_when: false
       no_log: true
+      when: not ansible_check_mode
 
     # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
     # no_log step that merely fails is undiagnosable. The script never echoes the token
     # and the runner's own configuration masks secrets it is given, so its output is safe
     # to surface — and surfacing it is what turns "failed" into something actionable.
-      when: not ansible_check_mode
     - name: "Report the registration outcome"
       ansible.builtin.debug:
         msg: >-

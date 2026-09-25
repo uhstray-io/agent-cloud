@@ -1,0 +1,80 @@
+---
+# Run after generating a fresh log line for the named service. This read-only
+# onboarding gate checks actual collection, not just healthy o11y containers.
+- name: Require a declared o11y receiver and a service identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the candidate checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; service collection was not verified."
+        success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
+      when: expected_repository_sha is defined
+
+    - name: Validate verification inputs
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length > 0
+          - expected_service | default('') is match('^[a-z][a-z0-9-]*$')
+          - expected_instance | default('') | length == 0 or expected_instance is match('^[a-zA-Z0-9.-]+:[0-9]+$')
+          - expect_metrics | default('true') | string | lower in ['true', 'false']
+        fail_msg: "Declare an o11y_svc receiver, a lowercase service name, and expect_metrics=true or false."
+
+- name: Verify the named service is collected
+  hosts: o11y_svc
+  gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: Query recent Loki logs for the service
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://loki:3100/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
+      register: _service_logs
+      changed_when: false
+      check_mode: false
+
+    - name: Require a recent service log line
+      ansible.builtin.assert:
+        that:
+          - _logs_json.status == 'success'
+          - _logs_json.data.result | length > 0
+        fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
+      vars:
+        _logs_json: "{{ _service_logs.stdout | from_json }}"
+
+    - name: Verify the service's Prometheus scrape results
+      ansible.builtin.include_tasks: tasks/verify-o11y-metrics.yml
+      when: expect_metrics | default('true') | bool
+
+    - name: Report verified metrics and logs
+      ansible.builtin.debug:
+        msg: >-
+          {{ expected_service }} has a Loki log from the last 15 minutes and
+          {{ _service_scrapes | length }} healthy Prometheus scrape(s).
+      vars:
+        _service_scrapes: "{{ (_scrapes.stdout | from_json).data.result }}"
+      when: expect_metrics | default('true') | bool
+
+    - name: Report verified log-only collection
+      ansible.builtin.debug:
+        msg: "{{ expected_service }} has a Loki log from the last 15 minutes (log-only tier)."
+      when: not (expect_metrics | default('true') | bool)

@@ -23,6 +23,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       BLOCKED 2026-09-22: production's running version is readable only through the
       authenticated `GET /api/info` or the UI; pinning blind could downgrade it across its
       database migrations. Operator reads it, then pin at or above it
+      2026-09-23 (PR 203 review): the pin no longer depends on that read. Semaphore's
+      deploy.sh reads the running controller's version and refuses a pin older than it
+      (test_semaphore_downgrade.bats). A production redeploy is therefore safe to attempt,
+      but it stops rather than downgrading.
 - [x] 0.4 Verify NetBox virtual machines accept custom fields on the pinned NetBox version and
       record the API used to create them. 2026-09-22: yes, see `design.md` Context
 - [x] 0.5 Verify agentgateway passes `response_format` with `type: json_schema` through to vLLM
@@ -215,6 +219,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       earlier steps", "Failure appears within one interval", "NetBox outage does not block
       deployment", "Only the collector writes status", "Unreviewed step is visible" and
       "Regression blocks a prompt change" pass on local-dev
+- [x] 7.9 Health contracts in the generated local inventory (`bootstrap-local-dev.yml`): a
+      `service_url` + `health_path` per local service, each read from the service's own verify
+      step and reachable from inside the local Semaphore container. Until then `Verify Service
+      Health (Local)` fails closed with "no declared service_url + health_path" (PR 203 Codex
+      review). Done for step-ca, Authentik, o11y and agentgateway as `health_url`, each
+      verified 200 from inside the local Semaphore container; Caddy, OpenBao and the other
+      local services remain undeclared and fail closed by name
 
 ## 8. Backfill agentgateway end to end
 

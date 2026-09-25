@@ -158,6 +158,11 @@ all:
           container_engine: podman
           o11y_grafana_port: 3002
           o11y_prom_port: 9090
+          o11y_prom_retention_size: 1GB  # local cap; production must size its own disk first
+          o11y_scrape_sample_limit: 2000
+          o11y_expected_metrics_targets:
+            - { uid: o11y_missing_caddy, service: caddy, instance: "caddy:2021" }
+          o11y_alerts_enabled: false  # enable only after the OpenBao webhook is approved and seeded
           o11y_loki_port: 3100
 
     # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as

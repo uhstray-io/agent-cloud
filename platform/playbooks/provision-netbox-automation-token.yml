@@ -1,16 +1,18 @@
 ---
 # provision-netbox-automation-token.yml — one-time bootstrap for build #1.
 #
-# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml reads
-# at secret/services/netbox:automation_api_token, and stores it in OpenBao.
+# Mints the dedicated, scoped NetBox API token that create-netbox-device.yml and
+# netbox-allocate-ip.yml read at secret/services/netbox:automation_api_token, and
+# stores it in OpenBao.
 # Idempotent: a no-op if the token already exists there. REST token creation needs
 # an existing token, so the first one is minted server-side via the NetBox Django
 # shell — same exec pattern as cleanup-netbox.yml.
 #
-# ponytail: the Django snippet targets NetBox v4 (users.models.{Token,ObjectPermission},
-# core.models.ObjectType). It runs via Semaphore against the live NetBox — not
-# testable in this repo — so verify those model paths on first run if the version
-# differs. The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
+# The Django snippet targets NetBox v4.5+ (users.models.{Token,ObjectPermission},
+# core.models.ObjectType). A v2 token's plaintext is available only at creation,
+# so an orphaned token is refused rather than storing its public key as a secret.
+# replace_unrecoverable_token=true explicitly revokes exactly one orphan before minting.
+# The single ObjectPermission grants view+add scoped to the dcim/ipam/extras
 # objects the executor touches (not superuser); a stricter view-vs-add split is the
 # upgrade path if that over-grant ever matters.
 
@@ -23,7 +25,7 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) | default('http://127.0.0.1:8200', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
+    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
     # One mint, several least-privilege identities. device-writer is the original (Build #1:
     # create-netbox-device); workflow-collector may only view and change virtual machines,
     # which is what the conformance collector writes (their custom fields).
@@ -58,7 +60,7 @@
     _user: "{{ _profile.user }}"
 
   tasks:
-    - name: "Refuse a cleartext secret-store endpoint"
+    - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
@@ -90,44 +92,42 @@
       no_log: true
       check_mode: false
 
-    # Converged on EVERY run, before the skip below: a scope added to a profile has to reach
-    # the identity whose token already exists, and the token itself is never re-minted for it.
     # The `|` below is a Django QuerySet union inside Python, not a shell pipe.
-    - name: "Converge the identity and its scoped permissions"
-      ansible.builtin.command:
-        cmd: "{{ _manage }}"
-        stdin: |
-          from django.contrib.auth import get_user_model
-          from users.models import ObjectPermission
-          from core.models import ObjectType
+    - name: "Ensure NetBox automation user and scoped permissions"  # noqa: risky-shell-pipe
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import ObjectPermission
+        from core.models import ObjectType
 
-          # The NetBox 4.5 User model has no is_staff field (FieldError, 2026-09-22).
-          user, changed = get_user_model().objects.get_or_create(
-              username="{{ _user }}", defaults={"is_active": True},
-          )
-          scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }})]
-          if {{ _profile.view_object_types | default([]) | to_json }}:
-              scopes.append(("{{ _profile.view_permission | default(_profile.permission ~ '-view') }}", ["view"],
-                             {{ _profile.view_object_types | default([]) | to_json }}))
-          for name, actions, types in scopes:
-              wanted = {ObjectType.objects.get_by_natural_key(*t.split(".")).pk for t in types}
-              perm, created = ObjectPermission.objects.get_or_create(
-                  name=name, defaults={"enabled": True, "actions": actions},
-              )
-              changed |= created
-              if not perm.enabled or perm.actions != actions:
-                  perm.enabled, perm.actions = True, actions
-                  perm.save(update_fields=["enabled", "actions"])
-                  changed = True
-              if set(perm.object_types.values_list("pk", flat=True)) != wanted:
-                  perm.object_types.set(list(wanted))
-                  changed = True
-              if not perm.users.filter(pk=user.pk).exists():
-                  perm.users.add(user)
-                  changed = True
-          print("changed" if changed else "unchanged")
+        user, changed = get_user_model().objects.get_or_create(
+            username="{{ _user }}",
+            defaults={"is_active": True},
+        )
+        scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }})]
+        if {{ _profile.view_object_types | default([]) | to_json }}:
+            scopes.append(("{{ _profile.view_permission | default(_profile.permission ~ '-view') }}", ["view"],
+                           {{ _profile.view_object_types | default([]) | to_json }}))
+        for name, actions, types in scopes:
+            wanted = {ObjectType.objects.get_by_natural_key(*t.split(".")).pk for t in types}
+            perm, created = ObjectPermission.objects.get_or_create(
+                name=name, defaults={"enabled": True, "actions": actions},
+            )
+            changed |= created
+            if not perm.enabled or perm.actions != actions:
+                perm.enabled, perm.actions = True, actions
+                perm.save(update_fields=["enabled", "actions"])
+                changed = True
+            if set(perm.object_types.values_list("pk", flat=True)) != wanted:
+                perm.object_types.set(list(wanted))
+                changed = True
+            if not perm.users.filter(pk=user.pk).exists():
+                perm.users.add(user)
+                changed = True
+        print("changed" if changed else "unchanged")
+        PYSCRIPT
       register: _permissions
-      changed_when: _permissions.stdout_lines | last | trim == 'changed'
+      changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
       when: not ansible_check_mode
 
     - name: "Already provisioned — skip (idempotent)"
@@ -139,6 +139,61 @@
         - name: "End play"
           ansible.builtin.meta: end_play
 
+    - name: "Check for a dedicated token whose plaintext is absent from OpenBao"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token
+
+        # A dry run skips creating the user, so an absent user has no tokens (0), not an error.
+        user = get_user_model().objects.filter(username="{{ _user }}").first()
+        print(0 if user is None else Token.objects.filter(
+            user=user, description="{{ _profile.description }}",
+        ).count())
+        PYSCRIPT
+      register: _orphaned_token
+      changed_when: false
+      check_mode: false
+
+    - name: "Refuse an unrecoverable dedicated token"
+      ansible.builtin.assert:
+        that: >-
+          (_orphaned_token.stdout_lines | last | trim | int) == 0 or
+          (replace_unrecoverable_token | default(false) | bool and
+           (_orphaned_token.stdout_lines | last | trim | int) == 1)
+        fail_msg: "NetBox has a dedicated token without its OpenBao bearer value; replacement requires replace_unrecoverable_token=true and exactly one matching token."
+
+    # A dry run writes no user, permission or token, so the mint and its sanity check below have
+    # nothing to read: report what a real run would do and stop (PR 203 check-mode retrofit).
+    - name: "Dry run: report the planned mint"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ 'one unrecoverable dedicated token would be revoked, then ' if
+          (_orphaned_token.stdout_lines | last | trim | int) == 1 else '' }}a scoped v2 token for
+          {{ _user }} would be minted and stored at secret/services/netbox:{{ _profile.field }}.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop before the revoke and mint"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+
+    - name: "Revoke exactly one unrecoverable dedicated token when explicitly requested"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import Token
+
+        user = get_user_model().objects.get(username="{{ _user }}")
+        matches = Token.objects.filter(
+            user=user, description="{{ _profile.description }}",
+        )
+        if matches.count() != 1:
+            raise RuntimeError("Expected exactly one unrecoverable dedicated token")
+        matches.delete()
+        print("revoked")
+        PYSCRIPT
+      when: not ansible_check_mode and (_orphaned_token.stdout_lines | last | trim | int) == 1
+
     - name: "Mint the dedicated scoped token via the NetBox Django shell"
       ansible.builtin.shell: |
         {{ _manage }} << 'PYSCRIPT'
@@ -146,40 +201,37 @@
         from users.models import Token
 
         user = get_user_model().objects.get(username="{{ _user }}")
-        # NetBox 4.5 v2 token: the secret exists ONLY at creation (hashed with the pepper,
-        # never stored), so an existing token cannot be recovered and a new one is minted.
-        # This task runs only when OpenBao holds no token (the skip above). The stored value
-        # is the full bearer credential the API expects: nbt_<key>.<token>.
-        minted = Token.objects.create(
-            user=user, description="{{ _profile.description }}",
+        issued = Token.objects.create(
+            user=user, version=2,
+            description="{{ _profile.description }}",
         )
-        print(f"nbt_{minted.key}.{minted.token}" if getattr(minted, "version", 1) == 2 else minted.key)
+        print(issued.get_auth_header_prefix().removeprefix("Bearer ") + issued.token)
         PYSCRIPT
       register: _mint
       changed_when: true
       no_log: true
       when: not ansible_check_mode
 
-    - name: "Sanity-check the minted token (v2 nbt_<12>.<40>, or a legacy 40-char v1)"
+    - name: "Sanity-check the minted NetBox v2 bearer token"
       ansible.builtin.assert:
         that:
           - (_mint.stdout_lines | default([]) | length) > 0
-          - >-
-            (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]{12}\\.[A-Za-z0-9]{40}$')
-            or (_mint.stdout_lines | last | trim | length) == 40
-        fail_msg: "NetBox Django shell did not return a token of a known shape — mint failed; check the run."
+          - (_mint.stdout_lines | last | trim) is match('^nbt_[A-Za-z0-9]{12}\.[A-Za-z0-9]{40}$')
+        fail_msg: "NetBox Django shell did not return a v2 bearer token — mint failed; check the run."
       no_log: true
 
-    - name: "Store the token in OpenBao (merge-patch: siblings preserved, write verified)"
-      # The shared merge task, not a read-modify-POST: two profiles and the Diode credential
-      # task all write secret/services/netbox, and a whole-document POST drops a sibling
-      # written between our read and our write.
-      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
-      vars:
-        _bm_url: "{{ _bao_url }}"
-        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
-        _bm_path: services/netbox
-        _bm_data: "{{ {_profile.field: (_mint.stdout_lines | last | trim)} }}"
+    - name: "Store the token in OpenBao (patch, preserving other fields)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          data: "{{ (_nb_secret.json.data.data | default({})) | combine({_profile.field: (_mint.stdout_lines | last | trim)}) }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      no_log: true
       when: not ansible_check_mode
 
     - name: "Provisioned"

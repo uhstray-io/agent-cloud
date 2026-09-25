@@ -1,8 +1,13 @@
 """Tests for proxmox_discovery pure helper functions."""
 
+from types import SimpleNamespace
+
+import proxmox_discovery as discovery
 import pytest
 from proxmox_discovery import (
+    ProxmoxDiscoveryBackend,
     _bytes_to_gb,
+    _configured_vm_ipv4,
     _iface_type,
     _int,
     _mb_to_gb,
@@ -115,6 +120,7 @@ class TestPickPrimaryIpv4:
         assert _pick_primary_ipv4(ips) == expected
 
     @pytest.mark.parametrize("skip_addr, valid_addr", [
+        ("0.0.0.0", "192.0.2.10"),
         ("127.0.0.1", "192.168.1.50"),
         ("169.254.1.1", "10.0.0.5"),
         ("fe80::1", "192.168.1.200"),
@@ -122,3 +128,54 @@ class TestPickPrimaryIpv4:
     def test_skips_non_routable(self, skip_addr, valid_addr):
         ips = [{"address": skip_addr, "prefix": 24}, {"address": valid_addr, "prefix": 24}]
         assert _pick_primary_ipv4(ips)[0] == valid_addr
+
+
+@pytest.mark.parametrize("config, expected", [
+    ({"ipconfig0": "ip=192.0.2.10/24,gw=192.0.2.1"},
+     ("ipconfig0", {"address": "192.0.2.10", "prefix": 24})),
+    ({"ipconfig0": "ip=dhcp", "ipconfig1": "ip=198.51.100.10/25"},
+     ("ipconfig1", {"address": "198.51.100.10", "prefix": 25})),
+    ({"ipconfig0": "ip=127.0.0.1/8", "ipconfig1": "ip=169.254.1.1/16"}, None),
+    ({"ipconfig0": "ip=invalid/24", "ipconfig1": "ip=auto"}, None),
+    ({"ipconfig0": "ip=203.0.113.10"}, None),
+    ({"ipconfig0": "ip=203.0.113.10/0"}, None),
+])
+def test_configured_vm_ipv4(config, expected):
+    assert _configured_vm_ipv4(config) == expected
+
+
+def test_vm_uses_configured_ipv4_when_guest_agent_is_unavailable(monkeypatch):
+    backend = ProxmoxDiscoveryBackend()
+    backend._cluster_name = "test-cluster"
+    backend._tenant_or_none = lambda: None
+    monkeypatch.setattr(discovery, "_reverse_dns", lambda _address: "")
+
+    endpoint = SimpleNamespace(config=SimpleNamespace(get=lambda: {"ipconfig1": "ip=192.0.2.10/24"}))
+    prox = SimpleNamespace(nodes=lambda _node: SimpleNamespace(qemu=lambda _vmid: endpoint))
+    entities = backend._build_vm({"vmid": 42, "name": "test-vm", "status": "stopped"}, "node", prox, "test-site")
+
+    assert entities[0].virtual_machine.primary_ip4.address == "192.0.2.10/24"
+    assert entities[1].vm_interface.name == "ipconfig1"
+    assert entities[2].ip_address.assigned_object_vm_interface.name == "ipconfig1"
+    assert entities[2].ip_address.address == "192.0.2.10/24"
+
+
+def test_vm_prefers_usable_guest_agent_ipv4(monkeypatch):
+    backend = ProxmoxDiscoveryBackend()
+    backend._cluster_name = "test-cluster"
+    backend._tenant_or_none = lambda: None
+    monkeypatch.setattr(discovery, "_reverse_dns", lambda _address: "")
+
+    endpoint = SimpleNamespace(
+        config=SimpleNamespace(get=lambda: {"ipconfig1": "ip=192.0.2.10/24"}),
+        agent=lambda _command: SimpleNamespace(get=lambda: {"result": [{
+            "name": "ens18",
+            "ip-addresses": [{"ip-address": "198.51.100.10", "prefix": 24}],
+        }]}),
+    )
+    prox = SimpleNamespace(nodes=lambda _node: SimpleNamespace(qemu=lambda _vmid: endpoint))
+    entities = backend._build_vm({"vmid": 42, "name": "test-vm", "status": "running"}, "node", prox, "test-site")
+
+    assert entities[0].virtual_machine.primary_ip4.address == "198.51.100.10/24"
+    assert entities[1].vm_interface.name == "ens18"
+    assert entities[2].ip_address.assigned_object_vm_interface.name == "ens18"
