@@ -59,5 +59,9 @@
         _assert_bao_url: "{{ _bao_url }}"
       when: drill_expect_alert | default(false) | bool
 
+    - name: Verify Discord delivery prerequisites before the fault drill
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+      when: drill_expect_alert | default(false) | bool
+
     - name: Run the disposable o11y fault probe
       ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml

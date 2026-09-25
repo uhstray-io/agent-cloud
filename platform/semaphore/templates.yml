@@ -1038,9 +1038,9 @@ templates:
         required: false
         default_value: "false"
 
-  - name: Drill o11y Alert Canary
+  - name: Drill o11y Alert Canary (Dev)
     playbook: platform/playbooks/drill-o11y-alert-canary.yml
-    dev_variant: true
+    repository: agent-cloud dev
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -1050,9 +1050,9 @@ templates:
     # Local-only. Restores paused provisioning in an always block. If the
     # controller is interrupted, run Restore o11y Alert Baseline (Dev).
 
-  - name: Restore o11y Alert Baseline
+  - name: Restore o11y Alert Baseline (Dev)
     playbook: platform/playbooks/restore-o11y-alert-baseline.yml
-    dev_variant: true
+    repository: agent-cloud dev
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"

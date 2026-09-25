@@ -1,9 +1,50 @@
 ---
-# Reused by the canary's always path and the independent interruption recovery.
-- name: Render the paused OpenBao-backed baseline
-  ansible.builtin.include_tasks: o11y-alert-provision.yml
+# Reused by the canary's always path and interruption recovery. Restoring a
+# paused rule needs no secret-store availability: preserve the existing .env.
+- name: Check that the existing o11y environment can be reused
+  ansible.builtin.stat:
+    path: "{{ _deploy_dir }}/.env"
+  register: _baseline_env
+
+- name: Refuse to restart without the existing o11y environment
+  ansible.builtin.assert:
+    that: _baseline_env.stat.isreg | default(false)
+    fail_msg: "The existing o11y .env is absent; restore requires the deployed environment."
+
+- name: Render paused Grafana alert rules without OpenBao
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"
+    dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+    mode: "0644"
   vars:
     o11y_alerts_enabled: false
+
+- name: Render removal of the Discord contact point without OpenBao
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alert-contact.yml.j2"
+    dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/contact.yml"
+    mode: "0644"
+  vars:
+    o11y_alerts_enabled: false
+
+- name: Remove the canary webhook from the existing runtime environment
+  ansible.builtin.lineinfile:
+    path: "{{ _deploy_dir }}/.env"
+    regexp: '^O11Y_ALERT_DISCORD_WEBHOOK_URL='
+    state: absent
+  no_log: true
+
+- name: Verify the existing runtime environment has no webhook line
+  ansible.builtin.command:
+    argv: [grep, -q, '^O11Y_ALERT_DISCORD_WEBHOOK_URL=', "{{ _deploy_dir }}/.env"]
+  register: _baseline_webhook_line
+  changed_when: false
+  failed_when: false
+
+- name: Refuse a restored environment that still contains the webhook
+  ansible.builtin.assert:
+    that: _baseline_webhook_line.rc == 1
+    fail_msg: "The canary webhook remains in the runtime environment."
 
 - name: Restart o11y with the paused baseline
   ansible.builtin.shell: |

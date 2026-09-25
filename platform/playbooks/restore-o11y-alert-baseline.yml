@@ -46,16 +46,6 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: dev
-    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions:
-      - { name: grafana_admin_password, type: random, length: 32 }
-    _required_existing_secrets: []
-    _shared_reads:
-      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
-    _env_templates:
-      - { src: env.j2, dest: .env, mode: "0600" }
   tasks:
     - name: Require a local real run before restoration
       ansible.builtin.assert:
@@ -63,11 +53,6 @@
           - local_mode | default(false) | bool
           - not ansible_check_mode
         fail_msg: "The alert-baseline restore is local-only and requires a real Semaphore run."
-
-    - name: Refuse a cleartext OpenBao endpoint before restoration
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
-      vars:
-        _assert_bao_url: "{{ _bao_url }}"
 
     - name: Place the reviewed checkout for local rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml

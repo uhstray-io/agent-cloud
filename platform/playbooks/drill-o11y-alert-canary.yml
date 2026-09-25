@@ -134,6 +134,9 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    - name: Verify Discord delivery prerequisites before activation
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+
     - name: Place the reviewed checkout for local rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 

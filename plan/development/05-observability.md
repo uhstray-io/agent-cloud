@@ -138,6 +138,15 @@
 > stages alerting temporarily within a reversible Semaphore canary, proves
 > the Discord receipt, and restores the paused baseline before any persistent
 > alert-enable rollout.
+> **Canary review correction, 2026-09-25:** The PR #242 review found that
+> restoring paused files through `manage-secrets.yml` would fail if OpenBao
+> became unavailable after activation. The restore now renders the declarative
+> paused rules and contact-point deletion from the reviewed checkout, removes
+> the webhook line from the existing local `.env`, and verifies Grafana after
+> restart without a second OpenBao dependency. The same review moved bot,
+> webhook, and Discord history checks before temporary activation and bound
+> both new Semaphore templates only to the Dev repository. These are code
+> corrections, not a live delivery receipt.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
