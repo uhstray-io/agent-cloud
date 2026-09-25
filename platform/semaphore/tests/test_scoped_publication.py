@@ -303,7 +303,6 @@ class ScopedPublicationTests(unittest.TestCase):
 
         self.setUp()
         self.records[0]["environment_id"] = None
-        self.records[0]["environment_ids"] = [None]
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)
         self.assertIn("Incomplete or multi-environment ownership metadata", output)
