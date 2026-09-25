@@ -25,7 +25,7 @@ The collector calls this three times, one JSON object on stdin each, keyed by "m
              runs off, so its template is listed in window_full; the collector keeps a
              service's last recorded status rather than erasing what it could not read
   aggregate  {registry, templates, fetched: [uri results of raw_output, item = picked row],
-              groups?, host_services?, now_ns?}
+              groups?, host_services?, now_ns?, window_full?}
                                                     -> {services, validation, inputs,
                                                         failed_steps, status_by_service,
                                                         report, loki_streams (only with now_ns)}
@@ -150,7 +150,8 @@ def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
-              inventory_services: list[str] | None = None, deploy_templates: frozenset = frozenset()) -> dict:
+              inventory_services: list[str] | None = None, deploy_templates: frozenset = frozenset(),
+              window_full: list | tuple = ()) -> dict:
     names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
@@ -202,7 +203,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     }
     status = {s: {step: r["status"] for step, r in services.get(s, {}).items()} for s in tracked}
     agg = {"services": services, "tracked": tracked, "validation": validation, "inputs": inputs,
-           "anomalies": anomalies,
+           "anomalies": anomalies, "history_window_full": sorted(window_full),
            "failed_steps": failed, "status_by_service": status}
     agg["report"] = report(agg, registry, inventory_services or [])
     return agg
@@ -215,7 +216,10 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
 
     Every inventoried service gets a row, including one with no workflow history yet
     (`no_history: true`), so a service that has never run a step is visible rather than
-    absent (review of PR #195)."""
+    absent (review of PR #195). When a template's history filled the read window, older runs
+    were not read: every row says `history_incomplete: true` and none claims `no_history`,
+    since the collector keeps NetBox's recorded status for what it could not see (PR 195
+    Codex review)."""
     steps = {s["id"]: s for s in registry}
     unreviewed = [s["id"] for s in registry if not s.get("reviewed")]
     out = {}
@@ -227,17 +231,23 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
              "undo": steps.get(step, {}).get("undo") or "none"}
             for step in agg["failed_steps"].get(service, [])
         ]
-        out[service] = {"failed": failed, "unreviewed": unreviewed, "no_history": not results}
+        incomplete = bool(agg.get("history_window_full"))
+        out[service] = {"failed": failed, "unreviewed": unreviewed,
+                        "no_history": not results and not incomplete, "history_incomplete": incomplete}
     return out
 
 
 def loki_streams(agg: dict, now_ns: int) -> list[dict]:
     """One Loki stream per (service, step), labelled so the dashboard can filter on them, and
-    one `no_history` stream for a tracked service that has not run a step yet."""
+    one `no_history` stream for a tracked service that has not run a step yet. When a template's
+    history filled the read window, every tracked service gets a `history_incomplete` stream
+    instead: its missing steps may be older than the window, not absent."""
+    incomplete = bool(agg.get("history_window_full"))
+    marker = "history_incomplete" if incomplete else "no_history"
     streams = [{"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
-                           "status": "no_history"},
-                "values": [[str(now_ns), json.dumps({"no_history": True})]]}
-               for service in agg.get("tracked", []) if service not in agg["services"]]
+                           "status": marker},
+                "values": [[str(now_ns), json.dumps({marker: True})]]}
+               for service in agg.get("tracked", []) if incomplete or service not in agg["services"]]
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
             line = json.dumps({"task_id": result["task_id"], "error": result["error"],
@@ -263,7 +273,8 @@ def main() -> int:
                                       if len(h) >= HISTORY_WINDOW})}
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
-        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys)
+        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys,
+                        data.get("window_full", []))
         if data.get("now_ns"):
             out["loki_streams"] = loki_streams(out, int(data["now_ns"]))
     else:

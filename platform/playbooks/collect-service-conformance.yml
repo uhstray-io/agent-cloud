@@ -127,7 +127,7 @@
         argv: [python3, "{{ _parser }}"]
         stdin: >-
           {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
-              'fetched': _fetched,
+              'fetched': _fetched, 'window_full': (_pick.stdout | from_json).window_full,
               'groups': groups, 'host_services': _host_services | default({}),
               'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
       register: _aggregate_run

@@ -284,6 +284,32 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
                                    "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
 
 
+def test_a_full_history_window_is_incomplete_history_never_no_history():
+    # PR 195 Codex review: NetBox keeps a status older than the read window, so the report
+    # and the dashboard must not say "no history" for it, nor go silent on a service that has
+    # other results; every tracked service is marked history_incomplete instead.
+    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "success", 1, out)], ["step-ca", "tududi"],
+                                 DEPLOYS, window_full=[4])
+    assert agg["history_window_full"] == [4]
+    assert agg["report"]["step-ca"]["no_history"] is False and agg["report"]["step-ca"]["history_incomplete"] is True
+    assert agg["report"]["tududi"]["history_incomplete"] is True
+    markers = {(st["stream"]["service"], st["stream"]["status"]) for st in step_results.loki_streams(agg, 1)
+               if st["stream"]["step"] == "none"}
+    assert markers == {("step-ca", "history_incomplete"), ("tududi", "history_incomplete")}
+    # an unfilled window keeps the plain no_history marker, for the service with no run only
+    plain = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "success", 1, out)], ["step-ca", "tududi"], DEPLOYS)
+    row = plain["report"]["step-ca"]
+    assert row["no_history"] is True and row["history_incomplete"] is False
+    assert {(st["stream"]["service"], st["stream"]["status"]) for st in step_results.loki_streams(plain, 1)
+            if st["stream"]["step"] == "none"} == {("step-ca", "no_history")}
+
+
+def test_the_collector_passes_the_window_to_the_aggregate():
+    text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
+    assert "'window_full': (_pick.stdout | from_json).window_full" in text
+
+
 def test_the_collector_writes_every_tracked_service():
     text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
     assert 'loop: "{{ _agg.tracked }}"' in text
@@ -305,3 +331,4 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
     assert 'step!="none"' in exprs["Step status by service"]
     assert 'status="no_history"' in exprs["Services not yet run"]
+    assert 'status="history_incomplete"' in exprs["History incomplete"]
