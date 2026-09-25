@@ -218,3 +218,15 @@ def test_the_clean_environment_rule_checks_the_endpoint():
     assert "OpenBao endpoint set but no approved endpoint to check it against" in rule(env)
     assert rule(dict(env, json=f'{{"openbao_addr":"{ENDPOINT}"}}'), ENDPOINT) == []
     assert rule(dict(env, json="{}")) == []
+    assert rule({"json": "{}", "env": "{}"}) == []  # upstream omits an empty secrets list
+    assert "no secrets list; contents cannot be established" in rule({"json": "{}", "env": "{}", "secrets": None})
+
+
+def test_seed_refuses_an_empty_isolated_environment_before_writes():
+    api = FakeAPI()
+    del api.env["secrets"]  # v2.18.12 single GET omits an empty loaded list
+    with pytest.raises(cli.Refusal, match="Provision both AppRole inputs"):
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET},
+                           playbook="platform/playbooks/seed-openbao-key.yml",
+                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+    assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))

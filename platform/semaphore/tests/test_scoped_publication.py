@@ -61,7 +61,8 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply(cls.active_tasks)
                 for row in cls.environments:
                     if self.path == f"/api/project/1/environment/{row['id']}":
-                        return self.reply(row)
+                        # v2.18.12 omits an empty `secrets` slice on single GET (omitempty).
+                        return self.reply({k: v for k, v in row.items() if k != "secrets" or v != []})
                 if self.path.endswith("/templates"):
                     # List projections need not contain the complete writable record.
                     return self.reply([{k: v for k, v in row.items() if k not in {"description", "survey_vars"}}
@@ -494,6 +495,15 @@ class ScopedPublicationTests(unittest.TestCase):
                 self.assertIn("is not safe to bind", output)
                 self.assertIn(("GET", "/api/project/1/environment/501"), self.requests)
                 self.assertEqual(self.writes, [])
+
+    def test_provisioner_refuses_explicit_null_secret_metadata_before_writes(self):
+        self.prepare_seed_template()
+        self.environments.append({"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
+                                  "json": "{}", "env": "{}", "secrets": None})
+        code, output = self.run_play(provision=True)
+        self.assertNotEqual(code, 0)
+        self.assertIn("no secrets list; contents cannot be established", output)
+        self.assertEqual(self.writes, [])
 
     def test_provisioner_refuses_a_leftover_seed_value_of_any_name(self):
         # Review of PR #205: only SEED_* was refused, so an interrupted OpenBao-key seed's

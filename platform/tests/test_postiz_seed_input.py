@@ -109,10 +109,10 @@ def test_shared_environment_refuses_before_any_write():
     assert all(body is None for path, body in api.calls)
 
 
-def test_missing_secret_metadata_refuses_before_any_write():
+def test_omitted_empty_secret_metadata_refuses_before_any_write():
     api = FakeAPI()
     del api.env["secrets"]
-    with pytest.raises(seed.Refusal, match="no secrets array"):
+    with pytest.raises(seed.Refusal, match="Provision both AppRole inputs"):
         seed.stage_and_seed(api, 1, 151, 2, {"SEED_X_API_KEY": "synthetic-value"}, ENDPOINT)
     assert all(body is None for path, body in api.calls)
 
