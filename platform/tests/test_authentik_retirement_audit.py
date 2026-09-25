@@ -53,4 +53,17 @@ def test_static_runtime_probe_loads_script_without_querying_accounts():
              if key != "AUTHENTIK_BOOTSTRAP_TOKEN"},
     )
     assert absent_token.returncode == 2
-    assert absent_token.stdout.strip() == "authentik_retirement_audit_failed"
+    assert absent_token.stdout.strip() == (
+        "authentik_retirement_audit_failed:bootstrap_token_unavailable")
+
+
+def test_unexpected_error_details_stay_hidden(monkeypatch, capsys):
+    monkeypatch.setenv("AUTHENTIK_BOOTSTRAP_TOKEN", "fixture-token")
+    monkeypatch.setattr(sys, "stdin", io.StringIO('audit:["private-name"]'))
+
+    def fail_lookup(name, token):
+        raise ValueError("private-name fixture-token")
+
+    monkeypatch.setattr(audit_module, "get_users", fail_lookup)
+    assert audit_module.main() == 2
+    assert capsys.readouterr().out.strip() == "authentik_retirement_audit_failed"

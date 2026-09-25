@@ -388,8 +388,10 @@
 > an account count. No Authentik deployment followed. The audit now checks
 > the same audit script with static, noncredentialed probe input first. Its
 > fixed readiness response proves container execution, script loading, and token
-> availability without querying accounts or revealing names or tokens. A
-> successful account count remains the deployment gate.
+> availability without querying accounts or revealing names or tokens. The
+> script reports only code-owned audit error labels; unexpected exception
+> details remain hidden. A successful account count remains the deployment
+> gate.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,

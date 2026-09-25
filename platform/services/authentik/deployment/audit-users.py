@@ -70,7 +70,10 @@ def main():
         usernames = json.loads(raw[len("audit:"):])
         print(json.dumps(audit(usernames, lambda name: get_users(name, token)), sort_keys=True))
         return 0
-    except (AuditError, ValueError, OSError, KeyError, TypeError, http.client.HTTPException):
+    except AuditError as exc:
+        print("authentik_retirement_audit_failed:" + str(exc))
+        return 2
+    except (ValueError, OSError, KeyError, TypeError, http.client.HTTPException):
         print("authentik_retirement_audit_failed")
         return 2
 
