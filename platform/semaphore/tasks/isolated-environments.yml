@@ -153,6 +153,24 @@
   loop_control:
     label: "{{ item.name }}"
 
+# A dry run creates no environment, so the readback below cannot hold the ones it would create,
+# and every later step needs their IDs (PR 203 Codex review): report and stop instead.
+- name: "Dry run, environments to create: report"
+  ansible.builtin.debug:
+    msg: >-
+      check mode: would create isolated environment(s)
+      {{ _isolated_specs | map(attribute='name') | reject('in', _environments.json | map(attribute='name') | list) | join(', ') }}
+      with no credentials; the bindings and authentication after it need their IDs, so the dry run stops here.
+  when:
+    - ansible_check_mode
+    - (_isolated_specs | map(attribute='name') | reject('in', _environments.json | map(attribute='name') | list) | list | length) > 0
+
+- name: "Dry run, environments to create: stop"
+  ansible.builtin.meta: end_play
+  when:
+    - ansible_check_mode
+    - (_isolated_specs | map(attribute='name') | reject('in', _environments.json | map(attribute='name') | list) | list | length) > 0
+
 - name: "Read back isolated environment identities"
   ansible.builtin.uri:
     url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment"

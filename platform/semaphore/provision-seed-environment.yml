@@ -260,6 +260,7 @@
       vars:
         _auth: "{{ _after.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Re-read the seed template before binding"
       ansible.builtin.uri:
@@ -315,6 +316,7 @@
           - _template.json.survey_vars | default([]) | publication_matches(_bound.json.survey_vars | default([]))
         quiet: true
         fail_msg: "Seed binding readback differs; reconcile before any credential import."
+      when: not ansible_check_mode
 
     - name: "Report the next read-only verification step"
       ansible.builtin.debug:
