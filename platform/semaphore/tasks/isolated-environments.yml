@@ -41,11 +41,16 @@
   no_log: true
 
 - name: "Require complete single-environment ownership metadata"
+  # Semaphore may return both the scalar binding and its list projection.
+  # Accept only an exact one-element mirror; a second binding is unsafe.
   ansible.builtin.assert:
     that:
-      - _existing.json | selectattr('environment_id', 'defined') | list | length == _existing.json | length
-      - _existing.json | selectattr('environment_ids', 'defined') | list | length == 0
+      - item.environment_id is defined
+      - item.environment_ids is not defined or item.environment_ids == [item.environment_id]
     fail_msg: "Incomplete or multi-environment ownership metadata; refusing isolated binding changes."
+  loop: "{{ _existing.json }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: "Refuse ambiguous or shared existing isolated environments"
   ansible.builtin.assert:

@@ -284,6 +284,22 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertIn("unfinished work", output)
         self.assertEqual(self.writes, [])
 
+    def test_isolated_environment_accepts_matching_list_and_refuses_multiple_bindings(self):
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "isolated_environment": "Isolated inputs"}
+        for row in self.records:
+            row["environment_ids"] = [row["environment_id"]]
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["environment_id"], self.environments[0]["id"])
+
+        self.setUp()
+        self.records[0]["environment_ids"] = [42, 500]
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
+        self.assertEqual(self.writes, [])
+
     def test_full_publication_refuses_to_bind_an_isolated_environment_that_is_not_clean(self):
         # Review of PR #205: an existing environment with the declared name was bound as-is.
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
