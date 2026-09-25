@@ -74,13 +74,15 @@ def run_seed(tmp_path, stored):
     server = Server(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        extra = {"openbao_addr": f"http://127.0.0.1:{server.server_port}",
-                 "bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret"}
+        # The address comes from the inventory's all.vars, as in production.
+        inventory = tmp_path / "inventory.yml"
+        inventory.write_text(json.dumps({"all": {"vars": {"openbao_addr": f"http://127.0.0.1:{server.server_port}"}}}))
+        extra = {"bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret"}
         env = {k: v for k, v in os.environ.items() if not k.startswith("SEED_") and k != "BAO_VALUE"}
         env.update(SEED_X_API_KEY=PROVIDER, ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_NOCOLOR="1",
                    # Stock output on purpose: stricter than production's redact_requests.
                    ANSIBLE_STDOUT_CALLBACK="default")
-        result = subprocess.run(["ansible-playbook", "-i", "localhost,", "-c", "local", PLAYBOOK,
+        result = subprocess.run(["ansible-playbook", "-i", str(inventory), "-c", "local", PLAYBOOK,
                                  "-e", json.dumps(extra)],
                                 cwd=ROOT, env=env, text=True, capture_output=True, timeout=120,
                                 stdin=subprocess.DEVNULL)

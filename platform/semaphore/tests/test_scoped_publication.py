@@ -335,8 +335,8 @@ class ScopedPublicationTests(unittest.TestCase):
         # One refusal per problem class proves publication applies the shared rule; every
         # variant of the rule is tested directly in test_seed_environment_rule.py.
         cases = {"leftover inputs: BAO_VALUE": [{"id": 1, "name": "BAO_VALUE", "type": "env"}]}
-        # The AppRole login would go to the environment's openbao_addr: an address other than
-        # the controller's own is refused before binding (review of PR #205).
+        # An address pin in the environment would override the inventory's address, which is
+        # where the seed run takes it from (2026-09-25): refused before binding.
         endpoint_case = {"id": 500, "project_id": 1, "name": "Isolated inputs", "env": "{}",
                          "json": '{"openbao_addr":"https://elsewhere.example:8200"}',
                          "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
@@ -347,7 +347,7 @@ class ScopedPublicationTests(unittest.TestCase):
             before = copy.deepcopy(self.records)
             code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
             self.assertNotEqual(code, 0, output)
-            self.assertIn("OpenBao endpoint differs from the approved endpoint", output)
+            self.assertIn("OpenBao address pinned in the environment", output)
             self.assertEqual(self.writes, [])
             self.assertEqual(self.records, before)
         for message, secrets in cases.items():
@@ -440,7 +440,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         target = self.environments[1]
         self.assertEqual(self.environments[0], source)
-        self.assertEqual(json.loads(target["json"]), {"openbao_addr": self.endpoint})
+        self.assertEqual(json.loads(target["json"] or "{}"), {})  # no pin: the address is the inventory's
         self.assertEqual(self.auth_values, {"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
         self.assertEqual(self.records[0], original | {"environment_id": target["id"]})
         writes = copy.deepcopy(self.writes)
@@ -478,7 +478,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.records[0]["environment_id"], 501)
         self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
 
-    def test_provisioner_preserves_auth_when_filling_missing_endpoint(self):
+    def test_provisioner_leaves_a_clean_provisioned_environment_untouched(self):
         self.prepare_seed_template()
         secrets = [{"id": 700 + i, "name": name, "type": "env"}
                    for i, name in enumerate(["BAO_ROLE_ID", "BAO_SECRET_ID"])]
@@ -488,22 +488,24 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.environments[1]["secrets"], secrets)
         self.assertEqual(self.auth_values, {})
-        self.assertEqual(json.loads(self.environments[1]["json"]), {"openbao_addr": self.endpoint})
-        self.assertIn(("PUT", "/api/project/1/environment/501"), self.writes)
+        self.assertEqual(json.loads(self.environments[1]["json"]), {})
+        self.assertNotIn(("PUT", "/api/project/1/environment/501"), self.writes)
 
-    def test_provisioner_refuses_changed_endpoint_before_writes(self):
+    def test_provisioner_removes_a_legacy_address_pin_and_keeps_auth(self):
+        # Earlier versions pinned openbao_addr in the environment; the seed run now takes it from
+        # the inventory, so the provisioner (and only it) accepts the pin in order to remove it.
         self.prepare_seed_template()
-        target = {"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
-                  "json": '{"openbao_addr":"https://different.example.com"}', "env": "{}",
-                  "secrets": [{"id": 700 + i, "name": name, "type": "env"}
-                              for i, name in enumerate(["BAO_ROLE_ID", "BAO_SECRET_ID"])]}
-        self.environments.append(copy.deepcopy(target))
+        secrets = [{"id": 700 + i, "name": name, "type": "env"}
+                   for i, name in enumerate(["BAO_ROLE_ID", "BAO_SECRET_ID"])]
+        self.environments.append({"id": 501, "project_id": 1, "name": "Postiz seed inputs (Dev)",
+                                  "json": '{"openbao_addr":"https://different.example.com"}', "env": "{}",
+                                  "secrets": copy.deepcopy(secrets)})
         code, output = self.run_play(provision=True)
-        self.assertNotEqual(code, 0)
-        # Refused by the shared clean-environment rule, before the provisioner's own check.
-        self.assertIn("OpenBao endpoint differs from the approved endpoint", output)
-        self.assertEqual(self.environments[1], target)
-        self.assertEqual(self.writes, [])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(json.loads(self.environments[1]["json"]), {})
+        self.assertEqual(self.environments[1]["secrets"], secrets)
+        self.assertEqual(self.auth_values, {})  # authentication preserved, never rotated
+        self.assertIn(("PUT", "/api/project/1/environment/501"), self.writes)
 
     def test_provisioner_reports_template_drift_without_sensitive_values(self):
         for before_binding in [True, False]:

@@ -1,0 +1,42 @@
+---
+# assert-bao-addr-declared.yml — refuse, before the AppRole login, an OpenBao address that is
+# not the one the run's inventory declares under top-level all.vars.
+#
+# Why. A seed run sends its AppRole login, then the seeded value, to this address. It comes
+# from the inventory's all.vars (declared there for every host, localhost included), and an
+# extra var would silently override it: an isolated environment edited after it was bound,
+# or a launch-time -e. The binding-time rule refuses an environment that carries one, but
+# the environment stays editable afterwards; the run is the one boundary every path passes
+# (plan 01-secrets-credentials, "the endpoint is not re-checked at run time", closed
+# 2026-09-25).
+#
+# How. ansible_inventory_sources names the file the run was given (Semaphore v2.17.31 writes a
+# static-yaml inventory to <project tmp>/inventory_<id>.yml and passes it with -i). The
+# declared address is read from that file itself, so an extra var cannot change it.
+#
+# Caller passes:
+#   _ba_url   the address this run will send the login to
+
+- name: "Read the OpenBao address the inventory declares"
+  # Reads the whole inventory file; only the one address leaves this task.
+  ansible.builtin.set_fact:
+    _ba_declared: >-
+      {{ query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping')
+         | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique | list }}
+  no_log: true
+
+- name: "Refuse an OpenBao address that is not the inventory's"
+  ansible.builtin.assert:
+    that:
+      - _ba_declared | length == 1
+      - _ba_url == _ba_declared | first
+    fail_msg: >-
+      {{ 'The inventory this run was given declares no single all.vars.openbao_addr, so the
+      address cannot be verified; declare it there.' if _ba_declared | length != 1
+      else 'This run would log in to ' ~ _ba_url ~ ', but its inventory declares '
+      ~ (_ba_declared | first) ~ '. An extra var overrode it (the seed environment or a -e);
+      remove it (Provision Seed Environment removes an environment pin).' }}
+    quiet: true

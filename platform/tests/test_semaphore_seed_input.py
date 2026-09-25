@@ -17,7 +17,7 @@ cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 
 SECRET = "synthetic-value-never-printed"
-ENDPOINT = "https://bao.example:8200"
+OPENBAO_SEED = {"playbook": "platform/playbooks/seed-openbao-key.yml", "template_names": {"Seed OpenBao Key (Dev)"}}
 
 
 def test_catalog_declares_the_openbao_seed_as_isolated():
@@ -64,7 +64,7 @@ class FakeAPI:
                          "playbook": "platform/playbooks/seed-openbao-key.yml",
                          "environment_id": bound_env, "app": "ansible", "arguments": None,
                          "repository_id": 5, "inventory_id": 2}
-        self.env = {"id": 9, "project_id": 1, "name": "OpenBao key seed inputs (Dev)", "json": '{"openbao_addr":"https://bao.example:8200"}',
+        self.env = {"id": 9, "project_id": 1, "name": "OpenBao key seed inputs (Dev)", "json": "{}",
                     "env": "{}", "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
                                              {"id": 2, "name": "BAO_SECRET_ID", "type": "env"}]}
         self.shared = {"id": 2, "project_id": 1, "name": "local-dev"}
@@ -108,14 +108,13 @@ def test_locate_resolves_names_and_preflight_requires_the_isolated_binding():
     api = FakeAPI(bound_env=2)
     with pytest.raises(cli.Refusal, match="Provision Seed Environment"):
         cli.preflight(api, 1, 301, 9, playbook="platform/playbooks/seed-openbao-key.yml",
-                      template_names={"Seed OpenBao Key (Dev)"}, endpoint=ENDPOINT)
+                      template_names={"Seed OpenBao Key (Dev)"})
     assert not any(body for _, body in api.calls)
 
 
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
     api = FakeAPI()
-    cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                       endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"},
+    cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED,
                        extra={"bao_path": "services/x", "bao_key": "k"})
     submissions = [body for path, body in api.calls if path == "/tasks" and body]
     assert len(submissions) == 1
@@ -129,8 +128,7 @@ def test_seed_refuses_a_leftover_staged_input_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 7, "name": "BAO_VALUE", "type": "env"})
     with pytest.raises(cli.Refusal):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -154,7 +152,7 @@ def run_cli(monkeypatch, tmp_path, api, *mode):
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("synthetic-token"))
     monkeypatch.setattr("sys.argv", ["semaphore-seed-input.py", "--template", "Seed OpenBao Key",
                                      "--set", "bao_path=services/x", "--set", "bao_key=k",
-                                     "--input", f"BAO_VALUE={value}", "--inventory", "2", "--openbao-addr", ENDPOINT,
+                                     "--input", f"BAO_VALUE={value}", "--inventory", "2",
                                      "--url", "https://semaphore.example", *mode])
     return cli.main()
 
@@ -177,7 +175,7 @@ def test_a_rebound_or_reshaped_template_is_refused_before_any_write(monkeypatch,
     # Review of PR #205: a template rebound to another repository or inventory after
     # provisioning, or given arguments, must get no staged input and no task, in any mode.
     api = FakeAPI()
-    if "_env_json" in drift:  # the environment's endpoint moved after provisioning
+    if "_env_json" in drift:  # an address pin added to the environment after provisioning
         api.env["json"] = drift["_env_json"]
     else:
         api.template.update(drift)
@@ -208,17 +206,16 @@ def test_a_leftover_input_of_another_seed_refuses_the_seed_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 8, "name": "SEED_X_API_KEY", "type": "env"})
     with pytest.raises(cli.Refusal, match="leftover inputs: SEED_X_API_KEY"):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
-def test_the_clean_environment_rule_checks_the_endpoint():
+def test_the_clean_environment_rule_refuses_any_address_pin():
+    # The seed run takes its address from the inventory; a pin would override it.
     rule = cli.stage_and_seed.__globals__["seed_environment_problems"]
-    env = {"json": '{"openbao_addr":"https://elsewhere.example"}', "env": "{}", "secrets": []}
-    assert "OpenBao endpoint differs from the approved endpoint" in rule(env, ENDPOINT)
-    assert "OpenBao endpoint set but no approved endpoint to check it against" in rule(env)
-    assert rule(dict(env, json=f'{{"openbao_addr":"{ENDPOINT}"}}'), ENDPOINT) == []
+    env = {"json": '{"openbao_addr":"https://bao.example:8200"}', "env": "{}", "secrets": []}
+    assert any("OpenBao address pinned" in p for p in rule(env))
+    assert rule(env, legacy_pin_ok=True) == []  # the provisioner, which removes it
     assert rule(dict(env, json="{}")) == []
     assert rule({"json": "{}", "env": "{}"}) == []  # upstream omits an empty secrets list
     assert "no secrets list; contents cannot be established" in rule({"json": "{}", "env": "{}", "secrets": None})
@@ -229,8 +226,7 @@ def test_seed_refuses_an_empty_isolated_environment_before_writes():
     del api.env["secrets"]  # v2.18.12 single GET omits an empty loaded list
     with pytest.raises(cli.Refusal, match="Provision both AppRole inputs"):
         cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET},
-                           playbook="platform/playbooks/seed-openbao-key.yml",
-                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+                           **OPENBAO_SEED)
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -260,8 +256,7 @@ def test_an_environment_changed_after_preflight_is_refused_before_staging(monkey
         return real(self, path, body)
     monkeypatch.setattr(FakeAPI, "__call__", changing)
     with pytest.raises(cli.Refusal, match="changed during preflight"):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
-                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 

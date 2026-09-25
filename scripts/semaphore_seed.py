@@ -160,14 +160,15 @@ def environment_body(env, operations):
     return {**env, "secrets": operations}
 
 
-def preflight(api, project, template_id, expected_env, *, playbook, template_names, endpoint,
-              bindings=None):
+def preflight(api, project, template_id, expected_env, *, playbook, template_names, bindings=None):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
     can launch or stage against a template the others would refuse. `bindings` maps
     template fields (repository_id, inventory_id) to their APPROVED values: a template
-    rebound after provisioning is refused before anything is staged or launched.
+    rebound after provisioning is refused before anything is staged or launched. The
+    approved inventory is also where the seed run's OpenBao address comes from (its
+    all.vars); the run refuses an address that differs from it.
     """
     template = api(f"/templates/{template_id}")
     if (template.get("playbook") != playbook
@@ -193,21 +194,11 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     before = api(f"/environment/{expected_env}")
     if before.get("project_id") != project or before.get("id") != expected_env:
         raise Refusal("Environment identity differs")
-    # The seed task logs in to OpenBao and writes the value at THIS address. Pinned to the
-    # operator-approved endpoint: an environment whose address changed after provisioning
-    # would otherwise receive the AppRole login and the staged value (review of PR #205).
-    # Required, with no default, so no caller can skip it.
-    try:
-        configured = (json.loads(before.get("json") or "{}") or {}).get("openbao_addr")
-    except ValueError:
-        configured = None
-    if not endpoint or configured != endpoint:
-        raise Refusal("Seed environment's OpenBao endpoint differs from the approved endpoint")
     # Before anything is staged the environment must be CLEAN by the one shared rule: only
-    # the two AppRole inputs, no plaintext env vars, extra vars at most openbao_addr. A
-    # leftover of ANY name (this seed's, another seed's) means an earlier run did not
+    # the two AppRole inputs, no plaintext env vars, no extra vars (an OpenBao address pin
+    # would override the inventory's). A leftover of ANY name means an earlier run did not
     # finish, or something else writes here; its task may still need it (review of PR #205).
-    problems = seed_environment_problems(before, endpoint)
+    problems = seed_environment_problems(before)
     if problems:
         raise Refusal("Seed environment requires reconciliation before staging: " + "; ".join(problems))
     # The rule allows an environment with no AppRole yet (a fresh provision); a seed needs it.
@@ -217,7 +208,7 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
 
 
 def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_names,
-                   endpoint, extra=None, bindings=None,
+                   extra=None, bindings=None,
                    message="Seed declared inputs via encrypted inputs", timeout=600):
     """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
     seed template, then remove exactly the inputs it created.
@@ -226,7 +217,7 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     `extra` is NON-SECRET launch configuration only: Semaphore persists it.
     """
     template, before = preflight(api, project, template_id, expected_env, playbook=playbook,
-                                 template_names=template_names, endpoint=endpoint, bindings=bindings)
+                                 template_names=template_names, bindings=bindings)
     env_path = f"/environment/{expected_env}"
     # A fresh equality check immediately before the first write. It is not CAS (v2.17 has
     # none); it refuses a change made since preflight read the environment (reviews of #249).

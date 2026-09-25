@@ -151,6 +151,8 @@
 
     - name: "Ensure the declared empty environment without copying shared configuration"
       ansible.builtin.include_tasks: tasks/isolated-environments.yml
+      vars:
+        _isolated_legacy_pin_ok: true  # this play removes an earlier version's address pin
 
     - name: "Read dedicated environment configuration"
       ansible.builtin.uri:
@@ -170,9 +172,10 @@
           - _target.json.project_id | int == _project_id | int
           - _target.json.name == _environment_name
           # The shared clean-environment rule (filter seed_environment_problems), the
-          # same one full publication applies before binding: no plaintext env vars,
-          # extra vars at most openbao_addr, and exactly the two AppRole inputs or none.
-          - _target.json | seed_environment_problems(_bao_url) | length == 0
+          # same one full publication applies before binding: no plaintext env vars, no
+          # extra vars, and exactly the two AppRole inputs or none. The provisioner alone
+          # accepts the OpenBao address pin earlier versions wrote: it removes it below.
+          - _target.json | seed_environment_problems(legacy_pin_ok=true) | length == 0
           - _auth | selectattr('id', 'defined') | selectattr('id', 'integer') | list | length == _auth | length
           - _auth | map(attribute='id') | unique | list | length == _auth | length
         quiet: true
@@ -190,7 +193,10 @@
                'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
              if (_target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
              else [] }}
-        _desired_json: "{{ {'openbao_addr': _bao_url} | to_json }}"
+        # No extra vars at all: the seed run takes the OpenBao address from the inventory's
+        # all.vars and refuses an override (tasks/assert-bao-addr-declared.yml), so an
+        # earlier version's pin is removed here, never written (2026-09-25).
+        _desired_json: "{{ {} | to_json }}"
       no_log: true
 
     - name: "Re-read dedicated environment before credential mutation"
@@ -213,7 +219,7 @@
 
     # Semaphore v2.17.31 applies secrets as explicit create/update/delete operations;
     # an empty list preserves every existing secret (api/projects/environment.go).
-    - name: "Store only missing encrypted authentication and endpoint configuration"
+    - name: "Store only missing encrypted authentication; remove an earlier address pin"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
         method: PUT
