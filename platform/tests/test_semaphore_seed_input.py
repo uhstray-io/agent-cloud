@@ -102,12 +102,14 @@ class FakeAPI:
         raise AssertionError(path)
 
 
-def test_locate_requires_the_isolated_binding():
-    assert cli.locate(FakeAPI(), "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)",
-                      "platform/playbooks/seed-openbao-key.yml") == (301, 9)
+def test_locate_resolves_names_and_preflight_requires_the_isolated_binding():
+    assert cli.locate(FakeAPI(), "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)") == (301, 9)
+    # The binding is preflight's to check, once, before any write (not a second copy in locate).
+    api = FakeAPI(bound_env=2)
     with pytest.raises(cli.Refusal, match="Provision Seed Environment"):
-        cli.locate(FakeAPI(bound_env=2), "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)",
-                   "platform/playbooks/seed-openbao-key.yml")
+        cli.preflight(api, 1, 301, 9, playbook="platform/playbooks/seed-openbao-key.yml",
+                      template_names={"Seed OpenBao Key (Dev)"}, endpoint=ENDPOINT)
+    assert not any(body for _, body in api.calls)
 
 
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
@@ -230,3 +232,16 @@ def test_seed_refuses_an_empty_isolated_environment_before_writes():
                            playbook="platform/playbooks/seed-openbao-key.yml",
                            endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
+
+
+@pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply"), ("--apply",)])
+def test_every_mode_runs_the_preflight_exactly_once(monkeypatch, tmp_path, mode):
+    # Preflight reads the template list once per run; a second preflight doubles it.
+    api = FakeAPI()
+    calls = []
+    real = cli.preflight
+    monkeypatch.setattr(cli, "preflight", lambda *a, **k: calls.append(1) or real(*a, **k))
+    import semaphore_seed
+    monkeypatch.setattr(semaphore_seed, "preflight", cli.preflight)
+    assert run_cli(monkeypatch, tmp_path, api, *mode) == 0
+    assert len(calls) == 1

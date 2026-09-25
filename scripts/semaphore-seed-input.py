@@ -24,38 +24,22 @@ The operator token arrives on stdin. Values are read from files, never argv.
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from semaphore_seed import API, TERMINAL, Refusal, preflight, stage_and_seed  # noqa: E402
-
-ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / "platform/semaphore/templates.yml"
-REPOSITORIES = ROOT / "platform/semaphore/repositories.yml"
-DEV_REPOSITORY = "agent-cloud dev"  # setup-templates.yml's semaphore_dev_repo_name default
-
-
-def declaration(base_name, catalog=CATALOG):
-    templates = yaml.safe_load(catalog.read_text())["templates"]
-    found = [t for t in templates if t.get("name") == base_name]
-    if len(found) != 1:
-        raise Refusal(f"No single declared template named {base_name!r}")
-    decl = found[0]
-    if not decl.get("isolated_environment") or not decl.get("seed_inputs"):
-        raise Refusal(f"{base_name!r} declares no isolated_environment and seed_inputs")
-    return decl
-
-
-def resolve_names(decl, variant):
-    if variant not in ("dev", "main"):
-        raise Refusal("variant must be dev or main")
-    if variant == "dev" and not decl.get("dev_variant"):
-        raise Refusal("This template has no dev variant")
-    suffix = " (Dev)" if variant == "dev" else ""
-    return decl["name"] + suffix, decl["isolated_environment"] + suffix
+from semaphore_seed import (  # noqa: E402
+    API,
+    Refusal,
+    declaration,
+    locate,
+    preflight,
+    repository_name,
+    resolve_names,
+    resolve_repository,
+    stage_and_seed,
+    submit,
+    wait,
+)
 
 
 def read_inputs(pairs, allowed):
@@ -90,35 +74,6 @@ def read_settings(pairs, decl):
     return settings
 
 
-def repository_name(decl, variant):
-    """The repository record this variant must run from, as setup-templates binds it."""
-    return DEV_REPOSITORY if variant == "dev" else decl.get("repository", "agent-cloud")
-
-
-def resolve_repository(api, name, declarations=REPOSITORIES):
-    """The live record's id, after proving its URL and branch match the declaration."""
-    declared = [r for r in yaml.safe_load(declarations.read_text())["repositories"] if r.get("name") == name]
-    live = [r for r in api("/repositories") if r.get("name") == name]
-    if len(declared) != 1 or len(live) != 1:
-        raise Refusal(f"Expected one declared and one live repository named {name!r}")
-    if (live[0].get("git_url"), live[0].get("git_branch")) != (declared[0]["git_url"], declared[0]["git_branch"]):
-        raise Refusal(f"Repository {name!r} differs from its declaration")
-    return live[0]["id"]
-
-
-def locate(api, template_name, environment_name, playbook):
-    templates = [t for t in api("/templates") if t.get("name") == template_name]
-    if len(templates) != 1:
-        raise Refusal(f"Expected one live template named {template_name!r}")
-    template = templates[0]
-    envs = [e for e in api("/environment") if e.get("name") == environment_name]
-    if len(envs) != 1:
-        raise Refusal(f"Expected one environment named {environment_name!r}; run Provision Seed Environment")
-    if template.get("environment_id") != envs[0]["id"] or template.get("playbook") != playbook:
-        raise Refusal("Template is not bound to its isolated environment; run Provision Seed Environment")
-    return template["id"], envs[0]["id"]
-
-
 def verify_access(api, project, template_id, access_var, settings, *, check, timeout=600):
     """Run the template's read-only access check. Stages nothing.
 
@@ -126,22 +81,15 @@ def verify_access(api, project, template_id, access_var, settings, *, check, tim
     launch a template the seed itself would refuse.
     """
     check()
-    task = api("/tasks", {"project_id": project, "template_id": template_id,
-                          "message": "Read-only access check for an isolated seed environment",
-                          "environment": json.dumps({**settings, access_var: "true"})})
-    task_id = task.get("id")
-    if not isinstance(task_id, int):
-        raise Refusal("Task identity unavailable")
-    deadline = time.monotonic() + timeout
-    while task.get("status") not in TERMINAL:
-        if time.monotonic() > deadline:
-            raise Refusal(f"Access check task {task_id} still nonterminal")
-        time.sleep(5)
-        task = api(f"/tasks/{task_id}")
-    print(f"Access check task {task_id}: {task['status']}", flush=True)
+    what = "Read-only access check"
+    task = submit(api, {"project_id": project, "template_id": template_id,
+                        "message": "Read-only access check for an isolated seed environment",
+                        "environment": json.dumps({**settings, access_var: "true"})}, what)
+    task = wait(api, task, what, timeout)
+    print(f"Access check task {task['id']}: {task['status']}", flush=True)
     if task["status"] != "success":
         raise Refusal("Access check failed; inspect the task output before seeding")
-    return task_id
+    return task["id"]
 
 
 def main():
@@ -161,6 +109,8 @@ def main():
     args = parser.parse_args()
     try:
         decl = declaration(args.template)
+        if not decl.get("seed_inputs"):
+            raise Refusal(f"{args.template!r} declares no seed_inputs for this CLI; see its own seed script")
         template_name, environment_name = resolve_names(decl, args.variant)
         settings = read_settings(args.set, decl)
         values = {} if args.verify_only else read_inputs(args.input, set(decl["seed_inputs"]))
@@ -169,7 +119,7 @@ def main():
         print(f"Template {template_name!r} in {environment_name!r}; inputs "
               f"{', '.join(sorted(values)) or 'none'}; settings {', '.join(sorted(settings))}", flush=True)
         api = API(args.url, args.project, sys.stdin.read().strip())
-        template_id, environment_id = locate(api, template_name, environment_name, decl["playbook"])
+        template_id, environment_id = locate(api, template_name, environment_name)
         bindings = {"repository_id": resolve_repository(api, repository_name(decl, args.variant)),
                     "inventory_id": args.inventory}
 
@@ -177,8 +127,10 @@ def main():
             return preflight(api, args.project, template_id, environment_id,
                              playbook=decl["playbook"], template_names={template_name},
                              endpoint=args.openbao_addr, bindings=bindings)
-        check()
+        # Each path runs the read-only preflight exactly once: here for a dry run, inside
+        # verify_access and stage_and_seed otherwise.
         if not args.apply:
+            check()
             print(f"Template {template_id}, environment {environment_id}: every preflight check passed. "
                   "Dry run: nothing changed.")
             return 0
