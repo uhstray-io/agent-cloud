@@ -40,7 +40,7 @@ supersede it with a new entry and link both.
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
-| 1.14 | Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
+| 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -81,6 +81,7 @@ supersede it with a new entry and link both.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
+| 4.10 | A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention (proposal: a PreToolUse hook) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -521,7 +522,7 @@ as a guess, and treat an unmatched or surprising label as a reason to read the t
 
 ### 1.14 A fact about the private inventory read from the public template
 
-**Occurrences: 1** — 2026-09-25
+**Occurrences: 2** — 2026-09-25, 2026-09-25
 
 **What happened.** Writing the run-time endpoint gap for #251, I stated that the approved
 OpenBao address is "the inventory's `all.vars.openbao_addr`" and that the environment's extra
@@ -542,6 +543,18 @@ file Semaphore syncs), never inferred from the public template inventory. When o
 template was read, say so in the claim.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-25.** After #256 merged, I told the user the existing isolated seed
+environments "still carry the old pin" and asked to run the provisioner to remove it; the user
+approved on that basis. Read from Semaphore before launching: no isolated seed environment
+existed in production at all, Seed OpenBao Key (Dev) and Provision Seed Environment (Dev) were
+not published, and Seed Postiz Secrets (Dev) was still bound to the shared environment. I had
+inferred live orchestrator state from the code that creates it. Nothing ran on the false
+premise; the user re-decided with the facts and the rollout ran as a first installation. Why
+the rule did not fire: it names site-config, and this was Semaphore. Its intent covers both:
+a claim about what production is configured with, or what exists there, is read from the
+system of record (site-config for inventory, the Semaphore API for templates and
+environments) before it is stated.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1745,6 +1758,29 @@ records a private local projection that bootstrap consumes and validates.
 
 **Enforced by.** Convention and review. This sync's test constructs synthetic
 IDs, but no general mechanical scan can identify private destination IDs.
+
+### 4.10 The interpreter read the token file as its program, and its error printed the token
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
+site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
+target the interpreter's stdin; the redirect won, so Python read the operator token file as its
+script, failed to parse it, and printed the offending line (the production Semaphore API token)
+in its `SyntaxError`, into the session transcript. Every other token read that day used the
+safe shape: a script file, the token on stdin.
+
+**Root cause.** A composition mistake in a one-off command, with a secret file as one of its
+inputs. `python3 -` means "program on stdin", which leaves no stdin for the secret.
+
+**The rule.** A secret reaches a program one way: the program is a file (or `-c` code with no
+secret in it) and the secret arrives on stdin or in an environment variable. Never pair
+`python3 -` / a heredoc script with a secret on stdin. After any exposure, say so at once and
+name the credential to rotate.
+
+**Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
+combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
+script) with a redirect from a path under `secrets/`.
 
 ## 5. Duplication and process
 
