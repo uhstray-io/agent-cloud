@@ -18,6 +18,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
 
     - name: Require the exact reviewed revision
       ansible.builtin.assert:
@@ -32,6 +33,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
 
     - name: Require a clean reviewed checkout
       ansible.builtin.assert:
@@ -86,6 +88,7 @@
             curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
       register: _baseline_rule
       changed_when: false
+      check_mode: false
 
     - name: Refuse an already active service-down rule
       ansible.builtin.assert:
@@ -106,6 +109,7 @@
       register: _baseline_contacts
       changed_when: false
       no_log: true
+      check_mode: false
 
     - name: Refuse an existing o11y contact point
       ansible.builtin.assert:
@@ -120,6 +124,7 @@
       register: _canary_probe_name
       delegate_to: localhost
       changed_when: false
+      check_mode: false
 
     - name: Bind the canary alert to only its probe
       ansible.builtin.set_fact:
@@ -156,6 +161,7 @@
             CONTAINER_ENGINE: "{{ _engine }}"
             LOCAL_MODE: "true"
           changed_when: true
+          when: not ansible_check_mode
 
         - name: Run the existing named fault and Discord receipt checks
           ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml

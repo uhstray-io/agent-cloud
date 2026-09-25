@@ -128,6 +128,7 @@
       failed_when: _pw_test.rc == 0
       changed_when: false
       ignore_errors: true
+      check_mode: false
 
     - name: "Confirm password auth disabled"
       ansible.builtin.assert:
@@ -149,6 +150,7 @@
       register: _key_test
       failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
       changed_when: false
+      check_mode: false
 
     - name: "Remove verification key"
       ansible.builtin.file:

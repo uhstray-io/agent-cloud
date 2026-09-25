@@ -52,6 +52,7 @@
       changed_when: false
       failed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -64,6 +65,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Fetch any existing caddy secret from OpenBao"
       ansible.builtin.uri:
@@ -75,6 +78,7 @@
       register: _bao_caddy
       delegate_to: localhost
       no_log: true
+      check_mode: false
 
     - name: "Resolve the token — the live literal wins, else OpenBao"
       ansible.builtin.set_fact:
@@ -102,6 +106,7 @@
             cloudflare_api_token: "{{ _cf_token }}"
       delegate_to: localhost
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Write the compose .env (0600) with the token"
       ansible.builtin.copy:
@@ -152,6 +157,7 @@
       changed_when: false
       failed_when: false
       no_log: true
+      check_mode: false
 
     - name: "Restore the Caddyfile backup if the rewrite is invalid"
       ansible.builtin.copy:
@@ -175,6 +181,7 @@
         chdir: "{{ _compose_dir }}"
       register: _recreate
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Wait for the admin API + confirm a known route is still served"
       ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
@@ -183,11 +190,13 @@
       retries: 15
       delay: 4
       until: _post.rc == 0 and (_probe in _post.stdout)
+      check_mode: false
 
     - name: "Confirm the token literal is gone from the (world-readable) Caddyfile"
       ansible.builtin.command: "grep -c 'dns cloudflare {$CLOUDFLARE_API_KEY}' {{ _caddyfile }}"
       register: _placeholders
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

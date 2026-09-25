@@ -22,6 +22,7 @@
         chdir: "{{ playbook_dir }}/../.."
       register: _discovery_revision
       changed_when: false
+      check_mode: false
 
     - name: "Check diagnostic source matches the committed checkout"
       ansible.builtin.command:
@@ -37,6 +38,7 @@
         chdir: "{{ playbook_dir }}/../.."
       register: _discovery_dirty
       changed_when: false
+      check_mode: false
 
     - name: "Require the reviewed diagnostic revision before target access"
       ansible.builtin.assert:
@@ -60,6 +62,7 @@
           - "{{ playbook_dir }}/files/discovery-diagnostics.py"
         stdin: "{{ {'since': discovery_log_since, 'until': discovery_log_until} | to_json }}"
       changed_when: false
+      check_mode: false
 
 - name: "Read NetBox discovery incident evidence"
   hosts: netbox_svc
@@ -81,6 +84,7 @@
       become: true
       register: _discovery_diagnostic
       changed_when: false
+      check_mode: false
       failed_when: false
 
     - name: "Require a completed collector response before parsing evidence"

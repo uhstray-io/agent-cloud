@@ -54,6 +54,7 @@
   register: _bm_existing
   delegate_to: localhost
   no_log: true
+  check_mode: false
 
 - name: "Refuse a missing path when the caller requires one"
   ansible.builtin.assert:
@@ -74,6 +75,24 @@
     # The one PATCH body: values to set, plus a null per key to delete.
     _bm_body: "{{ (_bm_data | default({})) | combine(dict((_bm_remove | default([])) | zip([none] * ((_bm_remove | default([])) | length)))) }}"
   no_log: true
+
+- name: "Dry run: report what this merge would write (key names only)"
+  # Under --check the writes below are skipped; this says what a real run would do. Only key
+  # NAMES are printed, never values.
+  # Reads _bm_set/_bm_del, the defaulted forms: a remove-only merge (a key revoke) supplies no
+  # _bm_data (PR 203 Codex review).
+  ansible.builtin.debug:
+    msg: >-
+      check mode: secret/{{ _bm_path }} would be
+      {{ 'CREATED' if _bm_existing.status == 404 else 'PATCHED' }}; keys that would be set:
+      {% for k, v in _bm_set.items() if _bm_current.get(k) != v %}{{ k }}{{ ', ' if not loop.last }}{% endfor %};
+      keys that would be removed: {{ _bm_del | intersect(_bm_current.keys() | list) | join(', ') }}
+  when:
+    - ansible_check_mode
+    - >-
+      _bm_existing.status == 404
+      or ((_bm_current | combine(_bm_set)) != _bm_current)
+      or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
 
 - name: "Require the guarded key to be unchanged"
   ansible.builtin.assert:
@@ -97,6 +116,7 @@
       data: "{{ _bm_body }}"
     status_code: [200]
   when:
+    - not ansible_check_mode
     - _bm_existing.status == 200
     - _bm_guard_key is not defined
     - ((_bm_current | combine(_bm_set)) != _bm_current) or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
@@ -122,6 +142,7 @@
         cas: "{{ _bm_existing.json.data.metadata.version }}"
     status_code: [200, 400]
   when:
+    - not ansible_check_mode
     - _bm_guard_key is defined
     - _bm_existing.status == 200
     - (_bm_current | combine(_bm_set)) != _bm_current
@@ -154,6 +175,7 @@
         cas: 0
     status_code: [200, 400]
   when:
+    - not ansible_check_mode
     - _bm_existing.status == 404
     - (_bm_on_missing | default('create')) == 'create'
     - _bm_set | length > 0
@@ -175,6 +197,7 @@
       data: "{{ _bm_body }}"
     status_code: [200]
   when:
+    - not ansible_check_mode
     - (_bm_create.status | default(0)) == 400
     - _bm_guard_key is not defined
   register: _bm_patch_after_race
@@ -209,6 +232,7 @@
   when: _bm_changed | bool  # noqa: no-handler — sequential verify of THIS run's write, not an event
   delegate_to: localhost
   no_log: true
+  check_mode: false
 
 - name: "Require every merged key to hold"
   ansible.builtin.assert:

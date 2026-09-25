@@ -1,0 +1,336 @@
+---
+# Service deployment workflow — the ONE definition of the steps every service passes through.
+# Design: plan/development/15-service-deployment-workflow-agents.md (step table, D1-D11).
+# Requirements: OpenSpec change service-deployment-workflow, platform/service-onboarding-workflow.
+# Readers: skynet builds its workflow graph from this file; the conformance collector scores
+# against it; the step review stamps `reviewed`. Tests: platform/tests/test_workflow_registry.py.
+#
+# Fields
+#   id               stable step id; also the `step` in every step result
+#   order            execution order
+#   diagram_label    the box text in docs/agent-cloud-service-deploy.excalidraw; null for a step
+#                    the drawing does not show yet (added: true)
+#   owner            OPA identity allowed to launch the executor (data.json allowed_templates)
+#   executor         Semaphore template name that converges/validates the step; "Deploy {service}"
+#                    is resolved per service. null for a reasoning step (it only proposes; the
+#                    steps in `feeds` execute) or for an executor not built yet (planned_executor)
+#   planned_executor template name the executor will have once built
+#   feeds            reasoning steps only: the step ids whose executors act on the proposal
+#   snapshot         read-only template whose JSON is the ONLY model input (reasoning steps);
+#                    planned_snapshot names it until it is built
+#   schema           proposal body schema for a reasoning step
+#   undo             template that reverses the step, or the literal none
+#   policy           required (a fail halts the run) | advisory (recorded, run continues)
+#   criteria         pass conditions the executor proves
+#   evidence_keys    keys the executor's step result carries in `evidence`
+#   reviewed         date the step review passed (tasks 7.1), or null
+steps:
+  - id: vm-template
+    order: 1
+    diagram_label: VM Template
+    owner: infra-agent
+    executor: Create VM Template
+    undo: none
+    policy: required
+    criteria:
+      - the template vmid exists on the declared node
+      - a cloud-init drive is attached to the template
+    evidence_keys: [template_vmid, node]
+    reviewed: null
+
+  - id: lookup-inventory
+    order: 2
+    diagram_label: Lookup Inventory
+    owner: infra-agent
+    executor: null
+    planned_executor: Lookup Service Inventory
+    undo: none
+    policy: required
+    criteria:
+      - the declared VM spec exists in site-config
+      - the declared address exists in NetBox as reserved or active
+      - no other VM claims the declared address
+    evidence_keys: [vm_spec, address_status]
+    reviewed: null
+
+  - id: validate-address
+    order: 3
+    diagram_label: Validate against ARP
+    owner: infra-agent
+    executor: null
+    planned_executor: Validate Address Free
+    undo: none
+    policy: required
+    criteria:
+      - the declared address is absent from the pfSense ARP table before provisioning
+      - a NetBox VM object exists for the service after the step
+    evidence_keys: [arp_present, netbox_vm_id]
+    reviewed: null
+
+  - id: provision-vm
+    order: 4
+    diagram_label: Provision VM
+    owner: infra-agent
+    executor: Provision VM
+    undo: Destroy VM
+    policy: required
+    criteria:
+      - the VM runs on the declared node with the declared cores, memory and disk
+      - onboot is 1
+    evidence_keys: [vmid, node, onboot]
+    reviewed: null
+
+  - id: cloud-init
+    order: 5
+    diagram_label: Cloud-init OS
+    owner: infra-agent
+    executor: Provision VM
+    undo: Destroy VM
+    policy: required
+    criteria:
+      - cloud-init finished
+      - SSH answers on the declared address with the bootstrap identity
+    evidence_keys: [cloud_init_done, ssh_reachable]
+    reviewed: null
+
+  - id: ssh-keys
+    order: 6
+    diagram_label: SSH Key Creation & Distribution
+    owner: infra-agent
+    executor: Distribute SSH Keys
+    undo: none
+    policy: required
+    criteria:
+      - the pair exists at secret/services/ssh/<service>
+      - its public half is authorized on the host
+      - key login is proven
+    evidence_keys: [key_present, key_login]
+    reviewed: null
+
+  - id: ssh-key-backup
+    order: 7
+    diagram_label: null
+    added: true
+    owner: infra-agent
+    executor: Back Up Service SSH Key
+    undo: none
+    policy: required
+    criteria:
+      - the pair is present in site-config on a pushed branch
+      - the output carries names only
+    evidence_keys: [branch]
+    reviewed: null
+
+  - id: access-harden
+    order: 8
+    diagram_label: Access harden
+    owner: security-agent
+    executor: Harden SSH
+    undo: none
+    policy: required
+    criteria:
+      - key-only access was proven before password authentication was withdrawn
+      - sshd rejects password authentication
+      - sudo is passwordless for the management user
+    evidence_keys: [key_only_proven, password_rejected]
+    reviewed: null
+
+  - id: service-assess
+    order: 9
+    diagram_label: Service Assess
+    owner: service-agent
+    executor: null
+    feeds: [vm-rightsize, service-deploy]
+    snapshot: null
+    planned_snapshot: Snapshot Service Assessment
+    schema: service-assessment.json
+    undo: none
+    policy: required
+    criteria:
+      - the proposal validates against its schema
+      - it names an existing deploy template for an existing service
+    evidence_keys: [verdict]
+    reviewed: null
+
+  - id: vm-rightsize
+    order: 10
+    diagram_label: VM Rightsize
+    owner: infra-agent
+    executor: Resize VM
+    undo: none
+    policy: required
+    criteria:
+      - live cores, memory and disk equal the declared spec
+    evidence_keys: [cores, memory_mb, disk_gb]
+    reviewed: null
+
+  - id: secrets-approle
+    order: 11
+    diagram_label: null
+    added: true
+    owner: service-agent
+    executor: Check Secrets
+    undo: none
+    policy: required
+    criteria:
+      - every existing-typed secret the service's deploy declares is present and non-empty
+      - the service AppRole exists with the service policy, when the service declares one
+        (a committed OpenBao policy file named for the service)
+    evidence_keys: [path_found, key_count, missing, empty, approle]
+    reviewed: null
+
+  - id: instrument-host
+    order: 12
+    diagram_label: Instrument OS/Infra Observability
+    owner: o11y-agent
+    executor: null
+    planned_executor: Instrument Host Observability
+    undo: none
+    policy: advisory
+    criteria:
+      - host series for the service host are present in Prometheus within one scrape interval
+    evidence_keys: [series_present]
+    reviewed: null
+
+  - id: service-deploy
+    order: 13
+    diagram_label: Service Deployment
+    owner: service-agent
+    executor: Deploy {service}
+    undo: none
+    policy: required
+    criteria:
+      - the deploy verify phase passes
+      - a second run reports no change
+    evidence_keys: [verified, changed_on_rerun]
+    reviewed: null
+
+  - id: service-validate
+    order: 14
+    diagram_label: Service Validate
+    owner: service-agent
+    executor: Verify Service Health
+    undo: none
+    policy: required
+    criteria:
+      - the service health URI answers 200 through its declared path
+    evidence_keys: [health_status]
+    reviewed: null
+
+  - id: edge-route
+    order: 15
+    diagram_label: null
+    added: true
+    owner: service-agent
+    executor: Manage Caddy Sites
+    undo: none
+    policy: required
+    criteria:
+      - the hostname resolves
+      - the route answers through Caddy
+      - the Cloudflare plan is zero-diff
+    evidence_keys: [resolves, route_status]
+    reviewed: null
+
+  - id: fw-assess
+    order: 16
+    diagram_label: FW Assess
+    owner: security-agent
+    executor: null
+    feeds: [fw-harden]
+    snapshot: null
+    planned_snapshot: Snapshot Firewall
+    schema: firewall-policy.json
+    undo: none
+    policy: required
+    criteria:
+      - the proposal validates against its schema
+      - every allow rule maps to a listening socket with a declared consumer
+      - SSH stays open to the orchestrator and to no source outside the declared SSH sources
+    evidence_keys: [verdict]
+    reviewed: null
+
+  - id: fw-harden
+    order: 17
+    diagram_label: FW Harden
+    owner: security-agent
+    executor: Apply Firewall
+    undo: none
+    policy: required
+    criteria:
+      - ufw is active with default deny inbound
+      - the allow set equals the declared inventory set
+      - SSH answers after apply
+    evidence_keys: [ufw_active, allows]
+    reviewed: null
+
+  - id: instrument-service
+    order: 18
+    diagram_label: Instrument Service Observability
+    owner: o11y-agent
+    executor: null
+    planned_executor: Instrument Service Observability
+    undo: none
+    policy: advisory
+    criteria:
+      - at least one series labelled with the service is present in Prometheus
+    evidence_keys: [series_present]
+    reviewed: null
+
+  - id: systemd-enablement
+    order: 19
+    diagram_label: Systemd enablement
+    owner: infra-agent
+    executor: null
+    planned_executor: Verify Service Persistence
+    undo: none
+    policy: required
+    criteria:
+      - linger is enabled for the service user
+      - every container restarts unless stopped, or is a systemd unit
+    evidence_keys: [linger, restart_policies]
+    reviewed: null
+
+  - id: access-assess
+    order: 20
+    diagram_label: Role & Access Assessment
+    owner: service-agent
+    executor: null
+    feeds: [oidc-config]
+    snapshot: null
+    planned_snapshot: Snapshot Access
+    schema: access-policy.json
+    undo: none
+    policy: required
+    criteria:
+      - the proposal validates against its schema
+      - the auth mode matches the service's agent practices
+      - every named group exists
+    evidence_keys: [verdict]
+    reviewed: null
+
+  - id: oidc-config
+    order: 21
+    diagram_label: OIDC Configuration
+    owner: security-agent
+    executor: Deploy Authentik
+    undo: none
+    policy: required
+    criteria:
+      - the service blueprint record is successful
+      - the provider redirect URI is verified
+    evidence_keys: [blueprint_status, redirect_verified]
+    reviewed: null
+
+  - id: credential-backup
+    order: 22
+    diagram_label: null
+    added: true
+    owner: security-agent
+    executor: Back Up Credentials to site-config
+    undo: none
+    policy: required
+    criteria:
+      - the named fields are present in site-config on a pushed branch
+    evidence_keys: [branch, field_count]
+    reviewed: null

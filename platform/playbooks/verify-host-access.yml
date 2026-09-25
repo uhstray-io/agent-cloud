@@ -113,6 +113,7 @@
       register: _reach
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Identify who we connected as"
       ansible.builtin.raw: "id -un"
@@ -120,6 +121,7 @@
       changed_when: false
       failed_when: false
       when: _reach.rc | default(1) == 0
+      check_mode: false
 
     # Resolve the target's connection parameters HERE, in a task that is NOT
     # delegated, and bake them as facts. Referencing `ansible_host` or
@@ -209,6 +211,7 @@
           delegate_to: "{{ inventory_hostname }}"
           changed_when: false
           failed_when: false
+          check_mode: false
 
         - name: "Record whether the host key was readable"
           ansible.builtin.set_fact:
@@ -274,6 +277,7 @@
             # An empty user would template to "@host" and fail as an ARGUMENT
             # error rather than a probe failure — indistinguishable from an abort.
             - (_target_user | default('') | trim | length) > 0
+          check_mode: false
 
       always:
         - name: "Remove the probe key and its pinned known_hosts"
@@ -309,6 +313,7 @@
         # Skip rather than abort when no sudo password is available; the report
         # states escalation as unavailable, which is the documented behaviour.
         - (_resolved_become_pw | default('') | length) > 0
+      check_mode: false
 
     - name: "Check whether privilege escalation works"
       ansible.builtin.raw: "id -un"
@@ -321,6 +326,7 @@
         # Skip rather than abort when no sudo password is available; the report
         # states escalation as unavailable, which is the documented behaviour.
         - (_resolved_become_pw | default('') | length) > 0
+      check_mode: false
 
     - name: "Count authorized keys for the connecting user"
       ansible.builtin.raw: "wc -l < ~/.ssh/authorized_keys 2>/dev/null || echo 0"
@@ -328,6 +334,7 @@
       changed_when: false
       failed_when: false
       when: _reach.rc | default(1) == 0
+      check_mode: false
 
     # ── Is what harden-ssh needs actually in the secret store? ───────────────
     - name: "Check the sudo password is available in the secret store"  # noqa: run-once[task]

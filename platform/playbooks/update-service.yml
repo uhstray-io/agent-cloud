@@ -39,6 +39,7 @@
       register: runtime
       changed_when: false
       when: compose_file.stat.exists
+      check_mode: false
 
     - name: Pull latest images
       ansible.builtin.shell: |
@@ -46,7 +47,9 @@
         {{ runtime.stdout }} compose -f compose.yml pull
       register: pull_result
       changed_when: "'Pull complete' in pull_result.stdout or 'Downloaded' in pull_result.stdout"
-      when: compose_file.stat.exists
+      when:
+        - not ansible_check_mode
+        - compose_file.stat.exists
 
     - name: Restart with new images
       ansible.builtin.shell: |
@@ -54,7 +57,9 @@
         {{ runtime.stdout }} compose -f compose.yml up -d
       register: restart_result
       changed_when: true
-      when: compose_file.stat.exists
+      when:
+        - not ansible_check_mode
+        - compose_file.stat.exists
 
     - name: Wait for service health
       ansible.builtin.uri:
@@ -69,6 +74,7 @@
       when:
         - compose_file.stat.exists
         - service_url is defined
+      check_mode: false
 
     - name: Report update status
       ansible.builtin.debug:

@@ -173,5 +173,13 @@ PY
   local create
   create=$(sed -n '/Record each new address as allocated/,/^$/p' "$PLAYBOOK")
   printf '%s' "$create" | grep -qF '_existing.results | default([])'
-  printf '%s' "$create" | grep -A2 'when:' | head -2 | grep -qF '_reserve'
+  # `_reserve` must come before any `.json` lookup in the condition (a check-mode guard may
+  # precede both: it reads no register).
+  local cond
+  cond=$(printf '%s' "$create" | sed -n '/^ *when:/,/^ *[a-z_]*:/p')
+  local r j
+  r=$(printf '%s\n' "$cond" | grep -nF '_reserve' | head -1 | cut -d: -f1)
+  j=$(printf '%s\n' "$cond" | grep -nF '.json' | head -1 | cut -d: -f1)
+  [ -n "$r" ]
+  [ -z "$j" ] || [ "$r" -lt "$j" ]
 }

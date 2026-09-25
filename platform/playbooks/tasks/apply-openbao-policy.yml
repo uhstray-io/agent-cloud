@@ -19,6 +19,8 @@
   delegate_to: localhost
   run_once: true
   no_log: true
+  changed_when: false
+  check_mode: false
 
 - name: "Apply policy — {{ _policy_name }}"
   ansible.builtin.uri:
@@ -31,6 +33,7 @@
       policy: "{{ lookup('file', _policy_file) }}"
     status_code: [200, 204]
   delegate_to: localhost
+  when: not ansible_check_mode
 
 - name: "Policy applied"
   ansible.builtin.debug:

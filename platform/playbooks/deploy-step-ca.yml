@@ -57,6 +57,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -92,10 +93,12 @@
         '
       register: _prov
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Reload step-ca to apply the policy (SIGHUP)"
       ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
       changed_when: true
+      when: not ansible_check_mode
       # No post-reload health wait here: Phase 3's retried `step ca health` is
       # the single gate, and it settles the reload (retries/until 'ok').
 
@@ -117,12 +120,14 @@
       retries: 5
       delay: 3
       until: "'ok' in _ca_health.stdout"
+      check_mode: false
 
     - name: "Confirm the root cert exists (subject)"
       ansible.builtin.command: >-
         {{ _engine }} exec step-ca step certificate inspect /home/step/certs/root_ca.crt --short
       register: _root
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

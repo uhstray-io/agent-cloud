@@ -91,6 +91,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     # bao_verify_access_only=true proves this environment's AppRole holds exactly the
     # capabilities the real seed will use (read, plus create for a new path or patch

@@ -87,6 +87,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -111,6 +112,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _post
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show post-deploy.sh output"
       ansible.builtin.debug:
@@ -126,6 +128,7 @@
       until: _health.status == 200
       retries: 5
       delay: 10
+      check_mode: false
 
     - name: "Deployed"
       ansible.builtin.debug:

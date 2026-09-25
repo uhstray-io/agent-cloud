@@ -1,0 +1,52 @@
+---
+# emit-step-result.yml — record ONE service-deployment-workflow step result.
+#
+# The result is written with ansible.builtin.set_stats, which runs in check mode as well
+# as a normal run, and is printed as JSON under "CUSTOM STATS" because the repository's
+# ansible.cfg sets show_custom_stats. The conformance collector and the skynet graph read
+# it from Semaphore's task output. Contract: plan 15 "Step result"; schema
+# agentcloud/step-result/v1 (platform/workflows/service-onboarding/schemas/step-result.json).
+#
+# Include LAST in an executor or snapshot playbook:
+#
+#   - name: "Record the step result"
+#     ansible.builtin.include_tasks: tasks/emit-step-result.yml
+#     vars:
+#       step_result_step: fw-harden                # registry step id
+#       step_result_status: pass                   # pass | fail | skip
+#       step_result_evidence: { ufw_active: true } # the registry's evidence keys
+#       step_result_error: null                    # string when status is fail
+#
+# Optional: step_result_service (default: service_name), step_result_undo (default: none),
+# workflow_id (extra var set by the orchestrator; empty for a human-launched run).
+# Tag the include `verify` in a playbook that has a verify-only run.
+
+- name: "Step result: validate the inputs"
+  ansible.builtin.assert:
+    that:
+      - step_result_step is defined and step_result_step | length > 0
+      - step_result_status in ['pass', 'fail', 'skip']
+      - step_result_status != 'fail' or (step_result_error | default('', true) | length > 0)
+    fail_msg: >-
+      emit-step-result needs step_result_step, a status of pass/fail/skip, and an
+      error message when the status is fail (got step={{ step_result_step | default('') }},
+      status={{ step_result_status | default('') }})
+    quiet: true
+  run_once: true
+
+- name: "Step result: record the result for {{ step_result_step }}"
+  ansible.builtin.set_stats:
+    data:
+      step_result:
+        schema: agentcloud/step-result/v1
+        workflow_id: "{{ workflow_id | default('') }}"
+        service: "{{ step_result_service | default(service_name | default('')) }}"
+        step: "{{ step_result_step }}"
+        status: "{{ step_result_status }}"
+        check_mode: "{{ ansible_check_mode | bool }}"
+        evidence: "{{ step_result_evidence | default({}) }}"
+        error: "{{ step_result_error | default(none) }}"
+        undo: "{{ step_result_undo | default('none') }}"
+    per_host: false
+    aggregate: false
+  run_once: true

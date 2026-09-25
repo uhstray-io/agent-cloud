@@ -17,6 +17,7 @@
   register: _nvidia_ctk_check
   changed_when: false
   failed_when: false
+  check_mode: false
 
 # apt_key is removed on Ubuntu 24.04 and deprecated in modern Ansible. Use the
 # signed-by keyring pattern instead: drop the (ASCII-armored) key into
@@ -73,6 +74,7 @@
   register: _gpu_probe
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: "GPU probe result"
   ansible.builtin.debug:

@@ -12,6 +12,7 @@
   loop_control:
     label: "{{ item.name }}"
   no_log: true
+  when: not ansible_check_mode
 
 - name: "Read back each selected workflow"
   ansible.builtin.uri:
@@ -24,6 +25,7 @@
     label: "{{ item.name }}"
   register: _deactivated
   no_log: true
+  check_mode: false
 
 - name: "Require every selected workflow to be inactive"
   ansible.builtin.assert:

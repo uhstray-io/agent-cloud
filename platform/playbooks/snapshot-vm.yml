@@ -93,6 +93,7 @@
       # header (module_defaults) and uri logs request params on failure. The next
       # debug/assert tasks surface status/exitstatus (no token) for diagnostics.
       no_log: true
+      check_mode: false
 
     - name: "Show what is being snapshotted"
       ansible.builtin.debug:
@@ -113,6 +114,7 @@
         status_code: [200]
       register: _create
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Record the snapshot task UPID"
       ansible.builtin.set_fact:
@@ -127,6 +129,7 @@
       until: _wait.json.data.status is defined and _wait.json.data.status == 'stopped'
       retries: 120          # up to 10 min (120 * 5s) for large disks
       delay: 5
+      when: not ansible_check_mode
 
     - name: "Assert the snapshot task SUCCEEDED (exitstatus OK)"
       ansible.builtin.assert:
@@ -141,6 +144,7 @@
         method: GET
       register: _snaps
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Assert our snapshot is present"
       ansible.builtin.assert:

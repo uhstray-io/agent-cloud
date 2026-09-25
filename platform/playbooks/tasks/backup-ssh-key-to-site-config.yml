@@ -44,8 +44,10 @@
     state: file
     prefix: ".bkderive_"
   register: _bk_tmp
+  when: not ansible_check_mode
 
 - name: "Derive the public key and compare it to the one supplied"
+  when: not ansible_check_mode
   block:
     - name: "Write the private key to scratch (0600, never to the destination yet)"
       ansible.builtin.copy:
@@ -162,6 +164,7 @@
     cmd: "ssh-keygen -lf {{ _bk_dest_dir }}/id_ed25519.pub"
   register: _bk_fp
   changed_when: false
+  when: not ansible_check_mode
 
 - name: "Report where it landed"
   ansible.builtin.debug:

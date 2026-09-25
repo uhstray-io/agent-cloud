@@ -139,6 +139,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _repos
+      check_mode: false
 
     # Map every repository record name -> id, so a template can NAME the record
     # (and therefore the branch) it runs from. Declared in repositories.yml and
@@ -194,6 +195,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _existing
+      check_mode: false
 
     - name: "Refuse ambiguous bootstrap records"
       ansible.builtin.assert:
@@ -251,6 +253,7 @@
       vars:
         _match: "{{ _existing.json | selectattr('name', 'equalto', item._publish_name) | first }}"
       register: _selected_records
+      check_mode: false
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
@@ -300,9 +303,11 @@
         status_code: [200, 201, 204]
       register: _published
       changed_when: true
-      when: >-
-        (not _scoped and not (_bootstrap_survey_publisher | default(false)))
-        or (not (_tpl_body | publication_matches(_existing_template)))
+      when:
+        - not ansible_check_mode
+        - >-
+          (not _scoped and not (_bootstrap_survey_publisher | default(false)))
+          or (not (_tpl_body | publication_matches(_existing_template)))
       vars:
         _existing_template: "{{ (_merge_records | selectattr('name', 'equalto', _tpl_name) | list | first) | default({}) }}"
         _existing_ids: "{{ _existing.json | selectattr('name', 'equalto', _tpl_name) | map(attribute='id') | list }}"
@@ -348,6 +353,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _templates_after
+      check_mode: false
 
     - name: "Read complete selected records after publication"
       ansible.builtin.uri:
@@ -357,6 +363,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _selected_after
+      check_mode: false
       loop: >-
         {{ _templates_after.json
            | selectattr('name', 'in', _selected_templates | map(attribute='_publish_name') | list) | list }}
@@ -379,7 +386,10 @@
       loop: "{{ _selected_templates }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _bootstrap_survey_publisher | default(false)
+      # Dry run: nothing was published, so a readback can only show the old record.
+      when:
+        - not ansible_check_mode
+        - _bootstrap_survey_publisher | default(false)
 
     - name: "Verify scoped surveys and every preserved record setting"
       ansible.builtin.assert:
@@ -396,6 +406,7 @@
       loop_control:
         label: "{{ item._publish_name }}"
       when:
+        - not ansible_check_mode
         - _scoped
         - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 1
 
@@ -421,6 +432,7 @@
       loop_control:
         label: "{{ item._publish_name }}"
       when:
+        - not ansible_check_mode
         - _scoped
         - _allow_scoped_create
         - _existing.json | selectattr('name', 'equalto', item._publish_name) | list | length == 0
@@ -433,6 +445,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _schedules
+      check_mode: false
       when: not _scoped
 
     - name: "Create or update each declared schedule"
@@ -449,7 +462,9 @@
         body_format: json
         body: "{{ _sched_body | to_json }}"
         status_code: [200, 201, 204]
-      when: not _scoped
+      when:
+        - not ansible_check_mode
+        - not _scoped
       vars:
         _sched_ids: "{{ (_schedules.json | default([])) | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
         _tpl_id: "{{ (_templates_after.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first) }}"

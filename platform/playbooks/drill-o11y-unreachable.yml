@@ -20,6 +20,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
 
     - name: Require the exact candidate revision
       ansible.builtin.assert:
@@ -34,6 +35,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
 
     - name: Require a clean candidate checkout
       ansible.builtin.assert:

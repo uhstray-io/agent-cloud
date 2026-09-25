@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhstray.io/agent-cloud/schemas/step-result.json",
+  "title": "Service deployment workflow step result",
+  "description": "One step's outcome, recorded by platform/playbooks/tasks/emit-step-result.yml through set_stats and read from the task output's CUSTOM STATS block. Design: plan 15, Contracts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "workflow_id", "service", "step", "status", "check_mode", "evidence", "error", "undo"],
+  "properties": {
+    "schema": {"const": "agentcloud/step-result/v1"},
+    "workflow_id": {"type": "string", "description": "Set by the orchestrator; empty for a human-launched run."},
+    "service": {"type": "string"},
+    "step": {"type": "string", "minLength": 1, "description": "Registry step id."},
+    "status": {"enum": ["pass", "fail", "skip"]},
+    "check_mode": {"type": "boolean", "description": "True when the run was a dry run (--check)."},
+    "evidence": {"type": "object", "description": "The registry's evidence keys for this step."},
+    "error": {"type": ["string", "null"]},
+    "undo": {"type": "string", "minLength": 1, "description": "Undo template name, or none."}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "fail"}}},
+     "then": {"properties": {"error": {"type": "string", "minLength": 1}}}}
+  ]
+}

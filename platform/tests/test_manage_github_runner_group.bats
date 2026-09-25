@@ -44,7 +44,8 @@ setup() {
 @test "runner-group: dry run is the DEFAULT" {
   # A playbook that mutates org-level access by default is one nobody can safely use to
   # look at the current state.
-  assert_grep -qF '_dry_run: "{{ dry_run | default(true) | bool }}"' "$PLAYBOOK"
+  # Check mode is always dry too (plan/architecture/08); the default stays true.
+  assert_grep -qF '_dry_run: "{{ (dry_run | default(true) | bool) or ansible_check_mode }}"' "$PLAYBOOK"
 
   # PER TASK. Comparing two whole-file counts lets an ungated mutation pass whenever
   # enough other tasks carry the guard — and an ungated mutation here changes org-level

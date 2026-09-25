@@ -64,7 +64,9 @@
   become: true
   register: _clean
   changed_when: true
-  when: not (local_mode | default(false) | bool)
+  when:
+    - not ansible_check_mode
+    - not (local_mode | default(false) | bool)
 
 # ── LOCAL teardown (shared deploy dir; keep the tree) ───────────────────────
 - name: "Stop and remove containers + volumes (local) for {{ service_name }}"
@@ -91,7 +93,9 @@
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _clean_local
   changed_when: true
-  when: local_mode | default(false) | bool
+  when:
+    - not ansible_check_mode
+    - local_mode | default(false) | bool
 
 # ── Clone removal — PROD only (local shares the tree) ───────────────────────
 - name: "Remove agent-cloud clone (prod; may contain root-owned files)"
@@ -117,6 +121,7 @@
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _verify
   changed_when: false
+  check_mode: false
 
 - name: "Clean state"
   ansible.builtin.debug:

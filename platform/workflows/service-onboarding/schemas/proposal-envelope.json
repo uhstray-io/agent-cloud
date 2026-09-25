@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhstray.io/agent-cloud/schemas/proposal-envelope.json",
+  "title": "Reasoning-step proposal envelope",
+  "description": "Wraps every proposal a reasoning step emits. workflow_id, proposed_by, idempotency_key and snapshot_sha256 are injected by the orchestrator and never produced by the model. The body is validated against the step's schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "workflow_id", "service", "step", "proposed_by", "idempotency_key", "reason", "snapshot_sha256", "proposal"],
+  "properties": {
+    "schema": {"const": "agentcloud/proposal/v1"},
+    "workflow_id": {"type": "string", "minLength": 1},
+    "service": {"type": "string", "minLength": 1},
+    "step": {"enum": ["service-assess", "fw-assess", "access-assess"]},
+    "proposed_by": {"enum": ["infra-agent", "security-agent", "o11y-agent", "service-agent"]},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "snapshot_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "proposal": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"step": {"const": "service-assess"}}},
+     "then": {"properties": {"proposal": {"$ref": "service-assessment.json"}}}},
+    {"if": {"properties": {"step": {"const": "fw-assess"}}},
+     "then": {"properties": {"proposal": {"$ref": "firewall-policy.json"}}}},
+    {"if": {"properties": {"step": {"const": "access-assess"}}},
+     "then": {"properties": {"proposal": {"$ref": "access-policy.json"}}}}
+  ]
+}

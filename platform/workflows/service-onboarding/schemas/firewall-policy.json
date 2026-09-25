@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhstray.io/agent-cloud/schemas/firewall-policy.json",
+  "title": "Firewall policy proposal body (step fw-assess)",
+  "description": "OPA additionally denies a proposal that drops SSH from the orchestrator's source or allows SSH from outside the declared SSH sources (rego firewall content rule).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["allow", "deny_egress", "verdict"],
+  "properties": {
+    "allow": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["port", "proto", "source", "consumer", "justification"],
+        "properties": {
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "proto": {"enum": ["tcp", "udp"]},
+          "source": {"type": "string", "minLength": 1, "description": "CIDR, or an inventory host name resolved by the executor."},
+          "consumer": {"type": "string", "minLength": 1},
+          "justification": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "deny_egress": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "verdict": {"$ref": "verdict.json"}
+  }
+}

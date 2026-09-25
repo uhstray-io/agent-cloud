@@ -69,6 +69,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Check whether the per-service key already exists"
       ansible.builtin.uri:
@@ -79,6 +81,7 @@
         status_code: [200, 404]
       register: _existing
       no_log: true
+      check_mode: false
 
     - name: "Generate + store keypair when absent"
       when: >-
@@ -95,6 +98,7 @@
           ansible.builtin.command:
             cmd: "ssh-keygen -t ed25519 -N '' -C {{ service_name }}@agent-cloud -f {{ _kd.path }}/id_ed25519"
           changed_when: true
+          when: not ansible_check_mode
 
         - name: "Read public key"
           ansible.builtin.slurp:
@@ -119,6 +123,7 @@
                 public_key: "{{ _pub.content | b64decode | trim }}"
                 private_key: "{{ _priv.content | b64decode }}"
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Wipe runner-local temp keys"
           ansible.builtin.file:
@@ -143,6 +148,7 @@
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
       register: _pair
       when:
+        - not ansible_check_mode
         - _sc_dir | length > 0
         - _sc.stat.exists | default(false)
       no_log: true

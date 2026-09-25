@@ -33,7 +33,13 @@ The production templates use the two repository records declared in
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
 in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
-**No production feature-branch record is declared.** Code that a Semaphore task
+**No production feature-branch record is declared, and a production template cannot run a
+feature branch either.** On v2.19.11, the pinned production version, the runner applies a
+task's `git_branch` only when the template sets `allow_override_branch_in_task`
+(`services/tasks/local_executor.go:938`), and `setup-templates.yml` sets it on no template.
+v2.18.12 applied a task's branch unconditionally and checked the flag only in the web UI
+(`services/tasks/LocalJob.go:817`, `docs/MISTAKES.md` 1.9), so a controller still on that
+version runs any pushed branch an API token names. Code that a Semaphore task
 must execute — a new playbook, a new OpenTofu file, a changed template — has to
 be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 `(Dev)` variant can run it, and into `main` before the base template can. Plan

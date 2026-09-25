@@ -30,6 +30,7 @@
   register: _ca_root_present
   changed_when: false
   failed_when: _ca_root_present.rc != 0
+  check_mode: false
 
 - name: "Ensure the consumer's certs dir exists"
   ansible.builtin.file:
@@ -56,3 +57,4 @@
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   changed_when: true
+  when: not ansible_check_mode

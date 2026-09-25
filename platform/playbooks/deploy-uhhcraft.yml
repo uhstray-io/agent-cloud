@@ -49,6 +49,17 @@
       - { name: printify_api_key, type: user }
       - { name: printify_shop_id, type: user }
       - { name: hubs_api_key, type: user }
+    # The operator keys the app refuses to start without: config.go's requireEnv panics on an
+    # empty value for each. manage-secrets refuses the deploy when one is missing, and Check
+    # Secrets reads the same list (PR 203 Codex review), so a missing key fails before a
+    # crash-looping container instead of after.
+    _required_existing_secrets:
+      - stripe_secret_key
+      - stripe_publishable_key
+      - stripe_webhook_secret
+      - resend_api_key
+      - discord_orders_webhook_url
+      - discord_ops_webhook_url
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
@@ -95,6 +106,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -119,6 +131,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _post
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show post-deploy.sh output"
       ansible.builtin.debug:
@@ -143,6 +156,7 @@
       until: _health.status == 200
       retries: 5
       delay: 10
+      check_mode: false
 
     - name: "Deployed"
       ansible.builtin.debug:

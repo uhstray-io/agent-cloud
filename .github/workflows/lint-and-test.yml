@@ -230,6 +230,17 @@ jobs:
       - name: Run Bash tests
         run: bats platform/tests/
 
+      # The Rego authorization policy had tests that ran only at deploy time
+      # (deploy-opa.yml) and on a workstation, so a rule could merge broken. Run them
+      # here in the image the OPA service pins (compose.yml OPA_IMAGE default). `check
+      # --strict` also catches a non-policy JSON file in the tree, which OPA loads as
+      # data and rejects with "merge error" (found 2026-09-22).
+      - name: Run Rego tests
+        run: |
+          img=openpolicyagent/opa:1.0.0-static
+          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" check --strict /p
+          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" test /p -v
+
   # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
   # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.
   go-lint:

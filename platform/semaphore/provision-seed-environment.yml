@@ -63,6 +63,8 @@
         follow_redirects: none
         status_code: [200]
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read repository declarations and live bindings"
       ansible.builtin.uri:
@@ -72,6 +74,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _repos
+      check_mode: false
 
     - name: "Require the intended repository identity"
       ansible.builtin.assert:
@@ -95,6 +98,7 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
       register: _existing
+      check_mode: false
 
     - name: "Require one existing seed template"
       ansible.builtin.assert:
@@ -110,6 +114,7 @@
         follow_redirects: none
       register: _template
       no_log: true
+      check_mode: false
 
     - name: "Require reviewed seed execution settings"
       ansible.builtin.assert:
@@ -133,6 +138,7 @@
         follow_redirects: none
       register: _source
       no_log: true
+      check_mode: false
 
     - name: "Require the reviewed source or already-converged binding"
       ansible.builtin.assert:
@@ -155,6 +161,7 @@
         follow_redirects: none
       register: _target
       no_log: true
+      check_mode: false
 
     - name: "Validate the dedicated credential boundary"
       ansible.builtin.assert:
@@ -195,6 +202,7 @@
         follow_redirects: none
       register: _fresh
       no_log: true
+      check_mode: false
 
     - name: "Refuse changed environment state"
       ansible.builtin.assert:
@@ -216,7 +224,9 @@
         body_format: json
         body: "{{ _target.json | combine({'json': _desired_json, 'secrets': _auth_operations}) | to_json }}"
         status_code: [200, 204]
-      when: _auth_operations | length > 0 or (_target.json.json | default('{}', true) | from_json) != (_desired_json | from_json)
+      when:
+        - not ansible_check_mode
+        - _auth_operations | length > 0 or (_target.json.json | default('{}', true) | from_json) != (_desired_json | from_json)
       changed_when: true
       no_log: true
 
@@ -229,6 +239,7 @@
         follow_redirects: none
       register: _after
       no_log: true
+      check_mode: false
 
     - name: "Verify preserved inputs and new authentication identities"
       ansible.builtin.assert:
@@ -249,6 +260,7 @@
       vars:
         _auth: "{{ _after.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Re-read the seed template before binding"
       ansible.builtin.uri:
@@ -259,6 +271,7 @@
         follow_redirects: none
       register: _template_fresh
       no_log: true
+      check_mode: false
 
     - name: "Require unchanged template settings"
       ansible.builtin.assert:
@@ -279,7 +292,7 @@
         body_format: json
         body: "{{ _template.json | publication_settings | combine({'environment_id': _target.json.id, 'survey_vars': _template.json.survey_vars | default([])}) | to_json }}"
         status_code: [200, 204]
-      when: _template.json.environment_id != _target.json.id
+      when: not ansible_check_mode and (_template.json.environment_id != _target.json.id)
       changed_when: true
       no_log: true
 
@@ -292,6 +305,7 @@
         follow_redirects: none
       register: _bound
       no_log: true
+      check_mode: false
 
     - name: "Verify only the declared binding changed"
       ansible.builtin.assert:
@@ -302,6 +316,7 @@
           - _template.json.survey_vars | default([]) | publication_matches(_bound.json.survey_vars | default([]))
         quiet: true
         fail_msg: "Seed binding readback differs; reconcile before any credential import."
+      when: not ansible_check_mode
 
     - name: "Report the next read-only verification step"
       ansible.builtin.debug:

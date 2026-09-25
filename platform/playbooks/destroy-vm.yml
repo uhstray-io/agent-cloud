@@ -107,6 +107,7 @@
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
         method: GET
       register: _all
+      check_mode: false
 
     - name: "Resolve the live record"
       ansible.builtin.set_fact:
@@ -137,7 +138,9 @@
         status_code: [200]
       register: _stop
       changed_when: _stop.json.data is defined
-      when: (_live.status | default('')) == 'running'
+      when:
+        - not ansible_check_mode
+        - (_live.status | default('')) == 'running'
 
     - name: "Wait until the VM is stopped and unlocked"
       ansible.builtin.uri:
@@ -150,6 +153,7 @@
       retries: 30
       delay: 5
       changed_when: false
+      when: not ansible_check_mode
 
     # Proxmox's own --destroy-unreferenced-disks scan walks every ENABLED storage on
     # the node and aborts when a cluster-wide storage is absent there (apollo has no
@@ -163,6 +167,7 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
         method: GET
       register: _stor
+      check_mode: false
 
     - name: "Select the storages to sweep for leftovers"
       ansible.builtin.set_fact:
@@ -179,6 +184,21 @@
         status_code: [200]
       register: _destroy
       changed_when: _destroy.json.data is defined
+      when: not ansible_check_mode
+
+    # A dry run destroyed nothing, so the wait, confirmation, volume sweep and report below
+    # would describe work that did not happen (PR 203 Codex review).
+    - name: "Dry run: report the planned destroy"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} on {{ _node }} would be destroyed (purge=1), then any volume
+          still tagged with vmid {{ _vmid }} on {{ _sweep_storages | join(', ') }} would be freed.
+          Nothing was changed.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop this host"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
 
     - name: "Wait for the destroy task"
       ansible.builtin.uri:
@@ -188,7 +208,9 @@
       until: _task.json.data.status == "stopped"
       retries: 60
       delay: 5
-      when: _destroy.json.data is defined
+      when:
+        - not ansible_check_mode
+        - _destroy.json.data is defined
 
     - name: "Verify the destroy task succeeded"
       ansible.builtin.fail:
@@ -204,6 +226,7 @@
       retries: 12
       delay: 5
       changed_when: false
+      when: not ansible_check_mode
 
     - name: "Sweep each active image storage for volumes still tagged with this vmid"
       ansible.builtin.uri:
@@ -212,6 +235,7 @@
       register: _leftovers
       loop: "{{ _sweep_storages }}"
       changed_when: false
+      check_mode: false
 
     - name: "Collect leftover volumes"
       ansible.builtin.set_fact:
@@ -228,6 +252,7 @@
       register: _freed
       changed_when: _freed.status == 200
       loop: "{{ _orphans }}"
+      when: not ansible_check_mode
 
     - name: "Re-check: nothing tagged with this vmid remains on the swept storages"
       ansible.builtin.uri:
@@ -239,6 +264,7 @@
       until: (_recheck.json.data | default([]) | length) == 0
       retries: 6
       delay: 5
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

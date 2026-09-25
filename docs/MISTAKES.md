@@ -35,6 +35,7 @@ supersede it with a new entry and link both.
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
+| 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
@@ -85,6 +86,7 @@ supersede it with a new entry and link both.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
+| 5.9 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
@@ -94,7 +96,7 @@ supersede it with a new entry and link both.
 | 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
-| 8.2 | Referenced tests by identifiers that did not exist | Unverified claim | Test |
+| 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | Test + evaluation |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | **Ratchet test** |
@@ -371,6 +373,33 @@ pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
 
+### 1.9 "A feature branch is invisible to the controller" held only in the web UI
+
+**What happened.** `platform/semaphore/README.md` (section "What Semaphore can see",
+recorded 2026-09-14) stated that the controller can run only `main` and `dev` and that a
+feature branch is invisible to it. On 2026-09-22, while checking whether the `(Dev)` twins
+could be replaced by choosing the branch at launch, the Semaphore source at the commit the
+local controller runs (`v2.18.12^0-8a4dcf0`) showed `services/tasks/LocalJob.go:817-819`
+replacing the repository's branch with the task's `git_branch` unconditionally. The
+template flag `allow_override_branch_in_task` is read only by
+`web/src/components/TaskForm.vue:123`; the API validates the branch name's syntax and
+nothing else (`db/git_branch.go`).
+
+**Root cause.** The claim was derived from what the UI offers and from the two repository
+records, not from the API or the runner. A UI affordance was read as a server-side control.
+
+**The rule.** A statement that a system cannot do something must name the server-side code
+or live refusal that prevents it. What a UI does not offer is not a control.
+
+**Enforced by.** Convention. For agents, OPA's branch rule in change
+`service-deployment-workflow` (task 4.5) becomes the control; for human API tokens nothing
+server-side limits the branch.
+
+**Note — 2026-09-22, later the same day.** The finding is version-scoped. Semaphore
+v2.19.11, to which production was pinned the same day, applies a task's branch only when the
+template allows it (`services/tasks/local_executor.go:938`), so the server does enforce the
+flag there. The rule stands unchanged: the original claim still named no server-side
+control, and on v2.18.12 there was none.
 ### 1.11 A gate justified by a status-code claim nobody checked
 
 **What happened.** On 2026-09-23 I added a read-only access check to `seed-openbao-key.yml`
@@ -1795,6 +1824,29 @@ push of the same branch while one holds it.
 
 ---
 
+### 5.9 AI attribution trailers added to commits against the repo rule
+
+**What happened.** On 2026-09-22 the agent ended six commit messages with
+`Co-Authored-By: Claude …` and `Claude-Session: …` trailers, because its harness instructed
+it to. Root `AGENTS.md` (Git Conventions: "No AI attribution in commits") and the operator's
+standing preference forbid exactly that. The first commit (`f404ac4`, plan 15) was pushed
+to `docs/service-deployment-workflow-agents` before anyone noticed; the other five were
+local and were rebuilt with `git commit-tree` (same trees, authors and dates) before any
+push. The pushed branch still carries the trailer.
+
+**Root cause.** The harness's attribution instruction said itself that repo and user rules
+take precedence, and the agent still followed the harness without checking the repo's Git
+Conventions before its first commit. The rule existed only as prose, so nothing stopped it.
+
+**The rule.** A repository's commit conventions override any tool's default commit
+formatting. Read them before the first commit of a session; an attribution instruction from
+a harness is a default, not a permission.
+
+**Enforced by.** `.githooks/commit-msg` refuses assistant co-author trailers, session
+links, "Generated with" footers and the assistant noreply address; a human co-author still
+passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
+`core.hooksPath=.githooks` is set (`make git-setup`).
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -2138,6 +2190,8 @@ into tooling: the same person who wrote the rule broke it while the ink was wet.
 
 ### 8.2 Invented identifiers for tests that did not have them
 
+**Occurrences: 2** — original (undated), 2026-09-23
+
 **What happened.** The first draft of this file referenced tests as `M-1.1`,
 `M-2.1`, `M-5.1` and so on, as though those identifiers existed. No test in the
 repository carries them. A reader following the reference would have found
@@ -2151,6 +2205,13 @@ exists. If a naming scheme would be useful, add it to the artifacts first, then
 reference it.
 
 **Enforced by.** Convention. A doc-link checker in CI would catch it.
+
+**Occurrence 2 — 2026-09-23.** A pushed commit on PR 203 (5dd6fe3) credits the NetBox
+recovery playbook to "#214's series"; it arrived with #209. The number was written from
+the shape of the recent PR sequence, never looked up, and checked only after the push, so
+the message cannot be corrected without a force push. The rule was not recalled because a
+commit message did not register as "a reference to an artifact"; it is one. Look the
+number up (`git log --merges`, `gh pr list --search <sha>`) before writing it.
 
 ### 8.3 Two invocation errors reported as findings before being checked
 

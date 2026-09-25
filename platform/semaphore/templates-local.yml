@@ -152,3 +152,30 @@ templates:
 #         title: "Target group"
 #         type: string
 #         required: false
+
+  # Service-deployment workflow executors, bound to the working tree so a dry run
+  # (DRY_RUN=1 scripts/local-dev.sh run <playbook>) exercises the code being written, not
+  # GitHub's (MISTAKES 10.9). Change service-deployment-workflow, task 2.2.
+  - name: "Check Secrets (Local)"
+    playbook: platform/playbooks/check-secrets.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group whose secrets to inventory (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: "Validate All Services (Local)"
+    playbook: platform/playbooks/validate-all.yml
+
+  # Workflow step service-validate's executor (PR 203 Codex review: the shared template
+  # alone runs GitHub's playbook on local-dev).
+  - name: "Verify Service Health (Local)"
+    playbook: platform/playbooks/verify-service-health.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        # Only groups with a health_url in the generated local inventory can pass (task 7.9).
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc)
+        type: string
+        required: true

@@ -166,6 +166,7 @@
         method: GET
       register: tmpl_check
       ignore_errors: true
+      check_mode: false
 
     - name: "Fail if template not found"
       ansible.builtin.fail:
@@ -182,6 +183,7 @@
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
         method: GET
       register: all_vms
+      check_mode: false
 
     - name: "Check for existing VM"
       ansible.builtin.set_fact:
@@ -245,6 +247,7 @@
       changed_when: false
       failed_when: false
       when: not (vm_exists | bool)
+      check_mode: false
 
     # Evidence, not proof: an answer is a certain refusal; silence is only as good
     # as ICMP on that network, and a missing `ping` binary is no evidence at all.
@@ -296,7 +299,9 @@
       # uri never reports changed on a POST by itself; the returned UPID is the
       # evidence the clone was started, and every step below gates on it.
       changed_when: clone_result.json.data is defined
-      when: not (vm_exists | bool)
+      when:
+        - not ansible_check_mode
+        - not (vm_exists | bool)
 
     - name: "Wait for clone task"
       ansible.builtin.uri:
@@ -306,7 +311,9 @@
       until: clone_task.json.data.status == "stopped"
       retries: 60
       delay: 10
-      when: clone_result.json.data is defined
+      when:
+        - not ansible_check_mode
+        - clone_result.json.data is defined
 
     - name: "Verify clone succeeded"
       ansible.builtin.fail:
@@ -335,6 +342,9 @@
       retries: 90
       delay: 10
       changed_when: false
+      # A read, and the identity check and node choice below consume it, so it runs under
+      # --check too (PR 203 Codex review: skipping it left them dereferencing nothing).
+      check_mode: false
       when: _do_migrate | bool
 
     - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
@@ -367,7 +377,9 @@
         status_code: [200]
       register: migrate_result
       changed_when: migrate_result.json.data is defined
-      when: _do_migrate | bool
+      when:
+        - not ansible_check_mode
+        - _do_migrate | bool
 
     - name: "Wait for migrate task"
       ansible.builtin.uri:
@@ -377,12 +389,32 @@
       until: migrate_task.json.data.status == "stopped"
       retries: 90
       delay: 10
-      when: migrate_result.json.data is defined
+      when:
+        - not ansible_check_mode
+        - migrate_result.json.data is defined
 
     - name: "Verify migrate succeeded"
       ansible.builtin.fail:
         msg: "Migrate to {{ _node }} failed: {{ migrate_task.json.data.exitstatus | default('unknown') }}"
       when: migrate_result.json.data is defined and migrate_task is defined and migrate_task.json.data.exitstatus | default('OK') != 'OK'
+
+    # A dry run does not migrate, so the VM is still on the template node and every probe
+    # below, addressed to the declared node, would fail (PR 203 Codex review).
+    - name: "Dry run, migration pending: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) sits on {{ _tmpl_node }} and would be migrated
+          offline to {{ _node }} (storage {{ _storage }}); its configure, start, SSH and runner
+          checks address {{ _node }}, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - _do_migrate | bool
+
+    - name: "Dry run, migration pending: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _do_migrate | bool
 
     # ── Configure VM (single PUT with all settings) ───────────────────────
     - name: "Wait for the clone lock to clear before configuring"
@@ -408,6 +440,7 @@
       failed_when:
         - (_vm_lock.json.data.lock | default('')) != ''
         - _vm_lock.attempts | default(0) >= 60
+      when: not ansible_check_mode
 
     - name: "Configure VM resources and cloud-init"
       ansible.builtin.uri:
@@ -424,6 +457,7 @@
           ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
           nameserver: "{{ _dns }}"
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Set Proxmox tags"
       ansible.builtin.uri:
@@ -433,6 +467,7 @@
         body:
           tags: "{{ _tags }}"
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Resize disk to size — {{ _disk }}"
       ansible.builtin.uri:
@@ -445,6 +480,7 @@
         status_code: [200]
       register: resize_result
       ignore_errors: true
+      when: not ansible_check_mode
 
     - name: "Warn if disk resize failed"
       ansible.builtin.debug:
@@ -452,18 +488,57 @@
       when: resize_result is failed
 
     # ── Start VM ──────────────────────────────────────────────────────────
+    # A dry run of a VM that does not exist yet skipped the clone, so every check below would
+    # ask Proxmox about a vmid it does not have (404; PR 203 review). Say what a real run would
+    # do and stop this host here; the cluster post-validate play still runs.
+    - name: "Dry run, VM not cloned yet: report what a real run would create"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) would be cloned from template {{ _tmpl_vmid }}
+          and configured on {{ _node }} ({{ _cores }} cores, {{ _mem }} MB, disk {{ _disk }},
+          {{ _ip }}); its start, SSH and runner checks need the VM, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - not (vm_exists | bool)
+
+    - name: "Dry run, VM not cloned yet: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - not (vm_exists | bool)
+
     - name: "Check VM status"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
         method: GET
       register: pre_start
+      check_mode: false
+
+    # A dry run does not start a stopped VM, so the SSH and runner checks below would wait for
+    # a state it never created (PR 203 Codex review).
+    - name: "Dry run, VM stopped: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: VM {{ _vmid }} ({{ _name }}) on {{ _node }} is {{ pre_start.json.data.status }}
+          and would be started; its SSH and runner checks need it running, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - pre_start.json.data.status != "running"
+
+    - name: "Dry run, VM stopped: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - pre_start.json.data.status != "running"
 
     - name: "Start VM"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
         method: POST
         status_code: [200]
-      when: pre_start.json.data.status != "running"
+      when:
+        - not ansible_check_mode
+        - pre_start.json.data.status != "running"
 
     - name: "Wait for VM running"
       ansible.builtin.uri:
@@ -473,6 +548,7 @@
       until: vm_running.json.data.status == "running"
       retries: 30
       delay: 5
+      when: not ansible_check_mode
 
     - name: "Wait for QEMU guest agent"
       ansible.builtin.uri:
@@ -484,6 +560,7 @@
       retries: 60
       delay: 10
       ignore_errors: true
+      when: not ansible_check_mode
 
     - name: "Wait for SSH"
       ansible.builtin.wait_for:
@@ -505,6 +582,8 @@
       delay: 15
       until: ssh_test.rc == 0
       ignore_errors: true
+      changed_when: false
+      check_mode: false
 
     - name: "Show SSH test output"
       ansible.builtin.debug:
@@ -526,7 +605,9 @@
           sudo systemctl enable --now semaphore-runner"
       register: runner_setup
       ignore_errors: true
-      when: ssh_test is succeeded and _runner_token | length > 0
+      when:
+        - not ansible_check_mode
+        - ssh_test is succeeded and _runner_token | length > 0
 
     - name: "Show runner setup output"
       ansible.builtin.debug:
@@ -538,7 +619,7 @@
         msg: |
           VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
             IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
-            Status: {{ 'running' if vm_running.json.data.status == 'running' else 'check' }}
+            Status: {{ (vm_running.json.data.status | default(pre_start.json.data.status | default('unknown'))) }}{{ ' (check mode: not started)' if ansible_check_mode else '' }}
             Agent: {{ 'ok' if (agent_ping is defined and agent_ping.status == 200) else 'pending' }}
             SSH: {{ 'ok' if ssh_ready is succeeded else 'pending' }}
             Runner: {{ 'configured' if (runner_setup is defined and runner_setup is succeeded) else 'skipped' }}

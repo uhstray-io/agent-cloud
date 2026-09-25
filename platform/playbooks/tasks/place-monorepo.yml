@@ -79,7 +79,9 @@
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/observability.yml \
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/contact.yml \
       "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"
-  when: local_mode | default(false) | bool
+  when:
+    - not ansible_check_mode
+    - local_mode | default(false) | bool
   register: _rsync_result
   changed_when: _rsync_result.stdout | length > 0
 

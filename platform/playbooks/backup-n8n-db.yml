@@ -47,6 +47,7 @@
       register: _pg_state
       changed_when: false
       failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
+      check_mode: false
 
     - name: "Ensure the owner-only backup directory exists"
       ansible.builtin.file:
@@ -73,11 +74,13 @@
         set -C
         {{ _engine | quote }} exec {{ _pg_container | quote }} pg_dump -U {{ _db_user | quote }} -d {{ _db_name | quote }} --clean --if-exists > {{ _dump_file | quote }}
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Verify the dump is real (carries the pg_dump header)"
       ansible.builtin.command:
         argv: ["grep", "-qm1", "PostgreSQL database dump", "{{ _dump_file }}"]
       changed_when: false
+      check_mode: false
 
     - name: "Report the artifact"
       ansible.builtin.debug:

@@ -33,6 +33,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: Read the site-config deploy key
       ansible.builtin.uri:
@@ -43,6 +45,7 @@
         status_code: [200, 403, 404]
       register: _site_config_ssh
       no_log: true
+      check_mode: false
 
     - name: Classify the site-config deploy key without displaying it
       ansible.builtin.set_fact:
@@ -104,6 +107,7 @@
             status_code: [200, 404]
           register: _pfsense_current
           no_log: true
+          check_mode: false
 
         - name: Classify the current key without displaying it
           ansible.builtin.set_fact:

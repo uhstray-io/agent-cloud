@@ -112,6 +112,7 @@
       ansible.builtin.command: hostname
       register: _remote_hostname
       changed_when: false
+      check_mode: false
 
     - name: "Refuse to continue if this is not the intended host"
       ansible.builtin.assert:
@@ -134,6 +135,7 @@
         executable: /bin/bash
       register: _defroute_if
       changed_when: false
+      check_mode: false
 
     - name: "Settle on the interface to configure"
       ansible.builtin.set_fact:
@@ -155,6 +157,7 @@
         executable: /bin/bash
       register: _current_cidr
       changed_when: false
+      check_mode: false
 
     - name: "Report the change this run would make"
       ansible.builtin.debug:
@@ -233,6 +236,7 @@
       register: _np_validate
       changed_when: false
       failed_when: _np_validate.rc != 0
+      check_mode: false
 
     - name: "Stop here on a dry run — nothing has been modified"
       ansible.builtin.meta: end_host
@@ -249,6 +253,7 @@
           cp -a /etc/netplan/. /var/backups/agent-cloud-netplan/
         executable: /bin/bash
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "ARM THE REVERT before applying anything"
       # The safety property of this playbook. A transient systemd timer restores
@@ -275,6 +280,7 @@
                           netplan apply'
         executable: /bin/bash
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Install the validated configuration"
       ansible.builtin.copy:
@@ -293,6 +299,7 @@
       async: 45
       poll: 0
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Publish the new address for the confirmation play"
       ansible.builtin.add_host:
@@ -397,6 +404,7 @@
       ansible.builtin.command: hostname
       register: _new_hostname
       changed_when: false
+      check_mode: false
 
     - name: "Refuse to disarm unless it is the intended host"
       ansible.builtin.assert:
@@ -422,6 +430,7 @@
       become: true
       register: _disarm
       changed_when: "'disarmed' in _disarm.stdout"
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

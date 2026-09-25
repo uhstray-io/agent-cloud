@@ -8,7 +8,8 @@
 #
 # Input: the full netbox-device-proposal JSON (passed unchanged from skynet) via
 #   -e device_proposal='{"name":...,"site":...,"idempotency_key":...}'
-# Optional: -e dry_run=true   (resolve + report, no writes)
+# Dry run: ansible-playbook --check (Semaphore "Dry run") resolves + reports, no writes.
+# -e dry_run=true still works the same way and is deprecated (plan/architecture/08).
 #
 # Idempotency: NetBox enforces device-name uniqueness within a site, so (site, name)
 # is the dedupe key — a retry finds the existing device and creates nothing. The
@@ -38,12 +39,20 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
     _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
-    _dry_run: "{{ dry_run | default(false) | bool }}"
+    # Check mode is the dry run; the legacy -e dry_run=true maps onto the same path.
+    _dry_run: "{{ (dry_run | default(false) | bool) or ansible_check_mode }}"
     _p: "{{ (device_proposal | from_json) if (device_proposal is string) else (device_proposal | default({})) }}"
     _required: [name, device_type, role, site, status, reason, proposed_by, workflow_id, idempotency_key]
     _statuses: [active, offline, planned, staged, decommissioning]
 
   tasks:
+    - name: "Deprecation: -e dry_run is replaced by check mode"
+      ansible.builtin.debug:
+        msg: >-
+          -e dry_run is deprecated: launch with --check (Semaphore "Dry run") instead. This run
+          still treats dry_run={{ dry_run }} as it always did.
+      when: dry_run is defined
+
     - name: "Validate proposal"
       ansible.builtin.assert:
         that:
@@ -70,6 +79,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read NetBox automation token from OpenBao"
       ansible.builtin.uri:
@@ -80,6 +91,7 @@
         status_code: [200]
       register: _nb_secret
       no_log: true
+      check_mode: false
 
     - name: "Set NetBox auth header"
       ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
@@ -101,6 +113,7 @@
         - { field: role, path: device-roles }
       loop_control:
         label: "{{ item.path }}={{ _p[item.field] }}"
+      check_mode: false
 
     - name: "Map resolved ids (fail if any slug is unknown to NetBox)"
       ansible.builtin.set_fact:
@@ -136,6 +149,7 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       register: _existing
+      check_mode: false
 
     - name: "Record whether the device already exists"
       ansible.builtin.set_fact:
@@ -177,6 +191,7 @@
         status_code: [201]
       register: _created
       when:
+        - not ansible_check_mode
         - not _device_exists
         - not _dry_run
 
@@ -189,6 +204,7 @@
         status_code: [200]
       register: _verify
       when: not _dry_run
+      check_mode: false
 
     - name: "Result"
       ansible.builtin.debug:

@@ -39,6 +39,7 @@
         method: GET
       register: existing_tmpl
       failed_when: existing_tmpl.status | default(-1) not in [200, 404, 500]
+      check_mode: false
 
     - name: "Skip if template already exists"
       ansible.builtin.meta: end_play
@@ -61,6 +62,7 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/content"
         method: GET
       register: local_content
+      check_mode: false
 
     - name: "Upload seed ISO via uri module"
       when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
@@ -78,6 +80,7 @@
                 filename: "autoinstall-seed.iso"
                 mime_type: "application/octet-stream"
           register: upload_result
+          when: not ansible_check_mode
       rescue:
         - name: "Upload seed ISO via curl (fallback)"
           ansible.builtin.command:
@@ -90,6 +93,7 @@
           register: upload_fallback
           changed_when: true
           no_log: true
+          when: not ansible_check_mode
 
     - name: "Create template VM"
       ansible.builtin.uri:
@@ -113,6 +117,7 @@
           vga: "serial0"
         status_code: [200]
       register: create_result
+      when: not ansible_check_mode
 
     - name: "Wait for VM creation task"
       ansible.builtin.uri:
@@ -122,13 +127,16 @@
       until: task_status.json.data.status == "stopped"
       retries: 30
       delay: 5
-      when: create_result.json.data is defined and create_result.json.data is string
+      when:
+        - not ansible_check_mode
+        - create_result.json.data is defined and create_result.json.data is string
 
     - name: "Start VM for autoinstall"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
         method: POST
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Autoinstall in progress"
       ansible.builtin.debug:
@@ -142,6 +150,7 @@
       until: vm_status.json.data.status == "running"
       retries: 12
       delay: 10
+      when: not ansible_check_mode
 
     - name: "Wait for autoinstall to complete (VM stops when done)"
       ansible.builtin.uri:
@@ -151,6 +160,7 @@
       until: vm_status.json.data.status == "stopped"
       retries: 60
       delay: 15
+      when: not ansible_check_mode
 
     - name: "Post-install: remove CDs, add cloud-init, set defaults"
       ansible.builtin.uri:
@@ -167,12 +177,14 @@
           ipconfig0: "ip=dhcp"
           nameserver: "{{ nameserver | default(gateway | default('')) }}"
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Convert VM to template"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/template"
         method: POST
         status_code: [200]
+      when: not ansible_check_mode
 
     - name: "Template creation complete"
       ansible.builtin.debug:

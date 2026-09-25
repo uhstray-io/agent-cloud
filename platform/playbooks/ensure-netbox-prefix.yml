@@ -51,7 +51,16 @@
         PYSCRIPT
       register: _prefix_result
       changed_when: _prefix_result.rc == 0 and (_prefix_result.stdout_lines | last | from_json).action == 'created'
+      # The script decides audit versus create inside NetBox, where check mode cannot reach, so a
+      # dry run does not start it. The read-only audit is the default run (no prefix_apply).
+      when: not ansible_check_mode
+
+    - name: "Dry run: point at the read-only audit"
+      ansible.builtin.debug:
+        msg: "check mode: run without prefix_apply for the read-only audit of {{ _prefix }}."
+      when: ansible_check_mode
 
     - name: Show exact prefix outcome
+      when: not ansible_check_mode
       ansible.builtin.debug:
         msg: "{{ _prefix_result.stdout_lines | last | from_json }}"

@@ -27,6 +27,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
       when: expected_repository_sha is defined
 
     - name: Require the exact reviewed candidate revision
@@ -42,6 +43,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
       when: expected_repository_sha is defined
 
     - name: Require a clean candidate checkout
@@ -55,6 +57,8 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/secret-declarations/o11y.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -62,12 +66,6 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions: >-
-      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
-         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
-          if o11y_alerts_enabled | default(false) | bool else []) }}
-    _required_existing_secrets: >-
-      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
     # OIDC client secret is owned by authentik (the IdP); read it here so
     # Grafana's generic_oauth secret matches the provider blueprint.
     _shared_reads:
@@ -115,7 +113,10 @@
         chdir: "{{ _monorepo_dir }}"
       register: _placed_revision
       changed_when: false
+      check_mode: false
+      # Proves what THIS run placed; a dry run places nothing.
       when:
+        - not ansible_check_mode
         - expected_repository_sha is defined
         - not (local_mode | default(false) | bool)
 
@@ -124,6 +125,7 @@
         that: _placed_revision.stdout == expected_repository_sha
         fail_msg: "Receiver checkout differs from the reviewed o11y candidate; no secrets or containers were changed."
       when:
+        - not ansible_check_mode
         - expected_repository_sha is defined
         - not (local_mode | default(false) | bool)
 
@@ -179,6 +181,7 @@
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -193,6 +196,30 @@
     _engine: "{{ container_engine | default('podman') }}"
 
   tasks:
+    # A dry run skipped the deploy, so on a fresh host o11y-grafana does not exist and every
+    # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
+    - name: "Dry run: does o11y-grafana exist yet?"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "o11y-grafana"]
+      register: _dry_container
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, o11y-grafana not deployed yet: report"
+      ansible.builtin.debug:
+        msg: "check mode: o11y-grafana does not exist on this host yet; its verification (Grafana, Prometheus, Alloy, Loki) needs a real deploy."
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0
+
+    - name: "Dry run, o11y-grafana not deployed yet: stop"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0
+
     - name: "Grafana health (/api/health -> 200)"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://127.0.0.1:3000/api/health"
       register: _gf
@@ -200,6 +227,7 @@
       retries: 6
       delay: 5
       until: _gf.rc == 0
+      check_mode: false
 
     - name: "Prometheus ready (/-/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-prometheus wget -q -O /dev/null http://127.0.0.1:9090/-/ready"
@@ -208,12 +236,14 @@
       retries: 6
       delay: 5
       until: _prom.rc == 0
+      check_mode: false
 
     - name: "Alloy healthy (collector config loaded)"
       ansible.builtin.command:
         argv: ["{{ _engine }}", inspect, --format, "{% raw %}{{.State.Health.Status}}{% endraw %}", o11y-alloy]
       register: _alloy_health
       changed_when: false
+      check_mode: false
       retries: 8
       delay: 5
       until: _alloy_health.rc == 0 and _alloy_health.stdout == 'healthy'
@@ -223,11 +253,13 @@
         url: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}/-/reload"
         method: POST
         status_code: 200
-      when: >-
-        (_dgx_scrape.changed | default(false)) or
-        (_dgx_scrape_absent.changed | default(false)) or
-        (_agentgateway_scrape.changed | default(false)) or
-        (_agentgateway_scrape_absent.changed | default(false))
+      when:
+        - not ansible_check_mode
+        - >-
+          (_dgx_scrape.changed | default(false)) or
+          (_dgx_scrape_absent.changed | default(false)) or
+          (_agentgateway_scrape.changed | default(false)) or
+          (_agentgateway_scrape_absent.changed | default(false))
 
     - name: "Loki ready (/ready)"
       ansible.builtin.command: "{{ _engine }} exec o11y-loki wget -q -O /dev/null http://127.0.0.1:3100/ready"
@@ -236,6 +268,7 @@
       retries: 8
       delay: 5
       until: _loki.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

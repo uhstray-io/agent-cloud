@@ -20,6 +20,13 @@
 #
 # Inventory (site-config):
 #   firewall_ssh_cidrs       REQUIRED list of CIDRs allowed to SSH (group var)
+#   firewall_controller_cidr the orchestrator's (Semaphore's) SSH source. When set it MUST be
+#                            one of firewall_ssh_cidrs, compared by equality like every CIDR
+#                            check here (no ipaddr on the runner): Semaphore reaches the host
+#                            only over SSH, so dropping its source orphans the host from
+#                            automation. OPA's firewall content rule reads the same value
+#                            (change service-deployment-workflow). Optional until site-config
+#                            declares it for every host; then required (task 4.6 follow-up)
 #   firewall_detect_ports    auto-discover the running containers' published host
 #                            ports + protocols and allow them from the upstream
 #                            (default true) — so the rule tracks whatever the
@@ -151,17 +158,52 @@
         fail_msg: >-
           firewall_ssh_cidrs must list >=1 CIDR, or enabling UFW would lock SSH out.
 
+    - name: "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)"
+      ansible.builtin.assert:
+        that:
+          - firewall_controller_cidr in _ssh_cidrs
+        fail_msg: >-
+          firewall_controller_cidr {{ firewall_controller_cidr }} is not in firewall_ssh_cidrs
+          {{ _ssh_cidrs | to_json }}: enabling UFW would cut Semaphore off from this host.
+      when: firewall_controller_cidr is defined
+
+    - name: "Warn when the orchestrator's SSH source is undeclared"
+      ansible.builtin.debug:
+        msg: >-
+          firewall_controller_cidr is not set for {{ inventory_hostname }}, so nothing here
+          proves Semaphore keeps SSH access. Declare it in site-config.
+      when: firewall_controller_cidr is not defined
+
     - name: "Install ufw"
       ansible.builtin.apt:
         name: ufw
         state: present
         update_cache: true
+      register: _ufw_pkg
+
+    # A dry run only simulates the install, so on a host without ufw every `ufw` command below
+    # (the forced-real status read included) would fail on a missing binary (PR 203 Codex review).
+    - name: "Dry run, ufw not installed: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: ufw is not installed on {{ inventory_hostname }} and would be installed; the
+          rules, default policies and enable need it, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - _ufw_pkg is changed
+
+    - name: "Dry run, ufw not installed: stop this host"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _ufw_pkg is changed
 
     - name: "Allow SSH (22/tcp) from each admin CIDR — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw allow from {{ item }} to any port 22 proto tcp"
       register: _sshrule
       changed_when: "'Rule added' in _sshrule.stdout or 'Rules updated' in _sshrule.stdout"
       loop: "{{ _ssh_cidrs }}"
+      when: not ansible_check_mode
 
     - name: "Allow each STATIC service port from its intended source"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw allow from {{ item.from }} to any port {{ item.port }} proto {{ item.proto | default('tcp') }}"
@@ -170,6 +212,7 @@
       loop: "{{ _rules }}"
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} ({{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     - name: "Allow each STATIC route rule on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
       # Published ports on rootful/Docker are DNAT'd to the container and routed
@@ -183,6 +226,7 @@
       loop: "{{ _route_rules }}"
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} (route, {{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
@@ -210,6 +254,7 @@
       register: _detected
       changed_when: false
       when: firewall_detect_ports | default(true) | bool
+      check_mode: false
 
     - name: "Normalise the upstream source(s) to a list"
       # One source or many, the rules below loop the same way. A string becomes
@@ -246,6 +291,7 @@
       loop_control:
         label: "{{ item.0 }} from {{ item.1 }}"
       when:
+        - not ansible_check_mode
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
 
@@ -261,6 +307,7 @@
       loop_control:
         label: "{{ item.0 }} from {{ item.1 }} (route)"
       when:
+        - not ansible_check_mode
         - _rootful
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
@@ -289,6 +336,7 @@
         - _allow_bridge_dns
         - _rootful
         - _engine == 'podman'
+      check_mode: false
 
     - name: "Allow container->gateway DNS (53/udp+tcp) on each podman bridge (INPUT) — BEFORE enable"  # noqa: command-instead-of-module
       # Scoped to port 53 only: aardvark-dns is the sole host-gateway service the
@@ -302,6 +350,7 @@
       loop_control:
         label: "{{ item.0 }} 53/{{ item.1 }} (podman bridge DNS, INPUT)"
       when:
+        - not ansible_check_mode
         - _allow_bridge_dns
         - _rootful
         - _engine == 'podman'
@@ -346,21 +395,25 @@
       loop: "{{ _deny_egress }}"
       loop_control:
         label: "deny out to {{ item.to }}{{ (':' ~ item.port) if item.port is defined else ' (all ports)' }} ({{ item.comment | default('') }})"
+      when: not ansible_check_mode
 
     - name: "Default-deny incoming"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default deny incoming"
       register: _din
       changed_when: "'changed' in _din.stdout"
+      when: not ansible_check_mode
 
     - name: "Default-allow outgoing"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default allow outgoing"
       register: _dout
       changed_when: "'changed' in _dout.stdout"
+      when: not ansible_check_mode
 
     - name: "Enable UFW"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw --force enable"
       register: _en
       changed_when: "'active' in _en.stdout"
+      when: not ansible_check_mode
 
     # ── Anti-lockout verify: force a NEW SSH connection through the live firewall.
     # The task that ran `ufw enable` used an already-established (allowed)
@@ -375,11 +428,13 @@
       ansible.builtin.command: "true"
       changed_when: false
       when: _verify
+      check_mode: false
 
     - name: "Capture UFW status"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw status verbose"
       register: _status
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

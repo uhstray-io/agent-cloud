@@ -30,6 +30,7 @@
   register: _sa_caps
   no_log: true
   check_mode: false
+  changed_when: false
 
 # With `read` confirmed below, a 404 here means the path does not exist yet.
 - name: "Read the status only of secret/data/{{ _sa_path }}"

@@ -160,6 +160,7 @@
         cat /home/{{ _ssh_user }}/.ssh/authorized_keys
       register: _auth_keys
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:
@@ -225,6 +226,7 @@
       register: _key_test
       failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
       changed_when: false
+      check_mode: false
 
     - name: "Result"
       ansible.builtin.debug:

@@ -22,6 +22,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_revision
       changed_when: false
+      check_mode: false
       when: expected_repository_sha is defined
 
     - name: Require the exact candidate revision
@@ -36,6 +37,7 @@
         chdir: "{{ playbook_dir | dirname | dirname }}"
       register: _controller_changes
       changed_when: false
+      check_mode: false
       when: expected_repository_sha is defined
 
     - name: Require a clean candidate checkout
@@ -65,7 +67,10 @@
         chdir: "{{ _monorepo_dir }}"
       register: _placed_revision
       changed_when: false
+      check_mode: false
+      # Proves what THIS run placed; a dry run places nothing.
       when:
+        - not ansible_check_mode
         - expected_repository_sha is defined
         - not (local_mode | default(false) | bool)
 
@@ -74,6 +79,7 @@
         that: _placed_revision.stdout == expected_repository_sha
         fail_msg: "Receiver checkout differs from the reviewed Caddy candidate; no config or containers were changed."
       when:
+        - not ansible_check_mode
         - expected_repository_sha is defined
         - not (local_mode | default(false) | bool)
 
@@ -137,6 +143,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -161,6 +168,7 @@
       retries: 5
       delay: 3
       until: _cfg.rc == 0 and (_cfg.stdout | length) > 0
+      check_mode: false
 
     - name: "Assert each configured route is present in the running config"
       ansible.builtin.assert:
@@ -177,6 +185,7 @@
         argv: ["{{ _engine }}", exec, caddy, wget, -q, -O, /dev/null, http://127.0.0.1:2021/metrics]
       register: _metrics
       changed_when: false
+      check_mode: false
       retries: 5
       delay: 3
       until: _metrics.rc == 0
