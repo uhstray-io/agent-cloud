@@ -138,6 +138,8 @@
       until: >-
         _firing_alerts.rc == 0 and
         ((_firing_alerts.stdout | from_json).data.alerts |
+         selectattr('labels', 'defined') |
+         selectattr('labels.service', 'defined') |
          selectattr('labels.service', 'equalto', expected_service) |
          selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
       when: drill_expect_alert | default(false) | bool

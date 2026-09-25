@@ -250,6 +250,14 @@ matches = env.compile_expression(wait['until'])
 for state, expected in [('Alerting', True), ('Alerting (Error)', False), ('firing', True), ('Normal', False)]:
     response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
     assert bool(matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')) is expected
+response = {'data': {'alerts': [
+    {'state': 'Normal'},
+    {'labels': {'team': 'other'}, 'state': 'Alerting'},
+    {'labels': {'service': 'pilot'}, 'state': 'Alerting'},
+]}}
+assert matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
+response['data']['alerts'].pop()
+assert not matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
 checks = rescue['ansible.builtin.assert']['that']
 instance_check = env.compile_expression(checks[-1])
 for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535']; scrapes found=1.", True),
