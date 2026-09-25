@@ -15,9 +15,10 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/semaphore-seed-input.py"
 SPEC = importlib.util.spec_from_file_location("semaphore_seed_input", SCRIPT)
 cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
+import semaphore_seed as core  # noqa: E402  (on sys.path once the CLI is loaded)
 
 SECRET = "synthetic-value-never-printed"
-OPENBAO_SEED = {"playbook": "platform/playbooks/seed-openbao-key.yml", "template_names": {"Seed OpenBao Key (Dev)"}}
+OPENBAO_SEED = {"playbook": "platform/playbooks/seed-openbao-key.yml", "template_name": "Seed OpenBao Key (Dev)"}
 
 
 def test_catalog_declares_the_openbao_seed_as_isolated():
@@ -25,7 +26,7 @@ def test_catalog_declares_the_openbao_seed_as_isolated():
     assert decl["seed_inputs"] == ["BAO_VALUE"]
     assert decl["isolated_environment"] == "OpenBao key seed inputs"
     assert decl["seed_access_check"] in {v["name"] for v in decl["survey_vars"]}
-    assert cli.resolve_names(decl, "dev") == ("Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)")
+    assert core.resolve_names(decl, "dev") == ("Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)")
 
 
 def test_a_template_without_isolation_is_refused():
@@ -103,12 +104,12 @@ class FakeAPI:
 
 
 def test_locate_resolves_names_and_preflight_requires_the_isolated_binding():
-    assert cli.locate(FakeAPI(), "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)") == (301, 9)
+    assert core.locate(FakeAPI(), "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)") == (301, 9)
     # The binding is preflight's to check, once, before any write (not a second copy in locate).
     api = FakeAPI(bound_env=2)
     with pytest.raises(cli.Refusal, match="Provision Seed Environment"):
         cli.preflight(api, 1, 301, 9, playbook="platform/playbooks/seed-openbao-key.yml",
-                      template_names={"Seed OpenBao Key (Dev)"})
+                      template_name="Seed OpenBao Key (Dev)")
     assert not any(body for _, body in api.calls)
 
 

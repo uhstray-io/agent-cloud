@@ -31,11 +31,8 @@ from semaphore_seed import (  # noqa: E402
     API,
     Refusal,
     declaration,
-    locate,
     preflight,
-    repository_name,
-    resolve_names,
-    resolve_repository,
+    seed_target,
     stage_and_seed,
     submit,
     wait,
@@ -109,36 +106,32 @@ def main():
         decl = declaration(args.template)
         if not decl.get("seed_inputs"):
             raise Refusal(f"{args.template!r} declares no seed_inputs for this CLI; see its own seed script")
-        template_name, environment_name = resolve_names(decl, args.variant)
         settings = read_settings(args.set, decl)
         values = {} if args.verify_only else read_inputs(args.input, set(decl["seed_inputs"]))
         if not args.verify_only and set(values) != set(decl["seed_inputs"]):
             raise Refusal(f"Supply every declared input: {', '.join(decl['seed_inputs'])}")
-        print(f"Template {template_name!r} in {environment_name!r}; inputs "
-              f"{', '.join(sorted(values)) or 'none'}; settings {', '.join(sorted(settings))}", flush=True)
         api = API(args.url, args.project, sys.stdin.read().strip())
-        template_id, environment_id = locate(api, template_name, environment_name)
-        bindings = {"repository_id": resolve_repository(api, repository_name(decl, args.variant)),
-                    "inventory_id": args.inventory}
+        t = seed_target(api, decl, args.variant, args.inventory)
+        print(f"Template {t.template_name!r} in {t.environment_name!r}; inputs "
+              f"{', '.join(sorted(values)) or 'none'}; settings {', '.join(sorted(settings))}", flush=True)
 
         def check():
-            return preflight(api, args.project, template_id, environment_id,
-                             playbook=decl["playbook"], template_names={template_name},
-                             bindings=bindings)
+            return preflight(api, args.project, t.template_id, t.environment_id,
+                             playbook=t.playbook, template_name=t.template_name, bindings=t.bindings)
         # Each path runs the read-only preflight exactly once: here for a dry run, inside
         # verify_access and stage_and_seed otherwise.
         if not args.apply:
             check()
-            print(f"Template {template_id}, environment {environment_id}: every preflight check passed. "
+            print(f"Template {t.template_id}, environment {t.environment_id}: every preflight check passed. "
                   "Dry run: nothing changed.")
             return 0
         if args.verify_only:
-            verify_access(api, args.project, template_id, decl["seed_access_check"], settings, check=check)
+            verify_access(api, args.project, t.template_id, decl["seed_access_check"], settings, check=check)
             return 0
-        stage_and_seed(api, args.project, template_id, environment_id, values,
-                       playbook=decl["playbook"], template_names={template_name}, extra=settings,
-                       bindings=bindings,
-                       message=f"Seed via {environment_name} (encrypted, removed after the task)")
+        stage_and_seed(api, args.project, t.template_id, t.environment_id, values,
+                       playbook=t.playbook, template_name=t.template_name, extra=settings,
+                       bindings=t.bindings,
+                       message=f"Seed via {t.environment_name} (encrypted, removed after the task)")
     except Refusal as error:
         print(str(error), file=sys.stderr)
         return 1

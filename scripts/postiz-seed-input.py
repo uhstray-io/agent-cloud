@@ -18,28 +18,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SEED_PLAYBOOK = "platform/playbooks/seed-postiz-secrets.yml"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from semaphore_seed import (  # noqa: E402
-    API,
-    Refusal,
-    declaration,
-    locate,
-    repository_name,
-    resolve_names,
-    resolve_repository,
-    stage_and_seed,
-)
+from semaphore_seed import API, Refusal, declaration, seed_target, stage_and_seed  # noqa: E402
 
 TEMPLATE = "Seed Postiz Secrets"
 
 
 def provider_fields():
     """Derive the allow-list from the actual seed declaration and app template."""
-    seed = (ROOT / SEED_PLAYBOOK).read_text()
-    declaration = seed.split("    _seedable:\n", 1)[1].split("\n  tasks:", 1)[0]
-    names = set(re.findall(r"^      - ([a-z_]+)$", declaration, re.M))
+    # The playbook the template declares (templates.yml), not a second copy of its path.
+    seed = (ROOT / declaration(TEMPLATE)["playbook"]).read_text()
+    seedable = seed.split("    _seedable:\n", 1)[1].split("\n  tasks:", 1)[0]
+    names = set(re.findall(r"^      - ([a-z_]+)$", seedable, re.M))
     template = (ROOT / "platform/services/postiz/deployment/templates/postiz.env.j2").read_text()
     fields = re.findall(r"^([A-Z_]+)=\{\{ secrets\.postiz_([a-z_]+)", template, re.M)
     return {env: "SEED_" + name.upper() for env, name in fields if name in names}
@@ -100,14 +91,10 @@ def main():
         if args.apply:
             if not all((args.url, args.inventory)):
                 raise Refusal("Apply requires --url and --inventory")
-            decl = declaration(TEMPLATE)
-            template_name, environment_name = resolve_names(decl, args.variant)
             api = API(args.url, args.project, sys.stdin.read().strip())
-            template_id, environment_id = locate(api, template_name, environment_name)
-            bindings = {"repository_id": resolve_repository(api, repository_name(decl, args.variant)),
-                        "inventory_id": args.inventory}
-            stage_and_seed(api, args.project, template_id, environment_id, values, playbook=SEED_PLAYBOOK,
-                           template_names={template_name}, bindings=bindings,
+            t = seed_target(api, declaration(TEMPLATE), args.variant, args.inventory)
+            stage_and_seed(api, args.project, t.template_id, t.environment_id, values, playbook=t.playbook,
+                           template_name=t.template_name, bindings=t.bindings,
                            message="Seed declared Postiz provider credentials via encrypted inputs")
     except Refusal as error:
         print(str(error), file=sys.stderr)

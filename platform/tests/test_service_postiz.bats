@@ -444,14 +444,12 @@ PYTHON
 
 @test "postiz: first-path secret creation is atomic (CAS 0)" {
   local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"
-  local shared="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
   # Two runs racing a first-time seed both see 404; without CAS the later POST
   # replaces the earlier writer's keys. The seed writes through the shared merge task,
-  # which owns the CAS-0 create and the create-race merge (no second copy here).
+  # which owns the CAS-0 create and the create-race merge (asserted, block-scoped, in
+  # test_credential_leaks.bats; proven against a store in test_postiz_seed_write.py).
   assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$f"
   refute_grep -qE 'method: (PATCH|POST)' <<<"$(sed -n '/Merge the supplied credentials/,$p' "$f")"
-  assert_grep -qE 'cas: 0' "$shared"
-  assert_grep -q 'Losing the create race means the path now exists' "$shared"
 }
 
 @test "postiz: the seed playbook uses the shared cleartext OpenBao guard" {
