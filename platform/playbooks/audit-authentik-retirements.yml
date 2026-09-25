@@ -51,6 +51,26 @@
         that: "_audit_names | length > 0"
         fail_msg: "No retirement username is configured in private inventory; this run would audit nothing."
 
+    - name: Check container execution and stdin without credentials
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - exec
+          - -i
+          - authentik-server
+          - python
+          - -c
+          - "import sys; sys.stdin.read(); print('ready')"
+        stdin: audit-probe
+      register: _audit_runtime_probe
+      changed_when: false
+      check_mode: false
+
+    - name: Require the container-local audit runtime
+      ansible.builtin.assert:
+        that: "_audit_runtime_probe.stdout | trim == 'ready'"
+        fail_msg: "Authentik audit runtime did not return its static readiness marker."
+
     - name: Read exact account presence through the container-local Authentik API
       ansible.builtin.command:
         argv:
