@@ -283,17 +283,23 @@
         headers: "{{ _nb_headers }}"
         body_format: json
         body:
-          address: "{{ item.item.address }}"
-          status: "{{ item.item.status | default('active') }}"
-          dns_name: "{{ item.item.dns_name | default('') }}"
-          description: "{{ item.item.description | default('Allocated by netbox-allocate-ip.yml') }}"
+          address: "{{ item.address }}"
+          status: "{{ item.status | default('active') }}"
+          dns_name: "{{ item.dns_name | default('') }}"
+          description: "{{ item.description | default('Allocated by netbox-allocate-ip.yml') }}"
         status_code: [201]
-      loop: "{{ _existing.results | default([]) }}"
+      # Loops over the declared assignments and indexes into the reads, never over the reads
+      # themselves: a failed loop item is printed whole, and a registered read carries the
+      # NetBox token in its request headers (docs/MISTAKES.md 4.6).
+      vars:
+        _read: "{{ (_existing.results | default([]))[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
+        index_var: _i
+        label: "{{ item.address }}"
       when:
         - _reserve
-        - (item.json.results | default([])) | length == 0
+        - (_read.json.results | default([])) | length == 0
 
     # RE-QUERY before reporting. The report used to iterate the pre-create GET results, so
     # an address this run had just created (HTTP 201) still printed "NOT recorded in the
@@ -315,29 +321,35 @@
     - name: "Report the recorded state of each named address"
       ansible.builtin.debug:
         msg: >-
-          {{ item.item.address }}:
-          {{ ('RECORDED as id=' ~ (item.json.results | first).id
-              ~ ' status=' ~ ((item.json.results | first).status.value | default('?'))
-              ~ ' dns_name=' ~ ((item.json.results | first).dns_name | default('') | default('(none)', true))
-              ~ ' description=' ~ ((item.json.results | first).description | default('') | default('(none)', true))
-              ~ ' tags=' ~ ((item.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
-             if ((item.json.results | default([])) | length > 0)
+          {{ item.address }}:
+          {{ ('RECORDED as id=' ~ (_read.json.results | first).id
+              ~ ' status=' ~ ((_read.json.results | first).status.value | default('?'))
+              ~ ' dns_name=' ~ ((_read.json.results | first).dns_name | default('') | default('(none)', true))
+              ~ ' description=' ~ ((_read.json.results | first).description | default('') | default('(none)', true))
+              ~ ' tags=' ~ ((_read.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
+             if ((_read.json.results | default([])) | length > 0)
              else 'NOT recorded in the authority' }}
-      loop: "{{ _final_state.results | default([]) }}"
+      vars:
+        _read: "{{ _final_state.results[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
+        index_var: _i
+        label: "{{ item.address }}"
 
     - name: "Refuse to report success for an address a reserve run failed to create"
       # A reserve run whose POST silently did nothing would otherwise end on a green
       # report. If we were asked to reserve, every named address must now exist.
       ansible.builtin.assert:
         that:
-          - (item.json.results | default([])) | length > 0
+          - (_read.json.results | default([])) | length > 0
         fail_msg: >-
-          {{ item.item.address }} is still not recorded after a reserve run. The create
+          {{ item.address }} is still not recorded after a reserve run. The create
           either did not run or did not take effect — check the task above rather than
           re-running, since a partial run may have created the others.
-      loop: "{{ _final_state.results | default([]) }}"
+      vars:
+        _read: "{{ _final_state.results[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
+        index_var: _i
+        label: "{{ item.address }}"
       when: _reserve
