@@ -1434,6 +1434,12 @@ templates:
     # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the runner host (leave as 'main' for production)"
+        type: string
+        required: true
+        default_value: "main"
       - name: target_service
         title: "Target group"
         description: "Inventory group holding the runner hosts (github_runner_svc)"

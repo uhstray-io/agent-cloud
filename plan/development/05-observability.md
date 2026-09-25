@@ -361,6 +361,18 @@
 > through the Dev-bound Semaphore workflows. Read-only Dev-bound
 > task 1160 planned one unrelated DNS addition and one rate-limit update at
 > `3de6fe71cd60efe2e2986922c08ab4c55bce0929`; reconcile those separately.
+> **Production SSO branch gate, 2026-09-25:** The live `Deploy Authentik (Dev)`
+> Semaphore template (179) is bound to the `dev` repository, but its
+> `service_branch` survey defaults to `main`. `deploy-authentik.yml` passes that
+> value to the shared target clone, so a launch accepting the default would run
+> reviewed Dev orchestration against Main service files. Before applying the
+> private Grafana app declaration, change the shared template publisher so
+> generated Dev variants default `service_branch` to `dev` while the base
+> templates retain `main`. Test both rendered variants, publish only the
+> Authentik Dev survey through Semaphore, verify its live default and bindings,
+> then launch with an explicit `service_branch=dev` API setting, verify the
+> target revision, and read back the Grafana app and OIDC path. Do not assume
+> an API launch fills omitted settings from survey defaults.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,
