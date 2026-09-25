@@ -17,7 +17,11 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
+{% if o11y_alert_canary_service is defined %}
+              expr: 'up{service="{{ o11y_alert_canary_service }}"}'
+{% else %}
               expr: 'up{service!=""}'
+{% endif %}
               instant: true
               range: false
               intervalMs: 1000
@@ -88,8 +92,8 @@ groups:
           summary: Expected metrics have disappeared for {{ target.service }}.
           dashboard_url: /d/service-overview
         labels: { severity: critical, service: '{{ target.service }}' }
-        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool else 'true' }}
-{% if o11y_alerts_enabled | default(false) | bool %}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
         notification_settings:
           receiver: agent-cloud-ops
 {% endif %}

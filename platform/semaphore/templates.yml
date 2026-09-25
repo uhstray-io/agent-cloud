@@ -1038,6 +1038,28 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Drill o11y Alert Canary (Dev)
+    playbook: platform/playbooks/drill-o11y-alert-canary.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required before temporary alert activation"
+        type: string
+        required: true
+    # Local-only. Restores paused provisioning in an always block. If the
+    # controller is interrupted, run Restore o11y Alert Baseline (Dev).
+
+  - name: Restore o11y Alert Baseline (Dev)
+    playbook: platform/playbooks/restore-o11y-alert-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required for interruption recovery"
+        type: string
+        required: true
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's

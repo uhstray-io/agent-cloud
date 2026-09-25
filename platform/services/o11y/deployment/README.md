@@ -18,3 +18,20 @@ and 7 days for Loki until measured ingestion justifies a change.
 
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
+
+## Local alert-delivery canary
+
+After `Seed o11y Alert Webhook (Dev)` stores the approved webhook in OpenBao,
+launch `Drill o11y Alert Canary (Dev)` through Semaphore with the exact pushed
+`dev` SHA. It requires the local paused baseline, renders an active rule only
+for its unique disposable probe, proves rule firing and a newer Discord message
+from that webhook, and restores the paused rules and removes the contact point
+in an Ansible `always` path. Discord history access and credentials are
+checked before activation. A failed receipt is not a passed drill.
+
+If the controller is interrupted before cleanup, run `Restore o11y Alert
+Baseline (Dev)` with the reviewed `dev` SHA. It renders paused rules and
+contact-point removal from code, removes the webhook line from the existing
+`.env`, and verifies the live paused state. It can restore alerts while
+OpenBao is unavailable. Persistent alert enablement is a separate reviewed
+inventory rollout after a successful canary receipt.
