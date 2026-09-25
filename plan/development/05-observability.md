@@ -175,6 +175,23 @@
 > contact point. No Discord delivery was proven. Filter out alerts without
 > the service label before matching the unique probe, then rerun the canary
 > from reviewed `dev`.
+>
+> **Local alert receipt, 2026-09-25:** PR #245 merged the label-filter fix
+> and a strict Jinja regression check to `dev` as
+> `98dd895c3fc7d71e1f5516edcd95b333ecfb1394`. Semaphore task 1779
+> checked out that exact clean revision, detected the disposable probe's
+> failed scrape, observed Grafana's service-down rule firing for it, and
+> confirmed a matching message from the owned Discord webhook. Its `always`
+> cleanup removed the probe, restarted the paused baseline, and read back
+> every o11y rule paused with the canary contact point absent. The task
+> finished successfully and reported the receipt after restoration. This
+> proves local alert delivery for one bounded canary run; production alert
+> delivery and the production receiver are still unverified. Keep the
+> baseline paused until a separately reviewed rollout enables alerts.
+> When testing alert-list filters, include unrelated alerts without the
+> expected labels and use strict undefined handling so local Jinja checks
+> reproduce Ansible's missing-attribute behavior.
+>
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
