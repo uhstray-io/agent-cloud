@@ -207,6 +207,33 @@
       changed_when: "(_bao_start.stdout | trim) != 'running'"
       when: not ansible_check_mode
 
+    # A dry run did not start OpenBao, so on a fresh machine the wait below would retry an
+    # endpoint that cannot answer (PR 203 Codex review): read the container's state, and stop the
+    # dry run when OpenBao is absent or stopped.
+    - name: "Dry run: is OpenBao already running?"
+      ansible.builtin.command:
+        argv: [podman, inspect, -f, "{{ '{{' }}.State.Status{{ '}}' }}", "{{ _bao_name }}"]
+      register: _bao_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, OpenBao not running: report"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ _bao_name }} is {{ (_bao_state.stdout | trim) or 'absent' }} and would be
+          started; everything after it needs a running OpenBao, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - (_bao_state.stdout | default('') | trim) != 'running'
+
+    - name: "Dry run, OpenBao not running: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - (_bao_state.stdout | default('') | trim) != 'running'
+
     - name: "Wait for OpenBao to accept API requests"
       # seal-status answers 200 even while uninitialized/sealed; /sys/health
       # would return 501/503 in those states and never converge on first boot.

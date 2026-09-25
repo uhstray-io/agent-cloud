@@ -232,3 +232,16 @@ def test_github_runner_requires_its_app_key(tmp_path):
     raw = (REPO / "platform/playbooks/deploy-github-runner.yml").read_text()
     v = _verdict(tmp_path, service="github-runner", stored={"other": "x"}, deploy_raw=raw)
     assert v["status"] == "fail" and v["evidence"]["missing"] == ["app_private_key"], v
+
+
+def test_a_greenfield_service_passes_before_its_first_deploy(tmp_path):
+    # PR 203 Codex review: the secrets step runs before service-deploy, and a service whose deploy
+    # generates every secret has no OpenBao path yet; failing on that blocked the deploy.
+    generated = [{"vars": {"_secret_definitions": [{"name": "svc_session", "type": "random", "length": 32}]}}]
+    v = _verdict(tmp_path, stored=None, deploy_raw=yaml.safe_dump(generated))
+    assert v["status"] == "pass" and v["evidence"]["path_found"] is False, v
+
+
+def test_an_absent_path_fails_when_the_deploy_requires_a_key(tmp_path):
+    v = _verdict(tmp_path, stored=None)
+    assert v["status"] == "fail" and v["evidence"]["missing"] == ["svc_api_key"], v
