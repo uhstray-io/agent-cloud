@@ -400,6 +400,16 @@
 > Dev-bound, read-only `Inspect Service Runtime (Dev)` workflow before selecting a
 > versioned recovery action. The retirement account count remains required
 > before applying the pending production Grafana SSO declaration.
+> Semaphore task 1312 published that inspector as Dev-bound template 230 from
+> merged `dev` commit `380b1d44a42d7bfe0b0f3f90f06a9c1f03660428`.
+> Read-only task 1313 checked out the same commit and found all four
+> Authentik containers (`postgresql`, `redis`, `server`, and `worker`) in
+> `created` state, each with exit code 0 and restart count 0. The inspector
+> succeeded; Authentik did not become healthy, and the retirement account
+> query still did not run. Recover the server through a reviewed Semaphore
+> workflow that preserves the database and prevents the blueprint worker from
+> applying the pending account retirement before the audit establishes the
+> account count. Do not treat this diagnostic success as SSO rollout proof.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,
