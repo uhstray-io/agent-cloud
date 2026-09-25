@@ -1,0 +1,146 @@
+---
+# Reconcile the operator's private pfSense key backup into the one OpenBao path
+# used by discovery and DHCP reservation. Run through the Dev-bound Semaphore
+# template; neither the key nor the site-config deploy key is a task parameter.
+
+- name: Reconcile the pfSense API key from site-config
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+
+  tasks:
+    - name: Require the OpenBao endpoint
+      ansible.builtin.assert:
+        that: _bao_url | length > 0
+
+    - name: Guard the OpenBao credential transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: Read the site-config deploy key
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/ssh/site-config"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 403, 404]
+      register: _site_config_ssh
+      no_log: true
+
+    - name: Classify the site-config deploy key without displaying it
+      ansible.builtin.set_fact:
+        _site_config_key_present: >-
+          {{ _site_config_ssh.status == 200 and
+             (_site_config_ssh.json | default({})).get('data', {}).get('data', {}).get('private_key', '') | length > 0 }}
+      no_log: true
+
+    - name: Require the site-config deploy key
+      ansible.builtin.assert:
+        that: _site_config_key_present
+        fail_msg: "The site-config deploy key is unavailable in OpenBao; no pfSense key was written."
+
+    - name: Read and reconcile the private backup in an ephemeral clone
+      block:
+        - name: Clone site-config with the pinned GitHub host keys
+          ansible.builtin.include_tasks: tasks/site-config-clone.yml
+          vars:
+            _sc_deploy_key: "{{ _site_config_ssh.json.data.data.private_key }}"
+            _sc_branch_prefix: "read/pfsense-key"
+
+        - name: Check the pfSense API key backup path
+          ansible.builtin.stat:
+            path: "{{ _sc_clone }}/netbox/secrets/pfsense_api_key.txt"
+          register: _site_config_key_stat
+
+        - name: Require the pfSense API key backup
+          ansible.builtin.assert:
+            that: _site_config_key_stat.stat.isreg | default(false)
+            fail_msg: "The private pfSense key backup is missing; no OpenBao write occurred."
+
+        - name: Load the pfSense API key backup
+          ansible.builtin.slurp:
+            src: "{{ _sc_clone }}/netbox/secrets/pfsense_api_key.txt"
+          register: _site_config_key_file
+          no_log: true
+
+        - name: Resolve the backed-up key in memory
+          ansible.builtin.set_fact:
+            _pfsense_key: "{{ _site_config_key_file.content | b64decode | trim }}"
+          no_log: true
+
+        - name: Classify the backup shape without displaying it
+          ansible.builtin.set_fact:
+            _pfsense_key_valid: "{{ _pfsense_key | length > 0 and _pfsense_key is match('^[^\\r\\n]+$') }}"
+          no_log: true
+
+        - name: Require a single nonempty key
+          ansible.builtin.assert:
+            that: _pfsense_key_valid
+            fail_msg: "The private pfSense key backup is empty or multiline; no OpenBao write occurred."
+
+        - name: Read the current pfSense discovery credential
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/discovery/pfsense"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+            status_code: [200, 404]
+          register: _pfsense_current
+          no_log: true
+
+        - name: Classify the current key without displaying it
+          ansible.builtin.set_fact:
+            _pfsense_existing_key: "{{ (((_pfsense_current.json | default({})).get('data') or {}).get('data') or {}) }}"
+          no_log: true
+
+        - name: Classify the current key value without displaying it
+          ansible.builtin.set_fact:
+            _pfsense_existing_key_present: "{{ (_pfsense_existing_key.get('api_key') | default('', true)) | length > 0 }}"
+            _pfsense_existing_key_matches: "{{ _pfsense_existing_key.get('api_key') == _pfsense_key }}"
+          no_log: true
+
+        - name: Preserve a different live key pending verification
+          ansible.builtin.assert:
+            that: (not _pfsense_existing_key_present) or _pfsense_existing_key_matches
+            fail_msg: "The private backup differs from the live pfSense key; no OpenBao write occurred. Verify the replacement before rotation."
+
+        - name: Seed the missing key through the shared KV-v2 merge task
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/discovery/pfsense
+            _bm_data: "{{ {'api_key': _pfsense_key} }}"
+            _bm_on_missing: create
+            _bm_guard_key: api_key
+            _bm_guard_value: "{{ _pfsense_existing_key.get('api_key') }}"
+
+      always:
+        - name: Remove the private clone and deploy key
+          ansible.builtin.file:
+            path: "{{ _sc_wd | default(_sc_wd_result.path | default('')) }}"
+            state: absent
+          when: (_sc_wd | default(_sc_wd_result.path | default(''))) | length > 0
+
+    - name: Report the credential outcome without its value
+      ansible.builtin.debug:
+        msg: >-
+          pfSense API key at secret/services/discovery/pfsense:
+          {{ 'reconciled' if _bm_changed else 'already up to date' }}.

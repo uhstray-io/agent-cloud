@@ -856,6 +856,13 @@ templates:
         type: string
         required: true
 
+  - name: Reconcile pfSense API Key
+    playbook: platform/playbooks/reconcile-pfsense-api-key.yml
+    dev_variant: true
+    # Reads the fixed private site-config backup on the runner through the
+    # OpenBao-backed deploy key. A different live key is never overwritten.
+    # No credential-bearing survey or launch-time parameter is accepted.
+
   - name: Seed n8n Secrets
     playbook: platform/playbooks/seed-n8n-secrets.yml
     # dev_variant because the cutover RUNS FROM dev (promotion to main comes
