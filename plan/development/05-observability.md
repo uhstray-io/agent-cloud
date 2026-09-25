@@ -161,8 +161,20 @@
 > preserves those exact files during `rsync --delete`, including when another
 > local service deploy places the repository. Future committed alert rules in
 > the same directory still copy normally. A local synthetic rsync check
-> confirmed that behavior; the live restore rerun is still pending review
-> and merge of this fix.
+> confirmed that behavior before the live restore rerun.
+> **Canary live rehearsal, 2026-09-25:** PR #244 merged the restore fix to
+> `dev` as `1371ca32f5cb449f02e555541c73836b6b54e019`. Local Semaphore
+> restore task 1765 succeeded on that exact revision: it recreated the
+> generated directory and read back every o11y rule paused with no canary
+> contact point. Canary task 1768 passed the exact-revision gate, Discord
+> history preflight, failed-scrape detection, and expected onboarding
+> refusal. It then failed while checking Grafana alerts because the API
+> response included an alert without `labels.service`; the Ansible filter
+> dereferenced that absent label before considering the probe. Its `always`
+> cleanup removed the probe and verified paused rules and absent canary
+> contact point. No Discord delivery was proven. Filter out alerts without
+> the service label before matching the unique probe, then rerun the canary
+> from reviewed `dev`.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

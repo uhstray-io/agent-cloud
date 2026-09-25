@@ -209,7 +209,7 @@ YAML
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-unreachable.yml" "$REPO_ROOT/platform/semaphore/templates.yml" "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-delivery-preflight.yml" <<'PY'
 import json, re, sys, yaml
-from jinja2 import Environment
+from jinja2 import Environment, StrictUndefined
 
 plays = yaml.safe_load(open(sys.argv[1]))
 assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
@@ -241,7 +241,7 @@ assert marker['ignore_errors'] is True
 assert any(task['name'] == 'Require Discord message-history access before the probe' for task in preflight_tasks)
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
-env = Environment()
+env = Environment(undefined=StrictUndefined)
 env.filters['from_json'] = json.loads
 env.filters['to_json'] = json.dumps
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
@@ -250,6 +250,14 @@ matches = env.compile_expression(wait['until'])
 for state, expected in [('Alerting', True), ('Alerting (Error)', False), ('firing', True), ('Normal', False)]:
     response = {'data': {'alerts': [{'labels': {'service': 'pilot'}, 'state': state}]}}
     assert bool(matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')) is expected
+response = {'data': {'alerts': [
+    {'state': 'Normal'},
+    {'labels': {'team': 'other'}, 'state': 'Alerting'},
+    {'labels': {'service': 'pilot'}, 'state': 'Alerting'},
+]}}
+assert matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
+response['data']['alerts'].pop()
+assert not matches(_firing_alerts={'rc': 0, 'stdout': json.dumps(response)}, expected_service='pilot')
 checks = rescue['ansible.builtin.assert']['that']
 instance_check = env.compile_expression(checks[-1])
 for msg, expected in [("pilot at probe:65535: failing instances=['probe:65535']; scrapes found=1.", True),
