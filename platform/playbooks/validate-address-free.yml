@@ -102,7 +102,11 @@
     - name: "Judge the address"
       ansible.builtin.set_fact:
         _arp_hits: "{{ _arp_entries | selectattr('ip', 'defined') | selectattr('ip', 'equalto', _ip) | list }}"
-        _own_vm: "{{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | selectattr('name', 'equalto', _name) | list | length > 0 }}"
+        # The ARP hit is the service's own only while that VM RUNS: a stopped VM cannot answer
+        # ARP, so another device holds the address (PR 195 Codex review).
+        _own_vm: >-
+          {{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | selectattr('name', 'equalto', _name)
+             | selectattr('status', 'defined') | selectattr('status', 'equalto', 'running') | list | length > 0 }}
       vars:
         # pfrest v2 wraps its answer in `data`; the ARP table has come back as a list and as a
         # dict keyed by index (the worker handled both, 1c3e6ea).

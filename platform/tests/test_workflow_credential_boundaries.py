@@ -81,3 +81,25 @@ def test_token_minting_uses_the_configured_engine():
 def test_local_discovery_requires_the_subnet_its_scans_render():
     names = [t.get("name") for t in yaml.safe_load((PLAYBOOKS / "tasks/assert-local-discovery-scope.yml").read_text())]
     assert "Local discovery: extra targets need the subnet the scans cover" in names
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("status,own", [("running", True), ("stopped", False)])
+def test_an_arp_hit_is_the_services_own_only_while_its_vm_runs(tmp_path, status, own):
+    # PR 195 Codex review: a STOPPED VM with the declared id and name still made the ARP hit
+    # "its own", so an address another device held passed as free.
+    judge = _named(PLAYBOOKS / "validate-address-free.yml", "Judge the address")
+    harness = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_ip": "192.0.2.10", "_vmid": 101, "_name": "svc",
+                 "_arp": {"json": {"data": [{"ip": "192.0.2.10", "mac": "aa"}]}},
+                 "_pve_vms": {"json": {"data": [{"vmid": 101, "name": "svc", "status": status}]}}},
+        "tasks": [judge, {"ansible.builtin.debug": {"msg": "OWN {{ _own_vm | bool }}"}}],
+    }]
+    path = tmp_path / "judge.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                         text=True, capture_output=True, check=True).stdout
+    assert f"OWN {own}" in out, out[-800:]

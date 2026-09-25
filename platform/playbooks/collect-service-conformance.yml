@@ -45,6 +45,10 @@
     _workflow: "{{ playbook_dir }}/../workflows/service-onboarding"
     _parser: "{{ _workflow }}/lib/step_results.py"
     _registry: "{{ (lookup('file', _workflow ~ '/registry.yml') | from_yaml).steps }}"
+    # The closed per-service deploy list OPA grants: only these are the "Deploy {service}" step.
+    _deploy_templates: >-
+      {{ (lookup('file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json)
+         .catalog['service-agent'].service_deploy_templates }}
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
 
   tasks:
@@ -76,7 +80,7 @@
       ansible.builtin.command:
         argv: [python3, "{{ _parser }}"]
         stdin: >-
-          {{ {'mode': 'select', 'registry': _registry, 'templates': _templates.json,
+          {{ {'mode': 'select', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
               'groups': groups, 'host_services': _host_services | default({})} | to_json }}
       register: _select
       changed_when: false
@@ -119,7 +123,7 @@
       ansible.builtin.command:
         argv: [python3, "{{ _parser }}"]
         stdin: >-
-          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json,
+          {{ {'mode': 'aggregate', 'registry': _registry, 'templates': _templates.json, 'deploy_templates': _deploy_templates,
               'fetched': _outputs.results | default([]),
               'groups': groups, 'host_services': _host_services | default({}),
               'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}

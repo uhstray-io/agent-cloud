@@ -24,6 +24,9 @@ TEMPLATES = [
     {"id": 7, "name": "Deploy postiz", "playbook": "platform/playbooks/deploy-postiz.yml"},
 ]
 GROUPS = {"tududi_svc": "tududi", "step_ca_svc": "step-ca"}  # postiz is not in this inventory
+# The closed per-service deploy list the collector reads from OPA's data (not a "Deploy " prefix).
+DEPLOYS = frozenset(json.loads((REPO / "platform/services/opa/deployment/policies/agentcloud/data.json").read_text())
+                    ["catalog"]["service-agent"]["service_deploy_templates"])
 
 
 def _run_line(result: dict) -> str:
@@ -36,12 +39,24 @@ def _task(tid, status, template_id, output="", service="tududi", **extra):
 
 
 def _agg(*tasks):
-    return step_results.aggregate(REGISTRY, TEMPLATES, list(tasks))
+    return step_results.aggregate(REGISTRY, TEMPLATES, list(tasks), deploy_templates=DEPLOYS)
 
 
 def test_only_workflow_templates_are_selected():
-    # A deploy for a service this inventory does not hold (postiz) has no history worth reading.
-    assert step_results.select(REGISTRY, TEMPLATES, GROUPS) == [1, 2, 3, 4, 6]
+    # A deploy for a service this inventory does not hold (postiz) has no history worth reading,
+    # and Deploy step-ca is platform infrastructure, not on the per-service deploy list.
+    assert step_results.select(REGISTRY, TEMPLATES, GROUPS, DEPLOYS) == [1, 2, 3, 4]
+
+
+def test_a_foundation_deploy_is_never_the_service_deploy_step():
+    # PR 195 Codex review: local inventory holds netbox_svc, and the "Deploy " prefix mapped
+    # Deploy NetBox (Local) to service-deploy, publishing a foundation failure as a service's.
+    templates = [{"id": 8, "name": "Deploy NetBox (Local)", "playbook": "platform/playbooks/deploy-netbox.yml"}]
+    groups = {**GROUPS, "netbox_svc": "netbox"}
+    assert step_results.select(REGISTRY, templates, groups, DEPLOYS) == []
+    agg = step_results.aggregate(REGISTRY, templates, [_task(9, "error", 8, "x", service="netbox")],
+                                 deploy_templates=DEPLOYS)
+    assert agg["services"] == {}
 
 
 def test_a_recorded_result_is_read_through_ansi_colour():
@@ -139,14 +154,17 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
         return json.loads(done.stdout)
 
     inv = {"groups": {"tududi_svc": ["h"], "step_ca_svc": ["s"]}, "host_services": {"h": "tududi", "s": "step-ca"}}
-    selected = call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES, **inv})
-    assert selected["template_ids"] == [1, 2, 3, 4, 6]
+    deploys = sorted(DEPLOYS)
+    selected = call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
+                     "deploy_templates": deploys, **inv})
+    assert selected["template_ids"] == [1, 2, 3, 4]
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t",
            "environment": '{"target_service": "tududi_svc"}'}
     picked = call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
                    "histories": [[row]]})["tasks"]
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
     agg = call({"mode": "aggregate", "registry": REGISTRY, "templates": TEMPLATES, "now_ns": 1,
+                "deploy_templates": deploys,
                 "fetched": [{"item": picked[0], "content": out, "status": 200}]})
     assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
     assert len(agg["loki_streams"]) == 1

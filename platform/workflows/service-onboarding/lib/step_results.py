@@ -70,19 +70,24 @@ def results_in(lines: list[str]) -> list[dict]:
     return found
 
 
-def _step_for(template: str, registry: list[dict]) -> str | None:
+def _step_for(template: str, registry: list[dict], deploy_templates: frozenset = frozenset()) -> str | None:
+    """The registry step a template executes. "Deploy {service}" is the CLOSED list of
+    application-service deploys OPA grants (data.json service_deploy_templates), never a
+    "Deploy " prefix, which also matched the platform's foundation such as Deploy NetBox
+    (PR 195 Codex review)."""
     base = VARIANT.sub("", template or "")
     for step in registry:
         if base in {step.get("executor"), step.get("snapshot")}:
             return step["id"]
-        if step.get("executor") == PER_SERVICE and base.startswith("Deploy "):
+        if step.get("executor") == PER_SERVICE and base in deploy_templates:
             return step["id"]
     return None
 
 
-def select(registry: list[dict], templates: list[dict], by_group: dict) -> list[int]:
+def select(registry: list[dict], templates: list[dict], by_group: dict,
+           deploy_templates: frozenset = frozenset()) -> list[int]:
     def wanted(t: dict) -> bool:
-        step = _step_for(t["name"], registry)
+        step = _step_for(t["name"], registry, deploy_templates)
         if step is None:
             return False
         per_service = next(s for s in registry if s["id"] == step).get("executor") == PER_SERVICE
@@ -132,7 +137,7 @@ def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
-              inventory_services: list[str] | None = None) -> dict:
+              inventory_services: list[str] | None = None, deploy_templates: frozenset = frozenset()) -> dict:
     names = {t["id"]: t["name"] for t in templates}
     services: dict[str, dict] = {}
     validation: dict[str, dict] = {}
@@ -141,7 +146,7 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
         lines = ANSI.sub("", task.get("output") or "").splitlines()
         results = results_in(lines)
         if not results and task["status"] == "error":
-            step = _step_for(names.get(task["template_id"], ""), registry)
+            step = _step_for(names.get(task["template_id"], ""), registry, deploy_templates)
             if step and task.get("service"):
                 results = [{
                     "service": task["service"], "step": step, "status": "fail",
@@ -229,13 +234,14 @@ def main() -> int:
     data = json.load(sys.stdin)
     mode = data["mode"]
     by_group = group_services(data.get("groups", {}), data.get("host_services", {}))
+    deploys = frozenset(data.get("deploy_templates", []))
     if mode == "select":
-        out = {"template_ids": select(data["registry"], data["templates"], by_group)}
+        out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys)}
     elif mode == "pick":
         out = {"tasks": pick(data["histories"], by_group)}
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
-        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())))
+        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys)
         if data.get("now_ns"):
             out["loki_streams"] = loki_streams(out, int(data["now_ns"]))
     else:

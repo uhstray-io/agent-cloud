@@ -39,10 +39,12 @@ PY
 @test "validate-address: the service's own running VM owns its address (backfill is skip, not a refusal)" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   local arp='{"data":[{"ip":"192.0.2.60"}]}'
-  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm"}]}')" = "hits=1 own=True" ]
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=True" ]
   # a DIFFERENT VM at the vmid, or ours by name at another vmid, owns nothing
-  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"other"}]}')" = "hits=1 own=False" ]
-  [ "$(judge "$arp" '{"data":[{"vmid":261,"name":"svc-vm"}]}')" = "hits=1 own=False" ]
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"other","status":"running"}]}')" = "hits=1 own=False" ]
+  [ "$(judge "$arp" '{"data":[{"vmid":261,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=False" ]
+  # ours but STOPPED cannot answer ARP: another device holds the address (PR 195 Codex review)
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"stopped"}]}')" = "hits=1 own=False" ]
   assert_grep -qF "'skip' if _own_vm else 'pass'" "$VALIDATE"
 }
 
