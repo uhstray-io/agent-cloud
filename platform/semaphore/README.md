@@ -147,6 +147,52 @@ and its installer, including the initial publisher. Manual UI creation is not
 an installation path. Resolve approved executor access before applying the
 bootstrap; do not substitute a manually configured template.
 
+## Seed a secret through an isolated environment
+
+A secret an operator holds, and no service generates, reaches OpenBao through a
+**seed template**: one that declares `isolated_environment` and `seed_inputs` in
+`templates.yml`. Seed OpenBao Key is the general one. The value travels as an
+encrypted environment input in that template's own environment. It is never a
+survey field or an extra var, because Semaphore persists both and returns them over
+its API. It is never staged in the shared environment, where every other template's
+task could receive it.
+
+1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
+   with `seed_template` set to the declared base name. It creates the environment,
+   gives it an encrypted copy of the controller AppRole, and binds only that template.
+2. **Once after provisioning:** prove the environment's AppRole may seed the path,
+   without writing anything. It checks the token's own capabilities on the path
+   (read plus create, update or patch); a GET alone cannot tell a missing path from
+   one the token cannot see:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --verify-only --apply < <token-file>
+   ```
+
+3. **Each seed:** put the value in a file, one line, then run a dry run without
+   `--apply`, then the real one:
+
+   ```bash
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> \
+     --input BAO_VALUE=<value-file> --inventory <approved-id> --openbao-addr <approved-bao-url> --url https://semaphore.uhstray.io --apply < <token-file>
+   ```
+
+The CLI accepts only the input names the template declares and only its survey
+settings. It resolves the template and environment by name and refuses unless they
+are bound to each other, the template still runs from its declared repository record
+(URL and branch checked against `repositories.yml`) and from the inventory you approve
+with `--inventory`, the environment still points at the OpenBao endpoint you approve with
+`--openbao-addr` (the seed task logs in and writes there), and it is an Ansible template with no extra arguments. Dry run,
+`--verify-only` and the real seed all run that same read-only preflight first, so a
+dry run fails on anything the seed would refuse. It refuses a leftover input from an earlier run, runs
+exactly one task, removes exactly the input it created, and never prints the value.
+An interrupted run leaves the encrypted input in place and names it, so it can be
+reconciled rather than silently retried. Postiz provider credentials use
+`scripts/postiz-seed-input.py`, which shares the same lifecycle code.
+
 ## Troubleshoot at the failing boundary
 
 | Evidence | Next check |

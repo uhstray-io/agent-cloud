@@ -1,0 +1,312 @@
+---
+# Controller configuration operation. The public template uses the fixed-loopback
+# wrapper; this implementation also runs against disposable provider fixtures.
+#
+# Generic over every seed template that declares `isolated_environment` in
+# templates.yml (Seed Postiz Secrets, Seed OpenBao Key, ...): `seed_template` names
+# the declared base template, `seed_variant` picks its dev or main instance. The
+# environment gets its own encrypted copy of the controller AppRole, so staged
+# secret inputs never sit in the environment every other template shares.
+- name: "Provision the declared isolated seed environment"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _project_id: "{{ semaphore_project_id | int }}"
+    _variant: "{{ seed_variant | default('dev') }}"
+    _declared: "{{ (lookup('file', playbook_dir + '/templates.yml') | from_yaml).templates }}"
+    _seed_names: "{{ _declared | selectattr('isolated_environment', 'defined') | map(attribute='name') | list }}"
+    _suffix: "{{ ' (Dev)' if _variant == 'dev' else '' }}"
+    _base: "{{ _declared | selectattr('name', 'equalto', seed_template | default('')) | first | default({}) }}"
+    _target_name: "{{ _base.name ~ _suffix }}"
+    _environment_name: "{{ _base.isolated_environment ~ _suffix }}"
+    _repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') if _variant == 'dev' else _base.repository | default('agent-cloud') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
+    _selected_templates: "{{ [_base | combine({'_publish_name': _target_name, '_generated': _variant == 'dev'})] }}"
+
+  tasks:
+    - name: "Require a declared isolated seed template"
+      ansible.builtin.assert:
+        that: (seed_template | default('')) in _seed_names
+        fail_msg: >-
+          seed_template must name a templates.yml entry that declares
+          isolated_environment; declared: {{ _seed_names | join(', ') }}
+
+    - name: "Require explicit reviewed bindings"
+      ansible.builtin.assert:
+        that:
+          - _variant in ['main', 'dev']
+          - semaphore_project_id | int > 0
+          - semaphore_inventory_id | int > 0
+          - semaphore_source_environment_id | int > 0
+          - _base.isolated_environment | length > 0
+          - _variant != 'dev' or _base.dev_variant | default(false) | bool
+        fail_msg: "Supply reviewed project, inventory and source-environment IDs and a declared variant."
+
+    - name: "Resolve existing controller runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
+    - name: "Validate the source credential transport"
+      ansible.builtin.include_tasks: ../playbooks/tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Validate the existing injected AppRole before copying runtime inputs"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        follow_redirects: none
+        status_code: [200]
+      no_log: true
+
+    - name: "Read repository declarations and live bindings"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _repos
+
+    - name: "Require the intended repository identity"
+      ansible.builtin.assert:
+        that:
+          - _live | length == 1
+          - _declared | length == 1
+          - (_live | first).git_url == (_declared | first).git_url
+          - (_live | first).git_branch == (_declared | first).git_branch
+        fail_msg: "The seed repository differs from its declaration."
+      vars:
+        _live: "{{ _repos.json | selectattr('name', 'equalto', _repo_name) | list }}"
+        _declared: >-
+          {{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories
+             | selectattr('name', 'equalto', _repo_name) | list }}
+
+    - name: "Read existing templates"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _existing
+
+    - name: "Require one existing seed template"
+      ansible.builtin.assert:
+        that: _existing.json | selectattr('name', 'equalto', _target_name) | list | length == 1
+        fail_msg: "The declared seed template must already exist unambiguously."
+
+    - name: "Read the complete seed template"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ (_existing.json | selectattr('name', 'equalto', _target_name) | first).id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _template
+      no_log: true
+
+    - name: "Require reviewed seed execution settings"
+      ansible.builtin.assert:
+        that:
+          - _template.json.id == (_existing.json | selectattr('name', 'equalto', _target_name) | first).id
+          - _template.json.project_id | int == _project_id | int
+          - _template.json.name == _target_name
+          - _template.json.app == 'ansible'
+          - _template.json.playbook == _base.playbook
+          - _template.json.inventory_id | int == semaphore_inventory_id | int
+          - _template.json.repository_id == (_repos.json | selectattr('name', 'equalto', _repo_name) | first).id
+          - _template.json.arguments | default(none) in [none, '[]', []]
+        fail_msg: "Seed execution settings differ; no environment mutation was attempted."
+
+    - name: "Read the current source environment"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _template.json.environment_id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _source
+      no_log: true
+
+    - name: "Require the reviewed source or already-converged binding"
+      ansible.builtin.assert:
+        that:
+          - _source.json.id == _template.json.environment_id
+          - >-
+            _source.json.id | int == semaphore_source_environment_id | int
+            or _source.json.name == _environment_name
+        fail_msg: "The source environment changed; review the binding before continuing."
+
+    - name: "Ensure the declared empty environment without copying shared configuration"
+      ansible.builtin.include_tasks: tasks/isolated-environments.yml
+
+    - name: "Read dedicated environment configuration"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _isolated_environment_ids[_environment_name] }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _target
+      no_log: true
+
+    - name: "Validate the dedicated credential boundary"
+      ansible.builtin.assert:
+        that:
+          - _target.json.id == _isolated_environment_ids[_environment_name]
+          - _target.json.project_id | int == _project_id | int
+          - _target.json.name == _environment_name
+          # The shared clean-environment rule (filter seed_environment_problems), the
+          # same one full publication applies before binding: no plaintext env vars,
+          # extra vars at most openbao_addr, and exactly the two AppRole inputs or none.
+          - _target.json | seed_environment_problems(_bao_url) | length == 0
+          - _auth | selectattr('id', 'defined') | selectattr('id', 'integer') | list | length == _auth | length
+          - _auth | map(attribute='id') | unique | list | length == _auth | length
+        quiet: true
+        fail_msg: "Dedicated environment has conflicting configuration or inputs; reconcile without overwriting them."
+      vars:
+        _auth: "{{ _target.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+      no_log: true
+
+    - name: "Prepare missing encrypted authentication inputs in memory"
+      ansible.builtin.set_fact:
+        _auth_operations: >-
+          {{ [{'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'create',
+               'secret': bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))},
+              {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create',
+               'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
+             if (_target.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
+             else [] }}
+        _desired_json: "{{ {'openbao_addr': _bao_url} | to_json }}"
+      no_log: true
+
+    - name: "Re-read dedicated environment before credential mutation"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _fresh
+      no_log: true
+
+    - name: "Refuse changed environment state"
+      ansible.builtin.assert:
+        that: _fresh.json == _target.json
+        quiet: true
+        fail_msg: "Dedicated environment changed during preparation; no automatic retry."
+      no_log: true
+
+    # Semaphore v2.17.31 applies secrets as explicit create/update/delete operations;
+    # an empty list preserves every existing secret (api/projects/environment.go).
+    - name: "Store only missing encrypted authentication and endpoint configuration"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        body_format: json
+        body: "{{ _target.json | combine({'json': _desired_json, 'secrets': _auth_operations}) | to_json }}"
+        status_code: [200, 204]
+      when: _auth_operations | length > 0 or (_target.json.json | default('{}', true) | from_json) != (_desired_json | from_json)
+      changed_when: true
+      no_log: true
+
+    - name: "Read back dedicated authentication metadata"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _after
+      no_log: true
+
+    - name: "Verify preserved inputs and new authentication identities"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _after.json | combine({'secrets': [], 'json': _desired_json}) ==
+            _target.json | combine({'secrets': [], 'json': _desired_json})
+          - (_after.json.json | from_json) == (_desired_json | from_json)
+          - _target.json.secrets | difference(_after.json.secrets) | length == 0
+          - _after.json.secrets | length == _target.json.secrets | length + _auth_operations | length
+          - _auth | length == 2
+          - _auth | map(attribute='name') | unique | list | length == 2
+          - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
+          - _auth | selectattr('id', 'defined') | selectattr('id', 'integer') | list | length == 2
+          - _auth | map(attribute='id') | unique | list | length == 2
+        quiet: true
+        fail_msg: "Authentication metadata readback differs; binding was not changed."
+      vars:
+        _auth: "{{ _after.json.secrets | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+      no_log: true
+
+    - name: "Re-read the seed template before binding"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ _template.json.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _template_fresh
+      no_log: true
+
+    - name: "Require unchanged template settings"
+      ansible.builtin.assert:
+        that:
+          - (_template_fresh.json | publication_settings) == (_template.json | publication_settings)
+          - _template_fresh.json.survey_vars | default([]) == _template.json.survey_vars | default([])
+        quiet: true
+        fail_msg: "Seed template changed; binding refused."
+
+    - name: "Bind only the seed template to its declared environment"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ _template.json.id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        body_format: json
+        body: "{{ _template.json | publication_settings | combine({'environment_id': _target.json.id, 'survey_vars': _template.json.survey_vars | default([])}) | to_json }}"
+        status_code: [200, 204]
+      when: _template.json.environment_id != _target.json.id
+      changed_when: true
+      no_log: true
+
+    - name: "Read back the resulting template binding"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ _template.json.id }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _bound
+      no_log: true
+
+    - name: "Verify only the declared binding changed"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_bound.json | publication_settings) ==
+            (_template.json | publication_settings | combine({'environment_id': _target.json.id}))
+          - _template.json.survey_vars | default([]) | publication_matches(_bound.json.survey_vars | default([]))
+        quiet: true
+        fail_msg: "Seed binding readback differs; reconcile before any credential import."
+
+    - name: "Report the next read-only verification step"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _target_name }} ({{ _template.json.id }}) now uses {{ _environment_name }}
+          ({{ _target.json.id }}). Before the first real seed, run this seed template with
+          {{ _base.seed_access_check | default('its read-only access check') }}=true and require
+          its read-only access success message.
