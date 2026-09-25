@@ -859,7 +859,7 @@
     - name: "Require complete local inventory before replacing it"
       ansible.builtin.assert:
         that:
-          - _existing_local == {} or _existing_local.inventory is string
+          - _existing_local == {} or ('inventory' in _existing_local and _existing_local.inventory is string)
         fail_msg: "Semaphore omitted the local inventory text; refusing replacement"
         quiet: true
       vars:
