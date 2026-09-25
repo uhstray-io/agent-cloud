@@ -13,13 +13,21 @@ PLAYBOOK = REPO / "platform/playbooks/inspect-service-runtime.yml"
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 
-def _run(tmp_path, names):
+def _run(tmp_path, names, target_service="demo_svc"):
     engine = tmp_path / "engine"
     engine.write_text(
         "#!/bin/sh\n"
         "case \"$1\" in\n"
-        f"  ps) printf '%s' '{names}' ;;\n"
-        "  inspect) printf 'exited 1 0\\n' ;;\n"
+        "  ps)\n"
+        "    [ \"$2\" = -a ] || exit 41\n"
+        "    [ \"$3\" = --filter ] || exit 42\n"
+        "    [ \"$4\" = 'label=com.docker.compose.project.working_dir="
+        "/tmp/demo/platform/services/demo/deployment' ] || exit 43\n"
+        f"    printf '%s' '{names}' ;;\n"
+        "  inspect)\n"
+        "    [ \"$2\" = --format ] || exit 44\n"
+        "    [ \"$3\" = '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}' ] || exit 45\n"
+        "    printf 'exited 1 0\\n' ;;\n"
         "  *) exit 99 ;;\n"
         "esac\n"
     )
@@ -36,7 +44,7 @@ def _run(tmp_path, names):
     env["ANSIBLE_NOCOLOR"] = "1"
     return subprocess.run(
         ["ansible-playbook", "--check", "-i", str(inventory), str(PLAYBOOK),
-         "-e", "target_service=demo_svc"],
+         "-e", f"target_service={target_service}"],
         cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
     )
 
@@ -50,4 +58,11 @@ def test_stopped_container_is_reported_in_check_mode(tmp_path):
 def test_empty_listing_fails_closed(tmp_path):
     done = _run(tmp_path, "")
     assert done.returncode != 0
-    assert "No service containers could be inspected" in done.stdout
+    assert "Service container listing failed or was empty" in done.stdout
+
+
+@pytest.mark.parametrize("group", ["all", "typo_svc"])
+def test_non_service_or_empty_group_is_refused(tmp_path, group):
+    done = _run(tmp_path, "demo-server\n", target_service=group)
+    assert done.returncode != 0
+    assert "target_service must name a populated *_svc inventory group" in done.stdout

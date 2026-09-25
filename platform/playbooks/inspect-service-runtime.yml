@@ -7,8 +7,10 @@
   tasks:
     - name: Require a populated target service group
       ansible.builtin.assert:
-        that: "groups.get(target_service | default(''), []) | length > 0"
-        fail_msg: "target_service must name a populated inventory group."
+        that:
+          - "target_service | default('') is match('^[a-z0-9_]+_svc$')"
+          - "groups.get(target_service | default(''), []) | length > 0"
+        fail_msg: "target_service must name a populated *_svc inventory group."
 
 - name: Inspect service containers without changing runtime state
   hosts: "{{ target_service | default('ungrouped') }}"
@@ -26,7 +28,9 @@
         that:
           - _lsc.rc == 0
           - _lsc.stdout_lines | length > 0
-        fail_msg: "No service containers could be inspected."
+        fail_msg: >-
+          Service container listing failed or was empty
+          (rc={{ _lsc.rc }}; stderr={{ _lsc.stderr | default('') | trim }}).
 
     - name: Read state, exit code, and restart count
       ansible.builtin.command:
