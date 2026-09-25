@@ -35,6 +35,9 @@
       role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
       secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+    # Resolved lazily, once _pve is read; only ever used inside no_log requests.
+    _pve_headers:
+      Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
 
   tasks:
     - name: "Require a target service that resolves to one declaring host with an address"
@@ -93,8 +96,7 @@
     - name: "Read Proxmox's VM list"
       ansible.builtin.uri:
         url: "{{ _pve.url }}/api2/json/cluster/resources?type=vm"
-        headers:
-          Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+        headers: "{{ _pve_headers }}"
         validate_certs: false
       register: _pve_vms
       check_mode: false
@@ -115,12 +117,12 @@
 
     # A running VM with the declared id and name does not prove the ARP entry is ITS: another
     # device can answer for the address (PR 195 Codex review). Its NIC MACs, from its own config,
-    # must include the MAC the firewall saw.
+    # must include EVERY MAC the firewall saw for the address: one foreign entry beside the VM's
+    # own is a second device holding it (PR 253 CodeRabbit review).
     - name: "Read the running VM's network configuration"
       ansible.builtin.uri:
         url: "{{ _pve.url }}/api2/json/nodes/{{ _running_vm[0].node }}/qemu/{{ _vmid }}/config"
-        headers:
-          Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+        headers: "{{ _pve_headers }}"
         validate_certs: false
       register: _vm_config
       failed_when: false
@@ -130,15 +132,26 @@
         - _arp_hits | length > 0
         - _running_vm | length > 0
 
+    # The read is no_log (its request carries the token), so its failure is checked here,
+    # visibly: otherwise an unreadable config reads as "no NIC has that MAC", the wrong cause.
+    - name: "Require the VM configuration read to answer"
+      ansible.builtin.assert:
+        that: _vm_config.status | default(-1) == 200
+        fail_msg: >-
+          Proxmox answered {{ _vm_config.status | default('no response') }} reading VM
+          {{ _vmid }}'s configuration (expected 200): its NIC MACs, which decide whether the
+          ARP entry is its own, are unknown.
+      when: _vm_config is not skipped
+
     - name: "Judge whether the ARP entry is the declared VM's own"
       ansible.builtin.set_fact:
         _own_vm: >-
-          {{ (_running_vm | length > 0) and (_arp_hits | map(attribute='mac', default='') | map('lower')
-               | select('in', _vm_macs) | list | length > 0) }}
+          {{ (_running_vm | length > 0) and (_arp_hits | length > 0)
+             and (_arp_hits | map(attribute='mac', default='') | map('lower') | difference(_vm_macs) | length == 0) }}
       vars:
         # Proxmox writes a NIC as net<N>: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0".
         _vm_macs: >-
-          {{ ((_vm_config.json.data | default({})) if (_vm_config is not skipped) else {}) | dict2items
+          {{ _vm_config.json.data | default({}) | dict2items
              | selectattr('key', 'match', '^net[0-9]+$') | map(attribute='value')
              | map('regex_search', '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | select | map('lower') | list }}
 
@@ -168,21 +181,35 @@
 
     - name: "Decide"
       ansible.builtin.set_fact:
-        _vm_record: "{{ _nb.results[0].json.results | first | default({}) }}"
+        _vm_records: "{{ _nb.results[0].json.results }}"
         # The type the Proxmox discovery worker creates (CLUSTER_TYPE = "Proxmox VE").
         _clusters: "{{ _nb.results[1].json.results | selectattr('type.name', 'equalto', 'Proxmox VE') | list }}"
 
     # A second task: a set_fact cannot read a fact it is assigning in the same call, and the
     # judgement below needs _clusters (PR 195 Codex review).
+    #
+    # An existing record is the service's only when it is the ONE record with that name and
+    # sits in a Proxmox cluster discovery maintains: the lookup filters by name alone, so a
+    # same-named record elsewhere would otherwise pass as this VM's (PR 195 Codex review).
     - name: "Decide: judge the address and the record placement"
       ansible.builtin.set_fact:
+        _vm_record: "{{ _vm_records[0] if (_vm_records | length == 1) else {} }}"
         _address_errors: >-
           {{ ([] if (_arp_hits | length == 0) or _own_vm
               else [_ip ~ ' answers ARP (' ~ (_arp_hits | map(attribute='mac', default='?') | join(', '))
                     ~ ') and no running VM ' ~ _vmid ~ ' named ' ~ _name ~ ' has that MAC on Proxmox: the address is in use'])
-             + ([] if (_nb.results[0].json.count > 0) or (_clusters | length == 1)
+             + ([] if (_vm_records | length > 0) or (_clusters | length == 1)
                 else ['cannot place the NetBox VM record: ' ~ (_clusters | length)
-                      ~ ' Proxmox clusters match (discovery maintains them; pass -e netbox_vm_cluster=<name>)']) }}
+                      ~ ' Proxmox clusters match (discovery maintains them; pass -e netbox_vm_cluster=<name>)'])
+             + ([(_vm_records | length) ~ ' NetBox VM records are named ' ~ _name
+                 ~ ': refusing to guess which one discovery reconciles']
+                if (_vm_records | length > 1) else [])
+             + (['the NetBox VM record ' ~ _name ~ ' is in cluster '
+                 ~ (_vm_records[0].cluster.name | default('none')) ~ ', not a Proxmox cluster discovery maintains'
+                 ~ (' (' ~ netbox_vm_cluster ~ ')' if netbox_vm_cluster is defined else '')]
+                if (_vm_records | length == 1)
+                   and ((_vm_records[0].cluster.id | default(none)) not in (_clusters | map(attribute='id') | list))
+                else []) }}
 
     - name: "NetBox: create the VM record (planned, in the Proxmox cluster)"
       ansible.builtin.uri:

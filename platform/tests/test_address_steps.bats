@@ -12,9 +12,12 @@ setup() {
 }
 
 # judge <arp-json> <pve-json> [vm-config-json] -> prints "hits=<n> own=<bool>"
-# The VM config stands in for the Proxmox read (its NIC MACs decide ownership).
+# The VM config stands in for the Proxmox read (its NIC MACs decide ownership). It defaults to
+# a NIC carrying the ARP entry's MAC, so a case that expects own=False fails only on the filter
+# it is about: with no MACs every case read False whatever the id, name or status (grounding
+# review of PR 195).
 judge() {
-  local cfg='{"data":{}}'
+  local cfg='{"data":{"net0":"virtio=BC:24:11:00:00:60,bridge=vmbr0"}}'
   [ -z "${3:-}" ] || cfg=$3
   python3 - "$VALIDATE" "$BATS_TEST_TMPDIR/judge.yml" "$1" "$2" "$cfg" <<'PY'
 import json, sys, yaml
@@ -44,8 +47,9 @@ PY
 @test "validate-address: the service's own running VM owns its address (backfill is skip, not a refusal)" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   local arp='{"data":[{"ip":"192.0.2.60","mac":"bc:24:11:00:00:60"}]}'
-  local ours='{"data":{"net0":"virtio=BC:24:11:00:00:60,bridge=vmbr0"}}'
-  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}' "$ours")" = "hits=1 own=True" ]
+  [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=1 own=True" ]
+  # ours, plus a second device answering for the same address (PR 253 CodeRabbit review)
+  [ "$(judge '{"data":[{"ip":"192.0.2.60","mac":"bc:24:11:00:00:60"},{"ip":"192.0.2.60","mac":"aa:bb:cc:dd:ee:ff"}]}' '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}')" = "hits=2 own=False" ]
   # running and ours by id and name, but the ARP MAC is another device's (PR 195 Codex review)
   [ "$(judge "$arp" '{"data":[{"vmid":260,"name":"svc-vm","status":"running"}]}' '{"data":{"net0":"virtio=BC:24:11:99:99:99,bridge=vmbr0"}}')" = "hits=1 own=False" ]
   # a DIFFERENT VM at the vmid, or ours by name at another vmid, owns nothing

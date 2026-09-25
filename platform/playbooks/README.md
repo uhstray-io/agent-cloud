@@ -216,7 +216,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | Playbook | Purpose |
 |----------|---------|
 | `lookup-service-inventory.yml` | Step lookup-inventory: the declared VM spec is complete, NetBox records the declared address as reserved or active, and no other host claims it. Takes `target_service` as the service name, like `provision-vm.yml` |
-| `validate-address-free.yml` | Step validate-address: the address is not live in the pfSense ARP table (`skip` when it is the service's own running VM), and the NetBox VM record exists. It writes that record, `planned`, in the Proxmox cluster discovery maintains, with the scoped `vm-recorder` token |
+| `validate-address-free.yml` | Step validate-address: the address is not live in the pfSense ARP table (`skip` when the ARP entry's MAC is on a NIC of the service's own running VM), and the NetBox VM record exists: exactly one, in a Proxmox cluster discovery maintains. It writes that record, `planned`, in the Proxmox cluster discovery maintains, with the scoped `vm-recorder` token |
 | `snapshot-service-assessment.yml` | The one input to the service assessment: the committed compose services (image and ports, no environment), running containers, practices |
 | `snapshot-firewall.yml` | The one input to the firewall assessment: listening sockets, ufw state, published container ports, the declared firewall vars |
 | `snapshot-access.yml` | The one input to the role and access assessment: Authentik app-catalog entries, blueprints and OpenBao policy files for the service |
