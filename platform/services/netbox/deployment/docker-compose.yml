@@ -240,6 +240,10 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    # One-shot: runs the migration and exits. The label is what the persistence check reads
+    # to accept restart "no" (test_restart_policy.bats requires it on every such service).
+    labels:
+      agent-cloud.one-shot: "true"
 
   # Diode's own Redis (separate from NetBox Redis). Uses Redis Stack for
   # RedisJSON/RediSearch/RedisGraph modules required by the reconciler.
