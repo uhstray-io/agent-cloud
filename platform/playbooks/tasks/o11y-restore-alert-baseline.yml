@@ -11,6 +11,12 @@
     that: _baseline_env.stat.isreg | default(false)
     fail_msg: "The existing o11y .env is absent; restore requires the deployed environment."
 
+- name: Recreate the generated Grafana alert provisioning directory
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting"
+    state: directory
+    mode: "0755"
+
 - name: Render paused Grafana alert rules without OpenBao
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"

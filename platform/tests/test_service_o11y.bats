@@ -281,6 +281,7 @@ PY
     "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-restore-alert-baseline.yml" \
     "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import posixpath
 import sys
 import yaml
 
@@ -300,6 +301,12 @@ assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
 assert recovery[-1]['tasks'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
 assert not any('manage-secrets.yml' in str(task) for task in restore)
+directory = next(i for i, task in enumerate(restore) if task['name'] == 'Recreate the generated Grafana alert provisioning directory')
+rules = next(i for i, task in enumerate(restore) if task['name'] == 'Render paused Grafana alert rules without OpenBao')
+assert directory < rules
+assert restore[directory]['ansible.builtin.file']['state'] == 'directory'
+assert all(directory < i and posixpath.dirname(task['ansible.builtin.template']['dest']) == restore[directory]['ansible.builtin.file']['path']
+           for i, task in enumerate(restore) if 'ansible.builtin.template' in task)
 assert any(task['name'] == 'Remove the canary webhook from the existing runtime environment' for task in restore)
 assert any(task.get('vars', {}).get('o11y_alerts_enabled') is False for task in restore)
 assert any(task['name'] == 'Require the service-down rule to be paused again' for task in restore)
@@ -308,6 +315,42 @@ templates = {item['name']: item for item in catalog['templates']}
 for name in ('Drill o11y Alert Canary (Dev)', 'Restore o11y Alert Baseline (Dev)'):
     assert templates[name]['repository'] == 'agent-cloud dev'
     assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
+PY
+  for name in observability.yml contact.yml; do
+    grep -qxF "config/grafana/provisioning/alerting/$name" "$DEPLOY_DIR/.gitignore"
+    grep -qF -- "--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/$name" \
+      "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
+  done
+}
+
+@test "o11y: shared local placement preserves rendered alerts and copies committed rules" {
+  command -v rsync >/dev/null 2>&1 || skip "rsync not available"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml" "$DEPLOY_DIR/.gitignore" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import yaml
+
+placement = yaml.safe_load(Path(sys.argv[1]).read_text())
+script = next(task['ansible.builtin.shell'] for task in placement
+              if task['name'] == 'Copy working tree into place (local mode)')
+assert '--delete-excluded' not in script
+rel = Path('platform/services/o11y/deployment/config/grafana/provisioning/alerting')
+with tempfile.TemporaryDirectory(prefix='o11y-placement-') as tmp:
+    source, target = Path(tmp) / 'source', Path(tmp) / 'target'
+    (source / rel).mkdir(parents=True)
+    (source / 'platform/services/o11y/deployment/.gitignore').write_text(Path(sys.argv[2]).read_text())
+    (source / rel / 'inference.yml').write_text('committed\n')
+    (target / rel).mkdir(parents=True)
+    for name in ('observability.yml', 'contact.yml'):
+        (target / rel / name).write_text('rendered\n')
+    rendered = script.replace('{{ _monorepo_dir }}', str(target)).replace(
+        '{{ playbook_dir | dirname | dirname }}', str(source))
+    subprocess.run(['bash', '-c', rendered], check=True, capture_output=True, text=True)
+    assert all((target / rel / name).read_text() == 'rendered\n'
+               for name in ('observability.yml', 'contact.yml'))
+    assert (target / rel / 'inference.yml').read_text() == 'committed\n'
 PY
 }
 

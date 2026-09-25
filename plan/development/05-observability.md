@@ -147,6 +147,22 @@
 > webhook, and Discord history checks before temporary activation and bound
 > both new Semaphore templates only to the Dev repository. These are code
 > corrections, not a live delivery receipt.
+> **Restore rehearsal, 2026-09-25:** PR #242 merged to `dev` as
+> `1fe44fd88fe827733f15f8ae2c147487b4ae5e6e`; scoped local Semaphore
+> tasks 1756 and 1757 published the canary and restore templates with the
+> Dev repository, local inventory, and existing credential group. Restore
+> task 1758 verified that revision and the local paused gate, then failed
+> before restart because local repository placement removed the generated
+> Grafana `alerting/` directory. The normal deploy creates that directory,
+> but the OpenBao-free restore initially did not. No canary was started and
+> no alert delivery was claimed. The restore task now creates the directory
+> idempotently before templating. The deployment `.gitignore` keeps the two
+> rendered alert files out of Git; the shared `place-monorepo.yml` explicitly
+> preserves those exact files during `rsync --delete`, including when another
+> local service deploy places the repository. Future committed alert rules in
+> the same directory still copy normally. A local synthetic rsync check
+> confirmed that behavior; the live restore rerun is still pending review
+> and merge of this fix.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates
