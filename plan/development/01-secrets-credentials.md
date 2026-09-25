@@ -1082,6 +1082,12 @@ The codebase uses `no_log: true` on 41 Ansible tasks to prevent secrets from app
 
 ## Solution: Custom Callback Plugin
 
+> **Status 2026-09-25 — partly built.** The narrower piece shipped as
+> `callback_plugins/redact_requests.py` (repository root, selected by `ansible.cfg`, because
+> Semaphore runs from the clone root): the default callback minus the `invocation` of every nested
+> result, which closes the request-header leak in `docs/MISTAKES.md` 4.6. The value-pattern
+> redaction designed below is still planned; it would also cover secrets in response bodies.
+
 A callback plugin named `redact_secrets` will intercept all Ansible output events, scan for values that match known sensitive variable patterns, and replace them with `***REDACTED***`. The actual values remain in Ansible memory for use by subsequent tasks.
 
 ## Design

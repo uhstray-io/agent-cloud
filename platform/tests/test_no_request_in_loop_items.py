@@ -1,14 +1,19 @@
-"""A visible task never loops over the registered results of a credential-bearing request.
+"""A visible task never loops over, or prints, a protected registered result (MISTAKES 4.6).
 
-A failed loop item is printed whole, and a registered `uri` result carries the request it
-made, headers included (`invocation.module_args`). `loop_control.label` only shortens the
-summary line. Reproduced on ansible-core 2.16.18, 2.19.13 and 2.20.8 at default verbosity,
-not on 2.21.0, so a local run on a newer core cannot catch it (docs/MISTAKES.md 4.6).
+Protected: the result of a task that hid itself (`no_log: true`), and of a `uri` request that
+sent headers - its `invocation` carries them even when the task is visible. A failed loop item
+is printed whole; `loop_control.label` only shortens the summary line. ansible-core 2.16.18,
+2.19.13 and 2.20.8 print it at default verbosity, 2.21.0 does not.
 
-The safe shape loops over the clean input and indexes into the results (`index_var`).
+The repository stdout callback (callback_plugins/redact_requests.py) strips nested requests
+from the display; this guard keeps the playbook shape right on its own, because a secret in a
+response body (`json.auth.client_token`, `json.data.data`) is not a request the callback strips.
 
-ponytail: a register is matched within one file only; a register consumed across an
-include_tasks boundary is not seen. Extend the walk when such a consumer appears.
+The safe shapes: loop over the clean input and index into the results (`index_var`), or print
+derived fields (`_r.json.count`), never the whole register.
+
+ponytail: a register is matched within one file, by name in `loop`/`with_*` and in a debug
+`var`/`msg`; an alias made with set_fact, or a consumer across include_tasks, is not seen.
 """
 
 import re
@@ -19,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SCANNED = ("platform/playbooks", "platform/semaphore")
 URI = {"uri", "ansible.builtin.uri"}
-CREDENTIAL_ARGS = {"headers", "url_password"}
+DEBUG = {"debug", "ansible.builtin.debug"}
 
 
 def _tasks(node):
@@ -34,19 +39,28 @@ def _tasks(node):
             yield from _tasks(item.get(key))
 
 
+def _bearing(task: dict) -> bool:
+    """A register worth protecting: the task hid itself (`no_log: true`), or it is a request
+    that sent headers, which its registered `invocation` carries even when the task is visible."""
+    return task.get("no_log") is True or any(isinstance(task.get(m), dict) and "headers" in task[m] for m in URI)
+
+
 def violations(text: str) -> list[str]:
     tasks = list(_tasks(yaml.safe_load(text)))
-    bearing = {
-        t["register"] for t in tasks
-        if t.get("register") and any(isinstance(t.get(m), dict) and CREDENTIAL_ARGS & set(t[m]) for m in URI)
-    }
+    bearing = {t["register"] for t in tasks if t.get("register") and _bearing(t)}
     found = []
     for t in tasks:
-        loop = str(t.get("loop", "")) + str(t.get("with_items", ""))
-        for reg in bearing:
+        if t.get("no_log") is True:
+            continue
+        loop = " ".join(str(v) for k, v in t.items() if k == "loop" or k.startswith("with_"))
+        printed = " ".join(str(t[m].get(k, "")) for m in DEBUG if isinstance(t.get(m), dict) for k in ("var", "msg"))
+        for reg in sorted(bearing):
             # `<reg>.results | length` (an index range) is the safe shape, not a violation.
-            if re.search(rf"\b{re.escape(reg)}\.results\b(?!\s*\|\s*length)", loop) and t.get("no_log") is not True:
+            if re.search(rf"\b{re.escape(reg)}\.results\b(?!\s*\|\s*length)", loop):
                 found.append(f"{t.get('name', '<unnamed>')!r} loops over {reg}.results")
+            # The whole register: not an attribute, an index or a test (`_r.json.count`, `_r is ok`).
+            if re.search(rf"\b{re.escape(reg)}\b(?!\s*[.\[]|\s+is\b)", printed):
+                found.append(f"{t.get('name', '<unnamed>')!r} prints {reg}")
     return found
 
 
@@ -67,12 +81,12 @@ def test_the_guard_catches_the_shape_it_exists_for():
   tasks:
     - ansible.builtin.uri: {url: "https://x", headers: {Authorization: "Bearer {{ t }}"}}
       register: _reads
-      no_log: true
       loop: [a]
     - ansible.builtin.assert: {that: false}
       loop: "{{ _reads.results }}"
       loop_control: {label: "{{ item.item }}"}
 """
+    # A visible request that sent headers is protected even without no_log.
     assert violations(leaking) == ["'<unnamed>' loops over _reads.results"]
     assert violations(leaking.replace("{that: false}", "{that: false}\n      no_log: true")) == []
     for safe in ('loop: [a]', 'loop: "{{ range(_reads.results | length) | list }}"'):
@@ -80,3 +94,22 @@ def test_the_guard_catches_the_shape_it_exists_for():
     filtered = 'loop: "{{ _reads.results | selectattr(\'json\', \'defined\') }}"'
     assert violations(leaking.replace('loop: "{{ _reads.results }}"', filtered)) == [
         "'<unnamed>' loops over _reads.results"]
+
+
+def test_any_no_log_source_is_protected_and_whole_register_prints_are_caught():
+    play = """
+- hosts: localhost
+  tasks:
+    - ansible.builtin.slurp: {src: /x}
+      register: _files
+      no_log: true
+      loop: [a]
+    - ansible.builtin.set_fact: {n: "{{ item.content }}"}
+      with_items: "{{ _files.results }}"
+    - ansible.builtin.debug: {var: _files}
+    - ansible.builtin.debug: {msg: "{{ _files.results | length }} files, {{ _files is succeeded }}"}
+    - ansible.builtin.slurp: {src: /y}
+      register: _public
+    - ansible.builtin.debug: {var: _public}
+"""
+    assert violations(play) == ["'<unnamed>' loops over _files.results", "'<unnamed>' prints _files"]
