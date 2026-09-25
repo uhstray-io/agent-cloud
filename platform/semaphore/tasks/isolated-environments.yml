@@ -43,15 +43,17 @@
 - name: "Require complete single-environment ownership metadata"
   # Semaphore may return both the scalar binding and its list projection.
   # Accept only an exact one-element mirror; a second binding is unsafe.
+  # Loop over indexes: a failed loop item is printed whole by ansible-core 2.19,
+  # and a template record can carry free-form arguments.
   ansible.builtin.assert:
     that:
-      - item.environment_id is defined
-      - item.environment_id | type_debug == 'int'
-      - item.environment_ids is not defined or item.environment_ids == [item.environment_id]
+      - _existing.json[item].environment_id is defined
+      - _existing.json[item].environment_id | type_debug == 'int'
+      - _existing.json[item].environment_ids is not defined or _existing.json[item].environment_ids == [_existing.json[item].environment_id]
     fail_msg: "Incomplete or multi-environment ownership metadata; refusing isolated binding changes."
-  loop: "{{ _existing.json }}"
+  loop: "{{ range(_existing.json | length) | list }}"
   loop_control:
-    label: "{{ item.name }}"
+    label: "template index {{ item }}"
 
 - name: "Refuse ambiguous or shared existing isolated environments"
   ansible.builtin.assert:

@@ -302,6 +302,15 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.writes, [])
 
         self.setUp()
+        self.records[0]["environment_ids"] = [43]
+        self.records[0]["arguments"] = "fixture-sensitive-arguments"
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Incomplete or multi-environment ownership metadata", output)
+        self.assertNotIn("fixture-sensitive-arguments", output)
+        self.assertEqual(self.writes, [])
+
+        self.setUp()
         self.records[0]["environment_id"] = None
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertNotEqual(code, 0)

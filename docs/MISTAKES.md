@@ -434,6 +434,10 @@ one-element list containing that scalar ID. Refuse missing or divergent metadata
 focused single-binding/multiple-binding regression in
 `platform/semaphore/tests/test_scoped_publication.py`.
 
+**Review follow-up.** A failed Ansible loop item can print the whole template
+record, including free-form arguments. The ownership guard loops over numeric
+indexes, and the regression asserts a sentinel argument is absent from output.
+
 ## 2. Tests that would have passed for the wrong reason
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it
