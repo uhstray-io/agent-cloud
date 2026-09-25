@@ -115,6 +115,14 @@
 > still need scoped publication into local Semaphore's stored inventory before
 > webhook creation or the alert-delivery drill. No webhook or delivery receipt
 > is claimed by these credential tasks.
+> **Local destination convergence:** The scoped publisher reads the two IDs
+> from a pinned, clean private inventory and writes only their local Semaphore
+> entries. On verified readback it keeps a mode-0600 projection in the local
+> bootstrap state directory. Bootstrap validates and consumes that projection
+> when rebuilding the static inventory, and refuses to erase a previously
+> published destination if the projection is missing. Public tests use
+> synthetic IDs. This mechanism is pending PR #241 review and merge; no
+> publication, webhook, or alert receipt is claimed yet.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

@@ -30,6 +30,7 @@
   vars:
     _bootstrap_play: true
     _state_dir: "{{ lookup('env', 'HOME') }}/.agent-cloud-local"
+    _o11y_projection_file: "{{ _state_dir }}/o11y-alert-destination.json"
     # Working inventory (committed example -> gitignored copy via `make local-init`).
     # The genesis foundation deploys (Stage 1.5) shell out to deploy-<svc>.yml with
     # this -i so they pick up the foundation host groups + genesis path vars.
@@ -855,6 +856,45 @@
         headers: *sem_hdr
       register: _invs
 
+    - name: "Check private local alert projection"
+      ansible.builtin.stat:
+        path: "{{ _o11y_projection_file }}"
+        follow: false
+      register: _o11y_projection_stat
+
+    - name: "Read private local alert projection"
+      ansible.builtin.slurp:
+        src: "{{ _o11y_projection_file }}"
+      register: _o11y_projection_raw
+      when: _o11y_projection_stat.stat.exists
+      no_log: true
+
+    - name: "Validate private local alert projection before inventory replacement"
+      ansible.builtin.assert:
+        that:
+          - _o11y_projection_stat.stat.isreg
+          - _o11y_projection_stat.stat.mode == '0600'
+          - _o11y_projection.keys() | list | sort == ['o11y_alert_discord_channel_id', 'o11y_alert_discord_guild_id', 'site_config_sha']
+          - _o11y_projection.site_config_sha is match('^[0-9a-f]{40}$')
+          - _o11y_projection.o11y_alert_discord_guild_id is match('^[0-9]{17,21}$')
+          - _o11y_projection.o11y_alert_discord_channel_id is match('^[0-9]{17,21}$')
+        fail_msg: "Private local alert projection is malformed or unsafe; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _o11y_projection: "{{ _o11y_projection_raw.content | b64decode | from_json }}"
+      when: _o11y_projection_stat.stat.exists
+
+    - name: "Refuse to erase a previously synced local alert destination"
+      ansible.builtin.assert:
+        that:
+          - _existing_o11y_inventory is not search('(?m)^o11y_alert_discord_(guild|channel)_id=')
+        fail_msg: "Existing local alert destination lacks its private projection; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _existing_o11y_inventory: >-
+          {{ (_invs.json | selectattr('name', 'equalto', 'local') | first | default({})).inventory | default('') }}
+      when: not _o11y_projection_stat.stat.exists
+
     - name: "Create or update local inventory"
       ansible.builtin.uri:
         url: >-
@@ -972,6 +1012,10 @@
           o11y_grafana_port=3002
           o11y_prom_port=9090
           o11y_loki_port=3100
+          {% if _o11y_projection_stat.stat.exists %}
+          o11y_alert_discord_guild_id={{ (_o11y_projection_raw.content | b64decode | from_json).o11y_alert_discord_guild_id }}
+          o11y_alert_discord_channel_id={{ (_o11y_projection_raw.content | b64decode | from_json).o11y_alert_discord_channel_id }}
+          {% endif %}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

@@ -205,6 +205,12 @@ local inventory ID, the verified Semaphore HTTPS origin, and the operator token
 on stdin. The default run previews names only; `--apply` performs the scoped,
 idempotent update. Do this before the Dev-bound webhook seed or fault drill;
 their channel IDs come from Semaphore's stored inventory, not from a survey.
+After a matching API readback, `--apply` also writes an owner-only projection
+at `~/.agent-cloud-local/o11y-alert-destination.json`. The local bootstrap
+reads that generated input when it rebuilds Semaphore inventory; it refuses
+to erase an already synced destination if the projection is missing. Refresh
+the projection by rerunning the sync after a reviewed private inventory change.
+The projection is a local copy, not a new source of truth.
 
 ## Troubleshoot at the failing boundary
 

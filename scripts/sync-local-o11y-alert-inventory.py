@@ -8,9 +8,11 @@ existing local o11y_svc INI group. The operator token arrives on stdin. Without
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +23,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = ("o11y_alert_discord_guild_id", "o11y_alert_discord_channel_id")
 SECTION = "[o11y_svc:vars]"
+PROJECTION = Path.home() / ".agent-cloud-local/o11y-alert-destination.json"
 
 
 class Refusal(Exception):
@@ -73,8 +76,30 @@ def overlay(inventory, values):
         if matches:
             block[matches[0]] = replacement
         else:
+            if block and not block[-1].endswith("\n"):
+                block[-1] += "\n"
             block.append(replacement)
     return "".join(lines[:start] + block + lines[end:])
+
+
+def save_projection(values, source_sha):
+    """Keep bootstrap's private input in the existing owner-only local state dir."""
+    if not PROJECTION.parent.is_dir() or PROJECTION.parent.stat().st_mode & 0o077:
+        raise Refusal("Local state directory must exist and be owner-only")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=PROJECTION.parent,
+                                         prefix=".o11y-alert-", delete=False) as file:
+            temporary = Path(file.name)
+            os.chmod(temporary, 0o600)
+            json.dump({"site_config_sha": source_sha, **values}, file)
+            file.write("\n")
+        os.replace(temporary, PROJECTION)
+    except OSError:
+        raise Refusal("Could not save private local alert projection") from None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main():
@@ -95,6 +120,8 @@ def main():
             raise Refusal("Site-config source must be a Git worktree root")
         if git(source_root, "rev-parse", "HEAD") != args.site_config_sha:
             raise Refusal("Private inventory checkout differs from its reviewed commit")
+        if git(source_root, "ls-remote", "origin", "refs/heads/main").split()[0] != args.site_config_sha:
+            raise Refusal("Remote site-config main moved; review the new revision")
         if git(source_root, "status", "--porcelain", "--", "inventory/production.yml"):
             raise Refusal("Private inventory has uncommitted changes")
         if (git(ROOT, "rev-parse", "HEAD") != args.expected_dev_sha
@@ -135,6 +162,8 @@ def main():
             raise Refusal("Target is not the reviewed local static inventory")
         desired = overlay(current["inventory"], values)
         if desired == current["inventory"]:
+            if args.apply:
+                save_projection(values, args.site_config_sha)
             print(f"Local inventory {args.inventory} already matches the private Discord destination")
             return 0
         if not args.apply:
@@ -148,6 +177,7 @@ def main():
         after = request("GET")
         if not isinstance(after, dict) or after.get("inventory") != desired:
             raise Refusal("Local inventory readback differs; reconcile before alerts")
+        save_projection(values, args.site_config_sha)
         print(f"Local inventory {args.inventory} now matches the private Discord destination")
         return 0
     except (Refusal, IndexError) as error:
