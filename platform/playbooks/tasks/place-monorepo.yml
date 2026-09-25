@@ -65,6 +65,9 @@
   # Python build/ and *.egg-info/ are explicit too: rsync's .gitignore merge
   # rules alone do not protect nested generated dirs during --delete, and old
   # root-owned build artifacts can otherwise make every local deploy fail.
+  # Grafana's two rendered alert files need the same explicit protection on
+  # every local placement. Keep the rule file-specific so future committed
+  # alert rules in the same directory still copy into place.
   # No -o/-g (like tar): ownership becomes this uid.
   ansible.builtin.shell: |
     set -euo pipefail
@@ -73,6 +76,8 @@
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
       --exclude build/ --exclude '*.egg-info/' \
+      --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/observability.yml \
+      --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/contact.yml \
       "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"
   when: local_mode | default(false) | bool
   register: _rsync_result
