@@ -129,6 +129,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
 | `store-postiz-api-key.yml` | Composable | Read the org's API key from postiz's own Postgres (minted by the app on the first authenticated request; the stored value IS the bearer token) and place it at `secret/services/postiz:postiz_api_key`, no_log throughout |
 | `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
+| `audit-authentik-retirements.yml` | Read-only | Count the live Authentik accounts named by private `*_legacy_username` declarations before a Dev blueprint deploy; prints counts, not usernames or credentials |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy |
 | `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 

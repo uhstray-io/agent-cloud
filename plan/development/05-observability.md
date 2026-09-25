@@ -373,6 +373,14 @@
 > then launch with an explicit `service_branch=dev` API setting, verify the
 > target revision, and read back the Grafana app and OIDC path. Do not assume
 > an API launch fills omitted settings from survey defaults.
+> Semaphore task 1302 published only the `Deploy Authentik (Dev)` survey from
+> reviewed `dev` commit `edab33beea54ea06b468ce0ee986dbddb94c7f42` on
+> 2026-09-25. Live template 179 now defaults `service_branch` to `dev` and
+> retains repository 5, inventory 2, environment 2, and the Authentik playbook.
+> Before deploying Authentik, run the read-only retirement audit through its
+> Dev-bound Semaphore template. The current Dev blueprint declares a legacy
+> account absent; the audit must establish whether that account is still live
+> before the deploy applies the private Grafana OIDC declaration.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,
