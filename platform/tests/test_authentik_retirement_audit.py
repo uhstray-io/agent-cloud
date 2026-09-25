@@ -3,9 +3,8 @@
 import importlib.util
 import io
 import json
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 MODULE = Path(__file__).resolve().parents[1] / "services/authentik/deployment/audit-users.py"
 spec = importlib.util.spec_from_file_location("authentik_retirement_audit", MODULE)
