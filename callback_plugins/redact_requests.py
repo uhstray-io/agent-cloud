@@ -8,7 +8,8 @@ token or a Semaphore Bearer value in its headers reaches the task output. Reprod
 verbosity on ansible-core 2.16.18, 2.19.13 and 2.20.8 (docs/MISTAKES.md 4.6).
 
 This strips `invocation` from every nested result, at every verbosity, and leaves the top level
-to ansible-core's own rule. Output is otherwise the default callback's, byte for byte.
+to ansible-core's own rule; an unlabeled loop item, which is displayed as its label, is stripped
+the same way. Output is otherwise the default callback's, byte for byte.
 Enabled for every run from the repository root by ansible.cfg (Semaphore runs from there).
 """
 
@@ -49,3 +50,8 @@ class CallbackModule(DefaultCallback):
 
     def _dump_results(self, result, *args, **kwargs):
         return super()._dump_results(strip_nested_invocations(result), *args, **kwargs)
+
+    def _get_item_label(self, result):
+        # A loop with no loop_control.label shows the item itself as its label, and that item
+        # can be a registered result carrying its request (Codex review of PR #247).
+        return strip_nested_invocations(super()._get_item_label(result), top=False)

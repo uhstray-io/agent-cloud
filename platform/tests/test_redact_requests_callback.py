@@ -35,6 +35,10 @@ PLAY = """
       ansible.builtin.assert: {that: "item.status == 999"}
       loop: "{{ _reads.results }}"
       loop_control: {label: "{{ item.item }}"}
+      ignore_errors: true
+    - name: The same loop with no label (the item itself is displayed as its label)
+      ansible.builtin.assert: {that: "item.status == 999"}
+      loop: "{{ _reads.results }}"
 """
 
 
@@ -74,6 +78,7 @@ def test_no_request_header_reaches_the_output_from_nested_results(tmp_path, serv
     code, output = run(tmp_path, server, *verbosity)
     assert code != 0, output  # the failing loop ran, so its items were printed
     assert "failed: [localhost] (item=a)" in output, output
+    assert "failed: [localhost] (item={" in output, output  # the unlabeled loop ran too
     assert TOKEN not in output
 
 
