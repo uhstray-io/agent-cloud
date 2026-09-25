@@ -317,6 +317,30 @@
 > Grafana Authentik URLs from private site-config PRs #17 and #18 have not
 > been applied to the live IdP.
 >
+> **Semaphore API and DHCP gate, 2026-09-24:** The operator-provided token
+> authenticated to the production Semaphore API. The live inventory differed
+> from merged private site-config in only the two pfSense selector fields;
+> the versioned `sync-inventory.yml` updated record 2 and read it back.
+> Dev-bound task 1264 published the current `Allocate NetBox IP (Dev)` survey
+> from checkout `d5c076b`, and task 1266 passed in read-only report mode.
+> Task 1265 failed input validation because its API launch omitted the declared
+> NetBox URL; task 1266 supplied that URL from private inventory. No address
+> was allocated by either run.
+>
+> Task 1267 then exercised reserve mode with the prefix's network address,
+> which the reviewed parser must refuse before any NetBox write. The task
+> reached the live pfSense GET, returned no HTTP status, and stopped with
+> `changed=0`; it did **not** validate a DHCP-assignable address. A separate
+> workstation TLS probe found the declared default HTTPS port unreachable
+> and the router's non-default GUI/API listener serving an expired self-signed
+> certificate. The task's censored transport error does not establish which
+> condition the Semaphore executor encountered. Correct the private endpoint
+> and renew or replace the router certificate through a reviewed, repeatable
+> workflow; distribute trust to the executor without disabling TLS verification.
+> Repeat the Dev-bound DHCP-assignable refusal and successful static-address
+> preflight before reserving the receiver IP. Keep router details in private
+> site-config, not this public plan.
+>
 > **Rollout practice:** publish a single reviewed Dev template with its
 > intended bindings, run a read-only preflight, and keep the task ID and
 > read-back with each state-changing step. Reserve the exact address through
