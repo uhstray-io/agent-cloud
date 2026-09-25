@@ -92,12 +92,16 @@ def submit(api, body, what):
 
 def wait(api, task, what, timeout=600):
     """Poll a submitted task until it is terminal; the final task row."""
+    task_id = task["id"]
     deadline = time.monotonic() + timeout
     while task.get("status") not in TERMINAL:
         if time.monotonic() > deadline:
-            raise Refusal(f"{what}: task {task['id']} still nonterminal after {timeout}s")
+            raise Refusal(f"{what}: task {task_id} still nonterminal after {timeout}s")
         time.sleep(POLL_SECONDS)
-        task = api(f"/tasks/{task['id']}")
+        task = api(f"/tasks/{task_id}")
+        if not isinstance(task, dict):
+            # Name the task: the caller may not have printed its id yet (review of #249).
+            raise Refusal(f"{what}: task {task_id} status unreadable; inspect it in Semaphore")
     return task
 
 
@@ -224,6 +228,10 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     template, before = preflight(api, project, template_id, expected_env, playbook=playbook,
                                  template_names=template_names, endpoint=endpoint, bindings=bindings)
     env_path = f"/environment/{expected_env}"
+    # A fresh equality check immediately before the first write. It is not CAS (v2.17 has
+    # none); it refuses a change made since preflight read the environment (reviews of #249).
+    if api(env_path) != before:
+        raise Refusal("Environment changed during preflight")
     operations = [{"name": name, "type": "env", "secret": value, "operation": "create"}
                   for name, value in values.items()]
     # Print recovery metadata BEFORE the first write. The server may accept a

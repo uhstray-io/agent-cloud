@@ -245,3 +245,29 @@ def test_every_mode_runs_the_preflight_exactly_once(monkeypatch, tmp_path, mode)
     monkeypatch.setattr(semaphore_seed, "preflight", cli.preflight)
     assert run_cli(monkeypatch, tmp_path, api, *mode) == 0
     assert len(calls) == 1
+
+
+def test_an_environment_changed_after_preflight_is_refused_before_staging(monkeypatch):
+    api = FakeAPI()
+    reads = []
+    real = FakeAPI.__call__
+
+    def changing(self, path, body=None):
+        if path == "/environment/9" and body is None:
+            reads.append(1)
+            if len(reads) == 2:  # the re-read before staging sees another writer's change
+                self.env["json"] = '{"openbao_addr":"https://elsewhere.example:8200"}'
+        return real(self, path, body)
+    monkeypatch.setattr(FakeAPI, "__call__", changing)
+    with pytest.raises(cli.Refusal, match="changed during preflight"):
+        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, playbook="platform/playbooks/seed-openbao-key.yml",
+                           endpoint=ENDPOINT, template_names={"Seed OpenBao Key (Dev)"})
+    assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
+
+
+@pytest.mark.parametrize("reply", [None, [], "running"])
+def test_an_unreadable_poll_names_the_task(monkeypatch, reply):
+    import semaphore_seed
+    monkeypatch.setattr(semaphore_seed.time, "sleep", lambda _s: None)
+    with pytest.raises(cli.Refusal, match="task 900 status unreadable"):
+        semaphore_seed.wait(lambda path, body=None: reply, {"id": 900, "status": "waiting"}, "Access check")
