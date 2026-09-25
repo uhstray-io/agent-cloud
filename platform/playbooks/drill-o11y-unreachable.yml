@@ -53,5 +53,11 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
   tasks:
+    - name: Refuse a cleartext OpenBao endpoint before the fault drill
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: drill_expect_alert | default(false) | bool
+
     - name: Run the disposable o11y fault probe
       ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml

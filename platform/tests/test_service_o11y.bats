@@ -223,7 +223,8 @@ survey = {item['name']: item for item in template['survey_vars']}
 assert survey['expected_repository_sha']['required'] is True
 assert survey['drill_expect_alert']['default_value'] == 'false'
 drill = next(play for play in plays if play.get('name') == 'Prove a declared unreachable metrics endpoint fails visibly')
-assert drill['tasks'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
+assert drill['tasks'][0]['ansible.builtin.include_tasks'] == 'tasks/assert-bao-transport.yml'
+assert drill['tasks'][1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
 probe_tasks = yaml.safe_load(open(sys.argv[3]))
 tasks = probe_tasks[-1]['block']
 assert any(task['name'] == "Name this run's disposable probe" for task in probe_tasks)

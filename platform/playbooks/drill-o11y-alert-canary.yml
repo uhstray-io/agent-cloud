@@ -129,6 +129,11 @@
       ansible.builtin.assert:
         that: _probe is match('^o11y-fault-probe-[0-9a-f]{12}$')
 
+    - name: Refuse a cleartext OpenBao endpoint before the canary
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: Place the reviewed checkout for local rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 

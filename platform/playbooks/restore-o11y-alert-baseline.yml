@@ -64,6 +64,11 @@
           - not ansible_check_mode
         fail_msg: "The alert-baseline restore is local-only and requires a real Semaphore run."
 
+    - name: Refuse a cleartext OpenBao endpoint before restoration
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: Place the reviewed checkout for local rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
