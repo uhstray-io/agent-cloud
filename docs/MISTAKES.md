@@ -37,6 +37,7 @@ supersede it with a new entry and link both.
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
+| 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -412,6 +413,30 @@ timestamp pair, no duration. A "hang" claim that could lead someone to stop a li
 gets that check before it is sent.
 
 **Enforced by.** Convention.
+
+### 1.13 A single-environment API projection was mistaken for a second binding
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** The reviewed dev publisher stopped before creating the local
+OpenBao seed template. Semaphore returned both `environment_id: 1` and
+`environment_ids: [1]` for every template. The isolated-environment guard rejected
+the mere presence of `environment_ids`, although it named the same sole binding.
+
+**Root cause.** The guard assumed that a list field meant multiple environments
+without comparing its contents to the scalar field returned by this API version.
+
+**The rule.** Before changing isolated template bindings, require an integer
+environment ID. If the API also supplies a list, it must be exactly the
+one-element list containing that scalar ID. Refuse missing or divergent metadata.
+
+**Enforced by.** `platform/semaphore/tasks/isolated-environments.yml` and the
+focused single-binding/multiple-binding regression in
+`platform/semaphore/tests/test_scoped_publication.py`.
+
+**Review follow-up.** A failed Ansible loop item can print the whole template
+record, including free-form arguments. The ownership guard loops over numeric
+indexes, and the regression asserts a sentinel argument is absent from output.
 
 ## 2. Tests that would have passed for the wrong reason
 
