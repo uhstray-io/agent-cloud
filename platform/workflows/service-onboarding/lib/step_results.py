@@ -217,9 +217,14 @@ def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
     # What NetBox already holds, merged UNDER this run's results: a step whose last run is
     # older than the history window keeps its status here, so NetBox, the report and Loki all
     # agree (PR 258 Codex review). Only real-run statuses are ever written, so they are real.
+    # A step whose snapshot succeeded in this run drops what was retained: the failure that
+    # snapshot recorded before is superseded, though the success is still no assessment
+    # (PR 258 Codex review).
     for service, steps in (retained or {}).items():
         for step, state in (steps or {}).items():
-            if step not in services.get(service, {}) and state in ("pass", "fail", "skip"):
+            if step in services.get(service, {}) or step in inputs.get(service, {}):
+                continue
+            if state in ("pass", "fail", "skip"):
                 services.setdefault(service, {})[step] = {
                     "status": state, "task_id": None, "end": None, "check_mode": False,
                     "error": RETAINED_ERROR if state == "fail" else None, "evidence": {}, "retained": True,

@@ -284,6 +284,16 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
                                    "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
 
 
+def test_a_retained_snapshot_failure_clears_when_the_snapshot_succeeds():
+    # PR 258 Codex review: a failed Snapshot Access was recorded as access-assess fail; its
+    # successful retry lands in inputs, so the old failure came back from NetBox for good.
+    ok = _run_line({"service": "tududi", "step": "access-assess", "status": "pass"})
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(30, "success", 4, ok)], ["tududi"], DEPLOYS,
+                                 retained={"tududi": {"access-assess": "fail", "fw-harden": "fail"}})
+    assert agg["status_by_service"] == {"tududi": {"fw-harden": "fail"}}
+    assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+
+
 def test_a_full_window_marks_only_the_services_it_can_hide():
     # PR 258 Codex review: one full window marked every service incomplete and hid a new,
     # unrelated service from "Services not yet run". A per-service deploy template can hide
