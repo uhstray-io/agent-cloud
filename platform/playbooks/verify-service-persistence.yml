@@ -23,11 +23,12 @@
   become: false
   tags: [verify]
   vars:
-    # The same set the compose guard enforces (test_restart_policy.bats): `always`, or "no" for
-    # a one-shot init container. podman-restart.service, rootful and rootless alike, starts
-    # only `always` containers at boot, so `unless-stopped` stays down after a reboot; Docker
-    # honours `always` too. Quoted: a bare no is YAML's false.
-    _restart_ok: [always, "no"]
+    # podman-restart.service, rootful and rootless alike, starts only `always` containers at
+    # boot, so `unless-stopped` stays down after a reboot; Docker honours `always` too. The one
+    # exception the compose guard allows (test_restart_policy.bats) is "no" for a one-shot init
+    # container, accepted only once it has EXITED 0: a long-running container with "no" would
+    # pass on its policy alone and stay down after a reboot (PR review, Codex).
+    _restart_ok: [always]
     _rootless_podman: >-
       {{ _engine == 'podman' and not (local_mode | default(false) | bool)
          and not (podman_rootful | default(false) | bool) }}
@@ -45,7 +46,8 @@
           - "{{ _engine }}"
           - inspect
           - --format
-          - "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}"
+          # policy, state and exit code (Docker Engine API ContainerState; podman the same)
+          - "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }} {{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.ExitCode{{ '}}' }}"
           - "{{ item }}"
       loop: "{{ _lsc.stdout_lines }}"
       register: _policies
@@ -84,7 +86,11 @@
 
     - name: "Decide the result"
       ansible.builtin.set_fact:
-        _restart_policies: "{{ _policies.results | items2dict(key_name='item', value_name='stdout') }}"
+        _restart_policies: >-
+          {%- set out = {} -%}
+          {%- for r in _policies.results -%}{%- set _ = out.update({r.item: (r.stdout.split(' ') | first)}) -%}{%- endfor -%}
+          {{ out }}
+        _one_shot_done: "{{ _policies.results | selectattr('stdout', 'match', '^no exited 0$') | map(attribute='item') | list }}"
         _linger_state: >-
           {{ 'not-applicable' if (_linger is skipped)
              else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
@@ -98,9 +104,12 @@
           {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir
                ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
               if (_lsc.stdout_lines | length == 0) else [])
-             + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok)
+             + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok + ['no'])
                 | map(attribute='key')
                 | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
+             + (_restart_policies | dict2items | selectattr('value', 'equalto', 'no') | map(attribute='key')
+                | reject('in', _one_shot_done)
+                | map('regex_replace', '^', 'restart policy "no" but not a one-shot container that exited 0: ') | list)
              + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
              + (['podman-restart.service is not enabled for the deploying user: containers will not start at boot']
                 if _boot_unit_state == 'disabled' else []) }}

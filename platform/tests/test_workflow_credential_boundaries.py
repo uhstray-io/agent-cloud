@@ -153,15 +153,22 @@ def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expec
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_persistence_accepts_only_what_boots(tmp_path):
     # podman-restart.service, rootful and rootless, starts only `restart: always` containers
-    # (test_restart_policy.bats); "no" is a one-shot init container, as the compose guard allows.
-    # Rootful podman once kept accepting unless-stopped (PR 195 grounding review).
+    # (test_restart_policy.bats). "no" is accepted only from a one-shot init container that has
+    # exited 0, never from a running one (PR review, Codex). Rootful podman once kept accepting
+    # unless-stopped (PR 195 grounding review).
     path = PLAYBOOKS / "verify-service-persistence.yml"
     play = yaml.safe_load(path.read_text())[0]
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
-    policies = {"a": "always", "b": "no", "c": "unless-stopped", "d": "on-failure"}
+    inspected = {"a": "always running 0", "b": "no exited 0", "c": "unless-stopped running 0",
+                 "d": "on-failure running 0", "e": "no running 0", "f": "no exited 1"}
     variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
-                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in policies.items()]},
+                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
                  "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
-                 "_lsc": {"stdout_lines": list(policies), "rc": 0, "stderr": ""}}
-    got, _ = _run_tasks(tmp_path, tasks, variables, "_persistence_errors")
-    assert got == ["restart policy not always/no: c", "restart policy not always/no: d"]
+                 "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _restart_policies]")
+    errors, policies = got
+    assert errors == ["restart policy not always: c", "restart policy not always: d",
+                      'restart policy "no" but not a one-shot container that exited 0: e',
+                      'restart policy "no" but not a one-shot container that exited 0: f']
+    # the evidence keeps the policy alone
+    assert policies == {k: v.split()[0] for k, v in inspected.items()}
