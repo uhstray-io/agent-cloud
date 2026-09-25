@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -167,3 +168,41 @@ def test_bootstrap_renders_private_projection_only_when_present():
                                             _o11y_projection_raw={"content": encoded})
     assert f"o11y_alert_discord_guild_id={VALUES['o11y_alert_discord_guild_id']}" in present
     assert f"o11y_alert_discord_channel_id={VALUES['o11y_alert_discord_channel_id']}" in present
+
+
+def test_bootstrap_refusals_evaluate_against_synthetic_inventory():
+    play = yaml.safe_load((SCRIPT.parents[1] / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]
+    env = Environment()
+    env.tests["match"] = lambda value, pattern: bool(re.match(pattern, value))
+    env.tests["search"] = lambda value, pattern: bool(re.search(pattern, value))
+
+    def accepts(task_name, **context):
+        task = next(item for item in play["tasks"] if item["name"] == task_name)
+        conditions = task["ansible.builtin.assert"]["that"]
+        return all(env.compile_expression(expression)(**context) for expression in conditions)
+
+    complete = "Require complete local inventory before replacing it"
+    assert accepts(complete, _existing_local={"inventory": CURRENT})
+    assert not accepts(complete, _existing_local={"id": 1})
+
+    validate = "Validate private local alert projection before inventory replacement"
+    good = {"site_config_sha": "a" * 40, **VALUES}
+    stat = {"stat": {"isreg": True, "mode": "0600"}}
+    assert accepts(validate, _o11y_projection_stat=stat, _o11y_projection=good)
+    for bad_stat, bad_value in [({"stat": {"isreg": False, "mode": "0600"}}, good),
+                                ({"stat": {"isreg": True, "mode": "0644"}}, good),
+                                (stat, {**good, "extra": "x"}),
+                                (stat, {**good, "site_config_sha": "bad"}),
+                                (stat, {**good, "o11y_alert_discord_channel_id": "bad"})]:
+        assert not accepts(validate, _o11y_projection_stat=bad_stat, _o11y_projection=bad_value)
+
+    missing = "Refuse to erase a previously synced local alert destination"
+    assert accepts(missing, _existing_o11y_inventory=CURRENT)
+    synced = sync.overlay(CURRENT, VALUES)
+    assert not accepts(missing, _existing_o11y_inventory=synced)
+
+    stale = "Refuse a stale local alert projection"
+    assert accepts(stale, _existing_o11y_inventory=CURRENT, _o11y_projection=good)
+    assert accepts(stale, _existing_o11y_inventory=synced, _o11y_projection=good)
+    changed = {**good, "o11y_alert_discord_channel_id": "3" * 19}
+    assert not accepts(stale, _existing_o11y_inventory=synced, _o11y_projection=changed)

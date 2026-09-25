@@ -199,8 +199,9 @@ reconciled rather than silently retried. Postiz provider credentials use
 reads the two Discord destination IDs already declared under `o11y_svc.vars` in
 private site-config's production inventory. It changes only those entries in
 Semaphore's existing local static inventory and reads the record back. Run it
-from a clean checkout of reviewed, pushed `dev`, with a clean site-config
-worktree and exact `--expected-dev-sha` and `--site-config-sha` pins. Supply the
+from a clean checkout of reviewed, pushed `dev`, with an unchanged private
+production inventory file and exact `--expected-dev-sha` and `--site-config-sha`
+pins. Supply the
 local inventory ID, the verified Semaphore HTTPS origin, and the operator token
 on stdin. The default run previews names only; `--apply` performs the scoped,
 idempotent update. Do this before the Dev-bound webhook seed or fault drill;

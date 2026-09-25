@@ -123,6 +123,9 @@
 > published destination if the projection is missing. Public tests use
 > synthetic IDs. This mechanism is pending PR #241 review and merge; no
 > publication, webhook, or alert receipt is claimed yet.
+> A read-only check of the running local Semaphore v2.18.12 inventory list
+> on 2026-09-25 found the `local` record's inventory text present. The
+> bootstrap guard still refuses if a later API projection omits that text.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

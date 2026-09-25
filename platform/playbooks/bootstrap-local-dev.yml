@@ -856,6 +856,15 @@
         headers: *sem_hdr
       register: _invs
 
+    - name: "Require complete local inventory before replacing it"
+      ansible.builtin.assert:
+        that:
+          - _existing_local == {} or _existing_local.inventory is string
+        fail_msg: "Semaphore omitted the local inventory text; refusing replacement"
+        quiet: true
+      vars:
+        _existing_local: "{{ _invs.json | selectattr('name', 'equalto', 'local') | first | default({}) }}"
+
     - name: "Check private local alert projection"
       ansible.builtin.stat:
         path: "{{ _o11y_projection_file }}"
@@ -894,6 +903,22 @@
         _existing_o11y_inventory: >-
           {{ (_invs.json | selectattr('name', 'equalto', 'local') | first | default({})).inventory | default('') }}
       when: not _o11y_projection_stat.stat.exists
+
+    - name: "Refuse a stale local alert projection"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _existing_o11y_inventory is not search('(?m)^o11y_alert_discord_(guild|channel)_id=')
+            or
+            (_existing_o11y_inventory is search('(?m)^o11y_alert_discord_guild_id=' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '$')
+             and _existing_o11y_inventory is search('(?m)^o11y_alert_discord_channel_id=' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '$'))
+        fail_msg: "Stored local alert destination differs from its private projection; rerun the reviewed sync"
+        quiet: true
+      vars:
+        _existing_o11y_inventory: >-
+          {{ (_invs.json | selectattr('name', 'equalto', 'local') | first | default({})).inventory | default('') }}
+        _o11y_projection: "{{ _o11y_projection_raw.content | b64decode | from_json }}"
+      when: _o11y_projection_stat.stat.exists
 
     - name: "Create or update local inventory"
       ansible.builtin.uri:

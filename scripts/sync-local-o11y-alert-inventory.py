@@ -181,7 +181,8 @@ def main():
         print(f"Local inventory {args.inventory} now matches the private Discord destination")
         return 0
     except (Refusal, IndexError) as error:
-        print(str(error) if isinstance(error, Refusal) else "Remote dev identity unavailable", file=sys.stderr)
+        print(str(error) if isinstance(error, Refusal) else "Required remote Git identity unavailable",
+              file=sys.stderr)
         return 1
 
 
