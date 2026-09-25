@@ -75,13 +75,19 @@ another group's vars. That is why the environment pins the address, and why the 
 nothing to compare the pin against. An environment edited after binding to point elsewhere is
 caught by the next publication, provisioning or seed CLI preflight, not by the seed task.
 
-Chosen direction (2026-09-25): the run uses the inventory value, with no pin in the
-environment. That needs, in order: the production inventory declares `openbao_addr` (and the
-`openbao_host` it is built from) under top-level `all.vars`; the inventory is re-synced to
-Semaphore; then the clean-environment rule forbids `openbao_addr` in an isolated environment,
-the provisioner removes an existing pin, and the seed CLIs pin the approved inventory id
-instead of comparing an address. Until the inventory change lands, removing the pin would leave
-a seed run with no address, which the seed playbooks refuse before any login.
+**Closed 2026-09-25.** The run uses the inventory value, with no pin in the environment:
+
+1. site-config#22 moved `openbao_addr` to the production inventory's top-level `all.vars`
+   (every `agent_cloud` host resolves the same value as before; `localhost` now resolves it),
+   and the inventory was re-synced to Semaphore record 2.
+2. The clean-environment rule refuses any extra var in an isolated environment, a pin
+   included; the provisioner alone accepts an earlier version's pin, and removes it.
+3. The seed CLIs no longer take `--openbao-addr`: the approved inventory, pinned by
+   `--inventory`, is where the address comes from.
+4. Each seed playbook, before its AppRole login, reads `all.vars.openbao_addr` from the
+   inventory file it was given (`ansible_inventory_sources`; Semaphore v2.17.31 passes a
+   static-yaml inventory as `-i <project tmp>/inventory_<id>.yml`) and refuses any other
+   address (`tasks/assert-bao-addr-declared.yml`).
 
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
@@ -357,6 +363,7 @@ flowchart LR
 | 2026-09-23 | Operator-held secrets move to isolated seed environments (generic provisioner and seed CLI); recorded the plaintext AppRole in shared environments as an open gap. |
 | 2026-09-25 | Seed playbooks refuse undeclared seed inputs at run time; recorded the run-time endpoint check as an open gap needing a design decision. |
 | 2026-09-25 | Corrected the endpoint gap: production declares `openbao_addr` under `agent_cloud`, not `all.vars`, so `localhost` gets no inventory value; recorded the chosen direction and its ordering. |
+| 2026-09-25 | Closed the endpoint gap: the address comes from the inventory's `all.vars`, the environment carries no pin, and the seed run refuses any other address. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 
