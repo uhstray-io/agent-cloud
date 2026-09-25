@@ -124,10 +124,13 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply({}, 400)
                 cls.template_payloads.append(copy.deepcopy(value))
                 if not cls.ignore_write:
-                    # Match SurveyVar's documented Go omitempty serialization.
+                    # Match SurveyVar's Go serialization: title is always present;
+                    # only the optional fields omit zero values.
                     value["survey_vars"] = [
-                        {k: v for k, v in survey.items() if v is not False and v != ""}
-                        | {"values": survey.get("values")}
+                        {k: v for k, v in survey.items()
+                         if k not in ("required", "type", "description", "values", "default_value")
+                         or v not in (False, "", None, [])}
+                        | {"title": survey.get("title", "")}
                         for survey in value.get("survey_vars", [])
                     ]
                     if cls.drop_setting:
@@ -390,6 +393,11 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_all_generated_dev_branch_surveys_preserve_other_fields(self):
         declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        self.assertIn("Deploy GitHub Runner", {
+            template["name"] for template in declarations
+            if template.get("dev_variant") and any(
+                survey["name"] == "service_branch" for survey in template.get("survey_vars", []))
+        })
         for base in declarations:
             surveys = base.get("survey_vars", [])
             if not base.get("dev_variant") or not any(v["name"] == "service_branch" for v in surveys):
@@ -422,7 +430,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.records[0].update(name="Seed Postiz Secrets (Dev)",
                                playbook="platform/playbooks/seed-postiz-secrets.yml", arguments="[]")
         self.records[0]["description"] = "preserve this detail-only field"
-        self.records[0]["survey_vars"] = [{"name": "postiz_verify_access_only", "type": "string", "values": None}]
+        self.records[0]["survey_vars"] = [{"name": "postiz_verify_access_only", "title": "", "type": "string"}]
         self.environments.append({"id": 42, "project_id": 1, "name": "shared", "json": '{"unrelated":"keep"}',
                                   "env": "{}", "secrets": [{"id": 71, "name": "UNRELATED", "type": "env"}]})
 
