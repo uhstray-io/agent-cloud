@@ -1331,6 +1331,16 @@ templates:
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml
 
+  - name: Install QEMU Guest Agent
+    playbook: platform/playbooks/install-qemu-guest-agent.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target VM group"
+        description: "One <name>_svc inventory group of existing QEMU VMs (e.g. netbox_svc)"
+        type: string
+        required: true
+
   - name: Install Podman
     playbook: platform/playbooks/install-podman.yml
     # Variant for the same reason as Generate Service SSH Key: one branch for the

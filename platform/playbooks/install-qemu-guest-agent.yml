@@ -1,0 +1,67 @@
+---
+# Install the guest agent on existing VMs that predate the cloud-init package list.
+# Run through the Install QEMU Guest Agent Semaphore template with an explicit group.
+
+# An empty or misspelled group makes the play below "skipping: no hosts matched"
+# and exit 0, which Semaphore records as a success. Same guard as destroy-vm.yml.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: "{{ target_service | default('') }}"
+    preflight_group_expected: "{{ target_service | default('') }}"
+
+- name: Install QEMU guest agent on selected VMs
+  hosts: "{{ target_service | default('localhost', true) }}"
+  gather_facts: false
+
+  tasks:
+    - name: Require one service VM group, not a host pattern
+      ansible.builtin.assert:
+        that: target_service is match('^[a-z0-9_]+_svc$')
+        fail_msg: "target_service must be one <name>_svc group (got '{{ target_service }}'); patterns such as 'all' reach non-VM hosts."
+
+    - name: Look for the guest-agent virtio port
+      # The packaged unit BindsTo dev-virtio\x2dports-org.qemu.guest_agent.0.device,
+      # so the service cannot be active without this port. It is the guest end of
+      # the VM's Proxmox `agent` channel (qm set <vmid> --agent 1).
+      ansible.builtin.stat:
+        path: /dev/virtio-ports/org.qemu.guest_agent.0
+      register: _qga_port
+
+    - name: Require the Proxmox agent channel before installing
+      ansible.builtin.assert:
+        that: _qga_port.stat.exists
+        fail_msg: >-
+          {{ inventory_hostname }} has no /dev/virtio-ports/org.qemu.guest_agent.0.
+          Enable the VM's Proxmox agent option first (or this host is not a QEMU VM);
+          the service cannot start without it.
+
+    - name: Resolve the sudo password before escalation
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: Ensure QEMU guest agent is installed
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      become: true
+
+    - name: Enable and start QEMU guest agent
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        enabled: true
+        state: started
+      become: true
+      when: not ansible_check_mode
+
+    - name: Verify QEMU guest agent is running
+      ansible.builtin.command: systemctl is-active qemu-guest-agent
+      register: _qga_status
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Report QEMU guest agent status
+      ansible.builtin.debug:
+        msg: "qemu-guest-agent on {{ inventory_hostname }}: {{ _qga_status.stdout }}"
+      when: not ansible_check_mode

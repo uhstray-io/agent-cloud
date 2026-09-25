@@ -329,6 +329,28 @@ The following phases were completed during initial development and are documente
 | 2c-iii. GPS coordinates | 2026-04-21 | Site entity always emitted with lat/lon |
 | 2c-iv. Description sanitization | 2026-04-21 | Credential keyword stripping before Diode ingestion |
 
+### Existing VM guest-agent repair (PR #186 follow-up)
+
+**Status:** ACTIVE — playbook prepared; live check-mode and installation proof pending.
+Newly provisioned VMs receive `qemu-guest-agent` through the
+cloud-init template. Older VMs may lack it, so their interface addresses cannot be
+read through the Proxmox guest-agent API. The validated cloud-init address fallback
+already lives in the discovery worker; the old PR's coordinate repair and duplicate
+fallback must not be ported over it.
+
+1. Add a Semaphore playbook that selects one explicit `<name>_svc` group (refusing
+   an empty group or a host pattern), refuses a VM without the guest-agent virtio
+   port, resolves sudo access, ensures the package is present, and starts the
+   service. A package state check must use `apt` directly rather than the return
+   code of `dpkg -l`.
+2. Publish a Dev template with a required `target_service` survey field so the
+   operator chooses the target group before the task runs.
+3. Validate playbook syntax, template parsing, and a check-mode run before a live
+   Semaphore run. Check mode is expected to refuse each VM without the port; enable
+   that VM's Proxmox `agent` option (`qm set <vmid> --agent 1`, as
+   `provision-vm.yml` does for new VMs) before installing. Production installation
+   remains pending that live verification.
+
 ---
 
 ## Operational Lessons
