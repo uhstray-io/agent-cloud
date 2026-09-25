@@ -18,8 +18,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import yaml
-
 # The one clean-environment rule, shared with publication and the provisioner (an Ansible
 # filter module; loaded by path so there is a single definition).
 _RULE = importlib.util.spec_from_file_location(
@@ -104,6 +102,7 @@ def wait(api, task, what, timeout=600):
 
 
 def declaration(base_name, catalog=CATALOG):
+    import yaml  # here, not at the top: the launcher imports this module and stays stdlib-only
     templates = yaml.safe_load(catalog.read_text())["templates"]
     found = [t for t in templates if t.get("name") == base_name]
     if len(found) != 1:
@@ -130,6 +129,7 @@ def repository_name(decl, variant):
 
 def resolve_repository(api, name, declarations=REPOSITORIES):
     """The live record's id, after proving its URL and branch match the declaration."""
+    import yaml  # see declaration()
     declared = [r for r in yaml.safe_load(declarations.read_text())["repositories"] if r.get("name") == name]
     live = [r for r in api("/repositories") if r.get("name") == name]
     if len(declared) != 1 or len(live) != 1:

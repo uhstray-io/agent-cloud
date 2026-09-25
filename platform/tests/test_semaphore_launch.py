@@ -161,3 +161,15 @@ def test_the_launcher_refuses_any_url_but_a_plain_https_origin(url):
     # One client with the seed CLIs: the launcher used to accept credentials in the URL.
     with pytest.raises(launcher.Refusal, match="plain HTTPS origin"):
         launcher.API(url, 1, "synthetic-token")
+
+
+def test_the_launcher_needs_only_the_standard_library():
+    # It shares the seed core's client; the core reads YAML only inside the seed helpers
+    # (Codex review of PR #249).
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['yaml'] = None; sys.argv = ['semaphore-launch.py', '--help']; "
+            f"import runpy; runpy.run_path({str(SCRIPT)!r}, run_name='__main__')")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "--template" in result.stdout
