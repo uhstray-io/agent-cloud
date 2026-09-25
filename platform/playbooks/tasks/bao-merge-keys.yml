@@ -33,6 +33,8 @@
 #   _bm_patch/_bm_create  the raw results, for callers that report create-vs-patch
 #
 # Every value-bearing step is no_log. Asserts print assertion TEXT, never values.
+# Every request refuses redirects and never forwards the token to a redirect target:
+# one place for that hardening, instead of per-caller copies that drift.
 
 - name: "Require the merge inputs"
   ansible.builtin.assert:
@@ -48,6 +50,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: GET
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
     status_code: [200, 404]
@@ -108,6 +112,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: PATCH
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
       Content-Type: application/merge-patch+json
@@ -133,6 +139,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: POST
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
     body_format: json
@@ -166,6 +174,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: POST
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
     body_format: json
@@ -189,6 +199,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: PATCH
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
       Content-Type: application/merge-patch+json
@@ -225,6 +237,8 @@
   ansible.builtin.uri:
     url: "{{ _bm_url }}/v1/secret/data/{{ _bm_path }}"
     method: GET
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
     headers:
       X-Vault-Token: "{{ _bm_token }}"
     status_code: [200]

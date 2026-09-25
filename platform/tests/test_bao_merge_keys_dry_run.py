@@ -46,3 +46,14 @@ def test_a_set_reports_the_changed_key(tmp_path):
     done = _report(tmp_path, set={"client_new": "x"})
     assert done.returncode == 0, done.stdout[-1500:]
     assert "keys that would be set: client_new" in done.stdout
+
+
+def test_every_store_request_refuses_redirects_and_keeps_the_token_home():
+    # The one place for this hardening: twelve callers merge through this task, and the
+    # per-caller copies it replaced had drifted (review of PR #205).
+    requests = [t for t in yaml.safe_load(TASKS.read_text()) if "ansible.builtin.uri" in t]
+    assert len(requests) == 6
+    for task in requests:
+        args = task["ansible.builtin.uri"]
+        assert args.get("follow_redirects") == "none", task["name"]
+        assert "X-Vault-Token" in args.get("unredirected_headers", []), task["name"]

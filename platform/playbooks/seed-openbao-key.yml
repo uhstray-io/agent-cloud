@@ -81,6 +81,11 @@
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
+    - name: "Refuse a seed input this template does not declare"
+      ansible.builtin.include_tasks: tasks/assert-seed-inputs-declared.yml
+      vars:
+        _si_allowed: [BAO_VALUE]
+
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
