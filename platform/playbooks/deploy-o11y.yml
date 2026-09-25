@@ -127,36 +127,8 @@
         - expected_repository_sha is defined
         - not (local_mode | default(false) | bool)
 
-    - name: "Manage secrets and template env file"
-      ansible.builtin.include_tasks: tasks/manage-secrets.yml
-
-    - name: "Refuse an alert webhook outside Discord HTTPS"
-      ansible.builtin.fail:
-        msg: "OpenBao's o11y alert webhook must be a Discord HTTPS webhook URL."
-      when:
-        - o11y_alerts_enabled | default(false) | bool
-        - >-
-          (_resolved.alert_discord_webhook_url | urlsplit('scheme') != 'https') or
-          (_resolved.alert_discord_webhook_url | urlsplit('hostname') not in ['discord.com', 'discordapp.com']) or
-          (_resolved.alert_discord_webhook_url | urlsplit('path') is not match('^/api(/v[0-9]+)?/webhooks/'))
-
-    - name: "Create Grafana alert provisioning directory"
-      ansible.builtin.file:
-        path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting"
-        state: directory
-        mode: "0755"
-
-    - name: "Render declarative Grafana alert rules"
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alerts.yml.j2"
-        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
-        mode: "0644"
-
-    - name: "Render Discord contact point or its removal"
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/alert-contact.yml.j2"
-        dest: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/contact.yml"
-        mode: "0644"
+    - name: "Configure o11y alert provisioning from OpenBao"
+      ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml
 
     - name: "Render DGX scrape targets only when inventory declares nodes"
       ansible.builtin.template:

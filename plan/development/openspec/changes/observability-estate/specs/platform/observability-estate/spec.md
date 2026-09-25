@@ -33,6 +33,11 @@ The platform SHALL provision a generic service view and baseline service-down an
 - **WHEN** a verified pilot service stops reporting beyond the configured pending interval
 - **THEN** the matching alert fires and reaches the configured notification destination
 
+#### Scenario: Canary restores paused alerts
+- **WHEN** the local delivery drill completes or fails after temporarily activating alerting
+- **THEN** the provisioned rules return to paused state and the temporary contact point is removed before the drill reports completion
+- **AND** persistent notification enablement remains a separate reviewed rollout
+
 ### Requirement: Onboarding verifies observability
 The service onboarding workflow SHALL record whether logs, health, and applicable metrics are verified. It MUST not mark a service observability-complete on the basis of configuration files alone.
 

@@ -121,11 +121,23 @@
 > bootstrap state directory. Bootstrap validates and consumes that projection
 > when rebuilding the static inventory, and refuses to erase a previously
 > published destination if the projection is missing. Public tests use
-> synthetic IDs. This mechanism is pending PR #241 review and merge; no
-> publication, webhook, or alert receipt is claimed yet.
+> synthetic IDs. PR #241 later merged; its publication and webhook result
+> are recorded below. This step alone did not prove alert delivery.
 > A read-only check of the running local Semaphore v2.18.12 inventory list
 > on 2026-09-25 found the `local` record's inventory text present. The
 > bootstrap guard still refuses if a later API projection omits that text.
+> **Webhook receipt, 2026-09-25:** PR #241 merged to `dev` as
+> `a65f6a97d8d097d5c488a15be2727fc2d4ce830e` after final-head CI and
+> independent review. The scoped sync from that commit copied only the two
+> approved private destination IDs into local Semaphore inventory and wrote
+> a mode-0600 bootstrap projection; readback matched private site-config.
+> Dev-bound Semaphore task 1737 checked out the same merge, reconciled its
+> named Discord webhook, and verified the URL in OpenBao without printing it.
+> Alert rules remain paused and no message-delivery receipt is claimed.
+> The existing delivery drill requires an active rule, so the next change
+> stages alerting temporarily within a reversible Semaphore canary, proves
+> the Discord receipt, and restores the paused baseline before any persistent
+> alert-enable rollout.
 > A read-only production Semaphore API check on 2026-09-23 found the reviewed
 > `dev` audit declaration absent from the live template catalog. A full-catalog
 > publication would have touched unrelated settings on 129 existing templates

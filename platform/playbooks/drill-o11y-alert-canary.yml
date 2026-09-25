@@ -1,0 +1,163 @@
+---
+# Local-only delivery proof. Alert provisioning is temporary: the always path
+# restores paused rules and removes the contact point, even when the probe fails.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout before the canary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no canary was started."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no canary was started."
+
+- name: Prove local alert delivery and restore the paused baseline
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: dev
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _secret_definitions: >-
+      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
+         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
+          if o11y_alerts_enabled | default(false) | bool else []) }}
+    _required_existing_secrets: >-
+      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
+    _shared_reads:
+      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+    expected_service: "{{ _probe }}"
+    expected_instance: "{{ _probe }}:65535"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+  tasks:
+    - name: Require a local, paused baseline before the canary
+      ansible.builtin.assert:
+        that:
+          - local_mode | default(false) | bool
+          - not (o11y_alerts_enabled | default(false) | bool)
+          - not ansible_check_mode
+        fail_msg: "The canary requires the local paused baseline and a real Semaphore run."
+
+    - name: Read the baseline service-down rule
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
+      register: _baseline_rule
+      changed_when: false
+
+    - name: Refuse an already active service-down rule
+      ansible.builtin.assert:
+        that: (_baseline_rule.stdout | from_json).isPaused | bool
+        fail_msg: "The baseline rule is active; no canary state was changed."
+
+    - name: Read baseline contact points without displaying webhook settings
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/contact-points
+      register: _baseline_contacts
+      changed_when: false
+      no_log: true
+
+    - name: Refuse an existing o11y contact point
+      ansible.builtin.assert:
+        that: >-
+          _baseline_contacts.stdout | from_json |
+          selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length == 0
+        fail_msg: "The o11y contact point is already active; no canary state was changed."
+
+    - name: Name this canary's unique disposable probe
+      ansible.builtin.command:
+        argv: [python3, -c, "import uuid; print('o11y-fault-probe-' + uuid.uuid4().hex[:12])"]
+      register: _canary_probe_name
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Bind the canary alert to only its probe
+      ansible.builtin.set_fact:
+        _probe: "{{ _canary_probe_name.stdout }}"
+
+    - name: Require a safe canary service label
+      ansible.builtin.assert:
+        that: _probe is match('^o11y-fault-probe-[0-9a-f]{12}$')
+
+    - name: Place the reviewed checkout for local rendering
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: Activate only the canary rule, prove delivery, and restore the baseline
+      block:
+        - name: Render the temporary OpenBao-backed canary rule and contact
+          ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml
+          vars:
+            o11y_alerts_enabled: true
+            o11y_alert_canary_service: "{{ _probe }}"
+
+        - name: Restart o11y with temporary canary provisioning
+          ansible.builtin.shell: |
+            cd "{{ _deploy_dir }}"
+            bash deploy.sh --no-pull
+          environment:
+            CONTAINER_ENGINE: "{{ _engine }}"
+            LOCAL_MODE: "true"
+          changed_when: true
+
+        - name: Run the existing named fault and Discord receipt checks
+          ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml
+          vars:
+            o11y_alerts_enabled: true
+            drill_expect_alert: true
+      always:
+        - name: Restore and verify the paused baseline
+          ansible.builtin.include_tasks: tasks/o11y-restore-alert-baseline.yml
+
+    - name: Report the delivery receipt after successful restoration
+      ansible.builtin.debug:
+        msg: "The canary fired and reached Discord; paused rules and contact-point removal were verified."
