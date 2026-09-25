@@ -60,6 +60,20 @@ over its API to anyone who can read the environment. Isolated seed environments
 already store their copy encrypted. Moving the shared environments to encrypted
 inputs is the follow-up; it touches every template and needs its own change.
 
+**Checked at run time too (2026-09-25).** The clean-environment rule runs when an
+environment is bound, and the environment stays editable after that. Each seed playbook now
+also refuses, before its AppRole login, any seed input its template does not declare
+(`tasks/assert-seed-inputs-declared.yml`): a leftover from another seed's interrupted run.
+
+**Open gap: the endpoint is not re-checked at run time.** The approved OpenBao address is the
+inventory's `all.vars.openbao_addr`, and the isolated environment pins its own copy as an
+extra var, which overrides the inventory value inside the run, so the playbook cannot compare
+the two. An environment edited after binding to point elsewhere is caught by the next
+publication, provisioning or seed CLI preflight, not by the seed task itself. Closing it needs
+a decision: drop the extra-var pin and let the run use the inventory value (the pin exists so
+the preflight has something to compare), or carry the approved address under a second name
+the environment cannot set.
+
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
 The production OpenBao host rebooted on 2026-09-19. The outage ran in two stages, and
@@ -332,6 +346,7 @@ flowchart LR
 | 2026-06-14 | Initial draft. A1 (persistent local file backend) landed; Tracks A/B and decision criteria authored from OpenBao docs + repo current-state assessment. |
 | 2026-09-22 | Recorded the 2026-09-19 reboot outage as the measured cost of problem 2. Its restart-policy stage is fixed; the sealed-after-restart stage stays open until B2. |
 | 2026-09-23 | Operator-held secrets move to isolated seed environments (generic provisioner and seed CLI); recorded the plaintext AppRole in shared environments as an open gap. |
+| 2026-09-25 | Seed playbooks refuse undeclared seed inputs at run time; recorded the run-time endpoint check as an open gap needing a design decision. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 

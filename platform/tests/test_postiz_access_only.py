@@ -19,19 +19,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 PLAYBOOKS = {
     "postiz": ("platform/playbooks/seed-postiz-secrets.yml", "services/postiz",
-               {"postiz_verify_access_only": True}, "Read-only Postiz access verified"),
+               {"postiz_verify_access_only": True}, "Read-only Postiz access verified", "SEED_X_API_KEY"),
     "openbao-key": ("platform/playbooks/seed-openbao-key.yml", "services/agentgateway",
                     {"bao_verify_access_only": True, "bao_path": "services/agentgateway",
-                     "bao_key": "vllm_api_key"}, "Read-only access to secret/services/agentgateway verified"),
+                     "bao_key": "vllm_api_key"}, "Read-only access to secret/services/agentgateway verified",
+                    "BAO_VALUE"),
 }
+# The capability matrix tests ONE shared task (tasks/assert-bao-seed-access.yml), so it runs
+# against one playbook; the other keeps one pass and one refusal to prove its wiring.
+MATRIX = "openbao-key"
+WIRING = "postiz"
 
 
 def writes(requests):
     return [r for r in requests if r[0] in ("PATCH", "PUT") or (r[0] == "POST" and r[1].startswith("/v1/secret/"))]
 
 
-def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
-    playbook, path, extra_vars, _ = PLAYBOOKS[which]
+def run_access_check(tmp_path, which, capabilities, provider="", exists=False, foreign=None):
+    playbook, path, extra_vars, _, own_input = PLAYBOOKS[which]
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -78,15 +83,18 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
                  "bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret", **extra_vars}
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("SEED_") and key != "BAO_VALUE"}
+        # Only this template's declared input: the seed refuses any other (a leftover).
+        env.update({own_input: provider} if provider else {})
+        env.update({foreign: "synthetic-leftover-value"} if foreign else {})
         # Stock output on purpose: stricter than production's redact_requests (MISTAKES 4.6).
-        env.update(SEED_X_API_KEY=provider, BAO_VALUE=provider, ANSIBLE_LOCAL_TEMP=str(tmp_path),
-                   ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+        env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
         result = subprocess.run(
             ["ansible-playbook", "-v", "-i", "localhost,", "-c", "local", playbook, "-e", json.dumps(extra)],
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=90,
         )
         output = result.stdout + result.stderr
-        for value in [provider, "synthetic-role", "synthetic-role-secret", "synthetic-login-value"]:
+        for value in [provider, "synthetic-role", "synthetic-role-secret", "synthetic-login-value",
+                      "synthetic-leftover-value"]:
             if value:
                 assert value not in output
         return result.returncode, output, requests
@@ -96,9 +104,11 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False):
         thread.join()
 
 
-@pytest.mark.parametrize("which", sorted(PLAYBOOKS))
-@pytest.mark.parametrize("exists,capabilities", [(False, ["read", "create"]), (True, ["read", "patch"]),
-                                                 (False, ["root"]), (True, ["root"])])
+PASSING = [(False, ["read", "create"]), (True, ["read", "patch"]), (False, ["root"]), (True, ["root"])]
+
+
+@pytest.mark.parametrize("which,exists,capabilities",
+                         [(MATRIX, *case) for case in PASSING] + [(WIRING, *PASSING[0])])
 def test_access_check_passes_with_the_capability_the_seed_uses(tmp_path, which, exists, capabilities):
     code, output, requests = run_access_check(tmp_path, which, capabilities, exists=exists)
     assert code == 0, output
@@ -114,16 +124,28 @@ def test_access_check_never_writes_even_with_a_staged_value(tmp_path, which):
     assert writes(requests) == []
 
 
-@pytest.mark.parametrize("which", sorted(PLAYBOOKS))
-@pytest.mark.parametrize("exists,capabilities", [
+REFUSED = [
     (False, ["deny"]), (False, ["read"]),
     (False, ["read", "update"]), (False, ["read", "patch"]),   # new path is POSTed: needs create
     (True, ["read", "create"]), (True, ["read", "update"]),    # existing path is PATCHed: needs patch
     (False, ["create"]),                                        # the seed reads first
-])
+]
+
+
+@pytest.mark.parametrize("which,exists,capabilities",
+                         [(MATRIX, *case) for case in REFUSED] + [(WIRING, *REFUSED[0])])
 def test_access_check_refuses_a_token_the_real_seed_would_be_denied(tmp_path, which, exists, capabilities):
     code, output, requests = run_access_check(tmp_path, which, capabilities, exists=exists)
     assert code != 0, output
     assert PLAYBOOKS[which][3] not in output
     assert "seeding needs read plus" in output
     assert writes(requests) == []
+
+
+@pytest.mark.parametrize("which,foreign", [("postiz", "BAO_VALUE"), ("openbao-key", "SEED_X_API_KEY")])
+def test_a_leftover_input_of_another_seed_is_refused_before_the_login(tmp_path, which, foreign):
+    # The isolated environment is checked when bound; the run re-checks what actually arrived.
+    code, output, requests = run_access_check(tmp_path, which, ["read", "create"], foreign=foreign)
+    assert code != 0, output
+    assert f"does not declare: {foreign}" in output
+    assert requests == []  # not even the AppRole login

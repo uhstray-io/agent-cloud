@@ -1,0 +1,39 @@
+---
+# assert-seed-inputs-declared.yml — refuse, before the AppRole login, a seed run whose
+# process environment carries a seed input this template does not declare.
+#
+# Why at run time. Full publication and the provisioner check an isolated seed environment
+# when they bind it (filter seed_environment_problems), but the environment stays editable
+# in Semaphore after that. A leftover input from an interrupted run of ANOTHER seed (a
+# SEED_* value in the OpenBao-key environment, a BAO_VALUE in the Postiz one) means the
+# environment is not the one that was checked; the run is the one boundary every path
+# passes (review of PR #205, altitude finding).
+#
+# Only NAMES are listed (a one-line Python on the controller prints os.environ's keys), so
+# no value ever enters Ansible memory or output and nothing here needs no_log.
+#
+# Caller passes:
+#   _si_allowed   list of the seed-input names this template declares (e.g. [BAO_VALUE])
+
+- name: "List the environment variable names this seed run received"
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -c
+      - "import os; print('\\n'.join(sorted(os.environ)))"
+  register: _si_names
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+
+- name: "Refuse a seed input this template does not declare"
+  vars:
+    _si_inputs: "{{ _si_names.stdout_lines | select('match', '^(SEED_[A-Z0-9_]+|BAO_VALUE)$') | list }}"
+    _si_foreign: "{{ _si_inputs | difference(_si_allowed) }}"
+  ansible.builtin.assert:
+    that: _si_foreign | length == 0
+    fail_msg: >-
+      This run's environment carries seed inputs its template does not declare:
+      {{ _si_foreign | join(', ') }}. The isolated environment changed after it was bound, or an
+      earlier seed did not finish; reconcile it (Provision Seed Environment) before seeding.
+    quiet: true

@@ -163,6 +163,11 @@ survey field or an extra var, because Semaphore persists both and returns them o
 its API. It is never staged in the shared environment, where every other template's
 task could receive it.
 
+The environment is checked when it is bound and again by every seed CLI preflight. The
+seed task itself also refuses, before it logs in to OpenBao, any seed input (`BAO_VALUE`,
+`SEED_*`) its template does not declare, so a leftover from another seed's interrupted
+run never reaches the login.
+
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name. It creates the environment,
    gives it an encrypted copy of the controller AppRole, and binds only that template.
