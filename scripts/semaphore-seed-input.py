@@ -10,7 +10,7 @@ back over its API.
   # dry run: resolve and check everything, change nothing
   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \\
       --set bao_path=services/agentgateway --set bao_key=vllm_api_key \\
-      --input BAO_VALUE=/path/to/value-file --inventory 2 \\
+      --input BAO_VALUE=/path/to/value-file --inventory <inventory-id> \\
       --url https://semaphore.example <token-file
 
   # after Provision Seed Environment: prove the environment's AppRole, no write
