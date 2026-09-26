@@ -483,6 +483,7 @@ templates:
 
   - name: Deploy tududi
     playbook: platform/playbooks/deploy-tududi.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -534,6 +535,7 @@ templates:
 
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
