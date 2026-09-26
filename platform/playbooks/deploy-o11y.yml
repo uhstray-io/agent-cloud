@@ -107,16 +107,17 @@
         fail_msg: "Production canary restoration is unfinished; run Restore o11y Alert Baseline (Dev) before deploying."
       when: not (local_mode | default(false) | bool)
 
-    - name: "Require complete DGX scrape settings when nodes are declared"
+    - name: "Require complete DGX scrape settings when scraping is enabled"
       ansible.builtin.assert:
         that:
+          - dgx_spark_nodes | default([]) | length > 0
           - dgx_spark_head_address is defined
           - dgx_spark_head_name is defined
           - dgx_spark_node_exporter_port is defined
           - dgx_spark_api_port is defined
           - not (dgx_spark_gpu_exporter_enabled | default(false) | bool) or dgx_spark_gpu_exporter_port is defined
         fail_msg: "DGX scrape inventory needs the head address/name and enabled collector ports."
-      when: dgx_spark_nodes | default([]) | length > 0
+      when: dgx_spark_scrape_enabled | default(false) | bool
 
     - name: "Require a complete declared agentgateway stats endpoint"
       ansible.builtin.assert:
@@ -156,20 +157,20 @@
     - name: "Configure o11y alert provisioning from OpenBao"
       ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml
 
-    - name: "Render DGX scrape targets only when inventory declares nodes"
+    - name: "Render DGX scrape targets only after source proof enables scraping"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-dgx-spark.yml.j2"
         dest: "{{ _deploy_dir }}/config/scrape.d/dgx-spark.yml"
         mode: "0644"
       register: _dgx_scrape
-      when: dgx_spark_nodes | default([]) | length > 0
+      when: dgx_spark_scrape_enabled | default(false) | bool
 
-    - name: "Remove DGX scrape targets when inventory declares no nodes"
+    - name: "Remove DGX scrape targets while scraping is disabled"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/config/scrape.d/dgx-spark.yml"
         state: absent
       register: _dgx_scrape_absent
-      when: dgx_spark_nodes | default([]) | length == 0
+      when: not (dgx_spark_scrape_enabled | default(false) | bool)
 
     - name: "Render the agentgateway scrape only when inventory declares it"
       ansible.builtin.template:

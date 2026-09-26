@@ -552,6 +552,55 @@ for gpu in (False, True):
 PY
 }
 
+@test "o11y: DGX source probe is bounded and scraping remains opt-in" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/probe-o11y-dgx-exporter.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import re
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+deploy = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+tasks = next(play['tasks'] for play in deploy if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+by_name = {task['name']: task for task in tasks}
+gate = 'dgx_spark_scrape_enabled | default(false) | bool'
+settings = by_name['Require complete DGX scrape settings when scraping is enabled']
+assert settings['when'] == gate
+assert 'dgx_spark_nodes | default([]) | length > 0' in settings['ansible.builtin.assert']['that']
+assert by_name['Render DGX scrape targets only after source proof enables scraping']['when'] == gate
+assert by_name['Remove DGX scrape targets while scraping is disabled']['when'] == f'not ({gate})'
+
+probe = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+assert probe[0]['vars'] == {'preflight_group': 'o11y_svc', 'preflight_group_expected': 'o11y_svc'}
+preflight = probe[1]['tasks']
+assert any(task['name'] == 'Refuse a different controller revision' for task in preflight)
+assert any(task['name'] == 'Refuse an altered controller checkout' for task in preflight)
+node_play = probe[2]
+assert node_play['hosts'] == 'o11y_svc'
+env = Environment(undefined=StrictUndefined)
+env.tests['search'] = lambda value, pattern: re.search(pattern, value) is not None
+selector = env.compile_expression(node_play['vars']['_probe_nodes'].removeprefix('{{').removesuffix('}}').strip())
+nodes = [{'name': 'spark-1', 'address': '192.0.2.1'}, {'name': 'spark-2', 'address': '192.0.2.2'}]
+assert selector(dgx_spark_nodes=nodes, probe_node_name='spark-2') == [nodes[1]]
+assert selector(dgx_spark_nodes=nodes, probe_node_name='unknown') == []
+steps = {task['name']: task for task in node_play['tasks']}
+route = steps['Read the receiver route and chosen source']
+route_check = env.compile_expression(steps['Require a route with an explicit source address']['ansible.builtin.assert']['that'])
+request = steps['Send one direct bounded metrics request from the receiver']
+assert route['ansible.builtin.command']['argv'][-1] == '{{ _probe_node.address }}'
+assert route_check(_probe_route={'stdout': '192.0.2.2 dev eth0 src 192.0.2.10'}) is True
+assert route_check(_probe_route={'stdout': '192.0.2.2 dev eth0'}) is False
+assert request['ansible.builtin.uri']['url'].startswith('http://{{ _probe_node.address }}:')
+assert request['ansible.builtin.uri']['use_proxy'] is False
+assert request['ansible.builtin.uri']['timeout'] == 5
+assert request['when'] == 'not ansible_check_mode'
+assert request['failed_when'] is False
+template = next(item for item in yaml.safe_load(open(sys.argv[3], encoding='utf-8'))['templates'] if item['name'] == 'Probe o11y DGX Exporter (Dev)')
+assert template['repository'] == 'agent-cloud dev'
+assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_node_name', 'probe_expect_reachable']
+PY
+}
+
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {
   python3 - "$DEPLOY_DIR/templates/scrape-agentgateway.yml.j2" <<'PY'
 import json
