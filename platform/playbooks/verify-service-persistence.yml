@@ -7,7 +7,9 @@
 #
 # Proves, for every container of the service:
 #   - it restarts on its own: restart policy `always` (podman's boot unit starts nothing
-#     else), or "no" for a one-shot init container
+#     else), or "no" for a one-shot init container, or (rootful podman) named by the service's
+#     own enabled `agent-cloud-boot-<service>.service`, which ensure-service-persistence.yml
+#     installs for legacy containers whose policy the Ubuntu podman cannot change in place
 # and, on a Linux host running rootless podman:
 #   - the deploying user has systemd linger, so its containers start without a login
 #     (tasks/enable-linger.yml is what sets it)
@@ -55,6 +57,7 @@
             {{ '{{' }}.State.ExitCode{{ '}}' }} {{ '{{' }}index .Config.Labels "agent-cloud.one-shot"{{ '}}' }}
           - "{{ item }}"
       loop: "{{ _lsc.stdout_lines }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
       register: _policies
       changed_when: false
       check_mode: false
@@ -89,19 +92,61 @@
       check_mode: false
       when: _rootless_podman | bool
 
+    - name: "Rootful podman: is the system boot unit enabled?"
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, podman-restart.service]
+      register: _system_unit
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
+    # ensure-service-persistence.yml gives a rootful service whose containers are not on
+    # `always` one boot unit that `podman start`s them by name.
+    - name: "Rootful podman: is the service's own boot unit enabled?"
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, "agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"]
+      register: _service_unit_enabled
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
+    - name: "Rootful podman: which containers does it start?"
+      # The file ensure-service-persistence.yml wrote; its ExecStart= line is that playbook's.
+      ansible.builtin.slurp:
+        src: "/etc/systemd/system/agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"
+      register: _service_unit_file
+      failed_when: false
+      check_mode: false
+      when: (_service_unit_enabled.stdout | default('') | trim) == 'enabled'
+
     - name: "Decide the result"
       ansible.builtin.set_fact:
         _restart_policies: >-
           {%- set out = {} -%}
           {%- for r in _policies.results -%}{%- set _ = out.update({r.item: (r.stdout.split(' ') | first)}) -%}{%- endfor -%}
           {{ out }}
+        # The names after "ExecStart=/usr/bin/podman start", only while the unit is enabled.
+        _unit_started: >-
+          {%- set text = ((_service_unit_file | default({})).content | default('')) | b64decode -%}
+          {%- set line = text.splitlines() | select('match', '^ExecStart=/usr/bin/podman start ') | first | default('') -%}
+          {{ line.split()[2:]
+             if ((_service_unit_enabled | default({})).stdout | default('') | trim) == 'enabled' else [] }}
         _one_shot_done: "{{ _policies.results | selectattr('stdout', 'match', '^no exited 0 true$') | map(attribute='item') | list }}"
         _linger_state: >-
           {{ 'not-applicable' if (_linger is skipped)
              else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
         _boot_unit_state: >-
-          {{ 'not-applicable' if (_boot_unit is skipped)
-             else ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') }}
+          {{ ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') if (_boot_unit is not skipped)
+             else ((('enabled' if (_system_unit.stdout | default('') | trim) == 'enabled' else 'disabled'))
+                   if ((_system_unit | default({'skipped': true})) is not skipped) else 'not-applicable') }}
 
     - name: "Decide the failures"
       ansible.builtin.set_fact:
@@ -110,13 +155,15 @@
                ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
               if (_lsc.stdout_lines | length == 0) else [])
              + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok + ['no'])
-                | map(attribute='key')
+                | map(attribute='key') | reject('in', _unit_started)
                 | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
              + (_restart_policies | dict2items | selectattr('value', 'equalto', 'no') | map(attribute='key')
-                | reject('in', _one_shot_done)
+                | reject('in', _one_shot_done) | reject('in', _unit_started)
                 | map('regex_replace', '^', 'restart policy "no" but not a declared one-shot container (label agent-cloud.one-shot=true) that exited 0: ') | list)
              + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
-             + (['podman-restart.service is not enabled for the deploying user: containers will not start at boot']
+             + (['podman-restart.service is not enabled '
+                 ~ ('for the deploying user' if (_boot_unit is not skipped) else '(system unit)')
+                 ~ ': containers will not start at boot']
                 if _boot_unit_state == 'disabled' else []) }}
 
     - name: "Report"
@@ -125,6 +172,7 @@
           containers: "{{ _restart_policies }}"
           linger: "{{ _linger_state }}"
           boot_unit: "{{ _boot_unit_state }}"
+          container_units: "{{ _unit_started }}"
           errors: "{{ _persistence_errors }}"
 
     - name: "Record the step result"

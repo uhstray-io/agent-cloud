@@ -41,6 +41,8 @@
           - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.ExitCode{{ '}}' }} {{ '{{' }}.RestartCount{{ '}}' }}"
           - "{{ item }}"
       loop: "{{ _lsc.stdout_lines }}"
+      # The listing runs as root for a rootful service; so must the inspect (PR 284 review).
+      become: "{{ podman_rootful | default(false) | bool }}"
       register: _runtime_states
       changed_when: false
       check_mode: false
