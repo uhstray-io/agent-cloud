@@ -6,7 +6,7 @@
 #          provisioning) travels with the repo.
 # Phase 2: deploy.sh — container lifecycle (pull, up, wait Grafana healthy;
 #          datasources + dashboards provision on boot).
-# Phase 3: Verify Grafana / Prometheus / Loki all answer.
+# Phase 3: Verify service health and, when enabled, live Grafana alert state.
 #
 # Plan: plan/development/O11Y-DEPLOYMENT.md.
 
@@ -293,6 +293,64 @@
       delay: 5
       until: _loki.rc == 0
       check_mode: false
+
+    - name: Verify enabled Grafana alert provisioning after a real deploy
+      when:
+        - o11y_alerts_enabled | default(false) | bool
+        - not ansible_check_mode
+      block:
+        - name: Read live o11y alert rules
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
+          register: _active_rules
+          changed_when: false
+          retries: 6
+          delay: 5
+          until: _active_rules.rc == 0
+
+        - name: Require the service-down rule and every o11y rule to be active
+          ansible.builtin.assert:
+            that:
+              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
+              - _o11y_rules | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules | length
+            fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
+          vars:
+            _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+
+        - name: Read live Grafana contact points without displaying webhook settings
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/contact-points
+          register: _active_contacts
+          changed_when: false
+          no_log: true
+
+        - name: Count only the intended contact point without its settings
+          ansible.builtin.set_fact:
+            _o11y_contact_count: >-
+              {{ _active_contacts.stdout | from_json |
+                 selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
+          no_log: true
+
+        - name: Require the o11y Discord contact point to be active
+          ansible.builtin.assert:
+            that: _o11y_contact_count | int == 1
+            fail_msg: "The o11y Discord contact point is absent or duplicated after alert enablement."
 
     - name: "Report"
       ansible.builtin.debug:
