@@ -58,8 +58,10 @@ def test_recovery_starts_only_existing_audit_dependencies():
             "              else 'ghcr.io/goauthentik/server:2024.12.3')\n"
             "    else: print('id-'+name+' image-'+name+' '+state[name]+' '+\n"
             "                ('no' if os.environ.get('FAKE_PODMAN_WRONG_RESTART') else\n"
-            "                 'always' if os.environ.get('FAKE_PODMAN_RESTART_DRIFT')\n"
-            "                 and state[name]=='running' else 'unless-stopped'))\n"
+            "                 'always' if (os.environ.get('FAKE_PODMAN_ALWAYS') or\n"
+            "                   (os.environ.get('FAKE_PODMAN_RESTART_DRIFT') and\n"
+            "                    state[name]=='running'))\n"
+            "                 else 'unless-stopped'))\n"
             "else: sys.exit(2)\n"
         )
         podman.chmod(0o755)
@@ -97,6 +99,16 @@ def test_recovery_starts_only_existing_audit_dependencies():
             **dict.fromkeys(NAMES[:3], "running"),
             "authentik-worker": "created",
         }
+
+        state_file.write_text(json.dumps(dict.fromkeys(NAMES, "created")))
+        env["FAKE_PODMAN_ALWAYS"] = "1"
+        declared_policy = run(["-e", "authentik_runtime_apply=true"])
+        assert declared_policy.returncode == 0, declared_policy.stdout + declared_policy.stderr
+        assert json.loads(state_file.read_text()) == {
+            **dict.fromkeys(NAMES[:3], "running"),
+            "authentik-worker": "created",
+        }
+        del env["FAKE_PODMAN_ALWAYS"]
 
         state_file.write_text(json.dumps(dict.fromkeys(NAMES, "created")))
         env["FAKE_PODMAN_WRONG_VOLUME"] = "1"
