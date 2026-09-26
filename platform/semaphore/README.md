@@ -125,8 +125,9 @@ publisher updated one survey (Provision NetBox Automation Token (Dev), tasks 132
 dry run, 1330 real) and scoped-created two templates (Provision NetBox Custom
 Fields (Dev), 1331/1332; Collect Service Conformance (Dev), 1333/1334), each read
 back and verified. Scoped create needs the project, inventory and environment ids
-of the templates it sits beside; production's `(Dev)` templates use project 1,
-inventory 2 (`production`) and environment 2.
+of the templates it sits beside: read them from an existing `(Dev)` template's
+bindings on the instance you are publishing to (`GET /api/project/<id>/templates`),
+never from documentation, since they are site-specific.
 
 A later full-catalog publication also creates the main-bound base template.
 Do not run that base until the publisher code has been selectively promoted to
