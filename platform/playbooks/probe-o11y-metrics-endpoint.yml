@@ -53,13 +53,15 @@
         that:
           - probe_target | default('') in ['dgx-vllm', 'agentgateway']
           - >-
-            probe_target != 'dgx-vllm' or
+            probe_target | default('') != 'dgx-vllm' or
             (dgx_spark_head_address is defined and dgx_spark_head_name is defined
              and dgx_spark_api_port is defined and
              (dgx_spark_nodes | default([]) | selectattr('name', 'equalto', dgx_spark_head_name) | selectattr('address', 'equalto', dgx_spark_head_address) | list | length) == 1)
           - >-
-            probe_target != 'agentgateway' or
-            (groups.get('agentgateway_svc', []) | length) == 1
+            probe_target | default('') != 'agentgateway' or
+            ((groups.get('agentgateway_svc', []) | length) == 1 and
+             hostvars[groups['agentgateway_svc'][0]].agw_stats_bind is defined and
+             hostvars[groups['agentgateway_svc'][0]].agw_stats_port is defined)
         fail_msg: "Select dgx-vllm or agentgateway with one complete inventory-declared endpoint."
 
     - name: Resolve the fixed inventory endpoint
