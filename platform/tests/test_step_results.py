@@ -169,24 +169,36 @@ def test_groups_map_to_their_hosts_service_name():
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
-    call = _call
     inv = {"groups": {"tududi_svc": ["h"], "step_ca_svc": ["s"]}, "host_services": {"h": "tududi", "s": "step-ca"}}
     deploys = sorted(DEPLOYS)
-    selected = call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
+    selected = _call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
                      "deploy_templates": deploys, **inv})
     assert selected["template_ids"] == [1, 2, 3, 4]
     # the service list the NetBox lookup loops, keyed as the aggregate keys them
     assert selected["inventory_services"] == ["step-ca", "tududi"]
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t",
            "environment": '{"target_service": "tududi_svc"}'}
-    picked = call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
+    picked = _call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
                    "histories": [[row]]})["tasks"]
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
-    agg = call({"mode": "aggregate", "registry": REGISTRY, "templates": TEMPLATES, "now_ns": 1,
+    agg = _call({"mode": "aggregate", "registry": REGISTRY, "templates": TEMPLATES, "now_ns": 1,
                 "deploy_templates": deploys,
                 "fetched": [{"item": picked[0], "content": out, "status": 200}]})
     assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
     assert len(agg["loki_streams"]) == 1
+
+
+def test_pick_passes_on_only_the_fields_the_later_steps_read():
+    # PR 274 Codex review: pick returned whole history rows into the visible task output.
+    row = {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
+           "environment": '{"target_service": "tududi_svc"}', "tpl_playbook": "p.yml", "message": "long",
+           "user_name": "someone", "tpl_alias": "Some Template"}
+    (picked,) = step_results.pick([[row]], GROUPS)
+    assert picked == {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
+                      "service": "tududi"}
+    # and the aggregate still reads everything it needs from that row
+    agg = _agg(dict(picked, output=_run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})))
+    assert agg["status_by_service"]["tududi"] == {"secrets-approle": "pass"}
 
 
 def test_pick_reports_a_template_whose_history_filled_the_window():

@@ -145,11 +145,9 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
-@test "wrapper reads a whole task log with its own state file, never a typed token" {
-  # The token stays in the state file the script loads (docs/MISTAKES.md 4.10); the id is
-  # checked before any state is read.
-  run grep -q "^  output)    shift; task_output" "$REPO_ROOT/scripts/local-dev.sh"
-  [ "$status" -eq 0 ]
+@test "wrapper reads a whole task log, checking the id before any state is read" {
+  # The token stays in the state file the script loads (docs/MISTAKES.md 4.10).
+  # the usage below is task_output's own; an undispatched subcommand prints the generic one
   run "$REPO_ROOT/scripts/local-dev.sh" output not-a-number
   [ "$status" -ne 0 ]
   [[ "$output" == *"usage: local-dev.sh output <task-id>"* ]]

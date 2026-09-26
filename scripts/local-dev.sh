@@ -168,8 +168,7 @@ print(('' if local else 'FALLBACK ') + str(pick[0]['id']) if pick else '')" "$re
     case "$status" in success|error|stopped) break ;; esac
     sleep 4; i=$((i + 1))
   done
-  _api "${base}/tasks/${task}/output" \
-    | python3 -c "import json,sys; [print(l['output']) for l in json.load(sys.stdin)]" | tail -40
+  _print_task_output "$task" | tail -40
   info "task ${task}: ${status}"
   [ "$status" = "success" ]
 }
@@ -206,15 +205,21 @@ run_playbook() {
   _run_template "platform/playbooks/${name%.yml}.yml" "$extra"
 }
 
-# Print one LOCAL Semaphore task's whole log (colour codes stripped). _run_template shows only
-# the last 40 lines; this reads the rest with the same state file, so the token is never
-# typed, printed or piped into an interpreter (docs/MISTAKES.md 4.10).
+# One task's log, colour codes stripped. /raw_output is plain text (Semaphore v2.18.12
+# GetTaskRawOutput), so there is no JSON to parse. State must already be loaded.
+_print_task_output() {
+  _api "${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}/tasks/$1/raw_output" \
+    | sed $'s/\x1b\\[[0-9;]*m//g'
+}
+
+# Print one LOCAL Semaphore task's whole log. _run_template shows only the last 40 lines; this
+# reads the rest with the same state file, so the token is never typed, printed or piped into
+# an interpreter (docs/MISTAKES.md 4.10).
 task_output() {
   local task="${1:-}"
   [[ "$task" =~ ^[0-9]+$ ]] || die "usage: local-dev.sh output <task-id>"
   _load_state
-  _api "${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}/tasks/${task}/output" \
-    | python3 -c "import json,re,sys; a=re.compile(r'\x1b\[[0-9;]*m'); [print(a.sub('', l['output'])) for l in json.load(sys.stdin)]"
+  _print_task_output "$task" || die "no output for task ${task} (not found, or local Semaphore is down)"
 }
 
 # Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as

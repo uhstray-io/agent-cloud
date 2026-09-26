@@ -66,6 +66,10 @@ TAIL = 20
 # (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0, v2.18.12
 # (the local-dev image) and v2.19.11 alike, read from source. /tasks/last stops at 200.
 HISTORY_WINDOW = 1000
+# What a picked row carries onward (the output read and aggregate): nothing else of the
+# history's rows leaves pick, so the visible task output stays small. Projected here, in
+# Python, not per row in Jinja, which measured slower than piping the rows whole (PR 274).
+PICKED_KEYS = ("id", "status", "template_id", "end", "params")
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 
 
@@ -119,11 +123,11 @@ def incomplete_services(window_full: list, templates: list[dict], registry: list
     by_id = {t["id"]: t for t in templates}
     out: set = set()
     for tid in window_full:
-        step, per_service, svc = _template_scope(by_id.get(tid, {}), registry, by_group, deploy_templates)
-        if per_service:
-            out |= {svc} if svc else set()
-        else:
-            out |= set(by_group.values())
+        _, per_service, svc = _template_scope(by_id.get(tid, {}), registry, by_group, deploy_templates)
+        if not per_service:
+            out |= set(inventory_services(by_group))
+        elif svc:
+            out.add(svc)
     return out
 
 
@@ -154,6 +158,12 @@ def group_services(groups: dict, host_services: dict) -> dict:
     return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
 
 
+def inventory_services(by_group: dict) -> list[str]:
+    """The inventory's services, as every mode keys them: the collector's NetBox lookup loops
+    this list, so the write can never reach a service the aggregate does not track."""
+    return sorted(set(by_group.values()))
+
+
 def is_check_mode(task: dict) -> bool:
     """Semaphore records Ansible check mode on the task as params.dry_run (v2.17 db/Task.go)."""
     return bool((task.get("params") or {}).get("dry_run"))
@@ -173,7 +183,8 @@ def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
                 newest[key] = task
     kept = {k: t for k, t in newest.items()
             if not k[2] or t["id"] > newest.get((k[0], k[1], False), {"id": -1})["id"]}
-    return [dict(t, service=key[1]) for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
+    return [{**{k: t[k] for k in PICKED_KEYS if k in t}, "service": key[1]}
+            for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],
@@ -323,7 +334,7 @@ def main() -> int:
         # The inventory's services, as the parser keys them: the collector's NetBox lookup loops
         # this list, so a write can never reach a service the aggregate does not track.
         out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys),
-               "inventory_services": sorted(set(by_group.values()))}
+               "inventory_services": inventory_services(by_group)}
     elif mode == "pick":
         out = {"tasks": pick(data["histories"], by_group),
                "window_full": sorted({h[0]["template_id"] for h in data["histories"]
@@ -331,7 +342,7 @@ def main() -> int:
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
         full = data.get("window_full", [])
-        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys,
+        out = aggregate(data["registry"], data["templates"], tasks, inventory_services(by_group), deploys,
                         full, data.get("retained") or {},
                         incomplete_services(full, data["templates"], data["registry"], by_group, deploys))
         if data.get("now_ns"):
