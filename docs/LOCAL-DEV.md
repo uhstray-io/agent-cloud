@@ -107,11 +107,14 @@ Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
 - **Check mode.** `DRY_RUN=1 ./scripts/local-dev.sh run <playbook>` launches the task
   in Ansible check mode (the task's `params.dry_run`). Run it first, then again
   without `DRY_RUN` for the real run.
-- **Which code runs.** Local templates are bound to the `agent-cloud worktree`
-  repository record, a read-only mount of THIS checkout, cloned at its `HEAD`
-  (`local_repo_branch`, default `HEAD`). Local Semaphore runs whatever commit this
-  checkout has checked out, including its scheduled templates. It does not run the
-  branch you are editing in another worktree.
+- **Which code runs.** `(Local)` templates are bound to the `agent-cloud worktree`
+  repository record: a read-only mount of THIS checkout that Semaphore runs in
+  place, with no clone (`bootstrap-local-dev.yml`). Every local task, the scheduled
+  ones included, runs this checkout's files as they are, uncommitted edits too. It
+  does not run a branch you are editing in another worktree. One exception: when a
+  playbook has no worktree-bound template, `run` falls back to a repository-bound
+  one and prints a `WARN`; that run executes the record's branch from GitHub, not
+  your working tree.
 - **Reading a task.** `run` prints the last 40 lines. `./scripts/local-dev.sh output
   <task-id>` prints the whole log with the same state file.
 

@@ -28,7 +28,7 @@ supersede it with a new entry and link both.
 | # | Mistake | Class | Enforced by |
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
@@ -179,7 +179,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 2.**
+**Occurrences: 4** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -193,6 +193,29 @@ quoting and pass without it, including an unterminated final line.
 
 **Additional enforcement.** `test_provider_config_survives_actual_loader` in
 `platform/tests/test_postiz_seed_input.py`.
+
+**Occurrence 3 — 2026-09-25.** Before handing the operator a local Semaphore launch, I
+grepped `scripts/semaphore-launch.py` for `http://|https|127\.0\.0\.1|localhost|scheme|cleartext|refuse`,
+got nothing, and told the operator the launcher had "no URL-scheme restriction". It refuses
+anything but HTTPS; its message says "plain HTTPS origin" in capitals, and my search was
+case-sensitive. The command I handed over failed on its first run.
+
+**Occurrence 4 — 2026-09-25.** I told the operator local Semaphore "clones the main checkout
+at its HEAD", and wrote it into three docs in PR #266, from `local_repo_branch` defaulting to
+`HEAD`. Three lines above that variable, `bootstrap-local-dev.yml` says the record points at the
+working tree and runs "in place (no clone)", so uncommitted edits run too. Codex caught it
+before merge.
+
+**Why the rule did not fire.** Neither search felt like a "gap" check. One was a quick safety
+look before a command, the other a reading of a variable's name. The rule is phrased around
+config gaps and wrong files, so it did not come to mind for "does this tool restrict X" or
+"what does this setting do".
+
+**Proposal (count ≥ 3, Convention alone is no longer acceptable).** A PostToolUse hook on
+Grep/`grep`: when a search returns zero matches, it appends "zero matches is not absence:
+check case, the path searched, and the file the runtime actually loads". That puts the rule at
+the moment of the search, not in this file. A claim about what a setting does cites the lines
+that implement it, not the setting's name.
 
 ### 1.3 A masked exit code reported as success
 
