@@ -52,16 +52,6 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions: >-
-      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
-         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
-          if o11y_alerts_enabled | default(false) | bool else []) }}
-    _required_existing_secrets: >-
-      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
-    _shared_reads:
-      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
-    _env_templates:
-      - { src: env.j2, dest: .env, mode: "0600" }
     expected_service: "{{ _probe }}"
     expected_instance: "{{ (_probe ~ ':65535') if (local_mode | default(false) | bool) else '127.0.0.1:65535' }}"
     _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
@@ -179,10 +169,21 @@
       check_mode: false
       when: not (local_mode | default(false) | bool)
 
+    - name: Read tracked changes in the deployed production checkout
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=no]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_changes
+      changed_when: false
+      check_mode: false
+      when: not (local_mode | default(false) | bool)
+
     - name: Refuse a receiver not already deployed from the reviewed revision
       ansible.builtin.assert:
-        that: _deployed_revision.stdout == expected_repository_sha
-        fail_msg: "Deploy the reviewed Dev revision to the receiver before running its alert canary."
+        that:
+          - _deployed_revision.stdout == expected_repository_sha
+          - _deployed_changes.stdout | length == 0
+        fail_msg: "Deploy the clean reviewed Dev revision to the receiver before running its alert canary."
       when: not (local_mode | default(false) | bool)
 
     - name: Refuse to overwrite an existing production canary scrape file
@@ -197,6 +198,18 @@
         fail_msg: "A production canary scrape file already exists; restore the baseline before retrying."
       when: not (local_mode | default(false) | bool)
 
+    - name: Refuse an unfinished production canary restoration
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+      register: _prod_canary_marker
+      when: not (local_mode | default(false) | bool)
+
+    - name: Require a cleared production canary marker
+      ansible.builtin.assert:
+        that: not _prod_canary_marker.stat.exists
+        fail_msg: "Production canary restoration is unfinished; run Restore o11y Alert Baseline (Dev)."
+      when: not (local_mode | default(false) | bool)
+
     - name: Require the production route values already deployed
       ansible.builtin.command:
         argv: [grep, -Fxq, "{{ item }}", "{{ _deploy_dir }}/.env"]
@@ -209,6 +222,13 @@
 
     - name: Activate only the canary rule, prove delivery, and restore the baseline
       block:
+        - name: Block normal deploys until production restoration is verified
+          ansible.builtin.copy:
+            dest: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+            mode: "0644"
+            content: "Restore o11y Alert Baseline (Dev) before normal deployment.\n"
+          when: not (local_mode | default(false) | bool)
+
         - name: Render a production-only unreachable scrape target
           ansible.builtin.copy:
             dest: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"

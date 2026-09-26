@@ -52,7 +52,8 @@
       ansible.builtin.assert:
         that:
           - not ansible_check_mode
-        fail_msg: "The alert-baseline restore requires a real Semaphore run."
+          - not (o11y_alerts_enabled | default(false) | bool)
+        fail_msg: "The alert-baseline restore requires a real Semaphore run with alerts still disabled."
 
     - name: Place the reviewed checkout for local baseline rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml

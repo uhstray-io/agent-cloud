@@ -135,3 +135,9 @@
       _restored_contacts.stdout | from_json |
       selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length == 0
     fail_msg: "The canary contact point remains active; run Restore o11y Alert Baseline (Dev)."
+
+- name: Clear the production canary marker only after baseline verification
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+    state: absent
+  when: not (local_mode | default(false) | bool)

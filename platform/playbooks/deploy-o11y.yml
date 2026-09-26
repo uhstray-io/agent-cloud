@@ -93,10 +93,18 @@
       register: _unfinished_prod_canary
       when: not (local_mode | default(false) | bool)
 
+    - name: "Inspect an unfinished production alert restoration"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+      register: _unfinished_prod_restore
+      when: not (local_mode | default(false) | bool)
+
     - name: "Refuse a normal deploy while the production canary needs restoration"
       ansible.builtin.assert:
-        that: not _unfinished_prod_canary.stat.exists
-        fail_msg: "Production canary scrape remains; run Restore o11y Alert Baseline (Dev) before deploying."
+        that:
+          - not _unfinished_prod_canary.stat.exists
+          - not _unfinished_prod_restore.stat.exists
+        fail_msg: "Production canary restoration is unfinished; run Restore o11y Alert Baseline (Dev) before deploying."
       when: not (local_mode | default(false) | bool)
 
     - name: "Require complete DGX scrape settings when nodes are declared"

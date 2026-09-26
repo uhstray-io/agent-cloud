@@ -552,9 +552,12 @@
 > filtered Grafana rule with the OpenBao-backed Discord webhook, requires a
 > matching new Discord bot-history receipt, then removes the scrape and
 > restores paused rules and the original runtime environment. The receiver
-> must already run the exact reviewed `dev` revision, and its Authentik route
-> values must match inventory before the drill starts. An interrupted run uses
-> the separate restore play. Production alerts stay disabled until a live
+> must already run the exact reviewed `dev` revision with no tracked changes,
+> and its Authentik route values must match inventory before the drill starts.
+> A marker blocks normal deploys until the paused rule and absent contact
+> point are verified after restoration. An interrupted run uses the separate
+> restore play, which refuses while persistent alerts are enabled. Production
+> alerts stay disabled until a live
 > canary and restoration both succeed; this paragraph records design and
 > deployment gates, not a delivery receipt.
 
