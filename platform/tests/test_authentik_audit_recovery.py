@@ -47,7 +47,11 @@ def test_recovery_starts_only_existing_audit_dependencies():
             "    fmt=sys.argv[3]\n"
             "    if 'json .Mounts' in fmt:\n"
             "        dest='/var/lib/postgresql/data' if name.endswith('postgresql') else '/data'\n"
-            "        print(json.dumps([{'Type':'volume','Name':name+'-data','Destination':dest}]))\n"
+            "        volume=('authentik_authentik-postgres' if name.endswith('postgresql')\n"
+            "                else 'authentik_authentik-redis')\n"
+            "        if name.endswith('postgresql') and os.environ.get('FAKE_PODMAN_WRONG_VOLUME'):\n"
+            "            volume='other-data'\n"
+            "        print(json.dumps([{'Type':'volume','Name':volume,'Destination':dest}]))\n"
             "    elif 'Health.Status' in fmt: print('healthy' if state[name]=='running' else 'starting')\n"
             "    else: print('id-'+name+' image-'+name+' '+state[name]+' always')\n"
             "else: sys.exit(2)\n"
@@ -87,6 +91,14 @@ def test_recovery_starts_only_existing_audit_dependencies():
             **dict.fromkeys(NAMES[:3], "running"),
             "authentik-worker": "created",
         }
+
+        state_file.write_text(json.dumps(dict.fromkeys(NAMES, "created")))
+        env["FAKE_PODMAN_WRONG_VOLUME"] = "1"
+        wrong_volume = run(["-e", "authentik_runtime_apply=true"])
+        assert wrong_volume.returncode != 0
+        assert "no declared named data volume" in wrong_volume.stdout
+        assert json.loads(state_file.read_text()) == dict.fromkeys(NAMES, "created")
+        del env["FAKE_PODMAN_WRONG_VOLUME"]
 
         state_file.write_text(json.dumps(dict.fromkeys(NAMES, "running")))
         refused = run(["-e", "authentik_runtime_apply=true"])

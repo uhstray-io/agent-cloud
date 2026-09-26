@@ -100,6 +100,7 @@
           - >-
             item.stdout | from_json | selectattr('Type', 'equalto', 'volume')
             | selectattr('Destination', 'equalto', '/var/lib/postgresql/data' if item.item == 'authentik-postgresql' else '/data')
+            | selectattr('Name', 'equalto', 'authentik_authentik-postgres' if item.item == 'authentik-postgresql' else 'authentik_authentik-redis')
             | list | length == 1
         fail_msg: "{{ item.item }} has no declared named data volume; no recovery was applied."
       loop: "{{ _mounts.results }}"
