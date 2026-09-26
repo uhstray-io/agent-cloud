@@ -37,6 +37,7 @@
     _script: |
       ENGINE=$1 FMT=$2
       command -v "$ENGINE" >/dev/null 2>&1 || { echo "(no $ENGINE)"; exit 0; }
+      "$ENGINE" --version 2>/dev/null
       ids=$("$ENGINE" ps -aq 2>/dev/null) || { echo "($ENGINE not usable here)"; exit 0; }
       [ -n "$ids" ] || { echo "(no containers)"; exit 0; }
       # shellcheck disable=SC2086

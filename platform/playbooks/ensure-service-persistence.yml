@@ -10,9 +10,12 @@
 #   rootful podman    the SYSTEM podman-restart.service enabled
 #   docker            docker.service enabled (Docker restarts `always` containers itself)
 #
-# A boot unit starts only `restart: always` containers. A container still carrying another
-# policy is not changed here: rerun that service's deploy, whose compose declares `always`
-# (test_restart_policy.bats), and verify-service-persistence.yml names any it finds.
+# A boot unit starts only `restart: always` containers. A podman container carrying another
+# policy is set to `always` in place (`podman update --restart always`): the container keeps
+# running, same process, which matters on the orchestrator's own host. `no` is left alone
+# (a one-shot init container; verify-service-persistence.yml judges it). The service's compose
+# already declares `always` (test_restart_policy.bats), so this converges drift from a legacy
+# compose file; a later `up` from that legacy file would bring the old policy back.
 #
 # Idempotent and check-mode safe (--check reports what would change, writes nothing).
 #
@@ -52,6 +55,31 @@
       when:
         - _engine == 'docker'
         - not _local
+
+    - name: "Podman: list the service's containers"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+      when: _engine == 'podman'
+
+    - name: "Podman: read each container's restart policy"
+      ansible.builtin.command:
+        argv: ["podman", "inspect", "--format", "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}", "{{ item }}"]
+      loop: "{{ _lsc.stdout_lines | default([]) if _engine == 'podman' else [] }}"
+      become: "{{ _rootful }}"
+      register: _ensure_policies
+      changed_when: false
+      check_mode: false
+
+    - name: "Podman: set restart policy always in place (the container is not restarted)"
+      ansible.builtin.command:
+        argv: [podman, update, --restart, always, "{{ item.item }}"]
+      loop: "{{ _ensure_policies.results | rejectattr('stdout', 'in', ['always', 'no']) | list }}"
+      loop_control:
+        label: "{{ item.item }} ({{ item.stdout | default('') or 'none' }} -> always)"
+      become: "{{ _rootful }}"
+      changed_when: true
 
     - name: "Report"
       ansible.builtin.debug:

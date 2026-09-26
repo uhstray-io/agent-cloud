@@ -55,6 +55,7 @@
             {{ '{{' }}.State.ExitCode{{ '}}' }} {{ '{{' }}index .Config.Labels "agent-cloud.one-shot"{{ '}}' }}
           - "{{ item }}"
       loop: "{{ _lsc.stdout_lines }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
       register: _policies
       changed_when: false
       check_mode: false
@@ -89,6 +90,18 @@
       check_mode: false
       when: _rootless_podman | bool
 
+    - name: "Rootful podman: is the system boot unit enabled?"
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, podman-restart.service]
+      register: _system_unit
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
     - name: "Decide the result"
       ansible.builtin.set_fact:
         _restart_policies: >-
@@ -100,8 +113,9 @@
           {{ 'not-applicable' if (_linger is skipped)
              else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
         _boot_unit_state: >-
-          {{ 'not-applicable' if (_boot_unit is skipped)
-             else ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') }}
+          {{ ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') if (_boot_unit is not skipped)
+             else ((('enabled' if (_system_unit.stdout | default('') | trim) == 'enabled' else 'disabled'))
+                   if ((_system_unit | default({'skipped': true})) is not skipped) else 'not-applicable') }}
 
     - name: "Decide the failures"
       ansible.builtin.set_fact:
@@ -116,7 +130,9 @@
                 | reject('in', _one_shot_done)
                 | map('regex_replace', '^', 'restart policy "no" but not a declared one-shot container (label agent-cloud.one-shot=true) that exited 0: ') | list)
              + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
-             + (['podman-restart.service is not enabled for the deploying user: containers will not start at boot']
+             + (['podman-restart.service is not enabled '
+                 ~ ('for the deploying user' if (_boot_unit is not skipped) else '(system unit)')
+                 ~ ': containers will not start at boot']
                 if _boot_unit_state == 'disabled' else []) }}
 
     - name: "Report"

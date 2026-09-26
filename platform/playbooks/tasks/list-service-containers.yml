@@ -8,6 +8,11 @@
 # A read: runs in check mode too, and never fails the play; an empty result is the caller's
 # to judge (verify-service-persistence.yml fails on it, the snapshots record it).
 #
+# A service still running from a directory outside the monorepo (a legacy standalone layout,
+# e.g. production openbao, semaphore and caddy) declares that directory as compose_working_dir.
+# A rootful podman service (podman_rootful: true) is listed as root, since its containers are
+# invisible to the connecting user's `podman ps`.
+#
 # Caller passes:  _lsc_fields  container fields to print, e.g. [Names, Ports]
 #                 _lsc_all     include stopped containers (default false)
 # Registers:      _lsc         (read _lsc.stdout_lines: one line per container)
@@ -16,7 +21,8 @@
 - name: "Resolve the service's deploy directory and engine"
   ansible.builtin.set_fact:
     _deploy_dir: >-
-      {{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}
+      {{ compose_working_dir | default((local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
+         ~ '/' ~ monorepo_deploy_path, true) }}
     _engine: "{{ container_engine | default('podman') }}"
 
 - name: "List the service's containers (by compose working directory)"
@@ -25,6 +31,7 @@
       {{ [_engine, 'ps'] + (['-a'] if (_lsc_all | default(false) | bool) else [])
          + ['--filter', 'label=com.docker.compose.project.working_dir=' ~ _deploy_dir,
             '--format', _lsc_fields | map('regex_replace', '^', '{{.') | map('regex_replace', '$', '}}') | join(' ')] }}
+  become: "{{ podman_rootful | default(false) | bool }}"
   register: _lsc
   changed_when: false
   failed_when: false
