@@ -19,7 +19,7 @@ import semaphore_seed as core  # noqa: E402  (on sys.path once the CLI is loaded
 
 # The seed target as seed_target() resolves it for FakeAPI (repository 5, inventory 2).
 TARGET = core.Target(301, 9, "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)",
-                     "platform/playbooks/seed-openbao-key.yml", {"repository_id": 5, "inventory_id": 2})
+                     "platform/playbooks/seed-openbao-key.yml", 5, 2)
 
 SECRET = "synthetic-value-never-printed"
 
@@ -137,13 +137,12 @@ def test_seed_refuses_a_leftover_staged_input_before_any_write():
 
 def test_verify_only_stages_nothing_and_sets_only_the_access_switch():
     api = FakeAPI()
-    cli.verify_access(api, 1, 301, "bao_verify_access_only", {"bao_path": "services/x", "bao_key": "k"},
-                      check=lambda: None)
+    cli.verify_access(api, 1, TARGET, "bao_verify_access_only", {"bao_path": "services/x", "bao_key": "k"})
     writes = [(path, body) for path, body in api.calls if body]
     assert [path for path, _ in writes] == ["/tasks"]
     assert json.loads(writes[0][1]["environment"])["bao_verify_access_only"] == "true"
     with pytest.raises(cli.Refusal):
-        cli.verify_access(FakeAPI(status="error"), 1, 301, "bao_verify_access_only", {}, check=lambda: None)
+        cli.verify_access(FakeAPI(status="error"), 1, TARGET, "bao_verify_access_only", {})
 
 
 # ── the CLI end to end: every mode runs the same read-only preflight first ──────
@@ -270,9 +269,7 @@ def test_an_unreadable_poll_names_the_task(monkeypatch, reply):
         semaphore_seed.wait(lambda path, body=None: reply, {"id": 900, "status": "waiting"}, "Access check")
 
 
-@pytest.mark.parametrize("bindings", [{}, {"repository_id": 5}, {"inventory_id": 2}])
-def test_a_target_without_both_bindings_is_refused_before_any_request(bindings):
-    api = FakeAPI()
-    with pytest.raises(cli.Refusal, match="approved repository and inventory"):
-        cli.preflight(api, 1, TARGET._replace(bindings=bindings))
-    assert api.calls == []
+def test_a_target_cannot_be_built_without_both_bindings():
+    with pytest.raises(TypeError):
+        core.Target(301, 9, "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)",
+                    "platform/playbooks/seed-openbao-key.yml", 5)

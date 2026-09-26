@@ -71,15 +71,15 @@ def read_settings(pairs, decl):
     return settings
 
 
-def verify_access(api, project, template_id, access_var, settings, *, check, timeout=600):
+def verify_access(api, project, target, access_var, settings, *, timeout=600):
     """Run the template's read-only access check. Stages nothing.
 
-    `check` is the same read-only preflight the seed runs (a callable), so this can never
-    launch a template the seed itself would refuse.
+    It runs the same read-only preflight the seed runs first, so it can never launch a
+    template the seed itself would refuse.
     """
-    check()
+    preflight(api, project, target)
     what = "Read-only access check"
-    task = submit(api, {"project_id": project, "template_id": template_id,
+    task = submit(api, {"project_id": project, "template_id": target.template_id,
                         "message": "Read-only access check for an isolated seed environment",
                         "environment": json.dumps({**settings, access_var: "true"})}, what)
     task = wait(api, task, what, timeout)
@@ -114,18 +114,15 @@ def main():
         t = seed_target(api, decl, args.variant, args.inventory)
         print(f"Template {t.template_name!r} in {t.environment_name!r}; inputs "
               f"{', '.join(sorted(values)) or 'none'}; settings {', '.join(sorted(settings))}", flush=True)
-
-        def check():
-            return preflight(api, args.project, t)
         # Each path runs the read-only preflight exactly once: here for a dry run, inside
         # verify_access and stage_and_seed otherwise.
         if not args.apply:
-            check()
+            preflight(api, args.project, t)
             print(f"Template {t.template_id}, environment {t.environment_id}: every preflight check passed. "
                   "Dry run: nothing changed.")
             return 0
         if args.verify_only:
-            verify_access(api, args.project, t.template_id, decl["seed_access_check"], settings, check=check)
+            verify_access(api, args.project, t, decl["seed_access_check"], settings)
             return 0
         stage_and_seed(api, args.project, t, values, extra=settings,
                        message=f"Seed via {t.environment_name} (encrypted, removed after the task)")

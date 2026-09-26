@@ -33,8 +33,7 @@ def test_parser_is_literal_and_allowlisted():
 
 def stage(api, values):
     """The shared lifecycle core, called the way postiz-seed-input.py's --apply calls it."""
-    target = core.Target(151, 2, "Seed Postiz Secrets", "dedicated-seed", PLAYBOOK,
-                         {"repository_id": 5, "inventory_id": 2})
+    target = core.Target(151, 2, "Seed Postiz Secrets", "dedicated-seed", PLAYBOOK, 5, 2)
     return seed.stage_and_seed(api, 1, target, values)
 
 

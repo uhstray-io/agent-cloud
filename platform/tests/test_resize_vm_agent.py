@@ -6,6 +6,7 @@ ansible-playbook.
 """
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,8 +16,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/resize-vm.yml"
-TASKS = ("Split the guest-agent property string",
-         "Resolve current values + the disk device to grow",
+TASKS = ("Resolve current values + the disk device to grow",
          "Decide whether the guest needs a restart to pick up its config",
          "Compute the config changes actually needed")
 
@@ -34,14 +34,16 @@ def decide(tmp_path, *, agent=None, pending=(), running=True, want_agent=True):
                  "_cfg": {"json": {"data": cfg}},
                  "_state": {"json": {"data": {"status": "running" if running else "stopped",
                                               "maxmem": 4096 * 1048576, "cpus": 2}}},
-                 "_pending": {"json": {"data": [dict(p) for p in pending]}}},
+                 "_pending": {"json": {"data": [dict(p) for p in pending]}},
+                 # The playbook's own lazy definitions, not copies.
+                 **{k: play["vars"][k] for k in ("_agent_items", "_agent_awaits_restart")}},
         "tasks": [tasks[n] for n in TASKS] + [{"ansible.builtin.debug": {
             "msg": "RESULT={{ {'changes': _cfg_changes, 'restart': _needs_restart | bool} | to_json }}"}}],
     }]
     play_file = tmp_path / "play.yml"
     play_file.write_text(yaml.safe_dump(harness, sort_keys=False))
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play_file)], capture_output=True, text=True,
-                         env={"ANSIBLE_NOCOLOR": "1", "PATH": __import__("os").environ["PATH"],
+                         env={"ANSIBLE_NOCOLOR": "1", "PATH": os.environ["PATH"],
                               "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
                          stdin=subprocess.DEVNULL, timeout=120).stdout
     line = next(ln for ln in out.splitlines() if "RESULT=" in ln)

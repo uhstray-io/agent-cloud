@@ -157,13 +157,16 @@ def locate(api, template_name, environment_name):
 
 
 class Target(NamedTuple):
-    """Where one seed runs: resolved by name, with the bindings its preflight must still see."""
+    """Where one seed runs: resolved by name, with the APPROVED repository and inventory its
+    template must still be bound to. Both are required fields, so a target missing either
+    cannot be built (CodeRabbit review of #264)."""
     template_id: int
     environment_id: int
     template_name: str
     environment_name: str
     playbook: str
-    bindings: dict
+    repository_id: int
+    inventory_id: int
 
 
 def seed_target(api, decl, variant, inventory):
@@ -172,9 +175,8 @@ def seed_target(api, decl, variant, inventory):
     its target here, so none of them can skip or reorder a binding check."""
     template_name, environment_name = resolve_names(decl, variant)
     template_id, environment_id = locate(api, template_name, environment_name)
-    bindings = {"repository_id": resolve_repository(api, repository_name(decl, variant)),
-                "inventory_id": inventory}
-    return Target(template_id, environment_id, template_name, environment_name, decl["playbook"], bindings)
+    return Target(template_id, environment_id, template_name, environment_name, decl["playbook"],
+                  resolve_repository(api, repository_name(decl, variant)), inventory)
 
 
 def environment_body(env, operations):
@@ -186,28 +188,23 @@ def preflight(api, project, target):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
-    can launch or stage against a template the others would refuse. `bindings` maps
-    template fields (repository_id, inventory_id) to their APPROVED values: a template
-    rebound after provisioning is refused before anything is staged or launched. The
+    can launch or stage against a template the others would refuse. The target's
+    repository_id and inventory_id are the APPROVED bindings: a template rebound after
+    provisioning is refused before anything is staged or launched. The
     approved inventory is also where the seed run's OpenBao address comes from (its
     all.vars); the run refuses an address that differs from it.
     """
     template_id, expected_env = target.template_id, target.environment_id
-    playbook, template_name, bindings = target.playbook, target.template_name, target.bindings
-    # Mandatory, BOTH of them: a target missing either could skip that half of the check
-    # (CodeRabbit review of #264).
-    if not bindings or not {"repository_id", "inventory_id"} <= set(bindings):
-        raise Refusal("A seed target must carry its approved repository and inventory bindings")
     template = api(f"/templates/{template_id}")
-    if (template.get("playbook") != playbook
-            or template.get("name") != template_name
+    if (template.get("playbook") != target.playbook
+            or template.get("name") != target.template_name
             or template.get("app") != "ansible"
             or template.get("arguments") not in (None, "[]", [])
             or template.get("environment_id") != expected_env):
         raise Refusal("Template name, playbook, app, arguments or environment binding differs; "
                       "run Provision Seed Environment")
-    for field, approved in bindings.items():
-        if template.get(field) != approved:
+    for field in ("repository_id", "inventory_id"):
+        if template.get(field) != getattr(target, field):
             raise Refusal(f"Template {field} differs from its approved binding")
     templates = {item["id"]: item for item in api("/templates")}
     if any(item.get("environment_id") == expected_env and item.get("id") != template_id
