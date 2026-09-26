@@ -120,13 +120,31 @@ assert local['GF_SERVER_ROOT_URL'] == 'https://grafana.agent-cloud.test:8443/'
 assert local['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.agent-cloud.test:8443/application/o/authorize/'
 assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000/application/o/token/'
 assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
+assert 'O11Y_AUTHENTIK_EDGE_IP' not in local
 
-prod = values(local_mode=False, o11y_zone='uhstray.io')
+prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10')
 assert prod['GF_SERVER_ROOT_URL'] == 'https://o11y.uhstray.io/'
 assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
 assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
 assert prod['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'https://auth.uhstray.io/application/o/userinfo/'
+assert prod['O11Y_ZONE'] == 'uhstray.io'
+assert prod['O11Y_AUTHENTIK_EDGE_IP'] == '192.0.2.10'
 assert 'GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE' not in prod
+PY
+}
+
+@test "o11y: production Grafana resolves Authentik through declared Caddy IP" {
+  python3 - "$DEPLOY_DIR/compose.prod.yml" "$DEPLOY_DIR/deploy.sh" <<'PY'
+import sys
+import yaml
+
+overlay = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert overlay['services']['grafana']['extra_hosts'] == [
+    'auth.${O11Y_ZONE:?}:${O11Y_AUTHENTIK_EDGE_IP:?}'
+]
+deploy = open(sys.argv[2], encoding='utf-8').read()
+assert 'if [ "${LOCAL_MODE:-}" != "true" ]; then' in deploy
+assert 'COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"' in deploy
 PY
 }
 
@@ -143,8 +161,64 @@ YAML
   run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
     "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
   [ "$status" -ne 0 ]
-  assert_contains "$output" "Production o11y needs its declared DNS zone"
+  assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
   refute_contains "$output" "TASK [Place the monorepo"
+}
+
+@test "o11y: production refuses a missing Caddy origin before placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    -e local_mode=false -e o11y_zone=example.invalid
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
+  refute_contains "$output" "TASK [Place the monorepo"
+}
+
+@test "o11y: local clean excludes production overlay and reports a failed Compose teardown" {
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/clean-service.yml" <<'PY'
+import pathlib
+import subprocess
+import sys
+import tempfile
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+with tempfile.TemporaryDirectory() as temp:
+    root = pathlib.Path(temp)
+    deploy = root / 'deployment'
+    deploy.mkdir()
+    for name in ('compose.yml', 'compose.local.yml', 'compose.prod.yml'):
+        (deploy / name).write_text('services: {}\n', encoding='utf-8')
+    engine = root / 'mock-engine'
+    engine.write_text('#!/bin/sh\ncase "$1" in compose) printf "%s\\n" "$@" > "$MOCK_ARGS"; exit 23;; ps) exit 0;; esac\n', encoding='utf-8')
+    engine.chmod(0o755)
+    for mode in ('local', 'prod'):
+        task = next(t for t in tasks if t['name'].startswith(f'Stop and remove containers + volumes ({mode})'))
+        shell = task['ansible.builtin.shell']
+        shell = shell.replace('{{ _monorepo_dir }}', str(root))
+        shell = shell.replace('{{ monorepo_deploy_path }}', 'deployment')
+        shell = shell.replace('{{ container_engine | default(\'podman\') }}', str(engine))
+        shell = shell.replace('{{ container_engine | default(\'docker\') }}', str(engine))
+        shell = shell.replace('{{ service_name }}', 'o11y')
+        shell = shell.replace("{{ '{{' }}.Names{{ '}}' }}", '.Names')
+        args_path = root / f'{mode}-args'
+        result = subprocess.run(['/bin/bash', '-c', shell], cwd=deploy,
+                                env={'MOCK_ARGS': str(args_path), 'PATH': '/usr/bin:/bin'},
+                                capture_output=True, text=True)
+        assert result.returncode == 23, (mode, result.returncode, result.stderr)
+        args = args_path.read_text(encoding='utf-8')
+        assert ('compose.local.yml' in args) == (mode == 'local')
+        assert ('compose.prod.yml' in args) == (mode == 'prod')
+PY
 }
 
 @test "o11y: production Dev template pins both controller and receiver revisions" {

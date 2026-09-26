@@ -20,6 +20,12 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/common.sh"
 
+# Production Grafana must reach Authentik through the declared LAN Caddy host;
+# public DNS sends its token exchange through Cloudflare's browser challenge.
+if [ "${LOCAL_MODE:-}" != "true" ]; then
+  COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
