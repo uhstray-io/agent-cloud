@@ -66,6 +66,7 @@ supersede it with a new entry and link both.
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
+| 2.24 | A local run proved a playbook whose `environment:` Go template the production Ansible re-templated and refused | Wrong-reason pass | Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -1362,6 +1363,28 @@ once to watch its case go red.
 
 **Enforced by.** Convention. This instance: the helper now defaults to a matching NIC, and
 removing the vmid, name or running filter each turns the suite red (mutation-checked).
+
+### 2.24 A local run proved a playbook the production Ansible could not run
+
+**What happened.** PR #282 added `inspect-host-containers.yml`, which passed the container
+inspect format (`{{.Name}}|{{.Config.Image}}|...`, a Go template) to its shell probes through
+`environment:`. A run against local-dev listed every container, and the PR merged on that
+evidence. Its first production launches failed on every host with "template error while
+templating string: unexpected '.'": production Semaphore's Ansible templates `environment:`
+values a second time, and the Go template reads as Jinja. `tasks/list-service-containers.yml`
+had always passed the same kind of format as a `command` argv, which production does not
+re-template, so the working pattern was already in the repo, a few files away.
+
+**Root cause.** Local-dev Semaphore and production run different Ansible versions, so a local
+pass proves the logic, not how the production controller templates it. The new playbook
+re-invented a data path instead of copying the one that had already run in production.
+
+**The rule.** Pass literal template syntax (Go templates, `{{` of any kind) as a `command` argv
+built from one expression, the way `list-service-containers.yml` does, never through
+`environment:` or a `shell` string. When a local run is the only evidence for a playbook,
+say that production has not run it, and treat the first production launch as its test.
+
+**Enforced by.** Convention.
 
 ## 3. Acting on live state
 

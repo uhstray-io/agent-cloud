@@ -23,7 +23,9 @@
   become: false
   vars:
     # One line per container: name|image|state|restart policy|compose working_dir. Built the way
-    # tasks/list-service-containers.yml builds its format.
+    # tasks/list-service-containers.yml builds its format, and passed the same way: as an argv
+    # element. Production Semaphore's Ansible re-templates `environment:` values, so a Go
+    # template there fails with "unexpected '.'"; argv is not re-templated.
     _fields:
       - .Name
       - .Config.Image
@@ -31,7 +33,9 @@
       - .HostConfig.RestartPolicy.Name
       - index .Config.Labels "com.docker.compose.project.working_dir"
     _fmt: "{{ _fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
+    # $1 = engine, $2 = inspect format (the argv on each probe below).
     _script: |
+      ENGINE=$1 FMT=$2
       command -v "$ENGINE" >/dev/null 2>&1 || { echo "(no $ENGINE)"; exit 0; }
       ids=$("$ENGINE" ps -aq 2>/dev/null) || { echo "($ENGINE not usable here)"; exit 0; }
       [ -n "$ids" ] || { echo "(no containers)"; exit 0; }
@@ -48,20 +52,16 @@
 
   tasks:
     - name: "Rootless podman (the connecting user)"
-      ansible.builtin.shell: "{{ _script }}"
-      args:
-        executable: /bin/sh
-      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      ansible.builtin.command:
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
       register: _rootless
       changed_when: false
       failed_when: false
       check_mode: false
 
     - name: "Rootless podman (the host's dedicated service account)"
-      ansible.builtin.shell: "{{ _script }}"
-      args:
-        executable: /bin/sh
-      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      ansible.builtin.command:
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
       become: true
       become_user: "{{ linger_user }}"
       register: _dedicated
@@ -73,10 +73,8 @@
         - linger_user != (ansible_user | default(''))
 
     - name: "Rootful podman"
-      ansible.builtin.shell: "{{ _script }}"
-      args:
-        executable: /bin/sh
-      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      ansible.builtin.command:
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
       become: true
       register: _rootful
       changed_when: false
@@ -84,10 +82,8 @@
       check_mode: false
 
     - name: "Docker"
-      ansible.builtin.shell: "{{ _script }}"
-      args:
-        executable: /bin/sh
-      environment: {ENGINE: docker, FMT: "{{ _fmt }}"}
+      ansible.builtin.command:
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'docker', _fmt] }}"
       become: true
       register: _docker
       changed_when: false
