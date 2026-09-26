@@ -12,6 +12,11 @@
 # its declared path", and an undeclared one cannot be checked. Validate All Services stays the
 # fleet overview; it only prints, so it cannot prove a step (PR 203 review).
 #
+# Where the probe runs: the executor, by default. A host that publishes its port on loopback only,
+# or firewalls it to the Caddy host, cannot answer the executor however healthy it is (production
+# tududi, honcho and n8n answered -1). Such a host sets health_probe_on_host: true with a loopback
+# health_url, and the probe runs ON the host, where the container's own healthcheck also looks.
+#
 # Usage (Semaphore): -e target_service=tududi_svc
 
 - name: "Refuse a target group that matches no hosts"
@@ -52,7 +57,7 @@
       register: _health
       failed_when: false
       check_mode: false
-      delegate_to: localhost
+      delegate_to: "{{ inventory_hostname if (health_probe_on_host | default(false) | bool) else 'localhost' }}"
       when: _url | length > 0
 
     - name: "Decide"
@@ -61,7 +66,7 @@
           {{ (['no declared health_url or service_url + health_path for ' ~ inventory_hostname]
               if _health is skipped else [])
              + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
-                 ~ (_codes | join(', '))] if (_health is not skipped and _health.status not in _codes) else []) }}
+                 ~ (_codes | join(', '))] if (_health is not skipped and (_health.status | default(none)) not in _codes) else []) }}
 
     # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
     # whole target group: every host's errors, and a host that failed before its verdict counts as

@@ -34,14 +34,15 @@ def _serve(status: int):
     return server
 
 
-def _run(tmp_path, status: int, health_path: str = "/health", via_health_url: bool = False):
+def _run(tmp_path, status: int, health_path: str = "/health", via_health_url: bool = False,
+         host_vars: str = ""):
     server = _serve(status)
     try:
         inventory = tmp_path / "inventory.ini"
         where = (f"health_url=http://127.0.0.1:{server.server_port}/health\n" if via_health_url else
                  f"service_url=http://127.0.0.1:{server.server_port}\nhealth_path={health_path}\n")
         inventory.write_text(
-            "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\n"
+            f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
             f"service_name=demo\n{where}health_status_codes=[200, 503]\n"
         )
         env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
@@ -76,6 +77,18 @@ def test_health_url_alone_is_a_declared_contract(tmp_path):
     # service_url would be written into the service's stored secrets.
     assert _run(tmp_path, 200, via_health_url=True).returncode == 0
     assert _run(tmp_path, 503, via_health_url=True).returncode != 0
+
+
+def test_health_probe_on_host_runs_the_probe_on_the_target(tmp_path):
+    # Production tududi/honcho/n8n publish on loopback or firewall the port to Caddy, so the
+    # executor's probe answered -1 for healthy services. The target here has no usable Python:
+    # a probe delegated to the executor still passes, one that runs on the target cannot.
+    broken = "ansible_python_interpreter=/nonexistent/python"
+    assert _run(tmp_path, 200, via_health_url=True, host_vars=broken).returncode == 0
+    on_host = _run(tmp_path, 200, via_health_url=True, host_vars=broken + " health_probe_on_host=true")
+    assert on_host.returncode != 0
+    assert "answered no response" in on_host.stdout, on_host.stdout[-2000:]
+    assert _run(tmp_path, 200, via_health_url=True, host_vars="health_probe_on_host=true").returncode == 0
 
 
 def test_the_local_inventory_declares_the_verified_health_urls():
