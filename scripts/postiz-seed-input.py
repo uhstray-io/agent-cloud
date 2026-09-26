@@ -93,8 +93,7 @@ def main():
                 raise Refusal("Apply requires --url and --inventory")
             api = API(args.url, args.project, sys.stdin.read().strip())
             t = seed_target(api, declaration(TEMPLATE), args.variant, args.inventory)
-            stage_and_seed(api, args.project, t.template_id, t.environment_id, values, playbook=t.playbook,
-                           template_name=t.template_name, bindings=t.bindings,
+            stage_and_seed(api, args.project, t, values,
                            message="Seed declared Postiz provider credentials via encrypted inputs")
     except Refusal as error:
         print(str(error), file=sys.stderr)

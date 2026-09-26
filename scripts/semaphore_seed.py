@@ -182,7 +182,7 @@ def environment_body(env, operations):
     return {**env, "secrets": operations}
 
 
-def preflight(api, project, template_id, expected_env, *, playbook, template_name, bindings=None):
+def preflight(api, project, target):
     """Every read-only check a seed makes before its first write. Returns (template, env).
 
     Dry run, the read-only access check and the real seed all call this, so none of them
@@ -192,6 +192,12 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     approved inventory is also where the seed run's OpenBao address comes from (its
     all.vars); the run refuses an address that differs from it.
     """
+    template_id, expected_env = target.template_id, target.environment_id
+    playbook, template_name, bindings = target.playbook, target.template_name, target.bindings
+    # Mandatory, BOTH of them: a target missing either could skip that half of the check
+    # (CodeRabbit review of #264).
+    if not bindings or not {"repository_id", "inventory_id"} <= set(bindings):
+        raise Refusal("A seed target must carry its approved repository and inventory bindings")
     template = api(f"/templates/{template_id}")
     if (template.get("playbook") != playbook
             or template.get("name") != template_name
@@ -200,7 +206,7 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
             or template.get("environment_id") != expected_env):
         raise Refusal("Template name, playbook, app, arguments or environment binding differs; "
                       "run Provision Seed Environment")
-    for field, approved in (bindings or {}).items():
+    for field, approved in bindings.items():
         if template.get(field) != approved:
             raise Refusal(f"Template {field} differs from its approved binding")
     templates = {item["id"]: item for item in api("/templates")}
@@ -229,8 +235,7 @@ def preflight(api, project, template_id, expected_env, *, playbook, template_nam
     return template, before
 
 
-def stage_and_seed(api, project, template_id, expected_env, values, *, playbook, template_name,
-                   extra=None, bindings=None,
+def stage_and_seed(api, project, target, values, *, extra=None,
                    message="Seed declared inputs via encrypted inputs", timeout=600):
     """Stage `values` as encrypted inputs in a DEDICATED environment, run one task of the
     seed template, then remove exactly the inputs it created.
@@ -238,8 +243,8 @@ def stage_and_seed(api, project, template_id, expected_env, values, *, playbook,
     Refuses before any write unless the environment is clean by the shared rule (preflight).
     `extra` is NON-SECRET launch configuration only: Semaphore persists it.
     """
-    template, before = preflight(api, project, template_id, expected_env, playbook=playbook,
-                                 template_name=template_name, bindings=bindings)
+    template_id, expected_env = target.template_id, target.environment_id
+    template, before = preflight(api, project, target)
     env_path = f"/environment/{expected_env}"
     # A fresh equality check immediately before the first write. It is not CAS (v2.17 has
     # none); it refuses a change made since preflight read the environment (reviews of #249).

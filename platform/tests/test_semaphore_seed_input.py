@@ -17,8 +17,11 @@ cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 import semaphore_seed as core  # noqa: E402  (on sys.path once the CLI is loaded)
 
+# The seed target as seed_target() resolves it for FakeAPI (repository 5, inventory 2).
+TARGET = core.Target(301, 9, "Seed OpenBao Key (Dev)", "OpenBao key seed inputs (Dev)",
+                     "platform/playbooks/seed-openbao-key.yml", {"repository_id": 5, "inventory_id": 2})
+
 SECRET = "synthetic-value-never-printed"
-OPENBAO_SEED = {"playbook": "platform/playbooks/seed-openbao-key.yml", "template_name": "Seed OpenBao Key (Dev)"}
 
 
 def test_catalog_declares_the_openbao_seed_as_isolated():
@@ -108,14 +111,13 @@ def test_locate_resolves_names_and_preflight_requires_the_isolated_binding():
     # The binding is preflight's to check, once, before any write (not a second copy in locate).
     api = FakeAPI(bound_env=2)
     with pytest.raises(cli.Refusal, match="Provision Seed Environment"):
-        cli.preflight(api, 1, 301, 9, playbook="platform/playbooks/seed-openbao-key.yml",
-                      template_name="Seed OpenBao Key (Dev)")
+        cli.preflight(api, 1, TARGET)
     assert not any(body for _, body in api.calls)
 
 
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
     api = FakeAPI()
-    cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED,
+    cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET},
                        extra={"bao_path": "services/x", "bao_key": "k"})
     submissions = [body for path, body in api.calls if path == "/tasks" and body]
     assert len(submissions) == 1
@@ -129,7 +131,7 @@ def test_seed_refuses_a_leftover_staged_input_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 7, "name": "BAO_VALUE", "type": "env"})
     with pytest.raises(cli.Refusal):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -207,7 +209,7 @@ def test_a_leftover_input_of_another_seed_refuses_the_seed_before_any_write():
     api = FakeAPI()
     api.env["secrets"].append({"id": 8, "name": "SEED_X_API_KEY", "type": "env"})
     with pytest.raises(cli.Refusal, match="leftover inputs: SEED_X_API_KEY"):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -226,8 +228,7 @@ def test_seed_refuses_an_empty_isolated_environment_before_writes():
     api = FakeAPI()
     del api.env["secrets"]  # v2.18.12 single GET omits an empty loaded list
     with pytest.raises(cli.Refusal, match="Provision both AppRole inputs"):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET},
-                           **OPENBAO_SEED)
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -257,7 +258,7 @@ def test_an_environment_changed_after_preflight_is_refused_before_staging(monkey
         return real(self, path, body)
     monkeypatch.setattr(FakeAPI, "__call__", changing)
     with pytest.raises(cli.Refusal, match="changed during preflight"):
-        cli.stage_and_seed(api, 1, 301, 9, {"BAO_VALUE": SECRET}, **OPENBAO_SEED)
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
@@ -267,3 +268,11 @@ def test_an_unreadable_poll_names_the_task(monkeypatch, reply):
     monkeypatch.setattr(semaphore_seed.time, "sleep", lambda _s: None)
     with pytest.raises(cli.Refusal, match="task 900 status unreadable"):
         semaphore_seed.wait(lambda path, body=None: reply, {"id": 900, "status": "waiting"}, "Access check")
+
+
+@pytest.mark.parametrize("bindings", [{}, {"repository_id": 5}, {"inventory_id": 2}])
+def test_a_target_without_both_bindings_is_refused_before_any_request(bindings):
+    api = FakeAPI()
+    with pytest.raises(cli.Refusal, match="approved repository and inventory"):
+        cli.preflight(api, 1, TARGET._replace(bindings=bindings))
+    assert api.calls == []

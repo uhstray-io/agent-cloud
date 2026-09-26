@@ -75,7 +75,7 @@ another group's vars. That is why the environment pins the address, and why the 
 nothing to compare the pin against. An environment edited after binding to point elsewhere is
 caught by the next publication, provisioning or seed CLI preflight, not by the seed task.
 
-**Closed 2026-09-25.** The run uses the inventory value, with no pin in the environment:
+**Drift closed 2026-09-25.** The run uses the inventory value, with no pin in the environment:
 
 1. site-config#22 moved `openbao_addr` to the production inventory's top-level `all.vars`
    (every `agent_cloud` host resolves the same value as before; `localhost` now resolves it),
@@ -91,10 +91,24 @@ caught by the next publication, provisioning or seed CLI preflight, not by the s
    through a named variable, because extra vars outrank every variable; the check also
    refuses the downstream store URLs being supplied before their tasks set them.
 
-Limit: whoever can inject arbitrary extra vars controls the run, so this check catches
-address drift and the obvious overrides, not an operator who can edit the environment or
-launch with arbitrary extra vars. That boundary is Semaphore's edit and launch permissions
-plus the binding-time rule.
+What that check guarantees, corrected 2026-09-25 by a grounding review: it catches DRIFT, a
+plain address set where it should not be. It does not stop a deliberate override. An extra
+var may be a Jinja template, re-rendered in every task, so a value can resolve to the declared
+address inside the check and to another address in the login task (reproduced on ansible-core
+2.16.18 and 2.20.8). The first version of this note said the check closed "the obvious
+overrides"; that was not true of a templated one (`docs/MISTAKES.md` 1.15).
+
+**Open gap: launch permission is extra-var control.** Semaphore v2.17.31 merges every key of a
+task's `environment` JSON into the run's extra vars with no survey filter
+(`services/tasks/TaskRunner.go` `populateTaskEnvironment`; `db/Task.go` `ValidateNewTask`
+checks only the git branch and the task params). So anyone allowed to launch a template can
+supply any extra var, a template included, and redirect that template's OpenBao AppRole login.
+This is not specific to the seeds: 44 playbook and task files log in to OpenBao, and all take
+the address from an overridable variable; two carry the drift check. The controls that bound
+it are who may launch and who may edit environments (Semaphore roles), not anything a playbook
+can check at run time. Candidate mitigations, each needing a decision: restrict launch rights
+on templates that log in to OpenBao; or build secret-bearing request URLs inline from the
+inventory file inside each request (no variable to override), a change to every login site.
 
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
@@ -371,6 +385,7 @@ flowchart LR
 | 2026-09-25 | Seed playbooks refuse undeclared seed inputs at run time; recorded the run-time endpoint check as an open gap needing a design decision. |
 | 2026-09-25 | Corrected the endpoint gap: production declares `openbao_addr` under `agent_cloud`, not `all.vars`, so `localhost` gets no inventory value; recorded the chosen direction and its ordering. |
 | 2026-09-25 | Closed the endpoint gap: the address comes from the inventory's `all.vars`, the environment carries no pin, and the seed run refuses any other address. |
+| 2026-09-25 | Corrected: the run-time check catches drift, not a templated override; recorded launch permission as extra-var control (Semaphore accepts any task-environment key) as an open gap covering every OpenBao login. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 

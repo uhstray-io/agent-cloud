@@ -41,6 +41,7 @@ supersede it with a new entry and link both.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
+| 1.15 | Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -555,6 +556,29 @@ the rule did not fire: it names site-config, and this was Semaphore. Its intent 
 a claim about what production is configured with, or what exists there, is read from the
 system of record (site-config for inventory, the Semaphore API for templates and
 environments) before it is stated.
+
+### 1.15 A security check's guarantee stated past what its tests exercised
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
+the inventory declares. After Codex showed forged helper variables bypassed the first version,
+I rewrote it, tested four injected plain values, and wrote in the task header, the plan and the
+PR that it "closes address drift and the obvious overrides". The next grounding review sent an
+extra var that is a Jinja TEMPLATE: re-rendered per task, it resolved to the declared address
+inside the check and to another address in the login task. Reproduced on 2.16.18 and 2.20.8:
+the plain override was refused, the templated one logged in elsewhere. Reading Semaphore
+v2.17.31 then showed any launcher may supply any extra-var key; there is no survey filter.
+
+**Root cause.** The claim covered a class ("overrides") while the tests covered instances
+(plain strings). Extra vars in Ansible are not values but templates, so "the value the check
+saw" and "the value the login used" are two renderings, not one.
+
+**The rule.** A security guarantee is stated only for the inputs its tests exercise, and the
+tests include the input class's strongest member (for extra vars: a template keyed on task
+context). Anything wider is written as a limit, with the boundary that actually holds it.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 

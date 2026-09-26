@@ -514,6 +514,7 @@ print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len
   assert_grep -qF 'when: not (bao_verify_access_only | default(false) | bool)' <<<"$blk"
   # Capabilities decide, never a GET status alone; every token-bearing call is no_log.
   assert_grep -qF '/v1/sys/capabilities-self' "$t"
-  assert_grep -qF "_write: \"{{ 'patch' if _exists | bool else 'create' }}\"" "$t"
+  # The patch-vs-create rule lives in filter_plugins/seed_access.py (test_seed_access_rule.py).
+  assert_grep -qF '_missing: "{{ _caps | seed_access_missing(_exists | bool) }}"' "$t"
   [ "$(grep -c 'no_log: true' "$t")" -eq 2 ]
 }

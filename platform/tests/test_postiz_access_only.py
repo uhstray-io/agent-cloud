@@ -24,7 +24,7 @@ WIRING = "postiz"
 
 
 def run_access_check(tmp_path, which, capabilities, provider="", exists=False, foreign=None,
-                     override=None, declare=True, env_addr=False, inject=None, declared=None):
+                     declare=True, env_addr=False, inject=None, declared=None):
     playbook, path, extra_vars, _, own_input = PLAYBOOKS[which]
 
     class Bao(FakeBao):
@@ -55,8 +55,7 @@ def run_access_check(tmp_path, which, capabilities, provider="", exists=False, f
         inputs = {**({own_input: provider} if provider else {}),
                   **({foreign: "synthetic-leftover-value"} if foreign else {})}
         code, output = run_seed(tmp_path, playbook, address, verbose=True, declare=declare,
-                                extra={**extra_vars, **({"openbao_addr": override} if override else {}),
-                                       **(inject or {})},
+                                extra={**extra_vars, **(inject or {})},
                                 inputs=inputs, env_addr=address if env_addr else None, declared=declared,
                                 # A templated declaration resolves to the synthetic store.
                                 inventory_vars={"openbao_host": address.removeprefix("http://")})
@@ -77,7 +76,7 @@ def test_access_check_refuses_a_token_the_real_seed_would_be_denied(tmp_path, wh
     code, output, requests = run_access_check(tmp_path, which, ["read", "patch"], exists=False)
     assert code != 0, output
     assert PLAYBOOKS[which][3] not in output
-    assert "seeding needs read plus create" in output
+    assert "seeding it lacks create" in output  # holds read and patch: only create is missing
     assert writes(requests) == []
 
 
@@ -94,7 +93,7 @@ def test_a_leftover_input_of_another_seed_is_refused_before_the_login(tmp_path, 
 def test_an_address_other_than_the_inventorys_is_refused_before_the_login(tmp_path, which):
     # An environment edited after binding (or a -e) overrides the inventory's address.
     code, output, requests = run_access_check(tmp_path, which, ["read", "create"],
-                                              override="http://127.0.0.1:9")
+                                              inject={"openbao_addr": "http://127.0.0.1:9"})
     assert code != 0, output
     assert "An extra var overrode it" in output
     assert requests == []  # not even the AppRole login
@@ -112,8 +111,9 @@ EVIL = "http://127.0.0.1:9"
 
 
 @pytest.mark.parametrize("inject", [
-    # Codex review of PR #256: forge the check's own inputs alongside the override.
-    {"openbao_addr": EVIL, "_ba_declared": [EVIL], "_ba_url": EVIL, "_ba_seen": [EVIL]},
+    # Codex review of PR #256: forge the check's own message input alongside a plain override.
+    # (A TEMPLATED override is not stopped: the header of tasks/assert-bao-addr-declared.yml.)
+    {"openbao_addr": EVIL, "_ba_seen": [EVIL]},
     {"_bao_url": EVIL},             # the login URL itself
     {"_bm_url": EVIL},              # the merge target, set later by the playbook
     {"_sa_url": EVIL},              # the access-check target
