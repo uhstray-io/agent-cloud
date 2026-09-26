@@ -97,6 +97,43 @@ It resolves the registered template by playbook name, passes explicit extra vars
 waits for completion and returns the task result. Operator state lives outside
 the repository; do not print or copy its credential file into documentation.
 
+Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
+
+- **Credentials.** Every `make local-*` target and `scripts/local-dev.sh` subcommand
+  loads the local Semaphore token from `~/.agent-cloud-local/credentials.env`
+  (written by `make local-bootstrap`). Nothing else authenticates to the local
+  instance. `site-config/secrets/semaphore/semaphore_api_token.txt` is the
+  **production** controller's token: local Semaphore answers it with HTTP 401.
+- **Check mode.** `DRY_RUN=1 ./scripts/local-dev.sh run <playbook>` launches the task
+  in Ansible check mode (the task's `params.dry_run`). Run it first, then again
+  without `DRY_RUN` for the real run.
+- **Which code runs.** `(Local)` templates are bound to the `agent-cloud worktree`
+  repository record: a read-only mount of THIS checkout that Semaphore runs in
+  place, with no clone (`bootstrap-local-dev.yml`). A `(Local)` task, a scheduled
+  one included, runs this checkout's files as they are, uncommitted edits too. It
+  does not run a branch you are editing in another worktree. The local catalog also
+  holds the shared templates (no suffix) and their `(Dev)` copies. Those stay bound
+  to their GitHub records, `main` and `dev`, and so do their schedules: a scheduled
+  shared template (for example `Collect Service Conformance`, beside its `(Local)`
+  twin) validates `main`, not your working tree. `run` picks the worktree-bound
+  template. When a playbook has none, it falls back to a repository-bound one and
+  prints a `WARN`, and that run executes the record's branch, not your working tree.
+- **Reading a task.** `run` prints the last 40 lines. `./scripts/local-dev.sh output
+  <task-id>` prints the whole log with the same state file.
+
+```bash
+DRY_RUN=1 ./scripts/local-dev.sh run collect-service-conformance   # check mode first
+./scripts/local-dev.sh run collect-service-conformance             # then the real run
+./scripts/local-dev.sh output 1907                                  # whole log of one task
+```
+
+Never read a credential file into an interpreter that takes its program on stdin
+(`python3 - <<'EOF' ... < token-file`): the redirect replaces the heredoc, the
+interpreter parses the token as code, and its syntax error prints the token
+(MISTAKES 4.10, twice in one day). Production launches go through
+`scripts/semaphore-launch.py` (a script file, the token on stdin, HTTPS only). See
+"Using Semaphore" in `AGENTS.md`.
+
 The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
 `local-validate`, `local-clean`, `promote`) wrap this flow via
 `scripts/local-dev.sh`, which also enforces the local-only guard (refuses

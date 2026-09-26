@@ -28,7 +28,7 @@ supersede it with a new entry and link both.
 | # | Mistake | Class | Enforced by |
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x2** | Unverified claim | Convention + loader test |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
@@ -82,7 +82,7 @@ supersede it with a new entry and link both.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
-| 4.10 | A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention (proposal: a PreToolUse hook) |
+| 4.10 | **x2** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention (proposal: a PreToolUse hook) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -180,7 +180,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 2.**
+**Occurrences: 4** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -194,6 +194,29 @@ quoting and pass without it, including an unterminated final line.
 
 **Additional enforcement.** `test_provider_config_survives_actual_loader` in
 `platform/tests/test_postiz_seed_input.py`.
+
+**Occurrence 3 — 2026-09-25.** Before handing the operator a local Semaphore launch, I
+grepped `scripts/semaphore-launch.py` for `http://|https|127\.0\.0\.1|localhost|scheme|cleartext|refuse`,
+got nothing, and told the operator the launcher had "no URL-scheme restriction". It refuses
+anything but HTTPS; its message says "plain HTTPS origin" in capitals, and my search was
+case-sensitive. The command I handed over failed on its first run.
+
+**Occurrence 4 — 2026-09-25.** I told the operator local Semaphore "clones the main checkout
+at its HEAD", and wrote it into three docs in PR #266, from `local_repo_branch` defaulting to
+`HEAD`. Three lines above that variable, `bootstrap-local-dev.yml` says the record points at the
+working tree and runs "in place (no clone)", so uncommitted edits run too. Codex caught it
+before merge.
+
+**Why the rule did not fire.** Neither search felt like a "gap" check. One was a quick safety
+look before a command, the other a reading of a variable's name. The rule is phrased around
+config gaps and wrong files, so it did not come to mind for "does this tool restrict X" or
+"what does this setting do".
+
+**Proposal (count ≥ 3, Convention alone is no longer acceptable).** A PostToolUse hook on
+Grep/`grep`: when a search returns zero matches, it appends "zero matches is not absence:
+check case, the path searched, and the file the runtime actually loads". That puts the rule at
+the moment of the search, not in this file. A claim about what a setting does cites the lines
+that implement it, not the setting's name.
 
 ### 1.3 A masked exit code reported as success
 
@@ -1785,7 +1808,7 @@ IDs, but no general mechanical scan can identify private destination IDs.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 1** — 2026-09-25
+**Occurrences: 2** — 2026-09-25, 2026-09-25
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -1805,6 +1828,17 @@ name the credential to rotate.
 **Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
 combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
 script) with a redirect from a path under `secrets/`.
+
+**Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
+Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
+I wrote `python3 - <<'EOF' ... EOF < site-config/secrets/semaphore/semaphore_api_token.txt`, the
+same file and the same shape. Python read the token file as its program and printed the token
+in its `SyntaxError`. The operator had called it the local token, and it was not: this entry
+already names it production's, which is why local Semaphore answered 401. Why the rule did not
+fire: it lives in this file and in no session's working context. Nothing read it at the moment
+of composing the command, and the one-off diagnostic looked unlike the "verify a rollout" case
+the entry describes. A second occurrence in one day is the case for the proposed PreToolUse
+hook: the rule has to sit where the command is composed, not in a document read before acting.
 
 ## 5. Duplication and process
 

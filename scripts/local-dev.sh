@@ -206,6 +206,17 @@ run_playbook() {
   _run_template "platform/playbooks/${name%.yml}.yml" "$extra"
 }
 
+# Print one LOCAL Semaphore task's whole log (colour codes stripped). _run_template shows only
+# the last 40 lines; this reads the rest with the same state file, so the token is never
+# typed, printed or piped into an interpreter (docs/MISTAKES.md 4.10).
+task_output() {
+  local task="${1:-}"
+  [[ "$task" =~ ^[0-9]+$ ]] || die "usage: local-dev.sh output <task-id>"
+  _load_state
+  _api "${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}/tasks/${task}/output" \
+    | python3 -c "import json,re,sys; a=re.compile(r'\x1b\[[0-9;]*m'); [print(a.sub('', l['output'])) for l in json.load(sys.stdin)]"
+}
+
 # Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as
 # bootstrap-local-dev.yml's "Register templates" step does, without re-running genesis. Use
 # after editing templates-local.yml or templates.yml. Resolves the same records by name
@@ -542,6 +553,7 @@ case "${1:-}" in
   clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
   run)       shift; run_playbook "$@" ;;
+  output)    shift; task_output "$@" ;;
   templates) templates ;;
   creds)     creds ;;
   resolver)  shift; resolver "$@" ;;
@@ -562,7 +574,9 @@ usage: scripts/local-dev.sh <subcommand>
   validate           run Validate All via LOCAL Semaphore
   templates          re-publish shared + local-only templates to LOCAL Semaphore
   run <playbook> [json]  run any registered template by playbook basename via
-                     LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON)
+                     LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON).
+                     DRY_RUN=1 runs it in check mode
+  output <task-id>   print a LOCAL Semaphore task's whole log (run shows the last 40 lines)
   creds              show the Authentik admin login (read from OpenBao) for browser testing
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)
