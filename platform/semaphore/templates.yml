@@ -1363,6 +1363,13 @@ templates:
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
 
+  # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
+  # project team, the system admins and the integrations to the private declarations
+  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  - name: Manage Semaphore Access
+    playbook: platform/playbooks/manage-semaphore-access.yml
+    dev_variant: true
+
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml

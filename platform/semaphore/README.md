@@ -46,6 +46,24 @@ be merged into `dev` (feature → `dev` PR, checks green, reviewed) before the
 the live step after the merge, not after the commit. Recorded 2026-09-14, when
 `ratelimit.tf` sat committed on its feature branch with nothing able to plan it.
 
+## Who may launch: launch rights are runner rights
+
+A task's `environment` becomes its extra vars with no survey filter, and a templated extra var
+can call a lookup that runs a command on the runner (plan 01, "Launch permission is runner
+access"). So anyone who can launch a template can run code on the controller, which holds the
+controller AppRole and the SSH keys. `task_runner` is therefore granted only to someone trusted
+with the controller, exactly like `manager` or `owner`. Four identities can launch: system
+admins, project members whose role can run tasks, those users' API tokens, and integrations
+(incoming webhooks, which copy payload values into the task environment).
+
+**Manage Semaphore Access** holds all four to a declaration: `semaphore_project_members`
+(username to role, the whole team) and `semaphore_admin_users` in the private inventory. Run it
+under check mode first; the report lists the live team, admins and integrations by name. A real
+run adds declared accounts, sets declared roles, removes undeclared members and reads the team
+back. It never demotes a system admin or deletes an integration: each is named and fails the
+run for an operator decision. The NemoClaw AppRole's policy denies the path that holds the
+controller's own API token.
+
 ## Launching a task from outside the controller (the API path)
 
 No workstation path to the production controller was verified in the 2026-09-14

@@ -166,6 +166,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `seed-discovery-credentials.yml` | Copy/migrate discovery credentials to new vault paths |
 | `seed-openbao-key.yml` | Merge ONE operator-held key into a secret path (created if absent, siblings preserved). Runs in its own isolated Semaphore environment; the value arrives as the encrypted `BAO_VALUE` input staged by `scripts/semaphore-seed-input.py`. `bao_verify_access_only=true` is the read-only access check |
 | `seed-postiz-secrets.yml` | Merge the operator's social-platform credentials into `secret/services/postiz`. Runs in its own isolated environment; values arrive as encrypted `SEED_*` inputs staged by `scripts/postiz-seed-input.py`. `postiz_verify_access_only=true` is the read-only access check |
+| `manage-semaphore-access.yml` | Hold the Semaphore project team, system admins and integrations to the private declarations `semaphore_project_members` and `semaphore_admin_users`: launch rights are runner rights. Check mode reports; a real run converges the team and reads it back; an undeclared admin or any integration fails by name |
 | `provision-seed-environment.yml` | Give ONE seed template that declares `isolated_environment` its own environment holding an encrypted copy of the controller AppRole, then bind it. Controller loopback API only; wraps `platform/semaphore/provision-seed-environment.yml` |
 | `sync-secrets-to-openbao.yml` | Push VM-local secrets to OpenBao (recovery/migration) |
 | `sync-netbox-secrets.yml` | Sync NetBox-specific secrets to OpenBao |
