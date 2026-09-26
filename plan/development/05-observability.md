@@ -376,7 +376,7 @@
 > Semaphore task 1302 published only the `Deploy Authentik (Dev)` survey from
 > reviewed `dev` commit `edab33beea54ea06b468ce0ee986dbddb94c7f42` on
 > 2026-09-25. Live template 179 now defaults `service_branch` to `dev` and
-> retains repository 5, inventory 2, environment 2, and the Authentik playbook.
+> retains its repository, inventory and environment bindings, and the Authentik playbook.
 > Before deploying Authentik, run the read-only retirement audit through its
 > Dev-bound Semaphore template. The current Dev blueprint declares a legacy
 > account absent; the audit must establish whether that account is still live

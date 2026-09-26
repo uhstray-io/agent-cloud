@@ -8,7 +8,7 @@ clean environment), stage encrypted inputs, run one task, then remove only the c
 inputs after a terminal result. The approved inventory is also where the seed run takes its
 OpenBao address.
 
-  scripts/postiz-seed-input.py --env-file providers.env --apply --inventory 2 \\
+  scripts/postiz-seed-input.py --env-file providers.env --apply --inventory <inventory-id> \\
       --url https://semaphore.example <token-file
 """
 

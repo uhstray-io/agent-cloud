@@ -933,7 +933,7 @@ No runtime AppRole: no container here authenticates to OpenBao; deploy-time acce
 |---|---|---|
 | Scripts contain no secret handling | `grep -E 'gen_secret\|put_secret\|get_secret\|bao_\|BAO_' platform/services/erpnext/deployment/*.sh` | No matches (scripts read `.env` only) |
 | CI green | PR checks | shellcheck/ansible-lint/yamllint/trufflehog/BATS all pass |
-| Templates registered | Semaphore UI / API | 7 ERPNext templates exist, wired to inventory 2 + env 2 |
+| Templates registered | Semaphore UI / API | 7 ERPNext templates exist, wired to the production inventory and environment records |
 | No real IPs/credentials in public repo | Pre-push audit + trufflehog | Clean |
 | Playbook syntax | `ansible-playbook --syntax-check` on all five | Valid |
 
