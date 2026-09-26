@@ -195,6 +195,12 @@ Semaphore environment (AppRole role-id + secret-id only)
   -> deploy.sh starts containers (reads .env, no OpenBao interaction)
 ```
 
+A secret only an operator holds (a third-party API key) enters OpenBao the other way: a
+seed CLI stages it as an encrypted input in that seed template's own isolated Semaphore
+environment, runs one task that merges it into OpenBao, then removes the input. It is never
+a survey value or launch-time extra var, both of which Semaphore persists. See
+[the Semaphore operating guide](platform/semaphore/README.md).
+
 Private configuration (real IPs, production inventory, credential backups) lives in the separate **site-config** repository.
 
 ## Automation

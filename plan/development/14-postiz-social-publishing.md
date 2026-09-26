@@ -171,7 +171,7 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
    here is an edit to `platform/infra/cloudflare/` plus an `Apply Cloudflare Tofu` run.
 4. **Operator: update the OAuth redirect/callback URIs at Discord, LinkedIn, X, and YouTube** to the new host. Automation cannot reach those consoles; connecting an account fails until this is done.
 5. `dev` → `main` promotion PR (merge commit), so prod Semaphore deploys from `main`.
-6. Prod Semaphore, in order: `Seed Postiz Secrets` → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 5 containers healthy → `Manage Caddy Sites` → verify `https://postiz.uhstray.io` serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
+6. Prod Semaphore, in order: `Provision Seed Environment` (`seed_template=Seed Postiz Secrets`, `seed_variant=main`) → the read-only access check (`Seed Postiz Secrets` with `postiz_verify_access_only=true`) → seed the values with `scripts/postiz-seed-input.py` (encrypted inputs, one task, inputs removed; procedure in `platform/semaphore/README.md`) → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 5 containers healthy → `Manage Caddy Sites` → verify `https://postiz.uhstray.io` serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
 7. First OIDC login on prod, then flip `postiz_disable_registration: true` and redeploy.
 
 ## Phase 4 — n8n integration contract

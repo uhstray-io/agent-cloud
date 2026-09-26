@@ -108,7 +108,13 @@ Each row is a rule from the linked page, read 2026-09-22.
    `ANSIBLE_SHOW_CUSTOM_STATS=true` is set in both controllers' environment. `debug` stays
    for humans.
 5. **Secrets.** Credential tasks keep `no_log: true` (root `AGENTS.md`, "Credential
-   Handling"), and tasks that render secret files add `diff: false`.
+   Handling"), and tasks that render secret files add `diff: false`. A visible task never
+   loops over, or prints, a protected registered result (a `no_log` result, or a `uri`
+   result that sent headers): a failed loop item is printed whole, request included. Loop
+   over the clean input and index into the results with `index_var`
+   (`platform/tests/test_no_request_in_loop_items.py`). The repository `ansible.cfg` also
+   selects `callback_plugins/redact_requests.py`, which strips every nested result's
+   request from the display (`docs/MISTAKES.md` 4.6).
 6. **Environments.** Production and local-dev are separate inventories and separate
    controllers, as the tips page advises for production and staging.
 

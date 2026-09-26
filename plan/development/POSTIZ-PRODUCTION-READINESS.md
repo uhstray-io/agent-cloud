@@ -8,7 +8,7 @@
 
 The selective release needs the tested search overlay, backend-health check and API-key capture without including unrelated service changes. A secret-inventory check alone cannot establish whether retained application data exists; the release must verify both before generating stateful credentials.
 
-The seed playbook safely merge-patches provider credentials, but the documented encrypted Semaphore input channel requires manual configuration. Task extra variables are persisted in plaintext and must never carry credentials.
+The seed playbook safely merge-patches provider credentials. The encrypted Semaphore input channel is now code: `Provision Seed Environment` gives Seed Postiz Secrets its own isolated environment, and `scripts/postiz-seed-input.py` stages each value there as an encrypted input for one task (Dev variants live 2026-09-25; main follows promotion). Task extra variables are persisted in plaintext and must never carry credentials.
 
 ## Design Principles
 

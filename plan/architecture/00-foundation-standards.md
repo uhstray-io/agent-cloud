@@ -161,7 +161,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [NETBOX-DISCOVERY-EXPANSION.md](../development/NETBOX-DISCOVERY-EXPANSION.md) | IMPLEMENTED | NetBox discovery pipeline architecture (Diode, proxmox_discovery, pfsense_sync). |
 | [OPENSSF-SCORECARD-PLAN.md](../development/OPENSSF-SCORECARD-PLAN.md) | TODO | OpenSSF Scorecard integration for supply chain security. |
 | [SNMPV3-UPGRADE-PLAN.md](../development/SNMPV3-UPGRADE-PLAN.md) | DEFERRED | Migration from SNMPv2c to SNMPv3 for discovery agents. |
-| [ANSIBLE-CREDENTIAL-REDACTION-PLAN.md](../development/ANSIBLE-CREDENTIAL-REDACTION-PLAN.md) | PLANNING | Ansible callback plugin for credential redaction in Semaphore logs. |
+| [01-secrets-credentials.md, "Solution: Custom Callback Plugin"](../development/01-secrets-credentials.md#solution-custom-callback-plugin) | PARTLY BUILT | Ansible callback plugin for credential redaction in Semaphore logs. Request stripping shipped as `callback_plugins/redact_requests.py`; value-pattern redaction still planned. (The standalone `ANSIBLE-CREDENTIAL-REDACTION-PLAN.md` was merged into plan 01.) |
 | [APPROLE-TTL-ENFORCEMENT-PLAN.md](../development/APPROLE-TTL-ENFORCEMENT-PLAN.md) | PROPOSED | Enforce 90-day TTL and bounded token_num_uses on all AppRoles. |
 | [DISASTER-RECOVERY-PLAN.md](../development/DISASTER-RECOVERY-PLAN.md) | PLANNING | Disaster recovery procedures for critical infrastructure failures. |
 | [PODMAN-UPGRADE-PLAN.md](../development/PODMAN-UPGRADE-PLAN.md) | PLANNING | Podman-compose upgrade strategy for services using Podman. |

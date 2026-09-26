@@ -1232,6 +1232,13 @@ CI verifies no non-example `.env` files are tracked in git:
 
 ## 3. Credential Redaction in Ansible (Callback Plugin)
 
+> **Status 2026-09-25 — partly built; this section is the design, not current behaviour.**
+> What shipped is `callback_plugins/redact_requests.py` (selected by the repository
+> `ansible.cfg` as `stdout_callback = redact_requests`): the default callback minus the
+> `invocation` of every nested result, which closes the request-header leak in
+> `docs/MISTAKES.md` 4.6. The value-pattern `redact_secrets` plugin below is still planned
+> (`plan/development/01-secrets-credentials.md`, "Solution: Custom Callback Plugin").
+
 ### The Problem
 
 Ansible's `no_log: true` directive suppresses ALL output from a task, including the task name, status, and error messages. This makes debugging impossible when a task fails -- operators see `CENSORED` with no context.
@@ -1427,6 +1434,10 @@ grep -rn 'password\|secret\|token\|api_key' platform/services/<name>/deployment/
 ---
 
 ## 7. no_log Policy
+
+> **Status 2026-09-25 — not in force.** This ban depends on the value-redaction plugin in
+> section 3, which is not built. The rule in force is `AGENTS.md`, "Credential Handling":
+> `no_log: true` on credential tasks only, never on deploys, waits or verification.
 
 **`no_log: true` is BANNED from all playbooks and task files.**
 

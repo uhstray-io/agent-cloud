@@ -55,7 +55,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 | `service_name` | Inventory per-host | e.g., `nocodb`, `openbao` |
 | `monorepo_deploy_path` | Inventory per-host | Path within monorepo to deploy.sh |
 | `monorepo_repo` | Inventory global | Git SSH URL |
-| `openbao_addr` | Environment | OpenBao API URL |
+| `openbao_addr` | Inventory `all.vars` | OpenBao API URL. Declared for every host, `localhost` included (production since 2026-09-25); an environment extra var of the same name overrides it, which the seed playbooks refuse as drift (`tasks/assert-bao-addr-declared.yml`). Isolated seed environments carry no extra vars |
 | `bao_role_id` / `bao_secret_id` | Environment | AppRole credentials |
 | `target_service` | Wrapper playbook vars | Inventory group name (e.g., `netbox_svc`) |
 
@@ -163,6 +163,9 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `check-secrets.yml` | Read-only secret inventory from OpenBao (present/missing/empty) |
 | `validate-secrets.yml` | Active credential testing (DB, Redis, HTTP auth) |
 | `seed-discovery-credentials.yml` | Copy/migrate discovery credentials to new vault paths |
+| `seed-openbao-key.yml` | Merge ONE operator-held key into a secret path (created if absent, siblings preserved). Runs in its own isolated Semaphore environment; the value arrives as the encrypted `BAO_VALUE` input staged by `scripts/semaphore-seed-input.py`. `bao_verify_access_only=true` is the read-only access check |
+| `seed-postiz-secrets.yml` | Merge the operator's social-platform credentials into `secret/services/postiz`. Runs in its own isolated environment; values arrive as encrypted `SEED_*` inputs staged by `scripts/postiz-seed-input.py`. `postiz_verify_access_only=true` is the read-only access check |
+| `provision-seed-environment.yml` | Give ONE seed template that declares `isolated_environment` its own environment holding an encrypted copy of the controller AppRole, then bind it. Controller loopback API only; wraps `platform/semaphore/provision-seed-environment.yml` |
 | `sync-secrets-to-openbao.yml` | Push VM-local secrets to OpenBao (recovery/migration) |
 | `sync-netbox-secrets.yml` | Sync NetBox-specific secrets to OpenBao |
 | `update-proxmox-token.yml` | Update Proxmox API token in OpenBao |
@@ -235,7 +238,8 @@ except the collector and the custom-fields converger, and all are read-only exce
 | Playbook | Purpose |
 |----------|---------|
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
-| `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel |
+| `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel. Enable that channel first with `resize-vm.yml`, which converges `agent=1` (a running VM needs `allow_reboot=true` to pick it up) |
+| `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration; grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
 | `install-podman.yml` | Install Podman + podman-compose (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |
@@ -279,7 +283,8 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/enable-linger.yml` | Implemented | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot. Included by `place-monorepo.yml`; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/assert-seed-inputs-declared.yml` | Implemented | Refuse, before the AppRole login, a seed run whose environment carries a seed input (`BAO_VALUE`, `SEED_*`) its template does not declare. Lists variable names only. Included by both isolated seed playbooks |
-| `tasks/assert-bao-addr-declared.yml` | Implemented | Refuse, before the AppRole login, an OpenBao address other than the one the run's inventory file declares under top-level `all.vars` (an extra var would override it). Included by both isolated seed playbooks |
+| `tasks/assert-bao-addr-declared.yml` | Implemented | Refuse, before the AppRole login, an OpenBao address other than the one the run's inventory file declares under top-level `all.vars` (an extra var would override it). Included by both isolated seed playbooks. Catches drift, a plain stray address; it does not stop a templated extra var, so launch and environment-edit permission is the boundary (`docs/MISTAKES.md` 1.15) |
+| `tasks/assert-bao-seed-access.yml` | Implemented | Prove, from the token's own capabilities and without reading a value or writing, that it may seed one KV-v2 path: `create` for a missing path, `patch` for an existing one. Names the missing capability. Included by both isolated seed playbooks |
 | `tasks/wait-for-apt.yml` | Implemented | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install right after provisioning does not fail on a transient lock |
 | `tasks/site-config-clone.yml` | Implemented | Clone site-config into a scratch dir on a fresh `<prefix>-<UTC>-<6hex>` branch with the deploy key the caller read from OpenBao — written 0600 inside that dir, `IdentitiesOnly`, pinned GitHub host keys |
 | `tasks/site-config-push.yml` | Implemented | Stage ONE path, commit if changed, push the branch, report names and counts — never values. Pairs with the clone task; the caller wipes the scratch dir in an `always:` |

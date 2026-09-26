@@ -148,7 +148,8 @@ Eliminating them needs Docker Swarm secrets, k8s + ESO, or a compose-external in
 
 | Layer | Mechanism | Disk? |
 |-------|-----------|-------|
-| Semaphore environment JSON | `bao_role_id`, `bao_secret_id`, `openbao_addr` | No — Semaphore injects as env vars |
+| Semaphore environment JSON | `bao_role_id`, `bao_secret_id` | No — Semaphore injects as env vars |
+| Inventory `all.vars` | `openbao_addr` (every host, `localhost` included; an environment extra var of that name overrides it) | No — inventory file |
 | `community.hashi_vault` lookup | Reads secrets from OpenBao at runtime | No — Ansible memory only |
 | `ansible.builtin.template` | Renders `.env.j2` → `.env` on VM | Yes — compose needs files |
 | `ansible.builtin.uri` | Patches OpenBao with new creds (Phase 4) | No — API call |
