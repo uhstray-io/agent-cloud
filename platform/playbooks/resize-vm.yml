@@ -1,6 +1,7 @@
 ---
 # resize-vm.yml — converge a live Proxmox VM's cores/memory/disk to its declared
-# spec. Composable and reusable for any service VM, now and later.
+# spec, and its guest-agent channel (agent=1, as provision-vm.yml sets for new VMs; per-host
+# opt-out vm_agent: false). Composable and reusable for any service VM, now and later.
 #
 # THE MODEL: `site-config/proxmox/vm-specs.yml` is already the declared source of
 # truth that provision-vm.yml builds from. This playbook makes that declaration
@@ -96,6 +97,11 @@
     _want_disk_gb: "{{ (resize_disk | default(vm_disk | default(_svc.disk | default(''))))
                        | regex_replace('(?i)\\s*g(b)?$', '') }}"
 
+    # The Proxmox guest-agent channel: provision-vm.yml sets agent=1 on every new VM, so an
+    # older VM converges to the same, and install-qemu-guest-agent.yml can then start the
+    # service (its unit binds to that channel's virtio port). Per-host opt-out: vm_agent: false.
+    _want_agent: "{{ vm_agent | default(true) | bool }}"
+
     _allow_reboot: "{{ allow_reboot | default(false) | bool }}"
     # Seconds to wait for a clean guest shutdown before giving up. A guest
     # without the agent, or one ignoring ACPI, will hit this.
@@ -112,6 +118,7 @@
         vm_disk: "{{ _hv.vm_disk | default(omit) }}"
         vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
         vm_node: "{{ _hv.vm_node | default(omit) }}"
+        vm_agent: "{{ _hv.vm_agent | default(omit) }}"
       vars:
         _grp: "{{ target_service | default('') }}_svc"
         _hv: "{{ hostvars[(groups[_grp] | default([]) | first) | default('')] | default({}) }}"
@@ -152,6 +159,7 @@
           - (_want_cores | string | length > 0)
             or (_want_memory | string | length > 0)
             or (_want_disk_gb | string | length > 0)
+            or (_want_agent | bool)
         fail_msg: >-
           Nothing to converge for '{{ target_service | default("(by vmid)") }}':
           no vm_cores/vm_memory/vm_disk on its inventory host, no readable
@@ -174,11 +182,33 @@
       register: _state
       check_mode: false
 
+    # Config changes Proxmox has accepted but not yet applied to the running guest (PVE API
+    # GET /nodes/{node}/qemu/{vmid}/pending: key, current value, pending value). `qm reboot`
+    # "applies pending changes" (qm(1)). An agent change still listed here needs a restart,
+    # whichever run wrote it.
+    - name: "Read the VM's pending config changes"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/pending"
+        method: GET
+      register: _pending
+      check_mode: false
+
+    # `agent` is a property string: "1", "0", or e.g. "fstrim_cloned_disks=1,enabled=1".
+    # `enabled` is its default key (a bare 1/0) and may sit anywhere, so it is parsed by key
+    # (Codex review of #265). Its own task: a set_fact cannot read a key it sets itself.
+    - name: "Split the guest-agent property string"
+      ansible.builtin.set_fact:
+        _agent_items: "{{ (_cfg.json.data.agent | default('') | string).split(',') | select | list }}"
+
     - name: "Resolve current values + the disk device to grow"
       ansible.builtin.set_fact:
         _have_cores: "{{ _cfg.json.data.cores | default(0) | int }}"
         _have_memory: "{{ _cfg.json.data.memory | default(0) | int }}"
         _is_running: "{{ (_state.json.data.status | default('unknown')) == 'running' }}"
+        _have_agent: "{{ _agent_items | select('match', '^(enabled=)?1$') | list | length > 0 }}"
+        _agent_pending: >-
+          {{ (_pending.json.data | default([]) | selectattr('key', 'equalto', 'agent')
+              | selectattr('pending', 'defined') | list | length) > 0 }}
         # What the guest is ACTUALLY running right now, which is not the same as
         # what its config says: a config write lands immediately but a guest
         # without hotplug keeps its old allocation until it next boots.
@@ -257,6 +287,7 @@
           - "vmid {{ _vmid }} on {{ _node }} — currently {{ 'RUNNING' if _is_running else 'stopped' }}"
           - "cores:  {{ _have_cores }} -> {{ _want_cores if (_want_cores | string | length > 0) else '(unchanged)' }}"
           - "memory: {{ _have_memory }}MB -> {{ _want_memory ~ 'MB' if (_want_memory | string | length > 0) else '(unchanged)' }}"
+          - "agent:  {{ 'enabled' if _have_agent | bool else 'off' }} -> {{ 'enabled' if _want_agent | bool else '(unchanged)' }}{{ ' (pending restart)' if _agent_pending | bool else '' }}"
           - >-
             disk:   {{ (_have_disk_gb | default('?')) ~ 'G' }} ->
             {{ (_want_disk_gb ~ 'G') if (_want_disk_gb | string | length > 0) else '(unchanged)' }}
@@ -295,6 +326,7 @@
                ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
                or ((_want_cores | string | length > 0)
                    and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
+               or ((_want_agent | bool) and ((_agent_pending | bool) or not (_have_agent | bool)))
              ) }}
 
     - name: "Compute the config changes actually needed"
@@ -304,9 +336,11 @@
                else {'cores': _want_cores | int})
              | combine(
                {} if (_want_memory | string | length == 0) or ((_want_memory | int) == (_have_memory | int))
-               else {'memory': _want_memory | int}) }}
+               else {'memory': _want_memory | int})
+             | combine({} if not (_want_agent | bool) or (_have_agent | bool) else
+                 {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')}) }}
 
-    - name: "Apply cores/memory to the VM config"
+    - name: "Apply cores/memory/agent to the VM config"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
         method: PUT
@@ -348,7 +382,9 @@
           memory={{ _want_memory if (_want_memory | string | length > 0) else _have_memory }}MB,
           but the guest is RUNNING cores={{ _running_cores }} (total vCPUs across
           {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
-          has no hotplug, so it keeps its old allocation until it next boots. It
+          has no hotplug, so it keeps its old allocation until it next boots.
+          {{ 'The guest-agent channel is also waiting for a restart. ' if (_want_agent | bool)
+             and ((_agent_pending | bool) or not (_have_agent | bool)) else '' }}It
           was NOT restarted. Re-run with -e allow_reboot=true during a
           maintenance window, or reboot the guest yourself.
       when:

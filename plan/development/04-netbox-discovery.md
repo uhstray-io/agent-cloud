@@ -347,9 +347,10 @@ fallback must not be ported over it.
    operator chooses the target group before the task runs.
 3. Validate playbook syntax, template parsing, and a check-mode run before a live
    Semaphore run. Check mode is expected to refuse each VM without the port; enable
-   that VM's Proxmox `agent` option (`qm set <vmid> --agent 1`, as
-   `provision-vm.yml` does for new VMs) before installing. Production installation
-   remains pending that live verification.
+   that VM's Proxmox `agent` option first by running **Resize VM** for the service with
+   `allow_reboot=true`. It converges `agent=1`, as `provision-vm.yml` sets for new VMs,
+   and restarts the guest while the change is pending. Production installation remains
+   pending that live verification.
 
 ---
 

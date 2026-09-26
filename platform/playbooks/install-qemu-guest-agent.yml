@@ -10,8 +10,11 @@
     preflight_group: "{{ target_service | default('') }}"
     preflight_group_expected: "{{ target_service | default('') }}"
 
+# The sentinel matches nothing, so an unset target can never aim the play at the controller
+# (the preflight above already refuses it; this keeps the fallback harmless too).
+
 - name: Install QEMU guest agent on selected VMs
-  hosts: "{{ target_service | default('localhost', true) }}"
+  hosts: "{{ target_service | default('__install_qemu_guest_agent_no_target__', true) }}"
   gather_facts: false
 
   tasks:
@@ -33,8 +36,9 @@
         that: _qga_port.stat.exists
         fail_msg: >-
           {{ inventory_hostname }} has no /dev/virtio-ports/org.qemu.guest_agent.0.
-          Enable the VM's Proxmox agent option first (or this host is not a QEMU VM);
-          the service cannot start without it.
+          Enable the VM's Proxmox agent option first: run Resize VM for this service with
+          allow_reboot=true, which converges agent=1 and restarts the guest so the port
+          appears (or this host is not a QEMU VM). The service cannot start without it.
 
     - name: Resolve the sudo password before escalation
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
