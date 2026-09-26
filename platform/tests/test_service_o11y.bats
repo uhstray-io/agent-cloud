@@ -621,6 +621,51 @@ assert all(rule['isPaused'] is True and 'notification_settings' not in rule for 
 PY
 }
 
+@test "o11y: real alert-enabled deploy verifies live rule and contact state" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import json
+import re
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
+block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
+assert block['when'] == ['o11y_alerts_enabled | default(false) | bool', 'not ansible_check_mode']
+tasks = block['block']
+rule_check = next(task for task in tasks if task['name'] == 'Require the service-down rule and every o11y rule to be active')
+env = Environment(undefined=StrictUndefined)
+env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
+env.filters['from_json'] = json.loads
+compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
+select_rules = compile_value(rule_check['vars']['_o11y_rules'])
+checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
+for rules, expected in [
+    ([{'uid': 'o11y_service_down', 'isPaused': False}], True),
+    ([{'uid': 'o11y_service_down', 'isPaused': False}, {'uid': 'unrelated', 'isPaused': True}], True),
+    ([{'uid': 'o11y_service_down', 'isPaused': False}, {'uid': 'o11y_missing_caddy', 'isPaused': True}], False),
+    ([{'uid': 'unrelated', 'isPaused': False}], False),
+    ([{'uid': 'o11y_service_down'}], False),
+]:
+    scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
+    assert all(bool(check(_o11y_rules=scoped)) for check in checks) is expected
+contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
+count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
+assert contact['no_log'] is True and count['no_log'] is True
+count_contacts = compile_value(count['ansible.builtin.set_fact']['_o11y_contact_count'])
+contact_check = env.compile_expression(tasks[-1]['ansible.builtin.assert']['that'])
+for contacts, expected in [
+    ([{'uid': 'o11y_ops_discord'}], True),
+    ([{'uid': 'other'}], False),
+    ([{'uid': 'o11y_ops_discord'}, {'uid': 'o11y_ops_discord'}], False),
+]:
+    selected = count_contacts(_active_contacts={'stdout': json.dumps(contacts)})
+    assert bool(contact_check(_o11y_contact_count=selected)) is expected
+PY
+}
+
 @test "o11y: starter dashboard is valid JSON with the expected uid" {
   local f="$DEPLOY_DIR/config/grafana/dashboards/agent-cloud-overview.json"
   [ -f "$f" ]

@@ -560,6 +560,25 @@
 > alerts stay disabled until a live
 > canary and restoration both succeed; this paragraph records design and
 > deployment gates, not a delivery receipt.
+>
+> **Production Discord alert receipt and permanent rollout, 2026-09-26:**
+> PR #277 merged the reversible production canary into `dev` at
+> `8c050ac2aa45184624cd4255b8a50a7c5a35be21` after a final-head Claude
+> review and green CI. Scoped Semaphore tasks 1390 and 1392 published the
+> canary and restore templates. A normal receiver deploy at that exact SHA
+> passed task 1394 without wiping volumes. Canary task 1395 then observed one
+> named `up=0` scrape, Grafana firing, and a newer matching Discord message
+> from the owned webhook. Its automatic restore verified all o11y rules
+> paused, the contact point and runtime webhook line absent, and the canary
+> scrape and recovery marker removed. Private site-config PR #28 enabled
+> persistent alerts in production inventory; the declared Semaphore API
+> inventory sync read back the merged file, check task 1397 passed, and real
+> deploy task 1398 reported healthy services with the OpenBao-backed webhook.
+> Task 1398 did not read Grafana's live rule and contact point back, so this
+> change adds that verification to every real alert-enabled deploy. The
+> local wipe/redeploy validation remains deferred to preserve local data;
+> production Authentik sign-in and DGX/agentgateway telemetry remain separate
+> acceptance gates.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
