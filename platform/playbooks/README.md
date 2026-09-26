@@ -190,8 +190,12 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 
 For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
 and `pfsense_dhcp_interface`, selecting the router and interface that serve the
-requested prefix. The playbook reads that interface's DHCP configuration through
-the pfSense REST API on every reservation run; its API key comes from OpenBao's
+requested prefix. Certificate validation defaults to on; a site-owned router
+may declare boolean `pfsense_dhcp_validate_certs: false` on its private NetBox
+host while its certificate is being renewed. The playbook refuses launch-time
+overrides of the router URL, interface, or TLS setting, and refuses a non-boolean
+TLS value. It reads that interface's DHCP configuration
+through the pfSense REST API on every reservation run; its API key comes from OpenBao's
 `secret/services/discovery/pfsense:api_key`, shared with the discovery worker.
 `reconcile-pfsense-api-key.yml` seeds that field from the fixed private
 `site-config` backup through a Dev-bound Semaphore task. It preserves a
@@ -199,8 +203,10 @@ different live key until the replacement is verified, and never passes the
 backup value as a task parameter. The reservation refuses missing or malformed data,
 addresses in the primary or additional DHCP pools, and existing static mappings
 before any NetBox write. The candidate must be a static IP outside DHCP's ranges.
-The router URL must use HTTPS with a certificate trusted by the Semaphore runner;
-the singular DHCP endpoint selects the interface by `id` and checks the returned
+The router URL must use HTTPS; certificate validation is the default and the
+private exception applies only to this pfSense read. Restore validation once
+the router certificate and executor trust are ready.
+The singular DHCP endpoint selects the interface by `id` and checks the returned
 `id`; pfREST may render the `interface` field as a display name. A failed TLS or API read
 refuses the reservation. Verify that source with a read-only refusal run before
 reserving production addresses.

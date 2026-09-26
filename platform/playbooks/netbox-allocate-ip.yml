@@ -50,12 +50,6 @@
     _count: "{{ (count | default(2)) | int }}"
     _reserve: "{{ reserve | default(false) | bool }}"
     _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
-    # Implicit localhost does not inherit inventory group vars. Site-specific
-    # router endpoint and interface live with the NetBox host in site-config.
-    _netbox_site: "{{ hostvars[groups['netbox_svc'][0]] if (groups['netbox_svc'] | default([]) | length > 0) else {} }}"
-    _pfsense_url: "{{ pfsense_dhcp_api_url | default(_netbox_site.pfsense_dhcp_api_url) | default('') }}"
-    _pfsense_interface: "{{ pfsense_dhcp_interface | default(_netbox_site.pfsense_dhcp_interface) | default('') }}"
-
   tasks:
     - name: "Validate inputs"
       ansible.builtin.assert:
@@ -80,11 +74,29 @@
     - name: "Require the pfSense DHCP source before reserving"
       ansible.builtin.assert:
         that:
-          - _pfsense_url | length > 0
-          - _pfsense_interface | length > 0
-          - _pfsense_url is match('^https://')
-        fail_msg: "Set an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
+          - groups.get('netbox_svc', []) | length == 1
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url | default('')) | length > 0
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface | default('')) | length > 0
+          - hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url is match('^https://')
+        fail_msg: "Declare one private NetBox host with an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface before reserving."
       when: _reserve
+
+    - name: "Require inventory-owned pfSense DHCP settings"
+      ansible.builtin.assert:
+        that:
+          - pfsense_dhcp_api_url is not defined
+          - pfsense_dhcp_interface is not defined
+          - pfsense_dhcp_validate_certs is not defined
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true)) is boolean
+        fail_msg: "Declare pfSense DHCP URL, interface, and boolean TLS setting on the private NetBox host; launch-time overrides are refused."
+      when: _reserve
+
+    - name: "Report a private pfSense TLS exception"
+      ansible.builtin.debug:
+        msg: "pfSense DHCP certificate validation is disabled by private NetBox inventory for this reservation."
+      when:
+        - _reserve
+        - not (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool)
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -104,7 +116,7 @@
     - name: "Refuse a cleartext pfSense endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
-        _assert_bao_url: "{{ _pfsense_url }}"
+        _assert_bao_url: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url }}"
         _assert_url_label: "pfSense"
       when: _reserve
 
@@ -184,11 +196,12 @@
 
     - name: "Read the live pfSense DHCP server configuration"
       ansible.builtin.uri:
-        url: "{{ _pfsense_url }}/api/v2/services/dhcp_server?id={{ _pfsense_interface | urlencode }}"
+        url: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url }}/api/v2/services/dhcp_server?id={{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface | urlencode }}"
         method: GET
         headers:
           X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"
         status_code: [200]
+        validate_certs: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool }}"
       register: _pfsense_dhcp
       failed_when: false
       no_log: true
@@ -206,7 +219,7 @@
         argv:
           - python3
           - "{{ playbook_dir }}/netbox_dhcp_boundary.py"
-        stdin: "{{ {'prefix': _prefix, 'interface': _pfsense_interface, 'assignments': _assignments, 'response': _pfsense_dhcp.json} | to_json }}"
+        stdin: "{{ {'prefix': _prefix, 'interface': hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface, 'assignments': _assignments, 'response': _pfsense_dhcp.json} | to_json }}"
       register: _dhcp_check
       changed_when: false
       failed_when: false
