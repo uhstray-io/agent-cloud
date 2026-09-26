@@ -80,9 +80,13 @@
         label: "{{ item.item }} ({{ item.stdout | default('') or 'none' }} -> always)"
       become: "{{ _rootful }}"
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: {{ _engine }}{{ ' (rootful)' if _rootful else (' (rootless)' if _engine == 'podman' else '') }}
-          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured. Check it with Verify Service Persistence.
+          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured; restart policy
+          {{ 'would be ' if ansible_check_mode else '' }}set to always on:
+          {{ (_ensure_policies.results | default([]) | rejectattr('stdout', 'in', ['always', 'no'])
+              | map(attribute='item') | list) or 'none' }}. Check it with Verify Service Persistence.

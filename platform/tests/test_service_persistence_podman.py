@@ -34,7 +34,7 @@ def _podman(*args):
     return subprocess.run(["podman", *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def _playbook(tmp_path, name, workdir):
+def _playbook(tmp_path, name, workdir, *extra):
     inventory = tmp_path / "inventory.ini"
     inventory.write_text(
         "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\n"
@@ -44,7 +44,7 @@ def _playbook(tmp_path, name, workdir):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     return subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOKS / name), "-e", "target_service=demo_svc"],
+        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOKS / name), "-e", "target_service=demo_svc", *extra],
         cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
     )
 
@@ -74,6 +74,11 @@ def test_ensure_sets_always_in_place_and_verify_then_passes(tmp_path, legacy_ser
     assert _playbook(tmp_path, "verify-service-persistence.yml", workdir).returncode != 0
 
     pid_before = _state(app)[1]
+    dry = _playbook(tmp_path, "ensure-service-persistence.yml", workdir, "--check")
+    assert dry.returncode == 0, dry.stdout[-2000:]
+    assert _state(app)[0] == "unless-stopped", "a dry run changed the restart policy"
+    assert "would be set to always on" in dry.stdout and app in dry.stdout
+
     ensured = _playbook(tmp_path, "ensure-service-persistence.yml", workdir)
     assert ensured.returncode == 0, ensured.stdout[-2000:]
 
