@@ -134,6 +134,14 @@ def test_no_declaration_reports_the_roster_and_writes_nothing(tmp_path):
     assert "semaphore_project_members is not declared" in output
 
 
+def test_a_typo_in_the_declaration_removes_nobody(tmp_path):
+    # Replacing viewer-b with a misspelled account must not revoke viewer-b first.
+    code, output = run(tmp_path, declared={"runner-a": "task_runner", "viewr-b": "guest"})
+    assert code != 0
+    assert Fake.writes == []
+    assert "Nothing was changed" in output and "declared member viewr-b has no Semaphore account" in output
+
+
 def test_an_integration_fails_the_run_after_the_team_is_converged(tmp_path):
     code, output = run(tmp_path, declared=DECLARED, integrations=[{"id": 9, "name": "deploy-hook"}])
     assert code != 0

@@ -62,7 +62,7 @@ inventory's top-level `all.vars` (the play runs on implicit `localhost`, which r
 group's vars; `promote-semaphore-admins.yml` reads `semaphore_admin_users` the same way). Run it
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
-back. It never demotes a system admin or deletes an integration: each is named and fails the
+back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
 run for an operator decision. The NemoClaw AppRole's policy denies the path that holds the
 controller's own API token.
 

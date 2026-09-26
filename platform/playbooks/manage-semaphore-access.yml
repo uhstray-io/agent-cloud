@@ -36,7 +36,10 @@
   tasks:
     - name: "Refuse a controller API destination override before authentication"
       ansible.builtin.assert:
-        that: (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        # Both the public override and the URL the requests actually use (Codex review of #276).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
         fail_msg: "Access management may only use the controller's fixed loopback API."
 
     - name: "Semaphore runtime access (injected token, or the controller AppRole)"
@@ -75,7 +78,13 @@
           - "To add: {{ _drift.add | map(attribute='username') | list }}"
           - "Role changes: {{ _drift.set_role | map(attribute='username') | list }}"
           - "To remove: {{ _drift.remove | map(attribute='username') | list }}"
+          - "Declaration errors (nothing is written): {{ _drift.invalid }}"
           - "Needs an operator decision: {{ _drift.problems }}"
+
+    - name: "Refuse a declaration that cannot be applied, before any write"
+      ansible.builtin.assert:
+        that: _drift.invalid | length == 0
+        fail_msg: "Nothing was changed. Fix the declaration: {{ _drift.invalid | join('; ') }}"
 
     # The writes carry the token, so their results stay out of the log; the read-back below is
     # what proves them.

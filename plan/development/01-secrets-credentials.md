@@ -141,7 +141,8 @@ can launch:
    It reads the project's members, the system admins and the project's integrations through
    the controller's loopback API, and compares them with two private inventory declarations:
    `semaphore_project_members` (username to role) and the existing `semaphore_admin_users`.
-   It refuses when `semaphore_project_members` is not declared. Under `--check` it only
+   It refuses, before any write, a declaration it cannot apply as written (absent, or naming
+   an account that does not exist), so a typo never removes working access first. Under `--check` it only
    reports, names and roles only. A real run converges project membership: it sets a declared
    member's role and removes an undeclared member. An undeclared system admin or any
    integration fails the run by name; each needs an operator decision, not a silent delete.

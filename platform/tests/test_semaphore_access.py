@@ -26,7 +26,7 @@ def drift(declared, *, members=MEMBERS, admins=("ops-admin",), integrations=()):
 
 def test_a_team_matching_its_declaration_changes_nothing():
     assert drift({"runner-a": "task_runner", "viewer-b": "guest"}) == {
-        "problems": [], "add": [], "set_role": [], "remove": []}
+        "invalid": [], "problems": [], "add": [], "set_role": [], "remove": []}
 
 
 def test_an_undeclared_member_is_removed_and_a_changed_role_is_set():
@@ -44,13 +44,14 @@ def test_a_declared_account_that_is_not_yet_a_member_is_added():
 def test_a_missing_or_empty_declaration_refuses_instead_of_removing_everyone():
     for declared in (None, {}, []):
         result = drift(declared)
-        assert result["problems"] and not result["remove"]
+        assert result["invalid"] and not result["remove"]
 
 
-def test_a_declared_name_without_an_account_or_role_is_a_problem():
+def test_a_declared_name_without_an_account_or_role_makes_the_declaration_invalid():
     result = drift({"runner-a": "task_runner", "viewer-b": "guest", "ghost": "guest", "newcomer": ""})
-    assert result["problems"] == ["declared member ghost has no Semaphore account",
-                                  "declared member newcomer has no role"]
+    assert result["invalid"] == ["declared member ghost has no Semaphore account",
+                                 "declared member newcomer has no role"]
+    assert result["problems"] == []
 
 
 def test_an_undeclared_system_admin_is_a_problem_matched_by_username_only():
