@@ -67,7 +67,10 @@ scripted path exist and are recorded here so it is built once, deliberately:
    into a repo, a survey parameter or a launch argument.
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
-   as a JSON string of the survey values. **Check mode and diff go inside
+   as a JSON string of the survey values. Semaphore v2.17.31 merges EVERY key of that
+   JSON into the run's extra vars; it does not filter by the survey
+   (`services/tasks/TaskRunner.go` `populateTaskEnvironment`). The launcher's
+   declared-fields check is client-side only, not a server control. **Check mode and diff go inside
    `params`:** `"params": {"dry_run": true, "diff": true}` (v2.17.31 `db/Task.go`,
    `AnsibleTaskParams`). A top-level `dry_run` is silently ignored and the task
    runs for real (`docs/MISTAKES.md` 3.8). Semaphore starts a task the moment it is
@@ -170,7 +173,11 @@ checked when it is bound and again by every seed CLI preflight. Before the seed 
 in to OpenBao it also refuses:
 
 - an address other than the one the inventory file it was given declares (an extra var in
-  the environment, or a `-e`, would override the inventory's)
+  the environment, or a `-e`, would override the inventory's). This catches drift, a plain
+  stray address. It does not stop a deliberate templated extra var: whoever may launch the
+  template or edit its environment controls its extra vars, so those Semaphore permissions
+  are the boundary (`docs/MISTAKES.md` 1.15; plan 01, "launch permission is extra-var
+  control")
 - any seed input (`BAO_VALUE`, `SEED_*`) its template does not declare, such as a leftover
   from another seed's interrupted run
 
@@ -179,12 +186,17 @@ refuses it until **Provision Seed Environment** runs again, which removes the pi
 the AppRole inputs.
 
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
-   with `seed_template` set to the declared base name. It creates the environment,
-   gives it an encrypted copy of the controller AppRole, and binds only that template.
+   with `seed_template` set to the declared base name, plus the verified
+   `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_source_environment_id`
+   its survey requires, and `seed_variant=dev` (main only after the seed code is
+   promoted). It creates the environment, gives it an encrypted copy of the controller
+   AppRole, and binds only that template. As of 2026-09-25 both Dev seed templates are
+   provisioned and bound; the main variants are not.
 2. **Once after provisioning:** prove the environment's AppRole may seed the path,
-   without writing anything. It checks the token's own capabilities on the path
-   (read plus create, update or patch); a GET alone cannot tell a missing path from
-   one the token cannot see:
+   without writing anything. It checks the token's own capabilities on the path:
+   `read`, plus `create` for a missing path or `patch` for an existing one, the
+   capability that seed's write will actually need. A GET alone cannot tell a missing
+   path from one the token cannot see:
 
    ```bash
    scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \

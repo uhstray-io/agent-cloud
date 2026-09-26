@@ -88,6 +88,11 @@
     _cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
     _mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
     _disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
+    # Per-host opt-outs, read from the declared host like every value above: this play runs
+    # on localhost, where a bare vm_onboot/vm_agent would miss the host's own setting.
+    # resize-vm.yml honours the same vm_agent, so a provision re-run cannot undo its opt-out.
+    _onboot: "{{ '1' if (_decl.vm_onboot | default(true) | bool) else '0' }}"
+    _agent: "{{ '1' if (_decl.vm_agent | default(true) | bool) else '0' }}"
     _ip: "{{ _decl.vm_ip | default(_svc.ip | default('')) }}"
     _gw: "{{ _decl.vm_gateway | default(_svc.gateway | default(_defaults.gateway | default(''))) }}"
     _dns: "{{ _decl.vm_nameserver | default(_svc.nameserver | default(_defaults.nameserver | default(''))) }}"
@@ -450,11 +455,11 @@
         body:
           cores: "{{ _cores }}"
           memory: "{{ _mem }}"
-          agent: "1"
+          agent: "{{ _agent }}"
           # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
           # come back after a hypervisor reboot silently takes its service down. Workflow
           # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
-          onboot: "{{ '1' if (vm_onboot | default(true) | bool) else '0' }}"
+          onboot: "{{ _onboot }}"
           net0: "virtio,bridge={{ _bridge }},firewall=0"
           ciuser: "{{ ci_user | default(ansible_user) }}"
           sshkeys: "{{ _ssh_pub | urlencode }}"

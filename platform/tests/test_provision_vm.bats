@@ -166,8 +166,18 @@ setup() {
 
 @test "provision-vm: the VM starts with its node (onboot), opt-out per host" {
   # Change service-deployment-workflow task 7.2; registry step provision-vm requires onboot=1.
-  blk=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml")
-  printf '%s' "$blk" | grep -qF "onboot: \"{{ '1' if (vm_onboot | default(true) | bool) else '0' }}\""
+  local pb="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  blk=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$pb")
+  printf '%s' "$blk" | grep -qF 'onboot: "{{ _onboot }}"'
+  # Read from the declared HOST: the play runs on localhost, so a bare vm_onboot misses it.
+  grep -qF "_onboot: \"{{ '1' if (_decl.vm_onboot | default(true) | bool) else '0' }}\"" "$pb"
+}
+
+@test "provision-vm: the guest-agent option honours the same per-host opt-out as resize-vm" {
+  local pb="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  blk=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$pb")
+  printf '%s' "$blk" | grep -qF 'agent: "{{ _agent }}"'
+  grep -qF "_agent: \"{{ '1' if (_decl.vm_agent | default(true) | bool) else '0' }}\"" "$pb"
 }
 
 @test "provision-vm: refuses a declared address another inventory host claims (evaluated)" {

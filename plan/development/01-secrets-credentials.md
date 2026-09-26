@@ -49,6 +49,12 @@ value staged as an encrypted input by `scripts/semaphore-seed-input.py` and remo
 after one task. Procedure: `platform/semaphore/README.md`, "Seed a secret through an
 isolated environment".
 
+**Rollout, 2026-09-25.** Dev: **Provision Seed Environment (Dev)** is installed, and **Seed
+OpenBao Key (Dev)** and **Seed Postiz Secrets (Dev)** are each bound to their own isolated
+environment, which holds only the encrypted `BAO_ROLE_ID` and `BAO_SECRET_ID` and no extra vars
+(read back from the Semaphore API on 2026-09-25). Main: not rolled out; it follows the
+`dev` → `main` promotion of the seed code.
+
 Why: on 2026-09-23 the agentgateway upstream key was seeded by staging it in the
 environment every template shares, driven by a one-off script. It worked, and it
 left no reusable path: the next seed would have needed another script, and any task
@@ -65,15 +71,16 @@ environment is bound, and the environment stays editable after that. Each seed p
 also refuses, before its AppRole login, any seed input its template does not declare
 (`tasks/assert-seed-inputs-declared.yml`): a leftover from another seed's interrupted run.
 
-**Open gap: the endpoint is not re-checked at run time.** The seed task takes its OpenBao
-address from the isolated environment's `openbao_addr` extra var. The production inventory
-declares the address under the `agent_cloud` group's vars, not `all.vars` (the public template
-inventory in this repo does use `all.vars`; the private one Semaphore runs does not). A seed
-runs on implicit `localhost`, which is in no group, so it receives no inventory value at all:
+**Gap as found (closed the same day, see "Drift closed" below): the endpoint was not
+re-checked at run time.** The seed task took its OpenBao address from the isolated
+environment's `openbao_addr` extra var. The production inventory then declared the address
+under the `agent_cloud` group's vars, not `all.vars` (the public template inventory in this
+repo does use `all.vars`; the private one Semaphore runs did not). A seed runs on implicit
+`localhost`, which is in no group, so it received no inventory value at all:
 verified on ansible-core 2.16.18, 2.20.8 and 2.21.0, where `localhost` gets `all.vars` but not
-another group's vars. That is why the environment pins the address, and why the run has
-nothing to compare the pin against. An environment edited after binding to point elsewhere is
-caught by the next publication, provisioning or seed CLI preflight, not by the seed task.
+another group's vars. That was why the environment pinned the address, and why the run had
+nothing to compare the pin against: an environment edited after binding to point elsewhere
+was caught by the next publication, provisioning or seed CLI preflight, not by the seed task.
 
 **Drift closed 2026-09-25.** The run uses the inventory value, with no pin in the environment:
 
@@ -103,12 +110,18 @@ task's `environment` JSON into the run's extra vars with no survey filter
 (`services/tasks/TaskRunner.go` `populateTaskEnvironment`; `db/Task.go` `ValidateNewTask`
 checks only the git branch and the task params). So anyone allowed to launch a template can
 supply any extra var, a template included, and redirect that template's OpenBao AppRole login.
-This is not specific to the seeds: 44 playbook and task files log in to OpenBao, and all take
+This is not specific to the seeds: 43 playbook and task files log in to OpenBao
+(`git grep -l 'auth/approle/login' -- '*.yml'`, 2026-09-25; an earlier "44" here was never
+counted), and all take
 the address from an overridable variable; two carry the drift check. The controls that bound
 it are who may launch and who may edit environments (Semaphore roles), not anything a playbook
 can check at run time. Candidate mitigations, each needing a decision: restrict launch rights
 on templates that log in to OpenBao; or build secret-bearing request URLs inline from the
 inventory file inside each request (no variable to override), a change to every login site.
+Either is cheaper after a prerequisite a 2026-09-25 grounding review named: there is no shared
+OpenBao login task, so address resolution, the transport guard and the drift check are
+repeated or absent per site (the drift check is in the two seed playbooks only). One login
+task that every site includes would turn the second mitigation into a one-file change.
 
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 

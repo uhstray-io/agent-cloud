@@ -8,6 +8,8 @@
 # Structural only (grep asserts) — no live Proxmox calls.
 # Run: bats platform/tests/test_resize_vm.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks/resize-vm.yml"
@@ -101,10 +103,7 @@ setup() {
 @test "resize-vm: reports the diff before any write" {
   # A run with allow_reboot unset is meant to be a safe preview, which only
   # works if the diff is printed before the first PUT.
-  local diff_line put_line
-  diff_line=$(grep -n 'Current vs desired' "$PB" | cut -d: -f1)
-  put_line=$(grep -n 'Apply cores/memory/agent to the VM config' "$PB" | cut -d: -f1)
-  [ "$diff_line" -lt "$put_line" ]
+  assert_precedes "$PB" 'Current vs desired' 'Apply cores/memory/agent to the VM config'
 }
 
 @test "resize-vm: warns that a grown disk still needs the guest filesystem extended" {

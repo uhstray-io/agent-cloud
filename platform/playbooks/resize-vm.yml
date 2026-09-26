@@ -101,6 +101,14 @@
     # older VM converges to the same, and install-qemu-guest-agent.yml can then start the
     # service (its unit binds to that channel's virtio port). Per-host opt-out: vm_agent: false.
     _want_agent: "{{ vm_agent | default(true) | bool }}"
+    # `agent` is a property string: "1", "0", or e.g. "fstrim_cloned_disks=1,enabled=1".
+    # `enabled` is its default key (a bare 1/0) and may sit anywhere, so it is parsed by key
+    # (Codex review of #265). Play vars resolve lazily: these read _cfg, and the facts set
+    # from it, only once the tasks below have produced them.
+    _agent_items: "{{ (_cfg.json.data.agent | default('') | string).split(',') | select | list }}"
+    # A wanted agent that is off, or written by an earlier run and still pending, needs a
+    # restart. One definition for the restart decision and its warning.
+    _agent_awaits_restart: "{{ (_want_agent | bool) and ((_agent_pending | bool) or not (_have_agent | bool)) }}"
 
     _allow_reboot: "{{ allow_reboot | default(false) | bool }}"
     # Seconds to wait for a clean guest shutdown before giving up. A guest
@@ -163,7 +171,8 @@
         fail_msg: >-
           Nothing to converge for '{{ target_service | default("(by vmid)") }}':
           no vm_cores/vm_memory/vm_disk on its inventory host, no readable
-          proxmox/vm-specs.yml, and no resize_* override passed. Declare the
+          proxmox/vm-specs.yml, no resize_* override passed, and the guest-agent
+          option opted out (vm_agent: false). Declare the
           sizes on the service's inventory host (the Semaphore-runnable path) or
           pass an override.
 
@@ -192,13 +201,6 @@
         method: GET
       register: _pending
       check_mode: false
-
-    # `agent` is a property string: "1", "0", or e.g. "fstrim_cloned_disks=1,enabled=1".
-    # `enabled` is its default key (a bare 1/0) and may sit anywhere, so it is parsed by key
-    # (Codex review of #265). Its own task: a set_fact cannot read a key it sets itself.
-    - name: "Split the guest-agent property string"
-      ansible.builtin.set_fact:
-        _agent_items: "{{ (_cfg.json.data.agent | default('') | string).split(',') | select | list }}"
 
     - name: "Resolve current values + the disk device to grow"
       ansible.builtin.set_fact:
@@ -326,7 +328,7 @@
                ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
                or ((_want_cores | string | length > 0)
                    and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
-               or ((_want_agent | bool) and ((_agent_pending | bool) or not (_have_agent | bool)))
+               or (_agent_awaits_restart | bool)
              ) }}
 
     - name: "Compute the config changes actually needed"
@@ -383,8 +385,8 @@
           but the guest is RUNNING cores={{ _running_cores }} (total vCPUs across
           {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
           has no hotplug, so it keeps its old allocation until it next boots.
-          {{ 'The guest-agent channel is also waiting for a restart. ' if (_want_agent | bool)
-             and ((_agent_pending | bool) or not (_have_agent | bool)) else '' }}It
+          {{ 'The guest-agent channel is also waiting for a restart. '
+             if (_agent_awaits_restart | bool) else '' }}It
           was NOT restarted. Re-run with -e allow_reboot=true during a
           maintenance window, or reboot the guest yourself.
       when:

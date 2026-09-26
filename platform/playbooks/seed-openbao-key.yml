@@ -18,7 +18,8 @@
 # A brand-new path is created with POST. Either way the write happens only when
 # the value actually changed, so re-runs converge without churning KV versions.
 #
-# The value is passed in as an extra var (no_log) and is never committed. Runs
+# The value arrives as the BAO_VALUE environment secret (a local run may use -e; no_log
+# either way) and is never committed. Runs
 # from the Semaphore runner (localhost), which holds the OpenBao AppRole (its
 # wildcard policy grants `patch` on secret/data/services/*).
 #
@@ -28,9 +29,10 @@
 #   returned by the API). Do NOT pass -e bao_value=... under Semaphore: it
 #   persists the extra-var JSON and serves it back over its API. The extra-var
 #   form is for a LOCAL run only.
-# The OpenBao address comes from the inventory's top-level all.vars.openbao_addr, never
-# from -e or the environment: the run refuses an address other than the one the inventory
-# file declares (tasks/assert-bao-addr-declared.yml). It must be https, OR http only to a
+# The OpenBao address comes from the inventory's top-level all.vars.openbao_addr: the run
+# refuses a plain address other than the one the inventory file declares, set by -e or the
+# environment (tasks/assert-bao-addr-declared.yml). That catches drift; a templated extra var
+# is outside what it stops (docs/MISTAKES.md 1.15). It must be https, OR http only to a
 # loopback/RFC1918 host (the internal OpenBao VLAN): the transport guard below refuses
 # public cleartext. AppRole creds are injected by the Semaphore environment.
 

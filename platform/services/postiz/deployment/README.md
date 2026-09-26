@@ -106,7 +106,8 @@ finds Seed Postiz Secrets and its isolated environment by name and runs the same
 read-only preflight as every seed CLI (`scripts/semaphore_seed.py`): the template must
 still run from its declared repository record and the approved inventory, and the
 environment must be clean. The seed task takes its OpenBao address from that inventory and
-refuses any other. It uses the controller AppRole. It stages encrypted `SEED_` inputs, waits for
+refuses a different plain address (drift; a templated extra var is outside what that
+check stops, see `docs/MISTAKES.md` 1.15). It uses the controller AppRole. It stages encrypted `SEED_` inputs, waits for
 the seed task, and removes only its inputs after a terminal result. The seed
 playbook reads OpenBao back and compares every supplied value without logging it.
 

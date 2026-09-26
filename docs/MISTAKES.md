@@ -42,6 +42,7 @@ supersede it with a new entry and link both.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
 | 1.15 | Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
+| 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -600,6 +601,27 @@ saw" and "the value the login used" are two renderings, not one.
 **The rule.** A security guarantee is stated only for the inputs its tests exercise, and the
 tests include the input class's strongest member (for extra vars: a template keyed on task
 context). Anything wider is written as a limit, with the boundary that actually holds it.
+
+**Enforced by.** Convention.
+
+### 1.16 A count written into a committed plan without running the count
+
+**Occurrences: 1** — 2026-09-25
+
+**What happened.** Recording the launch-permission gap for #264, I wrote into
+`plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
+OpenBao", and repeated the number to the user. No command in the session produced 44. A
+grounding review's agent counted 41; checking both, `git grep -l 'auth/approle/login' --
+'*.yml'` returns 43 (35 playbooks, 6 shared tasks, 2 Semaphore files). The wrong figure sat in
+a merged plan, sizing the change every candidate mitigation would need.
+
+**Root cause.** The number came from a scan earlier in the session whose exact pattern and
+scope were not kept, so the figure outlived the command that could reproduce it. A count reads
+as measured even when it is remembered.
+
+**The rule.** A count in a committed document carries the command that produced it and its
+date, run at the time of writing; a count that cannot be re-run is not written. (The corrected
+plan line now cites its command.)
 
 **Enforced by.** Convention.
 
