@@ -10,16 +10,17 @@
 #   rootful podman    the SYSTEM podman-restart.service enabled
 #   docker            docker.service enabled (Docker restarts `always` containers itself)
 #
-# podman-restart.service starts only `restart: always` containers. A ROOTFUL podman container on
-# another policy (a legacy compose file's drift; the repo's compose declares `always`,
-# test_restart_policy.bats) gets its own boot unit instead: `podman generate systemd --name`,
-# without --new, runs `podman start` on the EXISTING container. It is installed and enabled,
-# never started, so the running container is not touched, which matters on the orchestrator's
-# own host. Changing the policy in place needs `podman update --restart`, which the Ubuntu
-# 24.04 podman (4.9.3) does not have (PR 284 CI). `podman generate systemd` is deprecated in
-# favour of Quadlet; moving these services to the composable layout is the real fix.
-# A ROOTLESS container on another policy is refused by name: its deploy sets `always`.
-# `no` is left alone (a one-shot init container; verify-service-persistence.yml judges it).
+# podman-restart.service starts only `restart: always` containers. A ROOTFUL podman service
+# whose running containers carry another policy (a legacy compose file's drift; the repo's
+# compose declares `always`, test_restart_policy.bats) gets one boot unit of its own,
+# agent-cloud-boot-<service>.service, which runs `podman start <names>` at boot. It is
+# installed and enabled, never started, so no running container is touched, which matters on
+# the orchestrator's own host; it is removed again once every container is on `always`.
+# Changing the policy in place needs `podman update --restart`, which the Ubuntu 24.04 podman
+# (4.9.3) does not have (PR 284 CI). Moving these services to the composable layout is the
+# real fix. A ROOTLESS container on another policy is refused by name: its deploy sets `always`.
+# `no` counts as handled only from a declared one-shot container, verify-service-persistence.yml's
+# criterion; a long-running container on `no` gets the unit like any other.
 #
 # Idempotent and check-mode safe (--check reports what would change, writes nothing).
 #
@@ -67,28 +68,46 @@
         _lsc_all: true
       when: _engine == 'podman'
 
-    - name: "Podman: refuse to report convergence from a failed listing"
-      # list-service-containers never fails the play; an engine error would otherwise read as
-      # "nothing to change" (PR 284 review).
+    - name: "Podman: refuse to report convergence from a failed or empty listing"
+      # list-service-containers never fails the play; an engine error or a wrong
+      # compose_working_dir would otherwise read as "nothing to change" (PR 284 reviews).
       ansible.builtin.assert:
-        that: _lsc.rc == 0
-        fail_msg: "listing {{ _deploy_dir }}'s containers failed: {{ _lsc.stderr | default('') }}"
+        that:
+          - _lsc.rc == 0
+          - _lsc.stdout_lines | length > 0
+        fail_msg: "no containers listed for {{ _deploy_dir }} (rc={{ _lsc.rc }}): {{ _lsc.stderr | default('') }}"
       when: _engine == 'podman'
 
-    - name: "Podman: read each container's restart policy"
+    - name: "Podman: read each container's restart policy, state and one-shot label"
       ansible.builtin.command:
-        argv: ["podman", "inspect", "--format", "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}", "{{ item }}"]
+        argv:
+          - podman
+          - inspect
+          - --format
+          - >-
+            {{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}|{{ '{{' }}.State.Status{{ '}}' }}|{{ '{{' }}index .Config.Labels "agent-cloud.one-shot"{{ '}}' }}
+          - "{{ item }}"
       loop: "{{ _lsc.stdout_lines | default([]) if _engine == 'podman' else [] }}"
       become: "{{ _rootful }}"
       register: _ensure_policies
       changed_when: false
       check_mode: false
 
-    - name: "Podman: the containers a boot unit would not start"
+    - name: "Podman: the running containers podman's boot unit would not start"
+      # Not `always`, and not a declared one-shot on "no" (verify-service-persistence.yml's
+      # criterion). Running only: a stopped container is not started at boot on this
+      # playbook's say-so, and Verify still names it (PR 284 review).
       ansible.builtin.set_fact:
         _needs_unit: >-
-          {{ _ensure_policies.results | default([]) | rejectattr('skipped', 'defined')
-             | rejectattr('stdout', 'in', ['always', 'no']) | map(attribute='item') | list }}
+          {%- set out = [] -%}
+          {%- for r in _ensure_policies.results | default([]) | rejectattr('skipped', 'defined') -%}
+            {%- set f = (r.stdout ~ '||').split('|') -%}
+            {%- if f[0] != 'always' and not (f[0] == 'no' and f[2] == 'true') and f[1] == 'running' -%}
+              {%- set _ = out.append(r.item) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        _boot_unit_name: "agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"
 
     - name: "Rootless podman: refuse a container not on restart always"
       ansible.builtin.assert:
@@ -100,52 +119,91 @@
         - _engine == 'podman'
         - not _rootful
 
-    - name: "Rootful podman: generate a boot unit for each such container"
-      ansible.builtin.command:
-        argv: [podman, generate, systemd, --name, --no-header, --restart-policy, always, "{{ item }}"]
-      loop: "{{ _needs_unit if _rootful else [] }}"
-      become: true
-      register: _units
-      changed_when: false
-      check_mode: false
-
-    - name: "Rootful podman: the generated unit starts that existing container"
-      ansible.builtin.assert:
-        that:
-          - "'[Unit]' in _units.results[_i].stdout"
-          - "('podman start ' ~ item) in _units.results[_i].stdout"
-        fail_msg: "podman generate systemd did not produce a start unit for {{ item }}"
-      loop: "{{ _needs_unit if _rootful else [] }}"
-      loop_control:
-        index_var: _i
-
-    - name: "Rootful podman: install the unit"
+    # The unit mirrors podman's own podman-restart.service (v4.9.3 contrib/systemd): oneshot,
+    # RemainAfterExit, `podman start` at boot and a graceful stop, but keyed by container NAME,
+    # so a container recreated under the same name keeps working. `podman generate systemd`
+    # was rejected: its unit pins the container ID in PIDFile, and podman warns that a non
+    # --new unit on a container with its own restart policy can hang shutdown (PR 284 review).
+    # ponytail: names start in listing order, add an explicit order if a service needs one.
+    - name: "Rootful podman: install the service's boot unit"
       ansible.builtin.copy:
-        # From [Unit]: anything podman prints before it (a deprecation notice) is not unit text.
-        content: "{{ _units.results[_i].stdout[_units.results[_i].stdout.find('[Unit]') :] }}\n"
-        dest: "/etc/systemd/system/container-{{ item }}.service"
+        content: |
+          # Managed by agent-cloud ensure-service-persistence.yml: starts {{ service_name | default(inventory_hostname) }}'s
+          # containers that are not on restart: always (a legacy compose file's policy).
+          [Unit]
+          Description=Start {{ service_name | default(inventory_hostname) }} containers not on restart: always
+          StartLimitIntervalSec=0
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=true
+          ExecStart=/usr/bin/podman start {{ _needs_unit | join(' ') }}
+          ExecStop=/usr/bin/podman stop {{ _needs_unit | join(' ') }}
+
+          [Install]
+          WantedBy=default.target
+        dest: "/etc/systemd/system/{{ _boot_unit_name }}"
         owner: root
         group: root
         mode: "0644"
-      loop: "{{ _needs_unit if _rootful else [] }}"
-      loop_control:
-        index_var: _i
       become: true
+      register: _unit_file
+      when:
+        - _engine == 'podman'
+        - _rootful
+        - not _local
+        - _needs_unit | length > 0
 
-    - name: "Rootful podman: enable the unit at boot (not started now)"
+    - name: "Rootful podman: enable it at boot (not started now)"
       ansible.builtin.systemd_service:
-        name: "container-{{ item }}.service"
+        name: "{{ _boot_unit_name }}"
         enabled: true
-        daemon_reload: true
-      loop: "{{ _needs_unit if _rootful else [] }}"
+        daemon_reload: "{{ _unit_file is changed }}"
       become: true
       # Under --check the unit file was not written, so there is nothing to enable yet.
-      when: not ansible_check_mode
+      when:
+        - _engine == 'podman'
+        - _rootful
+        - not _local
+        - _needs_unit | length > 0
+        - not ansible_check_mode
+
+    - name: "Rootful podman: is a boot unit left from an earlier run?"
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ _boot_unit_name }}"
+      register: _stale_unit
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - _rootful
+        - not _local
+        - _needs_unit | length == 0
+
+    - name: "Rootful podman: remove it, now every container is on always"
+      # Left behind, it would start the containers a second time beside podman-restart.service.
+      when:
+        - _stale_unit.stat.exists | default(false)
+      become: true
+      block:
+        - name: "Rootful podman: disable the stale boot unit"
+          ansible.builtin.systemd_service:
+            name: "{{ _boot_unit_name }}"
+            enabled: false
+        - name: "Rootful podman: delete the stale boot unit"
+          ansible.builtin.file:
+            path: "/etc/systemd/system/{{ _boot_unit_name }}"
+            state: absent
+        - name: "Rootful podman: reload systemd after removing it"
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+          when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: {{ _engine }}{{ ' (rootful)' if _rootful else (' (rootless)' if _engine == 'podman' else '') }}
-          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured; own boot unit
-          {{ 'would be ' if ansible_check_mode else '' }}installed for:
+          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured; {{ _boot_unit_name | default('no boot unit') }}
+          {{ 'would ' if ansible_check_mode else '' }}start:
           {{ (_needs_unit | default([]) if _rootful else []) or 'none' }}. Check it with Verify Service Persistence.

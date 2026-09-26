@@ -182,23 +182,56 @@ def test_persistence_accepts_only_what_boots(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_persistence_accepts_a_rootful_container_with_its_own_enabled_unit(tmp_path):
+def test_persistence_accepts_a_rootful_container_named_by_the_enabled_service_unit(tmp_path):
     # PR 284: the Ubuntu 24.04 podman cannot change a legacy container's policy in place, so
-    # ensure-service-persistence.yml installs container-<name>.service; only an ENABLED unit counts.
+    # ensure-service-persistence.yml installs agent-cloud-boot-<service>.service; a container
+    # passes only when that unit is ENABLED and names it. The system podman-restart.service is
+    # still required for the containers on always.
+    import base64
     path = PLAYBOOKS / "verify-service-persistence.yml"
     play = yaml.safe_load(path.read_text())[0]
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
     inspected = {"app": "unless-stopped running 0 ", "db": " running 0 ", "run": "always running 0 "}
-    units = {"app": "enabled", "db": "disabled", "run": "not-found"}
-    variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
-                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
-                 "_container_units": {"results": [{"item": k, "stdout": v} for k, v in units.items()]},
-                 "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
-                 "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
-    got, _ = _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _unit_started]")
-    errors, started = got
+    unit = "[Service]\nType=oneshot\nExecStart=/usr/bin/podman start app\nExecStop=/usr/bin/podman stop app\n"
+
+    def run(enabled, system_unit="enabled"):
+        variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
+                     "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
+                     "_service_unit_enabled": {"stdout": enabled},
+                     "_service_unit_file": {"content": base64.b64encode(unit.encode()).decode()},
+                     "_system_unit": {"stdout": system_unit},
+                     "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
+                     "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
+        return _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _unit_started]")[0]
+
+    errors, started = run("enabled")
     assert started == ["app"]
     assert errors == ["restart policy not always: db"]
+    errors, started = run("disabled")
+    assert started == [] and errors == ["restart policy not always: app", "restart policy not always: db"]
+    errors, _ = run("enabled", system_unit="disabled")
+    assert any("podman-restart.service is not enabled (system unit)" in e for e in errors), errors
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_ensure_units_only_running_containers_a_boot_unit_would_miss(tmp_path):
+    # PR 284 review: `always` and a declared one-shot on "no" need no unit; a long-running
+    # container on "no" does; a stopped container is not started at boot on Ensure's say-so.
+    # The rendered ExecStart= is the line verify-service-persistence.yml parses.
+    path = PLAYBOOKS / "ensure-service-persistence.yml"
+    pick = _named(path, "Podman: the running containers podman's boot unit would not start")
+    content = _named(path, "Rootful podman: install the service's boot unit")["ansible.builtin.copy"]["content"]
+    inspected = {"app": "unless-stopped|running|", "db": "|running|", "run": "always|running|",
+                 "init": "no|exited|true", "worker": "no|running|", "old": "unless-stopped|exited|"}
+    variables = {"service_name": "demo",
+                 "_ensure_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]}}
+    render = {"ansible.builtin.set_fact": {"_unit_text": content}}
+    got, _ = _run_tasks(tmp_path, [pick, render], variables, "[_needs_unit, _boot_unit_name, _unit_text]")
+    needs, name, text = got
+    assert needs == ["app", "db", "worker"]
+    assert name == "agent-cloud-boot-demo.service"
+    assert "ExecStart=/usr/bin/podman start app db worker\n" in text
+    assert "Type=oneshot" in text and "PIDFile" not in text
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
