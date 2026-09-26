@@ -644,6 +644,7 @@ select_rules = compile_value(rule_check['vars']['_o11y_rules'])
 checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
 for rules, expected in [
     ([{'uid': 'o11y_service_down', 'isPaused': False}], True),
+    ([{'uid': 'o11y_service_down', 'isPaused': False}, {'uid': 'unrelated', 'isPaused': True}], True),
     ([{'uid': 'o11y_service_down', 'isPaused': False}, {'uid': 'o11y_missing_caddy', 'isPaused': True}], False),
     ([{'uid': 'unrelated', 'isPaused': False}], False),
     ([{'uid': 'o11y_service_down'}], False),
