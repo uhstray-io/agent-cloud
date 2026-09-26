@@ -344,10 +344,11 @@
 > Semaphore probe selects one declared node at a time, reports the receiver's
 > route and chosen source, and makes one bounded direct `/metrics` request.
 > The DGX owner observes the arriving source in each node's firewall log
-> before applying a reviewed source-scoped port 9100 rule. Only after both
-> nodes answer and Prometheus reports named healthy series should private
-> inventory enable persistent scraping. Keep GPU scraping and Loki shipping
-> disabled until their separate endpoint and receipt gates pass.
+> before applying a reviewed source-scoped port 9100 rule. After both nodes
+> answer, enable persistent scraping in a separate private inventory change,
+> redeploy from reviewed `dev`, and require named healthy Prometheus series
+> before accepting DGX telemetry. Keep GPU scraping and Loki shipping disabled
+> until their separate endpoint and receipt gates pass.
 > PR #206 passed CodeRabbit review and final-head checks and merged the local
 > baseline to `dev` as `3de6fe71cd60efe2e2986922c08ab4c55bce0929`.
 > Local Dev-bound Semaphore task 1225 deployed that merge; task 1231 found a
