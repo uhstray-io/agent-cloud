@@ -194,8 +194,9 @@ def preflight(api, project, target):
     """
     template_id, expected_env = target.template_id, target.environment_id
     playbook, template_name, bindings = target.playbook, target.template_name, target.bindings
-    # Mandatory: a target without its approved repository and inventory could skip the check.
-    if not bindings:
+    # Mandatory, BOTH of them: a target missing either could skip that half of the check
+    # (CodeRabbit review of #264).
+    if not bindings or not {"repository_id", "inventory_id"} <= set(bindings):
         raise Refusal("A seed target must carry its approved repository and inventory bindings")
     template = api(f"/templates/{template_id}")
     if (template.get("playbook") != playbook

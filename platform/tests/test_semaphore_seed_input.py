@@ -270,8 +270,9 @@ def test_an_unreadable_poll_names_the_task(monkeypatch, reply):
         semaphore_seed.wait(lambda path, body=None: reply, {"id": 900, "status": "waiting"}, "Access check")
 
 
-def test_a_target_without_bindings_is_refused_before_any_request():
+@pytest.mark.parametrize("bindings", [{}, {"repository_id": 5}, {"inventory_id": 2}])
+def test_a_target_without_both_bindings_is_refused_before_any_request(bindings):
     api = FakeAPI()
     with pytest.raises(cli.Refusal, match="approved repository and inventory"):
-        cli.preflight(api, 1, TARGET._replace(bindings={}))
+        cli.preflight(api, 1, TARGET._replace(bindings=bindings))
     assert api.calls == []
