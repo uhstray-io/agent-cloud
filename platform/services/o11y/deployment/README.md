@@ -18,9 +18,19 @@ route/source and makes one direct five-second `/metrics` request. Leave
 `probe_expect_reachable=false` while the DGX owner observes the blocked packet
 and its on-wire source. After the reviewed source-scoped firewall rule is
 applied, repeat with `probe_expect_reachable=true` and require HTTP 200 on both
-nodes. Then enable `dgx_spark_scrape_enabled` in private inventory and verify
-the named Prometheus series. Keep GPU scraping and Loki shipping separately
-gated.
+nodes. `Probe o11y Metrics Endpoint (Dev)` then checks the head's vLLM
+`/metrics` with `probe_target=dgx-vllm`; its head address/name and API port
+must match the private inventory. Only after all three metrics endpoints answer
+from the receiver, enable `dgx_spark_scrape_enabled` in a separate private
+inventory PR and verify the named Prometheus series. Keep GPU scraping and Loki
+shipping separately gated.
+
+For agentgateway, first bind its stats listener to its static LAN address and
+apply a firewall rule limited to the o11y receiver. Run the same endpoint probe
+with `probe_target=agentgateway`. Declare `agentgateway_metrics_address` and
+`agentgateway_metrics_port` in a later private inventory PR only after that
+probe gets HTTP 200. An early scrape declaration creates `up=0` and can fire
+the production service-down alert on the next o11y deploy.
 
 The playbook renders `config/scrape.d/dgx-spark.yml` from the private inventory
 and reloads Prometheus only if that file changes. The file is gitignored; keep

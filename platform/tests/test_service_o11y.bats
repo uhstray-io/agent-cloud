@@ -608,6 +608,59 @@ assert [item['name'] for item in template['survey_vars']] == ['expected_reposito
 PY
 }
 
+@test "o11y: endpoint probe accepts only declared metrics targets in check mode" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        receiver:
+          ansible_connection: local
+          dgx_spark_nodes:
+            - {name: spark-1, address: "192.0.2.1"}
+          dgx_spark_head_name: spark-1
+          dgx_spark_head_address: "192.0.2.1"
+          dgx_spark_api_port: 8000
+    agentgateway_svc:
+      hosts:
+        gateway:
+          agw_stats_bind: "192.0.2.2"
+          agw_stats_port: 19002
+YAML
+  local sha
+  sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+probe = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+steps = {task['name']: task for task in probe[2]['tasks']}
+request = steps['Send one direct bounded metrics request from the receiver']
+assert request['when'] == 'not ansible_check_mode'
+assert request['ansible.builtin.uri']['url'] == 'http://{{ _probe_address }}:{{ _probe_port }}/metrics'
+assert request['ansible.builtin.uri']['use_proxy'] is False
+assert request['ansible.builtin.uri']['return_content'] is False
+assert request['ansible.builtin.uri']['timeout'] == 5
+template = next(item for item in yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates'] if item['name'] == 'Probe o11y Metrics Endpoint (Dev)')
+assert template['repository'] == 'agent-cloud dev'
+assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_target']
+PY
+  for target in dgx-vllm agentgateway; do
+    run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+      -i "$BATS_TEST_TMPDIR/inventory.yml" \
+      "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+      -e expected_repository_sha="$sha" -e probe_target="$target"
+    [ "$status" -eq 0 ]
+    assert_contains "$output" "Refuse an unusable metrics address or port"
+  done
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+    -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    -e expected_repository_sha="$sha" -e probe_target=arbitrary
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Select dgx-vllm or agentgateway"
+}
+
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {
   python3 - "$DEPLOY_DIR/templates/scrape-agentgateway.yml.j2" <<'PY'
 import json
