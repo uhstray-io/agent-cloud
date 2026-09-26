@@ -416,7 +416,7 @@
 > again found all four containers `created`. The proposed
 > `Recover Authentik Audit Runtime (Dev)` workflow defaults to a read-only
 > preflight. Its apply mode starts only the existing database, cache, and
-> server containers, checks that their identities and named data volumes are
+> server containers, checks their identities, declared Authentik image, and named data volumes are
 > preserved, and refuses a running worker. Publish and run it only after its
 > review and Dev merge; then rerun the separate authenticated retirement audit
 > before deploying the Grafana OIDC blueprint.

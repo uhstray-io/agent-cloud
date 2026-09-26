@@ -71,6 +71,7 @@
       register: _before
       changed_when: false
       check_mode: false
+      failed_when: false
 
     - name: Require existing containers and a stopped blueprint worker
       ansible.builtin.assert:
@@ -92,6 +93,7 @@
       register: _mounts
       changed_when: false
       check_mode: false
+      failed_when: false
 
     - name: Require the existing named data volumes
       ansible.builtin.assert:
@@ -107,6 +109,23 @@
       loop_control:
         label: "{{ item.item }}"
 
+    - name: Inspect the existing server and worker image names
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{.ImageName}}' }}", "{{ item }}"]
+      loop: [authentik-server, authentik-worker]
+      register: _authentik_images
+      changed_when: false
+      check_mode: false
+
+    - name: Require the declared Authentik image before starting the server
+      ansible.builtin.assert:
+        that:
+          - item.stdout == (authentik_image | default('ghcr.io/goauthentik/server:2024.12.3'))
+        fail_msg: "{{ item.item }} does not use the declared Authentik image; no recovery was applied."
+      loop: "{{ _authentik_images.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Report the exact recovery scope
       ansible.builtin.debug:
         msg:
@@ -114,6 +133,7 @@
           start_if_stopped: "{{ _core }}"
           worker: stopped
           database_volume: preserved
+          authentik_image: "{{ authentik_image | default('ghcr.io/goauthentik/server:2024.12.3') }}"
           action: "Start existing containers only; no pull, recreate, source placement, or volume deletion."
 
     - name: End after read-only preflight by default

@@ -53,6 +53,9 @@ def test_recovery_starts_only_existing_audit_dependencies():
             "            volume='other-data'\n"
             "        print(json.dumps([{'Type':'volume','Name':volume,'Destination':dest}]))\n"
             "    elif 'Health.Status' in fmt: print('healthy' if state[name]=='running' else 'starting')\n"
+            "    elif 'ImageName' in fmt:\n"
+            "        print('other-image' if os.environ.get('FAKE_PODMAN_WRONG_IMAGE')\n"
+            "              else 'ghcr.io/goauthentik/server:2024.12.3')\n"
             "    else: print('id-'+name+' image-'+name+' '+state[name]+' always')\n"
             "else: sys.exit(2)\n"
         )
@@ -99,6 +102,20 @@ def test_recovery_starts_only_existing_audit_dependencies():
         assert "no declared named data volume" in wrong_volume.stdout
         assert json.loads(state_file.read_text()) == dict.fromkeys(NAMES, "created")
         del env["FAKE_PODMAN_WRONG_VOLUME"]
+
+        env["FAKE_PODMAN_WRONG_IMAGE"] = "1"
+        wrong_image = run(["-e", "authentik_runtime_apply=true"])
+        assert wrong_image.returncode != 0
+        assert "does not use the declared Authentik image" in wrong_image.stdout
+        assert json.loads(state_file.read_text()) == dict.fromkeys(NAMES, "created")
+        del env["FAKE_PODMAN_WRONG_IMAGE"]
+
+        missing = dict.fromkeys(NAMES[:3], "created")
+        state_file.write_text(json.dumps(missing))
+        refused_missing = run(["-e", "authentik_runtime_apply=true"])
+        assert refused_missing.returncode != 0
+        assert "is missing, unexpected" in refused_missing.stdout
+        assert json.loads(state_file.read_text()) == missing
 
         state_file.write_text(json.dumps(dict.fromkeys(NAMES, "running")))
         refused = run(["-e", "authentik_runtime_apply=true"])
