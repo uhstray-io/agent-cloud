@@ -53,7 +53,6 @@
     _deploy_templates: >-
       {{ (lookup('file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json)
          .catalog['service-agent'].service_deploy_templates }}
-    _inventory_services: "{{ (_host_services | default({})).values() | unique | sort }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
 
   tasks:
@@ -106,10 +105,24 @@
         argv: [python3, "{{ _parser }}"]
         stdin: >-
           {{ {'mode': 'pick', 'groups': groups, 'host_services': _host_services | default({}),
-              'histories': _histories.results | map(attribute='json') | list} | to_json }}
+              'histories': _histories_rows} | to_json }}
       register: _pick
       changed_when: false
       check_mode: false
+      vars:
+        # Only the fields pick and aggregate read (step_results.py): up to 1000 rows per
+        # template go through stdin every 15 minutes (grounding review of PR 258).
+        _row_keys: [id, status, template_id, environment, tpl_playbook, params, end]
+        _histories_rows: >-
+          {%- set out = [] -%}
+          {%- for r in _histories.results | default([]) -%}
+            {%- set rows = [] -%}
+            {%- for t in r.json | default([]) -%}
+              {%- if rows.append(t | dict2items | selectattr('key', 'in', _row_keys) | items2dict) -%}{%- endif -%}
+            {%- endfor -%}
+            {%- if out.append(rows) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
 
     - name: "Read each picked task's output"
       ansible.builtin.uri:
@@ -177,8 +190,9 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       # Every inventoried service, including one that has not run a step yet (review of PR
-      # #229). From the inventory, not the aggregate, which now runs after this read.
-      loop: "{{ _inventory_services }}"
+      # #229), as the PARSER keys them (first host of each group): the write indexes the
+      # aggregate by these names, so any other list could reach a service it lacks.
+      loop: "{{ (_select.stdout | from_json).inventory_services }}"
       register: _vms
       failed_when: false
       check_mode: false
@@ -187,8 +201,9 @@
 
     - name: "NetBox: sort the lookups"
       ansible.builtin.set_fact:
-        # Only the service name and the VM id: a registered uri result can carry the request's
-        # headers, the collector token among them, and this fact is visible (PR 195 Codex review).
+        # Only the service name, the VM id and its current workflow status: a registered uri
+        # result can carry the request's headers, the collector token among them, and this
+        # fact is visible (PR 195 Codex review).
         _vm_found: >-
           {%- set out = [] -%}
           {%- for r in _answered | selectattr('json.count', 'equalto', 1) -%}

@@ -7,7 +7,8 @@
 #          get_arp_table() reads: /api/v2/diagnostics/arp_table, X-API-Key, credentials at
 #          secret/services/discovery/pfsense) and Proxmox's VM list
 #   judge  an address in ARP refuses the step, UNLESS the declared vmid already runs on
-#          Proxmox under the declared name AND one of its NICs carries the ARP entry's MAC:
+#          Proxmox under the declared name AND its NICs carry EVERY MAC the ARP table holds
+#          for the address:
 #          then the address is the service's own and the step is `skip` (already
 #          provisioned), never a false refusal on a backfill
 #   write  the NetBox VM record when absent: status planned, in the Proxmox cluster the
@@ -133,7 +134,7 @@
         - _running_vm | length > 0
 
     # The read is no_log (its request carries the token), so its failure is checked here,
-    # visibly: otherwise an unreadable config reads as "no NIC has that MAC", the wrong cause.
+    # visibly: otherwise an unreadable config reads as "no NIC carries those MACs", the wrong cause.
     - name: "Require the VM configuration read to answer"
       ansible.builtin.assert:
         that: _vm_config.status | default(-1) == 200
@@ -197,7 +198,7 @@
         _address_errors: >-
           {{ ([] if (_arp_hits | length == 0) or _own_vm
               else [_ip ~ ' answers ARP (' ~ (_arp_hits | map(attribute='mac', default='?') | join(', '))
-                    ~ ') and no running VM ' ~ _vmid ~ ' named ' ~ _name ~ ' has that MAC on Proxmox: the address is in use'])
+                    ~ ') and no running VM ' ~ _vmid ~ ' named ' ~ _name ~ ' carries every one of those MACs on Proxmox: the address is in use'])
              + ([] if (_vm_records | length > 0) or (_clusters | length == 1)
                 else ['cannot place the NetBox VM record: ' ~ (_clusters | length)
                       ~ ' Proxmox clusters match (discovery maintains them; pass -e netbox_vm_cluster=<name>)'])

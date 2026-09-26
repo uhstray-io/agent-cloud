@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -36,6 +38,13 @@ def _run_line(result: dict) -> str:
 def _task(tid, status, template_id, output="", service="tududi", **extra):
     return {"id": tid, "status": status, "end": f"t{tid}", "template_id": template_id,
             "service": service, "output": output, **extra}
+
+
+def _call(payload: dict) -> dict:
+    """Run the parser as the collector does: one JSON object on stdin, JSON on stdout."""
+    done = subprocess.run([sys.executable, str(REPO / "platform/workflows/service-onboarding/lib/step_results.py")],
+                          input=json.dumps(payload), text=True, capture_output=True, check=True)
+    return json.loads(done.stdout)
 
 
 def _agg(*tasks):
@@ -160,20 +169,14 @@ def test_groups_map_to_their_hosts_service_name():
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
-    import subprocess
-    import sys
-    script = REPO / "platform/workflows/service-onboarding/lib/step_results.py"
-
-    def call(payload):
-        done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
-                              text=True, capture_output=True, check=True)
-        return json.loads(done.stdout)
-
+    call = _call
     inv = {"groups": {"tududi_svc": ["h"], "step_ca_svc": ["s"]}, "host_services": {"h": "tududi", "s": "step-ca"}}
     deploys = sorted(DEPLOYS)
     selected = call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
                      "deploy_templates": deploys, **inv})
     assert selected["template_ids"] == [1, 2, 3, 4]
+    # the service list the NetBox lookup loops, keyed as the aggregate keys them
+    assert selected["inventory_services"] == ["step-ca", "tududi"]
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t",
            "environment": '{"target_service": "tududi_svc"}'}
     picked = call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
@@ -189,15 +192,10 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
 def test_pick_reports_a_template_whose_history_filled_the_window():
     # PR 195 Codex review: runs older than the read window are invisible, so say which
     # templates hit it instead of letting their services look history-less.
-    import subprocess
-    import sys
-    script = REPO / "platform/workflows/service-onboarding/lib/step_results.py"
     full = [{"id": i, "status": "success", "template_id": 9} for i in range(step_results.HISTORY_WINDOW, 0, -1)]
     short = [{"id": 5000, "status": "success", "template_id": 8}]
-    done = subprocess.run([sys.executable, str(script)], text=True, capture_output=True, check=True,
-                          input=json.dumps({"mode": "pick", "groups": {}, "host_services": {},
-                                            "histories": [full, short, []]}))
-    assert json.loads(done.stdout)["window_full"] == [9]
+    got = _call({"mode": "pick", "groups": {}, "host_services": {}, "histories": [full, short, []]})
+    assert got["window_full"] == [9]
     # HISTORY_WINDOW is the size of THIS endpoint's answer; /tasks/last answers 200
     plays = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())
     read = next(t for t in plays[0]["tasks"] if t.get("name") == "Read each workflow template's task history")
@@ -318,6 +316,15 @@ def test_a_full_window_marks_only_the_services_it_can_hide():
     assert markers == {("tududi", "history_incomplete"), ("step-ca", "no_history")}
 
 
+def test_a_retained_step_the_registry_no_longer_holds_is_dropped():
+    # Grounding review of PR 258: a renamed or removed step's last status came back from NetBox
+    # on every run, a stale failure no run could ever clear.
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
+                                 retained={"tududi": {"fw-harden": "fail", "old-renamed-step": "fail"}})
+    assert agg["status_by_service"] == {"tududi": {"fw-harden": "fail"}}
+    assert agg["failed_steps"] == {"tududi": ["fw-harden"]}
+
+
 def test_a_status_older_than_the_window_is_reported_and_streamed_not_only_kept():
     # PR 258 Codex review: NetBox kept a failure whose run fell out of the window, but the
     # report and Loki dropped it. The retained status is merged UNDER this run's results.
@@ -345,7 +352,7 @@ def test_the_collector_passes_the_window_to_the_aggregate():
 
 def test_the_collector_writes_every_tracked_service():
     text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
-    assert 'loop: "{{ _inventory_services }}"' in text
+    assert 'loop: "{{ (_select.stdout | from_json).inventory_services }}"' in text
     assert "_agg.loki_streams | length > 0" in text
     assert "_agg.services.keys()" not in text
 
