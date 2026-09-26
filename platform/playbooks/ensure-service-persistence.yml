@@ -63,6 +63,14 @@
         _lsc_all: true
       when: _engine == 'podman'
 
+    - name: "Podman: refuse to report convergence from a failed listing"
+      # list-service-containers never fails the play; an engine error would otherwise read as
+      # "nothing to change" (PR 284 review).
+      ansible.builtin.assert:
+        that: _lsc.rc == 0
+        fail_msg: "listing {{ _deploy_dir }}'s containers failed: {{ _lsc.stderr | default('') }}"
+      when: _engine == 'podman'
+
     - name: "Podman: read each container's restart policy"
       ansible.builtin.command:
         argv: ["podman", "inspect", "--format", "{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}", "{{ item }}"]

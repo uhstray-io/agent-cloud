@@ -21,8 +21,9 @@
 - name: "Resolve the service's deploy directory and engine"
   ansible.builtin.set_fact:
     _deploy_dir: >-
-      {{ compose_working_dir | default((local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
-         ~ '/' ~ monorepo_deploy_path, true) }}
+      {{ compose_working_dir if (compose_working_dir | default('') | length > 0)
+         else (local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
+              ~ '/' ~ monorepo_deploy_path }}
     _engine: "{{ container_engine | default('podman') }}"
 
 - name: "List the service's containers (by compose working directory)"

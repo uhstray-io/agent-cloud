@@ -38,8 +38,8 @@ def _playbook(tmp_path, name, workdir, *extra):
     inventory = tmp_path / "inventory.ini"
     inventory.write_text(
         "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\n"
+        # No monorepo_deploy_path: a legacy service may declare only its working dir (PR 284 review).
         f"service_name=demo\nlocal_mode=true\ncontainer_engine=podman\ncompose_working_dir={workdir}\n"
-        "monorepo_deploy_path=platform/services/demo/deployment\n"
     )
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
@@ -56,13 +56,16 @@ def legacy_service():
     label = f"com.docker.compose.project.working_dir={workdir}"
     app, init = f"demo-app-{tag}", f"demo-init-{tag}"
     try:
-        _podman("run", "-d", "--name", app, "--label", label, "--restart", "unless-stopped", IMAGE, "sleep", "600")
-        _podman("run", "--name", init, "--label", label, "--label", "agent-cloud.one-shot=true",
-                "--restart", "no", IMAGE, "true")
-    except subprocess.CalledProcessError as err:
-        pytest.skip(f"cannot start a test container: {err.stderr}")
-    yield workdir, app, init
-    subprocess.run(["podman", "rm", "-f", app, init], capture_output=True)
+        try:
+            _podman("run", "-d", "--name", app, "--label", label, "--restart", "unless-stopped", IMAGE, "sleep", "600")
+            _podman("run", "--name", init, "--label", label, "--label", "agent-cloud.one-shot=true",
+                    "--restart", "no", IMAGE, "true")
+        except subprocess.CalledProcessError as err:
+            pytest.skip(f"cannot start a test container: {err.stderr}")
+        yield workdir, app, init
+    finally:
+        # Also after a skip: the app may have started before the one-shot failed (PR 284 review).
+        subprocess.run(["podman", "rm", "-f", app, init], capture_output=True)
 
 
 def _state(name):
