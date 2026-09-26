@@ -1,0 +1,210 @@
+---
+# Start only the existing Authentik database, cache, and server so the
+# retirement audit can run before any blueprint worker is allowed to start.
+# The default is a read-only preflight. No source placement, image pull,
+# container recreation, or volume operation occurs here.
+- name: Require one declared Authentik host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Refuse a missing or ambiguous target
+      ansible.builtin.assert:
+        that: "groups.get('authentik_svc', []) | length == 1"
+        fail_msg: "Declare exactly one authentik_svc host before recovery."
+
+    - name: Read the fetched Dev revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, refs/remotes/origin/dev]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _dev_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Read the controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Read the controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed Dev checkout
+      ansible.builtin.assert:
+        that:
+          - _controller_revision.stdout == _dev_revision.stdout
+          - _controller_changes.stdout | length == 0
+        fail_msg: "Authentik recovery requires a clean checkout at fetched Dev."
+
+- name: Recover existing Authentik audit dependencies
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _core: [authentik-postgresql, authentik-redis, authentik-server]
+    _all: [authentik-postgresql, authentik-redis, authentik-server, authentik-worker]
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: Refuse local mode and a different container engine
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+          - _engine == 'podman'
+        fail_msg: "Authentik recovery is scoped to the production Podman host."
+
+    - name: Inspect existing container identity and state
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{.Id}} {{.Image}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}}' }}"
+          - "{{ item }}"
+      loop: "{{ _all }}"
+      register: _before
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Require existing containers and a stopped blueprint worker
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - item.stdout.split() | length == 4
+          - item.stdout.split()[2] in ['created', 'exited', 'running']
+          - item.stdout.split()[3] == 'always'
+          - item.item != 'authentik-worker' or item.stdout.split()[2] in ['created', 'exited']
+        fail_msg: "{{ item.item }} is missing, unexpected, or the blueprint worker is running; no recovery was applied."
+      loop: "{{ _before.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Inspect existing backing-store mounts
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{json .Mounts}}' }}", "{{ item }}"]
+      loop: [authentik-postgresql, authentik-redis]
+      register: _mounts
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Require the existing named data volumes
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - >-
+            item.stdout | from_json | selectattr('Type', 'equalto', 'volume')
+            | selectattr('Destination', 'equalto', '/var/lib/postgresql/data' if item.item == 'authentik-postgresql' else '/data')
+            | selectattr('Name', 'equalto', 'authentik_authentik-postgres' if item.item == 'authentik-postgresql' else 'authentik_authentik-redis')
+            | list | length == 1
+        fail_msg: "{{ item.item }} has no declared named data volume; no recovery was applied."
+      loop: "{{ _mounts.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Inspect the existing server and worker image names
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{.ImageName}}' }}", "{{ item }}"]
+      loop: [authentik-server, authentik-worker]
+      register: _authentik_images
+      changed_when: false
+      check_mode: false
+
+    - name: Require the declared Authentik image before starting the server
+      ansible.builtin.assert:
+        that:
+          - item.stdout == (authentik_image | default('ghcr.io/goauthentik/server:2024.12.3'))
+        fail_msg: "{{ item.item }} does not use the declared Authentik image; no recovery was applied."
+      loop: "{{ _authentik_images.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Report the exact recovery scope
+      ansible.builtin.debug:
+        msg:
+          apply: "{{ authentik_runtime_apply | default(false) | bool }}"
+          start_if_stopped: "{{ _core }}"
+          worker: stopped
+          database_volume: preserved
+          authentik_image: "{{ authentik_image | default('ghcr.io/goauthentik/server:2024.12.3') }}"
+          action: "Start existing containers only; no pull, recreate, source placement, or volume deletion."
+
+    - name: End after read-only preflight by default
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode or not (authentik_runtime_apply | default(false) | bool)
+
+    - name: Start the existing database and cache
+      ansible.builtin.command:
+        argv: [podman, start, "{{ item.item }}"]
+      loop: "{{ _before.results[:2] }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not ansible_check_mode
+        - item.stdout.split()[2] != 'running'
+      changed_when: true
+
+    - name: Wait for database and cache health
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{.State.Health.Status}}' }}", "{{ item }}"]
+      loop: [authentik-postgresql, authentik-redis]
+      register: _backing_health
+      changed_when: false
+      check_mode: false
+      until: _backing_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+
+    - name: Start the existing server without the blueprint worker
+      ansible.builtin.command:
+        argv: [podman, start, authentik-server]
+      when:
+        - not ansible_check_mode
+        - _before.results[2].stdout.split()[2] != 'running'
+      changed_when: true
+
+    - name: Wait for the server to become healthy
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{.State.Health.Status}}' }}", authentik-server]
+      register: _server_health
+      changed_when: false
+      check_mode: false
+      until: _server_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+
+    - name: Verify identities, running core, and stopped worker
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{.Id}} {{.Image}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}}' }}"
+          - "{{ item }}"
+      loop: "{{ _all }}"
+      register: _after
+      changed_when: false
+      check_mode: false
+
+    - name: Require only the planned state transitions
+      ansible.builtin.assert:
+        that:
+          - item.stdout.split()[:2] == _before.results[ansible_loop.index0].stdout.split()[:2]
+          - item.item != 'authentik-worker' or item.stdout.split()[2] == _before.results[ansible_loop.index0].stdout.split()[2]
+          - item.item == 'authentik-worker' or item.stdout.split()[2] == 'running'
+        fail_msg: "{{ item.item }} changed identity or reached an unexpected state."
+      loop: "{{ _after.results }}"
+      loop_control:
+        extended: true
+        label: "{{ item.item }}"
+
+    - name: Report recovery ready for the separate retirement audit
+      ansible.builtin.debug:
+        msg: "Authentik database, cache, and server are healthy; the existing blueprint worker remains stopped. Run Audit Authentik Retirements (Dev) next."

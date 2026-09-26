@@ -281,6 +281,17 @@ templates:
     playbook: platform/playbooks/audit-authentik-retirements.yml
     dev_variant: true
 
+  - name: Recover Authentik Audit Runtime (Dev)
+    playbook: platform/playbooks/recover-authentik-audit-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: authentik_runtime_apply
+        title: Start existing audit dependencies
+        description: "false = inspect only; true = start the existing database, cache, and server while leaving the blueprint worker stopped"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Print User Credentials
     playbook: platform/playbooks/print-platform-user-credentials.yml
     # GATED, and it PRINTS a live credential into this task's output. Exists so an

@@ -412,6 +412,14 @@
 > that preserves the database and keeps the blueprint `worker` stopped until
 > the audit establishes the account count. Do not treat this diagnostic
 > success as SSO rollout proof.
+> Read-only task 1326 repeated the production inspection on 2026-09-25 and
+> again found all four containers `created`. The proposed
+> `Recover Authentik Audit Runtime (Dev)` workflow defaults to a read-only
+> preflight. Its apply mode starts only the existing database, cache, and
+> server containers, checks their identities, declared Authentik image, and named data volumes are
+> preserved, and refuses a running worker. Publish and run it only after its
+> review and Dev merge; then rerun the separate authenticated retirement audit
+> before deploying the Grafana OIDC blueprint.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,
