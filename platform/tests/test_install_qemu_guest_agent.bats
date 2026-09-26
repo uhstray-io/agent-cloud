@@ -28,11 +28,9 @@ setup() {
 }
 
 @test "qga: the virtio-port check runs before the package install" {
-  python3 - "$PB" <<'PY'
-import sys, yaml
-tasks = [t.get("name", "") for p in yaml.safe_load(open(sys.argv[1])) for t in p.get("tasks", [])]
-port = next(i for i, n in enumerate(tasks) if "virtio port" in n)
-apt = next(i for i, n in enumerate(tasks) if "installed" in n)
-assert port < apt, tasks
-PY
+  assert_precedes "$PB" 'Look for the guest-agent virtio port' 'ansible\.builtin\.apt:'
+}
+
+@test "qga: an unset target can never fall back to the controller" {
+  refute_grep -qF "default('localhost'" "$PB"
 }

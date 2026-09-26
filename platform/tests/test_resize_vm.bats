@@ -103,7 +103,7 @@ setup() {
   # works if the diff is printed before the first PUT.
   local diff_line put_line
   diff_line=$(grep -n 'Current vs desired' "$PB" | cut -d: -f1)
-  put_line=$(grep -n 'Apply cores/memory to the VM config' "$PB" | cut -d: -f1)
+  put_line=$(grep -n 'Apply cores/memory/agent to the VM config' "$PB" | cut -d: -f1)
   [ "$diff_line" -lt "$put_line" ]
 }
 
