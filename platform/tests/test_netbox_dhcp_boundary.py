@@ -112,6 +112,7 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
     parsed = yaml.safe_load((PLAYBOOKS / "netbox-allocate-ip.yml").read_text())[0]
     tasks = {task["name"]: task for task in parsed["tasks"]}
     source_guard = tasks["Require the pfSense DHCP source before reserving"]
+    endpoint_guard = tasks["Require the inventory-owned NetBox endpoint"]
     guard = tasks["Require inventory-owned pfSense DHCP settings"]
     notice = tasks["Report a private pfSense TLS exception"]
     uri = tasks["Read the live pfSense DHCP server configuration"]["ansible.builtin.uri"]
@@ -127,9 +128,16 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
         (False, {"pfsense_dhcp_validate_certs": True}, None, True),
         (False, {"pfsense_dhcp_api_url": "https://attacker.example"}, None, True),
         (False, {"pfsense_dhcp_interface": "wan"}, None, True),
+        (False, {"netbox_url": "https://attacker.example"}, None, True),
+        (False, {"service_url": "https://attacker.example"}, None, True),
+        (False, {"_netbox_url": "https://attacker.example"}, None, True),
         ("false", {}, None, True),
     ):
-        host_vars = {"pfsense_dhcp_api_url": "https://router.example", "pfsense_dhcp_interface": "lan"}
+        host_vars = {
+            "service_url": "https://netbox.example",
+            "pfsense_dhcp_api_url": "https://router.example",
+            "pfsense_dhcp_interface": "lan",
+        }
         if private_value is not None:
             host_vars["pfsense_dhcp_validate_certs"] = private_value
         inventory = tmp_path / "inventory.yml"
@@ -138,8 +146,9 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
         playbook.write_text(yaml.safe_dump([{
             "hosts": "localhost",
             "gather_facts": False,
-            "vars": {"_reserve": True},
+            "vars": {"_reserve": True, "_netbox_url": parsed["vars"]["_netbox_url"]},
             "tasks": [
+                endpoint_guard,
                 source_guard,
                 guard,
                 notice,
@@ -148,6 +157,10 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
                     "ansible.builtin.debug": {"msg": uri["validate_certs"]},
                 },
                 {"name": "Evaluate the actual URI URL template", "ansible.builtin.debug": {"msg": uri["url"]}},
+                {
+                    "name": "Evaluate the NetBox URL template",
+                    "ansible.builtin.debug": {"msg": parsed["vars"]["_netbox_url"]},
+                },
             ],
         }]))
         command = ["ansible-playbook", "-i", str(inventory), str(playbook)]
@@ -165,4 +178,5 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
         if not refused:
             assert f'"msg": {str(expected).lower()}' in output, output
             assert '"msg": "https://router.example/api/v2/services/dhcp_server?id=lan"' in output, output
+            assert '"msg": "https://netbox.example"' in output, output
             assert ("pfSense DHCP certificate validation is disabled" in output) is (not expected)

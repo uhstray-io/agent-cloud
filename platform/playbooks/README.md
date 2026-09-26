@@ -188,6 +188,10 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
 | `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
 
+The NetBox API endpoint comes from the single private `netbox_svc` host's
+`service_url` for both report and reserve mode. The shared transport guard
+allows only HTTPS or internal HTTP before credentials are read. Launch-time
+`netbox_url`, `service_url`, and `_netbox_url` overrides are refused.
 For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
 and `pfsense_dhcp_interface`, selecting the router and interface that serve the
 requested prefix. Certificate validation defaults to on; a site-owned router
