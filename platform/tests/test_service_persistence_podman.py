@@ -1,10 +1,11 @@
-"""ensure-service-persistence.yml converges restart policy in place; both playbooks find a
-legacy-layout service through compose_working_dir.
+"""Both persistence playbooks find a legacy-layout service through compose_working_dir, and
+Ensure refuses a rootless container a boot unit would not start.
 
 Runs the real playbooks against real podman containers on this machine (local_mode, so no
 linger or boot unit is touched). Production openbao, semaphore and caddy run from directories
-outside the monorepo, with `unless-stopped` or no policy; a boot unit starts only `always`.
-Requires ansible-playbook and a working podman.
+outside the monorepo; podman's boot unit starts only `always` containers. The rootful path
+(a per-container systemd unit) needs root and systemd, so its decision logic is tested in
+test_workflow_credential_boundaries.py instead. Requires ansible-playbook and a working podman.
 """
 
 import os
@@ -72,27 +73,20 @@ def _state(name):
     return _podman("inspect", "--format", "{{.HostConfig.RestartPolicy.Name}} {{.State.Pid}}", name).split()
 
 
-def test_ensure_sets_always_in_place_and_verify_then_passes(tmp_path, legacy_service):
+def test_verify_finds_the_legacy_service_and_ensure_refuses_what_would_not_boot(tmp_path, legacy_service):
     workdir, app, init = legacy_service
-    assert _playbook(tmp_path, "verify-service-persistence.yml", workdir).returncode != 0
-
-    pid_before = _state(app)[1]
-    dry = _playbook(tmp_path, "ensure-service-persistence.yml", workdir, "--check")
-    assert dry.returncode == 0, dry.stdout[-2000:]
-    assert _state(app)[0] == "unless-stopped", "a dry run changed the restart policy"
-    assert "would be set to always on" in dry.stdout and app in dry.stdout
-
-    ensured = _playbook(tmp_path, "ensure-service-persistence.yml", workdir)
-    assert ensured.returncode == 0, ensured.stdout[-2000:]
-
-    policy, pid_after = _state(app)
-    assert policy == "always"
-    assert pid_after == pid_before, "the container was restarted"
-    assert _state(init)[0] == "no", "a one-shot container's policy was changed"
-
     verified = _playbook(tmp_path, "verify-service-persistence.yml", workdir)
-    assert verified.returncode == 0, verified.stdout[-2000:]
-    assert app in verified.stdout and init in verified.stdout
+    assert verified.returncode != 0
+    # Found through the override, and failed for the policy, not for an empty selection.
+    assert f"restart policy not always: {app}" in verified.stdout, verified.stdout[-2000:]
+    assert "no containers carry" not in verified.stdout
+
+    for extra in ((), ("--check",)):
+        ensured = _playbook(tmp_path, "ensure-service-persistence.yml", workdir, *extra)
+        assert ensured.returncode != 0, extra
+        assert f"boot unit will not start them: {app}." in ensured.stdout, ensured.stdout[-2000:]
+        assert init not in ensured.stdout.split("will not start them:", 1)[1].split("\n", 1)[0]
+    assert _state(app)[0] == "unless-stopped" and _state(init)[0] == "no"
 
 
 def test_without_the_override_nothing_is_found(tmp_path, legacy_service):

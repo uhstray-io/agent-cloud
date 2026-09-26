@@ -182,6 +182,26 @@ def test_persistence_accepts_only_what_boots(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_persistence_accepts_a_rootful_container_with_its_own_enabled_unit(tmp_path):
+    # PR 284: the Ubuntu 24.04 podman cannot change a legacy container's policy in place, so
+    # ensure-service-persistence.yml installs container-<name>.service; only an ENABLED unit counts.
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    play = yaml.safe_load(path.read_text())[0]
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    inspected = {"app": "unless-stopped running 0 ", "db": " running 0 ", "run": "always running 0 "}
+    units = {"app": "enabled", "db": "disabled", "run": "not-found"}
+    variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
+                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
+                 "_container_units": {"results": [{"item": k, "stdout": v} for k, v in units.items()]},
+                 "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
+                 "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _unit_started]")
+    errors, started = got
+    assert started == ["app"]
+    assert errors == ["restart policy not always: db"]
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
     # PR 258 Codex review: the parser merges NetBox's statuses so the report and Loki agree
     # with the write; the collector hands it exactly {service: status} from the lookup.

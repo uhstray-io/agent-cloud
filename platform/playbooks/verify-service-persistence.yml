@@ -7,7 +7,9 @@
 #
 # Proves, for every container of the service:
 #   - it restarts on its own: restart policy `always` (podman's boot unit starts nothing
-#     else), or "no" for a one-shot init container
+#     else), or "no" for a one-shot init container, or (rootful podman) its own enabled
+#     `container-<name>.service`, which ensure-service-persistence.yml installs for a legacy
+#     container whose policy the Ubuntu podman cannot change in place
 # and, on a Linux host running rootless podman:
 #   - the deploying user has systemd linger, so its containers start without a login
 #     (tasks/enable-linger.yml is what sets it)
@@ -102,12 +104,29 @@
         - podman_rootful | default(false) | bool
         - not (local_mode | default(false) | bool)
 
+    - name: "Rootful podman: is each container's own boot unit enabled?"
+      # ensure-service-persistence.yml gives a rootful container not on `always` its own unit.
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, "container-{{ item }}.service"]
+      loop: "{{ _lsc.stdout_lines }}"
+      register: _container_units
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
     - name: "Decide the result"
       ansible.builtin.set_fact:
         _restart_policies: >-
           {%- set out = {} -%}
           {%- for r in _policies.results -%}{%- set _ = out.update({r.item: (r.stdout.split(' ') | first)}) -%}{%- endfor -%}
           {{ out }}
+        _unit_started: >-
+          {{ (_container_units | default({})).results | default([]) | rejectattr('skipped', 'defined')
+             | selectattr('stdout', 'equalto', 'enabled') | map(attribute='item') | list }}
         _one_shot_done: "{{ _policies.results | selectattr('stdout', 'match', '^no exited 0 true$') | map(attribute='item') | list }}"
         _linger_state: >-
           {{ 'not-applicable' if (_linger is skipped)
@@ -124,7 +143,7 @@
                ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
               if (_lsc.stdout_lines | length == 0) else [])
              + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok + ['no'])
-                | map(attribute='key')
+                | map(attribute='key') | reject('in', _unit_started)
                 | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
              + (_restart_policies | dict2items | selectattr('value', 'equalto', 'no') | map(attribute='key')
                 | reject('in', _one_shot_done)
@@ -141,6 +160,7 @@
           containers: "{{ _restart_policies }}"
           linger: "{{ _linger_state }}"
           boot_unit: "{{ _boot_unit_state }}"
+          container_units: "{{ _unit_started }}"
           errors: "{{ _persistence_errors }}"
 
     - name: "Record the step result"

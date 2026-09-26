@@ -66,7 +66,7 @@ supersede it with a new entry and link both.
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
-| 2.24 | A local run proved a playbook whose `environment:` Go template the production Ansible re-templated and refused | Wrong-reason pass | Convention |
+| 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -1366,6 +1366,8 @@ removing the vmid, name or running filter each turns the suite red (mutation-che
 
 ### 2.24 A local run proved a playbook the production Ansible could not run
 
+**Occurrences: 2** — 2026-09-26, 2026-09-26
+
 **What happened.** PR #282 added `inspect-host-containers.yml`, which passed the container
 inspect format (`{{.Name}}|{{.Config.Image}}|...`, a Go template) to its shell probes through
 `environment:`. A run against local-dev listed every container, and the PR merged on that
@@ -1385,6 +1387,17 @@ built from one expression, the way `list-service-containers.yml` does, never thr
 say that production has not run it, and treat the first production launch as its test.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-26.** PR #284 set a legacy container's restart policy with
+`podman update --restart always`. The flag was checked on the workstation's podman 5.8.3
+(policy changed, same PID) and in the `latest` podman docs; neither is what the servers run.
+They install podman from Ubuntu 24.04's own packages, 4.9.3, whose `podman update` has no
+`--restart` (the v4.9.3 man page lists none). CI's `ubuntu-24.04` runner failed the new test
+with "unknown flag: --restart", before any production run. The rule did not fire because it
+was worded about templating, while this was a host capability; the PR even said the
+production podman version was unknown, then built on the workstation's anyway. Widened here:
+a capability of a production tool is established on the version production runs (its man
+page at that tag, or a read-only report from the host), never on the workstation's.
 
 ## 3. Acting on live state
 
