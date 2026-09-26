@@ -170,13 +170,18 @@ templates:
         type: string
         required: false
         default_value: "false"
-      # A template passes no arguments, so the identity to mint is a survey choice. Blank
-      # means device-writer, the original profile.
+      # A template passes no arguments, so the identity to mint is a survey choice, a closed
+      # list of the playbook's profiles.
       - name: netbox_token_profile
         title: Token profile
-        description: "Blank or device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
-        type: string
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        type: enum
         required: false
+        default_value: device-writer
+        values:
+          - { name: "device-writer", value: "device-writer" }
+          - { name: "workflow-collector", value: "workflow-collector" }
+          - { name: "vm-recorder", value: "vm-recorder" }
 
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml

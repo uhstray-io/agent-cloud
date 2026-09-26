@@ -119,11 +119,11 @@ def incomplete_services(window_full: list, templates: list[dict], registry: list
     by_id = {t["id"]: t for t in templates}
     out: set = set()
     for tid in window_full:
-        step, per_service, svc = _template_scope(by_id.get(tid, {}), registry, by_group, deploy_templates)
-        if per_service:
-            out |= {svc} if svc else set()
-        else:
-            out |= set(by_group.values())
+        _, per_service, svc = _template_scope(by_id.get(tid, {}), registry, by_group, deploy_templates)
+        if not per_service:
+            out |= set(inventory_services(by_group))
+        elif svc:
+            out.add(svc)
     return out
 
 
@@ -152,6 +152,12 @@ def _service_of(task: dict, by_group: dict) -> str | None:
 
 def group_services(groups: dict, host_services: dict) -> dict:
     return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
+
+
+def inventory_services(by_group: dict) -> list[str]:
+    """The inventory's services, as every mode keys them: the collector's NetBox lookup loops
+    this list, so the write can never reach a service the aggregate does not track."""
+    return sorted(set(by_group.values()))
 
 
 def is_check_mode(task: dict) -> bool:
@@ -323,7 +329,7 @@ def main() -> int:
         # The inventory's services, as the parser keys them: the collector's NetBox lookup loops
         # this list, so a write can never reach a service the aggregate does not track.
         out = {"template_ids": select(data["registry"], data["templates"], by_group, deploys),
-               "inventory_services": sorted(set(by_group.values()))}
+               "inventory_services": inventory_services(by_group)}
     elif mode == "pick":
         out = {"tasks": pick(data["histories"], by_group),
                "window_full": sorted({h[0]["template_id"] for h in data["histories"]
@@ -331,7 +337,7 @@ def main() -> int:
     elif mode == "aggregate":
         tasks = [dict(r["item"], output=r.get("content") or "") for r in data["fetched"]]
         full = data.get("window_full", [])
-        out = aggregate(data["registry"], data["templates"], tasks, sorted(set(by_group.values())), deploys,
+        out = aggregate(data["registry"], data["templates"], tasks, inventory_services(by_group), deploys,
                         full, data.get("retained") or {},
                         incomplete_services(full, data["templates"], data["registry"], by_group, deploys))
         if data.get("now_ns"):

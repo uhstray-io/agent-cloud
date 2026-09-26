@@ -105,24 +105,10 @@
         argv: [python3, "{{ _parser }}"]
         stdin: >-
           {{ {'mode': 'pick', 'groups': groups, 'host_services': _host_services | default({}),
-              'histories': _histories_rows} | to_json }}
+              'histories': _histories.results | map(attribute='json') | list} | to_json }}
       register: _pick
       changed_when: false
       check_mode: false
-      vars:
-        # Only the fields pick and aggregate read (step_results.py): up to 1000 rows per
-        # template go through stdin every 15 minutes (grounding review of PR 258).
-        _row_keys: [id, status, template_id, environment, tpl_playbook, params, end]
-        _histories_rows: >-
-          {%- set out = [] -%}
-          {%- for r in _histories.results | default([]) -%}
-            {%- set rows = [] -%}
-            {%- for t in r.json | default([]) -%}
-              {%- if rows.append(t | dict2items | selectattr('key', 'in', _row_keys) | items2dict) -%}{%- endif -%}
-            {%- endfor -%}
-            {%- if out.append(rows) -%}{%- endif -%}
-          {%- endfor -%}
-          {{ out }}
 
     - name: "Read each picked task's output"
       ansible.builtin.uri:

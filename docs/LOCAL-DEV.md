@@ -99,9 +99,10 @@ the repository; do not print or copy its credential file into documentation.
 
 Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
 
-- **Credentials.** Every `make local-*` target and `scripts/local-dev.sh` subcommand
-  loads the local Semaphore token from `~/.agent-cloud-local/credentials.env`
-  (written by `make local-bootstrap`). Nothing else authenticates to the local
+- **Credentials.** Every `scripts/local-dev.sh` subcommand that talks to local
+  Semaphore (`deploy`, `clean-deploy`, `validate`, `run`, `output`, `templates`), and
+  so every `make local-*` target built on them, loads the local token from
+  `~/.agent-cloud-local/credentials.env` (written by `make local-bootstrap`). Nothing else authenticates to the local
   instance. `site-config/secrets/semaphore/semaphore_api_token.txt` is the
   **production** controller's token: local Semaphore answers it with HTTP 401.
 - **Check mode.** `DRY_RUN=1 ./scripts/local-dev.sh run <playbook>` launches the task

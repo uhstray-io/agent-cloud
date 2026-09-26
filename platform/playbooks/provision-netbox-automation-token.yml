@@ -57,8 +57,9 @@
         view_object_types: [virtualization.cluster]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
-    # Blank (a survey left empty) means the original profile, as an absent variable does.
-    _profile_name: "{{ netbox_token_profile | default('device-writer', true) | trim }}"
+    # The survey is a closed list; an API launch or -e can still pass anything, so blank (or
+    # whitespace) means the original profile and the assert below refuses the rest.
+    _profile_name: "{{ (netbox_token_profile | default('') | trim) or 'device-writer' }}"
     _profile: "{{ _profiles[_profile_name] }}"
     _user: "{{ _profile.user }}"
 

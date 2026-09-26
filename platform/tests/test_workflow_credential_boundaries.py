@@ -196,22 +196,8 @@ def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_the_parser_gets_only_the_history_fields_it_reads(tmp_path):
-    # Grounding review of PR 258: up to 1000 whole task rows per template went through stdin
-    # every 15 minutes; pick and aggregate read seven fields.
-    pick = "Pick the newest finished task per template and service"
-    task = _named(PLAYBOOKS / "collect-service-conformance.yml", pick)
-    probe = {"ansible.builtin.set_fact": {"_got": "{{ _histories_rows }}"}, "vars": task["vars"]}
-    row = {"id": 5, "status": "success", "template_id": 1, "environment": "{}", "tpl_playbook": "p.yml",
-           "params": {"dry_run": True}, "end": "t", "message": "long", "user_name": "someone", "commit_hash": "abc"}
-    got, _ = _run_tasks(tmp_path, [probe], {"_histories": {"results": [{"json": [row]}, {"status": 500}]}}, "_got")
-    keep = ("id", "status", "template_id", "environment", "tpl_playbook", "params", "end")
-    assert got == [[{k: row[k] for k in keep}], []]
-
-
-@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-@pytest.mark.parametrize("value,field", [("", "automation_api_token"), ("workflow-collector", "collector_api_token"),
-                                         ("bogus", None)])
+@pytest.mark.parametrize("value,field", [("", "automation_api_token"), ("  ", "automation_api_token"),
+                                         ("workflow-collector", "collector_api_token"), ("bogus", None)])
 def test_the_token_profile_is_a_survey_choice_blank_meaning_the_default(tmp_path, value, field):
     # A Semaphore template passes no arguments, so the profile arrives from the survey, where a
     # field left empty is "", not absent; an unknown name is refused before anything is minted.
@@ -230,11 +216,16 @@ def test_the_token_profile_is_a_survey_choice_blank_meaning_the_default(tmp_path
         assert "is not one of" in err.value.stdout
 
 
-def test_the_token_profile_survey_field_has_no_default():
-    # A default here is minted as the profile: "false" once landed on it by an edit that split
-    # the neighbouring field's keys, and it is not a profile, so every launch would refuse.
+def test_the_token_profile_survey_field_is_the_playbooks_closed_list():
+    # A closed list catches a typo at launch, not at run time. Its values are exactly the
+    # playbook's profiles, and its default is one of them: "false" once landed here by an edit
+    # that split the neighbouring field's keys, and every launch would have refused.
     templates = yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"]
     tpl = next(t for t in templates if t["name"] == "Provision NetBox Automation Token")
     fields = {s["name"]: s for s in tpl["survey_vars"]}
-    assert "default_value" not in fields["netbox_token_profile"]
+    field = fields["netbox_token_profile"]
+    profiles = yaml.safe_load((PLAYBOOKS / "provision-netbox-automation-token.yml").read_text())[0]["vars"]["_profiles"]
+    assert field["type"] == "enum"
+    assert [v["value"] for v in field["values"]] == list(profiles)
+    assert field["default_value"] == "device-writer"
     assert fields["replace_unrecoverable_token"]["default_value"] == "false"
