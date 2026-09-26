@@ -81,7 +81,7 @@ supersede it with a new entry and link both.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
-| 4.10 | A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention (proposal: a PreToolUse hook) |
+| 4.10 | **x2** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention (proposal: a PreToolUse hook) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -1761,7 +1761,7 @@ IDs, but no general mechanical scan can identify private destination IDs.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 1** — 2026-09-25
+**Occurrences: 2** — 2026-09-25, 2026-09-25
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -1781,6 +1781,17 @@ name the credential to rotate.
 **Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
 combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
 script) with a redirect from a path under `secrets/`.
+
+**Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
+Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
+I wrote `python3 - <<'EOF' ... EOF < site-config/secrets/semaphore/semaphore_api_token.txt`, the
+same file and the same shape. Python read the token file as its program and printed the token
+in its `SyntaxError`. The operator had called it the local token, and it was not: this entry
+already names it production's, which is why local Semaphore answered 401. Why the rule did not
+fire: it lives in this file and in no session's working context. Nothing read it at the moment
+of composing the command, and the one-off diagnostic looked unlike the "verify a rollout" case
+the entry describes. A second occurrence in one day is the case for the proposed PreToolUse
+hook: the rule has to sit where the command is composed, not in a document read before acting.
 
 ## 5. Duplication and process
 

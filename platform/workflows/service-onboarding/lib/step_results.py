@@ -63,8 +63,8 @@ PER_SERVICE = "Deploy {service}"
 FINISHED = {"success", "error"}
 TAIL = 20
 # Semaphore's GET /project/{p}/templates/{t}/tasks returns the newest 1000 tasks by id
-# (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0 and
-# v2.19.11 alike. /tasks/last stops at 200.
+# (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0, v2.18.12
+# (the local-dev image) and v2.19.11 alike, read from source. /tasks/last stops at 200.
 HISTORY_WINDOW = 1000
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 

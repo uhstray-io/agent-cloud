@@ -210,8 +210,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         was `/tasks/last`, 200); the NetBox lookup runs BEFORE the aggregate, and each VM's
         stored status is merged under this run's results as `retained` (registry step ids
         only), so NetBox, the report and Loki agree; a full window marks the services it can
-        hide `history_incomplete` (dashboard panel "History incomplete"). OPEN: a local
-        Semaphore run of the collector, dry run first, to prove the new order end to end.
+        hide `history_incomplete` (dashboard panel "History incomplete").
+      - Local, 2026-09-25, on dev 90a99ea (local Semaphore v2.18.12): dry run task 1906
+        (ok=29, failed=0) and real run task 1907 (ok=30, changed=1, failed=0). Order proven:
+        NetBox lookup → sort → aggregate → write. All 13 inventoried services were looked up
+        (`netbox_no_vm` lists all 13, none unreachable, none ambiguous); `history_window_full`
+        empty. tududi's three snapshot results land in `inputs`, not conformance; Loki took
+        the real run's push (`status` counts over 10 minutes: no_history 24, pass 4 — the
+        snapshot passes no longer counted). OPEN still: the NetBox write itself, because local
+        NetBox holds no VM record for any service.
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,
