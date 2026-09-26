@@ -123,9 +123,14 @@ declaration. The selected surveys are updated and read back; inventory,
 environment, arguments and operational settings are preserved. No schedules,
 service jobs, repository records, inventory records or credentials are changed.
 
-**Deployment status:** this controller entry point is newly implemented and
-tested against disposable providers. It is not yet installed or verified in
-production. Do not describe its existence in Git as live availability.
+**Deployment status:** installed and used in production. On 2026-09-25 the Dev
+publisher updated one survey (Provision NetBox Automation Token (Dev), tasks 1329
+dry run, 1330 real) and scoped-created two templates (Provision NetBox Custom
+Fields (Dev), 1331/1332; Collect Service Conformance (Dev), 1333/1334), each read
+back and verified. Scoped create needs the project, inventory and environment ids
+of the templates it sits beside: read them from an existing `(Dev)` template's
+bindings on the instance you are publishing to (`GET /api/project/<id>/templates`),
+never from documentation, since they are site-specific.
 
 A later full-catalog publication also creates the main-bound base template.
 Do not run that base until the publisher code has been selectively promoted to
