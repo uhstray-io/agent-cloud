@@ -103,8 +103,11 @@ templates:
       - name: probe_target
         title: "Metrics target"
         description: "One fixed private-inventory endpoint: dgx-vllm or agentgateway"
-        type: string
+        type: enum
         required: true
+        values:
+          - { name: "DGX vLLM", value: "dgx-vllm" }
+          - { name: "agentgateway", value: "agentgateway" }
 
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml

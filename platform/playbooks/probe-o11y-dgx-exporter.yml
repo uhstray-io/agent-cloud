@@ -78,6 +78,7 @@
         url: "http://{{ _probe_node.address }}:{{ dgx_spark_node_exporter_port }}/metrics"
         method: GET
         use_proxy: false
+        follow_redirects: none
         return_content: false
         status_code: 200
         timeout: 5

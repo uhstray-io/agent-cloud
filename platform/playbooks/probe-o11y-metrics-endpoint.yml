@@ -76,8 +76,9 @@
     - name: Refuse an unusable metrics address or port
       ansible.builtin.assert:
         that:
-          - _probe_address is match('^[0-9.]+$')
-          - _probe_address not in ['0.0.0.0', '127.0.0.1']
+          - _probe_address is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+          - _probe_address.split('.') | map('int') | max <= 255
+          - _probe_address.split('.')[0] | int not in [0, 127]
           - _probe_port | int > 0
           - _probe_port | int < 65536
         fail_msg: "The selected inventory endpoint must have a receiver-reachable IPv4 address and port."
@@ -91,7 +92,9 @@
 
     - name: Require a route with an explicit source address
       ansible.builtin.assert:
-        that: _probe_route.stdout is search('(^| )src [0-9]+')
+        that:
+          - _probe_route.stdout is search('(^| )src [0-9]+')
+          - _probe_route.stdout is not search('(^| )dev lo( |$)')
         fail_msg: "The receiver has no proven source route to the selected endpoint."
       when: not ansible_check_mode
 
@@ -100,6 +103,7 @@
         url: "http://{{ _probe_address }}:{{ _probe_port }}/metrics"
         method: GET
         use_proxy: false
+        follow_redirects: none
         return_content: false
         status_code: 200
         timeout: 5

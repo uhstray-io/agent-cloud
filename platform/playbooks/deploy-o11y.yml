@@ -122,11 +122,20 @@
     - name: "Require a complete declared agentgateway stats endpoint"
       ansible.builtin.assert:
         that:
+          - groups.get('agentgateway_svc', []) | length == 1
           - agentgateway_metrics_address | default('') is match('^[A-Za-z0-9.-]+$')
           - agentgateway_metrics_port is defined
           - agentgateway_metrics_port | int > 0
           - agentgateway_metrics_port | int < 65536
         fail_msg: "agentgateway metrics need a declared receiver-reachable address and port."
+      when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
+
+    - name: "Require the receiver target to match the gateway's published stats listener"
+      ansible.builtin.assert:
+        that:
+          - agentgateway_metrics_address == hostvars[groups['agentgateway_svc'][0]].agw_stats_bind
+          - agentgateway_metrics_port | int == hostvars[groups['agentgateway_svc'][0]].agw_stats_port | int
+        fail_msg: "The receiver's gateway scrape target differs from the gateway's declared stats bind."
       when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
 
     - name: "Place the monorepo + ensure podman/compose"

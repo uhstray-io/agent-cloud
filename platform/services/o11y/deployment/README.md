@@ -29,8 +29,9 @@ For agentgateway, first bind its stats listener to its static LAN address and
 apply a firewall rule limited to the o11y receiver. Run the same endpoint probe
 with `probe_target=agentgateway`. Declare `agentgateway_metrics_address` and
 `agentgateway_metrics_port` in a later private inventory PR only after that
-probe gets HTTP 200. An early scrape declaration creates `up=0` and can fire
-the production service-down alert on the next o11y deploy.
+probe gets HTTP 200. The receiver deploy refuses a target that differs from
+the gateway's declared stats bind and port. An early scrape declaration creates
+`up=0` and can fire the production service-down alert on the next o11y deploy.
 
 The playbook renders `config/scrape.d/dgx-spark.yml` from the private inventory
 and reloads Prometheus only if that file changes. The file is gitignored; keep
