@@ -1,0 +1,60 @@
+---
+# ensure-service-persistence.yml — make a service's containers start at boot.
+#
+# The SETUP half of workflow step systemd-enablement; verify-service-persistence.yml is the
+# read-only check that records the step. It changes host boot settings only and restarts
+# nothing, so it is safe on a running service, the orchestrator's own host included:
+#
+#   rootless podman   linger for the service account plus podman's USER boot unit
+#                     (tasks/enable-linger.yml, the same task every composable deploy runs)
+#   rootful podman    the SYSTEM podman-restart.service enabled
+#   docker            docker.service enabled (Docker restarts `always` containers itself)
+#
+# A boot unit starts only `restart: always` containers. A container still carrying another
+# policy is not changed here: rerun that service's deploy, whose compose declares `always`
+# (test_restart_policy.bats), and verify-service-persistence.yml names any it finds.
+#
+# Idempotent and check-mode safe (--check reports what would change, writes nothing).
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Ensure the service starts at boot: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _local: "{{ local_mode | default(false) | bool }}"
+    _rootful: "{{ podman_rootful | default(false) | bool }}"
+
+  tasks:
+    - name: "Rootless podman: linger and the user boot unit"
+      ansible.builtin.include_tasks: tasks/enable-linger.yml
+      when:
+        - _engine == 'podman'
+        - not _rootful
+
+    - name: "Rootful podman: the system boot unit"
+      ansible.builtin.systemd_service:
+        name: podman-restart.service
+        enabled: true
+      become: true
+      when:
+        - _engine == 'podman'
+        - _rootful
+        - not _local
+
+    - name: "Docker: the engine starts at boot"
+      ansible.builtin.systemd_service:
+        name: docker.service
+        enabled: true
+      become: true
+      when:
+        - _engine == 'docker'
+        - not _local
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ _engine }}{{ ' (rootful)' if _rootful else (' (rootless)' if _engine == 'podman' else '') }}
+          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured. Check it with Verify Service Persistence.

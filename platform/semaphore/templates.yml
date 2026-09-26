@@ -803,10 +803,37 @@ templates:
   # for rootless podman, the deploying user has linger. Read-only.
   - name: Verify Service Persistence
     playbook: platform/playbooks/verify-service-persistence.yml
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target group
         description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # The setup half of systemd-enablement: linger + podman's user boot unit (rootless), the
+  # system podman-restart.service (rootful) or docker.service (Docker). Boot settings only;
+  # restarts nothing, so it is safe on a running service. Verify Service Persistence checks it.
+  - name: Ensure Service Persistence
+    playbook: platform/playbooks/ensure-service-persistence.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Read-only: the containers on exactly one host, per engine (rootless podman for the
+  # connecting user and any declared linger_user, rootful podman, Docker), with restart policy
+  # and compose working directory. For onboarding a host that has no service group yet.
+  - name: Inspect Host Containers
+    playbook: platform/playbooks/inspect-host-containers.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_host
+        title: Target host
+        description: Inventory host to inspect, exactly one (e.g. devlog)
         type: string
         required: true
 
@@ -826,6 +853,7 @@ templates:
   # path (service_url + health_path) with HTTP 200. Read-only.
   - name: Verify Service Health
     playbook: platform/playbooks/verify-service-health.yml
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target group
