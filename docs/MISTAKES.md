@@ -41,7 +41,7 @@ supersede it with a new entry and link both.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
-| 1.15 | Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
+| 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
 | 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
@@ -583,7 +583,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 1** — 2026-09-25
+**Occurrences: 2** — 2026-09-25, 2026-09-26
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -603,6 +603,15 @@ tests include the input class's strongest member (for extra vars: a template key
 context). Anything wider is written as a limit, with the boundary that actually holds it.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-26.** Correcting occurrence 1 in #264, I wrote the launch-permission gap
+as "redirect that template's OpenBao AppRole login" and listed building request URLs inline as a
+candidate mitigation; #270 then named a shared login task as its prerequisite, and the user chose
+that plan. Tested before building it: a templated extra var can call `lookup("pipe", ...)`, so a
+launch runs arbitrary commands on the Semaphore runner (ansible-core 2.16.18 through 2.21.0).
+The real gap is code execution, and no URL change touches it. Why the rule did not fire: I
+applied it to the check I was correcting, not to the mitigation I proposed in the same note. A
+proposed fix is a security claim too, and the strongest input it must withstand is the same one.
 
 ### 1.16 A count written into a committed plan without running the count
 

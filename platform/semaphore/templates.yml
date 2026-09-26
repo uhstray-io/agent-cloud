@@ -1271,6 +1271,9 @@ templates:
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml
+    # The (Dev) copy applies the policy as dev has it, so the Semaphore-token deny lands
+    # before promotion (plan 01, "Launch permission is runner access").
+    dev_variant: true
 
   - name: Apply Policy - UhhCraft
     playbook: platform/playbooks/apply-policy-uhhcraft.yml
@@ -1367,6 +1370,13 @@ templates:
   # grant — Semaphore 2.18.12 has no group->role mapping (closes task #37).
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
+
+  # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
+  # project team, the system admins and the integrations to the private declarations
+  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  - name: Manage Semaphore Access
+    playbook: platform/playbooks/manage-semaphore-access.yml
+    dev_variant: true
 
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker

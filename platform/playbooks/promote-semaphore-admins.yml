@@ -10,7 +10,8 @@
 # no ad-hoc changes; config flows through code).
 #
 # Who becomes admin is DATA, not code: the inventory var `semaphore_admin_users`
-# (list of Semaphore usernames and/or emails — the platform-admins roster) is
+# (list of Semaphore USERNAMES — the platform-admins roster; see the matching task for why
+# email is not accepted) is
 # the source of truth. No names are hardcoded here.
 #
 # API creds: env first (SEMAPHORE_URL + SEMAPHORE_TOKEN, as setup-templates.yml
@@ -25,7 +26,7 @@
 #
 # Usage: via the "Promote Semaphore Admins" Semaphore template, or:
 #   ansible-playbook promote-semaphore-admins.yml \
-#     -e '{"semaphore_admin_users":["alice","bob@uhstray.io"]}'
+#     -e '{"semaphore_admin_users":["alice","bob"]}'
 
 - name: "Promote declared platform admins to Semaphore admins (closes task #37)"
   hosts: localhost

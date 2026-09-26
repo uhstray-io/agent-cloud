@@ -1,0 +1,154 @@
+---
+# manage-semaphore-access.yml — hold every identity that can launch a Semaphore task to a
+# declaration.
+#
+# Why. Launch rights are runner rights. Semaphore merges every key of a task's environment
+# into its extra vars with no survey filter, and a templated extra var can call a lookup that
+# runs a command on the runner, which holds the controller AppRole (plan 01, "Launch
+# permission is runner access"; reproduced on ansible-core 2.16 through 2.21). Four identities
+# can do it: system admins, project members whose role can run tasks, their API tokens, and
+# integrations (incoming webhooks that copy payload values into the task environment).
+#
+# What. Reads the project team, the system admins and the project's integrations through the
+# controller's loopback API and compares them with two private inventory declarations
+# (filter semaphore_access_drift):
+#   semaphore_project_members   {username: role} — the whole team, nothing implied
+#   semaphore_admin_users       [username]       — shared with promote-semaphore-admins.yml
+# Both belong in the inventory's top-level all.vars: this play runs on implicit localhost,
+# which receives no group's vars (verified with ansible-inventory --host localhost; a
+# declaration under a group reads as absent, and every admin is then reported undeclared).
+# Under --check it only reports, names and roles only; the report is how the current roster is
+# read before the declaration exists. A real run converges the team: it adds a declared account,
+# sets a declared role and removes an undeclared member, then reads the team back. It never
+# demotes a system admin or deletes an integration: each is reported by name and fails the run,
+# because each needs an operator decision.
+#
+# Usage: the "Manage Semaphore Access" template. Run it under --check first.
+
+- name: "Hold Semaphore launch access to its declaration"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
+    _pid: "{{ semaphore_project_id | default(1) }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        # Both the public override and the URL the requests actually use (Codex review of #276).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "Access management may only use the controller's fixed loopback API."
+
+    - name: "Semaphore runtime access (injected token, or the controller AppRole)"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Read the project team, the accounts and the integrations"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/{{ item }}"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      loop:
+        - "project/{{ _pid }}/users"
+        - "users"
+        - "project/{{ _pid }}/integrations"
+      register: _reads
+      check_mode: false
+      no_log: true
+
+    - name: "Compare the live access with the declarations"
+      ansible.builtin.set_fact:
+        _drift: >-
+          {{ _reads.results[0].json | semaphore_access_drift(
+               semaphore_project_members | default(none), _reads.results[1].json,
+               semaphore_admin_users | default([]), _reads.results[2].json) }}
+        _roster:
+          members: "{{ _reads.results[0].json | items2dict(key_name='username', value_name='role') }}"
+          admins: "{{ _reads.results[1].json | selectattr('admin') | map(attribute='username') | list }}"
+          integrations: "{{ _reads.results[2].json | map(attribute='name') | list }}"
+
+    - name: "Report launch access (names and roles only)"
+      ansible.builtin.debug:
+        msg:
+          - "Project {{ _pid }} team: {{ _roster.members }}"
+          - "System admins: {{ _roster.admins }}"
+          - "Integrations: {{ _roster.integrations }}"
+          - "To add: {{ _drift.add | map(attribute='username') | list }}"
+          - "Role changes: {{ _drift.set_role | map(attribute='username') | list }}"
+          - "To remove: {{ _drift.remove | map(attribute='username') | list }}"
+          - "Declaration errors (nothing is written): {{ _drift.invalid }}"
+          - "Needs an operator decision: {{ _drift.problems }}"
+
+    - name: "Refuse a declaration that cannot be applied, before any write"
+      ansible.builtin.assert:
+        that: _drift.invalid | length == 0
+        fail_msg: "Nothing was changed. Fix the declaration: {{ _drift.invalid | join('; ') }}"
+
+    # The writes carry the token, so their results stay out of the log; the read-back below is
+    # what proves them.
+    - name: "Add declared accounts to the project team"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body: {user_id: "{{ item.user_id }}", role: "{{ item.role }}"}
+        status_code: [200, 201, 204]
+      loop: "{{ _drift.add }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Set declared roles"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users/{{ item.user_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body: {role: "{{ item.to }}"}
+        status_code: [200, 204]
+      loop: "{{ _drift.set_role }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Remove undeclared members from the project team"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users/{{ item.user_id }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        status_code: [200, 204]
+      loop: "{{ _drift.remove }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Read the project team back"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _after
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode and (_drift.add + _drift.set_role + _drift.remove) | length > 0
+
+    - name: "Require the team to match its declaration"
+      vars:
+        _left: >-
+          {{ _after.json | semaphore_access_drift(semaphore_project_members, _reads.results[1].json,
+             semaphore_admin_users | default([]), []) }}
+      ansible.builtin.assert:
+        that: (_left.add + _left.set_role + _left.remove) | length == 0
+        fail_msg: >-
+          The team still differs after convergence: add {{ _left.add | map(attribute='username') | list }},
+          role {{ _left.set_role | map(attribute='username') | list }},
+          remove {{ _left.remove | map(attribute='username') | list }}.
+      when: _after is not skipped and _after.json is defined
+
+    - name: "Refuse access that needs an operator decision"
+      ansible.builtin.assert:
+        that: _drift.problems | length == 0
+        fail_msg: "Launch access needs an operator decision: {{ _drift.problems | join('; ') }}"

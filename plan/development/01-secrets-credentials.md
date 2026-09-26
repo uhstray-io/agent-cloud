@@ -105,23 +105,65 @@ address inside the check and to another address in the login task (reproduced on
 2.16.18 and 2.20.8). The first version of this note said the check closed "the obvious
 overrides"; that was not true of a templated one (`docs/MISTAKES.md` 1.15).
 
-**Open gap: launch permission is extra-var control.** Semaphore v2.17.31 merges every key of a
-task's `environment` JSON into the run's extra vars with no survey filter
+**Launch permission is runner access (corrected 2026-09-26).** Semaphore v2.17.31 merges every
+key of a task's `environment` JSON into the run's extra vars with no survey filter
 (`services/tasks/TaskRunner.go` `populateTaskEnvironment`; `db/Task.go` `ValidateNewTask`
-checks only the git branch and the task params). So anyone allowed to launch a template can
-supply any extra var, a template included, and redirect that template's OpenBao AppRole login.
-This is not specific to the seeds: 43 playbook and task files log in to OpenBao
-(`git grep -l 'auth/approle/login' -- '*.yml'`, 2026-09-25; an earlier "44" here was never
-counted), and all take
-the address from an overridable variable; two carry the drift check. The controls that bound
-it are who may launch and who may edit environments (Semaphore roles), not anything a playbook
-can check at run time. Candidate mitigations, each needing a decision: restrict launch rights
-on templates that log in to OpenBao; or build secret-bearing request URLs inline from the
-inventory file inside each request (no variable to override), a change to every login site.
-Either is cheaper after a prerequisite a 2026-09-25 grounding review named: there is no shared
-OpenBao login task, so address resolution, the transport guard and the drift check are
-repeated or absent per site (the drift check is in the two seed playbooks only). One login
-task that every site includes would turn the second mitigation into a one-file change.
+checks only the git branch, playbook path and task params); the latest release, v2.19.12, is
+unchanged. An extra var may be a Jinja template, and a template may call a lookup: a launch
+with `-e 'x={{ lookup("pipe", "...") }}'` runs that command on the Semaphore runner when any
+task renders `x` (reproduced on ansible-core 2.16.18, 2.17.14, 2.18.12, 2.19.6, 2.20.8 and
+2.21.0). Every playbook renders dozens of variables, so whoever can launch a template can run
+code on the runner, which holds the controller AppRole and the SSH keys. The note this replaces
+said the gap was a redirected OpenBao login and offered building request URLs inline as a
+mitigation; that does nothing against a templated extra var (`docs/MISTAKES.md` 1.15,
+occurrence 2).
+
+Four identities can put keys into a task's environment (read from the v2.17.31 source):
+
+| Path | Where | Why it reaches extra vars |
+|------|-------|---------------------------|
+| System admin | `api/projects/project.go` | Bypasses project membership and every permission check |
+| Project member whose role can run tasks | `db/ProjectUser.go` | `owner`, `manager`, `task_runner` and any custom role granting `CanRunProjectTasks`; `task_runner` is meant to be launch-only |
+| A user's API token | `/api/user/tokens` | Carries its user's rights; the controller's token is at `secret/services/semaphore:api_token`, which the NemoClaw AppRole's `services/*` read grant also covers |
+| Integration (incoming webhook) | `api/integration.go` | Copies header or payload values into the task environment |
+
+### Decision: every identity that can launch is runner-trusted, and held to a declaration
+
+Nothing a playbook checks at run time can stop this (Ansible exposes no list of the extra vars
+it was given, and any referenced variable can be replaced by a template), so the fix is who
+can launch:
+
+1. **NemoClaw cannot read the Semaphore token.** `nemoclaw-read.hcl` gains a `deny` on
+   `secret/data/services/semaphore` and `secret/metadata/services/semaphore`. `deny` always
+   wins and the exact path outranks the `services/*` glob (openbao.org/docs/concepts/policies).
+   Applied by `apply-policy-nemoclaw.yml`.
+2. **Membership as code: `manage-semaphore-access.yml`** (template "Manage Semaphore Access").
+   It reads the project's members, the system admins and the project's integrations through
+   the controller's loopback API, and compares them with two private inventory declarations:
+   `semaphore_project_members` (username to role) and the existing `semaphore_admin_users`.
+   It refuses, before any write, a declaration it cannot apply as written (absent, or naming
+   an account that does not exist), so a typo never removes working access first. Under `--check` it only
+   reports, names and roles only. A real run converges project membership: it sets a declared
+   member's role and removes an undeclared member. An undeclared system admin or any
+   integration fails the run by name; each needs an operator decision, not a silent delete.
+   The comparison is one filter (`filter_plugins/semaphore_access.py`), tested directly.
+3. **Documented as a trust boundary.** The Semaphore operating guide and `AGENTS.md` state
+   that launch rights are runner rights, so `task_runner` is granted only to someone trusted
+   with the controller.
+
+Rejected: building OpenBao URLs inline (no effect against a templated extra var); a per-playbook
+extra-var allowlist (no list of extra vars exists to check); patching Semaphore to filter by
+survey (a fork, and upstream is unchanged through v2.19.12); an OPA-gated launch gateway for
+machine callers (deferred by operator decision 2026-09-26; it is the next step if an automated
+caller needs to launch).
+
+Live order after merge: `apply-policy-nemoclaw.yml` → `Manage Semaphore Access` under
+`--check` to read the current roster → declare `semaphore_project_members` in site-config →
+a real run. Each live step is operator-approved.
+
+The shared OpenBao login task (a separate change) no longer closes this gap. It still earns
+its place: 43 sites repeat address resolution and the transport guard, and only the two seed
+playbooks carry the drift check.
 
 ### Measured cost of problem 2 — the 2026-09-19 reboot
 
