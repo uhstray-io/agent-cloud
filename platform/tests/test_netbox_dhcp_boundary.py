@@ -130,6 +130,7 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
         (False, {"pfsense_dhcp_interface": "wan"}, None, True),
         (False, {"netbox_url": "https://attacker.example"}, None, True),
         (False, {"service_url": "https://attacker.example"}, None, True),
+        (False, {"_netbox_url": "https://attacker.example"}, None, True),
         ("false", {}, None, True),
     ):
         host_vars = {
@@ -145,7 +146,7 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
         playbook.write_text(yaml.safe_dump([{
             "hosts": "localhost",
             "gather_facts": False,
-            "vars": {"_reserve": True},
+            "vars": {"_reserve": True, "_netbox_url": parsed["vars"]["_netbox_url"]},
             "tasks": [
                 endpoint_guard,
                 source_guard,

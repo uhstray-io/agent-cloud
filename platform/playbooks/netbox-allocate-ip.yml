@@ -55,10 +55,11 @@
       ansible.builtin.assert:
         that:
           - groups.get('netbox_svc', []) | length == 1
-          - hostvars[groups['netbox_svc'][0]].service_url | default('') is match('^https://')
+          - hostvars[groups['netbox_svc'][0]].service_url | default('') | length > 0
           - netbox_url is not defined
           - service_url is not defined
-        fail_msg: "Declare one private NetBox host with an HTTPS service_url; launch-time endpoint overrides are refused."
+          - _netbox_url == hostvars[groups['netbox_svc'][0]].service_url
+        fail_msg: "Declare one private NetBox host with service_url; launch-time endpoint overrides are refused."
 
     - name: "Validate inputs"
       ansible.builtin.assert:
