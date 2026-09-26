@@ -530,6 +530,15 @@
 > health verification failed after the server had stopped; check mode skips the
 > container deploy step. A separate full Dev-bound Authentik deploy is still
 > required before Grafana's production login can be accepted.
+> PR #275's independent review found that the shared clean task included every
+> Compose overlay in local mode. A production overlay requiring production-only
+> values made `down -v` fail, while the task masked that failure. The reviewed
+> correction excludes the production overlay from local teardown and reports
+> any Compose teardown failure. The clean workflow was not run; local data was
+> preserved as requested. The existing production receiver still has an env
+> rendered before this overlay was introduced, so a clean deploy must wait
+> until a normal reviewed deploy renders the new route values; a premature
+> clean now fails visibly instead of claiming it removed volumes.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

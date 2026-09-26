@@ -165,6 +165,62 @@ YAML
   refute_contains "$output" "TASK [Place the monorepo"
 }
 
+@test "o11y: production refuses a missing Caddy origin before placement" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    -e local_mode=false -e o11y_zone=example.invalid
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
+  refute_contains "$output" "TASK [Place the monorepo"
+}
+
+@test "o11y: local clean excludes production overlay and reports a failed Compose teardown" {
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/clean-service.yml" <<'PY'
+import pathlib
+import subprocess
+import sys
+import tempfile
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+with tempfile.TemporaryDirectory() as temp:
+    root = pathlib.Path(temp)
+    deploy = root / 'deployment'
+    deploy.mkdir()
+    for name in ('compose.yml', 'compose.local.yml', 'compose.prod.yml'):
+        (deploy / name).write_text('services: {}\n', encoding='utf-8')
+    engine = root / 'mock-engine'
+    engine.write_text('#!/bin/sh\ncase "$1" in compose) printf "%s\\n" "$@" > "$MOCK_ARGS"; exit 23;; ps) exit 0;; esac\n', encoding='utf-8')
+    engine.chmod(0o755)
+    for mode in ('local', 'prod'):
+        task = next(t for t in tasks if t['name'].startswith(f'Stop and remove containers + volumes ({mode})'))
+        shell = task['ansible.builtin.shell']
+        shell = shell.replace('{{ _monorepo_dir }}', str(root))
+        shell = shell.replace('{{ monorepo_deploy_path }}', 'deployment')
+        shell = shell.replace('{{ container_engine | default(\'podman\') }}', str(engine))
+        shell = shell.replace('{{ container_engine | default(\'docker\') }}', str(engine))
+        shell = shell.replace('{{ service_name }}', 'o11y')
+        shell = shell.replace("{{ '{{' }}.Names{{ '}}' }}", '.Names')
+        args_path = root / f'{mode}-args'
+        result = subprocess.run(['/bin/bash', '-c', shell], cwd=deploy,
+                                env={'MOCK_ARGS': str(args_path), 'PATH': '/usr/bin:/bin'},
+                                capture_output=True, text=True)
+        assert result.returncode == 23, (mode, result.returncode, result.stderr)
+        args = args_path.read_text(encoding='utf-8')
+        assert ('compose.local.yml' in args) == (mode == 'local')
+        assert ('compose.prod.yml' in args) == (mode == 'prod')
+PY
+}
+
 @test "o11y: production Dev template pins both controller and receiver revisions" {
   local playbook="$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
   local templates="$REPO_ROOT/platform/semaphore/templates.yml"
