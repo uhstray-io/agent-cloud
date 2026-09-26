@@ -1000,7 +1000,9 @@ ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always
 Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
 
 1. **Every compose service declares `restart: always`**, or `"no"` for a one-shot
-   container. On 4.9.3 the filter skips `unless-stopped`, whatever newer upstream
+   container that also carries the label `agent-cloud.one-shot: "true"`
+   (`verify-service-persistence.yml` accepts `"no"` only from a labelled container that
+   has exited 0, since a long-running `"no"` container can exit 0 too). On 4.9.3 the filter skips `unless-stopped`, whatever newer upstream
    documentation says. Docker honours `always` as well, so one policy serves both engines.
 2. **Every composable deploy runs `tasks/enable-linger.yml`** through the shared
    `tasks/place-monorepo.yml` preamble. Lingering alone is not enough: it starts an empty
@@ -1062,7 +1064,7 @@ pip3 install --upgrade podman-compose>=1.3.0
 | `healthcheck:` definition | Yes | Yes | Yes | Runs but not enforced for deps |
 | `restart: always` | Yes | Yes | Yes | Started at boot by `podman-restart.service` (see sec 11) |
 | `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. Not used (sec 11) |
-| `restart: "no"` | Yes | Yes | Yes | One-shot containers |
+| `restart: "no"` | Yes | Yes | Yes | One-shot containers only, labelled `agent-cloud.one-shot: "true"` |
 | `env_file:` (simple KEY=VALUE) | Yes | Yes | Yes | |
 | `env_file:` (quoted values) | Yes | Partial | Partial | Avoid quotes |
 | `environment:` | Yes | Yes | Yes | |
