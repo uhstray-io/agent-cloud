@@ -14,6 +14,9 @@
 # (filter semaphore_access_drift):
 #   semaphore_project_members   {username: role} — the whole team, nothing implied
 #   semaphore_admin_users       [username]       — shared with promote-semaphore-admins.yml
+# Both belong in the inventory's top-level all.vars: this play runs on implicit localhost,
+# which receives no group's vars (verified with ansible-inventory --host localhost; a
+# declaration under a group reads as absent, and every admin is then reported undeclared).
 # Under --check it only reports, names and roles only; the report is how the current roster is
 # read before the declaration exists. A real run converges the team: it adds a declared account,
 # sets a declared role and removes an undeclared member, then reads the team back. It never

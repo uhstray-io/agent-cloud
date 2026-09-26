@@ -57,7 +57,9 @@ admins, project members whose role can run tasks, those users' API tokens, and i
 (incoming webhooks, which copy payload values into the task environment).
 
 **Manage Semaphore Access** holds all four to a declaration: `semaphore_project_members`
-(username to role, the whole team) and `semaphore_admin_users` in the private inventory. Run it
+(username to role, the whole team) and `semaphore_admin_users`, both in the private
+inventory's top-level `all.vars` (the play runs on implicit `localhost`, which receives no
+group's vars; `promote-semaphore-admins.yml` reads `semaphore_admin_users` the same way). Run it
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back. It never demotes a system admin or deletes an integration: each is named and fails the
