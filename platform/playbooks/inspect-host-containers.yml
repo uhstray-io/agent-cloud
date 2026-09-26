@@ -1,0 +1,75 @@
+---
+# inspect-host-containers.yml — every container on one host, from each engine it has.
+#
+# Read-only, identical under --check. For each container: name, image, state, restart policy
+# and the compose working directory, which is how tasks/list-service-containers.yml selects a
+# service's containers. Names and metadata only: no environment, no mounts, no labels beyond
+# that one.
+#
+# Exists to onboard a host that carries no service group (devlog, grafanapodman) from what
+# actually runs there, and to see which engine and account own a service's containers:
+# rootless podman (the connecting user), rootful podman, or Docker.
+#
+# Usage (Semaphore): -e target_host=<inventory host or group>
+
+- name: "Inspect the containers on {{ target_host | default('(unset)') }}"
+  hosts: "{{ target_host | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  vars:
+    # One line per container: name|image|state|restart policy|compose working_dir. Built the way
+    # tasks/list-service-containers.yml builds its format.
+    _fields:
+      - .Name
+      - .Config.Image
+      - .State.Status
+      - .HostConfig.RestartPolicy.Name
+      - index .Config.Labels "com.docker.compose.project.working_dir"
+    _fmt: "{{ _fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
+    _script: |
+      command -v "$ENGINE" >/dev/null 2>&1 || { echo "(no $ENGINE)"; exit 0; }
+      ids=$("$ENGINE" ps -aq 2>/dev/null) || { echo "($ENGINE not usable here)"; exit 0; }
+      [ -n "$ids" ] || { echo "(no containers)"; exit 0; }
+      # shellcheck disable=SC2086
+      "$ENGINE" inspect --format "$FMT" $ids
+
+  tasks:
+    - name: "Rootless podman (the connecting user)"
+      ansible.builtin.shell: "{{ _script }}"
+      args:
+        executable: /bin/sh
+      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      register: _rootless
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Rootful podman"
+      ansible.builtin.shell: "{{ _script }}"
+      args:
+        executable: /bin/sh
+      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      become: true
+      register: _rootful
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Docker"
+      ansible.builtin.shell: "{{ _script }}"
+      args:
+        executable: /bin/sh
+      environment: {ENGINE: docker, FMT: "{{ _fmt }}"}
+      become: true
+      register: _docker
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          connecting_user: "{{ ansible_user | default('(inventory default)') }}"
+          rootless_podman: "{{ _rootless.stdout_lines | default([]) + _rootless.stderr_lines | default([]) }}"
+          rootful_podman: "{{ _rootful.stdout_lines | default([]) + _rootful.stderr_lines | default([]) }}"
+          docker: "{{ _docker.stdout_lines | default([]) + _docker.stderr_lines | default([]) }}"
