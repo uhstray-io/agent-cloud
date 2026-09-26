@@ -539,6 +539,27 @@
 > rendered before this overlay was introduced, so a clean deploy must wait
 > until a normal reviewed deploy renders the new route values; a premature
 > clean now fails visibly instead of claiming it removed volumes.
+>
+> **Reviewed route deployment and alert-drill design, 2026-09-26:** PR #275
+> merged into `dev` at `3ba8d8d6d76dd1d981bb2554e69467bec903e67e`
+> after a final-head Claude review and green CI. Semaphore check task 1381
+> and real task 1382 both passed at that exact revision. The normal deploy
+> rendered the production-only Grafana Authentik LAN route and verified the
+> four o11y services without wiping volumes. This proves service health, not
+> a completed Authentik sign-in: its full Dev deploy remains pending.
+> The next alert change extends the local reversible canary to production.
+> It adds one temporary static failed Prometheus scrape, enables only its
+> filtered Grafana rule with the OpenBao-backed Discord webhook, requires a
+> matching new Discord bot-history receipt, then removes the scrape and
+> restores paused rules and the original runtime environment. The receiver
+> must already run the exact reviewed `dev` revision with no tracked changes,
+> and its Authentik route values must match inventory before the drill starts.
+> A marker blocks normal deploys until the paused rule and absent contact
+> point are verified after restoration. An interrupted run uses the separate
+> restore play, which refuses while persistent alerts are enabled. Production
+> alerts stay disabled until a live
+> canary and restoration both succeed; this paragraph records design and
+> deployment gates, not a delivery receipt.
 
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

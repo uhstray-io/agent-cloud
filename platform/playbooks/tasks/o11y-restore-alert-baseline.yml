@@ -11,6 +11,12 @@
     that: _baseline_env.stat.isreg | default(false)
     fail_msg: "The existing o11y .env is absent; restore requires the deployed environment."
 
+- name: Remove only the generated production canary scrape declaration
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
+    state: absent
+  when: not (local_mode | default(false) | bool)
+
 - name: Recreate the generated Grafana alert provisioning directory
   ansible.builtin.file:
     path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting"
@@ -59,7 +65,7 @@
     bash deploy.sh --no-pull
   environment:
     CONTAINER_ENGINE: "{{ _engine }}"
-    LOCAL_MODE: "true"
+    LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
   changed_when: true
   when: not ansible_check_mode
 
@@ -129,3 +135,9 @@
       _restored_contacts.stdout | from_json |
       selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length == 0
     fail_msg: "The canary contact point remains active; run Restore o11y Alert Baseline (Dev)."
+
+- name: Clear the production canary marker only after baseline verification
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+    state: absent
+  when: not (local_mode | default(false) | bool)

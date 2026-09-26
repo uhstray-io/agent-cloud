@@ -343,7 +343,7 @@ receipt = next(t for t in tasks if t['name'] == 'Wait for the matching Discord w
 assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True and receipt['ignore_errors'] is True
 probe = next(t for t in tasks if t['name'] == 'Start the opted-in probe with no metrics listener')
 lifetime = int(re.search(r'sleep (\d+)', probe['ansible.builtin.command']['argv'][-1]).group(1))
-scrape = next(t for t in tasks if t['name'] == 'Wait for Alloy to report the failed scrape')
+scrape = next(t for t in tasks if t['name'] == 'Wait for the declared failed scrape')
 assert lifetime > sum(t['retries'] * t['delay'] for t in (scrape, wait, receipt)) + 60
 received = env.compile_expression(receipt['until'])
 marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
@@ -370,18 +370,24 @@ import yaml
 canary, recovery, restore, catalog = [yaml.safe_load(open(path)) for path in sys.argv[1:]]
 assert canary[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert canary[1]['name'] == 'Verify the reviewed Dev checkout before the canary'
-assert canary[2]['name'] == 'Prove local alert delivery and restore the paused baseline'
+assert canary[2]['name'] == 'Prove alert delivery and restore the paused baseline'
 tasks = canary[2]['tasks']
 assert next(i for i, task in enumerate(tasks) if task['name'] == 'Refuse an already active service-down rule') < next(
     i for i, task in enumerate(tasks) if 'block' in task)
 delivery = next(i for i, task in enumerate(tasks) if task['name'] == 'Verify Discord delivery prerequisites before activation')
 flight = next(task for task in tasks if 'block' in task)
 assert delivery < tasks.index(flight)
-assert flight['block'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-provision.yml'
-assert flight['block'][0]['vars']['o11y_alerts_enabled'] is True
+assert flight['block'][0]['name'] == 'Block normal deploys until production restoration is verified'
+assert flight['block'][1]['name'] == 'Render a production-only unreachable scrape target'
+assert flight['block'][1]['when'] == 'not (local_mode | default(false) | bool)'
+assert '127.0.0.1:65535' in flight['block'][1]['ansible.builtin.copy']['content']
+assert 'service: "{{ _probe }}"' in flight['block'][1]['ansible.builtin.copy']['content']
+provision = next(task for task in flight['block'] if task.get('ansible.builtin.include_tasks') == 'tasks/o11y-alert-provision.yml')
+assert provision['vars']['o11y_alerts_enabled'] is True
 assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
 assert recovery[-1]['tasks'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
+assert 'not (o11y_alerts_enabled | default(false) | bool)' in recovery[-1]['tasks'][0]['ansible.builtin.assert']['that']
 assert not any('manage-secrets.yml' in str(task) for task in restore)
 directory = next(i for i, task in enumerate(restore) if task['name'] == 'Recreate the generated Grafana alert provisioning directory')
 rules = next(i for i, task in enumerate(restore) if task['name'] == 'Render paused Grafana alert rules without OpenBao')
@@ -390,9 +396,12 @@ assert restore[directory]['ansible.builtin.file']['state'] == 'directory'
 assert all(directory < i and posixpath.dirname(task['ansible.builtin.template']['dest']) == restore[directory]['ansible.builtin.file']['path']
            for i, task in enumerate(restore) if 'ansible.builtin.template' in task)
 assert any(task['name'] == 'Remove the canary webhook from the existing runtime environment' for task in restore)
+assert next(task for task in restore if task['name'] == 'Remove only the generated production canary scrape declaration')['ansible.builtin.file']['state'] == 'absent'
+assert next(task for task in restore if task['name'] == 'Restart o11y with the paused baseline')['environment']['LOCAL_MODE'] != 'true'
 assert any(task.get('vars', {}).get('o11y_alerts_enabled') is False for task in restore)
 assert any(task['name'] == 'Require the service-down rule to be paused again' for task in restore)
 assert any(task['name'] == 'Require the canary contact point to be absent again' for task in restore)
+assert restore[-1]['name'] == 'Clear the production canary marker only after baseline verification'
 templates = {item['name']: item for item in catalog['templates']}
 for name in ('Drill o11y Alert Canary (Dev)', 'Restore o11y Alert Baseline (Dev)'):
     assert templates[name]['repository'] == 'agent-cloud dev'
@@ -403,6 +412,56 @@ PY
     grep -qF -- "--exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/$name" \
       "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml"
   done
+}
+
+@test "o11y: production canary uses one static failed scrape and restores it before restart" {
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-alert-canary.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-restore-alert-baseline.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-provision.yml" <<'PY'
+import sys
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+canary, probe, restore, deploy, provision = [yaml.safe_load(open(path, encoding='utf-8')) for path in sys.argv[1:]]
+tasks = canary[2]['tasks']
+slot = next(i for i, task in enumerate(tasks) if task['name'] == 'Require a clean production canary slot')
+flight = next(i for i, task in enumerate(tasks) if 'block' in task)
+assert slot < flight
+assert next(task for task in tasks if task['name'] == 'Place the reviewed checkout for local canary rendering')['when'] == 'local_mode | default(false) | bool'
+assert next(task for task in tasks if task['name'] == 'Read tracked changes in the deployed production checkout')['ansible.builtin.command']['argv'] == ['git', 'status', '--porcelain', '--untracked-files=no']
+assert next(task for task in tasks if task['name'] == 'Refuse a receiver not already deployed from the reviewed revision')['ansible.builtin.assert']['that'] == [
+    '_deployed_revision.stdout == expected_repository_sha', '_deployed_changes.stdout | length == 0']
+assert next(i for i, task in enumerate(tasks) if task['name'] == 'Require a cleared production canary marker') < flight
+route = next(task for task in tasks if task['name'] == 'Require the production route values already deployed')
+assert route['ansible.builtin.command']['argv'][1] == '-Fxq'
+assert route['loop'] == ['O11Y_ZONE={{ o11y_zone }}', 'O11Y_AUTHENTIK_EDGE_IP={{ _auth_edge_ip }}']
+block = tasks[flight]['block']
+assert block[0]['ansible.builtin.copy']['dest'].endswith('/config/.o11y-alert-canary-active')
+static = next(task for task in block if task['name'] == 'Render a production-only unreachable scrape target')
+rendered = Environment(undefined=StrictUndefined).from_string(static['ansible.builtin.copy']['content']).render(
+    _probe='o11y-fault-probe-abcdef123456')
+job, = yaml.safe_load(rendered)['scrape_configs']
+target, = job['static_configs']
+assert target['targets'] == ['127.0.0.1:65535']
+assert target['labels']['service'] == 'o11y-fault-probe-abcdef123456'
+assert static['when'] == 'not (local_mode | default(false) | bool)'
+canary_provision = next(task for task in block if task.get('ansible.builtin.include_tasks') == 'tasks/o11y-alert-provision.yml')
+assert canary_provision['vars']['o11y_canary_preserve_env'] is True
+append = next(task for task in provision if task['name'] == 'Add only the canary webhook to the existing runtime environment')
+assert append['no_log'] is True and append['ansible.builtin.lineinfile']['mode'] == '0600'
+assert next(task for task in provision if task.get('ansible.builtin.include_tasks') == 'manage-secrets.yml')['when'] == 'not (o11y_canary_preserve_env | default(false) | bool)'
+assert next(task for task in probe[-1]['block'] if task['name'] == 'Start the opted-in probe with no metrics listener')['when'][-1] == 'local_mode | default(false) | bool'
+names = [task['name'] for task in restore]
+assert names.index('Remove only the generated production canary scrape declaration') < names.index('Restart o11y with the paused baseline')
+assert names.index('Require the canary contact point to be absent again') < names.index('Clear the production canary marker only after baseline verification')
+assert tasks[flight]['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-restore-alert-baseline.yml'
+normal = next(play for play in deploy if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')['tasks']
+names = [task['name'] for task in normal]
+assert names.index('Refuse a normal deploy while the production canary needs restoration') < names.index('Place the monorepo + ensure podman/compose')
+assert len(next(task for task in normal if task['name'] == 'Refuse a normal deploy while the production canary needs restoration')['ansible.builtin.assert']['that']) == 2
+PY
 }
 
 @test "o11y: shared local placement preserves rendered alerts and copies committed rules" {

@@ -1,6 +1,7 @@
 ---
-# Local-only delivery proof. Alert provisioning is temporary: the always path
-# restores paused rules and removes the contact point, even when the probe fails.
+# Reversible local and production delivery proof. Alert provisioning is
+# temporary: the always path restores paused rules and removes the contact
+# point, even when the probe fails.
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -40,7 +41,7 @@
         that: _controller_changes.stdout | length == 0
         fail_msg: "Candidate checkout has uncommitted files; no canary was started."
 
-- name: Prove local alert delivery and restore the paused baseline
+- name: Prove alert delivery and restore the paused baseline
   hosts: o11y_svc
   gather_facts: false
   become: false
@@ -48,32 +49,32 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _branch: dev
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _secret_definitions: >-
-      {{ [{'name': 'grafana_admin_password', 'type': 'random', 'length': 32}] +
-         ([{'name': 'alert_discord_webhook_url', 'type': 'existing'}]
-          if o11y_alerts_enabled | default(false) | bool else []) }}
-    _required_existing_secrets: >-
-      {{ ['alert_discord_webhook_url'] if o11y_alerts_enabled | default(false) | bool else [] }}
-    _shared_reads:
-      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
-    _env_templates:
-      - { src: env.j2, dest: .env, mode: "0600" }
     expected_service: "{{ _probe }}"
-    expected_instance: "{{ _probe }}:65535"
+    expected_instance: "{{ (_probe ~ ':65535') if (local_mode | default(false) | bool) else '127.0.0.1:65535' }}"
     _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
     _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+    _auth_edge_hosts: "{{ groups['caddy_svc'] | default([]) }}"
+    _auth_edge_ip: "{{ hostvars[_auth_edge_hosts[0]].ansible_host | default('') if _auth_edge_hosts | length == 1 else '' }}"
   tasks:
-    - name: Require a local, paused baseline before the canary
+    - name: Require a paused baseline before the canary
       ansible.builtin.assert:
         that:
-          - local_mode | default(false) | bool
           - not (o11y_alerts_enabled | default(false) | bool)
           - not ansible_check_mode
-        fail_msg: "The canary requires the local paused baseline and a real Semaphore run."
+        fail_msg: "The canary requires a paused baseline and a real Semaphore run."
+
+    - name: Require the declared production Grafana route
+      ansible.builtin.assert:
+        that:
+          - o11y_zone | default('') is match('^[a-z0-9.-]+$')
+          - o11y_zone != 'agent-cloud.test'
+          - _auth_edge_hosts | length == 1
+          - _auth_edge_ip is match('^[0-9]+(\\.[0-9]+){3}$')
+        fail_msg: "Production canary needs a declared DNS zone and one Caddy origin IP."
+      when: not (local_mode | default(false) | bool)
 
     - name: Read the baseline service-down rule
       ansible.builtin.command:
@@ -118,7 +119,20 @@
           selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length == 0
         fail_msg: "The o11y contact point is already active; no canary state was changed."
 
-    - name: Name this canary's unique disposable probe
+    - name: Check that the paused environment has no canary webhook line
+      ansible.builtin.command:
+        argv: [grep, -q, '^O11Y_ALERT_DISCORD_WEBHOOK_URL=', "{{ _deploy_dir }}/.env"]
+      register: _baseline_webhook_line
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Refuse an environment already carrying an alert webhook
+      ansible.builtin.assert:
+        that: _baseline_webhook_line.rc == 1
+        fail_msg: "The paused environment already has a webhook line or is unreadable; no canary state was changed."
+
+    - name: Name this canary's unique fault probe
       ansible.builtin.command:
         argv: [python3, -c, "import uuid; print('o11y-fault-probe-' + uuid.uuid4().hex[:12])"]
       register: _canary_probe_name
@@ -142,16 +156,98 @@
     - name: Verify Discord delivery prerequisites before activation
       ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
 
-    - name: Place the reviewed checkout for local rendering
+    - name: Place the reviewed checkout for local canary rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      when: local_mode | default(false) | bool
+
+    - name: Read the already deployed production revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_revision
+      changed_when: false
+      check_mode: false
+      when: not (local_mode | default(false) | bool)
+
+    - name: Read tracked changes in the deployed production checkout
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=no]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_changes
+      changed_when: false
+      check_mode: false
+      when: not (local_mode | default(false) | bool)
+
+    - name: Refuse a receiver not already deployed from the reviewed revision
+      ansible.builtin.assert:
+        that:
+          - _deployed_revision.stdout == expected_repository_sha
+          - _deployed_changes.stdout | length == 0
+        fail_msg: "Deploy the clean reviewed Dev revision to the receiver before running its alert canary."
+      when: not (local_mode | default(false) | bool)
+
+    - name: Refuse to overwrite an existing production canary scrape file
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
+      register: _prod_canary_file
+      when: not (local_mode | default(false) | bool)
+
+    - name: Require a clean production canary slot
+      ansible.builtin.assert:
+        that: not _prod_canary_file.stat.exists
+        fail_msg: "A production canary scrape file already exists; restore the baseline before retrying."
+      when: not (local_mode | default(false) | bool)
+
+    - name: Refuse an unfinished production canary restoration
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+      register: _prod_canary_marker
+      when: not (local_mode | default(false) | bool)
+
+    - name: Require a cleared production canary marker
+      ansible.builtin.assert:
+        that: not _prod_canary_marker.stat.exists
+        fail_msg: "Production canary restoration is unfinished; run Restore o11y Alert Baseline (Dev)."
+      when: not (local_mode | default(false) | bool)
+
+    - name: Require the production route values already deployed
+      ansible.builtin.command:
+        argv: [grep, -Fxq, "{{ item }}", "{{ _deploy_dir }}/.env"]
+      loop:
+        - 'O11Y_ZONE={{ o11y_zone }}'
+        - 'O11Y_AUTHENTIK_EDGE_IP={{ _auth_edge_ip }}'
+      changed_when: false
+      check_mode: false
+      when: not (local_mode | default(false) | bool)
 
     - name: Activate only the canary rule, prove delivery, and restore the baseline
       block:
+        - name: Block normal deploys until production restoration is verified
+          ansible.builtin.copy:
+            dest: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+            mode: "0644"
+            content: "Restore o11y Alert Baseline (Dev) before normal deployment.\n"
+          when: not (local_mode | default(false) | bool)
+
+        - name: Render a production-only unreachable scrape target
+          ansible.builtin.copy:
+            dest: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
+            mode: "0644"
+            content: |
+              scrape_configs:
+                - job_name: o11y-production-canary
+                  static_configs:
+                    - targets: ["127.0.0.1:65535"]
+                      labels:
+                        service: "{{ _probe }}"
+          when: not (local_mode | default(false) | bool)
+
         - name: Render the temporary OpenBao-backed canary rule and contact
           ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml
           vars:
             o11y_alerts_enabled: true
             o11y_alert_canary_service: "{{ _probe }}"
+            o11y_canary_preserve_env: true
 
         - name: Restart o11y with temporary canary provisioning
           ansible.builtin.shell: |
@@ -159,7 +255,7 @@
             bash deploy.sh --no-pull
           environment:
             CONTAINER_ENGINE: "{{ _engine }}"
-            LOCAL_MODE: "true"
+            LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
           changed_when: true
           when: not ansible_check_mode
 
@@ -168,6 +264,7 @@
           vars:
             o11y_alerts_enabled: true
             drill_expect_alert: true
+            o11y_production_static_probe: "{{ not (local_mode | default(false) | bool) }}"
       always:
         - name: Restore and verify the paused baseline
           ansible.builtin.include_tasks: tasks/o11y-restore-alert-baseline.yml
