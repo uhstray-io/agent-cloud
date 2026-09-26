@@ -593,6 +593,7 @@ assert route_check(_probe_route={'stdout': '192.0.2.2 dev eth0 src 192.0.2.10'})
 assert route_check(_probe_route={'stdout': '192.0.2.2 dev eth0'}) is False
 assert request['ansible.builtin.uri']['url'].startswith('http://{{ _probe_node.address }}:')
 assert request['ansible.builtin.uri']['use_proxy'] is False
+assert request['ansible.builtin.uri']['follow_redirects'] == 'none'
 assert request['ansible.builtin.uri']['timeout'] == 5
 assert request['when'] == 'not ansible_check_mode'
 assert request['failed_when'] is False
@@ -606,6 +607,101 @@ template = next(item for item in yaml.safe_load(open(sys.argv[3], encoding='utf-
 assert template['repository'] == 'agent-cloud dev'
 assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_node_name', 'probe_expect_reachable']
 PY
+}
+
+@test "o11y: endpoint probe accepts only declared metrics targets in check mode" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        receiver:
+          ansible_connection: local
+          monorepo_deploy_path: platform/services/o11y/deployment
+          o11y_zone: example.invalid
+          agentgateway_metrics_address: "192.0.2.9"
+          agentgateway_metrics_port: 19002
+          dgx_spark_nodes:
+            - {name: spark-1, address: "192.0.2.1"}
+          dgx_spark_head_name: spark-1
+          dgx_spark_head_address: "192.0.2.1"
+          dgx_spark_api_port: 8000
+    agentgateway_svc:
+      hosts:
+        gateway:
+          agw_stats_bind: "192.0.2.2"
+          agw_stats_port: 19002
+    caddy_svc:
+      hosts:
+        caddy:
+          ansible_host: "192.0.2.3"
+YAML
+  local sha
+  sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+probe = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+steps = {task['name']: task for task in probe[2]['tasks']}
+request = steps['Send one direct bounded metrics request from the receiver']
+assert request['when'] == 'not ansible_check_mode'
+assert request['ansible.builtin.uri']['url'] == 'http://{{ _probe_address }}:{{ _probe_port }}/metrics'
+assert request['ansible.builtin.uri']['use_proxy'] is False
+assert request['ansible.builtin.uri']['follow_redirects'] == 'none'
+assert request['ansible.builtin.uri']['return_content'] is False
+assert request['ansible.builtin.uri']['timeout'] == 5
+template = next(item for item in yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates'] if item['name'] == 'Probe o11y Metrics Endpoint (Dev)')
+assert template['repository'] == 'agent-cloud dev'
+assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_target']
+assert template['survey_vars'][1]['type'] == 'enum'
+PY
+  for target in dgx-vllm agentgateway; do
+    run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+      -i "$BATS_TEST_TMPDIR/inventory.yml" \
+      "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+      -e expected_repository_sha="$sha" -e probe_target="$target"
+    [ "$status" -eq 0 ]
+    assert_contains "$output" "Refuse an unusable metrics address or port"
+  done
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+    -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    -e expected_repository_sha="$sha" -e probe_target=arbitrary
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Select dgx-vllm or agentgateway"
+  python3 - "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/missing-gateway.yml" "$BATS_TEST_TMPDIR/mismatched-head.yml" <<'PY'
+import copy
+import sys
+import yaml
+source = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+missing = copy.deepcopy(source)
+del missing['all']['children']['agentgateway_svc']['hosts']['gateway']['agw_stats_bind']
+with open(sys.argv[2], 'w', encoding='utf-8') as stream:
+    yaml.safe_dump(missing, stream)
+mismatched = copy.deepcopy(source)
+mismatched['all']['children']['o11y_svc']['hosts']['receiver']['dgx_spark_head_address'] = '192.0.2.8'
+with open(sys.argv[3], 'w', encoding='utf-8') as stream:
+    yaml.safe_dump(mismatched, stream)
+PY
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+    -i "$BATS_TEST_TMPDIR/missing-gateway.yml" \
+    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    -e expected_repository_sha="$sha" -e probe_target=agentgateway
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Select dgx-vllm or agentgateway"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+    -i "$BATS_TEST_TMPDIR/mismatched-head.yml" \
+    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    -e expected_repository_sha="$sha" -e probe_target=dgx-vllm
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Select dgx-vllm or agentgateway"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
+    -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "receiver's gateway scrape target differs"
+  refute_contains "$output" "TASK [Place the monorepo"
 }
 
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {

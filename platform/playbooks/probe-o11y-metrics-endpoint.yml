@@ -1,6 +1,6 @@
 ---
-# Read-only receiver-origin probe. Inventory supplies the destination; the
-# survey selects one declared node and the expected result, never an address.
+# Read-only receiver-origin check before declaring a production scrape target.
+# The survey chooses a fixed kind; private inventory supplies every address/port.
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -43,39 +43,64 @@
         that: _controller_changes.stdout | length == 0
         fail_msg: "Semaphore checkout has local changes; no probe was sent."
 
-- name: Probe one inventory-declared DGX node from the o11y receiver
+- name: Probe one inventory-declared metrics endpoint from the o11y receiver
   hosts: o11y_svc
   gather_facts: false
   become: false
-  vars:
-    _probe_nodes: "{{ dgx_spark_nodes | default([]) | selectattr('name', 'equalto', probe_node_name | default('')) | list }}"
-    _probe_node: "{{ _probe_nodes[0] }}"
   tasks:
-    - name: Require one declared node and a bounded node-exporter port
+    - name: Require one fixed target kind and its inventory declaration
       ansible.builtin.assert:
         that:
-          - _probe_nodes | length == 1
-          - dgx_spark_node_exporter_port | default(0) | int > 0
-          - dgx_spark_node_exporter_port | default(0) | int < 65536
-          - probe_expect_reachable | default('false') | string | lower in ['true', 'false']
-        fail_msg: "Select exactly one inventory-declared DGX node and a valid exporter port."
+          - probe_target | default('') in ['dgx-vllm', 'agentgateway']
+          - >-
+            probe_target | default('') != 'dgx-vllm' or
+            (dgx_spark_head_address is defined and dgx_spark_head_name is defined
+             and dgx_spark_api_port is defined and
+             (dgx_spark_nodes | default([]) | selectattr('name', 'equalto', dgx_spark_head_name) | selectattr('address', 'equalto', dgx_spark_head_address) | list | length) == 1)
+          - >-
+            probe_target | default('') != 'agentgateway' or
+            ((groups.get('agentgateway_svc', []) | length) == 1 and
+             hostvars[groups['agentgateway_svc'][0]].agw_stats_bind is defined and
+             hostvars[groups['agentgateway_svc'][0]].agw_stats_port is defined)
+        fail_msg: "Select dgx-vllm or agentgateway with one complete inventory-declared endpoint."
+
+    - name: Resolve the fixed inventory endpoint
+      ansible.builtin.set_fact:
+        _probe_address: >-
+          {{ dgx_spark_head_address if probe_target == 'dgx-vllm'
+             else hostvars[groups['agentgateway_svc'][0]].agw_stats_bind }}
+        _probe_port: >-
+          {{ dgx_spark_api_port if probe_target == 'dgx-vllm'
+             else hostvars[groups['agentgateway_svc'][0]].agw_stats_port }}
+
+    - name: Refuse an unusable metrics address or port
+      ansible.builtin.assert:
+        that:
+          - _probe_address is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+          - _probe_address.split('.') | map('int') | max <= 255
+          - _probe_address.split('.')[0] | int not in [0, 127]
+          - _probe_port | int > 0
+          - _probe_port | int < 65536
+        fail_msg: "The selected inventory endpoint must have a receiver-reachable IPv4 address and port."
 
     - name: Read the receiver route and chosen source
       ansible.builtin.command:
-        argv: [ip, -4, route, get, "{{ _probe_node.address }}"]
+        argv: [ip, -4, route, get, "{{ _probe_address }}"]
       register: _probe_route
       changed_when: false
       when: not ansible_check_mode
 
     - name: Require a route with an explicit source address
       ansible.builtin.assert:
-        that: _probe_route.stdout is search('(^| )src [0-9]+')
-        fail_msg: "The receiver has no proven source route to the declared DGX node."
+        that:
+          - _probe_route.stdout is search('(^| )src [0-9]+')
+          - _probe_route.stdout is not search('(^| )dev lo( |$)')
+        fail_msg: "The receiver has no proven source route to the selected endpoint."
       when: not ansible_check_mode
 
     - name: Send one direct bounded metrics request from the receiver
       ansible.builtin.uri:
-        url: "http://{{ _probe_node.address }}:{{ dgx_spark_node_exporter_port }}/metrics"
+        url: "http://{{ _probe_address }}:{{ _probe_port }}/metrics"
         method: GET
         use_proxy: false
         follow_redirects: none
@@ -93,18 +118,16 @@
         fail_msg: "The receiver did not execute a valid HTTP probe."
       when: not ansible_check_mode
 
-    - name: Report the route and HTTP status without response content
+    - name: Report route and HTTP status without response content
       ansible.builtin.debug:
         msg: >-
-          {{ probe_node_name }} route={{ _probe_route.stdout | trim }};
+          {{ probe_target }} route={{ _probe_route.stdout | trim }};
           metrics HTTP status={{ _probe_http.status }};
           detail={{ _probe_http.msg | default('none') }}.
       when: not ansible_check_mode
 
-    - name: Require the observed outcome to match the declared probe phase
+    - name: Require a reachable metrics endpoint
       ansible.builtin.assert:
-        that: >-
-          (_probe_http.status | int) ==
-          (200 if probe_expect_reachable | default(false) | bool else -1)
-        fail_msg: "DGX exporter reachability differs from the declared pre/post-firewall expectation."
+        that: _probe_http.status | int == 200
+        fail_msg: "{{ probe_target }} did not answer /metrics with HTTP 200 from the receiver."
       when: not ansible_check_mode
