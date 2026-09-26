@@ -1266,6 +1266,9 @@ templates:
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml
+    # The (Dev) copy applies the policy as dev has it, so the Semaphore-token deny lands
+    # before promotion (plan 01, "Launch permission is runner access").
+    dev_variant: true
 
   - name: Apply Policy - UhhCraft
     playbook: platform/playbooks/apply-policy-uhhcraft.yml
