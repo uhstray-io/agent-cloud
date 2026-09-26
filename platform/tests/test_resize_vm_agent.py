@@ -67,3 +67,10 @@ def test_the_per_host_opt_out_writes_nothing(tmp_path):
 
 def test_a_stopped_vm_gets_the_option_without_a_restart(tmp_path):
     assert decide(tmp_path, running=False) == {"changes": {"agent": "1"}, "restart": False}
+
+
+def test_the_opt_out_also_stops_a_restart_for_a_pending_agent_change(tmp_path):
+    # Codex review of #265: vm_agent: false must hold for reboots too, not only for writes.
+    result = decide(tmp_path, agent="1", pending=[{"key": "agent", "value": "0", "pending": "1"}],
+                    want_agent=False)
+    assert result == {"changes": {}, "restart": False}

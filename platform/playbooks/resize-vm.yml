@@ -320,8 +320,7 @@
                ((_want_memory | string | length > 0) and ((_want_memory | int) != (_running_memory | int)))
                or ((_want_cores | string | length > 0)
                    and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
-               or (_agent_pending | bool)
-               or ((_want_agent | bool) and not (_have_agent | bool))
+               or ((_want_agent | bool) and ((_agent_pending | bool) or not (_have_agent | bool)))
              ) }}
 
     - name: "Compute the config changes actually needed"
@@ -377,8 +376,8 @@
           but the guest is RUNNING cores={{ _running_cores }} (total vCPUs across
           {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
           has no hotplug, so it keeps its old allocation until it next boots.
-          {{ 'The guest-agent channel is also waiting for a restart. ' if (_agent_pending | bool)
-             or ((_want_agent | bool) and not (_have_agent | bool)) else '' }}It
+          {{ 'The guest-agent channel is also waiting for a restart. ' if (_want_agent | bool)
+             and ((_agent_pending | bool) or not (_have_agent | bool)) else '' }}It
           was NOT restarted. Re-run with -e allow_reboot=true during a
           maintenance window, or reboot the guest yourself.
       when:
