@@ -93,20 +93,24 @@
       changed_when: false
       check_mode: false
 
-    - name: "Podman: the running containers podman's boot unit would not start"
+    - name: "Podman: the containers podman's boot unit would not start"
       # Not `always`, and not a declared one-shot on "no" (verify-service-persistence.yml's
-      # criterion). Running only: a stopped container is not started at boot on this
-      # playbook's say-so, and Verify still names it (PR 284 review).
+      # criterion). Chosen by POLICY, never by whether a container happens to be running at
+      # this moment: a container down for maintenance or crashed must not drop out of the unit,
+      # or take the unit with it (PR 284 re-review). Not running now is reported instead.
       ansible.builtin.set_fact:
         _needs_unit: >-
           {%- set out = [] -%}
           {%- for r in _ensure_policies.results | default([]) | rejectattr('skipped', 'defined') -%}
             {%- set f = (r.stdout ~ '||').split('|') -%}
-            {%- if f[0] != 'always' and not (f[0] == 'no' and f[2] == 'true') and f[1] == 'running' -%}
+            {%- if f[0] != 'always' and not (f[0] == 'no' and f[2] == 'true') -%}
               {%- set _ = out.append(r.item) -%}
             {%- endif -%}
           {%- endfor -%}
           {{ out }}
+        _not_running: >-
+          {{ _ensure_policies.results | default([]) | rejectattr('skipped', 'defined')
+             | rejectattr('stdout', 'search', '^[^|]*[|]running[|]') | map(attribute='item') | list }}
         _boot_unit_name: "agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"
 
     - name: "Rootless podman: refuse a container not on restart always"
@@ -160,7 +164,8 @@
       ansible.builtin.systemd_service:
         name: "{{ _boot_unit_name }}"
         enabled: true
-        daemon_reload: "{{ _unit_file is changed }}"
+        # Every time: an earlier run may have written the file and failed before reloading.
+        daemon_reload: true
       become: true
       # Under --check the unit file was not written, so there is nothing to enable yet.
       when:
@@ -181,7 +186,7 @@
         - not _local
         - _needs_unit | length == 0
 
-    - name: "Rootful podman: remove it, now every container is on always"
+    - name: "Rootful podman: remove it, now no container needs it"
       # Left behind, it would start the containers a second time beside podman-restart.service.
       when:
         - _stale_unit.stat.exists | default(false)
@@ -204,6 +209,9 @@
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: {{ _engine }}{{ ' (rootful)' if _rootful else (' (rootless)' if _engine == 'podman' else '') }}
-          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured; {{ _boot_unit_name | default('no boot unit') }}
-          {{ 'would ' if ansible_check_mode else '' }}start:
-          {{ (_needs_unit | default([]) if _rootful else []) or 'none' }}. Check it with Verify Service Persistence.
+          boot start {{ 'would be ' if ansible_check_mode else '' }}ensured.
+          {{- (' ' ~ _boot_unit_name ~ (' would start: ' if ansible_check_mode else ' starts: ')
+               ~ ((_needs_unit | default([])) | join(', ') or 'none (no unit)') ~ '.')
+              if (_engine == 'podman' and _rootful and not _local) else '' }}
+          {{- (' Not running now: ' ~ (_not_running | join(', ')) ~ '.') if (_not_running | default([]) | length > 0) else '' }}
+          Check it with Verify Service Persistence.

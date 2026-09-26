@@ -158,7 +158,7 @@
                 | map(attribute='key') | reject('in', _unit_started)
                 | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
              + (_restart_policies | dict2items | selectattr('value', 'equalto', 'no') | map(attribute='key')
-                | reject('in', _one_shot_done)
+                | reject('in', _one_shot_done) | reject('in', _unit_started)
                 | map('regex_replace', '^', 'restart policy "no" but not a declared one-shot container (label agent-cloud.one-shot=true) that exited 0: ') | list)
              + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
              + (['podman-restart.service is not enabled '
