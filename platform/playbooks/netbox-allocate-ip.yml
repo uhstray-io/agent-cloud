@@ -55,10 +55,6 @@
     _netbox_site: "{{ hostvars[groups['netbox_svc'][0]] if (groups['netbox_svc'] | default([]) | length > 0) else {} }}"
     _pfsense_url: "{{ pfsense_dhcp_api_url | default(_netbox_site.pfsense_dhcp_api_url) | default('') }}"
     _pfsense_interface: "{{ pfsense_dhcp_interface | default(_netbox_site.pfsense_dhcp_interface) | default('') }}"
-    # A site-specific router certificate exception must be declared in private
-    # inventory; every other site keeps verified TLS.
-    _pfsense_validate_certs: "{{ _netbox_site.pfsense_dhcp_validate_certs | default(true) | bool }}"
-
   tasks:
     - name: "Validate inputs"
       ansible.builtin.assert:
@@ -83,19 +79,27 @@
     - name: "Require the pfSense DHCP source before reserving"
       ansible.builtin.assert:
         that:
+          - groups.get('netbox_svc', []) | length == 1
           - _pfsense_url | length > 0
           - _pfsense_interface | length > 0
           - _pfsense_url is match('^https://')
-        fail_msg: "Set an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface in private NetBox inventory before reserving."
+        fail_msg: "Declare one private NetBox host with an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface before reserving."
       when: _reserve
 
     - name: "Require an inventory-owned boolean pfSense TLS setting"
       ansible.builtin.assert:
         that:
           - pfsense_dhcp_validate_certs is not defined
-          - (_netbox_site.pfsense_dhcp_validate_certs | default(true)) is boolean
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true)) is boolean
         fail_msg: "Declare pfsense_dhcp_validate_certs as a boolean on the private NetBox host; launch-time overrides are refused."
       when: _reserve
+
+    - name: "Report a private pfSense TLS exception"
+      ansible.builtin.debug:
+        msg: "pfSense DHCP certificate validation is disabled by private NetBox inventory for this reservation."
+      when:
+        - _reserve
+        - not (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool)
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -200,7 +204,7 @@
         headers:
           X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"
         status_code: [200]
-        validate_certs: "{{ _pfsense_validate_certs }}"
+        validate_certs: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool }}"
       register: _pfsense_dhcp
       failed_when: false
       no_log: true

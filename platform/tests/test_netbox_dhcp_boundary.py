@@ -1,6 +1,7 @@
 """Live DHCP response must be checked before a NetBox reservation write."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -77,16 +78,64 @@ def test_router_check_precedes_netbox_write():
     assert all(tasks[index]["when"] == "_reserve" for index in (read, check_task, refusal))
     assert tasks[read]["no_log"] and tasks[check_task]["no_log"]
     assert "?id={{ _pfsense_interface | urlencode }}" in tasks[read]["ansible.builtin.uri"]["url"]
-    assert parsed["vars"]["_pfsense_validate_certs"] == (
-        "{{ _netbox_site.pfsense_dhcp_validate_certs | default(true) | bool }}"
-    )
-    assert tasks[read]["ansible.builtin.uri"]["validate_certs"] == "{{ _pfsense_validate_certs }}"
+    site_tls = "hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true)"
+    assert "_pfsense_validate_certs" not in parsed["vars"]
+    assert tasks[read]["ansible.builtin.uri"]["validate_certs"] == f"{{{{ {site_tls} | bool }}}}"
     tls_guard = names.index("Require an inventory-owned boolean pfSense TLS setting")
+    tls_notice = names.index("Report a private pfSense TLS exception")
     assert tls_guard < names.index("Authenticate to OpenBao (AppRole)")
+    assert tls_guard < tls_notice < read
     assert tasks[tls_guard]["when"] == "_reserve"
     assert tasks[tls_guard]["ansible.builtin.assert"]["that"] == [
         "pfsense_dhcp_validate_certs is not defined",
-        "(_netbox_site.pfsense_dhcp_validate_certs | default(true)) is boolean",
+        f"({site_tls}) is boolean",
     ]
+    assert tasks[tls_notice]["when"] == ["_reserve", f"not ({site_tls} | bool)"]
     source = tasks[names.index("Require the pfSense DHCP source before reserving")]
+    assert "groups.get('netbox_svc', []) | length == 1" in source["ansible.builtin.assert"]["that"]
     assert "_pfsense_url is match('^https://')" in source["ansible.builtin.assert"]["that"]
+
+
+def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
+    """Execute the actual guard and URI template without contacting a host."""
+    parsed = yaml.safe_load((PLAYBOOKS / "netbox-allocate-ip.yml").read_text())[0]
+    tasks = {task["name"]: task for task in parsed["tasks"]}
+    guard = tasks["Require an inventory-owned boolean pfSense TLS setting"]
+    notice = tasks["Report a private pfSense TLS exception"]
+    uri_template = tasks["Read the live pfSense DHCP server configuration"]["ansible.builtin.uri"]["validate_certs"]
+    for private_value, overrides, expected, refused in (
+        (None, {}, True, False),
+        (False, {}, False, False),
+        (False, {"_pfsense_validate_certs": True, "_netbox_site": {"pfsense_dhcp_validate_certs": True}}, False, False),
+        (False, {"pfsense_dhcp_validate_certs": True}, None, True),
+        ("false", {}, None, True),
+    ):
+        host_vars = {} if private_value is None else {"pfsense_dhcp_validate_certs": private_value}
+        inventory = tmp_path / "inventory.yml"
+        inventory.write_text(yaml.safe_dump({"all": {"children": {"netbox_svc": {"hosts": {"netbox": host_vars}}}}}))
+        playbook = tmp_path / "tls-check.yml"
+        playbook.write_text(yaml.safe_dump([{
+            "hosts": "localhost",
+            "gather_facts": False,
+            "vars": {"_reserve": True},
+            "tasks": [
+                guard,
+                notice,
+                {"name": "Evaluate the actual URI TLS template", "ansible.builtin.debug": {"msg": uri_template}},
+            ],
+        }]))
+        command = ["ansible-playbook", "-i", str(inventory), str(playbook)]
+        if overrides:
+            command.extend(["-e", json.dumps(overrides)])
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        )
+        output = result.stdout + result.stderr
+        assert (result.returncode != 0) is refused, output
+        if not refused:
+            assert f'"msg": {str(expected).lower()}' in output, output
+            assert ("pfSense DHCP certificate validation is disabled" in output) is (not expected)
