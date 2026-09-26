@@ -1,8 +1,11 @@
 ---
-# inspect-host-containers.yml — every container on one host, from each engine it has.
+# inspect-host-containers.yml — the containers on ONE host, from each engine it has.
 #
-# Read-only, identical under --check. For each container: name, image, state, restart policy
-# and the compose working directory, which is how tasks/list-service-containers.yml selects a
+# Read-only, identical under --check. Scope: rootless podman for the connecting user and, when
+# the host declares one, its dedicated `linger_user`; rootful podman; Docker. A rootless
+# container owned by any other account is not seen (a rootful probe cannot list another
+# user's rootless containers). For each container: name, image, state, restart policy and the
+# compose working directory, which is how tasks/list-service-containers.yml selects a
 # service's containers. Names and metadata only: no environment, no mounts, no labels beyond
 # that one.
 #
@@ -13,7 +16,9 @@
 # Usage (Semaphore): -e target_host=<inventory host or group>
 
 - name: "Inspect the containers on {{ target_host | default('(unset)') }}"
-  hosts: "{{ target_host | default('ungrouped') }}"
+  # An omitted target selects nothing (a name no inventory declares), never a group by
+  # accident; the syntax check still needs a value to render.
+  hosts: "{{ target_host | default('no-target-host-given') }}"
   gather_facts: false
   become: false
   vars:
@@ -33,6 +38,14 @@
       # shellcheck disable=SC2086
       "$ENGINE" inspect --format "$FMT" $ids
 
+  pre_tasks:
+    - name: "Require exactly one target host"
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          target_host must resolve to exactly one inventory host; it matched
+          {{ ansible_play_hosts_all | length }} ({{ ansible_play_hosts_all | join(', ') }}).
+
   tasks:
     - name: "Rootless podman (the connecting user)"
       ansible.builtin.shell: "{{ _script }}"
@@ -43,6 +56,21 @@
       changed_when: false
       failed_when: false
       check_mode: false
+
+    - name: "Rootless podman (the host's dedicated service account)"
+      ansible.builtin.shell: "{{ _script }}"
+      args:
+        executable: /bin/sh
+      environment: {ENGINE: podman, FMT: "{{ _fmt }}"}
+      become: true
+      become_user: "{{ linger_user }}"
+      register: _dedicated
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - linger_user is defined
+        - linger_user != (ansible_user | default(''))
 
     - name: "Rootful podman"
       ansible.builtin.shell: "{{ _script }}"
@@ -71,5 +99,9 @@
         msg:
           connecting_user: "{{ ansible_user | default('(inventory default)') }}"
           rootless_podman: "{{ _rootless.stdout_lines | default([]) + _rootless.stderr_lines | default([]) }}"
+          rootless_podman_dedicated_account: >-
+            {{ {linger_user: _dedicated.stdout_lines | default([]) + _dedicated.stderr_lines | default([])}
+               if (_dedicated is defined and _dedicated is not skipped) else 'none declared' }}
+          not_seen: rootless containers of any other account
           rootful_podman: "{{ _rootful.stdout_lines | default([]) + _rootful.stderr_lines | default([]) }}"
           docker: "{{ _docker.stdout_lines | default([]) + _docker.stderr_lines | default([]) }}"
