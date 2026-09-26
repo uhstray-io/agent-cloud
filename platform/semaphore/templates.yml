@@ -170,6 +170,13 @@ templates:
         type: string
         required: false
         default_value: "false"
+      # A template passes no arguments, so the identity to mint is a survey choice. Blank
+      # means device-writer, the original profile.
+      - name: netbox_token_profile
+        title: Token profile
+        description: "Blank or device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        type: string
+        required: false
 
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml
@@ -192,6 +199,8 @@ templates:
   # "Dry run" reports without writing.
   - name: Provision NetBox Custom Fields
     playbook: platform/playbooks/provision-netbox-custom-fields.yml
+    # The playbook is on dev only until promotion; the (Dev) copy runs it from there.
+    dev_variant: true
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
@@ -746,6 +755,10 @@ templates:
   # to NetBox (and Loki when collector_loki_url is set). The only writer of that status.
   - name: Collect Service Conformance
     playbook: platform/playbooks/collect-service-conformance.yml
+    # The (Dev) copy runs the collector from dev before promotion. It never carries the
+    # schedule (setup-templates.yml attaches schedules to the base only), so production
+    # does not get a second scheduled writer; it is launched by hand.
+    dev_variant: true
     schedule:
       cron: "*/15 * * * *"
 
