@@ -116,8 +116,7 @@ def main():
               f"{', '.join(sorted(values)) or 'none'}; settings {', '.join(sorted(settings))}", flush=True)
 
         def check():
-            return preflight(api, args.project, t.template_id, t.environment_id,
-                             playbook=t.playbook, template_name=t.template_name, bindings=t.bindings)
+            return preflight(api, args.project, t)
         # Each path runs the read-only preflight exactly once: here for a dry run, inside
         # verify_access and stage_and_seed otherwise.
         if not args.apply:
@@ -128,9 +127,7 @@ def main():
         if args.verify_only:
             verify_access(api, args.project, t.template_id, decl["seed_access_check"], settings, check=check)
             return 0
-        stage_and_seed(api, args.project, t.template_id, t.environment_id, values,
-                       playbook=t.playbook, template_name=t.template_name, extra=settings,
-                       bindings=t.bindings,
+        stage_and_seed(api, args.project, t, values, extra=settings,
                        message=f"Seed via {t.environment_name} (encrypted, removed after the task)")
     except Refusal as error:
         print(str(error), file=sys.stderr)

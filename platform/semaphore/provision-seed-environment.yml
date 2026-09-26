@@ -193,10 +193,6 @@
                'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
              if (_target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
              else [] }}
-        # No extra vars at all: the seed run takes the OpenBao address from the inventory's
-        # all.vars and refuses an override (tasks/assert-bao-addr-declared.yml), so an
-        # earlier version's pin is removed here, never written (2026-09-25).
-        _desired_json: "{{ {} | to_json }}"
       no_log: true
 
     - name: "Re-read dedicated environment before credential mutation"
@@ -228,11 +224,13 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
         body_format: json
-        body: "{{ _target.json | combine({'json': _desired_json, 'secrets': _auth_operations}) | to_json }}"
+        # No extra vars at all ('{}'): the seed run takes the OpenBao address from the
+        # inventory's all.vars, so an earlier version's pin is removed here, never written.
+        body: "{{ _target.json | combine({'json': '{}', 'secrets': _auth_operations}) | to_json }}"
         status_code: [200, 204]
       when:
         - not ansible_check_mode
-        - _auth_operations | length > 0 or (_target.json.json | default('{}', true) | from_json) != (_desired_json | from_json)
+        - _auth_operations | length > 0 or (_target.json.json | default('{}', true) | from_json) != {}
       changed_when: true
       no_log: true
 
@@ -251,9 +249,9 @@
       ansible.builtin.assert:
         that:
           - >-
-            _after.json | combine({'secrets': [], 'json': _desired_json}) ==
-            _target.json | combine({'secrets': [], 'json': _desired_json})
-          - (_after.json.json | from_json) == (_desired_json | from_json)
+            _after.json | combine({'secrets': [], 'json': '{}'}) ==
+            _target.json | combine({'secrets': [], 'json': '{}'})
+          - (_after.json.json | default('{}', true) | from_json) == {}
           - _target.json.get('secrets', []) | difference(_after.json.get('secrets', [])) | length == 0
           - _after.json.get('secrets', []) | length == _target.json.get('secrets', []) | length + _auth_operations | length
           - _auth | length == 2

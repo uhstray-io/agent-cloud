@@ -50,16 +50,16 @@
       {{ _sa_caps.json['secret/data/' ~ _sa_path]
          | default(_sa_caps.json.capabilities | default([])) }}
     _exists: "{{ _sa_get.status == 200 }}"
-    _write: "{{ 'patch' if _exists | bool else 'create' }}"
+    # The rule is filter_plugins/seed_access.py, tested directly (test_seed_access_rule.py);
+    # the message reports its answer rather than working the rule out a second time.
+    _missing: "{{ _caps | seed_access_missing(_exists | bool) }}"
   ansible.builtin.assert:
     that:
-      # The rule is filter_plugins/seed_access.py, tested directly (test_seed_access_rule.py).
-      - (_caps | seed_access_missing(_exists | bool)) == ''
+      - _missing == ''
     fail_msg: >-
       The AppRole holds {{ _caps | join(', ') or 'no capabilities' }} on
       secret/data/{{ _sa_path }}, which {{ 'exists' if _exists | bool else 'does not exist yet' }};
-      seeding needs read plus {{ _write }}. Fix the policy through
-      apply-openbao-policies.yml, not by hand.
+      seeding it lacks {{ _missing }}. Fix the policy through apply-openbao-policies.yml, not by hand.
     success_msg: >-
       Capabilities on secret/data/{{ _sa_path }} ({{ 'existing' if _exists | bool else 'new' }} path):
       {{ _caps | join(', ') }}
