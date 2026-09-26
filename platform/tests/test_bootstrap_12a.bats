@@ -145,6 +145,16 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "wrapper reads a whole task log with its own state file, never a typed token" {
+  # The token stays in the state file the script loads (docs/MISTAKES.md 4.10); the id is
+  # checked before any state is read.
+  run grep -q "^  output)    shift; task_output" "$REPO_ROOT/scripts/local-dev.sh"
+  [ "$status" -eq 0 ]
+  run "$REPO_ROOT/scripts/local-dev.sh" output not-a-number
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"usage: local-dev.sh output <task-id>"* ]]
+}
+
 @test "genesis registers repository records before applying templates" {
   # setup-templates.yml asserts that every record a template names exists, so a
   # dev-bound template cannot silently bind to the wrong branch. A freshly created

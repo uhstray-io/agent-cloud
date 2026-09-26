@@ -359,6 +359,23 @@ verified evidence, exact scoped publication/bootstrap entry points, their live
 availability limits, and troubleshooting boundaries. Follow it before requesting
 another operator login or mutating shared orchestration configuration.
 
+**Using Semaphore: local vs production.** Pick the instance first. Each has one
+supported entry point and one credential, and mixing them up is a recorded mistake
+(`docs/MISTAKES.md` 4.10):
+
+| | Local-dev Semaphore | Production Semaphore |
+|---|---|---|
+| Launch | `DRY_RUN=1 ./scripts/local-dev.sh run <playbook> ['{json}']`, then the same without `DRY_RUN`; or `make local-deploy-<svc>` | `scripts/semaphore-launch.py --template "<exact name>" [--set k=v] [--dry-run] --url https://<controller> < <token-file>` |
+| Credential | `~/.agent-cloud-local/credentials.env`, loaded by the script; never typed | an operator token file, on stdin only, and only with the operator's authorization for that launch. `site-config/secrets/semaphore/semaphore_api_token.txt` is the production token and local answers it 401 |
+| Code that runs | this checkout's `HEAD` (read-only mount; scheduled local templates too) | the template's repository record: `main`, or `dev` for a `(Dev)` template |
+| Read a task | `./scripts/local-dev.sh output <task-id>` | the launcher waits and prints the status plus the task's `TASK [`, `fatal`, `FAILED`, `msg` and `PLAY RECAP` lines |
+| Transport | the loopback API (`SEMAPHORE_URL` in the state file), chosen by the script | HTTPS only; the launcher refuses anything else ("must be a plain HTTPS origin") |
+
+Dry run first, then the real run. A secret never goes to a command whose program also
+arrives on stdin (`python3 -`, `bash -s`, a heredoc script): the redirect replaces the
+program, and the parse error prints the secret. Put the program in a file (or `-c`
+code with no secret in it) and the secret on stdin.
+
 ### Cloudflare edge as code (OpenTofu)
 
 The Cloudflare zone (WAF rulesets + platform DNS records) is **config-as-code via
