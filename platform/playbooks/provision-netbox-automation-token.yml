@@ -57,10 +57,20 @@
         view_object_types: [virtualization.cluster]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
-    _profile: "{{ _profiles[netbox_token_profile | default('device-writer')] }}"
+    # Blank (a survey left empty) means the original profile, as an absent variable does.
+    _profile_name: "{{ netbox_token_profile | default('device-writer', true) | trim }}"
+    _profile: "{{ _profiles[_profile_name] }}"
     _user: "{{ _profile.user }}"
 
   tasks:
+    - name: "Refuse an unknown token profile"
+      ansible.builtin.assert:
+        that: _profile_name in _profiles
+        fail_msg: >-
+          netbox_token_profile {{ _profile_name | to_json }} is not one of
+          {{ _profiles | list | join(', ') }}.
+        quiet: true
+
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:

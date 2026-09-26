@@ -74,7 +74,7 @@
         that: _nb_token | length > 0
         fail_msg: >-
           secret/services/netbox has no vm_recorder_api_token. Mint it once with Provision
-          NetBox Automation Token, -e netbox_token_profile=vm-recorder.
+          NetBox Automation Token, survey field Token profile = vm-recorder.
       no_log: true
 
     - name: "Build the NetBox API headers"
