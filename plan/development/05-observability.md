@@ -515,8 +515,8 @@
 > **Production alert and SSO gate, 2026-09-26:** Scoped task 1367 seeded the
 > existing Discord bot token into OpenBao; task 1368 proved channel access in
 > check mode, and task 1371 stored the managed alert webhook in OpenBao.
-> Production alerts remain disabled until a declared production fault drill
-> proves delivery; the existing canary and restore plays are local-only.
+> Production alerts remained disabled until production canary task 1395
+> proved delivery and restored the paused baseline.
 > Authentik's existing core containers and persistent volumes passed recovery
 > check task 1374 under reviewed PR #273. Task 1375 started the existing
 > database, cache, and server; their health and unchanged identities passed,
@@ -573,8 +573,8 @@
 > persistent alerts in production inventory; the declared Semaphore API
 > inventory sync read back the merged file, check task 1397 passed, and real
 > deploy task 1398 reported healthy services with the OpenBao-backed webhook.
-> Task 1398 did not read Grafana's live rule and contact point back, so this
-> change adds that verification to every real alert-enabled deploy. The
+> Task 1398 did not read Grafana's live rule and contact point back, so PR
+> #278 added that verification to every real alert-enabled deploy. The
 > local wipe/redeploy validation remains deferred to preserve local data;
 > production Authentik sign-in and DGX/agentgateway telemetry remain separate
 > acceptance gates.
@@ -583,11 +583,12 @@
 > the live Grafana readback into `dev` at
 > `55cb87cd1924759d4aa3f4c233423f9b890f57fc` after a final-head Claude
 > review and green CI. Semaphore check task 1402 and real deploy task 1403
-> both used that exact clean revision. The real run confirmed the o11y alert
-> rules were present and unpaused, exactly one Discord ops contact point was
-> provisioned, and Grafana, Prometheus, Alloy, and Loki answered health
-> checks. The contact-point response remained hidden because it contains
-> webhook settings. This is a live provisioning and service-health receipt;
+> both used that exact clean revision. The real run confirmed the service-down
+> rule was present and every provisioned o11y rule was unpaused. Exactly one
+> Discord ops contact point was provisioned, and Grafana, Prometheus, Alloy,
+> and Loki answered health checks. The contact-point response remained hidden
+> because it contains webhook settings. This is a live provisioning and
+> service-health receipt;
 > delivery was independently proven by canary task 1395. Authentik sign-in,
 > DGX/agentgateway telemetry, and the deferred local clean redeploy retain
 > their separate acceptance gates.
