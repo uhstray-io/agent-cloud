@@ -15,7 +15,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/resize-vm.yml"
-TASKS = ("Resolve current values + the disk device to grow",
+TASKS = ("Split the guest-agent property string",
+         "Resolve current values + the disk device to grow",
          "Decide whether the guest needs a restart to pick up its config",
          "Compute the config changes actually needed")
 
@@ -48,7 +49,7 @@ def decide(tmp_path, *, agent=None, pending=(), running=True, want_agent=True):
 
 
 def test_a_running_vm_without_the_agent_gets_it_and_needs_a_restart(tmp_path):
-    assert decide(tmp_path) == {"changes": {"agent": "1"}, "restart": True}
+    assert decide(tmp_path) == {"changes": {"agent": "enabled=1"}, "restart": True}
 
 
 def test_an_agent_change_still_pending_from_an_earlier_run_still_needs_the_restart(tmp_path):
@@ -66,7 +67,7 @@ def test_the_per_host_opt_out_writes_nothing(tmp_path):
 
 
 def test_a_stopped_vm_gets_the_option_without_a_restart(tmp_path):
-    assert decide(tmp_path, running=False) == {"changes": {"agent": "1"}, "restart": False}
+    assert decide(tmp_path, running=False) == {"changes": {"agent": "enabled=1"}, "restart": False}
 
 
 def test_the_opt_out_also_stops_a_restart_for_a_pending_agent_change(tmp_path):
@@ -74,3 +75,14 @@ def test_the_opt_out_also_stops_a_restart_for_a_pending_agent_change(tmp_path):
     result = decide(tmp_path, agent="1", pending=[{"key": "agent", "value": "0", "pending": "1"}],
                     want_agent=False)
     assert result == {"changes": {}, "restart": False}
+
+
+def test_enabled_is_found_wherever_it_sits_in_the_property_string(tmp_path):
+    # Codex review of #265: `enabled` need not come first.
+    assert decide(tmp_path, agent="fstrim_cloned_disks=1,enabled=1") == {"changes": {}, "restart": False}
+
+
+def test_enabling_keeps_the_other_agent_properties(tmp_path):
+    result = decide(tmp_path, agent="enabled=0,fstrim_cloned_disks=1,type=virtio")
+    assert result == {"changes": {"agent": "enabled=1,fstrim_cloned_disks=1,type=virtio"}, "restart": True}
+    assert decide(tmp_path, agent="0")["changes"] == {"agent": "enabled=1"}

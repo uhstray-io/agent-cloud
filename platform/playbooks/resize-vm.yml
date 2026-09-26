@@ -193,13 +193,19 @@
       register: _pending
       check_mode: false
 
+    # `agent` is a property string: "1", "0", or e.g. "fstrim_cloned_disks=1,enabled=1".
+    # `enabled` is its default key (a bare 1/0) and may sit anywhere, so it is parsed by key
+    # (Codex review of #265). Its own task: a set_fact cannot read a key it sets itself.
+    - name: "Split the guest-agent property string"
+      ansible.builtin.set_fact:
+        _agent_items: "{{ (_cfg.json.data.agent | default('') | string).split(',') | select | list }}"
+
     - name: "Resolve current values + the disk device to grow"
       ansible.builtin.set_fact:
         _have_cores: "{{ _cfg.json.data.cores | default(0) | int }}"
         _have_memory: "{{ _cfg.json.data.memory | default(0) | int }}"
         _is_running: "{{ (_state.json.data.status | default('unknown')) == 'running' }}"
-        # `agent` is "1", "0", or a property string such as "enabled=1,fstrim_cloned_disks=1".
-        _have_agent: "{{ (_cfg.json.data.agent | default('0') | string) is match('^(1|enabled=1)') }}"
+        _have_agent: "{{ _agent_items | select('match', '^(enabled=)?1$') | list | length > 0 }}"
         _agent_pending: >-
           {{ (_pending.json.data | default([]) | selectattr('key', 'equalto', 'agent')
               | selectattr('pending', 'defined') | list | length) > 0 }}
@@ -331,7 +337,8 @@
              | combine(
                {} if (_want_memory | string | length == 0) or ((_want_memory | int) == (_have_memory | int))
                else {'memory': _want_memory | int})
-             | combine({} if not (_want_agent | bool) or (_have_agent | bool) else {'agent': '1'}) }}
+             | combine({} if not (_want_agent | bool) or (_have_agent | bool) else
+                 {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')}) }}
 
     - name: "Apply cores/memory/agent to the VM config"
       ansible.builtin.uri:
