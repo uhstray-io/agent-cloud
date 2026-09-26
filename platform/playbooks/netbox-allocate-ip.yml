@@ -44,13 +44,22 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
+    _netbox_url: "{{ hostvars[groups['netbox_svc'][0]].service_url | default('') }}"
     _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
     _prefix: "{{ prefix | default('') }}"
     _count: "{{ (count | default(2)) | int }}"
     _reserve: "{{ reserve | default(false) | bool }}"
     _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
   tasks:
+    - name: "Require the inventory-owned NetBox endpoint"
+      ansible.builtin.assert:
+        that:
+          - groups.get('netbox_svc', []) | length == 1
+          - hostvars[groups['netbox_svc'][0]].service_url | default('') is match('^https://')
+          - netbox_url is not defined
+          - service_url is not defined
+        fail_msg: "Declare one private NetBox host with an HTTPS service_url; launch-time endpoint overrides are refused."
+
     - name: "Validate inputs"
       ansible.builtin.assert:
         that:
@@ -66,7 +75,7 @@
           - (not _reserve) or (_assignments | length > 0)
           - _assignments | rejectattr('address', 'defined') | list | length == 0
         fail_msg: >-
-          Need the OpenBao address, -e netbox_url=<url>, -e prefix=<cidr> (with a mask),
+          Need the OpenBao address, private NetBox service_url, -e prefix=<cidr> (with a mask),
           0 < count <= 32, and — when -e reserve=true — a non-empty `assignments` list
           in which every entry has an `address`.
         success_msg: "Querying {{ _prefix }} for {{ _count }} free address(es); mode={{ 'reserve' if _reserve else 'report' }}."
