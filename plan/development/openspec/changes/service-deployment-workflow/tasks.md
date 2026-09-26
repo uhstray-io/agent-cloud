@@ -229,8 +229,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         - custom fields: 1335, 1336, re-checked by 1337 (all three unchanged);
         - `workflow-collector` token minted into `collector_api_token`: 1338, 1339;
         - collector: dry run 1340, real run 1341 (ok=30, changed=1, failed=0).
-        **The NetBox write is proven live.** It wrote seven services' VM records (caddy, n8n,
-        nemoclaw, netbox, nocodb, openbao, semaphore). Seven services have no VM record;
+        **The NetBox write is proven live.** It PATCHed the workflow custom fields on seven
+        existing VM records (caddy, n8n, nemoclaw, netbox, nocodb, openbao, semaphore); it
+        creates and replaces no record. Seven services have no VM record;
         none was unreachable or ambiguous. It reported four real failures from history:
         agentgateway and github-runner provision-vm, authentik oidc-config, postiz
         secrets-approle. OPEN:
