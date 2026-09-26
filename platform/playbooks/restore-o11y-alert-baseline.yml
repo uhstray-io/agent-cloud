@@ -1,5 +1,5 @@
 ---
-# Idempotent recovery when a canary task is interrupted before its always path.
+# Idempotent recovery when a local or production canary is interrupted.
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -39,7 +39,7 @@
         that: _controller_changes.stdout | length == 0
         fail_msg: "Candidate checkout has uncommitted files; no alert baseline was changed."
 
-- name: Restore local paused o11y alert provisioning
+- name: Restore paused o11y alert provisioning
   hosts: o11y_svc
   gather_facts: false
   become: false
@@ -47,17 +47,16 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _branch: dev
   tasks:
-    - name: Require a local real run before restoration
+    - name: Require a real run before restoration
       ansible.builtin.assert:
         that:
-          - local_mode | default(false) | bool
           - not ansible_check_mode
-        fail_msg: "The alert-baseline restore is local-only and requires a real Semaphore run."
+        fail_msg: "The alert-baseline restore requires a real Semaphore run."
 
-    - name: Place the reviewed checkout for local rendering
+    - name: Place the reviewed checkout for local baseline rendering
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      when: local_mode | default(false) | bool
 
     - name: Restore and verify paused rules with no o11y contact point
       ansible.builtin.include_tasks: tasks/o11y-restore-alert-baseline.yml

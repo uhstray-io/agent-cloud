@@ -1180,7 +1180,8 @@ templates:
         description: "Exact Dev revision required before temporary alert activation"
         type: string
         required: true
-    # Local-only. Restores paused provisioning in an always block. If the
+    # Local uses a disposable container; production uses a generated static
+    # scrape. Both restore paused provisioning in an always block. If the
     # controller is interrupted, run Restore o11y Alert Baseline (Dev).
 
   - name: Restore o11y Alert Baseline (Dev)

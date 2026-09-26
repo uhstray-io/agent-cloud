@@ -5,9 +5,18 @@
     _resolved: {}
     _shared: {}
   no_log: true
+  when: not (o11y_canary_preserve_env | default(false) | bool)
 
 - name: "Manage secrets and template env file"
   ansible.builtin.include_tasks: manage-secrets.yml
+  when: not (o11y_canary_preserve_env | default(false) | bool)
+
+- name: Reuse the OpenBao-backed canary webhook without re-rendering the environment
+  ansible.builtin.set_fact:
+    _resolved:
+      alert_discord_webhook_url: "{{ _o11y_secret.json.data.data.alert_discord_webhook_url }}"
+  no_log: true
+  when: o11y_canary_preserve_env | default(false) | bool
 
 - name: "Refuse an alert webhook outside Discord HTTPS"
   ansible.builtin.fail:
@@ -18,6 +27,15 @@
       (_resolved.alert_discord_webhook_url | urlsplit('scheme') != 'https') or
       (_resolved.alert_discord_webhook_url | urlsplit('hostname') not in ['discord.com', 'discordapp.com']) or
       (_resolved.alert_discord_webhook_url | urlsplit('path') is not match('^/api(/v[0-9]+)?/webhooks/'))
+
+- name: Add only the canary webhook to the existing runtime environment
+  ansible.builtin.lineinfile:
+    path: "{{ _deploy_dir }}/.env"
+    regexp: '^O11Y_ALERT_DISCORD_WEBHOOK_URL='
+    line: "O11Y_ALERT_DISCORD_WEBHOOK_URL={{ _resolved.alert_discord_webhook_url }}"
+    mode: "0600"
+  no_log: true
+  when: o11y_canary_preserve_env | default(false) | bool
 
 - name: "Create Grafana alert provisioning directory"
   ansible.builtin.file:

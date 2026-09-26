@@ -87,6 +87,18 @@
         fail_msg: "Production o11y needs its declared DNS zone and one Caddy origin IP; local test URLs are refused."
       when: not (local_mode | default(false) | bool)
 
+    - name: "Inspect an unfinished production alert canary"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
+      register: _unfinished_prod_canary
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Refuse a normal deploy while the production canary needs restoration"
+      ansible.builtin.assert:
+        that: not _unfinished_prod_canary.stat.exists
+        fail_msg: "Production canary scrape remains; run Restore o11y Alert Baseline (Dev) before deploying."
+      when: not (local_mode | default(false) | bool)
+
     - name: "Require complete DGX scrape settings when nodes are declared"
       ansible.builtin.assert:
         that:

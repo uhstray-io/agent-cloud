@@ -34,7 +34,7 @@ The platform SHALL provision a generic service view and baseline service-down an
 - **THEN** the matching alert fires and reaches the configured notification destination
 
 #### Scenario: Canary restores paused alerts
-- **WHEN** the local delivery drill completes or fails after temporarily activating alerting
+- **WHEN** the local or production delivery drill completes or fails after temporarily activating alerting
 - **THEN** the provisioned rules return to paused state and the temporary contact point is removed before the drill reports completion
 - **AND** persistent notification enablement remains a separate reviewed rollout
 
