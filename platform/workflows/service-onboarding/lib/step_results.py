@@ -66,6 +66,10 @@ TAIL = 20
 # (GetAllTasks, params.Count = 1000; db/sql/task.go orders "id desc"), in v2.17.0, v2.18.12
 # (the local-dev image) and v2.19.11 alike, read from source. /tasks/last stops at 200.
 HISTORY_WINDOW = 1000
+# What a picked row carries onward (the output read and aggregate): nothing else of the
+# history's rows leaves pick, so the visible task output stays small. Projected here, in
+# Python, not per row in Jinja, which measured slower than piping the rows whole (PR 274).
+PICKED_KEYS = ("id", "status", "template_id", "end", "params")
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 
 
@@ -179,7 +183,8 @@ def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
                 newest[key] = task
     kept = {k: t for k, t in newest.items()
             if not k[2] or t["id"] > newest.get((k[0], k[1], False), {"id": -1})["id"]}
-    return [dict(t, service=key[1]) for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
+    return [{**{k: t[k] for k in PICKED_KEYS if k in t}, "service": key[1]}
+            for key, t in sorted(kept.items(), key=lambda kv: kv[1]["id"])]
 
 
 def aggregate(registry: list[dict], templates: list[dict], tasks: list[dict],

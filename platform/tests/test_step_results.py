@@ -188,6 +188,19 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
     assert len(agg["loki_streams"]) == 1
 
 
+def test_pick_passes_on_only_the_fields_the_later_steps_read():
+    # PR 274 Codex review: pick returned whole history rows into the visible task output.
+    row = {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
+           "environment": '{"target_service": "tududi_svc"}', "tpl_playbook": "p.yml", "message": "long",
+           "user_name": "someone", "tpl_alias": "Some Template"}
+    (picked,) = step_results.pick([[row]], GROUPS)
+    assert picked == {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
+                      "service": "tududi"}
+    # and the aggregate still reads everything it needs from that row
+    agg = _agg(dict(picked, output=_run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})))
+    assert agg["status_by_service"]["tududi"] == {"secrets-approle": "pass"}
+
+
 def test_pick_reports_a_template_whose_history_filled_the_window():
     # PR 195 Codex review: runs older than the read window are invisible, so say which
     # templates hit it instead of letting their services look history-less.
