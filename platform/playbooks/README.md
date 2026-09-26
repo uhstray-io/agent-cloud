@@ -192,8 +192,9 @@ For reserve mode, private `netbox_svc` inventory declares `pfsense_dhcp_api_url`
 and `pfsense_dhcp_interface`, selecting the router and interface that serve the
 requested prefix. Certificate validation defaults to on; a site-owned router
 may declare boolean `pfsense_dhcp_validate_certs: false` on its private NetBox
-host while its certificate is being renewed. The playbook refuses a launch-time
-override or a non-boolean value. It reads that interface's DHCP configuration
+host while its certificate is being renewed. The playbook refuses launch-time
+overrides of the router URL, interface, or TLS setting, and refuses a non-boolean
+TLS value. It reads that interface's DHCP configuration
 through the pfSense REST API on every reservation run; its API key comes from OpenBao's
 `secret/services/discovery/pfsense:api_key`, shared with the discovery worker.
 `reconcile-pfsense-api-key.yml` seeds that field from the fixed private
