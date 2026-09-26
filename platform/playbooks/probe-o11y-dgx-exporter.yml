@@ -86,17 +86,24 @@
       failed_when: false
       when: not ansible_check_mode
 
+    - name: Refuse a probe result without an HTTP status
+      ansible.builtin.assert:
+        that: "'status' in _probe_http"
+        fail_msg: "The receiver did not execute a valid HTTP probe."
+      when: not ansible_check_mode
+
     - name: Report the route and HTTP status without response content
       ansible.builtin.debug:
         msg: >-
           {{ probe_node_name }} route={{ _probe_route.stdout | trim }};
-          metrics HTTP status={{ _probe_http.status | default(-1) }}.
+          metrics HTTP status={{ _probe_http.status }};
+          detail={{ _probe_http.msg | default('none') }}.
       when: not ansible_check_mode
 
     - name: Require the observed outcome to match the declared probe phase
       ansible.builtin.assert:
         that: >-
-          (_probe_http.status | default(-1) | int) ==
+          (_probe_http.status | int) ==
           (200 if probe_expect_reachable | default(false) | bool else -1)
         fail_msg: "DGX exporter reachability differs from the declared pre/post-firewall expectation."
       when: not ansible_check_mode

@@ -579,6 +579,7 @@ node_play = probe[2]
 assert node_play['hosts'] == 'o11y_svc'
 env = Environment(undefined=StrictUndefined)
 env.tests['search'] = lambda value, pattern: re.search(pattern, value) is not None
+env.filters['bool'] = lambda value: value is True or str(value).lower() in ('true', 'yes', '1')
 selector = env.compile_expression(node_play['vars']['_probe_nodes'].removeprefix('{{').removesuffix('}}').strip())
 nodes = [{'name': 'spark-1', 'address': '192.0.2.1'}, {'name': 'spark-2', 'address': '192.0.2.2'}]
 assert selector(dgx_spark_nodes=nodes, probe_node_name='spark-2') == [nodes[1]]
@@ -595,6 +596,12 @@ assert request['ansible.builtin.uri']['use_proxy'] is False
 assert request['ansible.builtin.uri']['timeout'] == 5
 assert request['when'] == 'not ansible_check_mode'
 assert request['failed_when'] is False
+status_guard = env.compile_expression(steps['Refuse a probe result without an HTTP status']['ansible.builtin.assert']['that'])
+outcome = env.compile_expression(steps['Require the observed outcome to match the declared probe phase']['ansible.builtin.assert']['that'])
+assert status_guard(_probe_http={'status': -1}) is True
+assert status_guard(_probe_http={'msg': 'module failed'}) is False
+for status, expected, valid in [(200, 'true', True), (-1, 'false', True), (200, 'false', False), (-1, 'true', False)]:
+    assert bool(outcome(_probe_http={'status': status}, probe_expect_reachable=expected)) is valid
 template = next(item for item in yaml.safe_load(open(sys.argv[3], encoding='utf-8'))['templates'] if item['name'] == 'Probe o11y DGX Exporter (Dev)')
 assert template['repository'] == 'agent-cloud dev'
 assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_node_name', 'probe_expect_reachable']
