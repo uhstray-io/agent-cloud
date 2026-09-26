@@ -367,7 +367,7 @@ supported entry point and one credential, and mixing them up is a recorded mista
 |---|---|---|
 | Launch | `DRY_RUN=1 ./scripts/local-dev.sh run <playbook> ['{json}']`, then the same without `DRY_RUN`; or `make local-deploy-<svc>` | `scripts/semaphore-launch.py --template "<exact name>" [--set k=v] [--dry-run] --url https://<controller> < <token-file>` |
 | Credential | `~/.agent-cloud-local/credentials.env`, loaded by the script; never typed | an operator token file, on stdin only, and only with the operator's authorization for that launch. `site-config/secrets/semaphore/semaphore_api_token.txt` is the production token and local answers it 401 |
-| Code that runs | this checkout's working tree, uncommitted edits included (read-only mount, run in place; scheduled local templates too). A playbook with no `(Local)` template falls back to a repository-bound one, with a `WARN` | the template's repository record: `main`, or `dev` for a `(Dev)` template |
+| Code that runs | a `(Local)` template runs this checkout's working tree, uncommitted edits included (read-only mount, run in place), and so do its schedules. Shared and `(Dev)` templates in the local catalog, and their schedules, run their GitHub record (`main` / `dev`). A playbook with no `(Local)` template falls back to one of those, with a `WARN` | the template's repository record: `main`, or `dev` for a `(Dev)` template |
 | Read a task | `./scripts/local-dev.sh output <task-id>` | the launcher waits and prints the status plus the task's `TASK [`, `fatal`, `FAILED`, `msg` and `PLAY RECAP` lines |
 | Transport | the loopback API (`SEMAPHORE_URL` in the state file), chosen by the script | HTTPS only; the launcher refuses anything else ("must be a plain HTTPS origin") |
 

@@ -109,12 +109,15 @@ Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
   without `DRY_RUN` for the real run.
 - **Which code runs.** `(Local)` templates are bound to the `agent-cloud worktree`
   repository record: a read-only mount of THIS checkout that Semaphore runs in
-  place, with no clone (`bootstrap-local-dev.yml`). Every local task, the scheduled
-  ones included, runs this checkout's files as they are, uncommitted edits too. It
-  does not run a branch you are editing in another worktree. One exception: when a
-  playbook has no worktree-bound template, `run` falls back to a repository-bound
-  one and prints a `WARN`; that run executes the record's branch from GitHub, not
-  your working tree.
+  place, with no clone (`bootstrap-local-dev.yml`). A `(Local)` task, a scheduled
+  one included, runs this checkout's files as they are, uncommitted edits too. It
+  does not run a branch you are editing in another worktree. The local catalog also
+  holds the shared templates (no suffix) and their `(Dev)` copies. Those stay bound
+  to their GitHub records, `main` and `dev`, and so do their schedules: a scheduled
+  shared template (for example `Collect Service Conformance`, beside its `(Local)`
+  twin) validates `main`, not your working tree. `run` picks the worktree-bound
+  template. When a playbook has none, it falls back to a repository-bound one and
+  prints a `WARN`, and that run executes the record's branch, not your working tree.
 - **Reading a task.** `run` prints the last 40 lines. `./scripts/local-dev.sh output
   <task-id>` prints the whole log with the same state file.
 
