@@ -2,27 +2,27 @@
 # assert-bao-addr-declared.yml — refuse, before the AppRole login, an OpenBao address that is
 # not the one the run's inventory declares under top-level all.vars.
 #
-# Why. A seed run sends its AppRole login, then the seeded value, to `_bao_url`. That comes
-# from the inventory's all.vars.openbao_addr (declared there for every host, localhost
-# included), and an extra var silently overrides it: an isolated environment edited after it
-# was bound, or a launch-time -e. The binding-time rule refuses an environment that carries
-# one, but the environment stays editable; the run is the one boundary every path passes
-# (plan 01-secrets-credentials, "the endpoint is not re-checked at run time", closed
-# 2026-09-25).
+# What it catches: DRIFT. A plain address set where it should not be (an isolated environment
+# edited after binding, a stray -e) makes the login address differ from the inventory's
+# declaration, and the run stops before the AppRole login. The binding-time rule refuses an
+# environment carrying one, but the environment stays editable; this is the run-time net.
 #
 # How. The declaration is read from the inventory FILE the run was given:
 # ansible_inventory_sources is a magic variable an extra var cannot replace (checked on
 # ansible-core 2.16.18, 2.20.8, 2.21.0), and Semaphore v2.17.31 passes a static-yaml inventory
 # as -i <project tmp>/inventory_<id>.yml. It is read INLINE in each expression, never through
-# a named intermediate: extra vars outrank every variable, set_fact included, so a named
-# "declared" value could itself be supplied (Codex review of PR #256).
+# a named intermediate, so a supplied variable of the same name cannot stand in for it.
 #
-# Limit, stated plainly. Whoever can inject arbitrary extra vars can rename their way around
-# any run-time check that reads variables; this compares the one value the login uses and
-# refuses the two downstream URL variables being predefined, which closes address drift and
-# the obvious overrides. The boundary against a party who can edit the environment or launch
-# with arbitrary extra vars is Semaphore's edit and launch permissions plus the binding-time
-# rule, not this task.
+# What it does NOT stop: a deliberate override. An extra var may be a template, and a
+# template is re-rendered in every task, so a value can resolve to the declared address inside
+# this task and to another address in the login task (reproduced 2026-09-25 on 2.16.18 and
+# 2.20.8); the same holds for the predefined-URL checks below. And Semaphore v2.17.31 merges
+# EVERY key of a task's `environment` JSON into the extra vars, with no survey filter
+# (services/tasks/TaskRunner.go populateTaskEnvironment; db/Task.go ValidateNewTask checks
+# only branch and params). So whoever may launch a template controls its extra vars, and with
+# them any OpenBao login in any playbook. That boundary is Semaphore's launch and edit
+# permissions (plan 01-secrets-credentials, "Open gap: launch permission is extra-var control"), not a
+# run-time check.
 #
 # The caller's login URL must be `_bao_url` (both seed playbooks).
 
@@ -49,7 +49,8 @@
          | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
          | map(attribute='vars', default={}) | select('mapping')
          | map(attribute='openbao_addr', default='') | select | unique | first)
-      # Set by the seed playbook at each include, so defined here only if injected.
+      # Set by the seed playbook at each include, so defined here only if supplied as a plain
+      # extra var (drift); a template can evade this, see the header.
       - _bm_url is not defined
       - _sa_url is not defined
     fail_msg: >-
