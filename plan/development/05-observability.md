@@ -425,8 +425,11 @@
 > `56188830e57d29d34977a9eaca0df797cff16852` and refused before any
 > container start: all four existing containers use Podman's `unless-stopped`
 > restart policy, while the first recovery guard accepted only `always`.
-> Accept the existing safe policy and verify it is unchanged after start;
-> rerun the Dev-bound preflight before applying recovery.
+> Accept that existing policy only for this audit bridge and verify it is
+> unchanged after start. It differs from the declared `restart: always`:
+> recovered containers may stay down after a host reboot. Run the retirement
+> audit promptly, then use the normal reviewed deploy to restore the declared
+> policy. Rerun the Dev-bound preflight before applying recovery.
 > Read-only production Dev-bound Semaphore task 1297 checked out reviewed `dev` merge
 > `c31773d8ad42b055fadbbb63befe9d558043a6de` on 2026-09-25. OpenTofu
 > refreshed the existing `o11y` DNS record without proposing a change to it,

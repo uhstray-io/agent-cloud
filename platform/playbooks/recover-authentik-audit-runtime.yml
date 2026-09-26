@@ -79,6 +79,7 @@
           - item.rc == 0
           - item.stdout.split() | length == 4
           - item.stdout.split()[2] in ['created', 'exited', 'running']
+          # Existing prod is unless-stopped; accept it only for this no-recreate audit bridge.
           - item.stdout.split()[3] in ['always', 'unless-stopped']
           - item.item != 'authentik-worker' or item.stdout.split()[2] in ['created', 'exited']
         fail_msg: "{{ item.item }} is missing, unexpected, or the blueprint worker is running; no recovery was applied."
