@@ -79,7 +79,8 @@
           - item.rc == 0
           - item.stdout.split() | length == 4
           - item.stdout.split()[2] in ['created', 'exited', 'running']
-          - item.stdout.split()[3] == 'always'
+          # Existing prod is unless-stopped; accept it only for this no-recreate audit bridge.
+          - item.stdout.split()[3] in ['always', 'unless-stopped']
           - item.item != 'authentik-worker' or item.stdout.split()[2] in ['created', 'exited']
         fail_msg: "{{ item.item }} is missing, unexpected, or the blueprint worker is running; no recovery was applied."
       loop: "{{ _before.results }}"
@@ -197,6 +198,7 @@
       ansible.builtin.assert:
         that:
           - item.stdout.split()[:2] == _before.results[ansible_loop.index0].stdout.split()[:2]
+          - item.stdout.split()[3] == _before.results[ansible_loop.index0].stdout.split()[3]
           - item.item != 'authentik-worker' or item.stdout.split()[2] == _before.results[ansible_loop.index0].stdout.split()[2]
           - item.item == 'authentik-worker' or item.stdout.split()[2] == 'running'
         fail_msg: "{{ item.item }} changed identity or reached an unexpected state."
