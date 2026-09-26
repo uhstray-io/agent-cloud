@@ -120,13 +120,31 @@ assert local['GF_SERVER_ROOT_URL'] == 'https://grafana.agent-cloud.test:8443/'
 assert local['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.agent-cloud.test:8443/application/o/authorize/'
 assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000/application/o/token/'
 assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
+assert 'O11Y_AUTHENTIK_EDGE_IP' not in local
 
-prod = values(local_mode=False, o11y_zone='uhstray.io')
+prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10')
 assert prod['GF_SERVER_ROOT_URL'] == 'https://o11y.uhstray.io/'
 assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
 assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
 assert prod['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'https://auth.uhstray.io/application/o/userinfo/'
+assert prod['O11Y_ZONE'] == 'uhstray.io'
+assert prod['O11Y_AUTHENTIK_EDGE_IP'] == '192.0.2.10'
 assert 'GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE' not in prod
+PY
+}
+
+@test "o11y: production Grafana resolves Authentik through declared Caddy IP" {
+  python3 - "$DEPLOY_DIR/compose.prod.yml" "$DEPLOY_DIR/deploy.sh" <<'PY'
+import sys
+import yaml
+
+overlay = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert overlay['services']['grafana']['extra_hosts'] == [
+    'auth.${O11Y_ZONE:?}:${O11Y_AUTHENTIK_EDGE_IP:?}'
+]
+deploy = open(sys.argv[2], encoding='utf-8').read()
+assert 'if [ "${LOCAL_MODE:-}" != "true" ]; then' in deploy
+assert 'COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"' in deploy
 PY
 }
 
@@ -143,7 +161,7 @@ YAML
   run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
     "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
   [ "$status" -ne 0 ]
-  assert_contains "$output" "Production o11y needs its declared DNS zone"
+  assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
   refute_contains "$output" "TASK [Place the monorepo"
 }
 

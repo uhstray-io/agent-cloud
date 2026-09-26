@@ -66,6 +66,8 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _auth_edge_hosts: "{{ groups['caddy_svc'] | default([]) }}"
+    _auth_edge_ip: "{{ hostvars[_auth_edge_hosts[0]].ansible_host | default('') if _auth_edge_hosts | length == 1 else '' }}"
     # OIDC client secret is owned by authentik (the IdP); read it here so
     # Grafana's generic_oauth secret matches the provider blueprint.
     _shared_reads:
@@ -74,13 +76,15 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
-    - name: "Require the production DNS zone before rendering Grafana OIDC"
+    - name: "Require the production DNS zone and Caddy origin before rendering Grafana OIDC"
       ansible.builtin.assert:
         that:
           - o11y_zone is defined
           - o11y_zone | default('') is match('^[a-z0-9.-]+$')
           - o11y_zone != 'agent-cloud.test'
-        fail_msg: "Production o11y needs its declared DNS zone; local test URLs are refused."
+          - _auth_edge_hosts | length == 1
+          - _auth_edge_ip is match('^[0-9]+(\\.[0-9]+){3}$')
+        fail_msg: "Production o11y needs its declared DNS zone and one Caddy origin IP; local test URLs are refused."
       when: not (local_mode | default(false) | bool)
 
     - name: "Require complete DGX scrape settings when nodes are declared"
