@@ -70,6 +70,27 @@ templates:
         required: false
         default_value: "true"
 
+  - name: Probe o11y DGX Exporter (Dev)
+    playbook: platform/playbooks/probe-o11y-dgx-exporter.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before probing"
+        type: string
+        required: true
+      - name: probe_node_name
+        title: "Declared DGX node"
+        description: "Name of one node declared in the private receiver inventory"
+        type: string
+        required: true
+      - name: probe_expect_reachable
+        title: "Expect HTTP 200"
+        description: "false before the source-scoped firewall rule; true after it"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:

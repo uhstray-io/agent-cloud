@@ -7,8 +7,20 @@ private inventory may define `dgx_spark_nodes` (name and address per node),
 `dgx_spark_head_address`, `dgx_spark_head_name`,
 `dgx_spark_node_exporter_port`, and `dgx_spark_api_port`. Set
 `dgx_spark_gpu_exporter_enabled` and `dgx_spark_gpu_exporter_port` only after the
-GPU exporter is validated on the nodes. With no nodes declared, the deployment
-removes the DGX scrape file and the local profile keeps only self-scrape.
+GPU exporter is validated on the nodes. `dgx_spark_scrape_enabled` defaults to
+false: declaring nodes alone does not start scraping or page the ops channel.
+The deployment removes the DGX scrape file while scraping is disabled.
+
+Before enabling scraping, publish `Probe o11y DGX Exporter (Dev)` through the
+scoped Semaphore template workflow. With the exact reviewed Dev SHA, select one
+inventory-declared `probe_node_name` per run. The play reports the receiver's
+route/source and makes one direct five-second `/metrics` request. Leave
+`probe_expect_reachable=false` while the DGX owner observes the blocked packet
+and its on-wire source. After the reviewed source-scoped firewall rule is
+applied, repeat with `probe_expect_reachable=true` and require HTTP 200 on both
+nodes. Then enable `dgx_spark_scrape_enabled` in private inventory and verify
+the named Prometheus series. Keep GPU scraping and Loki shipping separately
+gated.
 
 The playbook renders `config/scrape.d/dgx-spark.yml` from the private inventory
 and reloads Prometheus only if that file changes. The file is gitignored; keep

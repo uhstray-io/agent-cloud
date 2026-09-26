@@ -1,0 +1,109 @@
+---
+# Read-only receiver-origin probe. Inventory supplies the destination; the
+# survey selects one declared node and the expected result, never an address.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Require the reviewed Dev checkout before probing
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require an exact reviewed revision
+      ansible.builtin.assert:
+        that: expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Pass the exact reviewed Dev commit SHA."
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse a different controller revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no probe was sent."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse an altered controller checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Semaphore checkout has local changes; no probe was sent."
+
+- name: Probe one inventory-declared DGX node from the o11y receiver
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _probe_nodes: "{{ dgx_spark_nodes | default([]) | selectattr('name', 'equalto', probe_node_name | default('')) | list }}"
+    _probe_node: "{{ _probe_nodes[0] }}"
+  tasks:
+    - name: Require one declared node and a bounded node-exporter port
+      ansible.builtin.assert:
+        that:
+          - _probe_nodes | length == 1
+          - dgx_spark_node_exporter_port | default(0) | int > 0
+          - dgx_spark_node_exporter_port | default(0) | int < 65536
+          - probe_expect_reachable | default('false') | string | lower in ['true', 'false']
+        fail_msg: "Select exactly one inventory-declared DGX node and a valid exporter port."
+
+    - name: Read the receiver route and chosen source
+      ansible.builtin.command:
+        argv: [ip, -4, route, get, "{{ _probe_node.address }}"]
+      register: _probe_route
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Require a route with an explicit source address
+      ansible.builtin.assert:
+        that: _probe_route.stdout is search('(^| )src [0-9]+')
+        fail_msg: "The receiver has no proven source route to the declared DGX node."
+      when: not ansible_check_mode
+
+    - name: Send one direct bounded metrics request from the receiver
+      ansible.builtin.uri:
+        url: "http://{{ _probe_node.address }}:{{ dgx_spark_node_exporter_port }}/metrics"
+        method: GET
+        use_proxy: false
+        return_content: false
+        status_code: 200
+        timeout: 5
+      register: _probe_http
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Refuse a probe result without an HTTP status
+      ansible.builtin.assert:
+        that: "'status' in _probe_http"
+        fail_msg: "The receiver did not execute a valid HTTP probe."
+      when: not ansible_check_mode
+
+    - name: Report the route and HTTP status without response content
+      ansible.builtin.debug:
+        msg: >-
+          {{ probe_node_name }} route={{ _probe_route.stdout | trim }};
+          metrics HTTP status={{ _probe_http.status }};
+          detail={{ _probe_http.msg | default('none') }}.
+      when: not ansible_check_mode
+
+    - name: Require the observed outcome to match the declared probe phase
+      ansible.builtin.assert:
+        that: >-
+          (_probe_http.status | int) ==
+          (200 if probe_expect_reachable | default(false) | bool else -1)
+        fail_msg: "DGX exporter reachability differs from the declared pre/post-firewall expectation."
+      when: not ansible_check_mode
