@@ -217,8 +217,27 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (`netbox_no_vm` lists all 13, none unreachable, none ambiguous); `history_window_full`
         empty. tududi's three snapshot results land in `inputs`, not conformance; Loki took
         the real run's push (`status` counts over 10 minutes: no_history 24, pass 4 — the
-        snapshot passes no longer counted). OPEN still: the NetBox write itself, because local
-        NetBox holds no VM record for any service.
+        snapshot passes no longer counted). The NetBox write had nothing to write there, since
+        local NetBox holds no VM record for any service.
+      - Production, 2026-09-25, on dev a12bb77 (PR #267: the collector and custom-fields
+        templates gained `(Dev)` copies, the token template a Token profile survey field). Each
+        step was a dry run first, through the Publish Semaphore Template Surveys (Dev) publisher
+        and then the templates themselves:
+        - survey update for Provision NetBox Automation Token (Dev): 1329, 1330;
+        - scoped create of Provision NetBox Custom Fields (Dev): 1331, 1332;
+        - scoped create of Collect Service Conformance (Dev): 1333, 1334;
+        - custom fields: 1335, 1336, re-checked by 1337 (all three unchanged);
+        - `workflow-collector` token minted into `collector_api_token`: 1338, 1339;
+        - collector: dry run 1340, real run 1341 (ok=30, changed=1, failed=0).
+        **The NetBox write is proven live.** It wrote seven services' VM records (caddy, n8n,
+        nemoclaw, netbox, nocodb, openbao, semaphore). Seven services have no VM record;
+        none was unreachable or ambiguous. It reported four real failures from history:
+        agentgateway and github-runner provision-vm, authentik oidc-config, postiz
+        secrets-approle. OPEN:
+        - the production Loki push: `collector_loki_url` is not set in the production
+          inventory, so the push was skipped;
+        - a schedule: the (Dev) copy carries none, and the scheduled base runs `main`, which
+          has no collector until promotion.
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,
