@@ -147,6 +147,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       template must set `allow_override_branch_in_task` (design Context). Then: set it in
       `setup-templates.yml`, remove `dev_variant` generation, launch on `dev` by branch; update the operating guide. If not:
       record the result and keep the twins (design risk entry)
+      - 2026-09-26: still pending, and the catalog keeps growing twins: 62 `dev_variant`
+        declarations on dev, 47 before 2026-09-25. Every production step of 7.2, 7.5 and 7.9
+        ran through a `(Dev)` twin, because `main` lags `dev` by several hundred commits
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
 - [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
@@ -184,6 +187,25 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
+      - Production, 2026-09-26 (PRs #282, #283, #284, #285; site-config #32, #33). The setup
+        half is `ensure-service-persistence.yml` (restarts nothing); every step was a dry run
+        first, through `(Dev)` templates. Verify Service Persistence passes on all eight
+        services in scope: authentik 1473, n8n 1510, o11y 1481, openbao 1519, semaphore 1520,
+        caddy 1521, honcho 1562, tududi 1564.
+        - Rootless (authentik, n8n, o11y, honcho, tududi, caddy): linger and podman's user boot
+          unit, every container `always`.
+        - openbao and semaphore run rootful podman from legacy standalone directories, on
+          `unless-stopped` or no policy. The Ubuntu 24.04 podman (4.9.3) cannot change a policy
+          in place, so each gets `agent-cloud-boot-<service>.service` (a oneshot `podman start`
+          by name, enabled, never started), which Verify reads back. Inventory declares
+          `podman_rootful` and `compose_working_dir` for them and for caddy.
+        - honcho, n8n and tududi were found stopped (state `created`) and redeployed through
+          `Deploy <service> (Dev)`: n8n 1507/1508, honcho 1557/1559, tududi 1558/1560.
+          authentik's server was stopped too: 1469/1471.
+        - Out of scope: Postiz (no containers in production), devlog (skipped). `grafanapodman`
+          is retired.
+        - OPEN: no boot path has been exercised by a real reboot (the registry's optional
+          reboot test).
 - [ ] 7.3 New executors: inventory lookup, address validation against pfSense ARP and NetBox,
       NetBox VM record, host instrumentation (after `inference-telemetry-production` lands the
       OTLP receiver)
@@ -239,6 +261,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
           inventory, so the push was skipped;
         - a schedule: the (Dev) copy carries none, and the scheduled base runs `main`, which
           has no collector until promotion.
+        - 2026-09-26: the collector has not run since task 1341, so NetBox and Loki do not yet
+          carry the systemd-enablement and service-validate results recorded that day (7.2, 7.9).
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,
@@ -260,6 +284,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       review). Done for step-ca, Authentik, o11y and agentgateway as `health_url`, each
       verified 200 from inside the local Semaphore container; Caddy, OpenBao and the other
       local services remain undeclared and fail closed by name
+      - Production counterpart, 2026-09-26 (PR #283, site-config #32). A host whose port is
+        loopback-only or firewalled to the Caddy host sets `health_probe_on_host: true` with a
+        loopback `health_url`, and the probe runs on the host. Verify Service Health (Dev) passes
+        (HTTP 200) for authentik 1472, n8n 1509, o11y 1500, openbao 1522, semaphore 1523,
+        honcho 1561 and tududi 1563. caddy declares no health path. Before the change, the
+        executor's direct probe answered -1 for tududi, honcho and n8n however healthy they were
 
 ## 8. Backfill agentgateway end to end
 

@@ -282,9 +282,10 @@ steps:
     executor: Verify Service Persistence
     undo: none
     policy: required
+    # Setup half: ensure-service-persistence.yml (restarts nothing); this step only verifies.
     criteria:
-      - linger is enabled for the service user
-      - every container has restart policy always (or "no" for a one-shot init container), or is a systemd unit
+      - rootless podman has linger for the service user and podman's user boot unit enabled; rootful podman has the system podman-restart.service enabled
+      - every container has restart policy always, or "no" as a declared one-shot that exited 0, or is started by the service's enabled agent-cloud-boot-<service>.service
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
 

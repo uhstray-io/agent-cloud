@@ -27,6 +27,17 @@ credential-visible sync workflow with `changed=0`; it did not verify task/issue
 correspondence. This proves that executor's access at the time of the run, not
 every credential's validity or ongoing AppRole health.
 
+## The production Semaphore host (recorded 2026-09-26)
+
+Production Semaphore runs under rootful podman from a legacy standalone compose directory
+(site-config's `scripts/semaphore-upgrade.sh` is its upgrade path), not from
+`platform/services/semaphore/deployment`. Three containers: Postgres and the app, both on no
+restart policy, and the runner on `always`. `agent-cloud-boot-semaphore.service` starts the first
+two at boot (`plan/architecture/05-platform-infra.md` section 11). The root filesystem was
+grown from 15 GB to 25 GB on 2026-09-26 after it filled and stopped Postgres (see "Troubleshoot at
+the failing boundary"). Never have a Semaphore job restart or recreate these containers: a
+running task would kill itself.
+
 ## Declared production repository records: `main` and `dev`
 
 The production templates use the two repository records declared in
@@ -282,6 +293,18 @@ The projection is a local copy, not a new source of truth.
 | Secret reads pass; target rejects it | Target transport, credential validity and account scope |
 | Publisher template is absent | Initial installation through the scoped bootstrap mechanism |
 | Survey readback or repository binding fails | Stop; inspect the declared and live values before another write |
+| A token that just worked gets an empty-body 401 on every endpoint, and the UI login says "Failed to create session" | Semaphore's own database before the credential. `api/auth.go` (v2.19.11) answers any error from the token or user lookup with 401, so a stopped Postgres reads exactly like a revoked token. Check the Postgres container and the host's disk. That check needs recovery access to the Semaphore host, which requires the operator's authorization |
+| A task fails within milliseconds, with no output and no checked-out commit | The Semaphore host (disk, runner) before the task's own inputs |
+
+The 2026-09-26 outage matched both rows: the host's 15 GB root filesystem filled, and
+Postgres exited at 22:41:59 UTC when WAL recovery could not extend a file. Growing
+the root logical volume into the volume group's unallocated space and starting
+Postgres restored service with nothing lost (`docs/MISTAKES.md` 1.18).
+
+Task output is stored in that database. A deploy dry run launched with `diff: true`
+records the monorepo placement's whole git diff: about 86,000 lines per task for
+Deploy honcho (Dev) and Deploy tududi (Dev) on 2026-09-26. Watch the host's disk
+when dry-running deploys whose target checkout is far behind.
 
 Report task ID, observed source revision when available, target names, failed
 step and change counts. Do not print secret values, auth IDs or raw variable
