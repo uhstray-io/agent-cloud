@@ -132,10 +132,13 @@
 
     - name: "Require the receiver target to match the gateway's published stats listener"
       ansible.builtin.assert:
+        # The gateway's own bind defaults to loopback (agentgateway env.j2), which no remote
+        # receiver can scrape, so it must be declared; its port defaults to 19002 there too.
         that:
+          - hostvars[groups['agentgateway_svc'][0]].agw_stats_bind is defined
           - agentgateway_metrics_address == hostvars[groups['agentgateway_svc'][0]].agw_stats_bind
-          - agentgateway_metrics_port | int == hostvars[groups['agentgateway_svc'][0]].agw_stats_port | int
-        fail_msg: "The receiver's gateway scrape target differs from the gateway's declared stats bind."
+          - agentgateway_metrics_port | int == hostvars[groups['agentgateway_svc'][0]].agw_stats_port | default(19002) | int
+        fail_msg: "The receiver's gateway scrape target differs from the gateway's declared stats bind (agw_stats_bind must be declared)."
       when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
 
     - name: "Place the monorepo + ensure podman/compose"

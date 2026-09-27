@@ -107,6 +107,9 @@
         return_content: false
         status_code: 200
         timeout: 5
+      # uri's timeout is per socket operation; a trickling endpoint could outlast it. The task
+      # keyword bounds the whole request (PR 281 review).
+      timeout: 15
       register: _probe_http
       changed_when: false
       failed_when: false

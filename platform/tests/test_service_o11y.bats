@@ -637,8 +637,25 @@ all:
         caddy:
           ansible_host: "192.0.2.3"
 YAML
-  local sha
-  sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  # The probe refuses a checkout that differs from the reviewed commit or has local changes
+  # (its "Refuse an altered controller checkout" gate), and it reads the repo it lives in. Run
+  # it from a scratch repo holding this working tree's playbooks, so the test covers uncommitted
+  # edits and passes in a developer checkout with untracked files (PR 281 review). Git exports
+  # GIT_DIR and friends to hooks; clear them before touching any repo (2026-09-23 incident).
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+  local probe_repo="$BATS_TEST_TMPDIR/probe-repo"
+  mkdir -p "$probe_repo/platform"
+  cp -R "$REPO_ROOT/platform/playbooks" "$probe_repo/platform/"
+  # The repo's ignore rules, so interpreter caches Ansible writes (filter_plugins/__pycache__)
+  # stay ignored exactly as in a real checkout.
+  cp "$REPO_ROOT/.gitignore" "$probe_repo/"
+  git -C "$probe_repo" init -q
+  git -C "$probe_repo" add -A
+  git -C "$probe_repo" -c user.email=t@example.invalid -c user.name=t -c core.hooksPath=/dev/null \
+    commit -q -m scratch
+  local sha probe="$probe_repo/platform/playbooks/probe-o11y-metrics-endpoint.yml"
+  sha=$(git -C "$probe_repo" rev-parse HEAD)
   python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
@@ -651,6 +668,7 @@ assert request['ansible.builtin.uri']['use_proxy'] is False
 assert request['ansible.builtin.uri']['follow_redirects'] == 'none'
 assert request['ansible.builtin.uri']['return_content'] is False
 assert request['ansible.builtin.uri']['timeout'] == 5
+assert request['timeout'] == 15
 template = next(item for item in yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates'] if item['name'] == 'Probe o11y Metrics Endpoint (Dev)')
 assert template['repository'] == 'agent-cloud dev'
 assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_target']
@@ -659,14 +677,14 @@ PY
   for target in dgx-vllm agentgateway; do
     run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
       -i "$BATS_TEST_TMPDIR/inventory.yml" \
-      "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+      "$probe" \
       -e expected_repository_sha="$sha" -e probe_target="$target"
     [ "$status" -eq 0 ]
     assert_contains "$output" "Refuse an unusable metrics address or port"
   done
   run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
     -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    "$probe" \
     -e expected_repository_sha="$sha" -e probe_target=arbitrary
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
@@ -686,13 +704,13 @@ with open(sys.argv[3], 'w', encoding='utf-8') as stream:
 PY
   run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
     -i "$BATS_TEST_TMPDIR/missing-gateway.yml" \
-    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    "$probe" \
     -e expected_repository_sha="$sha" -e probe_target=agentgateway
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
   run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
     -i "$BATS_TEST_TMPDIR/mismatched-head.yml" \
-    "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" \
+    "$probe" \
     -e expected_repository_sha="$sha" -e probe_target=dgx-vllm
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
