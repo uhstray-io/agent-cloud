@@ -4,7 +4,7 @@ See `proposal.md`. Local Grafana, Prometheus, Loki, and Alloy were healthy at ba
 
 On 2026-09-23, the local Prometheus v3.1.0 TSDB reported 616 active series, all under `job=prometheus`; this is a self-scrape baseline, not the service pilot measurement required by task 2.1. A read-only inventory listing confirmed that the declared `grafanapodman` host sits under `virtualmachines`, outside `agent_cloud`. The audit playbook targets both, and `ansible-playbook --list-hosts` includes `grafanapodman`; at that point no production container state had been observed.
 
-2026-09-26: the operator confirmed `grafanapodman` retired; it is removed from the private inventory (site-config#33) and from the container audit, which now targets `agent_cloud` only. The paragraph above records the state on 2026-09-23.
+2026-09-26: the operator confirmed `grafanapodman` retired; it is removed from the private inventory (site-config#33) and from the container audit, which now targets `agent_cloud` only. The 2026-09-23 paragraph above, the task 1134 paragraph below and decision 8 record the state before that confirmation.
 
 Production Semaphore task 1134 ran the reviewed audit on `dev` merge `b34acfd51bd65af36b21821c203c10085f093ae6`. The reachable Agent Cloud hosts reported no `o11y-*` containers and the audit formatter completed. Four inventory hosts, including `grafanapodman`, were unreachable, so the legacy Grafana host's containers and data remain unknown. Private inventory has no `o11y_svc` receiver and no managed VM specification for `grafanapodman`. A new receiver must be declared and provisioned through the normal NetBox, Proxmox, inventory, and Semaphore path; the legacy host and its data remain untouched until they can be examined separately.
 

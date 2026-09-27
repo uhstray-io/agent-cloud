@@ -337,8 +337,9 @@ machines has cost an investigation.
 Semaphore to the inventory host `grafanapodman` answered "Host is unreachable", and the
 service was then found running on a VM named `o11y`. I told the user `grafanapodman` was a
 stale inventory entry whose real host is `o11y`. Asked to remove it, I checked site-config's
-history instead: `grafanapodman` is one of ten legacy telemetry-lab hosts (`otelpodman` through `kafkapodman`) declared together
-in site-config's first inventory commit (`cfeaacb`), and nothing ever records it as retired or replaced. One unreachable SSH
+history instead: `grafanapodman` is one of ten legacy telemetry-lab hosts (`otelpodman`
+through `kafkapodman`) declared together in site-config's first inventory commit (`cfeaacb`),
+and nothing ever records it as retired or replaced. One unreachable SSH
 and a Proxmox listing that covered only VM ids 200-299 became "stale". The rule did not fire
 because it was worded about address conflicts and ARP; this was the same negative claim from
 one vantage, made about a whole host. Nothing was removed on that evidence; the operator then
@@ -709,11 +710,11 @@ turned the absence of an answer from one probe into a statement about the host.
 **Root cause.** 1.6's rule was worded for address conflicts and ARP, so it did not fire for the
 same inference made about a whole host from a failed login and a partial listing.
 
-**The rule.** Supersedes 1.6's scope. A host is called gone, retired, stale or addressless only
-from positive evidence of that state (a retirement record, the hypervisor showing the VM
-removed, the operator's statement) or from two independent vantages that both fail. One
-unreachable probe, or a listing that did not cover the host, is reported as exactly that: "no
-answer from X", "not in the listed range".
+**The rule.** Supersedes 1.6's scope. A host is called gone, retired or stale only from
+positive evidence of that state: a retirement record, the hypervisor showing the VM removed,
+or the operator's statement. Two independent vantages that both fail support "unreachable" or
+"addressless", never "retired". One unreachable probe, or a listing that did not cover the
+host, is reported as exactly that: "no answer from X", "not in the listed range".
 
 **Enforced by.** Convention.
 
