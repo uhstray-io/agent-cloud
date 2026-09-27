@@ -124,6 +124,14 @@
       the blueprint; the local overlay removes the UI host publish so no unauthenticated
       path exists. Browser login as `agent-cloud-admin` and the prod `nc` are Joe's/prod
 
+- [ ] 1.10 `UI_READ_ONLY=true` in the gateway environment, and a BATS assertion that it is
+      rendered; the UI must refuse writes itself, not only fail at the read-only mount
+      (design "Decisions recorded 2026-09-27")
+- [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
+      2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
+      rule (PR #289) applied, `agw_ui_enabled: true` (site-config #35), then Deploy
+      agentgateway (Dev); proves gate 1.9
+
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
       has never been shown DENYING anyone — log in as a platform-developers member and
@@ -197,6 +205,9 @@
       drill `direct` then `restore` against the live route in a window Joe names, proving
       scenario "Rollback after retirement is the playbook"
 
+- [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
+      2026-09-27), set in site-config in the same change that switches the route
+
 ## 5. Retire the shared key, records
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
       renders `legacy-shared` only while today is before `legacy_shared_expires`; a deploy
@@ -212,3 +223,18 @@
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
+
+## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
+- [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates, bind-
+      mounted (the image has no shell); `tls.root` = the step-ca root, so a client
+      certificate is required; BATS asserts both listeners render `tls` with `root`
+- [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
+      `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
+      tls_client_auth <cert> <key> }` (Caddy 2.11.4; `tls_trusted_ca_certs` is deprecated
+      there); fix the deprecated form in `plan/architecture/05-platform-infra.md`
+- [ ] 6.3 The model's `tls: {root, hostname}` and an `https://` base URL, once dgx-spark
+      serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
+      `--enable-ssl-refresh`)
+- [ ] 6.4 Validation gate: a request without Caddy's client certificate is refused at the
+      gateway; the gateway refuses a vLLM certificate not issued by the internal CA; the
+      public path works end to end with every hop encrypted

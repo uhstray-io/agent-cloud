@@ -1,0 +1,177 @@
+# Tasks: a production internal CA
+
+Every task is safe to re-run: detect the state it would produce first, and converge or
+skip when it already holds. Live work goes through Semaphore templates, never a shell on a
+host. Push, pull requests and merges happen only when Joe authorizes each one.
+
+## 0. Branch and decisions
+- [ ] 0.1 Feature branch from `dev` (`feat/production-internal-ca`) in its own worktree
+- [ ] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
+      the dgx-spark handoff channel (1), offline root (2), mutual TLS towards vLLM (3), the
+      production internal zone name (4)
+- [ ] 0.3 Validation gate: `openspec validate production-internal-ca` passes and the
+      answers are written into `design.md` as dated amendments; this phase proves no spec
+      scenario on its own and gates phase 1
+
+## 1. CA host
+- [ ] 1.1 site-config: declare the VM in `proxmox/vm-specs.yml` (template sizing unless
+      `vm-rightsize` says otherwise; next free vmid checked against the live cluster and
+      the ledger, not assumed) and a `step_ca_svc` group in `inventory/production.yml`
+      with `service_name: step-ca`, `monorepo_deploy_path:
+      platform/services/step-ca/deployment`, `container_engine: podman`,
+      `stepca_bind: 127.0.0.1`, `stepca_init_acme: "false"`, a production `stepca_name`,
+      and the firewall variables of task 3.1. Sync the Semaphore inventory record
+- [ ] 1.2 Workflow steps `lookup-inventory` and `validate-address` (the address reserved
+      in NetBox before provisioning, or the reason it could not be recorded as the
+      agentgateway change did)
+- [ ] 1.3 Workflow steps `provision-vm`, `cloud-init`, `ssh-keys` (Generate Service SSH
+      Key, Distribute SSH Keys), `ssh-key-backup` (Back Up Service SSH Key),
+      `access-harden` (Verify Host Access, then Harden SSH)
+- [ ] 1.4 Validation gate: key-only SSH to the CA host works from the controller and from a
+      workstation and password authentication is refused; this is the precondition for
+      scenario "Deploy converges and keeps the root"
+
+## 2. Deploy step-ca to production
+- [ ] 2.1 `deploy-step-ca.yml`: create the issuing provisioners idempotently (read the
+      provisioner list first; add only what is missing), one per profile or one with
+      per-profile templates as task 4.4 decides; their passwords are new `random` entries
+      in `_secret_definitions` (`secret/services/step-ca`), so manage-secrets generates
+      them once and reuses them; maximum and default lifetime from a new
+      `stepca_leaf_dur` (default `720h`). Keep the `admin` provisioner's local behaviour
+      unchanged; make Phase 2.5's lifetime raise report `changed` only when the value
+      actually differs
+- [ ] 2.2 Production parameters flow through the existing `env.j2` variables (bind,
+      name, DNS names, ACME switch); add a parameter only where one is missing. Confirm the
+      ACME provisioner is absent after first boot with `stepca_init_acme: "false"`
+- [ ] 2.3 `clean-deploy-step-ca.yml`: refuse unless `-e confirm_ca_reset=<inventory
+      hostname>` names the target, following `destroy-vm.yml`'s `confirm_destroy`
+      assertion; update `templates-local.yml`'s `Clean Deploy step-ca (Local)` and any
+      make target that calls the playbook to pass it
+- [ ] 2.4 `platform/semaphore/templates.yml`: a `Deploy step-ca` template (production
+      inventory, `main`) and its generated `(Dev)` variant; no production clean-deploy
+      template; run `setup-templates.yml`
+- [ ] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
+      reset refuses without confirmation, production inventory values render the loopback
+      bind and ACME off
+- [ ] 2.6 Run `Deploy step-ca (Dev)` twice; record the root fingerprint after each run
+- [ ] 2.7 Validation gate: scenarios "Deploy converges and keeps the root" and "Reset
+      without confirmation is refused"
+
+## 3. Firewall
+- [ ] 3.1 site-config: `firewall_ssh_cidrs` and `firewall_controller_cidr` for the CA
+      host, no `firewall_allow_rules`, and port detection that finds only the loopback
+      publish
+- [ ] 3.2 Workflow steps `fw-assess` (Snapshot Firewall) and `fw-harden` (Apply Firewall)
+- [ ] 3.3 Workflow step `systemd-enablement` (Verify Service Persistence) and a reboot of the
+      CA host through the supported path, then `service-validate`
+- [ ] 3.4 Validation gate: scenarios "A LAN host cannot reach the CA API" and "Only the
+      declared sources reach SSH", checked from a LAN host that is not the controller
+
+## 4. Cross-host issuance and root distribution
+- [ ] 4.1 Evolve `tasks/mint-internal-cert.yml`: new optional `_mint_ca_host` (default:
+      the play host), `_mint_name`, `_mint_profile`, `_mint_sans`; key and request
+      generated on the consumer with `openssl` (asserted present); request copied to the
+      CA host and signed there with `step ca sign` via `delegate_to`; certificate written
+      back on the consumer into a new serial-named subdirectory and a `current` symlink
+      swapped in one rename; the previous subdirectory kept until the next success. The
+      existing wildcard interface keeps working for `deploy-caddy.yml`
+- [ ] 4.2 Declared-name guard: the task refuses any SAN not in the consumer's declared leaf
+      (site-config list, decision 4) and any name outside the internal zone, before
+      anything reaches the CA; the existing hostname-character assertion stays
+- [ ] 4.3 Evolve `tasks/distribute-ca-root.yml`: optional `_ca_host`; root and intermediate
+      read from the CA container on that host, bundle written 0644 on the consumer into
+      the mounted certificate directory
+- [ ] 4.4 Profiles: issue one server and one client test leaf in local-dev, inspect their
+      extended key usage, and settle decision 5's mechanism (separate provisioners or
+      x509 templates) and whether the CA can also enforce a name policy; record the result
+      in `design.md`
+- [ ] 4.5 BATS: no task step reads, copies or templates the consumer's key onto the CA host
+      or the controller; the name guard is scoped to the issuance task; the symlink swap
+      is a single rename; each assertion mutated once to watch it go red
+- [ ] 4.6 Local-dev regression: `Deploy Caddy (Local)` and `make local-bootstrap` still serve
+      the wildcard, and every local consumer of the bundle still verifies the IdP
+- [ ] 4.7 Production proof with a throwaway leaf declared on the gateway host: issue it
+      through a Semaphore run, check where its key exists, then remove the declaration and
+      the files
+- [ ] 4.8 Validation gate: scenarios "The private key never leaves the consumer", "An
+      undeclared name is refused", "Local-dev issuance is unchanged in effect", "A server
+      leaf is refused as a client" and "Bundles match across consumers"
+
+## 5. Consumers
+- [ ] 5.1 Establish which compose file production Caddy runs from (`caddy_compose_dir` in
+      inventory versus the monorepo's `compose.yml`) and add a read-only certificate
+      directory mount to that file as code; redeploy Caddy through Semaphore
+- [ ] 5.2 Declare and issue the Caddy client leaf and the gateway server leaf; distribute
+      the bundle to both. The gateway's certificate directory is mounted as a directory
+      in production and in the local overlay (replacing the single-file bundle mount), and
+      its key is readable by the container's non-root user
+- [ ] 5.3 Hand to the companion change `inference-gateway-agentgateway` task group 6:
+      gateway listeners serve `current/` with `tls.root` set to the bundle; Caddy's two
+      inference blocks carry `tls_server_name`, `tls_trust_pool file` and
+      `tls_client_auth`. Verify whether each follows the symlink swap and record the
+      reload action per leaf
+- [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
+      bundle delivered through the agreed channel, with the SAN the gateway's model
+      `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
+      `--ssl-keyfile`, `--enable-ssl-refresh`); nothing on the nodes is changed from here
+- [ ] 5.5 Validation gate: scenario "A client leaf authenticates", plus the companion's
+      gate that a request without Caddy's client certificate is refused at the gateway
+
+## 6. Renewal and expiry alerting
+- [ ] 6.1 `renew-internal-certs.yml`: for every declared leaf, read the current
+      certificate's expiry on the consumer; re-issue through task 4.1 when less than a
+      third of its lifetime remains; run the declared reload action; connect to the
+      consumer's port and fail on a serial mismatch; push one Loki line per leaf and one
+      for the intermediate (the conformance collector's push shape). Emit the step result
+- [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
+      code; run `setup-templates.yml`
+- [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
+      is inside its window, run the template, and confirm the gateway and Caddy present the
+      new serials with no failed requests on the public path during the run (a paced
+      request loop through the public hostname)
+- [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, no renewal
+      line for thirty-six hours; deploy o11y through Semaphore
+- [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
+      expiry alert; pausing the schedule past the window fires the silent-job alert (or the
+      rule's `for` window shortened for the drill and restored); both reach the contact
+      point, then the canary is removed
+- [ ] 6.6 Validation gate: scenarios "A leaf inside its window is renewed and served", "A
+      fresh leaf is left alone", "A leaf near expiry raises an alert" and "A silent
+      renewal job raises an alert"
+
+## 7. Backup and restore
+- [ ] 7.1 `backup-step-ca-to-site-config.yml`: read the CA's certificates, encrypted keys
+      and configuration out of the container on the CA host and write them into a
+      site-config clone under `secrets/step-ca/` through `tasks/site-config-clone.yml` and
+      `tasks/site-config-push.yml`, a new branch per run, file names only in the output;
+      the key-bearing steps `no_log`, nothing else
+- [ ] 7.2 `templates.yml`: `Back Up step-ca to site-config`; run it, then run `Back Up
+      Credentials to site-config` with `credential_service=step-ca` for the passwords
+- [ ] 7.3 Restore drill in local-dev: restore the backed-up material into a fresh volume,
+      start the CA, compare the root fingerprint, then return local-dev to its own CA
+- [ ] 7.4 Validation gate: scenarios "Restore keeps the root" and "Backup output carries no
+      key material"
+
+## 8. Rollback path
+- [ ] 8.1 Confirm each consumer's internal-TLS settings are inventory values with the plain
+      transport as the default (Caddy blocks, gateway listeners, the gateway's model entry)
+- [ ] 8.2 In local-dev, remove the values for Caddy, redeploy, check the public-path
+      equivalent, then restore them
+- [ ] 8.3 Validation gate: scenario "Caddy returns to a plain upstream"
+
+## 9. Documentation and archive
+- [ ] 9.1 `plan/architecture/05-platform-infra.md`: line 483 to `tls_trust_pool file
+      <bundle>`; a mutual-TLS row with `tls_client_auth <cert> <key>` and
+      `tls_server_name`; a dated exception to the plain-HTTP default policy for the
+      inference path, naming this change; line 201's plan pointer corrected
+- [ ] 9.2 Stale pointers to `plan/development/INTERNAL-CA-DEPLOYMENT.md` in
+      `platform/services/step-ca/deployment/compose.yml`, `deploy-step-ca.yml` and
+      `tasks/mint-internal-cert.yml` point at `plan/archive/development/`; the task header
+      no longer says cross-host is out of scope
+- [ ] 9.3 `platform/services/step-ca/context/architecture.md`: a production section (own
+      host, loopback API, consumer-side keys, declared leaves, renewal, backup, reset
+      guard); root `CLAUDE.md`: workflow rows for the new templates and the widened
+      `secret/services/step-ca` row
+- [ ] 9.4 Validation gate: scenario "No deprecated directive remains"; `openspec validate
+      production-internal-ca` passes; on archive, retain the outcome (worked / dead end /
+      corrected) into bank `agent-cloud-750a33b9`
