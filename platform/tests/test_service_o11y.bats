@@ -653,7 +653,7 @@ YAML
   git -C "$probe_repo" init -q
   git -C "$probe_repo" add -A
   git -C "$probe_repo" -c user.email=t@example.invalid -c user.name=t -c core.hooksPath=/dev/null \
-    commit -q -m scratch
+    -c commit.gpgsign=false commit -q -m scratch
   local sha probe="$probe_repo/platform/playbooks/probe-o11y-metrics-endpoint.yml"
   sha=$(git -C "$probe_repo" rev-parse HEAD)
   python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
