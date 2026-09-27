@@ -100,6 +100,7 @@ supersede it with a new entry and link both.
 | 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
+| 5.13 | Staged with `git add -A` and committed six generated skill directories to a docs PR | Process | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -2289,6 +2290,28 @@ checkout another task owns. The checkout belongs to the task that is running in 
 **Enforced by.** Convention, plus a user memory. Proposal: a PreToolUse hook that refuses
 `git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
 working directory is the signal.
+
+### 5.13 Staged a docs fix with `git add -A` and committed six generated skill directories
+
+**What happened.** Fixing review findings on PR #287, a documentation-only branch, I staged
+with `git add -A`. The worktree held six untracked `.agents/skills/source-command-opsx-*`
+directories (1,107 lines) that the OpenSpec tooling had generated when `openspec validate` ran
+there; the main checkout had carried the same untracked set all session. Commit `ec1d1fc`
+pushed them, unrelated to the PR and duplicating the tracked `openspec-*` skills. The
+independent review of that head caught it before merge; the directories were untracked again
+in the next commit.
+
+**Root cause.** `git add -A` stages whatever the working tree holds, and a tool run inside the
+tree had added files since the previous commit. The earlier commit on the same branch used the
+same command safely only because nothing had been generated yet.
+
+**The rule.** Stage explicit paths, and read `git status --short` before every commit on a branch
+whose scope is known; a file you did not write is not staged without a reason stated in the
+commit.
+
+**Enforced by.** Convention. Proposed guard: ignore the generated `source-command-opsx-*`
+directories if they are not meant to be tracked (the `openspec-*` set is tracked deliberately,
+934d7bb), which is an operator decision.
 
 ## 6. Working from assumptions about files
 
