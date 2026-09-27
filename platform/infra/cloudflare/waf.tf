@@ -115,5 +115,35 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Authentik's OAuth2/OIDC machine endpoints — bypass the managed challenge for
+    # server-to-server clients.
+    #
+    # Why: a relying party fetches the discovery document and JWKS from the server, and
+    # exchanges codes at the token endpoint, with no browser in the loop. Cloudflare
+    # answered those requests with `cf-mitigated: challenge` (HTTP 403, an HTML page),
+    # so agentgateway v1.5.0, which loads the discovery document at startup, failed with
+    # "failed to decode oidc discovery response" and did not start (production Deploy
+    # agentgateway (Dev) task 1622, 2026-09-27). Validating Authentik-issued JWTs at the
+    # gateway needs the JWKS fetch through the same edge.
+    #
+    # Scope: only Authentik's machine endpoints (docs.goauthentik.io "OAuth2 provider":
+    # token, userinfo, revoke, introspect, device authorization, and the per-application
+    # discovery document and JWKS). The browser endpoints (authorize, end-session, the
+    # flow UI) stay under the challenge. Each covered endpoint is public by the OIDC
+    # specification or enforces client authentication itself.
+    {
+      ref         = "authentik-oidc-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Authentik OIDC machine endpoints - bypass challenge for server-to-server clients"
+      expression  = "(http.host eq \"auth.uhstray.io\" and (http.request.uri.path in {\"/application/o/token/\" \"/application/o/userinfo/\" \"/application/o/revoke/\" \"/application/o/introspect/\" \"/application/o/device/\"} or (starts_with(http.request.uri.path, \"/application/o/\") and (ends_with(http.request.uri.path, \"/.well-known/openid-configuration\") or ends_with(http.request.uri.path, \"/jwks/\")))))"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }
