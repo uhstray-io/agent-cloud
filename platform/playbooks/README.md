@@ -184,6 +184,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | Playbook | Purpose |
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
+| `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
 | `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
 | `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |

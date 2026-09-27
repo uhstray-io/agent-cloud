@@ -4,6 +4,7 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  any_errors_fatal: true
   tasks:
     - name: Read the controller checkout revision
       ansible.builtin.command:
@@ -13,11 +14,20 @@
       changed_when: false
       check_mode: false
 
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
     - name: Refuse a different revision or incomplete target
       ansible.builtin.assert:
         that:
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
+          - _controller_changes.stdout | length == 0
           - groups.get('o11y_svc', []) | length == 1
           - expected_service | default('') is match('^[a-z][a-z0-9-]*$')
           - expected_instance | default('') is match('^[a-zA-Z0-9.-]+:[0-9]+$')

@@ -41,6 +41,13 @@ and 7 days for Loki until measured ingestion justifies a change.
 
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
+Run `Verify o11y Metrics Target (Dev)` through Semaphore for each enabled
+exporter, supplying the exact reviewed `dev` SHA, its `service` label, the
+inventory-declared `host:port`, and one metric name from that exporter. The
+read-only receipt requires that exact instance to be healthy and its named
+series to exist in Prometheus. A different failed instance does not mask this
+target's result; a service-wide check without an instance still requires every
+scrape to be healthy. Keep the separate Loki log receipt for log shippers.
 
 ## Local alert-delivery canary
 

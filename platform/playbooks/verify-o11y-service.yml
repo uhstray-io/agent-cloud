@@ -71,7 +71,11 @@
           {{ expected_service }} has a Loki log from the last 15 minutes and
           {{ _service_scrapes | length }} healthy Prometheus scrape(s).
       vars:
-        _service_scrapes: "{{ (_scrapes.stdout | from_json).data.result }}"
+        _service_scrapes: >-
+          {{ ((_scrapes.stdout | from_json).data.result |
+              selectattr('metric.instance', 'equalto', expected_instance) | list)
+             if expected_instance | default('') | length > 0
+             else (_scrapes.stdout | from_json).data.result }}
       when: expect_metrics | default('true') | bool
 
     - name: Report verified log-only collection
