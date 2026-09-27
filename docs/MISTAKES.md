@@ -339,7 +339,9 @@ history instead: `grafanapodman` is one of eleven legacy telemetry-lab hosts dec
 in the initial commit, and nothing ever records it as retired or replaced. One unreachable SSH
 and a Proxmox listing that covered only VM ids 200-299 became "stale". The rule did not fire
 because it was worded about address conflicts and ARP; this was the same negative claim from
-one vantage, made about a whole host. Nothing was removed.
+one vantage, made about a whole host. Nothing was removed on that evidence; the operator then
+confirmed the host retired, and it was removed on that confirmation. The conclusion happened to
+be right; the evidence offered for it was not.
 
 ### 1.7 Recorded a memory as retained on the store's own "completed", with an empty result list
 

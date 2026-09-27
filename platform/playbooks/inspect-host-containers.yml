@@ -9,7 +9,7 @@
 # service's containers. Names and metadata only: no environment, no mounts, no labels beyond
 # that one.
 #
-# Exists to onboard a host that carries no service group (devlog, grafanapodman) from what
+# Exists to onboard a host that carries no service group (devlog) from what
 # actually runs there, and to see which engine and account own a service's containers:
 # rootless podman (the connecting user), rootful podman, or Docker.
 #

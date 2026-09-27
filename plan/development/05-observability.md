@@ -210,6 +210,10 @@
 > `o11y_svc` receiver and no managed VM specification for `grafanapodman`.
 > Receiver placement and production retention sizing remain gated on a
 > declared, reachable host and its storage audit.
+
+2026-09-26: the operator confirmed `grafanapodman` retired. It is removed from the
+private inventory (site-config#33), and the audit no longer inspects it. The production receiver is
+the `o11y` VM (`o11y_svc`).
 > At the task 1134 audit, the private production inventory omitted Grafana from
 > Authentik's enabled app list and had no managed Grafana Caddy route. The public o11y env template
 > now derives production browser and OIDC token URLs from a required production
