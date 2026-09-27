@@ -604,6 +604,9 @@
 > DGX/agentgateway telemetry, and the deferred local clean redeploy retain
 > their separate acceptance gates.
 
+2026-09-26: the operator confirmed `grafanapodman` retired. It is removed from the
+private inventory (site-config#33), and the audit no longer inspects it. The production receiver is
+the `o11y` VM (`o11y_svc`).
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
