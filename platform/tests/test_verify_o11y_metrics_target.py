@@ -38,6 +38,7 @@ def test_dev_verifier_keeps_revision_and_survey_guards():
     assert "_controller_revision.stdout == expected_repository_sha" in guards
     assert any("expected_instance" in guard for guard in guards)
     assert any("expected_metric" in guard for guard in guards)
+    assert "expected_metric != 'up'" in guards
     assert playbook[1]["tasks"][1]["check_mode"] is False
     names = {field["name"] for template in yaml.safe_load(
         (ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
