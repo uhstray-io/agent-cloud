@@ -2300,9 +2300,10 @@ side: a validation step's cleanup deleted a committed file that was one `git add
 being committed as a deletion.
 
 **Root cause.** 6.6's rule is about checking one generated artifact, and "stage named paths"
-lives only in an occurrence note, so it is not read as a rule. Tools in this repo write
-untracked, un-ignored files into the working tree (the graph indexer, the OpenSpec tooling), and
-a broad stage turns any of them into a commit.
+lives only in an occurrence note, so it is not read as a rule. Tools in this repo change the
+working tree in ways `.gitignore` does not cover (the graph indexer rewrites its tracked artifact;
+the OpenSpec tooling adds untracked skill directories), and a broad stage turns any of them into
+a commit.
 
 **The rule.** Supersedes the staging advice in 6.6's occurrence 2. Stage explicit paths. Read
 `git status --short` before every commit, and commit a file you did not write only with a reason
