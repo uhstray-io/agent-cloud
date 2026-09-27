@@ -32,7 +32,7 @@ supersede it with a new entry and link both.
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
-| 1.6 | Inferred a host's state from incomplete negative evidence (one ARP sweep that lost a race; one failed SSH and a VM listing limited to one id range) — **x2** | Unverified claim | Convention |
+| 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
@@ -43,8 +43,9 @@ supersede it with a new entry and link both.
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
 | 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
 | 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | Convention |
-| 1.17 | Explained a 401 as the token's scope; the token had just stopped working, and those were the outage's first 401s | Unverified claim | Convention |
+| 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | Convention (disk alert proposed) |
+| 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -336,13 +337,13 @@ machines has cost an investigation.
 Semaphore to the inventory host `grafanapodman` answered "Host is unreachable", and the
 service was then found running on a VM named `o11y`. I told the user `grafanapodman` was a
 stale inventory entry whose real host is `o11y`. Asked to remove it, I checked site-config's
-history instead: `grafanapodman` is one of eleven legacy telemetry-lab hosts declared together
-in the initial commit, and nothing ever records it as retired or replaced. One unreachable SSH
+history instead: `grafanapodman` is one of ten legacy telemetry-lab hosts (`otelpodman` through `kafkapodman`) declared together
+in site-config's first inventory commit (`cfeaacb`), and nothing ever records it as retired or replaced. One unreachable SSH
 and a Proxmox listing that covered only VM ids 200-299 became "stale". The rule did not fire
 because it was worded about address conflicts and ARP; this was the same negative claim from
 one vantage, made about a whole host. Nothing was removed on that evidence; the operator then
 confirmed the host retired, and it was removed on that confirmation. The conclusion happened to
-be right; the evidence offered for it was not.
+be right; the evidence offered for it was not. The rule is widened in 1.19.
 
 ### 1.7 Recorded a memory as retained on the store's own "completed", with an empty result list
 
@@ -651,13 +652,13 @@ plan line now cites its command.)
 
 **Enforced by.** Convention.
 
-### 1.17 Explained a 401 as the token's scope; the token had just stopped working
+### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
 **What happened.** Diagnosing two failed production deploy dry runs, a script that read a task's
 output through `/api/project/1/tasks/{id}/output` got HTTP 401, and so did `/api/events/last`.
 `/tasks/{id}` had answered moments earlier with the same token. I told the user the token was
 "scoped and can't read events or JSON output" and moved on. The next call, the launcher's
-`/templates`, also got 401, and so did `/tasks/{id}`: the token had stopped working, and those
+`/templates`, also got 401, and so did `/tasks/{id}`: every authenticated request had started failing, and those
 two 401s were the first of the outage. Semaphore v2.19.11 has no per-endpoint token scope:
 `api/auth.go` answers a Bearer token with 401 when the token lookup errors or finds nothing,
 when it is revoked or expired, or when its user lookup fails. The outage turned out to be the
@@ -698,6 +699,23 @@ including the error branch, before ruling causes out.
 
 **Enforced by.** Convention. Proposed guard: an o11y disk-usage alert for the Semaphore host
 (and every orchestrator-class host), which would have fired before Postgres ran out of room.
+
+### 1.19 A negative claim about a host's state, made from evidence that cannot establish it (widens 1.6)
+
+**What happened.** See 1.6 (an ARP sweep read as "no address") and its occurrence 2 (one
+unreachable SSH and a Proxmox listing limited to VM ids 200-299 read as "stale host"). Both
+turned the absence of an answer from one probe into a statement about the host.
+
+**Root cause.** 1.6's rule was worded for address conflicts and ARP, so it did not fire for the
+same inference made about a whole host from a failed login and a partial listing.
+
+**The rule.** Supersedes 1.6's scope. A host is called gone, retired, stale or addressless only
+from positive evidence of that state (a retirement record, the hypervisor showing the VM
+removed, the operator's statement) or from two independent vantages that both fail. One
+unreachable probe, or a listing that did not cover the host, is reported as exactly that: "no
+answer from X", "not in the listed range".
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
