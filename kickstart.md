@@ -415,7 +415,7 @@ Model everything on `platform/services/netbox/deployment/` + `platform/playbooks
 | **WebSmith** | Website builder | `agents/websmith/` | Prompt-only — walks users through a 5-phase workflow producing a signed `SPEC.md` for a new website service |
 | **WisBot** | Community interface | [separate repo](https://github.com/uhstray-io/WisBot) | Discord voice/chat bot |
 
-The intended inference backbone is **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI dirs (`platform/services/inference-ollama/` + `inference-webui/`) are **legacy, superseded by skynet**; `inference-vllm/` (reserved) is a candidate skynet backend.
+The intended inference backbone is **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI stack is **legacy, superseded by skynet**, and lives in the WisAI repo (its `infrastructure/`); this repo has only an empty `platform/services/inference/` placeholder.
 
 Each agent's `context/` directory follows the same shape:
 - `architecture/` — system docs the agent grounds itself in

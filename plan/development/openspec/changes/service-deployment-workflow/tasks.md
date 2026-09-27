@@ -198,7 +198,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
           `unless-stopped` or no policy. The Ubuntu 24.04 podman (4.9.3) cannot change a policy
           in place, so each gets `agent-cloud-boot-<service>.service` (a oneshot `podman start`
           by name, enabled, never started), which Verify reads back. Inventory declares
-          `podman_rootful` and `compose_working_dir` for them and for caddy.
+          `podman_rootful` and `compose_working_dir` for them, and `compose_working_dir` only
+          for caddy (rootless, legacy directory).
         - honcho, n8n and tududi were found stopped (state `created`) and redeployed through
           `Deploy <service> (Dev)`: n8n 1507/1508, honcho 1557/1559, tududi 1558/1560.
           authentik's server was stopped too: 1469/1471.

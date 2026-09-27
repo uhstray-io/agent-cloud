@@ -140,7 +140,7 @@ agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Data layer
+      nocodb/             Retired (replaced by tududi); kept until its decommission
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
@@ -158,11 +158,15 @@ agent-cloud/
       postiz/             Social publishing (app + Temporal workflow engine)
       agentgateway/       Inference edge gateway (per-client keys, token budgets)
       github-runner/      Self-hosted GitHub Actions runners
+      opa/                Policy engine (Rego policy-as-code)
+      openhands/          Agent Canvas
+      erpnext/            ERP (composable slim local tier)
+      wikijs/ nextcloud/ a2a-registry/   Further service directories (see each one's docs)
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
     workflows/
-      service-onboarding/ Service deployment workflow: step registry, step-result schemas,
+      service-onboarding/ Service deployment workflow: step registry, step-result and proposal schemas,
                           NetBox custom fields, the collector's step-result parser
     lib/                  Shared bash libraries (common.sh, bao-client.sh)
     inventory/            Inventory templates (placeholders, no real IPs)
@@ -224,7 +228,7 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 | `check-secrets.yml` | Read-only secret inventory from OpenBao |
 | `ensure-service-persistence.yml` | Make a service's containers start at boot (linger + podman's boot unit, the system unit for rootful podman, or a per-service boot unit for legacy containers); restarts nothing |
 | `verify-service-persistence.yml` / `verify-service-health.yml` | Read-only proof a service starts at boot and answers its declared health path |
-| `inspect-host-containers.yml` | Read-only list of every container on one host, per engine and account |
+| `inspect-host-containers.yml` | Read-only list of the containers on one host that the connecting user, a declared `linger_user`, root and Docker can see, with engine version, state and restart policy |
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
