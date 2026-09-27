@@ -44,6 +44,7 @@ supersede it with a new entry and link both.
 | 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
 | 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | Convention |
 | 1.17 | Explained a 401 as the token's scope; the token had just stopped working, and those were the outage's first 401s | Unverified claim | Convention |
+| 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | Convention (disk alert proposed) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -657,9 +658,10 @@ output through `/api/project/1/tasks/{id}/output` got HTTP 401, and so did `/api
 `/tasks/{id}` had answered moments earlier with the same token. I told the user the token was
 "scoped and can't read events or JSON output" and moved on. The next call, the launcher's
 `/templates`, also got 401, and so did `/tasks/{id}`: the token had stopped working, and those
-two 401s were the first of the outage. Semaphore v2.19.11 has no per-endpoint token scope
-(`api/auth.go` rejects a Bearer token only when it is missing, revoked or expired, or its user
-no longer exists).
+two 401s were the first of the outage. Semaphore v2.19.11 has no per-endpoint token scope:
+`api/auth.go` answers a Bearer token with 401 when the token lookup errors or finds nothing,
+when it is revoked or expired, or when its user lookup fails. The outage turned out to be the
+first case (entry 1.18).
 
 **Root cause.** Two successes followed by a failure on a new endpoint read as a property of
 the endpoint, because that was the only thing that had changed in my own actions. The
@@ -670,6 +672,32 @@ credential succeeds again right after the failure, or after the server's auth co
 scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 **Enforced by.** Convention.
+
+### 1.18 Listed an auth failure's causes from the code, missed the database error, and chased credentials for two hours
+
+**What happened.** Production Semaphore began answering every API call with an empty-body 401
+and the operator could not log in ("Failed to create session"). I read `api/auth.go` at
+v2.19.11 and reported that it rejects a Bearer token only when the token is missing, revoked or
+expired, or its user is gone, then spent about two hours on those: token file hashes across 32
+branches, migrations for an expiry default, every playbook that could revoke a token or delete
+a user, and questions to two peer sessions. The same code returns 401 when the token lookup
+returns ANY error (`if err != nil { ... w.WriteHeader(http.StatusUnauthorized) }`); only
+not-found skips the log line. The real cause was one SSH away: the VM's 15 GB root was 100%
+full, Postgres had failed WAL recovery with "No space left on device" at 22:41:59 UTC and
+exited, and every lookup errored. Growing the root volume into the volume group's 15 GB of
+unallocated space and starting Postgres restored service with nothing lost.
+
+**Root cause.** I read the error branch as "not found" because that was the case I expected,
+and the symptom (401) is worded as a credential problem, so the investigation stayed on
+credentials. Nothing looked at the host's resources until the operator's login failed too.
+
+**The rule.** When a service answers 401 or 403 to a credential that just worked, check the
+service's own health first (its backing store running, disk, memory, logs) before any theory
+about the credential. When reading an auth path, list every branch that produces the status,
+including the error branch, before ruling causes out.
+
+**Enforced by.** Convention. Proposed guard: an o11y disk-usage alert for the Semaphore host
+(and every orchestrator-class host), which would have fired before Postgres ran out of room.
 
 ## 2. Tests that would have passed for the wrong reason
 
