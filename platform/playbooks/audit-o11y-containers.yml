@@ -1,10 +1,11 @@
 ---
 # Read-only production inventory for inference-telemetry-production task 0.2.
 # o11y/deployment/compose.yml pins every container name to o11y-*.
-# grafanapodman is declared outside agent_cloud in the private inventory; include
-# it explicitly so this audit does not mistake an unexamined host for a clean one.
+# The legacy grafanapodman host this audit also inspected is retired (operator
+# decision 2026-09-26) and removed from the private inventory; the receiver is the
+# o11y VM, an agent_cloud host.
 - name: Audit production hosts for o11y containers
-  hosts: agent_cloud:grafanapodman
+  hosts: agent_cloud
   gather_facts: false
   tasks:
     - name: Read the SSH user's UID for the rootless Docker socket
@@ -68,36 +69,6 @@
           docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
           docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines | select('match', '^o11y-') | list }}"
           docker_rootful_errors: "{{ o11y_docker_rootful.stderr_lines }}"
-
-    - name: List all containers on the existing Grafana host
-      ansible.builtin.command:
-        argv: "{{ item.argv + ['--format', '{{.Names}} {{.Image}} {{.Status}}'] }}"
-      vars:
-        ansible_become: false
-      loop:
-        - {name: podman-rootless, argv: [podman, ps, -a]}
-        - {name: podman-rootful, argv: [sudo, -n, podman, ps, -a]}
-        - {name: docker-rootless, argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a]}
-        - {name: docker-rootful, argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a]}
-      loop_control:
-        label: "{{ item.name }}"
-      register: grafanapodman_containers
-      check_mode: false
-      changed_when: false
-      failed_when: false
-      when: inventory_hostname == 'grafanapodman'
-
-    - name: Report existing Grafana host inventory
-      ansible.builtin.debug:
-        msg:
-          runtime: "{{ item.item.name }}"
-          rc: "{{ item.rc }}"
-          containers: "{{ item.stdout_lines }}"
-          errors: "{{ item.stderr_lines }}"
-      loop: "{{ grafanapodman_containers.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-      when: inventory_hostname == 'grafanapodman'
 
 - name: Inspect OpenBao container state without reading secrets
   hosts: openbao
