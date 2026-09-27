@@ -32,7 +32,7 @@ supersede it with a new entry and link both.
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
-| 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race | Unverified claim | Convention |
+| 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** | Unverified claim | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | Convention (OPA branch rule pending) |
@@ -43,6 +43,7 @@ supersede it with a new entry and link both.
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | Convention |
 | 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | Convention |
 | 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | Convention |
+| 1.17 | Explained a 401 as the token's scope; the token had just stopped working, and those were the outage's first 401s | Unverified claim | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -298,6 +299,8 @@ denial, all three verified on the live host.
 
 ### 1.6 Concluded a host had no address, from one vantage, on a network with an address conflict
 
+**Occurrences: 2** — 2026-08-25, 2026-09-26
+
 **What happened.** Investigating why a service was unreachable, I swept the
 internal `/24` from my workstation, matched hardware addresses, and found the
 target's nowhere among the eighteen that answered. I reported that the host "has no IP
@@ -327,6 +330,16 @@ different host keys is a proof; one silent sweep is not.
 a declared address from two or more hosts and fails when the identities differ —
 worth building, since this is the second time one address answering as two
 machines has cost an investigation.
+
+**Occurrence 2 — 2026-09-26.** Onboarding boot persistence for the o11y service, SSH from
+Semaphore to the inventory host `grafanapodman` answered "Host is unreachable", and the
+service was then found running on a VM named `o11y`. I told the user `grafanapodman` was a
+stale inventory entry whose real host is `o11y`. Asked to remove it, I checked site-config's
+history instead: `grafanapodman` is one of eleven legacy telemetry-lab hosts declared together
+in the initial commit, and nothing ever records it as retired or replaced. One unreachable SSH
+and a Proxmox listing that covered only VM ids 200-299 became "stale". The rule did not fire
+because it was worded about address conflicts and ARP; this was the same negative claim from
+one vantage, made about a whole host. Nothing was removed.
 
 ### 1.7 Recorded a memory as retained on the store's own "completed", with an empty result list
 
@@ -632,6 +645,27 @@ as measured even when it is remembered.
 **The rule.** A count in a committed document carries the command that produced it and its
 date, run at the time of writing; a count that cannot be re-run is not written. (The corrected
 plan line now cites its command.)
+
+**Enforced by.** Convention.
+
+### 1.17 Explained a 401 as the token's scope; the token had just stopped working
+
+**What happened.** Diagnosing two failed production deploy dry runs, a script that read a task's
+output through `/api/project/1/tasks/{id}/output` got HTTP 401, and so did `/api/events/last`.
+`/tasks/{id}` had answered moments earlier with the same token. I told the user the token was
+"scoped and can't read events or JSON output" and moved on. The next call, the launcher's
+`/templates`, also got 401, and so did `/tasks/{id}`: the token had stopped working, and those
+two 401s were the first of the outage. Semaphore v2.19.11 has no per-endpoint token scope
+(`api/auth.go` rejects a Bearer token only when it is missing, revoked or expired, or its user
+no longer exists).
+
+**Root cause.** Two successes followed by a failure on a new endpoint read as a property of
+the endpoint, because that was the only thing that had changed in my own actions. The
+explanation came from the order of my calls, not from the server's authentication code.
+
+**The rule.** A 401 or 403 is attributed to scope only after a known-good call with the same
+credential succeeds again right after the failure, or after the server's auth code shows
+scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 **Enforced by.** Convention.
 
