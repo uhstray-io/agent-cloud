@@ -91,6 +91,24 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Probe o11y Metrics Endpoint (Dev)
+    playbook: platform/playbooks/probe-o11y-metrics-endpoint.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before probing"
+        type: string
+        required: true
+      - name: probe_target
+        title: "Metrics target"
+        description: "One fixed private-inventory endpoint: dgx-vllm or agentgateway"
+        type: enum
+        required: true
+        values:
+          - { name: "DGX vLLM", value: "dgx-vllm" }
+          - { name: "agentgateway", value: "agentgateway" }
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:

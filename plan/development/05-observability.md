@@ -349,6 +349,19 @@
 > redeploy from reviewed `dev`, and require named healthy Prometheus series
 > before accepting DGX telemetry. Keep GPU scraping and Loki shipping disabled
 > until their separate endpoint and receipt gates pass.
+> **Receiver probe receipts, 2026-09-26:** Semaphore tasks 1411 and 1412
+> returned the expected timeout from the receiver before the DGX firewall
+> change. The DGX owner independently observed both blocked packets from the
+> receiver's chosen source. After its reviewed PR #25 and firewall-only apply,
+> tasks 1413 and 1414 returned HTTP 200 from both node exporters. These are
+> host-origin checks; Prometheus has not yet loaded or scraped those targets.
+> The existing DGX scrape file also includes the head vLLM endpoint, so its
+> `/metrics` reachability must be probed before the persistent flag is enabled.
+> Separately, private gateway listener PR #30 merged and Semaphore tasks 1416
+> and 1418 applied a receiver-only stats firewall rule and redeployed the
+> gateway successfully. The gateway scrape declaration remains absent until a
+> receiver-origin metrics probe proves that listener reachable. A declared but
+> unreachable target would trigger the production service-down rule.
 > PR #206 passed CodeRabbit review and final-head checks and merged the local
 > baseline to `dev` as `3de6fe71cd60efe2e2986922c08ab4c55bce0929`.
 > Local Dev-bound Semaphore task 1225 deployed that merge; task 1231 found a
