@@ -319,6 +319,9 @@ services:
     <<: *frappe
     container_name: erpnext-configurator
     restart: "no"
+    labels:
+      # Required with restart "no" by the compose guard (platform/tests/test_restart_policy.bats).
+      agent-cloud.one-shot: "true"
     entrypoint: ["bash", "-c"]
     command:
       - >

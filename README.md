@@ -122,13 +122,13 @@ health. Verify the selected environment before relying on a service.
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
 | **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
 | **step-ca** | Internal CA -- stable root, issues the `*.agent-cloud.test` wildcard Caddy serves (local-dev live; prod via ACME) |
-| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live) |
+| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live; production deployed at `auth.uhstray.io`) |
 | **skynet** | Local-first, policy-gated LLM inference backbone -- OpenAI-compatible `/v1` gateway with multi-backend placement scheduling + policy gates (supersedes WisAI's Ollama + Open WebUI LLM plane) |
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
-| **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
-| **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
+| **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live; production deployed) |
+| **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live; production deployed) |
 | **agentgateway** | Inference edge gateway (Linux Foundation agentgateway v1.5.0) -- OpenAI-compatible `/v1` with per-client API keys and per-key hourly token budgets (own Postgres) in front of the model API; local-dev fronts LM Studio, prod will front vLLM on the DGX Spark head behind `inference.uhstray.io` (local-dev proving) |
 | **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
 | **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the five PRIVATE repos (`agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
@@ -140,7 +140,7 @@ agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Data layer
+      nocodb/             Retired (replaced by tududi); kept until its decommission
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
@@ -148,15 +148,26 @@ agent-cloud/
       step-ca/            Internal CA (Smallstep; stable root, *.agent-cloud.test)
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
-      inference-ollama/   Legacy WisAI workers (GPU, Ollama) -- superseded by skynet /v1
-      inference-webui/    Legacy WisAI coordinator (Open WebUI + Postgres) -- superseded by skynet /v1
-      inference-vllm/     Reserved (future 24 GB+ hardware; candidate skynet backend)
+      inference/          Placeholder only (.gitkeep); the LLM plane is skynet's /v1
       inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
       inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
       uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
+      tududi/             To-do app (rootless podman, SQLite, Authentik OIDC)
+      honcho/             Memory API (api + deriver + pgvector + redis)
+      o11y/               Grafana + Prometheus + Loki + Alloy
+      postiz/             Social publishing (app + Temporal workflow engine)
+      agentgateway/       Inference edge gateway (per-client keys, token budgets)
+      github-runner/      Self-hosted GitHub Actions runners
+      opa/                Policy engine (Rego policy-as-code)
+      openhands/          Agent Canvas
+      erpnext/            ERP (composable slim local tier)
+      wikijs/ nextcloud/ a2a-registry/   Further service directories (see each one's docs)
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
+    workflows/
+      service-onboarding/ Service deployment workflow: step registry, step-result and proposal schemas,
+                          NetBox custom fields, the collector's step-result parser
     lib/                  Shared bash libraries (common.sh, bao-client.sh)
     inventory/            Inventory templates (placeholders, no real IPs)
     hypervisor/proxmox/   VM provisioning and cloud-init
@@ -215,6 +226,9 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao to VMs |
 | `harden-ssh.yml` | Lock down sshd (after key verification) |
 | `check-secrets.yml` | Read-only secret inventory from OpenBao |
+| `ensure-service-persistence.yml` | Make a service's containers start at boot (linger + podman's boot unit, the system unit for rootful podman, or a per-service boot unit for legacy containers); restarts nothing |
+| `verify-service-persistence.yml` / `verify-service-health.yml` | Read-only proof a service starts at boot and answers its declared health path |
+| `inspect-host-containers.yml` | Read-only list of the containers on one host that the connecting user, a declared `linger_user`, root and Docker can see, with engine version, state and restart policy |
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
@@ -296,7 +310,7 @@ Production DGX Spark scrape targets are rendered from private inventory by
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
 | [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
 | [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Inference backbone + agent framework — OpenAI-compatible `/v1` gateway (placement + policy gates); supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (dirs `inference-ollama/` + `inference-webui/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
+| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
 
 ## Contributing
 

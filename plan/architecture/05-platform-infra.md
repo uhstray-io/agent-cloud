@@ -1008,13 +1008,49 @@ Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
    `tasks/place-monorepo.yml` preamble. Lingering alone is not enough: it starts an empty
    user manager unless the user unit is enabled.
 
+### Setting it up and proving it outside a deploy
+
+`ensure-service-persistence.yml` applies the table above to a running service without
+restarting anything, which makes it safe on the orchestrator's own host. It enables linger
+plus the user unit (rootless), the system unit (rootful, `podman_rootful: true` in the
+inventory) or `docker.service`. `verify-service-persistence.yml` is the read-only proof
+recorded as the service deployment workflow's systemd-enablement step. Both select a service's
+containers by the compose `working_dir` label (`tasks/list-service-containers.yml`); a service
+still running from a directory outside the monorepo declares that directory as
+`compose_working_dir`.
+
+### Containers created under an older policy
+
+The policy is fixed at create time, and the Ubuntu 24.04 podman (4.9.3) has no
+`podman update --restart`: its man page lists only resource flags, and CI's `ubuntu-24.04`
+runner rejects the flag as unknown. So a container created by a legacy compose file with
+`unless-stopped` or no policy cannot be moved to `always` in place.
+
+For a **rootful** service in that state, `ensure-service-persistence.yml` installs one unit per
+service, `/etc/systemd/system/agent-cloud-boot-<service>.service`. It is a oneshot
+`podman start <names>` with a graceful `ExecStop`, the shape of podman's own
+`podman-restart.service`, keyed by container name. It is enabled and never started, and removed
+once every container is on `always`. The container set is chosen by restart policy, never by
+whether a container happens to be running. Production openbao and semaphore have run this way
+since 2026-09-26. Rejected: `podman generate systemd` without `--new`, whose unit pins the
+container ID in `PIDFile` (a recreate under the same name leaves it failing) and which podman
+warns can hang shutdown for a container with its own restart policy. A **rootless** container
+in that state is refused by name; its deploy recreates it with `always`.
+
+The real fix is moving these services to the composable layout, whose deploys recreate every
+container from the repo compose.
+
 ### What this does not cover
 
 - **OpenBao comes back sealed.** Production uses manual Shamir unseal, so a reboot still
   needs a human. Transit auto-unseal is the planned fix
   (`plan/development/01-secrets-credentials.md`, problem 2 and phase B2).
-- **A container created under the old policy keeps it.** The policy is fixed at create
-  time, so a service picks up `always` only when its deploy recreates the container.
+- **Start order within a boot unit** is the container listing's order. `podman-compose`
+  v1.0.6's source passes `--requires` for `depends_on`, so for containers it created, starting
+  an app also starts its database; the podman-compose version that created the production
+  containers is unverified. "Started" is not "accepting connections", either: an app on no
+  restart policy that exits on a refused connection is not retried, and whether Semaphore
+  retries its database is unverified.
 - **No automation reboots a host to prove any of this.** See `docs/MISTAKES.md` 10.15.
 
 ---
@@ -1063,7 +1099,7 @@ pip3 install --upgrade podman-compose>=1.3.0
 | `container_name:` | Yes | Yes | Yes | Always set explicitly |
 | `healthcheck:` definition | Yes | Yes | Yes | Runs but not enforced for deps |
 | `restart: always` | Yes | Yes | Yes | Started at boot by `podman-restart.service` (see sec 11) |
-| `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. Not used (sec 11) |
+| `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. No repo compose file uses it; a legacy container that carries it (production openbao) is started by its per-service boot unit (sec 11) |
 | `restart: "no"` | Yes | Yes | Yes | One-shot containers only, labelled `agent-cloud.one-shot: "true"` |
 | `env_file:` (simple KEY=VALUE) | Yes | Yes | Yes | |
 | `env_file:` (quoted values) | Yes | Partial | Partial | Avoid quotes |

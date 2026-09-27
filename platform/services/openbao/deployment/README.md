@@ -42,6 +42,16 @@ Generated files in `secrets/` are gitignored. Back them up to `site-config/secre
 - `init.json` — root token + unseal key (CRITICAL)
 - `*-role-id.txt` / `*-secret-id.txt` — AppRole credentials per service
 
+## Production layout (recorded 2026-09-26)
+
+Production OpenBao was not created from this directory. Inspect Host Containers (task 1484)
+found one container, `workflow-openbao`, running under rootful podman from a legacy standalone
+directory in the deploy user's home, with restart policy `unless-stopped`. Podman's boot unit
+starts only `always` containers, so the inventory declares `podman_rootful: true` and that
+directory as `compose_working_dir`, and `ensure-service-persistence.yml` gives it
+`agent-cloud-boot-openbao.service` (see `plan/architecture/05-platform-infra.md` section 11).
+It still comes back **sealed** after a reboot: production uses manual Shamir unseal.
+
 ## Policies
 
 Policy scopes are documented in [config/policies/README.md](config/policies/README.md).

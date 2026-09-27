@@ -51,6 +51,13 @@ flat-Caddyfile deployment. Never pass a Cloudflare credential on the command lin
 See [site fragments](../deployment/sites/README.md) and the
 [platform infrastructure overview](../../../../plan/architecture/05-platform-infra.md).
 
+Production Caddy (recorded 2026-09-26) is one rootless podman container, `caddy`, on
+`restart: always`, created from a legacy standalone directory in the deploy user's home rather
+than from `platform/services/caddy/deployment` (Inspect Host Containers, task 1486). The
+inventory declares that directory as `compose_working_dir`; `ensure-service-persistence.yml`
+enabled linger and podman's user boot unit for it (task 1491), and Verify Service Persistence
+passes (task 1521). It declares no health path, so Verify Service Health does not cover it.
+
 ## NextCloud Configuration
 
 - [AIO Reverse Proxy Setup](https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md#adapting-the-sample-web-server-configurations-below)

@@ -100,12 +100,13 @@ supersede it with a new entry and link both.
 | 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
+| 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | Convention (pre-commit hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
-| 6.6 | **x2** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
+| 6.6 | **x3** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | Test (rootful case) |
@@ -2290,6 +2291,30 @@ checkout another task owns. The checkout belongs to the task that is running in 
 `git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
 working directory is the signal.
 
+### 5.13 A broad stage commits whatever a tool generated in the tree (widens 6.6's staging rule)
+
+**What happened.** See 6.6: its occurrence 2 (a `git add -A` shipped the graph auto-index's
+output) and occurrence 3 (a `git add -A` on PR #287 shipped six generated
+`.agents/skills/source-command-opsx-*` directories). 3.4 records the same exposure from the other
+side: a validation step's cleanup deleted a committed file that was one `git add -A` away from
+being committed as a deletion.
+
+**Root cause.** 6.6's rule is about checking one generated artifact, and "stage named paths"
+lives only in an occurrence note, so it is not read as a rule. Tools in this repo change the
+working tree in ways `.gitignore` does not cover (the graph indexer rewrites its tracked artifact;
+the OpenSpec tooling adds untracked skill directories), and a broad stage turns any of them into
+a commit.
+
+**The rule.** Supersedes the staging advice in 6.6's occurrence 2. Stage explicit paths. Read
+`git status --short` before every commit, and commit a file you did not write only with a reason
+stated in the commit message.
+
+**Enforced by.** Convention, which three occurrences make insufficient. Concrete proposal: a local
+pre-commit hook in `.pre-commit-config.yaml` that fails when a commit ADDS a path under
+`.agents/`, `.claude/`, `.opencode/` or `.codebase-memory/` that the target branch does not track,
+unless the commit message names it. The graph pair is already gated by
+`graph-artifact-consistent`.
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -2443,7 +2468,7 @@ prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIF
 
 ### 6.6 A generated artifact rewritten under the wrong identity, one `git add -A` from being committed
 
-**Occurrences: 2** — 2026-09-23, 2026-09-23
+**Occurrences: 3** — 2026-09-23, 2026-09-23, 2026-09-26
 
 **What happened.** On 2026-09-23 a Codex review of the main checkout found
 `.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
@@ -2476,6 +2501,15 @@ fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it 
 gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;
 and a broad stage picked up files I had not touched. Stage named paths, never the whole tree,
 in any worktree the auto-indexer watches.
+
+**Occurrence 3 — 2026-09-26.** Fixing review findings on the documentation PR #287, I staged
+with `git add -A` and commit `ec1d1fc` pushed six untracked `.agents/skills/source-command-opsx-*`
+directories (1,107 lines), unrelated to the PR. They appeared in that worktree after the previous
+commit (22:18 local); which command generated them is not established, and the main checkout
+had carried the same set since 2026-09-18. The independent review of that head caught it before
+merge, and `d5dddd0` untracked them. The rule did not fire because "stage named paths" sits in
+occurrence 2's note, not in the rule, and the graph gate covers only the graph pair. Widened in
+5.13.
 
 ### 6.7 Task-local variable shadowing broke a lazy play expression
 
