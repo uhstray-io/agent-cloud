@@ -2,6 +2,10 @@
 # (config/ IS committed — config-as-code; only the Grafana admin pw stays out.)
 .env
 config/scrape.d/*.yml
+# Rendered from templates/config.alloy.j2 and templates/prometheus.yml.j2 by
+# deploy-o11y.yml. Keep them on local targets across shared rsync --delete runs.
+/config/config.alloy
+/config/prometheus.yml
 # These two Grafana alert files are rendered on the target, never committed.
 # Other alert rules in this directory may be committed as config-as-code.
 config/grafana/provisioning/alerting/observability.yml

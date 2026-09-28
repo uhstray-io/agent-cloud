@@ -522,7 +522,7 @@
           - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | length == 14
           - (_agentgateway_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'identity') | list | length == 1
           - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'LLM tokens by identity, model, and token type') | list | length == 1
-          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Rejected requests by reason') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Rejected access records (reason pending sample)') | list | length == 1
           - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Rate-limited requests (429)') | list | length == 1
           - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Agentgateway build') | list | length == 1
           - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent access records') | list | length == 1

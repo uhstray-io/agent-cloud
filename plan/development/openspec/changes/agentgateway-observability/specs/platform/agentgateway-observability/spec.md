@@ -203,8 +203,10 @@ The observability stack SHALL provision, from committed configuration alone, two
 dashboards. The client-view dashboard stands on its own, not as a row on another
 dashboard, and shows p50 and p95 first-token latency, request duration, error ratio and
 per-identity request rate. The operations dashboard shows token usage by identity and
-model, rejections by reason, process health, the gateway's access records and a trace
-search.
+model, rejection access records, process health, the gateway's access records and a
+trace search. Rejection grouping by reason is accepted only after the gateway's live
+OTLP record shape and reason field are verified; until then the dashboard shows raw 4xx
+records and the implementation task remains open.
 
 #### Scenario: Dashboard survives a non-destructive redeploy
 - **WHEN** updated observability configuration is applied through the normal Semaphore

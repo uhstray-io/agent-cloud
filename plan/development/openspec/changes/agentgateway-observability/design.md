@@ -410,15 +410,18 @@ This change owns the gateway side and lists the o11y items as dependencies.
     - Operations: `agentgateway-traffic` is extended and renamed to "Agentgateway
       operations". This change asks to keep the uid, so links and the landed assert keep
       resolving; the o11y session makes that call. The dashboard gains tokens by identity, model and
-      `gen_ai_token_type`, rejections by `reason`, and requests with HTTP status 429,
-      `agentgateway_build_info`, access records from Loki
-      (`{service="agentgateway", signal="access-log"}`) and a Tempo search on uid
-      `tempo`. The eight-panel assert (`deploy-o11y.yml:502`) moves to the new count.
+      `gen_ai_token_type`, a raw 4xx access-record panel from Loki using
+      `{service="agentgateway", signal="access-log"}`, requests with HTTP status 429,
+      `agentgateway_build_info` and a Tempo search on uid
+      `tempo`. The panel-count assert (`deploy-o11y.yml:502`) moves to the new count.
+      The panel does not yet group rejections by reason: gateway tasks 4.2/4.3 must
+      capture an OTLP record and verify its reason field and Loki line shape first.
+      Task 7.1 remains partially open until that evidence supports a reason query.
       The previously proposed `agentgateway_requests_shed_total` is not listed in the
       gateway 1.5 metric reference, and no source definition has been verified. The
-      replacement uses the documented status breakdown of `agentgateway_requests_total`.
-      A live 429 receipt
-      is still required before claiming that this panel captures rate-limit events.
+      rate-limit panel uses the documented status breakdown of
+      `agentgateway_requests_total`, aggregated across matching identities. A live 429
+      receipt is still required before claiming that this panel captures rate-limit events.
     - Client view: `agentgateway-client-view.json`, uid `agentgateway-client-view`, with
       p50 and p95 first-token latency from
       `agentgateway_gen_ai_server_time_to_first_token_bucket`, request duration, the 4xx

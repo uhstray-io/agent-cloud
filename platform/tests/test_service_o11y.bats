@@ -464,7 +464,7 @@ assert len(next(task for task in normal if task['name'] == 'Refuse a normal depl
 PY
 }
 
-@test "o11y: shared local placement preserves rendered alerts and copies committed rules" {
+@test "o11y: shared local placement preserves rendered configs and alerts and copies committed rules" {
   command -v rsync >/dev/null 2>&1 || skip "rsync not available"
   python3 - "$REPO_ROOT/platform/playbooks/tasks/place-monorepo.yml" "$DEPLOY_DIR/.gitignore" <<'PY'
 from pathlib import Path
@@ -478,11 +478,17 @@ script = next(task['ansible.builtin.shell'] for task in placement
               if task['name'] == 'Copy working tree into place (local mode)')
 assert '--delete-excluded' not in script
 rel = Path('platform/services/o11y/deployment/config/grafana/provisioning/alerting')
+generated = Path('platform/services/o11y/deployment/config')
 with tempfile.TemporaryDirectory(prefix='o11y-placement-') as tmp:
     source, target = Path(tmp) / 'source', Path(tmp) / 'target'
     (source / rel).mkdir(parents=True)
     (source / 'platform/services/o11y/deployment/.gitignore').write_text(Path(sys.argv[2]).read_text())
     (source / rel / 'inference.yml').write_text('committed\n')
+    (source / generated).mkdir(parents=True, exist_ok=True)
+    (source / generated / 'loki-config.yml').write_text('committed config\n')
+    (target / generated).mkdir(parents=True)
+    for name in ('config.alloy', 'prometheus.yml'):
+        (target / generated / name).write_text('rendered config\n')
     (target / rel).mkdir(parents=True)
     for name in ('observability.yml', 'contact.yml'):
         (target / rel / name).write_text('rendered\n')
@@ -491,6 +497,9 @@ with tempfile.TemporaryDirectory(prefix='o11y-placement-') as tmp:
     subprocess.run(['bash', '-c', rendered], check=True, capture_output=True, text=True)
     assert all((target / rel / name).read_text() == 'rendered\n'
                for name in ('observability.yml', 'contact.yml'))
+    assert all((target / generated / name).read_text() == 'rendered config\n'
+               for name in ('config.alloy', 'prometheus.yml'))
+    assert (target / generated / 'loki-config.yml').read_text() == 'committed config\n'
     assert (target / rel / 'inference.yml').read_text() == 'committed\n'
 PY
 }
@@ -937,10 +946,15 @@ for metric in ('up{job="agentgateway"}', 'agentgateway_config_synchronized',
                'status="429"', 'agentgateway_build_info'):
     assert metric in queries, metric
 assert 'or vector(0)' not in queries
-rejections = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rejected requests by reason')
-assert 'sum by (reason)' in rejections['targets'][0]['expr']
-assert 'agentgateway_requests_total' in rejections['targets'][0]['expr']
-assert 'reason!=""' in rejections['targets'][0]['expr']
+rejections = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rejected access records (reason pending sample)')
+assert rejections['type'] == 'logs'
+assert rejections['datasource']['uid'] == 'loki'
+assert '4xx access records' in rejections['description']
+assert 'Grouping by rejection reason awaits a captured access record' in rejections['description']
+assert rejections['targets'][0]['expr'].startswith('{service="agentgateway", signal="access-log"} |~ `')
+assert 'http[.]status' in rejections['targets'][0]['expr']
+assert '4[0-9]{2}' in rejections['targets'][0]['expr']
+assert 'agentgateway_requests_total' not in rejections['targets'][0]['expr']
 access = next(panel for panel in dashboard['panels'] if panel['title'] == 'Recent access records')
 assert access['datasource']['uid'] == 'loki'
 assert access['targets'][0]['expr'] == '{service="agentgateway", signal="access-log"}'
@@ -952,6 +966,8 @@ assert traces['targets'][0]['query'] == '{ resource.service.name = "agentgateway
 rate_limited = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rate-limited requests (429)')
 assert 'agentgateway_requests_total' in rate_limited['targets'][0]['expr']
 assert 'status="429"' in rate_limited['targets'][0]['expr']
+assert 'sum(increase(' in rate_limited['targets'][0]['expr']
+assert 'identity=~"$identity"' in rate_limited['targets'][0]['expr']
 
 client = json.loads((deploy / 'config/grafana/dashboards/agentgateway-client-view.json').read_text())
 assert client['uid'] == 'agentgateway-client-view'

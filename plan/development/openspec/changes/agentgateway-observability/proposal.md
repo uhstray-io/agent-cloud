@@ -122,7 +122,8 @@ o11y-side work, owned by the o11y session per the handoff of 2026-09-28 and list
 as dependencies:
 
 - the operations dashboard: rename and extend `agentgateway-traffic`, and update its
-  eight-panel assert
+  panel-count assert. It currently shows raw 4xx Loki access records; reason grouping
+  remains gated on the gateway's 4.2/4.3 live record sample and verified field shape.
 - the new `agentgateway-client-view` dashboard
 - the receiver's mutual-TLS block
 - the `signal` label hint

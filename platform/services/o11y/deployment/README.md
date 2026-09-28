@@ -48,6 +48,17 @@ The source configs are `templates/config.alloy.j2` and
 `templates/prometheus.yml.j2`; `Deploy o11y` renders their runtime files under
 `config/` before starting the containers.
 
+The agentgateway operations dashboard currently displays raw 4xx access records
+from Loki. Its `http.status` filter does not parse or group a rejection reason.
+Gateway tasks 4.2/4.3 must capture a real OTLP record and verify the exported
+line shape and reason field before a reason-grouped panel can be implemented or
+claimed complete.
+
+The production Semaphore inventory is a static copy of private site-config. After
+changing private inventory, run the reviewed `sync-inventory.yml` check and apply
+through Semaphore and verify its readback before a Dev-bound deploy relies on the
+new values. A site-config merge alone does not update Semaphore's inventory copy.
+
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
 Run `Verify o11y Metrics Target (Dev)` through Semaphore for each enabled

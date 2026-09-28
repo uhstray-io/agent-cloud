@@ -76,6 +76,8 @@
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
       --exclude build/ --exclude '*.egg-info/' \
+      --exclude platform/services/o11y/deployment/config/config.alloy \
+      --exclude platform/services/o11y/deployment/config/prometheus.yml \
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/observability.yml \
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/contact.yml \
       "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"

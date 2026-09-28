@@ -109,12 +109,12 @@
     },
     {
       "id": 10,
-      "title": "Rejected requests by reason",
-      "type": "timeseries",
+      "title": "Rejected access records (reason pending sample)",
+      "type": "logs",
       "datasource": {"type": "loki", "uid": "loki"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37},
-      "targets": [{"refId": "A", "expr": "sum by (reason) (rate(agentgateway_requests_total{job=\"agentgateway\", reason!=\"\"}[5m]))", "legendFormat": "{{reason}}"}],
-      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}
+      "description": "Shows 4xx access records. Grouping by rejection reason awaits a captured access record and verified OTLP-to-Loki field shape.",
+      "targets": [{"refId": "A", "expr": "{service=\"agentgateway\", signal=\"access-log\"} |~ `http[.]status([[:space:]]*=[[:space:]]*|\"?[[:space:]]*:[[:space:]]*\"?)[\"']?4[0-9]{2}`"}]
     },
     {
       "id": 11,
@@ -122,7 +122,7 @@
       "type": "stat",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 5, "w": 6, "x": 12, "y": 37},
-      "targets": [{"refId": "A", "expr": "increase(agentgateway_requests_total{job=\"agentgateway\", status=\"429\"}[5m])", "instant": true}],
+      "targets": [{"refId": "A", "expr": "sum(increase(agentgateway_requests_total{job=\"agentgateway\", status=\"429\", identity=~\"$identity\"}[5m]))", "instant": true}],
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
     },
     {

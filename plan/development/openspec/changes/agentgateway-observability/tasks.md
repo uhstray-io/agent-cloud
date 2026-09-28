@@ -296,17 +296,20 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 7. Dashboards and other o11y-side dependencies (design decision 11)
 
-- [x] 7.1 **[o11y]** Operations dashboard: extend `agentgateway-traffic.json` and rename
+- [ ] 7.1 **[o11y]** Operations dashboard: extend `agentgateway-traffic.json` and rename
       it "Agentgateway operations". This change asks to keep the uid. Add tokens by
-      identity, model and `gen_ai_token_type`, rejections by `reason`,
-      a `Rate-limited requests (429)` panel using
-      `agentgateway_requests_total{status="429"}`, `agentgateway_build_info`, access records
+      identity, model and `gen_ai_token_type`, raw 4xx access records (reason grouping
+      remains gated on a captured OTLP record and verified reason field/line shape from
+      gateway tasks 4.2/4.3), a `Rate-limited requests (429)` panel using the status
+      selector on `agentgateway_requests_total`, `agentgateway_build_info`, access records
       (`{service="agentgateway", signal="access-log"}`, which needs 4.1) and a Tempo
       search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:502`.
       The upstream [Prometheus guide](https://agentgateway.dev/docs/standalone/latest/documentation/observability/metrics/prometheus/)
       documents the v1.5.0 metrics endpoint and says `agentgateway_requests_total`
       is broken down by status; task 4.6 must still confirm a real 429 appears in
-      that series before claiming rate-limit coverage.
+      that series before claiming rate-limit coverage. The panel-count and query
+      implementation is present, but leave this task open until tasks 4.2/4.3 establish
+      the access-record stream and reason extraction, and task 4.6 confirms live 429 data.
 - [x] 7.2 **[o11y]** Client-view dashboard: `agentgateway-client-view.json`, uid
       `agentgateway-client-view`, with p50 and p95 first-token latency, request
       duration, the 4xx and 5xx ratio, and per-identity request rate, plus an `identity`
@@ -363,6 +366,10 @@ is a separate dashboard, with operations as a second dashboard.
       (delivered by 8.1); `inference-telemetry-production` 1.4 (per-port sources
       available after 5.1)
 - [ ] 9.4 Validation gate:
+      - After any private site-config inventory change, run the reviewed
+        `platform/semaphore/sync-inventory.yml` check and apply through Semaphore,
+        then verify Semaphore readback before a Dev-bound deploy relies on those values.
+        A site-config merge alone does not update Semaphore's static inventory copy.
       - After an hour of production traffic, run the normal `Deploy o11y (Dev)`
         Semaphore template from the merged `dev` revision, preserving Prometheus, Loki,
         Tempo and Grafana volumes. Read back both dashboards and the previously recorded
