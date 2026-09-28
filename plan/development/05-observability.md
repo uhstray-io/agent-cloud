@@ -787,8 +787,8 @@ the `o11y` VM (`o11y_svc`).
 > query or proxy all three data sources, and read back both the observability
 > estate and agentgateway traffic dashboards. The gateway deploy (1673) proved
 > readiness, API-key refusal, a fresh receiver scrape, and a keyed model
-> completion. PR #297 added an opt-in credential-free trace canary after Claude
-> review and resolution of CodeRabbit's two findings. The Dev-bound verifier
+> completion. PR #297 added an opt-in credential-free trace canary; both
+> CodeRabbit review threads were resolved. The Dev-bound verifier
 > (1682) sent 100 direct anonymous 401 requests and found a Tempo trace in the
 > bounded canary window, a recent gateway log in Loki, and a healthy Prometheus
 > scrape. The Loki check accepts any labeled gateway log from the preceding
@@ -805,7 +805,9 @@ the `o11y` VM (`o11y_svc`).
 > Its remaining acceptance checks are the second node's one-minute delivery
 > bound, GPU counter compatibility, receiver-outage buffering, and persistence
 > after reboot. The Grafana trace-to-log and trace-to-metric pivots are
-> provisioned but still need an operator click-through receipt. The local
+> provisioned but still need an operator click-through receipt. The trace
+> receiver is active before the required fail-closed enablement gate and
+> production alert-delivery proof; both remain open acceptance work. The local
 > wipe/redeploy gate remains deferred to preserve local data.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->

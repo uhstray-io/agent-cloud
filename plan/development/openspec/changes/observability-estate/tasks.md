@@ -31,7 +31,7 @@
 
 - [x] 5.1 Inventory every dashboard in the original `uhstray-io/o11y` repository, map each query to currently deployed exporters/backends, and record retained, rewritten, and deferred assets in `05-observability.md`.
 - [ ] 5.2 Provision an agentgateway Grafana dashboard using the upstream standalone PromQL contract and stable Prometheus UID. Verify request, error, token, and latency series against the production receiver; make absent metrics visible rather than claiming traffic coverage.
-- [x] 5.3 Implement a pinned, persistent Tempo backend and an Alloy OTLP traces pipeline with bounded retention, private ingress, and a fail-closed trace gate. Provision and health-check Tempo as a Grafana data source. The production receiver and pilot trace receipts passed.
+- [ ] 5.3 Implement a pinned, persistent Tempo backend and an Alloy OTLP traces pipeline with bounded retention, private ingress, and a fail-closed trace gate. Provision and health-check Tempo as a Grafana data source. The backend, pipeline, data source, and production trace receipt passed; the fail-closed gate remains open under 3.1 and 3.4.
 - [ ] 5.4 Configure agentgateway's sampled trace export with stable `service.name` and no prompt/completion capture; deploy gateway and receiver from reviewed `dev` through Semaphore and prove a real trace in Tempo plus metrics/log correlation.
 - [ ] 5.5 Modernize and provision the original host/container dashboard only after its node-exporter and cAdvisor inputs have named live receipts. Keep the seven Mimir dashboards deferred until Mimir and their queries are migrated to the current Grafana schema.
 
@@ -40,5 +40,6 @@ and token usage have named production metric receipts; the time-to-first-token
 histogram has no series yet, and the status-labeled error series has not been
 queried separately. A real Tempo trace and same-service Loki/Prometheus signals
 passed, but Grafana's trace pivots still need an operator click-through receipt.
-The four DGX follow-up checks and the data-preserving local rebuild deferral
-remain separate acceptance work.
+The trace receiver is active before the required fail-closed enablement gate
+and production alert-delivery proof; both remain open acceptance work. The four
+DGX follow-up checks and the data-preserving local rebuild deferral remain open.
