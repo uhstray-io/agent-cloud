@@ -64,7 +64,7 @@ groups:
 {% endif %}
 {# The local inventory generated before this rollout still needs the Caddy pilot
    contract; a declared inventory list overrides this default. #}
-{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
+{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
       - uid: {{ target.uid }}
         title: Missing telemetry for {{ target.service }} at {{ target.instance }}
         condition: B

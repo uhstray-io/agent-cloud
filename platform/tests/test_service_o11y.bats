@@ -770,7 +770,7 @@ template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
 )
 contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
-targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy', 'instance': 'caddy:2021'}]
+targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}]
 for enabled in (False, True):
     for declared in ([], targets):
         rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False, o11y_alerts_enabled=enabled))['groups'][0]['rules']
@@ -781,8 +781,8 @@ for enabled in (False, True):
         assert rules[0]['labels']['owner'] == 'platform-operations'
         assert rules[0]['labels']['environment'] == 'prod'
         if declared:
-            assert rules[1]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy'
-            assert rules[1]['labels']['service'] == 'caddy'
+            assert rules[1]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
+            assert rules[1]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[1]['labels']['owner'] == 'platform-operations'
         if enabled:
             for rule in rules:
@@ -794,7 +794,7 @@ for enabled in (False, True):
         assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
         assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
         if declared:
-            assert 'absent_over_time(up{service="caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
+            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
     if enabled:
         receiver = contact['contactPoints'][0]['receivers'][0]
@@ -1277,6 +1277,13 @@ import yaml
 from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
+repo = deploy.parents[3]
+caddy = yaml.safe_load((repo / 'platform/services/caddy/deployment/compose.yml').read_text())
+local_inventory = yaml.safe_load((repo / 'platform/inventory/local-dev.yml.example').read_text())
+caddy_target = local_inventory['all']['children']['o11y_svc']['hosts']['o11y-local']['o11y_expected_metrics_targets'][0]
+assert caddy_target['service'] == f"{caddy['name']}/caddy"
+for verifier in ('verify-o11y-service.yml', 'verify-o11y-metrics-target.yml'):
+    assert "(/[a-z][a-z0-9_-]*)?" in (repo / 'platform/playbooks' / verifier).read_text()
 overview = json.loads((deploy / 'config/grafana/dashboards/service-overview.json').read_text())
 service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'service')
 assert service['datasource']['uid'] == 'prometheus'
@@ -1308,6 +1315,7 @@ for name in ('scrape-agentgateway.yml.j2', 'scrape-dgx-spark.yml.j2'):
         assert forbidden in template
 
 alerts = (deploy / 'templates/alerts.yml.j2').read_text()
+assert f"'service': '{caddy_target['service']}'" in alerts
 assert 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])' in alerts
 assert 'service: \'{{ target.service }}\'' in alerts
 PY
