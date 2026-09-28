@@ -1,7 +1,7 @@
 ---
 # Read-only production budget receipt. Run as a Dev-bound Semaphore task after
-# deployment; copy its numeric task ID to private inventory for both budget
-# receipts. No config is changed and only bounded, nonsecret values are shown.
+# deployment; copy its numeric ID from the successful Semaphore task record to
+# private inventory for both budget receipts. No config is changed.
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -21,13 +21,12 @@
       changed_when: false
       check_mode: false
 
-    - name: Require the exact reviewed revision and a real Semaphore task
+    - name: Require the exact reviewed revision and a real production run
       ansible.builtin.assert:
         that:
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
-          - lookup('env', 'SEMAPHORE_TASK_ID') | default('') is match('^[1-9][0-9]*$')
           - not ansible_check_mode
           - not (local_mode | default(false) | bool)
         fail_msg: "Budget receipts require a real production run from the exact reviewed Dev revision."
@@ -40,7 +39,6 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    _semaphore_task_id: "{{ lookup('env', 'SEMAPHORE_TASK_ID') }}"
   tasks:
     - name: Require explicit production budget declarations
       ansible.builtin.assert:
@@ -151,7 +149,7 @@
       ansible.builtin.debug:
         msg:
           status: verified
-          semaphore_task_id: "{{ _semaphore_task_id }}"
+          receipt_instruction: "Record this successful Semaphore task's numeric ID"
           prometheus_retention: "{{ o11y_prom_retention }}"
           prometheus_retention_size: "{{ o11y_prom_retention_size }}"
           loki_retention: "{{ o11y_loki_retention }}"

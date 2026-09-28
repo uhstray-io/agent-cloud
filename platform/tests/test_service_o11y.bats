@@ -1048,6 +1048,7 @@ for name in ('Drill o11y Active Alert Delivery (Dev)', 'Recover o11y Active Aler
     assert templates[name]['repository'] == 'agent-cloud dev'
     assert [var['name'] for var in templates[name]['survey_vars']] == ['expected_repository_sha', 'expected_receiver_sha']
 assert "_deployed_revision.stdout == expected_receiver_sha" in str(drill)
+assert "SEMAPHORE_TASK_ID" not in str(drill)
 assert "_deployed_revision.stdout == expected_receiver_sha" in str(recovery)
 PY
 }
@@ -1091,7 +1092,7 @@ import yaml
 playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:3]]
 comparator = sys.argv[3]
 assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
-assert "lookup('env', 'SEMAPHORE_TASK_ID')" in str(playbook[1]['tasks'][-1])
+assert "SEMAPHORE_TASK_ID" not in str(playbook)
 assert playbook[2]['tasks'][0]['name'] == 'Require explicit production budget declarations'
 tasks = playbook[2]['tasks']
 names = {task['name'] for task in tasks}
@@ -1101,7 +1102,7 @@ assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configurat
         'Compare equivalent live and declared retention units'} <= names
 assert all('no_log' not in task for task in tasks if task['name'].startswith('Read ') and 'configuration' in task['name'])
 summary = tasks[-1]['ansible.builtin.debug']['msg']
-assert set(summary) == {'status', 'semaphore_task_id', 'prometheus_retention',
+assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
     'scrape_sample_limit', 'active_prometheus_series'}
 assert 'http://' not in str(summary)

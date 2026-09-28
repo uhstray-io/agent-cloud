@@ -256,8 +256,8 @@
         - name: Recover and verify the active alert baseline
           ansible.builtin.include_tasks: tasks/o11y-recover-active-alert-drill.yml
 
-    - name: Report the production alert delivery receipt ID
+    - name: Report how to record the production alert delivery receipt
       ansible.builtin.debug:
         msg: >-
-          Production active alert delivery passed. Record Semaphore task
-          {{ lookup('env', 'SEMAPHORE_TASK_ID') }} as the alert delivery receipt.
+          Production active alert delivery passed. Record this successful
+          Semaphore task's numeric ID as the alert delivery receipt.
