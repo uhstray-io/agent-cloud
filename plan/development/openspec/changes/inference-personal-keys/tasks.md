@@ -131,7 +131,7 @@ are the gateway change's tasks 1.10 and 1.12; this change reads their answers.
       `tasks/emit-step-result.yml` with counts, identities and whether the deploy recreated
       the gateway; one result line through `tasks/push-loki-lines.yml`
 - [ ] 5.2 Lifetime vars `inference_key_lifetime_days: 30` and
-      `inference_key_grace_days: 3`, plus `inference_key_rotation_anchor` for the cohort
+      `inference_key_grace_days: 3`, plus `inference_key_rotation_day` (1-28) for the cohort
       branch of design decision 9 (built only if gateway task 1.12 finds no hot reload);
       the deploy and the reconcile read the same values
 - [ ] 5.3 `templates.yml`: template `Reconcile Inference User Keys`, `dev_variant: true`,
@@ -164,7 +164,7 @@ are the gateway change's tasks 1.10 and 1.12; this change reads their answers.
       "A missing gateway container is redeployed"; a username with a dot is refused by
       name while others reconcile, proving scenario "A non-conforming username is refused
       by name"; a new member gets a key, proving scenario "A declared member becomes
-      eligible"; with short local lifetime values and, on the cohort branch, an anchor
+      eligible"; with short local lifetime values and, on the cohort branch, a rotation day
       set so a cohort day falls in the test, every key rotates in one run with at most one
       gateway recreate and the old keys then get 401, proving scenarios "Rotation
       overlaps" and "The old key stops working at its expiry"; a removed member's key gets

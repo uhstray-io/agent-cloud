@@ -285,28 +285,33 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
    for up to a day. Alternative rejected: an Authentik webhook on group change,
    because it adds a second trigger path and still needs the schedule for expiry.
 
-9. **30-day lifetime, 3-day overlap, rotated as one cohort, expiry enforced by the
-   deploy.** `expires_at = issued_at + 30 days` is a hard maximum
-   (`inference_key_lifetime_days: 30`, `inference_key_grace_days: 3`). When successors
+9. **Monthly lifetime, 3-day overlap, rotated as one cohort, expiry enforced by the
+   deploy.** Joe, 2026-09-28, chose a fixed calendar day for the cohort ("Fixed calendar
+   day"), accepting that a key can live up to 34 days: a month of up to 31 days plus the
+   3-day grace. Without hot reload the hard maximum is therefore
+   `expires_at <= next cohort day + grace days`, at most 34 days after issue; with hot
+   reload it stays `issued_at + 30 days` (`inference_key_lifetime_days: 30`,
+   `inference_key_grace_days: 3`). When successors
    are minted depends on what a key change costs at the gateway, which the gateway
    change's task 1.12 settles:
    - **A key change restarts the gateway (no hot reload).** Keys rotate as one cohort,
-     so rotation costs a fixed number of restarts, not one per user. Cohort days fall
-     every 27 days (lifetime minus grace) from a declared anchor date,
-     `inference_key_rotation_anchor`. On a cohort day's first run the reconcile mints a
+     so rotation costs a fixed number of restarts, not one per user. The cohort day is a
+     fixed day of each calendar month, `inference_key_rotation_day` (1-28, so it exists in
+     every month). On a cohort day's first run the reconcile mints a
      successor for every current key issued before that day, and sets each old key's
      `previous_expires_at` to the earlier of its own `expires_at` and the cohort day plus
      the grace days. Rotation then restarts the gateway twice per cycle, on the cohort
      day and three days later when the previous keys drop, whatever the number of users.
-     A member who joins mid-cycle gets a key the next cohort day succeeds early, so no key
-     outlives 30 days. Why 27 days and not a fixed calendar day each month: a month runs
-     to 31 days, so a key minted on a monthly day either expires before the next month's
-     cohort day or needs a lifetime past 30 days (open question 6 asks Joe which to keep).
+     A member who joins mid-cycle gets a key the next cohort day succeeds early. Why a
+     calendar day and not every 27 days from an anchor: Joe chose the calendar day,
+     2026-09-28, for a rotation date people can remember; the 27-day anchor kept the
+     30-day maximum but drifts across the calendar. Rejected on that decision.
    - **Hot reload confirmed.** Each key gets its successor on its own day 27, because a
      key change then drops no stream and staggered rotations spread the user-facing
-     churn; the anchor variable is not used.
+     churn; the rotation-day variable is not used.
    In both branches both keys are enrolled until the old key's recorded expiry, so no
-   key is ever valid past 30 days and the user has three days to swap. The gateway
+   key is ever valid past its recorded expiry (at most 34 days after issue on the cohort
+   branch, 30 on the hot-reload branch) and the user has three days to swap. The gateway
    deploy renders a key only while `now < expires_at` (and the previous key only while
    `now < previous_expires_at`), and **fails** on a record whose expiry field is missing
    or unparseable, so a damaged record cannot become a non-expiring key. Keys are 48
@@ -418,7 +423,5 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
    ceiling (gateway change task 4.2).
 5. Should `platform-admins` members be added to `inference-users` automatically, or
    explicitly like everyone else? Default if unanswered: explicitly.
-6. Rotation cohort cadence, when a key change restarts the gateway: every 27 days from
-   a declared anchor (the default, keeping the 30-day maximum), or a fixed calendar day
-   each month with a lifetime of up to 34 days (a month plus the grace)? Default if
-   unanswered: 27 days.
+6. Decided 2026-09-28 (Joe): the cohort rotates on a fixed calendar day each month, with
+   a lifetime of up to 34 days.

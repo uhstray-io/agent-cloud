@@ -127,13 +127,14 @@ hours. It MUST NOT print a key value.
 - THEN that member gets no key, the run reports the username as refused, and every
   other member is still reconciled
 
-### Requirement: Keys expire after 30 days with an enforced overlap
-Every key SHALL carry an expiry no later than 30 days after issue. When a key change
-restarts the gateway, the reconcile SHALL rotate all keys together on a declared cohort
-day, every 27 days from a declared anchor, so that rotation restarts the gateway a fixed
-number of times per cycle whatever the number of users; when the gateway applies key
-changes without a restart, it SHALL instead mint each key's successor when that key is
-27 days old. In both cases the old key SHALL stay valid until its recorded expiry, at
+### Requirement: Keys expire within a month with an enforced overlap
+When a key change restarts the gateway, the reconcile SHALL rotate all keys together on a
+declared fixed day of each calendar month, so that rotation restarts the gateway a fixed
+number of times per cycle whatever the number of users, and every key SHALL carry an
+expiry no later than the next cohort day plus the grace days (at most 34 days after
+issue). When the gateway applies key changes without a restart, every key SHALL carry an
+expiry no later than 30 days after issue and the reconcile SHALL mint each key's
+successor when that key is 27 days old. In both cases the old key SHALL stay valid until its recorded expiry, at
 most three days after its successor is minted. The gateway deploy MUST render a key only
 while its recorded expiry is in the future and MUST fail on a record whose expiry is
 missing or unparseable, so that expiry is enforced by code on every deploy.

@@ -60,10 +60,10 @@ agent and operator identities. It does not work for a team:
   its rendered configuration changed (the gateway change's change-aware deploy). It runs
   hourly on a schedule declared in `templates.yml`, and the platform's shared
   scheduled-job-silent alert watches it.
-- **30-day rotation with a grace overlap, enforced.** Every key has a hard 30-day
-  lifetime written into its record. While a key change restarts the gateway, keys
-  rotate together on one cohort day every 27 days, so rotation restarts the gateway a
-  fixed number of times per cycle; if the gateway applies key changes without a
+- **Monthly rotation with a grace overlap, enforced.** Every key has a hard lifetime
+  written into its record. While a key change restarts the gateway, keys rotate together
+  on one fixed calendar day each month (Joe, 2026-09-28), so rotation restarts the
+  gateway a fixed number of times per cycle and a key lives at most 34 days; if the gateway applies key changes without a
   restart, each key's successor is minted on its own day 27. Both keys are valid until
   the old one's expiry. The gateway
   deploy renders a key only while its recorded expiry is in the future and refuses a
