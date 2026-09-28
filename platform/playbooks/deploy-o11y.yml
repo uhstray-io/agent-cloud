@@ -307,6 +307,53 @@
       until: _loki.rc == 0
       check_mode: false
 
+    - name: Verify Grafana can query its provisioned data sources
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -sS --config - "http://127.0.0.1:3000/api/datasources/uid/$1/health"
+          - datasource-health
+          - "{{ item }}"
+      loop: [prometheus, loki]
+      register: _datasource_health
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _datasource_health.rc == 0 and (_datasource_health.stdout | from_json).status == 'OK'
+      when: not ansible_check_mode
+
+    - name: Read the provisioned o11y self-monitoring dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/o11y-self-monitoring
+      register: _self_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _self_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require the committed self-monitoring dashboard to be active
+      ansible.builtin.assert:
+        that:
+          - (_self_dashboard.stdout | from_json).dashboard.uid == 'o11y-self-monitoring'
+          - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 6
+        fail_msg: "Grafana did not provision the o11y self-monitoring dashboard."
+      when: not ansible_check_mode
+
     - name: Verify enabled Grafana alert provisioning after a real deploy
       when:
         - o11y_alerts_enabled | default(false) | bool

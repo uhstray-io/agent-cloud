@@ -637,6 +637,38 @@ the `o11y` VM (`o11y_svc`).
 > need separate live queries. The local wipe/redeploy remains deferred to
 > preserve its data.
 
+> **Named production metric receipts, 2026-09-27:** Public PR #288 merged as
+> `9e9c41622774925747fc31ba0eaa98d9a9802ea3` after final-head Claude review
+> and green CI. Scoped publisher check task 1632 and real task 1633 created
+> `Verify o11y Metrics Target (Dev)` without changing other templates. Each
+> verifier run checked that exact clean Dev revision, one healthy named
+> Prometheus target, and a non-synthetic exporter metric from that target.
+> Tasks 1634 and 1635 found `node_memory_MemAvailable_bytes` from the two DGX
+> node exporters; task 1636 found `vllm:num_requests_running` from the head
+> vLLM endpoint. After agentgateway's reviewed redeploy, receiver-origin probe
+> 1637 returned `/metrics` HTTP 200 and task 1638 found
+> `agentgateway_config_synchronized` from its healthy scrape. These prove
+> metrics collection at that point in time. They do not prove DGX Loki log
+> delivery, sustained scrape health, or trace ingestion. Receiver firewall
+> check task 1639 read back default-deny inbound, SSH management allows, and
+> Grafana's Caddy-only port; Loki ingress was not yet published.
+
+> **Self-monitoring integration, pending rollout:** Grafana already provisions
+> Prometheus and Loki by stable UID over the private o11y network. The next
+> reviewed Dev deploy adds internal Prometheus scrapes for Grafana, Loki, and
+> Alloy alongside Prometheus's existing self scrape. It explicitly declares
+> Grafana's already-enabled `/metrics`, checks both data-source health
+> endpoints, and requires the committed `o11y-self-monitoring` dashboard to
+> appear in Grafana. The dashboard reports all four scrape states, active
+> series, samples per scrape,
+> Loki received bytes and lines, Alloy component health, and process memory.
+> These are source-level implementation claims until the Dev-bound Semaphore
+> deploy and live dashboard readback succeed. The check does not imply that
+> each panel has data; verify representative series and Loki ingestion after
+> rollout. Existing service-down alerts select `service` labels, so the new
+> self-scrape status is dashboard-visible but does not yet notify Discord.
+> Keep the local named volumes intact.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
