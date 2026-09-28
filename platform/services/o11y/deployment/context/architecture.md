@@ -32,8 +32,10 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 
 - Production DGX Spark and agentgateway metrics; receiver-side Grafana alerting.
 - Sampled agentgateway traces → Alloy OTLP → Tempo, with Grafana trace-to-log
-  correlation configured. A 2026-09-28 operator click-through verified a
-  same-span Loki log; trace-to-metrics still needs a functional UI receipt.
+  correlation configured. Loki's `traceid` derived field links matching logs
+  back to Tempo. A 2026-09-28 operator click-through verified a same-span Loki
+  log; trace-to-metrics and log-to-trace still need functional UI receipts after
+  the receiver deploys this revision.
 - OpenBao audit ingestion, orb-agent OpenTelemetry, and future
   Reliability/NetClaw consumers remain separately gated.
 
@@ -41,7 +43,7 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 
 | File | Role |
 |---|---|
-| `deployment/compose.yml` | grafana + prometheus + loki + alloy; pinned images; healthchecks |
+| `deployment/compose.yml` | grafana + prometheus + loki + alloy + tempo; pinned images; healthchecks |
 | `deployment/compose.local.yml` | slim overlay (caps, `label=disable`, `local-dev`, podman socket for Alloy) |
 | `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait Grafana healthy) |
 | `deployment/templates/env.j2` | image/port vars + Grafana admin pw (from OpenBao) |
@@ -51,3 +53,9 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 | `platform/playbooks/verify-o11y-production-budgets.yml` | read-only retention, sample-limit, and active-series receipt |
 
 `deployment/.env` is rendered per-deploy and gitignored.
+Semaphore's production inventory is a static copy of the private site-config
+file. After a reviewed private inventory change, run the versioned
+`platform/semaphore/sync-inventory.yml` and verify its readback before relying
+on a Dev-bound production task. Runtime Loki/Tempo config endpoints may emit
+multiple YAML documents, so the budget verifier selects the document carrying
+the setting it needs.
