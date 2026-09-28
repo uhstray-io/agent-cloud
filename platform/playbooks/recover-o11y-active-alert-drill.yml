@@ -1,0 +1,78 @@
+---
+# Separate idempotent recovery for an interrupted production active-state drill.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout before active-drill recovery
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+          - not ansible_check_mode
+        fail_msg: "Semaphore checked out a different revision or is in check mode; recovery did not run."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; active-drill recovery did not run."
+
+- name: Recover the active production alert baseline
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: Require an active production baseline
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - o11y_alerts_enabled | default(false) | bool
+        fail_msg: "Active-drill recovery requires a real production run with alerts still enabled."
+
+    - name: Verify the deployed revision before recovery
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the deployed receiver to match the reviewed revision
+      ansible.builtin.assert:
+        that: _deployed_revision.stdout == expected_repository_sha
+        fail_msg: "Deploy the reviewed revision before recovering its active alert drill."
+
+    - name: Converge and verify the active production baseline
+      ansible.builtin.include_tasks: tasks/o11y-recover-active-alert-drill.yml
+
+    - name: Report the active alert baseline recovery
+      ansible.builtin.debug:
+        msg: "Active production alert rule and Discord contact verified; the drill scrape and interruption marker are absent."

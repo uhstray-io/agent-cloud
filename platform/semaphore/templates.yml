@@ -1306,6 +1306,38 @@ templates:
         type: string
         required: true
 
+  - name: Drill o11y Active Alert Delivery (Dev)
+    playbook: platform/playbooks/drill-o11y-active-alert-delivery.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact deployed Dev revision required before the active-state delivery drill"
+        type: string
+        required: true
+    # Exercises an already-active production rule/contact with one failed
+    # scrape. Recovery removes only its generated scrape and reloads Prometheus.
+
+  - name: Recover o11y Active Alert Drill (Dev)
+    playbook: platform/playbooks/recover-o11y-active-alert-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact deployed Dev revision required for active-drill recovery"
+        type: string
+        required: true
+
+  - name: Verify o11y Production Budgets (Dev)
+    playbook: platform/playbooks/verify-o11y-production-budgets.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact deployed Dev revision required for the read-only receipt"
+        type: string
+        required: true
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's

@@ -1,0 +1,29 @@
+---
+# Shared fail-closed prerequisite for enabling trace intake or export. Receipt
+# IDs are Semaphore task IDs stored only in private site inventory.
+- name: Require exactly one declared o11y receiver for trace rollout
+  ansible.builtin.assert:
+    that: groups.get('o11y_svc', []) | length == 1
+    fail_msg: "Trace rollout requires exactly one declared o11y receiver."
+
+- name: Require the receiver's trace, alert, retention, and cardinality receipts
+  ansible.builtin.assert:
+    that:
+      - hostvars[_trace_receiver].o11y_trace_rollout_enabled | default(false) | bool
+      - hostvars[_trace_receiver].o11y_alerts_enabled | default(false) | bool
+      - hostvars[_trace_receiver].o11y_metrics_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+      - hostvars[_trace_receiver].o11y_alert_delivery_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+      - hostvars[_trace_receiver].o11y_retention_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+      - hostvars[_trace_receiver].o11y_cardinality_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+      - hostvars[_trace_receiver].o11y_prom_retention | default('') is match('^[1-9][0-9]*(ms|s|m|h|d|w|y)$')
+      - hostvars[_trace_receiver].o11y_prom_retention_size | default('') is match('^(0B|[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB))$')
+      - hostvars[_trace_receiver].o11y_loki_retention | default('') is match('^[1-9][0-9]*(ms|s|m|h|d|w|y)$')
+      - hostvars[_trace_receiver].o11y_tempo_retention | default('') is match('^[1-9][0-9]*(ms|s|m|h|d|w|y)$')
+      - hostvars[_trace_receiver].o11y_scrape_sample_limit | default(0) | int > 0
+      - hostvars[_trace_receiver].agentgateway_metrics_address | default('') | length > 0
+    fail_msg: >-
+      Trace rollout is blocked: enable trace rollout and alerting, record the
+      metrics, production alert delivery, retention, and cardinality Semaphore
+      task IDs, and declare the production retention and scrape sample budgets.
+  vars:
+    _trace_receiver: "{{ groups['o11y_svc'][0] }}"

@@ -864,6 +864,9 @@ assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 't
 dashboard = json.loads((deploy / 'config/grafana/dashboards/o11y-self-monitoring.json').read_text())
 assert dashboard['uid'] == 'o11y-self-monitoring'
 assert len(dashboard['panels']) >= 6
+component = next(panel for panel in dashboard['panels'] if panel['title'] == 'O11y components up (expected 5)')
+assert 'tempo' in component['targets'][0]['expr']
+assert 'max": 5' in json.dumps(component['fieldConfig'])
 assert all(panel['datasource']['uid'] == 'prometheus' for panel in dashboard['panels'])
 panels = {panel['id']: panel for panel in dashboard['panels']}
 assert all(panels[panel_id]['options']['colorMode'] == 'none' for panel_id in (2, 3))
@@ -880,6 +883,15 @@ verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11
 names = {task['name'] for task in verify['tasks']}
 assert 'Verify Grafana can query its provisioned data sources' in names
 assert 'Require the committed self-monitoring dashboard to be active' in names
+readback = next(task for task in verify['tasks'] if task['name'] == 'Require the committed self-monitoring dashboard to be active')
+assert any('O11y components up (expected 5)' in condition for condition in readback['ansible.builtin.assert']['that'])
+assert any('tempo_distributor_spans_received_total' in condition for condition in readback['ansible.builtin.assert']['that'])
+assert any('tempo_distributor_bytes_received_total' in condition for condition in readback['ansible.builtin.assert']['that'])
+tempo_config = next(task for task in verify['tasks'] if task['name'] == 'Read the live Tempo datasource correlation settings')
+assert '/api/datasources/uid/tempo' in tempo_config['ansible.builtin.command']['argv'][-1]
+correlation = next(task for task in verify['tasks'] if task['name'] == 'Require live Tempo trace-to-metric and trace-to-log mappings')
+assert any('tracesToMetrics.datasourceUid' in condition for condition in correlation['ansible.builtin.assert']['that'])
+assert any('tracesToLogsV2.datasourceUid' in condition for condition in correlation['ansible.builtin.assert']['that'])
 health = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana can query its provisioned data sources')
 assert 'curl -sS --config -' in health['ansible.builtin.command']['argv'][5]
 PY
@@ -997,4 +1009,95 @@ PY
   grep -q 'local-dev' "$f"
   grep -q 'podman.sock' "$f"
   ! grep -qE '^[[:space:]]*ports:' "$f"
+}
+
+@test "o11y: active alert drill preserves rules and has separate recovery" {
+  python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-active-alert-delivery.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-recover-active-alert-drill.yml" \
+    "$REPO_ROOT/platform/playbooks/recover-o11y-active-alert-drill.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+drill, probe, recover, recovery, deploy, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:]]
+assert drill[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
+tasks = drill[2]['tasks']
+names = [task['name'] for task in tasks]
+assert names.index('Require exactly one active service-down rule') < names.index('Verify Discord receipt credentials and history access')
+assert names.index('Verify Discord receipt credentials and history access') < names.index('Atomically claim the active-drill interruption marker')
+flight = next(task for task in tasks if 'block' in task)
+target = flight['block'][0]
+assert target['ansible.builtin.copy']['dest'].endswith('/config/scrape.d/o11y-prod-alert-drill.yml')
+assert 'o11y-production-active-alert-drill' in target['ansible.builtin.copy']['content']
+assert '127.0.0.1:65535' in target['ansible.builtin.copy']['content']
+assert 'service: "{{ _probe }}"' in target['ansible.builtin.copy']['content']
+assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
+assert flight['block'][-1]['vars']['drill_expect_alert'] is True
+assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
+recover_names = [task['name'] for task in recover]
+for before in ('Require the drill scrape job to be absent', 'Require every o11y alert rule to remain active', 'Require the production Discord contact point to remain present once'):
+    assert recover_names.index(before) < recover_names.index('Clear the active-drill marker after recovery checks pass')
+assert recovery[-1]['tasks'][-2]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
+normal = next(p for p in deploy if p.get('name') == 'Phase 1: Place repo + manage o11y secrets')['tasks']
+normal_names = [task['name'] for task in normal]
+assert normal_names.index('Require the active alert drill to be recovered before deploy') < normal_names.index('Place the monorepo + ensure podman/compose')
+templates = {item['name']: item for item in catalog['templates']}
+for name in ('Drill o11y Active Alert Delivery (Dev)', 'Recover o11y Active Alert Drill (Dev)'):
+    assert templates[name]['repository'] == 'agent-cloud dev'
+    assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
+PY
+}
+
+@test "o11y: shared trace gate refuses missing receipts and accepts complete inventory" {
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/assert-o11y-trace-rollout.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml" <<'PY'
+import sys
+import yaml
+
+gate, receiver, gateway = [yaml.safe_load(open(path, encoding='utf-8')) for path in sys.argv[1:]]
+assert gate[0]['ansible.builtin.assert']['that'] == "groups.get('o11y_svc', []) | length == 1"
+checks = gate[1]['ansible.builtin.assert']['that']
+required = ('o11y_trace_rollout_enabled', 'o11y_alerts_enabled',
+    'o11y_metrics_receipt_id', 'o11y_alert_delivery_receipt_id',
+    'o11y_retention_receipt_id', 'o11y_cardinality_receipt_id',
+    'o11y_prom_retention', 'o11y_prom_retention_size', 'o11y_loki_retention',
+    'o11y_tempo_retention', 'o11y_scrape_sample_limit', 'agentgateway_metrics_address')
+for name in required:
+    assert any(name in check for check in checks), name
+assert 'Trace rollout is blocked' in gate[1]['ansible.builtin.assert']['fail_msg']
+o11y_tasks = next(play for play in receiver if 'manage o11y secrets' in play.get('name', ''))['tasks']
+gateway_tasks = next(play for play in gateway if 'manage agentgateway secrets' in play.get('name', ''))['tasks']
+assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in o11y_tasks)
+assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in gateway_tasks)
+PY
+}
+
+@test "o11y: production budget receipt is read-only and emits bounded fields" {
+  python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" \
+    "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:]]
+assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
+assert "lookup('env', 'SEMAPHORE_TASK_ID')" in str(playbook[1]['tasks'][-1])
+assert playbook[2]['tasks'][0]['name'] == 'Require explicit production budget declarations'
+tasks = playbook[2]['tasks']
+names = {task['name'] for task in tasks}
+assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configuration',
+        'Read Tempo runtime configuration', 'Read the live Alloy sample limit',
+        'Read current Prometheus head series count'} <= names
+summary = tasks[-1]['ansible.builtin.debug']['msg']
+assert set(summary) == {'status', 'semaphore_task_id', 'prometheus_retention',
+    'prometheus_retention_size', 'loki_retention', 'tempo_retention',
+    'scrape_sample_limit', 'active_prometheus_series'}
+assert 'http://' not in str(summary)
+assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
+    'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
+template = next(t for t in catalog['templates'] if t['name'] == 'Verify o11y Production Budgets (Dev)')
+assert template['repository'] == 'agent-cloud dev'
+PY
 }

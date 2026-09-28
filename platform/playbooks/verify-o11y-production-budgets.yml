@@ -1,0 +1,148 @@
+---
+# Read-only production budget receipt. Run as a Dev-bound Semaphore task after
+# deployment; copy its numeric task ID to private inventory for both budget
+# receipts. No config is changed and only bounded, nonsecret values are shown.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision and a real Semaphore task
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+          - lookup('env', 'SEMAPHORE_TASK_ID') | default('') is match('^[1-9][0-9]*$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Budget receipts require a real production run from the exact reviewed Dev revision."
+
+- name: Read production retention and cardinality settings
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _semaphore_task_id: "{{ lookup('env', 'SEMAPHORE_TASK_ID') }}"
+  tasks:
+    - name: Require explicit production budget declarations
+      ansible.builtin.assert:
+        that:
+          - o11y_prom_retention is defined
+          - o11y_prom_retention_size is defined
+          - o11y_loki_retention is defined
+          - o11y_tempo_retention is defined
+          - o11y_scrape_sample_limit is defined
+          - o11y_scrape_sample_limit | int > 0
+        fail_msg: "Declare production Prometheus, Loki, Tempo, and scrape sample budgets in private inventory."
+
+    - name: Read the deployed receiver revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _receiver_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the receiver to run the reviewed revision
+      ansible.builtin.assert:
+        that: _receiver_revision.stdout == expected_repository_sha
+        fail_msg: "The production receiver is not on the reviewed Dev revision."
+
+    - name: Read Prometheus runtime retention flags
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsS
+          - http://prometheus:9090/api/v1/status/flags
+      register: _prom_flags
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read Loki runtime configuration
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, curl, -fsS, http://loki:3100/config]
+      register: _loki_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read Tempo runtime configuration
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, curl, -fsS, http://tempo:3200/status/config]
+      register: _tempo_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the live Alloy sample limit
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-alloy
+          - sh
+          - -c
+          - 'printf "%s\n" "$O11Y_SCRAPE_SAMPLE_LIMIT"'
+      register: _sample_limit
+      changed_when: false
+      check_mode: false
+
+    - name: Read current Prometheus head series count
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsSG
+          - --data-urlencode
+          - 'query=prometheus_tsdb_head_series{job="prometheus"}'
+          - http://prometheus:9090/api/v1/query
+      register: _head_series
+      changed_when: false
+      check_mode: false
+
+    - name: Require live budgets to match inventory and cardinality to be measurable
+      ansible.builtin.assert:
+        that:
+          - (_prom_flags.stdout | from_json).data['storage.tsdb.retention.time'] == o11y_prom_retention
+          - (_prom_flags.stdout | from_json).data['storage.tsdb.retention.size'] == o11y_prom_retention_size
+          - (_loki_config.stdout | from_yaml).limits_config.retention_period == o11y_loki_retention
+          - (_tempo_config.stdout | from_yaml).compactor.compaction.block_retention == o11y_tempo_retention
+          - _sample_limit.stdout | trim | int == o11y_scrape_sample_limit | int
+          - (_head_series.stdout | from_json).data.result | length == 1
+          - (_head_series.stdout | from_json).data.result[0].value[1] | int > 0
+        fail_msg: "A live retention/sample setting differs from inventory or active-series readback is absent."
+
+    - name: Report the sanitized production budget receipt
+      ansible.builtin.debug:
+        msg:
+          status: verified
+          semaphore_task_id: "{{ _semaphore_task_id }}"
+          prometheus_retention: "{{ o11y_prom_retention }}"
+          prometheus_retention_size: "{{ o11y_prom_retention_size }}"
+          loki_retention: "{{ o11y_loki_retention }}"
+          tempo_retention: "{{ o11y_tempo_retention }}"
+          scrape_sample_limit: "{{ o11y_scrape_sample_limit | int }}"
+          active_prometheus_series: "{{ (_head_series.stdout | from_json).data.result[0].value[1] | int }}"

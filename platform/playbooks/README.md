@@ -185,6 +185,9 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
 | `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
+| `drill-o11y-active-alert-delivery.yml` | Dev-bound production drill against already-active Grafana rules/contact; adds one failed scrape, reuses the named Discord receipt path, then removes only its scrape declaration and verifies recovery |
+| `recover-o11y-active-alert-drill.yml` | Separate idempotent recovery for an interrupted active alert drill; clears its marker only after scrape, rule, and contact readback |
+| `verify-o11y-production-budgets.yml` | Dev-bound read-only production receipt for Prometheus/Loki/Tempo retention, Alloy sample limit, active Prometheus series, and the Semaphore task ID |
 | `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
 | `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |

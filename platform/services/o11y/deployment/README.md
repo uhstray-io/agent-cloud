@@ -65,3 +65,48 @@ contact-point removal from code, removes the webhook line from the existing
 `.env`, and verifies the live paused state. It can restore alerts while
 OpenBao is unavailable. Persistent alert enablement is a separate reviewed
 inventory rollout after a successful canary receipt.
+
+## Production alert-delivery drill
+
+When production alerts are already enabled, use `Drill o11y Active Alert
+Delivery (Dev)` with the exact clean deployed Dev SHA. It checks that the
+service-down rule and all o11y rules are active, the Discord contact exists
+once, and the bot can read channel history before it adds a uniquely labeled
+failed scrape. The shared probe waits for the named `up=0`, Grafana firing, and
+a newer matching Discord message. Its `always` path removes only the generated
+scrape file, reloads Prometheus, and verifies the active rules and contact are
+still present.
+
+If the controller stops before that verification, normal receiver deploys
+refuse the `.o11y-active-alert-drill` marker. Run
+`Recover o11y Active Alert Drill (Dev)` with the same deployed SHA. Recovery is
+safe to repeat and clears the marker only after Prometheus no longer has the
+drill job and the active alert/contact state is read back. It does not remove
+stored metrics, logs, or traces. This recovery is separate from the paused
+canary's `Restore o11y Alert Baseline (Dev)` workflow.
+
+## Trace rollout receipts
+
+Both receiver and gateway deploys use the shared trace gate when tracing is
+requested. Private receiver inventory must set
+`o11y_trace_rollout_enabled: true`, retain `o11y_alerts_enabled: true`, declare
+`agentgateway_metrics_address`, and store the four Semaphore task IDs in
+`o11y_metrics_receipt_id`, `o11y_alert_delivery_receipt_id`,
+`o11y_retention_receipt_id`, and `o11y_cardinality_receipt_id`. It also needs
+explicit `o11y_prom_retention`, `o11y_prom_retention_size`,
+`o11y_loki_retention`, `o11y_tempo_retention`, and
+`o11y_scrape_sample_limit` values. Keep all receipt IDs and live inventory
+values in private `site-config`.
+
+Run `Verify o11y Production Budgets (Dev)` after deployment. It reads the live
+Prometheus, Loki, Tempo, and Alloy settings plus active Prometheus series, then
+prints only those budget values, the series count, and its Semaphore task ID.
+Record that task ID as both the retention and cardinality receipt after
+reviewing the result. The check changes no configuration.
+
+The o11y self-monitoring dashboard requires five healthy component scrapes and
+Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard
+and Tempo datasource correlation mappings; a stale four-component dashboard
+or missing trace-to-metric/log mapping fails verification. A production UI
+click-through confirmed one agentgateway trace opened its same-span Loki log;
+trace-to-metrics still needs a functional operator receipt.
