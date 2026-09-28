@@ -1,341 +1,371 @@
 # Tasks: agentgateway observability
 
-Every task is idempotent and runs through Semaphore templates for live work; nothing is
-done over a shell on a VM. Pull requests only when Joe asks for them (repo rule).
+Every task is idempotent, and live work runs through Semaphore templates; nothing is done
+over a shell on a VM. Pull requests are opened only when Joe asks for them (repo rule).
 
-Relation to sibling changes (recorded here so no task is done twice):
+Rebased 2026-09-28 onto `origin/dev` at `7a24846`, then brought up to `origin/dev` at
+`a146382` (PR #301) by merge `f92b0bf`. The landed state and its commits are in
+`design.md` Context.
 
-- `inference-gateway-agentgateway` task 3.1 is **superseded** by sections 2 to 5 of this
-  change (its spans-as-Loki-lines plan is replaced by export to Tempo, design decision 3).
-  Its gate 3.3 is **proved here** by task 6.5, against the separate client-view dashboard
-  (task 4.1) rather than a row on the inference dashboard. Its task 1.10
-  (`UI_READ_ONLY=true`) stays with it and is a dependency of design decision 5.
-- `observability-estate` task 3.3 (one instrumented pilot service) is **absorbed** by
-  section 5, with the gateway as the pilot; the Alloy-exporter half of its task 3.2 is
-  delivered here, and the Tempo half (image, retention, storage) belongs to the separate
-  Tempo work. Its task 3.1 (the gate itself) and 3.4 (its own validation) stay with it;
-  section 5 consumes 3.1. Its task
-  4.4's agentgateway half is proved by tasks 2.8 and 3.10.
-- `inference-telemetry-production` keeps the o11y host (section 1), its firewall (1.4),
-  the inference dashboards (3.1) and alert groups (3.2). This change depends on its
-  section 1 for production and offers task 2.1's mechanism to its task 1.4.
+## Ownership and relation to other work
+
+Per the handoff of 2026-09-28, the o11y session owns the o11y stack. Tasks marked
+**[o11y]** are that session's work. They are listed here as dependencies, with the task
+in this change that waits on each one, and this change does not implement them. Every
+other task is gateway-side and belongs to this change.
+
+- `inference-gateway-agentgateway` task 3.1 is **superseded** by this change together
+  with the landed o11y work. Its gate 3.3 is **proved here** by task 9.4, against the
+  separate client-view dashboard. Its task 1.10 (`UI_READ_ONLY=true`) stays with it and
+  is done in PR #303 (open against `dev` on 2026-09-28); design decisions 4 and 5 depend
+  on it, and task 2.5 here refuses `full` without it.
+- `observability-estate` task 3.1 (the gate) has landed as
+  `tasks/assert-o11y-trace-rollout.yml`, which this change reuses without a second gate.
+  Task 3.2 is checked off there. Task 3.3 (the pilot service) is **absorbed** here, with
+  the gateway as the pilot; task 8.1 proves it.
+- `inference-telemetry-production` keeps the o11y host, its firewall (its task 1.4), the
+  inference dashboards and the alert groups. Task 5.1 here offers the per-port mechanism
+  to its task 1.4.
 - `production-internal-ca` tasks 4.1 and 4.4 (consumer-side leaf issuance) are a
-  dependency of task 3.8.
-- `inference-personal-keys` task 4.2 (user-key rendering) renders the `team` marker this
-  change requires (task 1.4); its eligibility group `inference-users` is the team.
-- External dependency, not an OpenSpec change: the Tempo deployment on the o11y VM
-  (separate session, Joe 2026-09-27). It supplies the Tempo OTLP ingest endpoint, its
-  query endpoint, its transport statement and Grafana's Tempo datasource. Section 5
-  starts only when it has published those.
+  dependency of section 6.
+- `inference-personal-keys` task 4.2 (user-key rendering) renders the `team` marker that
+  task 2.3 requires.
 
-Decided by Joe, 2026-09-27: keep the uhstray.io team's prompt and completion content,
-never anyone else's, for 90 days; the legacy shared key and skynet are team-only;
-Tempo is deployed by separate work and this change integrates with its endpoint;
-`clientSampling` off with 10 percent sampling; the gateway client view is a separate
-dashboard.
+Decided by Joe, 2026-09-27, and still binding: keep the uhstray.io team's prompt and
+completion content, and never anyone else's, for 90 days; the legacy shared key and
+skynet are team-only; `clientSampling` is off and sampling is 10 percent; the client view
+is a separate dashboard, with operations as a second dashboard.
 
-## 1. Gateway configuration on current blocks; team content kept, nothing else
+## 1. Split the OTLP switch (first; design decision 1)
 
-- [ ] 1.1 Feature branch from `dev`: `feat/agentgateway-observability`
-- [ ] 1.2 `templates/config.yaml.j2`: remove `config.logging.fields` and `config.tracing`;
-      add `frontendPolicies.accessLog` with `add: {identity: apiKey.name}` and
-      `database: {llm: <agw_content_logging>}` (`full` or `metadata`, default `metadata`);
-      keep `config.metrics.fields.add.identity`. Add, inside the same block, `otlp`
-      rendered only when `agw_otlp_endpoint` is set: `host`, `protocol: grpc`,
-      `fields.add` = `identity`, `service: '"agentgateway"'`, `signal: '"access-log"'`,
-      and `policies.backendTLS.{root, cert, key, hostname}` unless the local-only
-      plaintext flag holds (design decisions 1, 4, 5, 6)
-- [ ] 1.3 Same template: `frontendPolicies.tracing` rendered only when `agw_traces_enabled`
-      and `agw_otlp_endpoint` are both set: `host`, `protocol: grpc`,
-      `randomSampling: '{{ agw_trace_sampling | default("0.1") }}'`,
-      `clientSampling: 'false'`, `resources: {service.name: '"agentgateway"',
-      deployment.environment: <env from inventory>}`, the same `backendTLS` rule
-      (design decision 8)
-- [ ] 1.4 Team marker (design decision 12): every `apiKey` entry renders
-      `metadata: {name, team}`; inventory identities take `team` from
-      `agw_client_policies.<name>.team` with no default; while
-      `agw_content_logging == 'full'` the template adds `llm.policies.authorization`
-      with the rule `apiKey.team == "uhstray"`. Coordinate with `inference-personal-keys`
-      task 4.2 so user keys render `team: uhstray` (their group `inference-users` is the
-      team); append a dated pointer line to that change's task list
-- [ ] 1.5 `deploy-agentgateway.yml` render guard, after templating and before `deploy.sh`:
-      load the rendered YAML; collect every CEL value under `config.metrics.fields.add`,
-      `frontendPolicies.accessLog.add`, `frontendPolicies.accessLog.otlp.fields.add`,
-      `frontendPolicies.accessLog.database.add`, `frontendPolicies.tracing.attributes` and
-      `.resources`; fail naming the field if any references `llm.prompt`,
-      `llm.completion`, `request.headers`, `request.body` or any `apiKey` member other
-      than `apiKey.name` and `apiKey.team`; fail naming the identity if any key has no
-      `team`, or if `database.llm` is `full` and any key's team is not `uhstray`; fail
-      when `database.llm` is `full` and the team authorization rule is absent; fail when
-      an OTLP block lacks `backendTLS` and `local_mode` is false or the plaintext flag is
-      unset. Not `no_log` (the config holds no credential: `config.yaml.j2:4-10`)
-- [ ] 1.6 `deploy-agentgateway.yml` verify: probe `http://<gateway>:19002/metrics` from the
-      sibling db container as the readiness probe does; require `agentgateway_build_info`;
-      after the keyed chat completion, require an `agentgateway_requests_total` series with
-      `identity="<verify client>"`. Database checks inside the db container, counts only:
-      with `full`, a payload row exists for the verify request; with `metadata`, the
-      payload table gained no row; in both modes the oldest `request_logs` row is younger
-      than `agw_request_log_retention_days` plus two days, else fail naming the breach
-- [ ] 1.7 `compose.yml`: labels `prometheus.io/scrape: "true"`, `prometheus.io/port:
-      "19002"`, `prometheus.io/path: /metrics` on the gateway; read-only mount of a
-      deploy-created `./certs/otlp` directory for the OTLP client leaf, key and CA root;
-      update the header comment that says the database holds "nothing a client needs
-      back" (`compose.yml:6-7`) to name the request-log content and its retention
-- [ ] 1.8 `platform/tests/test_service_agentgateway.bats`: the deprecated blocks are absent;
-      `identity` appears in both the parent and the OTLP field lists; `database.llm`
-      renders from `agw_content_logging` with default `metadata`; every key renders a
-      `team`; the team rule renders exactly when the mode is `full`; `clientSampling` is
-      `false`; both exporters declare `protocol: grpc`; the scrape labels exist. One
-      render test per refusal in 1.5 (each forbidden expression, a missing team, a
-      non-team identity under `full`), each mutated once to watch it go red
-      (`CONTRIBUTING.md`, "Writing BATS Tests"). Replace the existing `config.logging`
-      assertion at lines 145-151 rather than keeping both
-- [ ] 1.9 Local proof through the local Semaphore (`Deploy agentgateway (Local)`), with
-      `agw_content_logging: full`: readiness 200; keyed round-trip 200 for a team
-      identity and a payload row for it; a temporary identity declared with a non-team
-      value is refused at render (1.5); a key enrolled with `team` other than `uhstray`
-      by a test-only local override of the guard gets HTTP 403 at the gateway and leaves
-      no payload row. unverified today: that v1.5.0 accepts `frontendPolicies.accessLog`
-      and `.tracing` alongside the `llm` shortcut, and that `llm.policies.authorization`
-      sees `apiKey.team` after API-key authentication; this task proves both. Record the
-      results in `platform/services/agentgateway/context/architecture.md`
-- [ ] 1.10 Content access check, local: the log detail request for a stored entry through
-      `https://admin.inference.<local zone>/api/logs/get` is refused without the
+- [ ] 1.1 Read-only, through Semaphore: record, names and booleans only, whether the
+      production and local gateway inventories declare `agw_otlp_host` and
+      `agw_trace_sampling`, and whether the receiver declares `o11y_otlp_bind`. Record
+      the result in `design.md` Context. unverified today: the production values
+      (`platform/services/o11y/deployment/README.md:114-115` records a production trace)
+- [ ] 1.2 `templates/config.yaml.j2`: render `accessLog.otlp` only when `agw_otlp_host`
+      is set and `agw_otlp_logs` is true (today the condition is the host alone, line
+      88). Render `frontendPolicies.tracing` only when `agw_otlp_host` is set and
+      `agw_otlp_traces` is true (today line 98). Both switches default to `false`
+- [ ] 1.3 `deploy-agentgateway.yml` Phase 1:
+      - Split the assert at lines 103-112 in two. The receiver checks (one `o11y_svc`
+        host, the host format, and bind equality, lines 106-108) run when
+        `agw_otlp_host` is set. The sampling guard (lines 109-110) runs when
+        `agw_otlp_traces` is true.
+      - Change the conditions of the rollout-gate include (lines 114-116) and of the
+        Tempo readiness check (line 132) to `agw_otlp_traces`.
+      - Keep the reachability check (line 142) on `agw_otlp_host`.
+      - Add a refusal, placed before `Manage secrets and render env + config`: when
+        `agw_otlp_host` is set with neither switch, fail and name both switches. Also
+        refuse either switch without `agw_otlp_host`.
+      - Update the inventory header comment at line 29.
+- [ ] 1.4 `deploy-agentgateway.yml` Phase 3: the scrape receipt at lines 279-316 (its
+      conditions at lines 288 and 316) runs when the receiver declares
+      `agentgateway_metrics_address`, instead of when `agw_otlp_host` is set
+- [ ] 1.5 `deploy-o11y.yml:124-128`: the receiver's gate include reads the gateway's
+      `agw_otlp_traces` instead of `agw_otlp_host`. The private-bind guard at lines
+      164-175 keeps `agw_otlp_host`. The o11y session reviews this edit
+- [ ] 1.6 BATS:
+      - Replace the landed OTLP test at `platform/tests/test_service_agentgateway.bats:346-373`
+        with a matrix of renders: logs only renders `accessLog.otlp` and no `tracing`;
+        traces only renders `tracing` and no `accessLog.otlp`; both renders both;
+        neither renders neither.
+      - Update the gate assertion at line 385 and `platform/tests/test_service_o11y.bats:1086`
+        to the trace switch.
+      - Add one playbook-level test per refusal from 1.3, each mutated once to watch it
+        go red (`CONTRIBUTING.md`, "Writing BATS Tests").
+- [ ] 1.7 site-config: in the pull request that accompanies this code, set
+      `agw_otlp_logs: true` and `agw_otlp_traces: true` wherever 1.1 found
+      `agw_otlp_host` declared
+- [ ] 1.8 Validation gate: in local-dev, through the local Semaphore, a gateway deploy
+      with `agw_otlp_logs: true`, `agw_otlp_traces: false` and the receiver's trace
+      rollout flag unset reaches the keyed probes. A deploy with only `agw_otlp_host`
+      set fails with the named refusal. Together these prove scenarios "Access records
+      ship without trace receipts" and "A receiver address alone is refused"
+
+## 2. Gateway configuration deltas: sampling, team, content, guards
+
+- [ ] 2.1 `config.yaml.j2` tracing (design decision 2): `randomSampling` defaults to
+      `0.1` instead of `0.05` (line 103), and `clientSampling` renders the literal
+      `false` (line 104). The landed guard (0, 0.1] is unchanged
+- [ ] 2.2 `config.yaml.j2` access log (design decision 3): `accessLog.add` carries
+      `identity: apiKey.name` and `team: apiKey.team`; `accessLog.otlp.fields.add`
+      carries `service`, `identity`, `team` and `signal: '"access-log"'`. `signal` goes
+      in the OTLP list only
+- [ ] 2.3 Team marker (design decision 5): every `apiKey` entry renders
+      `metadata: {name, team}`. Inventory identities take `team` from
+      `agw_client_policies.<name>.team`, with no default. Coordinate with
+      `inference-personal-keys` task 4.2 so user keys render `team: uhstray`, and append
+      a dated pointer line to that change's task list
+- [ ] 2.4 Content mode (design decision 4): render
+      `frontendPolicies.accessLog.database.llm` from `agw_content_logging`, which is
+      `full` or `metadata` and defaults to `metadata`. The mode is always rendered and
+      never omitted
+- [ ] 2.5 `deploy-agentgateway.yml` render guards, placed before
+      `Manage secrets and render env + config` and not `no_log`, because they read
+      inventory only (design decision 6):
+      - refuse any identity without a `team`, naming it
+      - while `agw_content_logging == 'full'`, refuse any identity whose team is not
+        `uhstray`, naming it
+      - refuse an `agw_content_logging` value outside `full` and `metadata`
+      - refuse a team value outside `^[a-z0-9][a-z0-9-]*$`, the charset the playbook
+        already enforces for names (lines 86-93)
+      - while `agw_content_logging == 'full'`, refuse unless the gateway environment sets
+        `UI_READ_ONLY=true` (design decision 5; `inference-gateway-agentgateway` task
+        1.10, PR #303). The guard runs before the render like the others, so it reads
+        the committed `templates/env.j2` on the controller (a `lookup('file')`), not an
+        inventory flag, and requires the literal line `UI_READ_ONLY=true`; removing
+        that line from the template fails a `full` deploy
+- [ ] 2.6 BATS scan of `config.yaml.j2` (design decision 6): extend the key-position scan
+      at `test_service_agentgateway.bats:145-152` so it fails on `llm.prompt`,
+      `llm.completion`, `request.headers`, `request.body` or any `apiKey.` member other
+      than `name` and `team`, anywhere outside a Jinja comment. Mutate it once with a
+      planted `request.headers.authorization` field and watch it go red
+- [ ] 2.7 BATS render tests:
+      - `clientSampling` is `false`, and the sampling default is `0.1`.
+      - `identity` and `team` appear in both field lists; `signal` appears only in the
+        OTLP list.
+      - Every key renders a `team`.
+      - `database.llm` renders `metadata` when the variable is unset and `full` when it
+        is set.
+      - Each refusal in 2.5 fires, including `full` against an environment without
+        `UI_READ_ONLY=true`.
+      - `compose.yml` mounts the gateway config `:ro`, and the mount source is
+        `config.yaml` or a directory that holds only `config.yaml`, never the deploy
+        directory or `.env` (design decision 5; it stays true if
+        `inference-gateway-agentgateway` task 1.12 moves the config to a directory
+        mount).
+- [ ] 2.8 `compose.yml`: rewrite the header comment that says the database holds "nothing
+      a client needs back" (lines 7-8) so it names the request-log content and its
+      retention
+- [ ] 2.9 Local proof through `Deploy agentgateway (Local)` with
+      `agw_content_logging: full`: readiness 200; a keyed round-trip 200 for a team
+      identity, and a payload row for it (counts only, inside `agentgateway-db`). A
+      temporary identity declared with a non-team value is refused at render. Record
+      the results in `platform/services/agentgateway/context/architecture.md`
+- [ ] 2.10 Content access check, local: the log detail request for a stored entry
+      through `https://admin.inference.<local zone>/api/logs/get` is refused without the
       Authentik login, and refused for a signed-in user outside `platform-admins`; the
-      conversation view renders for an admin (`ui/src/api/logsApi.ts:19-21`). unverified
-      today: that the UI's OIDC and authorization policy covers the `/api/logs` paths as
-      the source reads (`types/local.rs:2060-2070`, `:3968-3975`)
-- [ ] 1.11 `platform/playbooks/prune-agentgateway-request-logs.yml` (design decision 13):
+      conversation view renders for an admin. unverified today: that `ui.policies`
+      covers the `/api/logs` paths, as the source reads (`types/local.rs:2060-2070`,
+      `:3968-3975`). Also record, from the v1.5.0 source and one local start, whether
+      the gateway can run with no admin listener while the UI listener keeps working;
+      the design's accepted risk on the admin listener's unauthenticated log API
+      (Risks) stands until this says it can
+- [ ] 2.11 Handout notice: the document the team's keys are handed out with (the gateway
+      change's task 4.4 updates dgx-spark `docs/TEAM-ENDPOINT.md`; personal keys use
+      their own handout) states that prompts and completions are kept for 90 days and
+      are readable by platform admins
+- [ ] 2.12 site-config: declare `team: uhstray` for every `agw_clients` identity,
+      including the enrolled legacy shared key and `skynet`, which Joe confirmed as
+      team-only on 2026-09-27. Only after 3.2's schedule is live and
+      `inference-gateway-agentgateway` task 1.10 (PR #303) is merged and deployed, set
+      `agw_content_logging: full` and `agw_request_log_retention_days: 90`
+- [ ] 2.13 Validation gate: 2.6's planted field fails the scan, which proves scenario
+      "Content-capturing configuration is refused". 2.9 proves scenarios "A non-team
+      identity is refused at render" and "A team request's content is stored". 2.10
+      proves scenario "Content is readable only by platform admins". 2.7's refusal of `full`
+      without `UI_READ_ONLY=true` proves scenario "Content logging needs a read-only UI"
+
+## 3. Content retention (design decision 7)
+
+- [ ] 3.1 `platform/playbooks/prune-agentgateway-request-logs.yml`: run
       `DELETE FROM request_logs WHERE completed_at < now() - interval '<N> days'` inside
-      `agentgateway-db` through the container engine, `N` from
-      `agw_request_log_retention_days` (default 90, integer asserted); payload rows go by
-      cascade (`0001_create_request_log_schema.sql:26`); report the deleted count only;
-      a second run deletes nothing. `templates.yml`: `Prune agentgateway Request Logs`
-      with `dev_variant: true` and a daily `schedule:`; BATS asserts the schedule, the
-      integer guard and that no statement selects payload columns
-- [ ] 1.12 Backup exposure: read-only through Semaphore, find whether any Proxmox backup
-      job covers the gateway VM (unverified today) and record its retention in
-      `design.md`; add to `platform/services/agentgateway/deployment/README.md` that any
+      `agentgateway-db` through the container engine, with `N` taken from
+      `agw_request_log_retention_days` (default 90, integer asserted). Payload rows go by
+      cascade (`0001_create_request_log_schema.sql:26`). Report the deleted count and
+      the oldest remaining row's age in days, nothing else. A second run deletes
+      nothing. Record the result with `tasks/emit-step-result.yml`
+- [ ] 3.2 `platform/semaphore/templates.yml`: add `Prune agentgateway Request Logs`, with
+      `dev_variant: true` and a daily `schedule:` in the form at `templates.yml:446-449`.
+      BATS asserts the schedule, the integer guard, and that no statement selects a
+      payload column
+- [ ] 3.3 unverified: whether `collect-service-conformance.yml` reads this template's
+      step result and writes its Loki line (`collect-service-conformance.yml:22-23`
+      describes one line per workflow step result). Read the collector's template
+      selection. If it does, the alert in 3.4 reads that line. If it does not, the prune
+      pushes the same fields to Loki from the receiver host, labelled
+      `service="agentgateway", signal="request-log-prune"`, and BATS asserts the push
+      carries counts only
+- [ ] 3.4 **[o11y]** Grafana alert rule: fire when no prune result has arrived in 26 hours,
+      or when the reported oldest age exceeds the retention plus two days. Task 3.6
+      waits on it
+- [ ] 3.5 Backup exposure: read-only, through Semaphore, find whether any Proxmox backup
+      job covers the gateway VM (unverified today), and record its retention in
+      `design.md`. Add to `platform/services/agentgateway/deployment/README.md` that any
       database backup excludes `request_log_payloads` data
-- [ ] 1.13 Handout notice: the document the team's keys are handed out with (the
-      gateway change's task 4.4 updates dgx-spark `docs/TEAM-ENDPOINT.md`; personal keys
-      use their own handout) states that prompts and completions are kept for 90 days and
-      readable by platform admins
-- [ ] 1.14 site-config: declare `team: uhstray` for every `agw_clients` identity, including
-      the enrolled legacy shared key (`legacy-shared`) and `skynet`, both confirmed
-      team-only by Joe on 2026-09-27; then `agw_content_logging: full` and
-      `agw_request_log_retention_days: 90`; the prune schedule is live before the first
-      production deploy with `full`
-- [ ] 1.15 Validation gate: 1.8's planted `llm.prompt` field fails before any restart,
-      proving scenario "Content-capturing configuration is refused"; 1.9 proves scenarios
-      "A non-team identity is refused at render", "A non-team key is refused at request
-      time" and "A team request's content is stored"; 1.10 proves scenario "Content is
-      readable only by platform admins"; a local prune run with retention `0` removes the
-      rows and a second run deletes nothing, proving scenario "An expired row is removed";
-      a verify run against a row back-dated past the window fails, proving scenario "A
-      stopped prune is detected"
+- [ ] 3.6 Validation gate: a local prune run with retention `0` removes the rows and a
+      second run deletes nothing, which proves scenario "An expired row is removed". With
+      the local schedule paused past the alert window, 3.4's rule fires, which proves
+      scenario "A stopped prune is detected". A gateway deploy during that window still
+      succeeds, which proves scenario "A stale prune never blocks a gateway deploy"
 
-## 2. Metrics in local-dev and production
+## 4. Access records in Loki (design decisions 3 and 8)
 
-- [ ] 2.1 `apply-firewall.yml`: optional `firewall_detected_port_sources` (published port to
-      a list of sources) that replaces `firewall_upstream_source` for the ports it names;
-      unnamed ports unchanged; `platform/tests/test_apply_firewall.bats` covers a named port,
-      an unnamed port and a named port that is not published (refused with its name)
-- [ ] 2.2 unverified: whether `apply-firewall.yml` removes an allow rule it added on an
-      earlier run when the source list for that port shrinks. Read the play and a
-      `--check` run against the gateway host; if it does not prune, add pruning of rules
-      carrying the play's own comment tag, with a BATS case
-- [ ] 2.3 Local: deploy the gateway and o11y through the local Semaphore; confirm the local
-      Prometheus holds `agentgateway_requests_total{service="agentgateway"}` with the
-      verifying identity's label (Alloy discovery, `config.alloy:49-101`)
-- [ ] 2.4 Read-only through Semaphore: record the gateway host's current firewall
-      variables and `agw_stats_bind` from the synced inventory (names only) in
-      `design.md` Context
-- [ ] 2.5 site-config: gateway `agw_stats_bind` = its LAN address and
-      `firewall_detected_port_sources` naming the stats port with the o11y host as its only
-      source; `Deploy agentgateway (Dev)`, then `Apply Firewall (Dev)` on the gateway host
-- [ ] 2.6 `Probe o11y Metrics Endpoint (Dev)` with `probe_target=agentgateway`: HTTP 200
-      from the o11y host (the order in `platform/services/o11y/deployment/README.md:28-34`);
-      a probe from the controller to the same port is refused
-- [ ] 2.7 `deploy-o11y.yml` verify: when `agentgateway_metrics_address` is declared, require
-      `up{job="agentgateway"} == 1` within three scrape intervals, extending
-      `tasks/verify-o11y-metrics.yml`; site-config declares `agentgateway_metrics_address`
-      and `agentgateway_metrics_port` in its own PR; `Deploy o11y (Dev)`
-- [ ] 2.8 Validation gate: 2.7 plus a keyed request through the public route proves
-      scenario "Metrics target is up and carries the identity"; 2.6's refused probe proves
-      scenario "Metrics listener refuses other hosts". Needs the production o11y host
-      (`inference-telemetry-production` section 1)
+- [ ] 4.1 **[o11y]** Add `signal` to the label hint at `config.alloy:118-123`, so the
+      hint names `service,signal`. Tasks 4.3 and 7.1 wait on it
+- [ ] 4.2 unverified: the line format `otelcol.exporter.loki` v1.5.1 produces for a
+      gateway record, whether a keyed `GET /v1/models` record carries `identity`, and
+      the field v1.5.0 uses for a rejection reason. In local-dev with `agw_otlp_logs: true`,
+      record one real line each for a keyed `/v1/models`, a keyed chat completion and a
+      401, with the identity reduced to its name. Record them in
+      `platform/services/o11y/deployment/README.md`, and write 4.3's query against them
+- [ ] 4.3 `deploy-agentgateway.yml` Phase 3, when `agw_otlp_logs` is true:
+      - Before the keyed probe, mark a time on the receiver clock, as lines 279-283 do.
+      - After the probe, query Loki from the receiver (`exec o11y-grafana wget` to
+        `loki:3100/loki/api/v1/query_range`) for `{service="agentgateway", signal="access-log"}`
+        carrying the verifying identity at or after the mark, with bounded retries.
+      - The probe is keyed `/v1/models` if 4.2 shows that record carries `identity`;
+        otherwise it is the chat completion.
+      - Print the record's status and timestamp only. The query holds no key, so it is
+        not `no_log`.
+      - A 429 from the gateway's own bucket still satisfies the check if 4.2 shows a
+        refused request leaves a record.
+- [ ] 4.4 BATS: the Loki receipt selects on `signal="access-log"` (a stdout line cannot
+      satisfy it), runs only when `agw_otlp_logs` is true, and its task carries no
+      `Authorization` header
+- [ ] 4.5 Local note: with the socket source (`config.alloy:10-37`), the gateway's stdout
+      also lands in local Loki as `service="agentgateway"`. The landed log check at
+      `verify-o11y-service.yml:76-100` matches either source. Record in
+      `platform/services/o11y/deployment/README.md` that locally only the
+      `signal="access-log"` stream proves OTLP delivery
+- [ ] 4.6 Validation gate: in local-dev, then production, 4.3 passes. This proves
+      scenarios "A request is findable by identity" and "Identity is not an index label"
+      (the stream's label set holds no `identity`, `team`, model or token label). One
+      keyless request and one request burst past the bucket, both found in Loki with
+      their status and reason, prove scenario "A rejected request still leaves a record"
 
-## 3. Access records over OTLP
+## 5. Metrics (design decision 10)
 
-- [ ] 3.1 Move `config/config.alloy` to `config/alloy/containers.alloy`; the Loki
-      `cluster` external label reads `sys.env("O11Y_CLUSTER")`, rendered from inventory in
-      `templates/env.j2`; compose mounts the directory and runs `alloy run /etc/alloy/`;
-      `.gitignore` the rendered `otlp.alloy`; BATS asserts the directory mount and that no
-      committed `.alloy` file declares `otelcol.receiver.otlp`
-- [ ] 3.2 `templates/otlp.alloy.j2`, rendered by `deploy-o11y.yml` only when
-      `o11y_otlp_enabled`: `otelcol.receiver.otlp` gRPC on 4317 with `tls { cert_file,
-      key_file, client_ca_file }` unless the local plaintext flag holds; logs through
-      `otelcol.processor.batch`, a processor that sets `loki.attribute.labels` to
-      `service, signal`, and `otelcol.exporter.loki` into the existing
-      `loki.write.default`; removed when disabled, Alloy restarted only on change
-- [ ] 3.3 `compose.yml`: Alloy publishes
-      `${O11Y_OTLP_BIND:-127.0.0.1}:${O11Y_OTLP_GRPC_PORT:-4317}:4317` and mounts a
-      deploy-created `./certs/otlp` directory read-only; `templates/env.j2` renders both
-      values
-- [ ] 3.4 `deploy-o11y.yml` guards: refuse `o11y_otlp_plaintext` unless `local_mode`;
-      refuse `o11y_otlp_enabled` without the three certificate files present when not
-      plaintext; the gateway deploy refuses an `agw_otlp_endpoint` whose host is not the
-      declared o11y host
-- [ ] 3.5 `deploy-o11y.yml` verify: when OTLP is enabled, the verify first generates its
-      own traffic, so an idle gateway cannot fail it: it sends one keyed chat completion
-      through the gateway as the verifying identity (`agw_verify_client` on the gateway
-      host, else its first `agw_clients` entry — the gateway deploy's own selection; the
-      key comes through `_shared_reads` from `agentgateway`, `client_<name>`, in the
-      `no_log` credential step, and the request is a `uri` call delegated to the gateway
-      host, to its published port, whose result is never printed) and records the send
-      time. Once the gateway listeners require client certificates (gateway change task
-      6.1), the call is `https://` and presents the `agw-verifier` client leaf on the
-      gateway host (`client_cert`/`client_key`, `ca_path` the internal bundle;
-      `production-internal-ca` decision 4). It then requires, within a bounded retry, a
-      Loki record under `{service="agentgateway", signal="access-log"}` whose body names
-      that identity and whose timestamp is at or after the send time, and requires the
-      label set of that stream to contain no `identity`, model or token label. A 429 from
-      the gateway's request bucket still satisfies the check, because a rejected request
-      also leaves a record. It prints the record's status and timestamp, never the key
-- [ ] 3.5a Rejected-request record: the same verify sends one request with no key (from
-      the gateway host, presenting the `agw-verifier` leaf once group 6 lands, so the
-      refusal is the key check and not the TLS handshake) and
-      requires a record at or after its send time carrying HTTP status 401 and a
-      rejection reason. unverified: the access-log field name v1.5.0 uses for the
-      rejection reason; read it from the line 3.7 records before writing the query
-- [ ] 3.6 Local: `o11y_otlp_plaintext: true`, `agw_otlp_endpoint` = `o11y-alloy:4317` on the
-      shared `local-dev` network; deploy both through the local Semaphore
-- [ ] 3.7 unverified: the line format `otelcol.exporter.loki` v1.5.1 produces for a gateway
-      record (body plus attributes). Record one real line for a served request and one for
-      a request refused with 401, each with the identity redacted to its name only, in
-      `platform/services/o11y/deployment/README.md`; write the dashboard's and the
-      verify's log queries against them
-- [ ] 3.8 Production: declare the o11y receiver's server leaf and the gateway's client
-      leaf through `production-internal-ca` task 4.1's issuance (names from site-config,
-      keys generated on each host); site-config sets `o11y_otlp_enabled`,
-      `agw_otlp_endpoint`, and `firewall_detected_port_sources` on the o11y host naming the
-      OTLP port with the gateway host as its only source; `Deploy o11y (Dev)`,
-      `Apply Firewall (Dev)`, `Deploy agentgateway (Dev)`. unverified: how v1.5.0 reports
-      an unreadable client key; observe it once with the key's mode deliberately wrong in
-      local-dev and record the log line
-- [ ] 3.9 BATS in `platform/tests/test_service_o11y.bats`: the rendered `otlp.alloy`
-      carries `client_ca_file` whenever the plaintext flag is unset; the plaintext guard
-      refuses outside `local_mode`; the label hint names exactly `service` and `signal`
-- [ ] 3.10 Validation gate: 3.5 in production proves scenarios "A request is findable by
-      identity" and "Identity is not an index label"; 3.5a plus one request burst past
-      the verifying identity's request bucket, both found in Loki, proves scenario "A
-      rejected request still leaves a record"; a Semaphore-run TLS handshake to the
-      receiver without a client certificate fails, proving scenario "A sender without a
-      client certificate is rejected"; a production render with the plaintext flag set
-      fails in 3.4, proving scenario "Plaintext export is refused in production"
-- [ ] 3.11 Follow-up, recorded not built: Alloy `v1.5.1`'s OTLP receiver cannot check a
-      client certificate's name (design decision 6), so the firewall declaration in 3.8 is
-      the only binding of sender to gateway. On each Alloy upgrade, read the receiver's
-      server TLS arguments at the new tag; when a name check exists, require the gateway's
-      OTLP client name there; otherwise record the version read in `design.md`
+- [ ] 5.1 `apply-firewall.yml`: an optional `firewall_detected_port_sources` (published
+      port to a list of sources) that replaces `firewall_upstream_source` for the ports
+      it names, leaving unnamed ports unchanged (today the product at lines 290 and
+      306). `platform/tests/test_apply_firewall.bats` covers a named port, an unnamed
+      port, and a named port that is not published (refused with its name)
+- [ ] 5.2 unverified: whether `apply-firewall.yml` removes an allow rule it added on an
+      earlier run when the source list for that port shrinks. Read the play and run it
+      with `--check` against the gateway host. If it does not prune, add pruning of rules
+      that carry the play's own comment tag, with a BATS case
+- [ ] 5.3 `compose.yml` (gateway): add the labels `prometheus.io/scrape: "true"`,
+      `prometheus.io/port: "19002"` and `prometheus.io/path: /metrics`. BATS asserts
+      them
+- [ ] 5.4 Local: deploy the gateway and o11y through the local Semaphore, and confirm the
+      local Prometheus holds `agentgateway_requests_total` with the verifying identity's
+      label (Alloy discovery, `config.alloy:49-100`)
+- [ ] 5.5 site-config: set the gateway's `agw_stats_bind` to its LAN address, and set
+      `firewall_detected_port_sources` naming the stats port with the o11y host as its
+      only source. Run `Deploy agentgateway (Dev)`, then `Apply Firewall (Dev)` on the
+      gateway host
+- [ ] 5.6 `Probe o11y Metrics Endpoint (Dev)` with `probe_target=agentgateway`: HTTP 200
+      from the o11y host, in the order `platform/services/o11y/deployment/README.md:28-34`
+      gives. A probe from the controller to the same port is refused
+- [ ] 5.7 site-config declares `agentgateway_metrics_address` and
+      `agentgateway_metrics_port` in its own pull request, then `Deploy o11y (Dev)`. The
+      gateway's scrape receipt (1.4) then runs
+- [ ] 5.8 Validation gate: 1.4's receipt passes after a keyed request through the public
+      route, which proves scenario "Metrics target is up and carries the identity". 5.6's
+      refused probe proves scenario "Metrics listener refuses other hosts"
 
-## 4. Dashboards
+## 6. Transport: mutual TLS on the landed bind (design decision 9)
 
-- [ ] 4.1 Two dashboards adapted from agentgateway `v1.5.0`
-      `controller/install/helm/agentgateway/files/agentgateway-dashboard.json` (commit
-      `fe6732474a96a0363dfb9822859af4e9bab360fa`, Apache-2.0, recorded in each JSON
-      description), variables `identity`, `gen_ai_request_model`, `env`, datasource uids
-      `prometheus` and `loki` (design decision 9):
-      `config/grafana/dashboards/agentgateway-client-view.json`, uid
-      `agentgateway-client-view`, the separate client-view dashboard; and
-      `config/grafana/dashboards/agentgateway.json`, uid `agentgateway`, operations, whose
-      trace panel uses a datasource variable of type `tempo`
-- [ ] 4.2 BATS: both JSON files parse; their uids are unique among the dashboards; every
-      metric name they query is in agentgateway v1.5.0 `schema/metrics.md` or carries a
-      `_bucket`/`_sum`/`_count` suffix of one; no query references `namespace`, `pod` or
-      a `gateway_networking_k8s_io_*` label; no panel names a fixed Tempo datasource uid
-- [ ] 4.3 Validation gate: `Clean Deploy o11y (Local)` then one keyed request; the local
+- [ ] 6.1 **[o11y]** The receiver's `tls { cert_file, key_file, client_ca_file }` block,
+      its server leaf, and the name of the receiver-side declaration that turns it on.
+      unverified today: that name. Record it in `design.md` when the o11y session picks
+      it. 6.2 waits on it
+- [ ] 6.2 `config.yaml.j2`: when the receiver declares TLS (read from
+      `hostvars[groups['o11y_svc'][0]]`, as line 108 of the deploy reads
+      `o11y_otlp_bind`), render `policies.backendTLS.{root, cert, key, hostname}` on
+      `accessLog.otlp` and on `tracing`. `compose.yml`: mount a deploy-created
+      `./certs/otlp` directory read-only. The deploy refuses to render plaintext against
+      a TLS-declared receiver
+- [ ] 6.3 Issue the gateway's OTLP client leaf through `production-internal-ca` task 4.1
+      (the key is generated on the gateway host). unverified: how v1.5.0 reports an
+      unreadable client key. Observe it once in local-dev, with the key's mode
+      deliberately wrong, and record the log line
+- [ ] 6.4 BATS: `backendTLS` renders exactly when the receiver declares TLS, and the
+      plaintext-against-TLS refusal fires
+- [ ] 6.5 Validation gate: a Semaphore-run TLS handshake to the receiver without a
+      client certificate fails, which proves scenario "A sender without a client
+      certificate is rejected". A render with a TLS-declared receiver and no leaf path
+      fails, which proves scenario "Plaintext export is refused once the receiver
+      requires TLS"
+- [ ] 6.6 Follow-up, recorded and not built: Alloy `v1.5.1`'s receiver cannot check a
+      client certificate's name, so the firewall rule is the only binding of sender to
+      gateway. On each Alloy upgrade, read the receiver's server TLS arguments at the new
+      tag, and record the version read in `design.md`
+
+## 7. Dashboards and other o11y-side dependencies (design decision 11)
+
+- [ ] 7.1 **[o11y]** Operations dashboard: extend `agentgateway-traffic.json` and rename
+      it "Agentgateway operations". This change asks to keep the uid. Add tokens by
+      identity, model and `gen_ai_token_type`, rejections by `reason`,
+      `agentgateway_requests_shed_total`, `agentgateway_build_info`, access records
+      (`{service="agentgateway", signal="access-log"}`, which needs 4.1) and a Tempo
+      search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:502`
+- [ ] 7.2 **[o11y]** Client-view dashboard: `agentgateway-client-view.json`, uid
+      `agentgateway-client-view`, with p50 and p95 first-token latency, request
+      duration, the 4xx and 5xx ratio, and per-identity request rate, plus an `identity`
+      variable. The o11y deploy asserts it the way lines 480-504 assert the traffic
+      dashboard
+- [ ] 7.3 **[o11y]** Replace the hard-coded `cluster = "agent-cloud-local"` at
+      `config.alloy:44` and `config/prometheus.yml:8` with a value rendered from
+      inventory
+- [ ] 7.4 Validation gate: `Clean Deploy o11y (Local)`, then one keyed request. The local
       client-view and operations dashboards show that identity in metrics and in an
-      access record, proving scenario "Local deploy shows metrics and access records"
+      access record, which proves scenario "Local deploy shows metrics and access
+      records"
 
-## 5. Traces to the separately deployed Tempo, after the estate gate
+## 8. Traces (landed path; the deltas are sampling and the standing signal)
 
-- [ ] 5.1 Inputs from the separate Tempo work, recorded in `design.md` before any code in
-      this section: the OTLP gRPC ingest address, whether it is host-local to Alloy, its
-      TLS server name and CA if not, the query endpoint the receipt check uses, and the
-      Grafana Tempo datasource uid. unverified today: all of them (the Tempo work has not
-      published them)
-- [ ] 5.2 `templates/otlp.alloy.j2`: a trace pipeline rendered only when
-      `o11y_traces_enabled` and `o11y_tempo_otlp_endpoint` are both set:
-      `otelcol.processor.batch` into `otelcol.exporter.otlp` to that endpoint, TLS against
-      the internal CA root unless `o11y_tempo_otlp_host_local` is true. No default host
-- [ ] 5.3 Gate wiring: `deploy-o11y.yml` refuses `o11y_traces_enabled` without
-      `o11y_tempo_otlp_endpoint`, refuses a plaintext endpoint not declared host-local,
-      and refuses until the estate gate (its task 3.1) is recorded as passed, naming what
-      is missing; `deploy-agentgateway.yml` refuses `agw_traces_enabled` unless the
-      declared o11y host has `o11y_traces_enabled`
-- [ ] 5.4 `deploy-o11y.yml` verify: when traces are enabled and `o11y_tempo_query_url` is
-      declared, the verify reuses 3.5's own probe request instead of waiting for traffic:
-      it reads the trace id from that probe's access record and requires a lookup of that
-      trace id on the query endpoint to return a `service.name=agentgateway` trace. A
-      caller cannot force sampling (the spec's caller-context requirement), so the check
-      is required only while the gateway host's declared `agw_trace_sampling` is `1` (the
-      5.6 test window); at any lower fraction a missing trace is reported as "not run:
-      probe not sampled", never as passed or failed. With no query endpoint declared, the
-      verify reports the check as not run rather than passed. unverified: the access-record
-      field v1.5.0 uses for the trace id; read it from the line 3.7 records
-- [ ] 5.4a Standing trace-receipt signal (design decision 11): add a scrape of Alloy's own
-      metrics (Alloy serves HTTP on 12345, `compose.yml:66`; nothing scrapes it today) and,
-      in `templates/alerts.yml.j2`, a rule rendered only when traces are enabled: the rate
-      of Alloy's exported-span counter is zero for `o11y_trace_silence_minutes` (default
-      30) while `rate(agentgateway_requests_total[5m]) > 0`. unverified: the counter's
-      name and the metrics path at Alloy `v1.5.1`; read both from the running local Alloy
-      and record them in `design.md` before writing the rule; task 6.1 measures the same
-      counter. BATS: the rule is absent when traces are disabled; drill: stop the trace
-      exporter's endpoint for the window in local-dev and see the alert fire
-- [ ] 5.5 BATS: the trace pipeline is absent from the rendered Alloy file when disabled or
-      when no endpoint is declared; each refusal in 5.3 fires; the rendered exporter
-      carries TLS whenever the endpoint is not host-local
-- [ ] 5.6 Each environment where the Tempo work has published an endpoint, through its
-      Semaphore: enable traces with `agw_trace_sampling` at `1` for a test window, then
-      back to the declared default `0.1`
-- [ ] 5.7 Validation gate: an enablement attempted before the estate gate, or with no
-      endpoint declared, is refused, proving scenario "Trace enablement waits for the
-      rollout gate"; the test window's trace is found on the query endpoint with the same
-      trace id as its access record, proving scenario "A sampled request is searchable in
-      Grafana"; with sampling at `0`, a request sent with a `traceparent` header leaves no
-      trace, proving scenario "Caller-supplied trace context does not force a trace"
+- [ ] 8.1 Validation gate: with 1.2 and 2.1 deployed and `agw_otlp_traces: true`, run
+      the landed `Verify o11y Service` with `expected_service=agentgateway`,
+      `expect_traces=true` and `emit_agentgateway_canary=true`
+      (`verify-o11y-service.yml:41-68`, `:106-132`). A trace found proves scenario "A
+      sampled request is searchable in Grafana". No sampling-at-one window is used,
+      because the landed guard caps sampling at 0.1. The same run proves
+      `observability-estate` task 3.3's pilot
+- [ ] 8.2 **[o11y]** Trace-silence alert (design decision 8): fire when
+      `rate(tempo_distributor_spans_received_total{job="tempo"}[30m]) == 0` while
+      `increase(agentgateway_requests_total{job="agentgateway"}[30m]) >= 100`, and only
+      while the gateway's `agw_otlp_traces` is true. The counter is already scraped
+      (`config/prometheus.yml:31-33`), so no new scrape is needed. unverified: whether
+      another service sends spans to this Tempo. If one does, the o11y session picks a
+      gateway-specific series
+- [ ] 8.3 Client-started traces: in local-dev, send 20 requests, each carrying a distinct
+      `traceparent` with the sampled flag set, and search Tempo for each of those trace
+      ids. Fewer than 20 are found, where `clientSampling: true` would find all 20. This
+      proves scenario "Caller-supplied trace context does not force a trace". BATS in 2.7
+      asserts the rendered `false`
+- [ ] 8.4 Validation gate: a gateway deploy with `agw_otlp_traces: true` against a
+      receiver without its receipts is refused by the landed gate, which proves scenario
+      "Trace enablement waits for the rollout gate"
 
-## 6. Measure, record, reconcile
+## 9. Measure, record, reconcile
 
-- [ ] 6.1 After seven days in production: spans exported per day, measured at Alloy
-      (unverified: the metric name Alloy v1.5.1 exposes for exported spans, which task
-      5.4a records and its alert uses), gateway
-      access lines per day in Loki, active gateway series in Prometheus, the `request_logs` row count
-      and the size of `request_log_payloads`; record them in `design.md`
-- [ ] 6.2 Set `agw_trace_sampling` from 6.1, with the Tempo owner's storage figure, and
-      the arithmetic in an `env.j2` comment; if the payload table's size slows budget
-      accounting, move the request log to its own `config.logging.database` in a follow-up change
-- [ ] 6.3 Docs: `platform/services/agentgateway/context/architecture.md` (signals, ports,
-      content rule), `platform/services/o11y/deployment/README.md` (OTLP, the Tempo
-      endpoint as an input from separate work, the order of enablement, Alloy config is a
-      directory), and the root `AGENTS.md` rows the branch workflow requires
-- [ ] 6.4 Append dated pointer lines, never edits, to the sibling changes' task lists:
-      `inference-gateway-agentgateway` 3.1 (superseded here) and its design decision 6
-      (Tempo deferral reversed, design decision 3 here); `observability-estate` 3.3
-      (delivered here) and 3.2 (Alloy half here, Tempo half separate work);
-      `inference-telemetry-production` 1.4 (per-port sources available)
-- [ ] 6.5 Validation gate: after an hour of production traffic, a wipe and redeploy of the
-      production o11y stack through Semaphore restores both dashboards (production has no
-      clean-deploy template on 2026-09-27: `platform/semaphore/templates.yml` declares only
-      `Deploy o11y (Dev)`, line 36, and `Clean Deploy o11y (Local)` lives in
-      `templates-local.yml:130`; declare one first, or reuse the one
-      `inference-telemetry-production` task 3.5 needs), the client-view dashboard rendering
-      first-token percentiles and per-identity counts, proving scenario "Dashboard survives
-      a rebuild" (and the gateway change's "Client-view latency on the dashboard"); a
-      team request carrying a unique marker string leaves no match in a Loki search or in
-      the trace store, proving scenario "Loki holds no prompt text", and neither the
-      caller's key nor its Authorization value appears in the database, Loki or the trace
-      store, proving scenario "Header and key are never stored"; on archive, retain the
-      outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`
+- [ ] 9.1 After seven days in production, record in `design.md`: spans received per day
+      (`tempo_distributor_spans_received_total`), gateway access lines per day in Loki,
+      active gateway series in Prometheus, the `request_logs` row count, and the size of
+      `request_log_payloads`. If the payload table's size slows budget accounting, move
+      the request log to its own `config.logging.database` in a follow-up change
+- [ ] 9.2 Docs: update `platform/services/agentgateway/context/architecture.md` (signals,
+      switches, ports, content rule) and `platform/services/agentgateway/deployment/README.md`
+      (switches, prune, backup exclusion), plus the root `AGENTS.md` rows the branch
+      workflow requires
+- [ ] 9.3 Append dated pointer lines, never edits, to the sibling changes' task lists:
+      `inference-gateway-agentgateway` 3.1 (superseded) and its design decision 6 (the
+      Tempo deferral is reversed by the landed o11y work); `observability-estate` 3.3
+      (delivered by 8.1); `inference-telemetry-production` 1.4 (per-port sources
+      available after 5.1)
+- [ ] 9.4 Validation gate:
+      - After an hour of production traffic, a wipe and redeploy of the production o11y
+        stack through Semaphore restores both dashboards, with the client view rendering
+        first-token percentiles and per-identity counts. This proves scenario "Dashboard
+        survives a rebuild" and the gateway change's "Client-view latency on the
+        dashboard". Production has no clean-deploy template on 2026-09-28, so declare
+        one first or reuse the one `inference-telemetry-production` task 3.5 needs.
+      - A team request carrying a unique marker string leaves no match in Loki or in
+        Tempo, which proves scenario "Loki holds no prompt text".
+      - Neither the caller's key nor its Authorization value appears in the database,
+        Loki or Tempo, which proves scenario "Header and key are never stored".
+      - On archive, retain the outcome (worked / dead end / corrected) into bank
+        `agent-cloud-750a33b9`.

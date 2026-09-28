@@ -30,7 +30,11 @@ credential MUST appear in a container's argument vector.
 ### Requirement: Runs follow one method and one metric set
 A measured run SHALL use Poisson arrivals in stages whose rates are fractions of a
 saturation rate measured by a calibration sweep for the same workload shape, with a
-warm-up stage at a repeated rate that MUST be excluded from results. Each measured stage
+short warm-up stage of its own at a repeated rate that MUST be excluded from results. A
+stored saturation rate SHALL be reused while the workload file, the served model and
+profile and the calibration tool's image digest are unchanged, and the sweep MUST run
+again when any of them differs. Each measured stage SHALL last long enough to send the
+declared sample target at its rate. Each measured stage
 MUST report TTFT p50 and p90, ITL p50, TPOT p50, output tokens per second, achieved
 requests per second, and completed, failed and in-flight counts, taken from the client
 tool; gateway and vLLM histograms SHALL be recorded as corroboration and never as the
@@ -47,6 +51,17 @@ reasoning or content.
 - THEN a calibration sweep records a saturation rate first, and the measured ladder's
   rates are the declared fractions of it, none above the absolute cap
 
+#### Scenario: Calibration is reused while its inputs hold
+- WHEN a capacity campaign starts for a shape whose stored saturation rate was measured
+  with the same workload file digest, served model and profile, and calibration image
+  digest
+- THEN no calibration sweep runs and the manifest names the calibration run it reused
+
+#### Scenario: Stage length follows the sample target
+- WHEN a ladder is planned
+- THEN each measured stage's duration is the sample target divided by the stage's rate,
+  and the warm-up stage has its own fixed duration
+
 #### Scenario: Low-sample stage is flagged
 - WHEN a measured stage completes fewer than 50 requests
 - THEN its percentiles are reported and marked low-sample
@@ -58,14 +73,15 @@ fields redacted to their names, and a summary in one schema across tools. The ma
 MUST record the requester, template, target, workload shape and file digest, ladder and
 stage durations, tool names and versions, image digests, the dgx-spark harness commit when
 used, this repository's commit, the served model and profile, the gateway version when the
-gateway is the target, the window, the outcome and per-stage sample counts. So that a
-re-run sends the same requests, the manifest MUST also record every seed each tool uses
+gateway is the target, the window, the outcome and per-stage sample counts. So that two
+runs' inputs can be compared, the manifest MUST also record every seed each tool uses
 for prompt generation and for its arrival process, the sha256 of every dataset or prompt
 file a tool reads, and the sha256 of each rendered tool configuration after redaction.
 The playbook MUST set every such seed explicitly in the rendered configuration and MUST
-NOT leave one to a tool default, because a default can be the current time. The bundle
-SHALL be copied on a new branch per run to the private results location, reporting names
-only.
+NOT leave one to a tool default, because a default can be the current time. The manifest
+and summary SHALL be copied on a new branch per run to the private results location,
+reporting names only; the other bundle files SHALL stay on the runner, named in the
+manifest with their digests.
 
 #### Scenario: Bundle contains no credential
 - WHEN a run through the gateway completes
@@ -76,19 +92,10 @@ only.
 - WHEN a run is started with a run id whose directory already exists
 - THEN the playbook refuses and the existing bundle is unchanged
 
-#### Scenario: Result is reproducible from its manifest
-- WHEN an operator re-runs a campaign from a stored manifest's shape, ladder, tool and
-  image digests
-- THEN the new run renders its tool configurations with the manifest's recorded seeds,
-  their post-redaction digests and the dataset and prompt file digests equal the stored
-  ones, and its manifest differs only in run id, time, window and results, plus the
-  realised arrival times of any tool whose arrival draw its pinned version does not seed
-
-#### Scenario: Re-run refuses a drifted input
-- WHEN a re-run's rendered configuration digest or a dataset or prompt file digest does
-  not match the stored manifest
-- THEN the playbook refuses before sending any request and names the file whose digest
-  differs
+#### Scenario: Every seed is explicit and recorded
+- WHEN a run renders its tool configurations
+- THEN every seed field each tool reads is set in the rendered configuration, and the
+  manifest records each seed with the configuration digests
 
 ### Requirement: Gateway overhead is measured as an A/B against one backend
 The gateway-overhead benchmark SHALL run the same workload shape, ladder, tool and image
@@ -180,17 +187,15 @@ stream longer than the edge's 125-second read timeout.
 
 ### Requirement: Teams can run a bounded benchmark themselves
 A Semaphore template SHALL let any team member run a benchmark against the gateway as
-`bench` within the team caps, choosing from a survey with no secret fields: workload
-shape, tool, rates, stage duration, output and input tokens, served model and a label.
-The tool choice MUST be limited to tools whose output satisfies the measured-run method
-above: Poisson arrivals and a per-stage report of every listed metric. The calibration
-sweep tool and the closed-loop continuity harness MUST NOT be offered, because their runs
-are not measured ladders. The template MUST NOT offer the direct or public targets.
+`bench` within the team caps, with the primary ladder tool only, choosing from a survey
+with no secret fields: workload shape, rates, output and input tokens, served model and a
+label. The calibration sweep tool, the closed-loop continuity harness and the direct-target
+cross-check tool MUST NOT be offered, and the template MUST NOT offer the direct or public
+targets.
 
-#### Scenario: Team template refuses a non-ladder tool
-- WHEN the team template is launched with the calibration sweep tool or the closed-loop
-  harness as its tool
-- THEN the playbook refuses before any request is sent and names the tools it accepts
+#### Scenario: Team template refuses any tool but the ladder tool
+- WHEN the team template is launched with any tool other than the primary ladder tool
+- THEN the playbook refuses before any request is sent and names the tool it accepts
 
 #### Scenario: Team run completes and is visible
 - WHEN a team member launches the template with in-cap values

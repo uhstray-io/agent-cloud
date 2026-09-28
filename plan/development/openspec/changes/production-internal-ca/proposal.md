@@ -80,8 +80,9 @@ The platform already has one, but only in local-dev:
   and the dgx-spark handoff.
 - **Scheduled renewal and expiry alerting.** A Semaphore template on a schedule declared
   as code renews every declared leaf that is inside its renewal window, confirms the
-  running process now presents the new certificate, and writes one line per leaf to Loki;
-  Grafana alerts when any leaf is close to expiry or when the renewal job goes silent.
+  running process now uses the new certificate, and writes one line per leaf to Loki;
+  Grafana alerts when any leaf is close to expiry, and one shared rule alerts when any
+  declared scheduled job, the renewal job among them, goes silent.
 - **Backup of CA material.** A playbook copies the CA's encrypted keys, certificates and
   configuration from the volume into site-config on a new branch per run, following the
   existing credential-backup channel; the key password travels separately through the
@@ -111,7 +112,9 @@ The platform already has one, but only in local-dev:
   consumer-side key), `platform/playbooks/tasks/distribute-ca-root.yml` (cross-host read),
   `platform/playbooks/deploy-step-ca.yml` (production parameters, issuing provisioner),
   `platform/playbooks/clean-deploy-step-ca.yml` (confirmation guard), new
-  `renew-internal-certs.yml` and `backup-step-ca-to-site-config.yml`,
+  `renew-internal-certs.yml` and `backup-step-ca-to-site-config.yml`, a shared
+  `tasks/push-loki-lines.yml` extracted from `collect-service-conformance.yml` (which
+  adopts it),
   `platform/semaphore/templates.yml`, `platform/services/step-ca/deployment/templates/env.j2`
   (new parameters only if the existing ones do not suffice),
   `platform/services/step-ca/context/architecture.md`, o11y `templates/alerts.yml.j2`,

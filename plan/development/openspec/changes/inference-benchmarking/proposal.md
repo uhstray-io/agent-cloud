@@ -28,7 +28,7 @@ The inference endpoint has a capacity figure, but no repeatable way to produce o
   different scripts, vantage points and prompt sets; none is an open-loop arrival test.
 - **The gateway's limits are placeholders.** The gateway template ships one global request
   bucket and a per-key hourly token budget with default figures
-  (`platform/services/agentgateway/deployment/templates/config.yaml.j2:153,169`), and the
+  (`platform/services/agentgateway/deployment/templates/config.yaml.j2:161,177-178`), and the
   gateway change's task 4.2 is still "derive both figures from the measured ceiling". Its
   conformance scenario asks for first-token latency "within an agreed margin of the direct
   path" (`inference-gateway-agentgateway/specs/platform/inference-gateway/spec.md`) with
@@ -61,7 +61,8 @@ endpoint and has to be scaled, not copied.
 - **Four tools, one run contract.** `inference-perf` (kubernetes-sigs; the harness
   agentgateway's benchmark suite uses, run standalone against an HTTP endpoint) is the
   primary open-loop tool and reuses agentgateway's workload file shape. `vllm bench
-  serve` is the cross-check. `guidellm` runs the calibration sweep. dgx-spark's
+  serve` is the cross-check, run when a tool image changes. `guidellm` runs the
+  calibration sweep, reused while its inputs are unchanged. dgx-spark's
   closed-loop harness (`vllm/bench_c1c6.py`, prompt set `code-reasoning-v1`) runs
   unchanged at a pinned dgx-spark commit, so every new result can be compared with the
   recorded baselines. All four write into the same immutable run bundle.
@@ -81,8 +82,8 @@ endpoint and has to be scaled, not copied.
   in every metric and log line and cannot spend a team member's budget.
 - **Results are immutable and visible.** Each run writes a manifest (tool versions, image
   digests, model, served profile, workload, ladder, target, git revisions) and the raw
-  per-stage output, never a credential. The bundle is pushed on a new branch per run to a
-  private repository (design decision 7), and one summary line per stage goes to Loki,
+  per-stage output, never a credential. The bundle stays on the runner; its manifest and
+  summary are pushed on a new branch per run to a private repository (design decision 7), and one summary line per stage goes to Loki,
   where a Grafana dashboard reads it alongside the server-side series.
 - **Guardrails.** Rate, concurrency and duration caps; declared benchmark windows for
   anything above the self-serve caps, because the GPUs serve the team at the same time;

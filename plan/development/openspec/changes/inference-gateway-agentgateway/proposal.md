@@ -128,7 +128,8 @@ see no change of base URL.
   deploy.sh, templates/env.j2, templates/config.yaml.j2, .gitignore, README.md}`,
   `platform/services/agentgateway/context/architecture.md`,
   `platform/playbooks/deploy-agentgateway.yml`, `clean-deploy-agentgateway.yml`,
-  `manage-agentgateway-client-key.yml`,
+  `manage-agentgateway-client-key.yml`, a new `platform/playbooks/tasks/agw-probe.yml`
+  (the one gateway probe path, task 6.1a),
   `platform/tests/test_service_agentgateway.bats`, `platform/inventory/local-dev.yml.example`
   (service group + the `admin.inference` Caddy route), `bootstrap-local-dev.yml` (the
   control plane's static inventory + its Caddy route table), `templates.yml` +

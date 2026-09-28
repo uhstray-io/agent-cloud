@@ -36,12 +36,14 @@ only inside the windows named below.
       gateway's `agw_client_cert_allowlist`, and render inference-perf's `cert_path` and
       `key_path` for gateway-target runs (design decision 8); the preflight refuses a
       gateway-target run whose leaf is missing or expires inside the planned duration, and
-      refuses `vllm-bench` against the gateway
+      refuses `vllm-bench` on any target but direct vLLM
 - [ ] 1.5 dgx-spark side (tracked, not done here): the vLLM API allow rule includes the
       benchmark VM; confirm with one direct `/v1/models` request from the VM
 - [ ] 1.6 Validation gate: the firewall probes prove scenario "Runner reaches exactly its
-      targets"; a gateway request from the VM appears in the access log as `bench`,
-      proving scenario "Benchmark requests are attributed"
+      targets"; a gateway request from the VM through the gateway probe path
+      (`inference-gateway-agentgateway` task 6.1a, run from the benchmark VM with the
+      `bench` leaf and key) appears in the access log as `bench`, proving scenario
+      "Benchmark requests are attributed"
 
 ## 2. Toolchain and run contract
 - [ ] 2.1 Pin all four tools by digest in inventory (inference-perf `v0.7.0`, guidellm
@@ -54,53 +56,58 @@ only inside the windows named below.
       records from source (Context, "Seeds and replay"): two inference-perf runs with the
       same `load.base_seed` and `data.shared_prefix.seed` send the same prompts, and two
       `vllm bench serve` runs with the same `--seed` send the same prompts at the same
-      intervals. Record whether `vllm bench serve`'s saved result carries an in-flight
-      count; if it does not, remove `vllm-bench` from the team survey (design decision 11).
-      Record how inference-perf `v0.7.0` is given the CA that verifies the gateway's
-      server certificate
+      intervals. Record how inference-perf `v0.7.0` is given the CA that verifies the
+      gateway's server certificate
 - [ ] 2.2 Workload files for `agw-reference` and `agw-reference-scaled` (design decision
       4) as committed inference-perf configs; equivalent parameters for the other tools
       rendered from the same source values, so one shape has one definition
 - [ ] 2.3 Committed caps file (team and operator caps, public rate cap, in-flight cap 24,
       output cap 4,096), read by the playbook with a file lookup so variable precedence
       cannot raise it; lock on the runner; run-id directory creation that refuses an
-      existing id
+      existing id; stage durations computed as `N_min / rate` (design decision 3), the
+      warm-up fixed at 120 seconds
 - [ ] 2.4 Run playbook: preflight (caps, window, lock, budget and global-bucket plan
       checks, image digests), render configs with owner-only permissions and every seed
-      set explicitly (generated once per campaign, or read from the manifest on a re-run),
-      run tool containers, write the manifest (seeds, dataset and prompt file sha256,
-      post-redaction config sha256) and `summary.json`, redact configs, release the lock
-      in `always:`. A re-run compares each rendered config and file digest with the stored
-      manifest and refuses on any difference, naming the file. Team mode refuses
-      `guidellm` and `dgx-harness`. Credential-handling tasks alone carry `no_log`
+      set explicitly (generated once per campaign), run tool containers, write the
+      manifest (seeds, dataset and prompt file sha256, post-redaction config sha256, the
+      name and sha256 of every bundle file kept on the VM) and `summary.json`, redact
+      configs, release the lock in `always:`. Calibration: reuse the stored `R_sat` for
+      the shape when the workload digest, served model and profile, and guidellm digest
+      match its calibration manifest, and run the sweep only otherwise. Team mode refuses
+      every tool but inference-perf. Credential-handling tasks alone carry `no_log`
 - [ ] 2.5 Abort watcher (design decision 9) polling Prometheus; thresholds as inventory
       values with conservative defaults until task 3.1 sets them
 - [ ] 2.6 Tests: pytest for the manifest writer, the summary schema across the four
-      tools' native outputs (fixtures), redaction and the budget-plan arithmetic; BATS
-      for the playbook's refusals (unpinned image, cap above file, run outside window,
-      existing run id, team mode with a direct target, team mode with `guidellm` or
-      `dgx-harness`, re-run with a drifted config or file digest); pytest that no rendered
-      config leaves a seed field unset
+      tools' native outputs (fixtures), redaction, the budget-plan arithmetic, the stage
+      duration arithmetic and the calibration-reuse decision; BATS for the playbook's
+      refusals (unpinned image, cap above file, run outside window, existing run id, team
+      mode with a direct target, team mode with any tool but inference-perf, `vllm-bench`
+      against a non-direct target); pytest that no rendered config leaves a seed field
+      unset
 - [ ] 2.7 Prove the whole contract against a local-dev upstream (the fake inference
       upstream or LM Studio) through the local Semaphore
 - [ ] 2.8 Validation gate: the BATS refusals prove scenarios "Tool image is pinned",
-      "Caps cannot be raised from the survey", "Second concurrent run is refused" and "A
-      run id is never reused", "Re-run refuses a drifted input" and "Team template refuses
-      a non-ladder tool"; a scan of the local run's bundle and task output proves scenario
-      "Bundle contains no credential"
+      "Caps cannot be raised from the survey", "Second concurrent run is refused", "A run
+      id is never reused" and "Team template refuses any tool but the ladder tool"; the
+      seed pytest proves scenario "Every seed is explicit and recorded"; a scan of the
+      local run's bundle and task output proves scenario "Bundle contains no credential"
 
 ## 3. Direct baseline and calibration (window named by Joe, before the narrowing)
-- [ ] 3.1 guidellm sweep against direct vLLM for each shape; record `R_sat` per shape, the
-      prefix-cache hit ratio during the first shared-prefix stage, and the abort
-      thresholds set from the idle and saturated readings
-- [ ] 3.2 inference-perf measured ladder against direct vLLM for the scaled shape, then
-      the reference shape
-- [ ] 3.3 `vllm bench serve` cross-check at the scaled shape's ladder; dgx-spark harness
-      C1 to C8; compare C1, C2 and C4 with 44.3, 70.5 and 100.6
-- [ ] 3.4 Repeat 3.2 in two more windows; record run-to-run and tool-to-tool tolerance per
-      shape in `design.md` decision 4, replacing the provisional 10 percent
+- [ ] 3.1 guidellm sweep against direct vLLM for each shape (the first calibration, so
+      nothing is stored to reuse); record `R_sat` per shape with its calibration inputs,
+      the prefix-cache hit ratio during the first measured stage after the 120-second
+      warm-up, and the abort thresholds set from the idle and saturated readings
+- [ ] 3.2 inference-perf measured ladder against direct vLLM for the scaled shape; the
+      reference shape's ladder once, as the comparability record for this serving profile
+- [ ] 3.3 `vllm bench serve` cross-check at 0.5 and 1.0 times the scaled shape's `R_sat`
+      (the first campaign has no cross-checked digest pair yet); dgx-spark harness C1 to
+      C8; compare C1, C2 and C4 with 44.3, 70.5 and 100.6
+- [ ] 3.4 Repeat the scaled shape's ladder of 3.2 in two more windows; record run-to-run
+      and tool-to-tool tolerance for the scaled shape in `design.md` decision 4, replacing
+      the provisional 10 percent
 - [ ] 3.5 Validation gate: the summaries prove scenarios "Warm-up is excluded", "Ladder is
-      scaled, not copied", "Low-sample stage is flagged" (or record that no stage was
+      scaled, not copied", "Stage length follows the sample target", "Low-sample stage is
+      flagged" (or record that no stage was
       low-sample) and "Continuity row is present"
 
 ## 4. Gateway A/B and limit figures
@@ -114,13 +121,12 @@ only inside the windows named below.
       `agw_rate_requests_per_minute_total` and the default and per-identity
       `tokens_per_hour` from it, with the arithmetic as comments in site-config inventory;
       hand the figures to the gateway change's task 4.2
-- [ ] 4.4 Re-run of one stored manifest with its recorded seeds: every rendered config
-      and dataset or prompt file digest matches the stored manifest, and the new manifest
-      differs only in the fields the spec scenario allows
 - [ ] 4.5 Validation gate: the A/B report proves scenario "Overhead report pairs the two
-      targets"; the inventory comments prove scenario "Limits cite their run"; 4.4 proves
-      scenario "Result is reproducible from its manifest"; a budget-exceeding plan refused
-      in preflight proves scenario "Budget-exceeding plan is refused"
+      targets"; the inventory comments prove scenario "Limits cite their run"; a
+      budget-exceeding plan refused in preflight proves scenario "Budget-exceeding plan is
+      refused"; a second campaign with unchanged calibration inputs reuses the stored
+      `R_sat` and runs no sweep, proving scenario "Calibration is reused while its inputs
+      hold"
 
 ## 5. Public path
 - [ ] 5.1 Confirm whether the site's egress address is shared with LAN clients of the
@@ -132,18 +138,22 @@ only inside the windows named below.
       stream proves scenario "Long stream passes the edge"
 
 ## 6. Results in the observability stack
-- [ ] 6.1 Loki push of one line per measured stage (pattern of the conformance
-      collector), bounded labels only
+- [ ] 6.1 Loki push of one line per measured stage through `tasks/push-loki-lines.yml`
+      (extracted by `production-internal-ca` task 6.0; this change waits on it and adds no
+      push of its own), bounded labels only
 - [ ] 6.2 Benchmark dashboard as a provisioned file beside the existing dashboards: run
       list, per-stage figures, run-window annotations, gateway and vLLM series overlay
-- [ ] 6.3 Durable copy of each bundle to the results home from task 0.2 on a new branch
-      per run, size cap enforced, names only in output
+- [ ] 6.3 Durable copy of each run's `manifest.json` and `summary.json` to the results
+      home from task 0.2 on a new branch per run, through `tasks/site-config-clone.yml` and
+      `tasks/site-config-push.yml`, names only in output; native outputs and redacted
+      configs stay on the VM for the declared retention
 - [ ] 6.4 Validation gate: a completed run on the dashboard proves scenario "Dashboard
       shows a finished run"
 
 ## 7. Self-serve template and guard drill
 - [ ] 7.1 Templates in `platform/semaphore/templates.yml`: "Run Team Inference
-      Benchmark" (survey per design decision 11, no secret fields), "Run Inference
+      Benchmark" (survey per design decision 11: no tool field, no stage duration, no
+      secret fields), "Run Inference
       Benchmark A/B" and "Run Inference Capacity Benchmark"; each with a Dev variant.
       Settle which Semaphore task field supplies the requester
 - [ ] 7.2 Team guide in the service README: what each shape means, how to read the
