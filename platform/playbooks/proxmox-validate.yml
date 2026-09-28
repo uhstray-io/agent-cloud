@@ -81,6 +81,50 @@
       ansible.builtin.debug:
         msg: "Cluster: {{ pve_nodes.json.data | map(attribute='node') | list | join(', ') }}"
 
+    # ── 2b. Node capacity (read-only report) ─────────────────────────────
+    # Where to place a new VM: each online node's live CPU and memory use, what its
+    # VMs are configured to take (the commitment that matters when they all run),
+    # and the VM storage's free space. Numbers only; the registered API result
+    # stays inside the no_log task and only the derived figures are printed.
+    - name: "Get cluster resources"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources"
+        method: GET
+      register: pve_resources
+      no_log: true
+      check_mode: false
+
+    - name: "Derive node capacity"
+      ansible.builtin.set_fact:
+        node_capacity: >-
+          {%- set out = [] -%}
+          {%- for n in pve_nodes.json.data | selectattr('status', 'equalto', 'online') | sort(attribute='node') -%}
+          {#- `template` is absent on ordinary VMs, and strict undefined rejects rejectattr on it -#}
+          {%- set vms = [] -%}
+          {%- for v in pve_resources.json.data if v.type == 'qemu' and v.node == n.node and (v.template | default(0) | int) != 1 -%}
+          {%- set _ = vms.append(v) -%}
+          {%- endfor -%}
+          {%- set stor = pve_resources.json.data | selectattr('type', 'equalto', 'storage') | selectattr('node', 'equalto', n.node) | selectattr('storage', 'equalto', _vm_storage) | list -%}
+          {%- set _ = out.append({
+                'node': n.node,
+                'cpu_used_pct': ((n.cpu | default(0) | float) * 100) | round(1),
+                'cores': n.maxcpu | default(0) | int,
+                'vcpus_configured': vms | map(attribute='maxcpu') | map('int') | sum,
+                'mem_used_gb': ((n.mem | default(0) | int) / 1073741824) | round(1),
+                'mem_total_gb': ((n.maxmem | default(0) | int) / 1073741824) | round(1),
+                'mem_free_gb': (((n.maxmem | default(0) | int) - (n.mem | default(0) | int)) / 1073741824) | round(1),
+                'mem_configured_gb': ((vms | map(attribute='maxmem') | map('int') | sum) / 1073741824) | round(1),
+                'vms': vms | length,
+                'vms_running': vms | selectattr('status', 'equalto', 'running') | list | length,
+                'vm_storage_free_gb': (((stor | first | default({})).maxdisk | default(0) | int - (stor | first | default({})).disk | default(0) | int) / 1073741824) | round(0) | int if stor else 'n/a'
+              }) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Report node capacity (most free memory first)"
+      ansible.builtin.debug:
+        msg: "{{ node_capacity | sort(attribute='mem_free_gb', reverse=true) | map('to_json') | list }}"
+
     # ── 3. Storage ───────────────────────────────────────────────────────
     - name: "Get storage on target node"
       ansible.builtin.uri:
