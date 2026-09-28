@@ -20,8 +20,9 @@ keep investigation detail in log bodies or structured metadata.
 
 For each deployed target, declare its stable service identity, owner, cluster
 and environment values, signal methods, profile applicability, finite label
-values, and proof. Local container logs prefer the Compose service name and
-retain the container name as detail. Remote metrics use the same declared
+values, and proof. Local Compose discovery uses `<project>/<service>` so
+repeated names such as `redis` stay distinct; the container name remains detail.
+Remote metrics use the same declared
 `service` value. A missing scrape stays missing or unhealthy; dashboard queries
 must not turn absent telemetry into a healthy zero. The Service Overview
 selector is sourced from Prometheus service labels, so it covers metric-enabled
@@ -32,7 +33,7 @@ Pyroscope is private on the o11y network with a persistent named volume and a
 seven-day initial retention policy. Its Alloy self-profile pilot is disabled
 unless private inventory explicitly enables it after the pinned Alloy config,
 target reachability, privacy, and VM headroom are verified. The initial pilot
-uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=alloy`
+uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=o11y/alloy`
 and a 60-second scrape interval. Record the before/after CPU, memory, profile
 ingestion, and retained-disk measurements before adding another producer. A
 normal deploy preserves this volume and every existing telemetry volume.

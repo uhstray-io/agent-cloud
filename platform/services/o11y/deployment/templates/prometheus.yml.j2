@@ -15,33 +15,33 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
-        labels: {service: prometheus}
+        labels: {service: o11y/prometheus}
 
   # Self-monitoring stays on the private o11y network; no extra host ports.
   - job_name: grafana
     static_configs:
       - targets: ["grafana:3000"]
-        labels: {service: grafana}
+        labels: {service: o11y/grafana}
 
   - job_name: loki
     static_configs:
       - targets: ["loki:3100"]
-        labels: {service: loki}
+        labels: {service: o11y/loki}
 
   - job_name: alloy
     static_configs:
       - targets: ["alloy:12345"]
-        labels: {service: alloy}
+        labels: {service: o11y/alloy}
 
   - job_name: tempo
     static_configs:
       - targets: ["tempo:3200"]
-        labels: {service: tempo}
+        labels: {service: o11y/tempo}
 
   - job_name: pyroscope
     static_configs:
       - targets: ["pyroscope:4040"]
-        labels: {service: pyroscope}
+        labels: {service: o11y/pyroscope}
 
   # Phase 2 (O11Y-DEPLOYMENT.md) — per-target metrics:
   #   - Caddy: its admin API (:2019/metrics) binds LOOPBACK-ONLY, so it is not

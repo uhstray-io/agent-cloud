@@ -913,6 +913,7 @@ assert pyroscope_config['storage']['backend'] == 'filesystem'
 assert pyroscope_config['storage']['filesystem']['dir'] == '/data/storage'
 assert pyroscope_config['limits']['retention_period'] == '168h'
 assert pyroscope_config['metastore']['index']['cleanup_interval'] == '15m'
+assert pyroscope_config['self_profiling']['disable_push'] is True
 datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())['datasources']
 assert any(source['uid'] == 'pyroscope' and source['url'] == 'http://pyroscope:4040' for source in datasources)
 dashboard = json.loads((deploy / 'config/grafana/dashboards/o11y-self-monitoring.json').read_text())
@@ -941,6 +942,10 @@ readback = next(task for task in verify['tasks'] if task['name'] == 'Require the
 assert any('O11y components up (expected 6)' in condition for condition in readback['ansible.builtin.assert']['that'])
 assert any('Profile samples written / sec' in condition for condition in readback['ansible.builtin.assert']['that'])
 assert 'Pyroscope ready (/ready) through the private compose network' in names
+ready = next(task for task in verify['tasks'] if task['name'] == 'Pyroscope ready (/ready) through the private compose network')
+assert ready['when'] == 'not ansible_check_mode'
+config = next(task for task in verify['tasks'] if task['name'] == 'Read the effective Pyroscope storage and retention configuration')
+assert '/api/v1/status/config' in ' '.join(config['ansible.builtin.command']['argv'])
 assert 'Require private persistent Pyroscope v2 storage and bounded retention' in names
 assert any('tempo_distributor_spans_received_total' in condition for condition in readback['ansible.builtin.assert']['that'])
 assert any('tempo_distributor_bytes_received_total' in condition for condition in readback['ansible.builtin.assert']['that'])
@@ -1058,7 +1063,7 @@ alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster')
 assert 'pyroscope.scrape' not in alloy
 profiled_alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster', o11y_alloy_profile_pilot_enabled=True)
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
-assert '"__address__" = "alloy:12345", "service_name" = "alloy"' in profiled_alloy
+assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy"' in profiled_alloy
 assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
 assert 'otelcol.receiver.otlp "traces"' in alloy
@@ -1287,6 +1292,8 @@ env.filters['bool'] = bool
 alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster')
 assert 'target_label  = "service"' in alloy
 assert '__meta_docker_container_label_com_docker_compose_service' in alloy
+assert '__meta_docker_container_label_com_docker_compose_project' in alloy
+assert 'separator     = "/"' in alloy
 assert 'value  = "service,signal"' in alloy
 assert 'prometheus.relabel "bounded_labels"' in alloy
 for forbidden in ('request_id', 'user_id', 'trace_id', 'traceid', 'raw_path', 'path', 'address', 'timestamp', 'prompt', 'secret'):

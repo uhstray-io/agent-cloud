@@ -30,4 +30,7 @@ segment_writer:
 limits:
   retention_period: 168h
 
+self_profiling:
+  disable_push: true
+
 multitenancy_enabled: false

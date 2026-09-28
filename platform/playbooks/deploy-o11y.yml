@@ -355,7 +355,7 @@
       retries: 8
       delay: 5
       until: _pyroscope_ready.rc == 0
-      check_mode: false
+      when: not ansible_check_mode
 
     - name: Read the effective Pyroscope storage and retention configuration
       ansible.builtin.command:
@@ -365,7 +365,7 @@
           - o11y-grafana
           - sh
           - -c
-          - curl -fsS http://pyroscope:4040/config
+          - curl -fsS http://pyroscope:4040/api/v1/status/config
       register: _pyroscope_config
       changed_when: false
       retries: 6
@@ -376,11 +376,12 @@
     - name: Require private persistent Pyroscope v2 storage and bounded retention
       ansible.builtin.assert:
         that:
-          - "'architecture_storage: v2' in _pyroscope_config.stdout"
-          - "'backend: filesystem' in _pyroscope_config.stdout"
-          - "'dir: /data/storage' in _pyroscope_config.stdout"
-          - "'retention_period: 168h' in _pyroscope_config.stdout"
-          - "'cleanup_interval: 15m' in _pyroscope_config.stdout"
+          - (_pyroscope_config.stdout | from_yaml).architecture_storage == 'v2'
+          - (_pyroscope_config.stdout | from_yaml).storage.backend == 'filesystem'
+          - (_pyroscope_config.stdout | from_yaml).storage.filesystem.dir == '/data/storage'
+          - (_pyroscope_config.stdout | from_yaml).limits.retention_period in ['168h', '1w']
+          - (_pyroscope_config.stdout | from_yaml).metastore.index.cleanup_interval in ['15m', '15m0s']
+          - (_pyroscope_config.stdout | from_yaml).self_profiling.disable_push | bool
         fail_msg: "Pyroscope's effective configuration does not match the committed persistent storage and seven-day retention policy."
       when: not ansible_check_mode
 

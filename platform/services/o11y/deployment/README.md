@@ -153,7 +153,7 @@ measured receiver resource headroom using `o11y_profile_pilot_config_receipt_id`
 `o11y_profile_pilot_privacy_receipt_id`, and
 `o11y_profile_pilot_resource_receipt_id`. The deploy refuses an enabled pilot
 without all three receipts. The only initial target is Alloy's own
-`alloy:12345` pprof endpoint, labeled `service_name=alloy`, sampled every 60
+`alloy:12345` pprof endpoint, labeled `service_name=o11y/alloy`, sampled every 60
 seconds. Compare CPU, memory, profile ingestion, and retained disk before
 adding another producer. Runtime sampling, restart persistence, and measured
 resource headroom still require the Dev-bound Semaphore evidence run.
