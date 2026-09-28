@@ -215,6 +215,7 @@ YAML
 @test "provision-vm: the summary reports the login and runner checks, not the port wait" {
   # Semaphore task 1753: port 22 open, the login failed (no key file on the runner) and the
   # runner step was skipped, yet the summary printed "SSH: ok" and "Runner: configured".
+  # Runs the REAL classify + summary tasks against injected registers.
   command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
   local play="$BATS_TEST_TMPDIR/summary.yml"
   python3 - "$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml" "$play" <<'PY'
@@ -222,34 +223,231 @@ import sys
 import yaml
 
 plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-task, = (t for p in plays for t in p.get("tasks", []) if t.get("name") == "Provisioning complete")
-task = dict(task, register="summary")
-common = {"_vmid": 220, "_name": "dns", "_node": "n", "_ip": "x", "ansible_user": "u",
-          "target_service": "dns", "vm_running": {"json": {"data": {"status": "running"}}},
-          "agent_ping": {"status": 200}, "ssh_ready": {"changed": False}}
+post, = (p for p in plays if p.get("hosts") == "_provisioned_vm")
+tasks = {t["name"]: t for t in post["tasks"]}
+classify = tasks["Classify the post-boot results"]
+summary = dict(tasks["Provisioning complete"], register="summary")
+common = {"_pv_vmid": 220, "_pv_name": "dns", "_pv_node": "n", "ansible_host": "x", "ansible_user": "u",
+          "_pv_service": "dns", "_pv_status": "running", "_pv_agent_ok": True, "_pv_port_open": True,
+          "_runner_token": "t"}
+skip = {"skipped": True, "changed": False}
 cases = {
-    "failed": {"ssh_test": {"failed": True, "rc": 255}, "runner_setup": {"skipped": True, "changed": False}},
-    "ok": {"ssh_test": {"rc": 0, "changed": False}, "runner_setup": {"rc": 0, "changed": True}},
-    "runnerfail": {"ssh_test": {"rc": 0, "changed": False}, "runner_setup": {"failed": True, "rc": 1}},
-    # --check: wait_for and the agent ping are skipped, so neither may read as passed
-    "check": {"ssh_ready": {"skipped": True, "changed": False}, "agent_ping": {"skipped": True, "changed": False},
-              "ssh_test": {"skipped": True, "changed": False}, "runner_setup": {"skipped": True, "changed": False}},
+    "failed": {"_login": {"failed": True, "msg": "timed out"}, "_cloudinit": skip, "_runner_env": skip, "_runner_svc": skip},
+    "ok": {"_login": {"changed": False}, "_cloudinit": {"rc": 0, "changed": False},
+           "_runner_env": {"changed": True}, "_runner_svc": {"changed": True}},
+    "runnerfail": {"_login": {"changed": False}, "_cloudinit": {"rc": 0, "changed": False},
+                   "_runner_env": {"changed": True}, "_runner_svc": {"failed": True}},
+    # ignore_unreachable leaves a result that `succeeded` accepts
+    "unreach": {"_login": {"changed": False}, "_cloudinit": {"unreachable": True, "changed": False},
+                "_runner_env": skip, "_runner_svc": skip},
+    "notoken": {"_runner_token": "", "_login": {"changed": False}, "_cloudinit": {"rc": 2, "changed": False},
+                "_runner_env": skip, "_runner_svc": skip},
+    # the shape --check leaves: the port wait, agent ping and every connection step skipped
+    "check": {"_pv_agent_ok": False, "_pv_port_open": False,
+              "_login": skip, "_cloudinit": skip, "_runner_env": skip, "_runner_svc": skip},
 }
 out = []
 for name, regs in cases.items():
     out.append({"hosts": "localhost", "gather_facts": False, "vars": {**common, **regs},
-                "tasks": [task, {"name": "save", "ansible.builtin.copy": {
+                "tasks": [classify, summary, {"name": "save", "check_mode": False, "ansible.builtin.copy": {
                     "content": "{{ summary.msg }}", "dest": f"{sys.argv[2]}.{name}", "mode": "0600"}}]})
 yaml.safe_dump(out, open(sys.argv[2], "w"))
 PY
   ansible-playbook -i localhost, -c local "$play" >/dev/null
   assert_grep -qF "SSH port: open" "$play.failed"
-  assert_grep -qF "SSH login: NOT verified" "$play.failed"
-  assert_grep -qF "Runner: skipped" "$play.failed"
+  assert_grep -qF "SSH login: FAILED" "$play.failed"
+  assert_grep -qF "cloud-init: not checked" "$play.failed"
+  assert_grep -qF "Runner: not attempted" "$play.failed"
   assert_grep -qF "SSH login: ok" "$play.ok"
+  assert_grep -qF "cloud-init: done" "$play.ok"
   assert_grep -qF "Runner: configured" "$play.ok"
-  assert_grep -qF "Runner: FAILED" "$play.runnerfail"
+  assert_grep -qF "Runner: FAILED starting semaphore-runner" "$play.runnerfail"
+  assert_grep -qF "cloud-init: FAILED" "$play.unreach"
+  assert_grep -qF "cloud-init: done with recoverable errors" "$play.notoken"
+  assert_grep -qF "Runner: skipped (no runner token supplied)" "$play.notoken"
   assert_grep -qF "SSH port: pending" "$play.check"
   assert_grep -qF "Agent: pending" "$play.check"
-  assert_grep -qF "SSH login: NOT verified" "$play.check"
+  assert_grep -qF "SSH login: not checked" "$play.check"
+}
+
+@test "provision-vm: no post-boot step shells out to ssh or disables host key checking" {
+  # The old steps ran `ssh -o StrictHostKeyChecking=no -i "{{ ssh_private_key_path }}"`;
+  # that variable is set nowhere, so every Semaphore run passed `-i ""` (tasks 1753/1755).
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  refute_grep -q 'StrictHostKeyChecking=no' "$pb"
+  refute_grep -q 'ssh_private_key_path' "$pb"
+  refute_grep -qE '^\s+(cmd|argv): .*\bssh\b' "$pb"
+  # The login is Ansible's own connection to the declared host, added in memory.
+  assert_grep -qF 'ansible.builtin.wait_for_connection:' "$pb"
+  assert_grep -qF 'name: "{{ _decl_host | default(_name, true) }}"' "$pb"
+  assert_grep -qF 'groups: _provisioned_vm' "$pb"
+}
+
+@test "playbooks: no command, shell, raw or script task carries a runner token" {
+  # A token in a command string sits in the argv of every process that runs it and, when
+  # the task fails without no_log, in Semaphore's durable task log.
+  python3 - "$REPO_ROOT/platform/playbooks" <<'PY'
+import pathlib, re, sys, yaml
+
+SHELLY = {"command", "shell", "raw", "script", "ansible.builtin.command", "ansible.builtin.shell",
+          "ansible.builtin.raw", "ansible.builtin.script"}
+TOKEN = re.compile(r"runner_token|SEMAPHORE_RUNNER_TOKEN", re.I)
+
+def tasks(node):
+    if isinstance(node, list):
+        for n in node:
+            yield from tasks(n)
+    elif isinstance(node, dict):
+        if any(k in SHELLY for k in node):
+            yield node
+        for k in ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always"):
+            if k in node:
+                yield from tasks(node[k])
+
+bad, scanned = [], 0
+for f in sorted(pathlib.Path(sys.argv[1]).rglob("*.yml")):
+    try:
+        doc = yaml.safe_load(f.read_text())
+    except yaml.YAMLError:
+        continue
+    for t in tasks(doc):
+        scanned += 1
+        args = {k: v for k, v in t.items() if k in SHELLY or k in ("args", "environment")}
+        if TOKEN.search(yaml.safe_dump(args)):
+            bad.append(f"{f.name}: {t.get('name')}")
+assert scanned > 50, f"scanned only {scanned} command tasks; the walker is broken"
+if bad:
+    sys.exit("runner token in a command task: " + "; ".join(bad))
+PY
+}
+
+@test "provision-vm: the runner-env write is the only token reader, and it is no_log" {
+  python3 - "$REPO_ROOT/platform/playbooks/provision-vm.yml" <<'PY'
+import sys, yaml
+
+plays = yaml.safe_load(open(sys.argv[1]))
+readers = []
+for p in plays:
+    for t in p.get("tasks") or []:
+        body = {k: v for k, v in t.items() if k not in ("when", "name")}
+        if "_runner_token" in yaml.safe_dump(body):
+            readers.append(t)
+names = [t["name"] for t in readers]
+assert names == ["Write the Semaphore runner environment", "Classify the post-boot results"], names
+write, classify = readers
+assert write.get("no_log") is True, "the runner-env write must be no_log"
+assert write["ansible.builtin.copy"]["mode"] == "0600"
+assert write.get("become") is True
+# The classifier only measures the token's length; it never renders the value.
+dumped = yaml.safe_dump(classify)
+assert dumped.count("_runner_token") == dumped.count("_runner_token | length"), "classifier may only test length"
+PY
+}
+
+@test "provision-vm: under --check the post-boot play skips every connection step and says so" {
+  # A dry run must not read as a proved login. Run the REAL post-boot play in check mode on
+  # a local-connection host: if any connection step ran, the login would succeed and read "ok".
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  local play="$BATS_TEST_TMPDIR/postboot.yml" out="$BATS_TEST_TMPDIR/postboot.out"
+  python3 - "$REPO_ROOT/platform/playbooks/provision-vm.yml" "$play" "$out" <<'PY'
+import sys, yaml
+
+plays = yaml.safe_load(open(sys.argv[1]))
+post = dict(next(p for p in plays if p.get("hosts") == "_provisioned_vm"))
+tasks = [dict(t) for t in post["tasks"]]
+tasks[[t["name"] for t in tasks].index("Provisioning complete")]["register"] = "summary"
+tasks.append({"name": "save", "check_mode": False, "delegate_to": "localhost",
+              "ansible.builtin.copy": {"content": "{{ summary.msg }}", "dest": sys.argv[3], "mode": "0600"}})
+post["tasks"] = tasks
+yaml.safe_dump([post], open(sys.argv[2], "w"))
+PY
+  cat > "$BATS_TEST_TMPDIR/inv.yml" <<'YAML'
+_provisioned_vm:
+  hosts:
+    vm1:
+      ansible_connection: local
+      ansible_host: 192.0.2.10
+      ansible_user: u
+      _pv_service: dns
+      _pv_vmid: 220
+      _pv_name: dns
+      _pv_node: n
+      _pv_status: running
+      _pv_agent_ok: false
+      _pv_port_open: false
+YAML
+  ansible-playbook --check -i "$BATS_TEST_TMPDIR/inv.yml" "$play" -e runner_token=fake-token \
+    >"$BATS_TEST_TMPDIR/log" 2>&1 || { cat "$BATS_TEST_TMPDIR/log"; return 1; }
+  assert_grep -qF "SSH login: not checked (check mode)" "$out"
+  assert_grep -qF "cloud-init: not checked" "$out"
+  assert_grep -qF "Runner: not checked" "$out"
+  # No connection step ran — each is reported skipped by name.
+  local t
+  for t in "Log in over Ansible's connection" "Wait for cloud-init to finish" \
+           "Write the Semaphore runner environment" "Enable and start the Semaphore runner"; do
+    grep -A1 -F "TASK [$t]" "$BATS_TEST_TMPDIR/log" | grep -q '^skipping' \
+      || { echo "not skipped under --check: $t"; cat "$BATS_TEST_TMPDIR/log"; return 1; }
+  done
+  refute_grep -qF "fake-token" "$BATS_TEST_TMPDIR/log"
+}
+
+@test "provision-vm: a post-boot failure does not stop the summary or post-validate, then fails the run" {
+  # Evaluated: the real post-boot and verdict plays on a local-connection host with no
+  # `cloud-init` binary. The login succeeds, cloud-init fails, the play must continue to its
+  # summary, and the verdict play must then fail with a diagnosis.
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
+  # Order is the contract: post-boot, then the post-validate import, then the verdict.
+  local post val verdict
+  post=$(grep -n 'hosts: _provisioned_vm' "$pb" | cut -d: -f1)
+  val=$(grep -n 'name: "Post-validate: VM running"' "$pb" | cut -d: -f1)
+  verdict=$(grep -n 'name: "Verdict: the new VM is reachable and configured"' "$pb" | cut -d: -f1)
+  [ "$post" -lt "$val" ]
+  [ "$val" -lt "$verdict" ]
+  local play="$BATS_TEST_TMPDIR/chain.yml"
+  python3 - "$pb" "$play" <<'PY'
+import sys, yaml
+
+plays = yaml.safe_load(open(sys.argv[1]))
+post = next(p for p in plays if p.get("hosts") == "_provisioned_vm")
+verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
+marker = {"hosts": "localhost", "gather_facts": False,
+          "tasks": [{"name": "stand-in for post-validate", "ansible.builtin.debug": {"msg": "POST-VALIDATE RAN"}}]}
+yaml.safe_dump([post, marker, verdict], open(sys.argv[2], "w"))
+PY
+  cat > "$BATS_TEST_TMPDIR/inv.yml" <<'YAML'
+all:
+  hosts:
+    localhost: { ansible_connection: local }
+_provisioned_vm:
+  hosts:
+    vm1:
+      ansible_connection: local
+      ansible_host: 192.0.2.10
+      ansible_user: u
+      _pv_service: dns
+      _pv_vmid: 220
+      _pv_name: dns
+      _pv_node: n
+      _pv_status: running
+      _pv_agent_ok: true
+      _pv_port_open: true
+YAML
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  # A PATH with no cloud-init on it (ansible and python are resolved first).
+  local path="$bin:$(dirname "$(command -v ansible-playbook)"):$(dirname "$(command -v python3)"):/usr/bin:/bin"
+  if PATH="$path" command -v cloud-init >/dev/null; then skip "cloud-init installed on this machine"; fi
+  run env PATH="$path" SEMAPHORE_RUNNER_TOKEN= ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$play"
+  [ "$status" -ne 0 ] || { echo "$output"; return 1; }
+  assert_grep -qF "cloud-init: FAILED" <<<"$output"
+  assert_grep -qF "POST-VALIDATE RAN" <<<"$output"
+  assert_grep -qF "reported a crash or never finished" <<<"$output"
+  # And with a cloud-init that finishes cleanly and no runner token, the run passes.
+  printf '#!/bin/sh\necho "status: done"\nexit 0\n' > "$bin/cloud-init"
+  chmod +x "$bin/cloud-init"
+  run env PATH="$path" SEMAPHORE_RUNNER_TOKEN= ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$play"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  assert_grep -qF "cloud-init: done" <<<"$output"
+  assert_grep -qF "Runner: skipped (no runner token supplied)" <<<"$output"
 }

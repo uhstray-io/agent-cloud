@@ -65,7 +65,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 - `distribute-ssh-keys.yml` — `become: false` (writes to user-owned `~/.ssh/`)
 - `harden-ssh.yml` — `become: true` (modifies `/etc/ssh/sshd_config`)
 - `deploy-service.yml` — `become: false` (runs deploy.sh as the service user)
-- `provision-vm.yml` — runs against Proxmox API, no SSH become
+- `provision-vm.yml` — runs against the Proxmox API; its post-boot play logs in to the new VM over Ansible's own connection and uses `become: true` only to write the Semaphore runner environment, after resolving the sudo password
 
 Before privileged tasks, use `tasks/resolve-become-password.yml` to read the
 bootstrap sudo password from OpenBao. Disable automatic fact gathering when it
