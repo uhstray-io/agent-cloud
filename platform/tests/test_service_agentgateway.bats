@@ -144,8 +144,9 @@ setup() {
 
 @test "agentgateway: observability — identity label on metrics and logs, never prompt content" {
   assert_grep -qE '^\s*metrics:$' "$CONFIG"
-  assert_grep -qE '^\s*logging:$' "$CONFIG"
-  [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 2 ]
+  assert_grep -qE '^\s*accessLog:$' "$CONFIG"
+  refute_grep -qE '^\s*logging:$' "$CONFIG"
+  [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
@@ -349,16 +350,26 @@ import sys
 import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 assert 'tracing' not in config['config']
+assert 'logging' not in config['config']
 tracing = config['frontendPolicies']['tracing']
 assert tracing['host'] == 'receiver.test:4317'
 assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
 assert tracing['resources']['service.name'] == '"agentgateway"'
 access = config['frontendPolicies']['accessLog']['otlp']
+assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
 assert access['host'] == 'receiver.test:4317'
 assert access['fields']['add']['service'] == '"agentgateway"'
+assert access['fields']['add']['identity'] == 'apiKey.name'
 PY
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
+assert 'otlp' not in config['frontendPolicies']['accessLog']
+PY
 }
 
 @test "agentgateway: trace rollout gate runs before OpenBao and deploy" {

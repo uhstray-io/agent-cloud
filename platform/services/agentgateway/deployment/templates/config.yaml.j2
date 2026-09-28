@@ -45,16 +45,6 @@ config:
     fields:
       add:
         identity: apiKey.name
-  # The default access log already carries gen_ai.request.model / response.model /
-  # usage.input_tokens / output_tokens / reasoning_tokens and, on streamed
-  # responses, agw.ai.time_to_first_token (read on the running container
-  # 2026-09-17). The one thing it lacks is WHO: add the identity. Never
-  # llm.prompt or llm.completion — content stays out of logs.
-  logging:
-    fields:
-      add:
-        identity: apiKey.name
-
 # The built-in operator UI, on its OWN listener (:4001) instead of the admin
 # interface (which stays on the container loopback, unpublished), and
 # authenticated BY THE GATEWAY: an OIDC authorization-code flow against Authentik
@@ -89,6 +79,22 @@ ui:
 {% endif %}
 
 frontendPolicies:
+  # Access logs carry model, usage, and streaming timings by default. Add the
+  # bounded client identity without recording prompts or completions. The old
+  # config.logging setting cannot coexist with this policy (v1.5.0).
+  accessLog:
+    add:
+      identity: apiKey.name
+{% if agw_otlp_host | default('') %}
+    # Access logs share Alloy's OTLP receiver with traces. The service field
+    # becomes Loki's bounded service label; stdout logging stays available.
+    otlp:
+      host: {{ agw_otlp_host }}
+      fields:
+        add:
+          service: '"agentgateway"'
+          identity: apiKey.name
+{% endif %}
 {% if agw_otlp_host | default('') %}
   tracing:
     # The receiver is Alloy, which batches these spans to Tempo. Bound both
@@ -98,14 +104,6 @@ frontendPolicies:
     clientSampling: {{ agw_trace_sampling | default(0.05) }}
     resources:
       service.name: '"agentgateway"'
-  accessLog:
-    # Access logs share Alloy's OTLP receiver with traces. The service field
-    # becomes Loki's bounded service label; stdout logging stays available.
-    otlp:
-      host: {{ agw_otlp_host }}
-      fields:
-        add:
-          service: '"agentgateway"'
 {% endif %}
   http:
     # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the
