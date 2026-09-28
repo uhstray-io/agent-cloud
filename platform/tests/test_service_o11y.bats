@@ -942,6 +942,11 @@ assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in data
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 verify = next(p for p in plays if p.get('name') == 'Phase 3: Verify o11y')
 assert any(t['name'] == 'Tempo ready (/ready) through the private compose network' for t in verify['tasks'])
+health = next(t for t in verify['tasks'] if t['name'] == 'Verify Grafana can query its provisioned data sources')
+assert health['loop'] == ['prometheus', 'loki']
+proxy = next(t for t in verify['tasks'] if t['name'] == 'Verify Grafana can proxy the Tempo datasource')
+assert '/api/datasources/proxy/uid/tempo/ready' in proxy['ansible.builtin.command']['argv'][-1]
+assert 'curl -fsS' in proxy['ansible.builtin.command']['argv'][-1]
 PY
 }
 

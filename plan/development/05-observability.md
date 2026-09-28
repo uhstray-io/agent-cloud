@@ -746,6 +746,27 @@ the `o11y` VM (`o11y_svc`).
 > `service=agentgateway` before forwarding them to Loki. Any missing signal
 > fails its named check.
 
+> **First production Tempo rollout, 2026-09-27 EDT:** PRs #293 and private
+> site-config #37 merged after CodeRabbit approval and green checks. The
+> scoped publisher created `Verify o11y Service (Dev)` in Semaphore task 1657.
+> The existing production inventory was byte-for-byte equal to the private
+> pre-merge revision; the reviewed merge added eight lines, and the declared
+> inventory sync updated the stored Semaphore record with readback equality.
+> Receiver check-mode task 1658 passed at `dev` merge
+> `3279758457392fefa0a189a542fdd927ec5e063b`. Real task 1659 placed that
+> revision, preserved the existing volumes, and reached Tempo's `/ready`, but
+> failed while checking Grafana's Tempo data source: its generic plugin health
+> response had no `status` field. Grafana documents plugin health checks as
+> optional. The correction probes Tempo's `/ready` through Grafana's provisioned
+> data-source proxy; it still requires `status=OK` for Prometheus and Loki.
+> Task 1659 is not a completed receiver or gateway trace receipt. Review and
+> merge this correction before rerunning the Dev-bound receiver deployment.
+> Firewall check-mode task 1660 and real task 1661 passed from the reviewed
+> Dev template; the real task re-established SSH after applying the restricted
+> OTLP rule. Gateway check-mode task 1663 then proved Tempo readiness, gateway-
+> to-Alloy TCP reachability, and the named healthy gateway metric before any
+> gateway redeploy. Check mode did not produce a trace or access-log receipt.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

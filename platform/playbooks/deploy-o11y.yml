@@ -343,12 +343,34 @@
             curl -sS --config - "http://127.0.0.1:3000/api/datasources/uid/$1/health"
           - datasource-health
           - "{{ item }}"
-      loop: [prometheus, loki, tempo]
+      loop: [prometheus, loki]
       register: _datasource_health
       changed_when: false
       retries: 6
       delay: 5
       until: _datasource_health.rc == 0 and (_datasource_health.stdout | from_json).status == 'OK'
+      when: not ansible_check_mode
+
+    # Grafana's plugin health endpoint is optional. Tempo in the pinned Grafana
+    # version returns a JSON response without `status`, even while Tempo is ready.
+    # A proxied /ready request proves the provisioned datasource routes to Tempo.
+    - name: Verify Grafana can proxy the Tempo datasource
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS -o /dev/null --config -
+            http://127.0.0.1:3000/api/datasources/proxy/uid/tempo/ready
+      register: _tempo_datasource
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _tempo_datasource.rc == 0
       when: not ansible_check_mode
 
     - name: Read the provisioned o11y self-monitoring dashboard
