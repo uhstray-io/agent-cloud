@@ -247,7 +247,7 @@ def test_templates_targeting_a_group_ask_for_it():
         assert playbook.is_file(), f"{tpl['name']} names a missing playbook: {tpl['playbook']}"
         plays = yaml.safe_load(playbook.read_text()) or []
         hosts = [str(p.get("hosts", "")) for p in plays if isinstance(p, dict)]
-        if any("target_service" in h for h in hosts):
-            if "target_service" not in {v["name"] for v in tpl.get("survey_vars") or []}:
-                missing.append(tpl["name"])
+        fields = {v["name"] for v in tpl.get("survey_vars") or []}
+        if any("target_service" in h for h in hosts) and "target_service" not in fields:
+            missing.append(tpl["name"])
     assert not missing, f"templates whose playbook targets target_service without the field: {missing}"
