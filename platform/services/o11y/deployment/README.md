@@ -39,6 +39,15 @@ real node addresses in `site-config`. Metrics use the `service`, `component`,
 `cluster`, `env`, and `node` labels. Retention defaults to 15 days for Prometheus
 and 7 days for Loki until measured ingestion justifies a change.
 
+Alloy's Loki external label and Prometheus's external label use the same
+`o11y_cluster` inventory value. Local development defaults to
+`agent-cloud-local`; production deploys require the label explicitly. This
+implements the cluster-label portion of `estate-wide-observability-instrumentation`
+task 3.3 (2026-09-28); the remaining instrumentation work stays with that change.
+The source configs are `templates/config.alloy.j2` and
+`templates/prometheus.yml.j2`; `Deploy o11y` renders their runtime files under
+`config/` before starting the containers.
+
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
 Run `Verify o11y Metrics Target (Dev)` through Semaphore for each enabled

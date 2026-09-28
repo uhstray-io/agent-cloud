@@ -41,7 +41,7 @@ loki.write "default" {
     url = "http://loki:3100/loki/api/v1/push"
   }
   external_labels = {
-    cluster = "agent-cloud-local",
+    cluster = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
   }
 }
 
@@ -119,7 +119,7 @@ otelcol.processor.attributes "gateway_logs" {
   action {
     key    = "loki.attribute.labels"
     action = "insert"
-    value  = "service"
+    value  = "service,signal"
   }
   output {
     logs = [otelcol.exporter.loki.gateway.input]

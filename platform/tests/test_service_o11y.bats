@@ -505,12 +505,12 @@ PY
 
 @test "o11y: committed config-as-code present (prometheus/loki/alloy/grafana)" {
   # Prometheus self-scrape is the committed config-as-code. Per-target scrapes
-  # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in prometheus.yml
+  # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in the Prometheus template
   # because Caddy's admin API is loopback-only and not yet cross-container
   # routable — so do NOT assert caddy:2019 here (O11Y-DEPLOYMENT.md Phase 2).
-  grep -q 'job_name: prometheus' "$DEPLOY_DIR/config/prometheus.yml"
+  grep -q 'job_name: prometheus' "$DEPLOY_DIR/templates/prometheus.yml.j2"
   grep -q 'schema: v13' "$DEPLOY_DIR/config/loki-config.yml"
-  grep -q 'loki.write' "$DEPLOY_DIR/config/config.alloy"
+  grep -q 'loki.write' "$DEPLOY_DIR/templates/config.alloy.j2"
   grep -qE 'url: http://prometheus:9090' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
   grep -qE 'url: http://loki:3100' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
 }
@@ -849,9 +849,16 @@ import pathlib
 import re
 import sys
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
-scrapes = yaml.safe_load((deploy / 'config/prometheus.yml').read_text())['scrape_configs']
+env = Environment(undefined=StrictUndefined)
+env.filters['to_json'] = json.dumps
+prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
+rendered_prometheus = env.from_string(prometheus_template).render(o11y_cluster='test-cluster')
+prometheus_config = yaml.safe_load(rendered_prometheus)
+assert prometheus_config['global']['external_labels']['cluster'] == 'test-cluster'
+scrapes = prometheus_config['scrape_configs']
 jobs = {job['job_name']: job['static_configs'][0]['targets'] for job in scrapes}
 assert {key: jobs[key] for key in ('prometheus', 'grafana', 'loki', 'alloy', 'tempo')} == {
     'prometheus': ['localhost:9090'],
@@ -906,7 +913,7 @@ assert 'curl -sS --config -' in health['ansible.builtin.command']['argv'][5]
 PY
 }
 
-@test "o11y: agentgateway dashboard uses the declared scrape and documented traffic metrics" {
+@test "o11y: agentgateway operations and client dashboards use declared sources and metrics" {
   python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import pathlib
@@ -916,28 +923,66 @@ import yaml
 deploy = pathlib.Path(sys.argv[1])
 dashboard = json.loads((deploy / 'config/grafana/dashboards/agentgateway-traffic.json').read_text())
 assert dashboard['uid'] == 'agentgateway-traffic'
-assert len(dashboard['panels']) == 8
-assert all(panel['datasource']['uid'] == 'prometheus' for panel in dashboard['panels'])
-queries = '\n'.join(target['expr'] for panel in dashboard['panels'] for target in panel['targets'])
+assert dashboard['title'] == 'Agentgateway operations'
+assert len(dashboard['panels']) == 14
+assert {panel['datasource']['uid'] for panel in dashboard['panels']} == {'prometheus', 'loki', 'tempo'}
+operation_identity = next(variable for variable in dashboard['templating']['list'] if variable['name'] == 'identity')
+assert 'label_values(agentgateway_requests_total' in operation_identity['query']['query']
+queries = '\n'.join(target.get('expr', '') for panel in dashboard['panels'] for target in panel['targets'])
 for metric in ('up{job="agentgateway"}', 'agentgateway_config_synchronized',
                'agentgateway_requests_total', 'agentgateway_request_duration_seconds_bucket',
                'agentgateway_gen_ai_client_token_usage_sum',
-               'agentgateway_gen_ai_server_time_to_first_token_bucket'):
+               'agentgateway_gen_ai_server_time_to_first_token_bucket',
+               'identity, gen_ai_request_model, gen_ai_token_type',
+               'status="429"', 'agentgateway_build_info'):
     assert metric in queries, metric
 assert 'or vector(0)' not in queries
+rejections = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rejected requests by reason')
+assert 'sum by (reason)' in rejections['targets'][0]['expr']
+assert 'agentgateway_requests_total' in rejections['targets'][0]['expr']
+assert 'reason!=""' in rejections['targets'][0]['expr']
+access = next(panel for panel in dashboard['panels'] if panel['title'] == 'Recent access records')
+assert access['datasource']['uid'] == 'loki'
+assert access['targets'][0]['expr'] == '{service="agentgateway", signal="access-log"}'
+traces = next(panel for panel in dashboard['panels'] if panel['title'] == 'Recent agentgateway traces')
+assert traces['datasource']['uid'] == 'tempo'
+assert traces['type'] == 'table'
+assert 'agentgateway' in traces['targets'][0]['query']
+assert traces['targets'][0]['query'] == '{ resource.service.name = "agentgateway" }'
+rate_limited = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rate-limited requests (429)')
+assert 'agentgateway_requests_total' in rate_limited['targets'][0]['expr']
+assert 'status="429"' in rate_limited['targets'][0]['expr']
+
+client = json.loads((deploy / 'config/grafana/dashboards/agentgateway-client-view.json').read_text())
+assert client['uid'] == 'agentgateway-client-view'
+assert client['title'] == 'Agentgateway client view'
+assert len(client['panels']) == 6
+assert all(panel['datasource']['uid'] == 'prometheus' for panel in client['panels'])
+identity = next(variable for variable in client['templating']['list'] if variable['name'] == 'identity')
+assert 'label_values(agentgateway_requests_total' in identity['query']['query']
+client_queries = '\n'.join(target['expr'] for panel in client['panels'] for target in panel['targets'])
+assert 'histogram_quantile(0.50' in client_queries
+assert 'histogram_quantile(0.95' in client_queries
+assert 'agentgateway_request_duration_seconds_bucket' in client_queries
+assert 'status=~"4.."' in client_queries and 'status=~"5.."' in client_queries
+assert 'sum by (identity)' in client_queries and 'identity=~"$identity"' in client_queries
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 names = {task['name'] for task in verify['tasks']}
 assert 'Read the provisioned agentgateway traffic dashboard' in names
 assert 'Require the committed agentgateway traffic dashboard to be active' in names
+assert 'Read the provisioned agentgateway client-view dashboard' in names
+assert 'Require the committed agentgateway client-view dashboard to be active' in names
 PY
 }
 
 @test "o11y: private Alloy OTLP input has a bounded persistent Tempo consumer" {
   python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import json
 import pathlib
 import sys
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
@@ -949,11 +994,16 @@ assert '${O11Y_OTLP_BIND:-127.0.0.1}' in compose['services']['alloy']['ports'][0
 tempo = yaml.safe_load((deploy / 'config/tempo-config.yml').read_text())
 assert tempo['storage']['trace']['backend'] == 'local'
 assert tempo['compactor']['compaction']['block_retention'] == '${O11Y_TEMPO_RETENTION:-168h}'
-alloy = (deploy / 'config/config.alloy').read_text()
+alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
+env = Environment(undefined=StrictUndefined)
+env.filters['to_json'] = json.dumps
+alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster')
 assert 'otelcol.receiver.otlp "traces"' in alloy
 assert 'otelcol.processor.attributes.gateway_logs.input' in alloy
 assert 'otelcol.exporter.loki "gateway"' in alloy
 assert 'loki.attribute.labels' in alloy
+assert 'value  = "service,signal"' in alloy
+assert 'cluster = "test-cluster"' in alloy
 assert 'otelcol.processor.batch.traces.input' in alloy
 assert 'otelcol.exporter.otlp.tempo.input' in alloy
 assert 'endpoint = "tempo:4317"' in alloy
@@ -961,6 +1011,17 @@ datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/
 assert {d['uid'] for d in datasources} == {'prometheus', 'loki', 'tempo'}
 assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in datasources)
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+phase_one = next(p for p in plays if p.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+cluster_guard = next(t for t in phase_one['tasks'] if t['name'] == 'Require the observability cluster label')
+assert any('o11y_cluster is defined' in item for item in cluster_guard['ansible.builtin.assert']['that'])
+assert any("local_mode | default(false) | bool" in item for item in cluster_guard['ansible.builtin.assert']['that'])
+for name, src, dest in (
+    ('Render Alloy config with the inventory cluster label', 'templates/config.alloy.j2', 'config/config.alloy'),
+    ('Render Prometheus config with the inventory cluster label', 'templates/prometheus.yml.j2', 'config/prometheus.yml'),
+):
+    task = next(t for t in phase_one['tasks'] if t['name'] == name)
+    assert task['ansible.builtin.template']['src'].endswith(src)
+    assert task['ansible.builtin.template']['dest'].endswith(dest)
 verify = next(p for p in plays if p.get('name') == 'Phase 3: Verify o11y')
 assert any(t['name'] == 'Tempo ready (/ready) through the private compose network' for t in verify['tasks'])
 health = next(t for t in verify['tasks'] if t['name'] == 'Verify Grafana can query its provisioned data sources')

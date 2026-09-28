@@ -182,6 +182,10 @@ dashboard. It also supplies the pilot for `observability-estate` task 3.3.
 Every step is inventory-gated. Each one reverts by a declaration change plus a Semaphore
 redeploy, and no telemetry data is deleted.
 
+Validation also uses the normal Semaphore deploy path with persistent volumes. Clean
+deploys and volume-wipe recovery drills are outside this change unless Joe explicitly
+requests one.
+
 - Traces: set `agw_otlp_traces: false` and redeploy the gateway. The template renders no
   `frontendPolicies.tracing`, and access records keep flowing.
 - Access records over OTLP: set `agw_otlp_logs: false` and redeploy. Stdout logging is

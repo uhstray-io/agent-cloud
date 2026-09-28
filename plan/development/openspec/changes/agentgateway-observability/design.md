@@ -410,10 +410,15 @@ This change owns the gateway side and lists the o11y items as dependencies.
     - Operations: `agentgateway-traffic` is extended and renamed to "Agentgateway
       operations". This change asks to keep the uid, so links and the landed assert keep
       resolving; the o11y session makes that call. The dashboard gains tokens by identity, model and
-      `gen_ai_token_type`, rejections by `reason`, `agentgateway_requests_shed_total`,
+      `gen_ai_token_type`, rejections by `reason`, and requests with HTTP status 429,
       `agentgateway_build_info`, access records from Loki
       (`{service="agentgateway", signal="access-log"}`) and a Tempo search on uid
       `tempo`. The eight-panel assert (`deploy-o11y.yml:502`) moves to the new count.
+      The previously proposed `agentgateway_requests_shed_total` is not listed in the
+      gateway 1.5 metric reference, and no source definition has been verified. The
+      replacement uses the documented status breakdown of `agentgateway_requests_total`.
+      A live 429 receipt
+      is still required before claiming that this panel captures rate-limit events.
     - Client view: `agentgateway-client-view.json`, uid `agentgateway-client-view`, with
       p50 and p95 first-token latency from
       `agentgateway_gen_ai_server_time_to_first_token_bucket`, request duration, the 4xx
@@ -422,6 +427,11 @@ This change owns the gateway side and lists the o11y items as dependencies.
       is proved against.
     - Both take an `identity` variable from `label_values(agentgateway_requests_total,
       identity)`, and neither queries a Kubernetes label.
+    - Acceptance uses the normal Semaphore o11y deploy after traffic has been retained.
+      Read back both dashboards and telemetry from before and after the deploy. A clean
+      deploy or volume wipe is not part of this change; it needs a separate explicit
+      request. This proves configuration reconciliation and data preservation, not
+      recovery from lost volumes.
 
 ## Risks / Trade-offs
 

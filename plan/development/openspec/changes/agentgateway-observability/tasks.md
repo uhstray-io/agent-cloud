@@ -202,7 +202,7 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 4. Access records in Loki (design decisions 3 and 8)
 
-- [ ] 4.1 **[o11y]** Add `signal` to the label hint at `config.alloy:118-123`, so the
+- [x] 4.1 **[o11y]** Add `signal` to the label hint at `config.alloy:118-123`, so the
       hint names `service,signal`. Tasks 4.3 and 7.1 wait on it
 - [ ] 4.2 unverified: the line format `otelcol.exporter.loki` v1.5.1 produces for a
       gateway record, whether a keyed `GET /v1/models` record carries `identity`, and
@@ -296,21 +296,27 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 7. Dashboards and other o11y-side dependencies (design decision 11)
 
-- [ ] 7.1 **[o11y]** Operations dashboard: extend `agentgateway-traffic.json` and rename
+- [x] 7.1 **[o11y]** Operations dashboard: extend `agentgateway-traffic.json` and rename
       it "Agentgateway operations". This change asks to keep the uid. Add tokens by
       identity, model and `gen_ai_token_type`, rejections by `reason`,
-      `agentgateway_requests_shed_total`, `agentgateway_build_info`, access records
+      a `Rate-limited requests (429)` panel using
+      `agentgateway_requests_total{status="429"}`, `agentgateway_build_info`, access records
       (`{service="agentgateway", signal="access-log"}`, which needs 4.1) and a Tempo
-      search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:502`
-- [ ] 7.2 **[o11y]** Client-view dashboard: `agentgateway-client-view.json`, uid
+      search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:502`.
+      The upstream [Prometheus guide](https://agentgateway.dev/docs/standalone/latest/documentation/observability/metrics/prometheus/)
+      documents the v1.5.0 metrics endpoint and says `agentgateway_requests_total`
+      is broken down by status; task 4.6 must still confirm a real 429 appears in
+      that series before claiming rate-limit coverage.
+- [x] 7.2 **[o11y]** Client-view dashboard: `agentgateway-client-view.json`, uid
       `agentgateway-client-view`, with p50 and p95 first-token latency, request
       duration, the 4xx and 5xx ratio, and per-identity request rate, plus an `identity`
       variable. The o11y deploy asserts it the way lines 480-504 assert the traffic
       dashboard
-- [ ] 7.3 **[o11y]** Replace the hard-coded `cluster = "agent-cloud-local"` at
+- [x] 7.3 **[o11y]** Replace the hard-coded `cluster = "agent-cloud-local"` at
       `config.alloy:44` and `config/prometheus.yml:8` with a value rendered from
       inventory
-- [ ] 7.4 Validation gate: `Clean Deploy o11y (Local)`, then one keyed request. The local
+- [ ] 7.4 Validation gate: `Deploy o11y (Local)` without removing containers' persistent
+      volumes, then one keyed request. The local
       client-view and operations dashboards show that identity in metrics and in an
       access record, which proves scenario "Local deploy shows metrics and access
       records"
@@ -357,12 +363,14 @@ is a separate dashboard, with operations as a second dashboard.
       (delivered by 8.1); `inference-telemetry-production` 1.4 (per-port sources
       available after 5.1)
 - [ ] 9.4 Validation gate:
-      - After an hour of production traffic, a wipe and redeploy of the production o11y
-        stack through Semaphore restores both dashboards, with the client view rendering
-        first-token percentiles and per-identity counts. This proves scenario "Dashboard
-        survives a rebuild" and the gateway change's "Client-view latency on the
-        dashboard". Production has no clean-deploy template on 2026-09-28, so declare
-        one first or reuse the one `inference-telemetry-production` task 3.5 needs.
+      - After an hour of production traffic, run the normal `Deploy o11y (Dev)`
+        Semaphore template from the merged `dev` revision, preserving Prometheus, Loki,
+        Tempo and Grafana volumes. Read back both dashboards and the previously recorded
+        telemetry timestamps, then confirm the client view renders first-token
+        percentiles and per-identity counts from new traffic. This proves scenario
+        "Dashboard survives a non-destructive redeploy" and the gateway change's
+        "Client-view latency on the dashboard". A volume-wipe recovery drill requires
+        a separate explicit request and is not an acceptance condition here.
       - A team request carrying a unique marker string leaves no match in Loki or in
         Tempo, which proves scenario "Loki holds no prompt text".
       - Neither the caller's key nor its Authorization value appears in the database,

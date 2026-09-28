@@ -1,0 +1,83 @@
+{
+  "uid": "agentgateway-client-view",
+  "title": "Agentgateway client view",
+  "tags": ["agent-cloud", "agentgateway", "inference"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "identity",
+        "label": "Identity",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(agentgateway_requests_total{job=\"agentgateway\"}, identity)",
+        "query": {"query": "label_values(agentgateway_requests_total{job=\"agentgateway\"}, identity)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "First-token latency p50",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(agentgateway_gen_ai_server_time_to_first_token_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "First-token latency p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_gen_ai_server_time_to_first_token_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "title": "Request duration p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "title": "4xx request ratio",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"4..\", identity=~\"$identity\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "title": "5xx request ratio",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"5..\", identity=~\"$identity\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "title": "Request rate by identity",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [{"refId": "A", "expr": "sum by (identity) (rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m]))", "legendFormat": "{{identity}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    }
+  ]
+}

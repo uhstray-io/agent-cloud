@@ -206,12 +206,12 @@ per-identity request rate. The operations dashboard shows token usage by identit
 model, rejections by reason, process health, the gateway's access records and a trace
 search.
 
-#### Scenario: Dashboard survives a rebuild
-- **WHEN** the observability stack is wiped and redeployed through Semaphore after one
-  hour of gateway traffic has been collected
+#### Scenario: Dashboard survives a non-destructive redeploy
+- **WHEN** updated observability configuration is applied through the normal Semaphore
+  deployment after one hour of gateway traffic, preserving all persistent volumes
 - **THEN** the client-view dashboard loads without manual steps and renders first-token
-  latency percentiles and per-identity request counts, and the operations dashboard
-  loads alongside it
+  latency percentiles and per-identity request counts, the operations dashboard loads
+  alongside it, and previously collected telemetry remains queryable
 
 ### Requirement: Local-dev collects the same signals by the same code
 Local-dev SHALL deploy the gateway's telemetry from the same templates and playbooks as
