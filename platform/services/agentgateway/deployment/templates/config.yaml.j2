@@ -93,6 +93,7 @@ frontendPolicies:
       fields:
         add:
           service: '"agentgateway"'
+          identity: apiKey.name
 {% endif %}
 {% if agw_otlp_host | default('') %}
   tracing:

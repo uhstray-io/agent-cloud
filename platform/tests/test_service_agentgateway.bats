@@ -146,7 +146,7 @@ setup() {
   assert_grep -qE '^\s*metrics:$' "$CONFIG"
   assert_grep -qE '^\s*accessLog:$' "$CONFIG"
   refute_grep -qE '^\s*logging:$' "$CONFIG"
-  [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 2 ]
+  [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
@@ -359,6 +359,7 @@ access = config['frontendPolicies']['accessLog']['otlp']
 assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
 assert access['host'] == 'receiver.test:4317'
 assert access['fields']['add']['service'] == '"agentgateway"'
+assert access['fields']['add']['identity'] == 'apiKey.name'
 PY
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
