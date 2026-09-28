@@ -1373,11 +1373,13 @@ phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place r
 policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
 forbidden = re.compile(policy)
 for label in ('request_id', 'user_id', 'client_id', 'session_id', 'trace_id', 'email', 'api_key',
-              'prompt', 'raw_path', 'remote_addr', 'timestamp', 'token_value'):
-    assert forbidden.search(label), label
+              'prompt', 'raw_path', 'remote_addr', 'timestamp', 'token_value',
+              'http_request_id', 'x_user_id', 'user_email', 'request_path', 'http_url',
+              'client_ip_address', 'gen_ai_prompt', 'url_path'):
+    assert forbidden.fullmatch(label), label
 for label in ('service', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
               'gen_ai_request_model', 'gen_ai_token_type', 'gpu', 'device', 'node'):
-    assert not forbidden.search(label), label
+    assert not forbidden.fullmatch(label), label
 repo = deploy.parents[3]
 caddy = yaml.safe_load((repo / 'platform/services/caddy/deployment/compose.yml').read_text())
 local_inventory = yaml.safe_load((repo / 'platform/inventory/local-dev.yml.example').read_text())
@@ -1408,6 +1410,17 @@ assert '__meta_docker_container_label_com_docker_compose_project' in alloy
 assert 'separator     = "/"' in alloy
 assert 'value  = "service,signal"' in alloy
 assert 'prometheus.relabel "bounded_labels"' in alloy
+
+profile_gate = next(task for task in phase_one['tasks']
+                    if task.get('name') == 'Require prior config, privacy, and resource receipts before profile collection')
+receipt_checks = profile_gate['ansible.builtin.assert']['that']
+assert len(receipt_checks) == 3
+env.tests['match'] = lambda value, pattern: re.fullmatch(pattern, str(value)) is not None
+for check in receipt_checks:
+    assert not env.compile_expression(check)(o11y_profile_pilot_config_receipt_id='0',
+        o11y_profile_pilot_privacy_receipt_id='0', o11y_profile_pilot_resource_receipt_id='0')
+    assert env.compile_expression(check)(o11y_profile_pilot_config_receipt_id='17',
+        o11y_profile_pilot_privacy_receipt_id='19', o11y_profile_pilot_resource_receipt_id='23')
 assert f'regex  = {json.dumps(policy)}' in alloy
 assert 'loki.attribute.labels' in alloy
 
