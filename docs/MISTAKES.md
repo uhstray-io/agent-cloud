@@ -98,10 +98,11 @@ supersede it with a new entry and link both.
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
 | 5.9 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
-| 5.10 | Switched branches inside a checkout another task was using; the rule is one worktree per work item | Process | Convention (hook proposed) |
+| 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
 | 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | Convention (pre-commit hook proposed) |
+| 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | Convention (hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -2290,6 +2291,8 @@ skipped under `--check`. Verb-free writes (`mv`, `sed -i`) are still only caught
 
 ### 5.10 Switched branches inside a checkout another task was using
 
+**Occurrences: 2** — 2026-09-23, 2026-09-28
+
 **What happened.** On 2026-09-23 I split PR #195 for CodeRabbit's 150-file limit, and did it
 in the one checkout the service-deployment-workflow task was running from:
 `git branch feat/workflow-check-mode-standard 187d787 && git switch ...`, then back with
@@ -2314,6 +2317,15 @@ checkout another task owns. The checkout belongs to the task that is running in 
 `git switch`/`git checkout <branch>` in a checkout a live session holds. The session's
 working directory is the signal.
 
+**Occurrence 2 — 2026-09-28.** Not a branch switch: a path checkout. Syncing the merged
+site-config inventory into Semaphore, I began the command with `cd` into the main site-config
+checkout (another task's, on `feat/agentgateway-host`) instead of my `site-config-cadns`
+worktree, and ran `git checkout origin/main -- inventory/production.yml` there, which staged
+and wrote main's copy over that checkout's file. I restored it to the checkout's HEAD with
+`git restore --staged --worktree --source=HEAD`; whether the file had uncommitted edits
+before is not recoverable. The rule did not fire because it names branch switches only;
+widened in 5.14.
+
 ### 5.13 A broad stage commits whatever a tool generated in the tree (widens 6.6's staging rule)
 
 **What happened.** See 6.6: its occurrence 2 (a `git add -A` shipped the graph auto-index's
@@ -2337,6 +2349,26 @@ pre-commit hook in `.pre-commit-config.yaml` that fails when a commit ADDS a pat
 `.agents/`, `.claude/`, `.opencode/` or `.codebase-memory/` that the target branch does not track,
 unless the commit message names it. The graph pair is already gated by
 `graph-artifact-consistent`.
+
+### 5.14 Wrote a file into a checkout another task owns (widens 5.10)
+
+**What happened.** See 5.10 occurrence 2: `git checkout origin/main -- inventory/production.yml`
+ran in the main site-config checkout, which belongs to another task, because the command
+started with the wrong `cd`. It overwrote the file in both the index and the working tree.
+
+**Root cause.** 5.10 names `git switch` and `git checkout <branch>`, so a path checkout, a
+restore, a stash or any editor write into someone else's checkout reads as allowed. The shared
+state is the working tree and index, not the branch pointer. And a sync step reached for a
+checkout by habit instead of the worktree it had just created for that work item.
+
+**The rule.** Supersedes 5.10's scope. In a checkout another task owns, run only read-only git
+(`status`, `log`, `show`, `diff`, `fetch`); no `checkout`/`restore`/`reset`/`stash`/`add`/
+`commit` and no file writes, whatever their target. Read a file at a ref with `git show
+<ref>:<path>`, never by checking it out. Every command that writes starts from the work item's
+own worktree path.
+
+**Enforced by.** Convention. Proposal: extend 5.10's PreToolUse hook to refuse any git write
+verb whose working directory is a checkout a different live session holds.
 
 ## 6. Working from assumptions about files
 
