@@ -963,6 +963,8 @@ canary = next(p for p in plays if p.get('name') == 'Emit an optional gateway tra
 mark, traffic = canary['tasks']
 assert mark['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
 assert traffic['ansible.builtin.uri']['status_code'] == 401
+assert traffic['ansible.builtin.uri']['use_netrc'] is False
+assert traffic['ansible.builtin.uri']['use_proxy'] is False
 assert '_canary_bind' in traffic['ansible.builtin.uri']['url']
 assert "['0.0.0.0', '::', '']" in canary['vars']['_canary_bind']
 assert traffic['loop'] == '{{ range(100) | list }}'

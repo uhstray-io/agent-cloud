@@ -58,6 +58,8 @@
         method: GET
         status_code: 401
         timeout: 5
+        use_netrc: false
+        use_proxy: false
       loop: "{{ range(100) | list }}"
       loop_control:
         label: "request {{ item + 1 }}/100"

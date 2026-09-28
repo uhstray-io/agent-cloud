@@ -745,8 +745,9 @@ the `o11y` VM (`o11y_svc`).
 > `expected_service=agentgateway`, `expect_metrics=true`,
 > `expect_logs=true`, `expect_traces=true`, and
 > `emit_agentgateway_canary=true`; the opt-in canary sends 100 anonymous 401
-> requests directly to the gateway listener, then requires a fresh access log
-> in Loki and a trace in Tempo from the receiver-clock start mark, with a
+> requests directly to the gateway listener, then checks for a labeled gateway
+> log in Loki from the last 15 minutes and requires a trace in Tempo from the
+> receiver-clock start mark, with a
 > one-minute allowance for source clock skew. Five-percent
 > sampling makes a trace likely without a credential or an LLM call; a rare
 > zero-sample run must be retried rather than counted as proof. Agentgateway
