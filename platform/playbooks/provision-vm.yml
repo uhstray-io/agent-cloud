@@ -634,10 +634,10 @@
           VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
             IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
             Status: {{ (vm_running.json.data.status | default(pre_start.json.data.status | default('unknown'))) }}{{ ' (check mode: not started)' if ansible_check_mode else '' }}
-            Agent: {{ 'ok' if (agent_ping is defined and agent_ping.status == 200) else 'pending' }}
-            SSH port: {{ 'open' if ssh_ready is succeeded else 'pending' }}
+            Agent: {{ 'ok' if (agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200) else 'pending' }}
+            SSH port: {{ 'open' if (ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded) else 'pending' }}
             SSH login: {{ 'ok' if (ssh_test is defined and ssh_test is not skipped and ssh_test.rc | default(1) == 0) else 'NOT verified (no key file on this runner, or login refused); run Distribute SSH Keys then Verify Host Access' }}
-            Runner: {{ 'configured' if (runner_setup is defined and runner_setup is not skipped and runner_setup is succeeded) else 'skipped' }}
+            Runner: {{ 'skipped' if (runner_setup is not defined or runner_setup is skipped) else ('configured' if runner_setup is succeeded else 'FAILED (see the task above)') }}
           Next: deploy-service.yml -e target_service={{ target_service }}
 
 - name: "Post-validate: VM running"

@@ -230,6 +230,10 @@ common = {"_vmid": 220, "_name": "dns", "_node": "n", "_ip": "x", "ansible_user"
 cases = {
     "failed": {"ssh_test": {"failed": True, "rc": 255}, "runner_setup": {"skipped": True, "changed": False}},
     "ok": {"ssh_test": {"rc": 0, "changed": False}, "runner_setup": {"rc": 0, "changed": True}},
+    "runnerfail": {"ssh_test": {"rc": 0, "changed": False}, "runner_setup": {"failed": True, "rc": 1}},
+    # --check: wait_for and the agent ping are skipped, so neither may read as passed
+    "check": {"ssh_ready": {"skipped": True, "changed": False}, "agent_ping": {"skipped": True, "changed": False},
+              "ssh_test": {"skipped": True, "changed": False}, "runner_setup": {"skipped": True, "changed": False}},
 }
 out = []
 for name, regs in cases.items():
@@ -244,4 +248,8 @@ PY
   assert_grep -qF "Runner: skipped" "$play.failed"
   assert_grep -qF "SSH login: ok" "$play.ok"
   assert_grep -qF "Runner: configured" "$play.ok"
+  assert_grep -qF "Runner: FAILED" "$play.runnerfail"
+  assert_grep -qF "SSH port: pending" "$play.check"
+  assert_grep -qF "Agent: pending" "$play.check"
+  assert_grep -qF "SSH login: NOT verified" "$play.check"
 }
