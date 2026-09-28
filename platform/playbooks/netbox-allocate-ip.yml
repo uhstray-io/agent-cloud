@@ -386,4 +386,9 @@
       loop_control:
         index_var: _i
         label: "{{ item.address }}"
-      when: _reserve
+      # Under --check the create is skipped (`not ansible_check_mode` above), so the
+      # addresses are absent by design; asserting here made every reserve dry run fail
+      # after its DHCP boundary had already passed (Semaphore task 1729, 2026-09-28).
+      when:
+        - not ansible_check_mode
+        - _reserve
