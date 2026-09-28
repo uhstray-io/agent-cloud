@@ -14,9 +14,11 @@
 #                          materialised  true when a key file exists
 #                          dir           runner-local 0700 scratch directory ('' if none)
 #                          key           <dir>/id, the key at 0600 ('' if none)
-#                          known_hosts   <dir>/known_hosts, a path for a pinned host key;
-#                                        NOT written here. Anything the caller puts under
-#                                        `dir` is wiped with it.
+#                          known_hosts   <dir>/known_hosts, for the caller's ssh
+#                                        UserKnownHostsFile (a pinned key, or what
+#                                        accept-new records); NOT written here. Anything
+#                                        the caller puts under `dir` is wiped with it, so
+#                                        no run touches the runner's ~/.ssh/known_hosts.
 #   ssh_key_allow_empty  default false: empty material fails here, naming the problem,
 #                        instead of reaching ssh as a confusing argument error. true
 #                        (verify-host-access, which REPORTS a missing key) writes nothing
@@ -39,15 +41,14 @@
 # still leaves the wipe something to remove.
 #
 # CHECK MODE. Every write here carries `check_mode: false`, deliberately: the dry run then
-# still TESTS key auth, read-only, which is the point of running one before hardening.
-# plan/architecture/08-ansible-automation-standards.md ("Platform conventions" 2) puts the
-# probe itself in the read-only class, and "Security Considerations" allows
-# `check_mode: false` only on tasks that cannot change state. A runner-local scratch
-# directory that the same run removes changes no managed system — check mode is defined as
-# running "without changing remote systems" (same doc, the check-mode rows of its source
-# table) — which is the reading platform/tests/test_check_mode_contract.py already encodes
-# for a self-removing `mktemp -d` root (`_sandboxed`). The wipe carries it too; a simulated
-# delete would leave the key behind.
+# still TESTS key auth, read-only, before the real run relies on it. This is the
+# runner-scratch class of plan/architecture/08-ansible-automation-standards.md (decision
+# 2026-09-28): a task may write under --check only inside a runner-local temp directory
+# created in the same run and removed in `always`, and nothing outside it.
+# platform/tests/test_check_mode_contract.py enforces it: a forced write must target this
+# result's paths. The wipe carries it too; a simulated delete would leave the key behind.
+# The scratch tasks report `changed_when: false`: they leave nothing behind, so a dry run
+# that reported them as changes would misstate what the real run would do.
 #
 # Credential handling (AGENTS.md "Credential Handling"): only the task that writes the
 # material is no_log; it also sets `diff: false`, since --diff would otherwise print it.
@@ -85,13 +86,17 @@
 
 - name: "Materialise SSH key: create the runner-local scratch directory (0700)"
   # tempfile(state=directory) creates it owner-only, like mkdtemp; the tests assert the mode.
+  # The parent is named explicitly, so remove-ssh-key.yml can require the directory it
+  # deletes to sit directly under the same root, computed by the same expression.
   ansible.builtin.tempfile:
     state: directory
     prefix: ".sshkey_"
+    path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
   register: _msk_dir
   delegate_to: localhost
   become: false
   check_mode: false
+  changed_when: false
   when: (ssh_key_content | default('') | string | length) > 0
 
 - name: "Materialise SSH key: record the directory before anything is written into it"
@@ -111,6 +116,7 @@
   delegate_to: localhost
   become: false
   check_mode: false
+  changed_when: false
   diff: false
   no_log: true
   when: _msk_dir.path is defined

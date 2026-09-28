@@ -15,6 +15,7 @@ material never reaches the output, even at -v.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,6 +49,7 @@ if "-i" in args:
 for a in args:
     if a.startswith("UserKnownHostsFile="):
         kh = a.split("=", 1)[1]
+        seen["known_hosts_path"] = kh
         seen["known_hosts"] = open(kh).read() if os.path.exists(kh) else None
 with open(os.environ["SSH_STUB_LOG"], "a") as log:
     log.write(json.dumps(seen) + "\n")
@@ -151,7 +153,12 @@ def test_key_section_probes_with_a_private_key_and_wipes_it(tmp_path, playbook, 
     assert not Path(result["dir"]).exists(), "the scratch directory survived the run"
     if playbook == "verify-host-access.yml":
         assert seen["known_hosts"] == "192.0.2.10 " + " ".join(HOSTKEY.split()[:2]) + "\n", seen
+    # No ssh call in these plays may record a host key in the runner's own known_hosts.
+    for call in calls:
+        assert call.get("known_hosts_path") == result["known_hosts"], call
     assert "STUB-KEY-MATERIAL" not in out.stdout + out.stderr
+    # The scratch leaves nothing behind, so a dry run must not report it as a change.
+    assert "changed=0" in out.stdout.rsplit("PLAY RECAP", 1)[1], out.stdout[-800:]
 
 
 @needs_ansible
@@ -281,3 +288,52 @@ def test_exactly_one_file_materialises_an_ssh_probe_key():
                 tempfiles.add(rel)
     assert writers == set(PRIVATE_KEY_WRITERS), f"private-key writers changed: {sorted(writers)}"
     assert tempfiles == set(TEMPFILE_USERS), f"tempfile users changed: {sorted(tempfiles)}"
+
+
+def _ssh_calls(path: Path) -> list[list[str]]:
+    calls = []
+    for task in _tasks(path):
+        args = task.get("ansible.builtin.command") or {}
+        # a Jinja expression is one word even though it contains spaces
+        argv = args.get("argv") or re.findall(r"\S*\{\{.*?\}\}\S*|\S+", str(args.get("cmd") or ""))
+        if argv and argv[0] == "ssh":
+            calls.append([str(a) for a in argv])
+    return calls
+
+
+@pytest.mark.parametrize("playbook", CONVERTED)
+def test_every_ssh_call_uses_the_scratch_known_hosts(playbook):
+    # accept-new against the runner's ~/.ssh/known_hosts wrote to the runner on every run,
+    # dry runs included; pointing ssh at the scratch file keeps the run inside the scratch.
+    calls = _ssh_calls(PLAYBOOKS / playbook)
+    assert calls, playbook
+    for argv in calls:
+        files = [a.split("=", 1)[1] for a in argv if a.startswith("UserKnownHostsFile=")]
+        assert len(files) == 1 and files[0].endswith(".known_hosts }}"), argv
+
+
+@needs_ansible
+def test_remove_deletes_only_a_scratch_dir_under_the_temp_root(tmp_path):
+    # A `.sshkey_` name is not enough: the directory must sit directly under the temp root
+    # the materialise task uses. pytest's tmp_path is nested below that root.
+    decoy = tmp_path / ".sshkey_decoy"
+    decoy.mkdir()
+    (decoy / "keep").write_text("x")
+    (tmp_path / "tasks").symlink_to(PLAYBOOKS / "tasks")
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {"_k": {"materialised": True, "dir": str(decoy)}},
+                "tasks": [{"ansible.builtin.include_tasks": REMOVE, "vars": {"ssh_key_result_var": "_k"}}]}]
+    (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")],
+                         cwd=REPO, env=env, text=True, capture_output=True)
+    assert out.returncode == 0, out.stdout[-1500:]
+    assert (decoy / "keep").exists(), "the wipe deleted a .sshkey_ directory it did not create"
+
+
+def test_materialise_and_remove_agree_on_the_temp_root():
+    root = yaml.safe_load((PLAYBOOKS / MATERIALISE).read_text())
+    (tmp,) = [t for t in root if "ansible.builtin.tempfile" in t]
+    (wipe,) = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
+    assert tmp["ansible.builtin.tempfile"]["path"] == wipe["vars"]["_rsk_root"]
+    assert "(_rsk_dir | realpath | dirname) == _rsk_root" in wipe["when"]

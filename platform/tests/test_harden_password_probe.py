@@ -51,9 +51,15 @@ printf '%s' "$SSHD_STUB"
 
 def _tasks() -> dict:
     found = {}
-    for play in yaml.safe_load(PLAYBOOK.read_text()):
-        for task in play.get("tasks") or []:
+
+    def walk(tasks):
+        for task in tasks or []:
             found[task.get("name")] = task
+            for key in ("block", "rescue", "always"):
+                walk(task.get(key))
+
+    for play in yaml.safe_load(PLAYBOOK.read_text()):
+        walk(play.get("tasks"))
     return found
 
 
@@ -63,7 +69,9 @@ def _run(tmp_path: Path, methods: str, sshd: str = LOCKED, check: bool = False):
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                 # ansible_become beats the task keyword, so the sshd read runs unprivileged
                 "vars": {"ansible_user": "tester", "ansible_host": "192.0.2.10",
-                         "service_name": "svc", "ansible_become": False},
+                         "service_name": "svc", "ansible_become": False,
+                         # the probe runs inside the key block; stand in for its result
+                         "_verify_key": {"known_hosts": str(tmp_path / "known_hosts")}},
                 "tasks": tasks}]
     (tmp_path / "bin").mkdir()
     for name, body in (("ssh", SSH_STUB), ("sshd", SSHD_STUB)):

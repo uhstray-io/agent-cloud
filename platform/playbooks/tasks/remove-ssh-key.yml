@@ -9,9 +9,11 @@
 # run too; a simulated delete would leave the key on the runner (see the header of
 # materialise-ssh-key.yml for why the scratch runs under --check at all).
 #
-# The wipe refuses any directory that is not one materialise-ssh-key.yml created (its
-# `.sshkey_` prefix): the path arrives through a fact, and a mis-set fact must not turn a
-# cleanup step into an arbitrary recursive delete.
+# The wipe refuses any directory materialise-ssh-key.yml did not create: the path arrives
+# through a fact, and a mis-set fact must not turn a cleanup step into an arbitrary
+# recursive delete. It must carry the `.sshkey_` prefix AND sit directly under the temp
+# root, computed here by the same expression the materialise task hands tempfile, not
+# read back from the fact.
 
 - name: "Remove SSH key: wipe the runner-local scratch directory"
   ansible.builtin.file:
@@ -19,10 +21,13 @@
     state: absent
   vars:
     _rsk_dir: "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir | default('') }}"
+    _rsk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
   delegate_to: localhost
   become: false
   check_mode: false
+  changed_when: false
   when:
     - ssh_key_result_var is defined
     - _rsk_dir | length > 0
     - (_rsk_dir | basename) is match('^\.sshkey_')
+    - (_rsk_dir | realpath | dirname) == _rsk_root

@@ -11,11 +11,20 @@ Under `ansible-playbook --check`, a module without check-mode support is skipped
   `ansible_check_mode`, `check_mode: true`, or `creates`/`removes` on a command. A write
   under `check_mode: false` runs for real during a dry run and is always a violation.
 
+A FILE write (copy, file, tempfile, lineinfile, template, ...) simulates, so it needs no guard,
+but under `check_mode: false` it runs for real. That is allowed only in the runner-scratch class
+(plan/architecture/08, decision 2026-09-28): delegated to the runner, and targeting the scratch
+directory tasks/materialise-ssh-key.yml creates and tasks/remove-ssh-key.yml removes in the same
+run. The accepted paths are a CLOSED set: a materialise result's `dir`, `key` or `known_hosts`
+(result names read from the repo's own includes), plus the shared tasks' own expressions in
+their own files.
+
 Guards on an enclosing block are inherited. Files still being retrofitted are listed in
 check_mode_allowlist.txt; a listed file that has become clean fails the test until its line is
 removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4 and 2.4).
 """
 
+import functools
 import re
 from pathlib import Path
 
@@ -45,6 +54,17 @@ HOST_WRITE = re.compile(
     r"|(?:^|[\s;&|(])(?:sudo\s+)?systemctl\s+(?:--user\s+)?(?:start|stop|restart|reload|enable|disable)\b"
 )
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
+
+FILE_WRITES = {"copy", "file", "tempfile", "lineinfile", "template", "blockinfile", "replace",
+               "assemble", "get_url", "unarchive"}
+MATERIALISE = "platform/playbooks/tasks/materialise-ssh-key.yml"
+REMOVE = "platform/playbooks/tasks/remove-ssh-key.yml"
+# The shared tasks' own scratch expressions, each valid only in its own file.
+SCRATCH_INTERNAL = {
+    MATERIALISE: {"{{ _msk_dir.path }}/id"},
+    REMOVE: {"{{ _rsk_dir }}"},
+}
+SCRATCH_RESULT_PATH = re.compile(r"^\{\{ (?P<var>\w+)\.(?:dir|key|known_hosts) \}\}$")
 
 
 class _Loader(yaml.SafeLoader):
@@ -105,6 +125,55 @@ def _sandboxed(text: str) -> bool:
     return bool(re.search(r"\broot=\$\(mktemp -d\)", text)) and "trap 'rm -rf \"$root\"' EXIT" in text
 
 
+def _file_write(task: dict) -> tuple[str, object] | tuple[None, None]:
+    for key, value in task.items():
+        short = key.rsplit(".", 1)[-1]
+        core = key == short or key.startswith(("ansible.builtin.", "ansible.legacy."))
+        if core and short in FILE_WRITES:
+            return short, value
+    return None, None
+
+
+def _in_runner_scratch(module: str, args, rel: str | None, scratch_vars: frozenset[str] | set[str]) -> bool:
+    args = args if isinstance(args, dict) else {}
+    if module == "tempfile":
+        # Only the shared task may create the scratch root, and only as its own prefix.
+        return rel == MATERIALISE and args.get("state") == "directory" and args.get("prefix") == ".sshkey_"
+    target = str(args.get("dest") or args.get("path") or "").strip()
+    if target in SCRATCH_INTERNAL.get(rel, set()):
+        return True
+    match = SCRATCH_RESULT_PATH.match(target)
+    return bool(match) and match.group("var") in scratch_vars
+
+
+@functools.cache
+def _scratch_result_vars() -> frozenset[str]:
+    """Every `ssh_key_result_var` the repo passes to tasks/materialise-ssh-key.yml."""
+    names: set[str] = set()
+
+    def walk(tasks):
+        for task in tasks or []:
+            if not isinstance(task, dict):
+                continue
+            if str(task.get("ansible.builtin.include_tasks", "")).endswith("materialise-ssh-key.yml"):
+                name = (task.get("vars") or {}).get("ssh_key_result_var")
+                if name:
+                    names.add(str(name))
+            for key in TASK_LISTS:
+                if isinstance(task.get(key), list):
+                    walk(task[key])
+
+    for path in _files():
+        doc = _load(path)
+        for item in doc if isinstance(doc, list) else []:
+            if isinstance(item, dict) and "hosts" in item:
+                for key in ("pre_tasks", "tasks", "post_tasks", "handlers"):
+                    walk(item.get(key))
+            else:
+                walk([item])
+    return frozenset(names)
+
+
 def _classify(task: dict, module: str, args) -> str:
     # `changed_when: false` is the author's declaration that the task changes nothing, for a
     # command and for an HTTP call alike (an OpenBao AppRole login is a POST that only
@@ -125,19 +194,25 @@ def _classify(task: dict, module: str, args) -> str:
     return "write"
 
 
-def violations_in(doc) -> list[str]:
+def violations_in(doc, rel: str | None = None, scratch_vars: frozenset[str] | set[str] | None = None) -> list[str]:
     found: list[str] = []
+    scratch = _scratch_result_vars() if scratch_vars is None else scratch_vars
 
-    def walk(tasks, inherited: bool, inherited_off: bool):
+    def walk(tasks, inherited: bool, inherited_off: bool, inherited_runner: bool = False):
         for index, task in enumerate(tasks or []):
             if not isinstance(task, dict):
                 continue
             name = task.get("name", f"#{index}")
             guard = _guarded(task, inherited)
             off = inherited_off or task.get("check_mode") is False
+            runner = inherited_runner or task.get("delegate_to") == "localhost"
             for key in TASK_LISTS:
                 if key in task and isinstance(task[key], list):
-                    walk(task[key], guard, off)
+                    walk(task[key], guard, off, runner)
+            file_module, file_args = _file_write(task)
+            if file_module and off and not (runner and _in_runner_scratch(file_module, file_args, rel, scratch)):
+                found.append(f"{name}: {file_module} write forced to run in check mode outside the runner "
+                             "scratch directory")
             module, args = _module(task)
             if module is None:
                 continue
@@ -183,7 +258,7 @@ def _load(path: Path):
 @pytest.mark.parametrize("path", _files(), ids=lambda p: str(p.relative_to(REPO)))
 def test_playbook_honours_check_mode(path):
     rel = str(path.relative_to(REPO))
-    found = violations_in(_load(path))
+    found = violations_in(_load(path), rel)
     if rel in _allowlist():
         assert found, f"{rel} is clean now: remove it from {ALLOWLIST.name}"
     else:
@@ -374,3 +449,45 @@ def test_no_task_key_is_stranded_under_the_next_tasks_comment():
                     and lines[i + 1].strip().startswith("- name:")):
                 stranded.append(f"{path.relative_to(REPO)}:{i + 1}")
     assert not stranded, stranded
+
+
+# The runner-scratch class (plan/architecture/08, decision 2026-09-28).
+
+def _scratch(yaml_text: str, rel=None):
+    return violations_in(yaml.safe_load(yaml_text), rel, {"_probe_key"})
+
+
+def test_forced_file_write_outside_the_scratch_is_caught():
+    for task in ('ansible.builtin.copy:\n    content: x\n    dest: /etc/motd',
+                 'ansible.builtin.lineinfile:\n    path: /etc/ssh/sshd_config\n    line: x',
+                 'ansible.builtin.file:\n    path: "{{ _probe_key.dir }}/../x"\n    state: absent',
+                 'ansible.builtin.copy:\n    content: x\n    dest: "{{ _other.known_hosts }}"',
+                 'ansible.builtin.tempfile:\n    state: directory\n    prefix: .sshkey_'):
+        found = _scratch(f"- name: w\n  {task}\n  delegate_to: localhost\n  check_mode: false\n")
+        assert found == ["w: " + task.split(":")[0].rsplit(".", 1)[-1]
+                         + " write forced to run in check mode outside the runner scratch directory"], task
+
+
+def test_forced_write_into_a_materialise_result_passes_on_the_runner_only():
+    task = '- name: pin\n  ansible.builtin.copy:\n    content: x\n    dest: "{{ _probe_key.known_hosts }}"\n'
+    assert not _scratch(task + "  delegate_to: localhost\n  check_mode: false\n")
+    assert _scratch(task + "  check_mode: false\n"), "a forced write on the TARGET is not runner scratch"
+    # delegation and the forced run are inherited from an enclosing block
+    assert not _scratch("- name: probe\n  delegate_to: localhost\n  check_mode: false\n  block:\n"
+                        '    - name: pin\n      ansible.builtin.copy:\n        content: x\n'
+                        '        dest: "{{ _probe_key.known_hosts }}"\n')
+
+
+def test_shared_task_expressions_count_only_in_their_own_file():
+    task = ("- name: wipe\n  ansible.builtin.file:\n    path: \"{{ _rsk_dir }}\"\n    state: absent\n"
+            "  delegate_to: localhost\n  check_mode: false\n")
+    assert not _scratch(task, REMOVE)
+    assert _scratch(task, "platform/playbooks/other.yml")
+
+
+def test_a_simulated_file_write_needs_nothing():
+    assert not _scratch("- name: w\n  ansible.builtin.copy:\n    content: x\n    dest: /etc/motd\n")
+
+
+def test_every_materialise_caller_is_known_to_the_guard():
+    assert _scratch_result_vars() >= {"_mgmt_key", "_verify_key", "_probe_key"}

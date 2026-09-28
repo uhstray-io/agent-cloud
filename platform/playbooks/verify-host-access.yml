@@ -224,6 +224,7 @@
           # Runner-local scratch inside the key's directory, wiped with it. A simulated
           # write here would leave the probe no pin to check against under --check.
           check_mode: false
+          changed_when: false
           vars:
             _kh_host: "{{ _target_addr if ((_target_port | int) == 22) else ('[' ~ _target_addr ~ ']:' ~ _target_port) }}"
           when:

@@ -106,7 +106,10 @@
     # (tasks/materialise-ssh-key.yml explains why that is allowed), and the key-auth
     # probe then answers the question a dry run exists for — would the key still get in.
     # Key auth is checked FIRST: if it fails, the host is one step from a lockout and
-    # that is the failure the operator needs to see.
+    # that is the failure the operator needs to see. The password probe runs in this
+    # block too, only so both ssh calls share the scratch known_hosts (accept-new
+    # records the host key there, never in the runner's ~/.ssh/known_hosts); it reads
+    # no key and decides nothing — the decision is after the block.
     - name: "Verify the lockdown with a runner-local copy of the management key"
       become: false
       block:
@@ -122,6 +125,7 @@
               ssh -i {{ _verify_key.key }}
                   -o BatchMode=yes -o ConnectTimeout=10
                   -o StrictHostKeyChecking=accept-new
+                  -o UserKnownHostsFile={{ _verify_key.known_hosts }}
                   -o PasswordAuthentication=no -o PubkeyAuthentication=yes
                   {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
                   echo KEY_AUTH_OK
@@ -130,6 +134,32 @@
           register: _key_test
           failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
           changed_when: false
+          check_mode: false
+
+        - name: "Probe password auth from the runner (what the server offers)"
+          ansible.builtin.command:
+            argv:
+              - ssh
+              - -v
+              - -o
+              - BatchMode=yes
+              - -o
+              - ConnectTimeout=10
+              - -o
+              - StrictHostKeyChecking=accept-new
+              - -o
+              - PubkeyAuthentication=no
+              - -o
+              - PreferredAuthentications=password,keyboard-interactive
+              - -o
+              - "UserKnownHostsFile={{ _verify_key.known_hosts }}"
+              - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
+              - echo SHOULD_NOT_REACH
+          delegate_to: localhost
+          become: false
+          register: _pw_probe
+          changed_when: false
+          failed_when: false
           check_mode: false
 
       always:
@@ -152,30 +182,6 @@
     # Anything short of proof is a failure: an unreachable server, an unreadable
     # config or a missing setting cannot pass. Both probes only read; the decision
     # below is the one place that fails the host.
-    - name: "Probe password auth from the runner (what the server offers)"
-      ansible.builtin.command:
-        argv:
-          - ssh
-          - -v
-          - -o
-          - BatchMode=yes
-          - -o
-          - ConnectTimeout=10
-          - -o
-          - StrictHostKeyChecking=accept-new
-          - -o
-          - PubkeyAuthentication=no
-          - -o
-          - PreferredAuthentications=password,keyboard-interactive
-          - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
-          - echo SHOULD_NOT_REACH
-      delegate_to: localhost
-      become: false
-      register: _pw_probe
-      changed_when: false
-      failed_when: false
-      check_mode: false
-
     - name: "Read sshd's effective authentication settings"
       ansible.builtin.command:
         argv: [sshd, -T]

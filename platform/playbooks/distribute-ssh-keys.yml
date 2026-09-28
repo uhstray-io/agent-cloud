@@ -200,6 +200,8 @@
     # The key goes on disk only for the probe, via the shared task, and is wiped in
     # `always` — on a failed probe too. Under --check this still runs: the scratch is
     # runner-local (tasks/materialise-ssh-key.yml explains why that is allowed).
+    # accept-new records the host key in the scratch known_hosts, never the runner's
+    # own ~/.ssh/known_hosts, so neither a dry run nor a real one leaves it behind.
     - name: "Test SSH key auth with a runner-local copy of the management key"
       block:
         - name: "Materialise the management key (runner-local, 0600)"
@@ -215,6 +217,7 @@
                   -o BatchMode=yes
                   -o ConnectTimeout=10
                   -o StrictHostKeyChecking=accept-new
+                  -o UserKnownHostsFile={{ _mgmt_key.known_hosts }}
                   -o PasswordAuthentication=no
                   -o PubkeyAuthentication=yes
                   {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
