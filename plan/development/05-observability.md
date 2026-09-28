@@ -7,6 +7,42 @@
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
 
+## Signal identity, service visibility, and profiling contract
+
+Use one bounded service identity across signals: Prometheus and Loki use
+`service`, OTLP resources use `service.name`, and profiles use `service_name`.
+Prometheus and Loki also carry inventory-bounded `cluster` and `environment`.
+Alerts add the finite `severity` and `owner` labels and group on service,
+environment, cluster, and alert name. Keep `container` and `instance` for
+drill-down only. Request IDs, user IDs, trace IDs, raw paths, addresses, prompt
+content, and secrets must stay out of Prometheus labels and Loki stream labels;
+keep investigation detail in log bodies or structured metadata.
+
+For each deployed target, declare its stable service identity, owner, cluster
+and environment values, signal methods, profile applicability, finite label
+values, and proof. Local container logs prefer the Compose service name and
+retain the container name as detail. Remote metrics use the same declared
+`service` value. A missing scrape stays missing or unhealthy; dashboard queries
+must not turn absent telemetry into a healthy zero. The Service Overview
+selector is sourced from Prometheus service labels, so it covers metric-enabled
+local and remote services; use Logs Drilldown and the coverage declaration for
+log-only targets.
+
+Pyroscope is private on the o11y network with a persistent named volume and a
+seven-day initial retention policy. Its Alloy self-profile pilot is disabled
+unless private inventory explicitly enables it after the pinned Alloy config,
+target reachability, privacy, and VM headroom are verified. The initial pilot
+uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=alloy`
+and a 60-second scrape interval. Record the before/after CPU, memory, profile
+ingestion, and retained-disk measurements before adding another producer. A
+normal deploy preserves this volume and every existing telemetry volume.
+
+Use the existing Discord contact point. Group notifications by the bounded
+service and environment context, wait 30 seconds before the first grouped
+notification, then use a five-minute group interval and a four-hour repeat
+interval. Verify the provisioned rule settings by read-back; a Discord delivery
+drill is a separate runtime receipt.
+
 > **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
 > committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
 > `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`

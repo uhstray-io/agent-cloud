@@ -1,4 +1,4 @@
-# Observability stack — Grafana + Prometheus + Loki + Alloy + Tempo.
+# Observability stack — Grafana + Prometheus + Loki + Alloy + Tempo + Pyroscope.
 # Podman-compatible compose. Plan: plan/development/O11Y-DEPLOYMENT.md.
 #
 # Ansible's deploy-o11y.yml templates .env (the Grafana admin password from
@@ -101,6 +101,16 @@ services:
       - tempo-data:/var/tempo
     networks: [o11y]
 
+  pyroscope:
+    image: ${O11Y_PYROSCOPE_IMAGE:-docker.io/grafana/pyroscope:2.2.0}
+    container_name: o11y-pyroscope
+    restart: always
+    command: ["-config.file=/etc/pyroscope/config.yml"]
+    volumes:
+      - ./config/pyroscope-config.yml:/etc/pyroscope/config.yml:ro
+      - pyroscope-data:/data
+    networks: [o11y]
+
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
     container_name: o11y-grafana
@@ -142,3 +152,4 @@ volumes:
   loki-data:
   grafana-data:
   tempo-data:
+  pyroscope-data:

@@ -44,3 +44,9 @@ datasources:
             value: service
         filterByTraceID: false
         filterBySpanID: false
+
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    access: proxy
+    url: http://pyroscope:4040

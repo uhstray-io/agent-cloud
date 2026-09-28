@@ -1,5 +1,21 @@
 ## Context
 
+### Cross-signal identity and profile adoption baseline
+
+The initial receiver contract uses the bounded `service` identity for metrics
+and Loki, `service.name` for OTLP resources, and `service_name` for profiles.
+`cluster` and `environment` come from controlled inventory values. Alert rules
+add bounded `owner` and `severity` values. Request/user identifiers, trace IDs,
+timestamps, raw paths, addresses, prompts, and secrets are not indexed metric
+or Loki stream labels. Container and instance details remain for drill-down.
+
+Service Overview lists metric-enabled services from Prometheus and queries Loki
+by `service`; log-only coverage remains visible in the estate inventory and
+Logs Drilldown. Missing telemetry remains a gap rather than a healthy default.
+Profiling begins with one opt-in, measured Alloy self-profile target after its
+resource and privacy gates pass. Add no other producer until measured ingestion,
+retention, host headroom, and a successful profile receipt support the next wave.
+
 See [proposal.md](proposal.md) for motivation and [the capability spec](specs/platform/estate-instrumentation/spec.md) for the behavior contract. The production receiver uses Prometheus for metrics, Loki for logs, and a private Alloy OTLP/gRPC path into single-node Tempo with local persistent storage (`platform/services/o11y/deployment/config/`, `compose.yml`). Grafana self-monitoring and agentgateway dashboards are provisioned. On 2026-09-28, a Dev-bound production deploy of reviewed commit `970dfa3ab545fa64f3c3829f99cf8ab29b7d32f2` passed live checks for all five stack components, the data sources, both dashboards, provisioned cross-signal link settings, alert rules, and the Discord contact point. Separate successful Semaphore receipts proved a named metrics target, a recent trace, alert delivery, retention, and cardinality; their IDs remain in private inventory. A user-visible trace-pivot click-through and some owning OpenSpec task checkboxes remain open. Production Alloy has no engine-socket mount, so its local container log/metrics discovery is not a production coverage receipt. These facts establish a receiver baseline, not estate-wide coverage; the broader rollout remains tracked by `observability-estate` and `inference-telemetry-production`. The architecture's old socket-scraped Prometheus and future Mimir sketches are not current collection mechanisms (`plan/architecture/06-observability-instrumentation.md`, as-built amendments).
 
 The candidate set is generated from the current `platform/services/` and `agents/` trees at census time, including empty scaffolds. A directory is not proof of deployment: the first implementation phase must reconcile every candidate with private inventory, Semaphore templates, and live read-only discovery. The inventory also includes Proxmox, guest OS and container hosts, pfSense/network, DGX Spark, and external endpoints that Agent Cloud actually manages; scope is based on a declared managed target, not an indiscriminate network scan.

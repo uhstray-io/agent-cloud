@@ -28,6 +28,14 @@ discovery.relabel "containers" {
     regex         = "/?(.*)"
     target_label  = "service"
   }
+
+  // Prefer the stable Compose service name; retain the container name only as
+  // a fallback for unmanaged containers without Compose metadata.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
 }
 
 loki.source.docker "default" {
@@ -42,6 +50,7 @@ loki.write "default" {
   }
   external_labels = {
     cluster = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
+    environment = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }},
   }
 }
 
@@ -88,6 +97,12 @@ discovery.relabel "metrics" {
 
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
     target_label  = "component"
   }
 }
@@ -96,7 +111,18 @@ prometheus.scrape "local_containers" {
   targets         = discovery.relabel.metrics.output
   scrape_interval = "15s"
   sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))
-  forward_to      = [prometheus.remote_write.local.receiver]
+  forward_to      = [prometheus.relabel.bounded_labels.receiver]
+}
+
+prometheus.relabel "bounded_labels" {
+  forward_to = [prometheus.remote_write.local.receiver]
+
+  // These request-specific dimensions are investigation detail, not indexed
+  // series labels. Keep bounded service and component labels intact.
+  rule {
+    action = "labeldrop"
+    regex  = "(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)"
+  }
 }
 
 prometheus.remote_write "local" {
@@ -144,3 +170,25 @@ otelcol.exporter.otlp "tempo" {
     }
   }
 }
+
+{% if o11y_alloy_profile_pilot_enabled | default(false) | bool %}
+// The sole profile pilot is Alloy's own documented pprof endpoint. Keep it
+// disabled until the pinned collector, privacy, and resource gates are proven.
+pyroscope.write "private" {
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+  external_labels = {
+    cluster = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
+    environment = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }},
+  }
+}
+
+pyroscope.scrape "alloy_self_profile" {
+  targets = [
+    { "__address__" = "alloy:12345", "service_name" = "alloy" },
+  ]
+  scrape_interval = "60s"
+  forward_to = [pyroscope.write.private.receiver]
+}
+{% endif %}

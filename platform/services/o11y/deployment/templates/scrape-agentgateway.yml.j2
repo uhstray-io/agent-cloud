@@ -2,6 +2,9 @@
 scrape_configs:
   - job_name: agentgateway
     metrics_path: /metrics
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: '(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)'
     static_configs:
       - targets: [{{ (agentgateway_metrics_address ~ ':' ~ (agentgateway_metrics_port | string)) | to_json }}]
-        labels: {service: agentgateway, component: gateway, env: prod}
+        labels: {service: agentgateway, component: gateway, environment: prod}
