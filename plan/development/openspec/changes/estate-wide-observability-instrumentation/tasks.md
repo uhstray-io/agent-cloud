@@ -1,0 +1,41 @@
+## 1. Establish the accepted receiver baseline
+
+- [ ] 1.1 Reconcile the existing o11y upgrade, dashboards, user-visible trace pivot, and production receipt gates in their owning OpenSpec changes; record the reviewed `dev` revision and successful Semaphore task IDs in private inventory. Require the fail-closed trace rollout gate before another tracing pilot.
+- [ ] 1.2 Deploy and verify a receiver-host node metric source and log collector through reviewed `dev` and Semaphore. This bounded pilot is the sole new sender before the baseline; prove exact-target host CPU, memory, filesystem, and log queries, plus private ingress.
+- [ ] 1.3 Capture a representative seven-day production baseline starting at the receiver-host source's first successful receipt: backend ingest, active series, span rate and size, retention/disk growth, receiver drops, query load, p95 host CPU and memory, and current VM/guest filesystem capacity without publishing private topology.
+- [ ] 1.4 Validation gate — show the existing signal and active-alert baseline remains healthy before any sender beyond the bounded receiver-host pilot is enabled; record a successful exact-target receipt for **Scenario: Service passes three-signal verification** on the already instrumented gateway.
+
+## 2. Declare and reconcile estate coverage
+
+- [ ] 2.1 Implement the coverage declaration schema and read-only report using existing service/agent definitions plus private inventory; include lifecycle, owner, runtime, signal applicability, method, identity, budget, and receipt fields.
+- [ ] 2.2 Generate the candidate set from every current platform service and agent directory, including empty scaffolds; reconcile it and declared Proxmox/guest/runner/network/DGX targets against Semaphore templates and live readback. Record deployed, planned, retired, and excluded states without guessing from a directory.
+- [ ] 2.3 Extend onboarding and the shared o11y verifier so a stale or missing exact-target signal fails with its target name and a receipt; keep private endpoint values in site-config.
+- [ ] 2.4 Validation gate — exercise a missing deployed signal and a scaffolded directory, proving **Scenario: Deployed target lacks a signal** and **Scenario: Scaffold is not counted as deployed**.
+
+## 3. Bound collection and pilot the reusable methods
+
+- [ ] 3.1 Extend the receiver-host pilot to one other infrastructure VM and one application VM through existing Semaphore/OpenBao boundaries. Send remote OTLP logs/traces through receiver Alloy and scrape declared private native metrics; do not publish Loki push or Prometheus remote-write. Review runner-host entitlements, redaction, egress, and OpenBao isolation separately before enrolling them.
+- [ ] 3.2 Pilot one request-serving runtime's supported zero-code OTel agent; verify version compatibility, startup/rollback, context propagation, redaction, sampling, and stable `service.name`. Record unsupported runtimes honestly and add a manual span only for a demonstrated critical gap.
+- [ ] 3.3 Add receiver memory/backpressure, per-target cardinality and volume limits, non-zero Prometheus size retention, disk-free and drop/refusal alerts, and provisioned missing-telemetry alerts. Parameterize the environment/cluster label in Prometheus and Alloy from inventory and migrate dependent dashboards/alerts; prove no secret, prompt, or request body enters the result.
+- [ ] 3.4 Validation gate — from a declared unapproved vantage host, prove the source-scoped firewall denies ingestion; use an over-budget pilot and unsupported runtime to prove **Scenario: Unapproved sender attempts export**, **Scenario: Ingestion budget exceeded**, and **Scenario: Instrumentation is unsupported**.
+
+## 4. Gate each wave on receiver and VM capacity
+
+- [ ] 4.1 Extend the existing production budget verifier and comparator with a read-only forecast from measured peak ingest/compression, declared retention, pilot load, and VM resource headroom; refuse a wave on insufficient headroom, drops, or unhealthy queries.
+- [ ] 4.2 For a refused wave, review the private VM spec and inventory change; use the existing Dev-bound Semaphore `resize-vm.yml` workflow only if growth is required. Before disk growth, build and check idempotent guest partition/LV/filesystem expansion for the actual layout, require a backup/restore receipt, keep reboot opt-in, and preserve all telemetry volumes.
+- [ ] 4.3 Read back Proxmox and guest CPU/memory/disk, Grafana/backend health, data access, and alert baseline; rerun the forecast before enabling senders. If no resize is needed, record the passing no-change forecast.
+- [ ] 4.4 Validation gate — deliberately fail a forecast to prove **Scenario: Wave exceeds capacity**; if a resize occurred, prove **Scenario: VM capacity increased** with live readback.
+
+## 5. Roll out infrastructure and application cohorts
+
+- [ ] 5.1 Onboard the deployed control-plane and infrastructure targets: o11y, Caddy, DNS, CA, OpenBao, OPA, Authentik, Semaphore, NetBox, Proxmox, guest/container hosts, and pfSense or other declared managed devices. Gate runner-host collection separately on job-output entitlement, redaction, and egress. Use native/exporter metrics and logs; trace only compatible request-serving components.
+- [ ] 5.2 Onboard deployed stateful and user services: n8n, Postiz, tududi, honcho, UhhCraft, ERPNext, OpenHands, and any confirmed Nextcloud/NocoDB/WikiJS targets. Include their declared DB/queue components, workers, dashboards, and meaningful alerts.
+- [ ] 5.3 For each remote target, probe from the receiver, apply the reviewed source-scoped firewall rule, prove the endpoint is reachable, and only then merge its private scrape/export declaration. For each batch, deploy reviewed `dev` through Semaphore, run the capacity gate, collect fresh exact-target receipts, and use an operator-driven reviewed revert/redeploy if verification fails.
+- [ ] 5.4 Validation gate — verify one controlled request and the required fresh signals for every deployed target in these cohorts, proving **Scenario: Service passes three-signal verification** and **Scenario: New instrumentation fails validation** in an operator-driven rollback drill.
+
+## 6. Roll out agent and inference cohorts and close coverage
+
+- [ ] 6.1 Preserve the proven agentgateway/DGX signal path while onboarding deployed agent/inference workers discovered by the census; classify each runtime and apply a supported agent or documented alternative. Probe each remote endpoint and apply the reviewed source-scoped firewall rule before merging its scrape/export declaration.
+- [ ] 6.2 Add provisioned per-cohort dashboards and alerts only for verified data, including receiver loss, service health, worker failures, inference traffic/latency, and VM disk/capacity trends.
+- [ ] 6.3 Reconcile all deployed inventory entries, recent receipts, budget forecasts, and exclusions; update the architecture's as-built notes and recovery guidance with the actual mechanisms and measured capacity decision.
+- [ ] 6.4 Validation gate — produce a complete deployed-target coverage report and a reviewed failure/recovery receipt, proving **Scenario: Deployed target lacks a signal** and **Scenario: New instrumentation fails validation**.
