@@ -759,13 +759,24 @@ the `o11y` VM (`o11y_svc`).
 > response had no `status` field. Grafana documents plugin health checks as
 > optional. The correction probes Tempo's `/ready` through Grafana's provisioned
 > data-source proxy; it still requires `status=OK` for Prometheus and Loki.
-> Task 1659 is not a completed receiver or gateway trace receipt. Review and
-> merge this correction before rerunning the Dev-bound receiver deployment.
+> Task 1659 is not a completed receiver or gateway trace receipt. PR #294
+> corrected the Grafana proxy check and merged after a Claude review and green
+> CI. Receiver check-mode task 1664 and real task 1665 then passed from exact
+> reviewed `dev` revision `fe248cb850dffbb624a623a44f41236cbd4ce527`.
+> Task 1665 proved all four backends, Alloy, the provisioned Tempo data source,
+> both dashboards, active alert rules, and the Discord contact point. It did
+> not prove gateway log or trace intake.
 > Firewall check-mode task 1660 and real task 1661 passed from the reviewed
 > Dev template; the real task re-established SSH after applying the restricted
 > OTLP rule. Gateway check-mode task 1663 then proved Tempo readiness, gateway-
 > to-Alloy TCP reachability, and the named healthy gateway metric before any
 > gateway redeploy. Check mode did not produce a trace or access-log receipt.
+> Real gateway task 1666 passed the receiver, firewall, OpenBao, and named
+> metrics prerequisites, then failed readiness: agentgateway v1.5.0 rejects
+> its older `config.logging` block when `frontendPolicies.accessLog` is also
+> set. Its container is stopped until the access-log field is moved to the
+> supported policy and the reviewed Dev playbook redeploys it. This is a
+> configuration-schema defect; do not claim a production gateway receipt yet.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
