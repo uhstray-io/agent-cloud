@@ -6,7 +6,6 @@ import re
 import sys
 from decimal import Decimal
 
-
 SECONDS = {
     "ms": Decimal("0.001"),
     "s": Decimal(1),
