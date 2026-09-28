@@ -137,7 +137,7 @@ supersede it with a new entry and link both.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
-| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test per playbook; class Convention (data-flow rule proposed) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314; #319 pending; class Convention (data-flow rule proposed) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Convention (probe fix pending) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
@@ -3454,8 +3454,9 @@ failed on `'dict object' has no attribute 'path'`: `tempfile` registers no path 
 and the next task read it. Distribute SSH Keys, Harden SSH and Verify Host Access carried the
 same `tempfile`-then-read pattern; a lifted copy of each failed identically under `--check`.
 Provision VM's summary read skipped results as passed ("SSH: ok", "Runner: configured"), since
-Ansible's `succeeded` test accepts a skipped result. Fixed in #308, #313, #314 and the shared
-`tasks/materialise-ssh-key.yml`.
+Ansible's `succeeded` test accepts a skipped result. Fixed in #308, #313 and #314; the three
+key-handling playbooks move onto a shared `tasks/materialise-ssh-key.yml` in #319 (open on
+2026-09-28).
 
 **Root cause.** `test_check_mode_contract.py` classifies each task on its own and models only
 `uri` and the command family. It never follows a `register` from a task that check mode skips
@@ -3468,7 +3469,8 @@ reads an attribute of it is guarded the same way, or reads it through `default` 
 `is skipped` test. A summary built from registers excludes `skipped` explicitly before trusting
 `succeeded`. A new or changed playbook's dry run is executed once before it is called safe.
 
-**Enforced by.** Test for each fixed playbook (behavioural, mutation-checked). The class itself
+**Enforced by.** Test for each playbook fixed in #308, #313 and #314 (behavioural,
+mutation-checked); the three key-handling playbooks gain theirs with #319. The class itself
 is Convention; proposal: a data-flow rule in `test_check_mode_contract.py` that follows registers
 from producers skipped under `--check`, with the skipped-module set taken from `ansible-doc --json`.
 
