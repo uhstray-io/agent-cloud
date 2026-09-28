@@ -781,6 +781,33 @@ the `o11y` VM (`o11y_svc`).
 > to-Alloy TCP reachability, and the named healthy gateway metric before any
 > gateway redeploy. Check mode did not produce a trace or access-log receipt.
 
+> **Production telemetry receipts, 2026-09-28 EDT:** the reviewed `dev`
+> receiver deployment (Semaphore task 1665) preserved the existing volumes,
+> proved Prometheus, Loki, Tempo, and Alloy healthy, verified Grafana could
+> query or proxy all three data sources, and read back both the observability
+> estate and agentgateway traffic dashboards. The gateway deploy (1673) proved
+> readiness, API-key refusal, a fresh receiver scrape, and a keyed model
+> completion. PR #297 added an opt-in credential-free trace canary after Claude
+> review and resolution of CodeRabbit's two findings. The Dev-bound verifier
+> (1682) sent 100 direct anonymous 401 requests and found a Tempo trace in the
+> bounded canary window, a recent gateway log in Loki, and a healthy Prometheus
+> scrape. The Loki check accepts any labeled gateway log from the preceding
+> 15 minutes; it does not identify a canary request. The normal verifier keeps
+> the canary disabled.
+>
+> Named target checks found live gateway request, request-latency, and LLM
+> token-usage series (1683–1685). The time-to-first-token histogram had no
+> series (1686); its dashboard panel must remain visibly empty until a real
+> producer receipt proves that metric. Do not substitute a zero or another
+> latency metric. Both DGX node exporters and the vLLM head had named
+> Prometheus series (1687–1689). The DGX team's merged PRs #28 and #29 recorded
+> code-managed Loki shipping and labeled journal receipt from both nodes.
+> Its remaining acceptance checks are the second node's one-minute delivery
+> bound, GPU counter compatibility, receiver-outage buffering, and persistence
+> after reboot. The Grafana trace-to-log and trace-to-metric pivots are
+> provisioned but still need an operator click-through receipt. The local
+> wipe/redeploy gate remains deferred to preserve local data.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
