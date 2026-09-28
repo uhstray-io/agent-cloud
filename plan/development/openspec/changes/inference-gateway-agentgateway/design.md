@@ -218,6 +218,46 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    Total TLS (Advanced Certificate Manager) is enabled and issues a per-hostname edge
    certificate for every proxied record, so `admin.inference.uhstray.io` is covered.
 
+### Decisions recorded 2026-09-27
+
+Operator decisions from the planning session of 2026-09-27, after the operator UI's first
+production start failed (see the last item).
+
+- **Transport security end to end.** Caddy keeps the public certificate and re-encrypts to
+  HTTPS listeners on the gateway, API and UI alike; the gateway **requires Caddy's client
+  certificate** (a gateway `tls.root` makes client authentication mandatory in v1.5.0,
+  `types/agent.rs` 564-579 at tag v1.5.0). Refined in review: the gateway admits a
+  declared allowlist of client leaves by name, Caddy's by default plus the deploy's own
+  verifier and the benchmark runner (`production-internal-ca` decisions 4 and 5; task
+  6.1 here). vLLM serves HTTPS, and the gateway verifies it
+  with the model's `tls` block (`root`, `hostname`), which the simplified `llm:` config
+  supports directly (`types/local.rs` 819-826), so no move to routing-based config is
+  needed. An `https://` base URL adds a default TLS configuration only when `tls` is unset
+  (`types/local.rs` 1062-1064), so `tls` is set explicitly. Certificates come from a
+  production internal CA: change `production-internal-ca`. Certificate files are
+  hot-reloaded by the gateway; vLLM needs `--enable-ssl-refresh` or a restart. The vLLM
+  side is dgx-spark's, handled by the dgx-spark session.
+- **Token authority.** OpenBao holds every key value; the gateway alone accepts them and
+  meters budgets. Personal access through Authentik SSO is a personal API key per user,
+  rotated every 30 days and readable only by its owner through an Authentik OIDC login to
+  OpenBao: change `inference-personal-keys`. Accepting Authentik JWTs directly at the
+  gateway is deferred there, because v1.5.0 attaches budgets only to API keys.
+- **UI read-only, explicitly.** The config file is mounted read-only, so a UI write already
+  fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (the source reads
+  it at `ui.rs` 52-60), so no key or policy is ever managed there.
+- **Grace period.** `legacy-shared` stays valid through the gateway for 14 days after the
+  route switch (`legacy_shared_expires` = switch date + 14 days), then task 5.1 applies.
+- **Benchmarking** is its own change, `inference-benchmarking`, and runs before the budgets
+  of task 4.2 are set: its capacity ceiling is where those figures come from. Its direct-vLLM
+  baseline runs before vLLM's allowed range is narrowed to the gateway (task 5.1), or the
+  benchmark VM stays in that range.
+- **Authentik's OIDC endpoints behind Cloudflare.** The UI's first production start (Deploy
+  agentgateway (Dev), task 1622) failed: Cloudflare's managed challenge answered the
+  gateway's server-side fetch of Authentik's discovery document with an HTML 403, and v1.5.0
+  loads that document at startup. A Cloudflare skip rule for Authentik's machine endpoints
+  (discovery, JWKS, token, userinfo, revoke, introspect, device) fixes it (PR #289); the
+  browser endpoints stay challenged. The same path serves any later JWKS validation.
+
 ## Risks / Trade-offs
 
 - [Gateway strips or rewrites fields vLLM needs] → task 2.3 sends `reasoning_effort`,
