@@ -82,7 +82,7 @@ instance that does not keep content.
 
 ### Requirement: Stored content expires within the declared retention
 The platform SHALL delete request-log rows, with their content, once they are older than
-the declared retention period (30 days unless inventory declares otherwise), on a
+the declared retention period (90 days unless inventory declares otherwise), on a
 schedule declared as code, and MUST detect a retention job that has stopped running.
 
 #### Scenario: An expired row is removed
@@ -114,17 +114,18 @@ MUST refuse to render a gateway configuration that would.
   request-log database, in Loki or in the trace store
 
 ### Requirement: Gateway traces reach the platform trace store at a declared rate
-The gateway SHALL export spans for a declared fraction of requests to a self-hosted trace
-store that Grafana queries, with trace-to-log navigation to the matching access records.
-A request that arrives already carrying trace context MUST NOT be traced on the caller's
-say-so. Trace export MUST NOT be enabled until the platform's trace rollout gate is
-recorded as passed, and stored traces MUST expire within the declared retention period.
+The gateway SHALL export spans for a declared fraction of requests, over the
+observability host's authenticated telemetry receiver, to the platform's Tempo ingest
+endpoint named in inventory; that trace store is provided by separate work, and no
+endpoint host SHALL be assumed. A request that arrives already carrying trace context
+MUST NOT be traced on the caller's say-so. Trace export MUST NOT be enabled until the
+Tempo endpoint is declared and the platform's trace rollout gate is recorded as passed.
 
 #### Scenario: A sampled request is searchable in Grafana
 - **WHEN** traces are enabled with a sampling fraction of one for a test window and one
   request is sent through the gateway
-- **THEN** a Grafana trace search for service `agentgateway` returns its trace, and the
-  trace links to the request's access record in Loki
+- **THEN** a search on the declared Tempo query endpoint for service `agentgateway`
+  returns its trace, and the request's access record in Loki carries the same trace id
 
 #### Scenario: Caller-supplied trace context does not force a trace
 - **WHEN** traces are enabled with a sampling fraction of zero and a request carrying a
@@ -133,8 +134,8 @@ recorded as passed, and stored traces MUST expire within the declared retention 
 
 #### Scenario: Trace enablement waits for the rollout gate
 - **WHEN** gateway trace export is requested before the trace rollout gate is recorded as
-  passed
-- **THEN** the deployment refuses and reports the missing gate
+  passed, or before a Tempo ingest endpoint is declared
+- **THEN** the deployment refuses and reports what is missing
 
 ### Requirement: The telemetry push hop is mutually authenticated and encrypted
 Outside local-dev, the gateway's export of access records and spans to the observability
@@ -151,17 +152,20 @@ export SHALL be permitted only in local-dev and only when explicitly declared.
   certificate issued by the internal CA
 - **THEN** the TLS handshake fails and no record is ingested
 
-### Requirement: A provisioned dashboard shows the gateway's client view
+### Requirement: The gateway's client view is a separate provisioned dashboard
 The observability stack SHALL provision, from committed configuration alone, a gateway
-dashboard showing p50 and p95 first-token latency, request duration, error ratio and
-per-identity request rate, token usage by identity and model, rejections by reason, the
-gateway's access records and, when traces are enabled, a trace search.
+client-view dashboard of its own, not a row on another dashboard, showing p50 and p95
+first-token latency, request duration, error ratio and per-identity request rate, and a
+separate gateway operations dashboard showing token usage by identity and model,
+rejections by reason, process health, the gateway's access records and, when a trace
+store is available, a trace search.
 
 #### Scenario: Dashboard survives a rebuild
 - **WHEN** the observability stack is wiped and redeployed through Semaphore after one
   hour of gateway traffic has been collected
-- **THEN** the gateway dashboard loads without manual steps and its client-view row
-  renders first-token latency percentiles and per-identity request counts
+- **THEN** the gateway client-view dashboard loads without manual steps and renders
+  first-token latency percentiles and per-identity request counts, and the operations
+  dashboard loads alongside it
 
 ### Requirement: Local-dev collects the same signals by the same code
 Local-dev SHALL deploy the gateway's telemetry from the same templates and playbooks as
@@ -170,5 +174,5 @@ production, differing only in inventory values and compose overlays.
 #### Scenario: Local deploy shows metrics and access records
 - **WHEN** the local gateway and local observability stack are deployed through the
   local Semaphore and one keyed request is sent through the gateway
-- **THEN** the local Grafana's gateway dashboard shows that request's identity in the
+- **THEN** the local Grafana's gateway dashboards show that request's identity in the
   metrics and in an access record

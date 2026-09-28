@@ -6,12 +6,15 @@ done over a shell on a VM. Pull requests only when Joe asks for them (repo rule)
 Relation to sibling changes (recorded here so no task is done twice):
 
 - `inference-gateway-agentgateway` task 3.1 is **superseded** by sections 2 to 5 of this
-  change (its spans-as-Loki-lines plan is replaced by Tempo, design decision 3). Its gate
-  3.3 is **proved here** by task 6.5. Its task 1.10 (`UI_READ_ONLY=true`) stays with it and
-  is a dependency of design decision 5.
-- `observability-estate` tasks 3.2 (Alloy OTLP to Tempo) and 3.3 (one instrumented pilot
-  service) are **absorbed** by section 5, with the gateway as the pilot. Its task 3.1 (the
-  gate itself) and 3.4 (its own validation) stay with it; section 5 consumes 3.1. Its task
+  change (its spans-as-Loki-lines plan is replaced by export to Tempo, design decision 3).
+  Its gate 3.3 is **proved here** by task 6.5, against the separate client-view dashboard
+  (task 4.1) rather than a row on the inference dashboard. Its task 1.10
+  (`UI_READ_ONLY=true`) stays with it and is a dependency of design decision 5.
+- `observability-estate` task 3.3 (one instrumented pilot service) is **absorbed** by
+  section 5, with the gateway as the pilot; the Alloy-exporter half of its task 3.2 is
+  delivered here, and the Tempo half (image, retention, storage) belongs to the separate
+  Tempo work. Its task 3.1 (the gate itself) and 3.4 (its own validation) stay with it;
+  section 5 consumes 3.1. Its task
   4.4's agentgateway half is proved by tasks 2.8 and 3.10.
 - `inference-telemetry-production` keeps the o11y host (section 1), its firewall (1.4),
   the inference dashboards (3.1) and alert groups (3.2). This change depends on its
@@ -20,10 +23,16 @@ Relation to sibling changes (recorded here so no task is done twice):
   dependency of task 3.8.
 - `inference-personal-keys` task 4.2 (user-key rendering) renders the `team` marker this
   change requires (task 1.4); its eligibility group `inference-users` is the team.
+- External dependency, not an OpenSpec change: the Tempo deployment on the o11y VM
+  (separate session, Joe 2026-09-27). It supplies the Tempo OTLP ingest endpoint, its
+  query endpoint, its transport statement and Grafana's Tempo datasource. Section 5
+  starts only when it has published those.
 
 Decided by Joe, 2026-09-27: keep the uhstray.io team's prompt and completion content,
-never anyone else's; Tempo lives in the o11y stack; `clientSampling` off with 10 percent
-sampling.
+never anyone else's, for 90 days; the legacy shared key and skynet are team-only;
+Tempo is deployed by separate work and this change integrates with its endpoint;
+`clientSampling` off with 10 percent sampling; the gateway client view is a separate
+dashboard.
 
 ## 1. Gateway configuration on current blocks; team content kept, nothing else
 
@@ -99,7 +108,7 @@ sampling.
 - [ ] 1.11 `platform/playbooks/prune-agentgateway-request-logs.yml` (design decision 13):
       `DELETE FROM request_logs WHERE completed_at < now() - interval '<N> days'` inside
       `agentgateway-db` through the container engine, `N` from
-      `agw_request_log_retention_days` (default 30, integer asserted); payload rows go by
+      `agw_request_log_retention_days` (default 90, integer asserted); payload rows go by
       cascade (`0001_create_request_log_schema.sql:26`); report the deleted count only;
       a second run deletes nothing. `templates.yml`: `Prune agentgateway Request Logs`
       with `dev_variant: true` and a daily `schedule:`; BATS asserts the schedule, the
@@ -110,12 +119,13 @@ sampling.
       database backup excludes `request_log_payloads` data
 - [ ] 1.13 Handout notice: the document the team's keys are handed out with (the
       gateway change's task 4.4 updates dgx-spark `docs/TEAM-ENDPOINT.md`; personal keys
-      use their own handout) states that prompts and completions are kept for 30 days and
+      use their own handout) states that prompts and completions are kept for 90 days and
       readable by platform admins
-- [ ] 1.14 site-config: declare `team: uhstray` for every `agw_clients` identity after
-      confirming each is used only by team members (the enrolled shared key included);
-      then `agw_content_logging: full` and `agw_request_log_retention_days: 30`; the prune
-      schedule is live before the first production deploy with `full`
+- [ ] 1.14 site-config: declare `team: uhstray` for every `agw_clients` identity, including
+      the enrolled legacy shared key (`legacy-shared`) and `skynet`, both confirmed
+      team-only by Joe on 2026-09-27; then `agw_content_logging: full` and
+      `agw_request_log_retention_days: 90`; the prune schedule is live before the first
+      production deploy with `full`
 - [ ] 1.15 Validation gate: 1.8's planted `llm.prompt` field fails before any restart,
       proving scenario "Content-capturing configuration is refused"; 1.9 proves scenarios
       "A non-team identity is refused at render", "A non-team key is refused at request
@@ -204,89 +214,86 @@ sampling.
       client certificate is rejected"; a production render with the plaintext flag set
       fails in 3.4, proving scenario "Plaintext export is refused in production"
 
-## 4. Dashboard
+## 4. Dashboards
 
-- [ ] 4.1 `config/grafana/dashboards/agentgateway.json`, uid `agentgateway`, adapted from
-      agentgateway `v1.5.0`
+- [ ] 4.1 Two dashboards adapted from agentgateway `v1.5.0`
       `controller/install/helm/agentgateway/files/agentgateway-dashboard.json` (commit
-      `fe6732474a96a0363dfb9822859af4e9bab360fa`, Apache-2.0, recorded in the JSON
-      description): variables `identity`, `gen_ai_request_model`, `env`; rows per design
-      decision 9; datasource uids `prometheus` and `loki`
-- [ ] 4.2 BATS: the JSON parses; its uid is unique among the dashboards; every metric name
-      it queries is in agentgateway v1.5.0 `schema/metrics.md` or carries a
+      `fe6732474a96a0363dfb9822859af4e9bab360fa`, Apache-2.0, recorded in each JSON
+      description), variables `identity`, `gen_ai_request_model`, `env`, datasource uids
+      `prometheus` and `loki` (design decision 9):
+      `config/grafana/dashboards/agentgateway-client-view.json`, uid
+      `agentgateway-client-view`, the separate client-view dashboard; and
+      `config/grafana/dashboards/agentgateway.json`, uid `agentgateway`, operations, whose
+      trace panel uses a datasource variable of type `tempo`
+- [ ] 4.2 BATS: both JSON files parse; their uids are unique among the dashboards; every
+      metric name they query is in agentgateway v1.5.0 `schema/metrics.md` or carries a
       `_bucket`/`_sum`/`_count` suffix of one; no query references `namespace`, `pod` or
-      a `gateway_networking_k8s_io_*` label
-- [ ] 4.3 Once `inference-telemetry-production` task 3.1's inference dashboard exists, add a
-      link panel from it to `agentgateway` (design Open Questions: link, not embed, unless
-      Joe decides otherwise)
-- [ ] 4.4 Validation gate: `Clean Deploy o11y (Local)` then one keyed request; the local
-      dashboard shows that identity in metrics and in an access record, proving scenario
-      "Local deploy shows metrics and access records"
+      a `gateway_networking_k8s_io_*` label; no panel names a fixed Tempo datasource uid
+- [ ] 4.3 Validation gate: `Clean Deploy o11y (Local)` then one keyed request; the local
+      client-view and operations dashboards show that identity in metrics and in an
+      access record, proving scenario "Local deploy shows metrics and access records"
 
-## 5. Traces, after the estate gate
+## 5. Traces to the separately deployed Tempo, after the estate gate
 
-- [ ] 5.1 Pin Tempo: confirm the `docker.io/grafana/tempo:3.0.3` tag and its digest; read the
-      3.0.3 configuration reference for single-binary receivers, filesystem storage and
-      block retention, and record the exact keys in `design.md` before writing the config.
-      unverified today: every Tempo 3.0 key name (the sketch in
-      `plan/architecture/06-observability-instrumentation.md` is 2.x-shaped)
-- [ ] 5.2 `compose.traces.yml` overlay: Tempo on the `o11y` network only, named volume,
-      `mem_limit` in the local overlay; `deploy.sh` appends it when `O11Y_TRACES_ENABLED`
-      is true in `.env`, the way it prepends `compose.prod.yml` (`deploy.sh:25-27`)
-- [ ] 5.3 `config/tempo.yaml` with retention from `O11Y_TEMPO_RETENTION` (inventory
-      `o11y_tempo_retention`, default 7 days), metrics generator off; a rendered, gitignored
-      `provisioning/datasources/tempo.yml` (`uid: tempo`, trace-to-logs into `loki`,
-      trace-to-metrics into `prometheus`) and a Loki derived field linking `trace.id` to
-      `tempo`. unverified: Grafana 11.4's datasource keys for those links; confirm against
-      its provisioning documentation before writing them
-- [ ] 5.4 `otlp.alloy.j2`: a trace pipeline, rendered only when traces are enabled,
-      `otelcol.processor.batch` into `otelcol.exporter.otlp` to `tempo:4317` on the private
-      network
-- [ ] 5.5 Gate wiring: `deploy-o11y.yml` refuses `o11y_traces_enabled` until the estate
-      gate (its task 3.1) is recorded as passed, reporting the missing gate;
-      `deploy-agentgateway.yml` refuses `agw_traces_enabled` unless the declared o11y host
-      has `o11y_traces_enabled`
-- [ ] 5.6 `deploy-o11y.yml` verify: when traces are enabled, a Tempo search for
-      `service.name=agentgateway` returns a trace newer than the gateway's last deploy
-- [ ] 5.7 BATS: the overlay is appended only when enabled; the trace pipeline is absent
-      from the rendered Alloy file when disabled; both refusals in 5.5 fire
-- [ ] 5.8 Local, then production, each through its Semaphore: enable traces with
-      `agw_trace_sampling` at `1` for a test window, then back to the declared default
-- [ ] 5.9 Validation gate: an enablement attempted before the estate gate is refused,
-      proving scenario "Trace enablement waits for the rollout gate"; the test window's
-      trace is found and links to its access record, proving scenario "A sampled request
-      is searchable in Grafana"; with sampling at `0`, a request sent with a `traceparent`
-      header leaves no trace, proving scenario "Caller-supplied trace context does not
-      force a trace"
+- [ ] 5.1 Inputs from the separate Tempo work, recorded in `design.md` before any code in
+      this section: the OTLP gRPC ingest address, whether it is host-local to Alloy, its
+      TLS server name and CA if not, the query endpoint the receipt check uses, and the
+      Grafana Tempo datasource uid. unverified today: all of them (the Tempo work has not
+      published them)
+- [ ] 5.2 `templates/otlp.alloy.j2`: a trace pipeline rendered only when
+      `o11y_traces_enabled` and `o11y_tempo_otlp_endpoint` are both set:
+      `otelcol.processor.batch` into `otelcol.exporter.otlp` to that endpoint, TLS against
+      the internal CA root unless `o11y_tempo_otlp_host_local` is true. No default host
+- [ ] 5.3 Gate wiring: `deploy-o11y.yml` refuses `o11y_traces_enabled` without
+      `o11y_tempo_otlp_endpoint`, refuses a plaintext endpoint not declared host-local,
+      and refuses until the estate gate (its task 3.1) is recorded as passed, naming what
+      is missing; `deploy-agentgateway.yml` refuses `agw_traces_enabled` unless the
+      declared o11y host has `o11y_traces_enabled`
+- [ ] 5.4 `deploy-o11y.yml` verify: when traces are enabled and `o11y_tempo_query_url` is
+      declared, a search on that endpoint for `service.name=agentgateway` returns a trace
+      newer than the gateway's last deploy; with no query endpoint declared, the verify
+      reports the check as not run rather than passed
+- [ ] 5.5 BATS: the trace pipeline is absent from the rendered Alloy file when disabled or
+      when no endpoint is declared; each refusal in 5.3 fires; the rendered exporter
+      carries TLS whenever the endpoint is not host-local
+- [ ] 5.6 Each environment where the Tempo work has published an endpoint, through its
+      Semaphore: enable traces with `agw_trace_sampling` at `1` for a test window, then
+      back to the declared default `0.1`
+- [ ] 5.7 Validation gate: an enablement attempted before the estate gate, or with no
+      endpoint declared, is refused, proving scenario "Trace enablement waits for the
+      rollout gate"; the test window's trace is found on the query endpoint with the same
+      trace id as its access record, proving scenario "A sampled request is searchable in
+      Grafana"; with sampling at `0`, a request sent with a `traceparent` header leaves no
+      trace, proving scenario "Caller-supplied trace context does not force a trace"
 
 ## 6. Measure, record, reconcile
 
-- [ ] 6.1 After seven days in production: Tempo volume growth per day, gateway access lines
-      per day in Loki, active gateway series in Prometheus, the `request_logs` row count
+- [ ] 6.1 After seven days in production: spans exported per day, measured at Alloy
+      (unverified: the metric name Alloy v1.5.1 exposes for exported spans), gateway
+      access lines per day in Loki, active gateway series in Prometheus, the `request_logs` row count
       and the size of `request_log_payloads`; record them in `design.md`
-- [ ] 6.2 Set `agw_trace_sampling` and `o11y_tempo_retention` from 6.1 with the arithmetic
-      in an `env.j2` comment; if the payload table's size slows budget accounting, move
-      the request log to its own `config.logging.database` in a follow-up change
+- [ ] 6.2 Set `agw_trace_sampling` from 6.1, with the Tempo owner's storage figure, and
+      the arithmetic in an `env.j2` comment; if the payload table's size slows budget
+      accounting, move the request log to its own `config.logging.database` in a follow-up change
 - [ ] 6.3 Docs: `platform/services/agentgateway/context/architecture.md` (signals, ports,
-      content rule), `platform/services/o11y/deployment/README.md` (OTLP, Tempo, the order
-      of enablement), a dated amendment to
-      `plan/architecture/06-observability-instrumentation.md` (Tempo lives in the o11y
-      stack; Alloy config is a directory), and the root `AGENTS.md` rows the branch
-      workflow requires
+      content rule), `platform/services/o11y/deployment/README.md` (OTLP, the Tempo
+      endpoint as an input from separate work, the order of enablement, Alloy config is a
+      directory), and the root `AGENTS.md` rows the branch workflow requires
 - [ ] 6.4 Append dated pointer lines, never edits, to the sibling changes' task lists:
       `inference-gateway-agentgateway` 3.1 (superseded here) and its design decision 6
-      (Tempo deferral reversed, design decision 3 here); `observability-estate` 3.2 and 3.3
-      (delivered here); `inference-telemetry-production` 1.4 (per-port sources available)
+      (Tempo deferral reversed, design decision 3 here); `observability-estate` 3.3
+      (delivered here) and 3.2 (Alloy half here, Tempo half separate work);
+      `inference-telemetry-production` 1.4 (per-port sources available)
 - [ ] 6.5 Validation gate: after an hour of production traffic, a wipe and redeploy of the
-      production o11y stack through Semaphore restores the dashboard (production has no
+      production o11y stack through Semaphore restores both dashboards (production has no
       clean-deploy template on 2026-09-27: `platform/semaphore/templates.yml` declares only
       `Deploy o11y (Dev)`, line 36, and `Clean Deploy o11y (Local)` lives in
       `templates-local.yml:130`; declare one first, or reuse the one
-      `inference-telemetry-production` task 3.5 needs) with its client-view row rendering
+      `inference-telemetry-production` task 3.5 needs), the client-view dashboard rendering
       first-token percentiles and per-identity counts, proving scenario "Dashboard survives
       a rebuild" (and the gateway change's "Client-view latency on the dashboard"); a
       team request carrying a unique marker string leaves no match in a Loki search or in
       the trace store, proving scenario "Loki holds no prompt text", and neither the
       caller's key nor its Authorization value appears in the database, Loki or the trace
-      store, proving scenario "Header and key are never stored"; on archive, retain the outcome (worked /
-      dead end / corrected) into bank `agent-cloud-750a33b9`
+      store, proving scenario "Header and key are never stored"; on archive, retain the
+      outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`

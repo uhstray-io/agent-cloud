@@ -215,11 +215,10 @@ Loki, Tempo and Alloy:
 - `otelcol.exporter.loki` does not turn OTLP attributes into Loki labels unless the record
   carries the `loki.resource.labels` or `loki.attribute.labels` hint attributes
   (`otelcol.exporter.loki.md`).
-- Tempo releases: `v3.0.3` is the latest, `v2.10.8` the newest 2.x
-  (`gh release list -R grafana/tempo`). Tempo 3.0 notes: "Single-binary mode: push
-  distributor local ingest directly to live-store and metrics-generator without Kafka"
-  and "This release contains breaking configuration and deployment changes"
-  (`gh release view v3.0.0 -R grafana/tempo`).
+- Tempo is outside this change (Joe, 2026-09-27: "The tempo deployment for the VM will
+  be handled by a different session"). No OpenSpec change for it exists under
+  `plan/development/openspec/changes/` on 2026-09-27 (listed with `ls`). Its OTLP ingest
+  address, query address, transport and Grafana datasource are inputs to this change.
 
 ### Sibling changes
 
@@ -264,10 +263,9 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
 **Non-Goals:**
 - Gateway alert rules beyond the generic service-down rule; the inference alert groups
   are `inference-telemetry-production` task 3.2.
-- Tempo's metrics generator (span metrics and service graphs). The gateway's own metrics
-  already give request rate, errors and duration per identity and model; generated span
-  series would spend the series budget on a duplicate.
-- Object storage for Tempo, long trace retention and Mimir; plan 05 phase 3 owns them.
+- Deploying, sizing and retaining Tempo, its storage, its metrics generator and Grafana's
+  Tempo datasource: separate work (external dependency, `proposal.md`). Mimir stays with
+  plan 05 phase 3.
 - The cost catalog (`agentgateway_gen_ai_client_cost_usd_total`); vLLM on our own
   hardware has no per-token price to declare.
 - Shipping the gateway VM's non-access stdout (startup, errors) to Loki. Access records
@@ -300,26 +298,34 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
    push, because v1.5.0 documents no metrics exporter (`schema/config.md:91-94` has
    `remove` and `fields` only).
 
-3. **Tempo joins the o11y compose stack; traces arrive through Alloy** (confirmed by
-   Joe, 2026-09-27). A pinned Tempo
-   single-binary container on the `o11y` network, filesystem storage in a named volume,
-   block retention from inventory with a default of 7 days to match Loki's default
-   (`compose.yml:46`), so a trace's log link never outlives its logs. Alloy receives OTLP
-   gRPC on 4317, batches, and exports to Tempo on the private network. Grafana gains a
-   Tempo datasource (`uid: tempo`) with trace-to-logs into Loki and trace-to-metrics into
-   Prometheus. Tempo, its datasource and Alloy's trace pipeline ship as an inventory-gated
-   overlay (`compose.traces.yml`, appended through the `COMPOSE_OVERLAYS` mechanism
-   `deploy.sh:25-27` already uses) plus rendered, gitignored provisioning and Alloy files,
-   so a host with traces off runs exactly today's stack. The pin is Tempo 3.0.3: this is
-   a new install with no 2.x data to migrate, and 3.0 runs single-binary without Kafka.
-   Alternatives rejected: spans as Loki log lines (the gateway change's decision 6),
-   because Grafana cannot render a span tree from log lines and the gateway emits real
-   OTLP spans, and the retention-owner objection is now answered by the estate change's
-   declared-retention requirement; a separate `platform/services/tempo` service as
-   sketched in `plan/architecture/06-observability-instrumentation.md` (Tempo
-   section), because it would need its own host or a cross-project network to reach
-   Alloy and Grafana, for one producer; Jaeger as the documentation's example uses,
-   because the platform standardizes on the Grafana stack (06, "Tracing (Tempo)").
+3. **Traces reach an externally deployed Tempo through the o11y Alloy.** Ownership:
+
+   | Component | Owner |
+   |---|---|
+   | Tempo container, storage, retention, metrics generator, Grafana Tempo datasource | Separate work (Joe, 2026-09-27) |
+   | Gateway `frontendPolicies.tracing` (gRPC, sampling, `clientSampling`, resources) | This change |
+   | Gateway to Alloy hop, mutual TLS, firewall | This change |
+   | Alloy trace pipeline (batch, OTLP exporter to the declared Tempo endpoint) | This change |
+   | Trace receipt check in the o11y deploy | This change |
+
+   The gateway sends spans to the same Alloy OTLP receiver its access records use
+   (decision 4); Alloy batches them and exports with `otelcol.exporter.otlp` to
+   `o11y_tempo_otlp_endpoint`, an inventory value with no default host. The Alloy-to-Tempo
+   hop uses TLS verified against the internal CA root unless inventory declares the
+   endpoint host-local (`o11y_tempo_otlp_host_local: true`, a statement the Tempo work
+   makes about where it listens); the deploy refuses a plaintext non-host-local endpoint.
+   The trace pipeline renders only when that endpoint is declared and trace enablement is
+   on. Why Alloy rather than gateway-to-Tempo directly: the receiver, its client
+   certificate check and its firewall rule already exist for access records, so the
+   Tempo side only has to accept OTLP from Alloy on the o11y VM; a direct hop would make
+   the Tempo work expose its ingest port on the LAN, verify client certificates and open
+   its firewall to the gateway host, which is work that session does not own. Alloy also
+   leaves one place to retarget if the Tempo address changes. Alternatives rejected:
+   spans as Loki log lines (the gateway change's decision 6), because Grafana cannot
+   render a span tree from log lines and the gateway emits real OTLP spans; Tempo
+   deployed by this change, superseded by Joe's scope decision; Jaeger as the
+   documentation's example uses, because the platform standardizes on the Grafana stack
+   (`plan/architecture/06-observability-instrumentation.md`, "Tracing (Tempo)").
 
 4. **Access records travel by OTLP, not by a log shipper on the gateway VM.** The o11y
    Alloy cannot see the gateway's stdout in production (Context), and the OTLP receiver
@@ -361,7 +367,7 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
      (`Logs.tsx:466-480`), which is mounted read-only (`compose.yml:48`) and, with the
      gateway change's `UI_READ_ONLY`, refused by the store (`config.rs:390-392`).
    - Team members are told, in the handout document for their key, that their prompts
-     and completions are kept for 30 days and are readable by platform admins.
+     and completions are kept for 90 days and are readable by platform admins.
    Alternatives rejected: never logging content (this design's first draft), because
    Joe wants the team's prompts to learn from; content in Loki or in OTLP log records,
    because Grafana has no per-record access control and every Grafana viewer would read
@@ -404,26 +410,31 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
    `clientSampling` left at its default `true`, any caller could force its requests into
    the trace store by sending a `traceparent` header, which turns the trace volume into a
    client-controlled quantity. Errors do not need tracing to be found: every request has
-   an access record. The first week's Tempo block growth decides whether to raise the
-   rate (task 6.2).
+   an access record. The first week's exported span count, measured at Alloy, and the
+   Tempo owner's storage figure decide whether to raise the rate (tasks 6.1, 6.2).
 
-9. **A platform dashboard adapted from the v1.5.0 upstream dashboard.** File
-   `config/grafana/dashboards/agentgateway.json`, uid `agentgateway` (no collision with
-   the three existing dashboards). The Kubernetes variables are replaced by `identity`,
-   `gen_ai_request_model` and `env`; the pod CPU and memory panels are dropped. Rows:
-   client view (p50 and p95 first-token latency from
-   `agentgateway_gen_ai_server_time_to_first_token_bucket`, request duration, 4xx and 5xx
-   ratio, per-identity request rate), tokens (by identity, model and
-   `gen_ai_token_type`), rejections (by `reason`, which covers budget and rate-limit
-   refusals), process (`agentgateway_config_synchronized`, `agentgateway_build_info`,
-   `agentgateway_requests_shed_total`), access records (Loki
-   `{service="agentgateway", signal="access-log"}`) and traces (Tempo search for
-   `service.name=agentgateway`, present only when traces are enabled). The JSON records
-   the upstream path and commit it was adapted from (Apache-2.0). This dashboard carries
-   the client-view row that the gateway change's scenario "Client-view latency on the
-   dashboard" names; the inference dashboard from `inference-telemetry-production` task
-   3.1 links to it rather than duplicating its panels. Alternative rejected: importing the
-   upstream JSON unchanged, because its variables resolve empty on a standalone gateway.
+9. **Two platform dashboards adapted from the v1.5.0 upstream dashboard; the client
+   view is its own dashboard** (Joe, 2026-09-27: "The gateways client-view should be a
+   separate dashboard"). Both drop the Kubernetes variables for `identity`,
+   `gen_ai_request_model` and `env`, drop the pod CPU and memory panels, and record the
+   upstream path and commit they were adapted from (Apache-2.0).
+   - `config/grafana/dashboards/agentgateway-client-view.json`, uid
+     `agentgateway-client-view`: p50 and p95 first-token latency from
+     `agentgateway_gen_ai_server_time_to_first_token_bucket`, request duration, 4xx and
+     5xx ratio, per-identity request rate. This is the dashboard the gateway change's
+     scenario "Client-view latency on the dashboard" is proved against; it is not a row
+     on `inference-telemetry-production`'s inference dashboard.
+   - `config/grafana/dashboards/agentgateway.json`, uid `agentgateway`: tokens (by
+     identity, model and `gen_ai_token_type`), rejections (by `reason`, which covers
+     budget and rate-limit refusals), process (`agentgateway_config_synchronized`,
+     `agentgateway_build_info`, `agentgateway_requests_shed_total`), access records (Loki
+     `{service="agentgateway", signal="access-log"}`) and a trace search through a
+     dashboard variable of datasource type `tempo`, so the JSON names no Tempo
+     datasource uid that the separate Tempo work has not yet chosen.
+   Neither uid collides with the three existing dashboards. Alternative rejected:
+   importing the upstream JSON unchanged, because its variables resolve empty on a
+   standalone gateway; one dashboard with a client-view row, superseded by Joe's
+   decision.
 
 10. **The Alloy configuration becomes a directory.** `config/config.alloy` moves to
     `config/alloy/containers.alloy` unchanged except that the `cluster` external label
@@ -445,8 +456,9 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     deploy, when the gateway target is
     declared, requires `up{job="agentgateway"} == 1`; when OTLP logs are enabled, a Loki
     line under `{service="agentgateway", signal="access-log"}` within ten minutes of the
-    gateway's last deploy; when traces are enabled, a Tempo search hit for
-    `service.name=agentgateway`. Each check extends the existing
+    gateway's last deploy; when traces are enabled and `o11y_tempo_query_url` is declared,
+    a search on that Tempo query endpoint returning a `service.name=agentgateway` trace
+    newer than the gateway's last deploy. Each check extends the existing
     `tasks/verify-o11y-metrics.yml` pattern.
 
 12. **Team membership is declared on every identity and enforced twice.** Each
@@ -472,10 +484,11 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     `agw_team_identities` list, because a per-identity field travels with the identity
     through rotation and revocation.
 
-13. **Content expires after 30 days, by a scheduled prune.** v1.5.0 prunes nothing
-    (Context), and prompts can carry pasted secrets, so rows cannot live forever.
+13. **Content expires after 90 days, by a scheduled prune** (Joe, 2026-09-27: "Let's
+    keep prompts for 90 days"). v1.5.0 prunes nothing (Context), and prompts can carry
+    pasted secrets, so rows cannot live forever.
     `prune-agentgateway-request-logs.yml` deletes `request_logs` rows whose
-    `completed_at` is older than `agw_request_log_retention_days` (default 30); the
+    `completed_at` is older than `agw_request_log_retention_days` (default 90); the
     payload rows go with them by cascade. It runs daily from a `schedule:` declared in
     `platform/semaphore/templates.yml`, the way the tududi token refresh does
     (`templates.yml:404-405`), executes inside the database container through the
@@ -484,10 +497,10 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     two days, which catches a silently stopped schedule. Any future backup of this
     database excludes `request_log_payloads` data (for example `pg_dump
     --exclude-table-data`); a VM-level backup that captures the disk is checked and its
-    retention recorded (task 1.12). Alternatives rejected: a longer retention, because
-    thirty days is enough to review a month of prompting and a leaked secret lives no
-    longer than that; pruning only payload rows, because the metadata row is also
-    per-request personal data with no use after the budget window.
+    retention recorded (task 1.12). Alternatives rejected: indefinite retention, because
+    a secret pasted into a prompt would then live forever; 30 days (this design's
+    earlier default), superseded by Joe's 90; pruning only payload rows, because the
+    metadata row is also per-request personal data.
 
 ## Risks / Trade-offs
 
@@ -495,7 +508,7 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
   local Semaphore deploy runs the rendered config on the pinned binary before any
   production deploy; BATS asserts the deprecated blocks are gone and the identity field
   is present in both the parent and OTLP field lists.
-- [Prompts with pasted secrets sit in the gateway database for up to 30 days, readable by
+- [Prompts with pasted secrets sit in the gateway database for up to 90 days, readable by
   platform admins and by anyone holding the database password] → retention and prune
   (decision 13), admin-only UI access, the handout notice (decision 5); a secret found in
   a prompt is rotated, and the row can be purged at once with a zero-day prune run.
@@ -515,8 +528,9 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
   the issuance task sets ownership for the gateway's container user. unverified: how
   v1.5.0 reports an unreadable client key (task 3.8 observes it); the o11y deploy's
   log-receipt check fails closed either way, because no record arrives.
-- [Tempo 3.0 is a new major line] → pinned by digest; retention and storage keys are
-  checked against the 3.0.3 reference before the first deploy (task 5.1).
+- [The Tempo endpoint does not exist yet, or its address or transport changes] → trace
+  export renders only when the endpoint is declared; the o11y deploy's receipt check
+  fails loudly when spans stop arriving; retargeting is one inventory value.
 - [`otelcol.exporter.loki` line format is not yet observed] → task 3.7 records the line
   a real record produces before the dashboard's log queries are written.
 
@@ -529,20 +543,17 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
 2. Metrics in production: stats bind, firewall, probe, declaration, dashboard.
 3. OTLP logs: local-dev plaintext first, then production over mutual TLS once the
    internal CA issues both leaves.
-4. Traces: after the estate change records its gates, enable Tempo and the gateway's
-   tracing, locally then in production; measure a week; set the rate and retention.
+4. Traces: once the separate Tempo work publishes its endpoint and the estate change
+   records its gates, declare the endpoint, enable the gateway's tracing, locally then in
+   production; measure a week; set the rate.
 
 Rollback is in `proposal.md`.
 
 ## Open Questions
 
-Decided 2026-09-27 by Joe (no longer open): Tempo lives in the o11y stack (decision 3);
-`clientSampling` is off and new traces are sampled at 10 percent (decision 8); team
-content is kept, non-team content is not (decisions 5, 12, 13).
-
-Still open:
-
-- Whether the `agentgateway` dashboard's client-view row satisfies the gateway change's
-  scenario wording ("the inference dashboard's client-view row") or the row must also be
-  embedded in `inference-telemetry-production`'s dashboard. Either answer leaves this
-  change's tasks unchanged except task 4.3's link-versus-embed step.
+None open. Decided 2026-09-27 by Joe: team content is kept, non-team content is not
+(decisions 5, 12); prompts are kept for 90 days (decision 13); the legacy shared key and
+the skynet identity are used only by the uhstray.io team (task 1.14); Tempo is deployed
+by separate work and this change integrates with its endpoint (decision 3);
+`clientSampling` is off with 10 percent sampling (decision 8); the gateway client view is
+a separate dashboard (decision 9).
