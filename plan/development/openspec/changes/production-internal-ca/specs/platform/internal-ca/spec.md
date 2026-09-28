@@ -65,25 +65,9 @@ local-dev and production.
 A leaf issued with the server profile MUST NOT be usable for client authentication, and a
 leaf issued with the client profile MUST NOT be usable as a server certificate. Production
 issuance SHALL use provisioners separate from the bootstrap provisioner, each limited to
-the production leaf lifetime. Because every client-profile leaf chains to the same root,
-the gateway MUST also admit a request only when the presented client certificate carries,
-among its subject alternative names, the name of a client leaf on the gateway's declared
-allowlist. The allowlist SHALL name only declared client-profile leaves, and MUST default
-to Caddy's leaf alone.
-
-#### Scenario: Another client leaf is refused at the gateway
-- WHEN a client presents a client-profile leaf from the production CA whose subject
-  alternative names include no name on the gateway's allowlist
-- THEN the gateway refuses the request, although the TLS handshake completes
-
-#### Scenario: An allowlisted non-Caddy client is served
-- WHEN the gateway's own verification probe presents the declared verifier client leaf
-  from the gateway host, with the verifier on the allowlist
-- THEN the handshake completes and the request reaches the gateway's key check
-
-#### Scenario: An undeclared allowlist entry is refused at render
-- WHEN the gateway's allowlist names a leaf that is not a declared client-profile leaf
-- THEN the gateway deploy fails before restarting the gateway and names the entry
+the production leaf lifetime. Every client-profile leaf SHALL be declared by name and
+subject alternative names, so that a consumer admitting clients by name has one list to
+read.
 
 #### Scenario: A server leaf is refused as a client
 - WHEN a client presents a server-profile leaf from the production CA to a listener that
@@ -104,17 +88,18 @@ root to the public repository.
 - THEN the bundle files on both hosts are byte-identical and their root fingerprint equals
   the CA's
 
-### Requirement: Leaves are renewed on a schedule and the new certificate is served
-A Semaphore template on a schedule declared as code SHALL re-issue every declared leaf
-whose remaining lifetime is below one third of its total, replace it atomically in a
-mounted directory, run the leaf's declared reload action, and MUST fail the run unless
-the new certificate is proven in use on the TLS path its profile serves. A server leaf is
+### Requirement: Leaves are renewed on a schedule and the new certificate is in use
+A Semaphore template on a schedule declared as code SHALL re-issue every declared leaf on a
+consumer host when any leaf on that host has less than one third of its lifetime left,
+replace each atomically in a mounted directory, run the host's declared reload action
+once, and MUST fail the run unless each new certificate is proven in use. A server leaf is
 proven on the consumer's serving listener, which MUST present the new serial. A client
-leaf is proven on the peer that verifies it: a request sent through the client after
-the reload action MUST complete its mutual TLS handshake with that peer, and the
-certificate the peer records for that request MUST match the fingerprint of the new
-leaf read from the client host's file; the client's own listening port is never the
-check. A leaf outside its renewal window SHALL be left unchanged.
+leaf whose user opens its files on each call is proven by one request through the
+gateway's shared probe path presenting the new files. A client leaf held by a long-running
+process is proven by a reload that loads the files from the mounted directory, the serial
+there matching the one issued, and a request along the process's path completing. The
+client's own listening port is never the check. A host whose leaves are all outside their
+renewal window SHALL be left unchanged.
 
 #### Scenario: A server leaf inside its window is renewed and served
 - WHEN the renewal template runs while a server leaf has less than a third of its
@@ -122,13 +107,17 @@ check. A leaf outside its renewal window SHALL be left unchanged.
 - THEN a new certificate with a new serial is written, the consumer's serving listener
   presents that serial, and requests through the consumer succeed throughout
 
-#### Scenario: Caddy's client leaf is renewed and presented to the gateway
+#### Scenario: Caddy's client leaf is renewed and loaded
 - WHEN the renewal template runs while Caddy's client leaf has less than a third of its
   lifetime left
-- THEN a new certificate is written on the Caddy host, a probe request through Caddy
-  to the gateway completes after Caddy's reload, the client certificate the gateway
-  records for that probe matches the new leaf's fingerprint, and requests through
-  Caddy succeed throughout
+- THEN a new certificate is written on the Caddy host, a forced Caddy reload succeeds,
+  the serial in the mounted `current/` directory equals the issued one, a request through
+  Caddy to the gateway completes, and requests through Caddy succeed throughout
+
+#### Scenario: A per-call client leaf is renewed and proven through the probe path
+- WHEN the renewal template renews the gateway host's verifier leaf
+- THEN one request through the shared probe path from the gateway host, presenting the
+  new files, completes
 
 #### Scenario: A fresh leaf is left alone
 - WHEN the renewal template runs while every leaf has more than a third of its lifetime
@@ -137,9 +126,11 @@ check. A leaf outside its renewal window SHALL be left unchanged.
 
 ### Requirement: Expiry is alerted before it causes an outage
 The renewal run SHALL publish each leaf's and the intermediate's expiry to the o11y stack,
-and Grafana MUST alert when any leaf has fewer than seven days left, when the intermediate
-has fewer than ninety days left, or when no renewal result has arrived for thirty-six
-hours.
+and Grafana MUST alert when any leaf has fewer than seven days left or when the
+intermediate has fewer than ninety days left. One shared rule SHALL alert for every
+scheduled job in a declared list whose newest result line is older than the silence it
+declares; the renewal job declares thirty-six hours, and every other scheduled job that
+joins the list uses the same rule rather than one of its own.
 
 #### Scenario: A leaf near expiry raises an alert
 - WHEN a declared leaf's remaining lifetime falls below seven days
@@ -147,7 +138,7 @@ hours.
 
 #### Scenario: A silent renewal job raises an alert
 - WHEN no renewal result reaches Loki for thirty-six hours
-- THEN the renewal-silent alert fires
+- THEN the scheduled-job-silent alert fires naming the renewal job
 
 ### Requirement: The CA material is backed up and restorable to the same root
 The platform SHALL back up the CA's certificates, encrypted keys and configuration from

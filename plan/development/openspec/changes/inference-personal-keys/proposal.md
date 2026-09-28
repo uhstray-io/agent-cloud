@@ -4,9 +4,10 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>. Decisions by Joe, 2026-09-27.
 
 Companion changes: `inference-gateway-agentgateway` (this change extends its key
 rendering, budgets and telemetry; it must be deployed first), plus the OpenBao and
-Authentik services this change configures. Related, open: agent-cloud PR #289 (the
-Cloudflare skip rule that lets OIDC relying parties reach Authentik's machine endpoints),
-which the deferred JWT path below would depend on.
+Authentik services this change configures. Related: agent-cloud PR #289 (the
+Cloudflare skip rule that lets OIDC relying parties reach Authentik's machine endpoints,
+merged to `dev` as `platform/infra/cloudflare/waf.tf:129-135`), which the deferred JWT
+path below would depend on, as would this change's own OpenBao OIDC mount.
 
 ## Why
 
@@ -55,21 +56,27 @@ agent and operator identities. It does not work for a team:
 - **Reconcile from group membership.** A new Semaphore template, `Reconcile Inference
   User Keys`, lists the group's active members and converges OpenBao to it: mint for
   new members, rotate aged keys, drop expired previous keys, revoke keys of anyone no
-  longer eligible, then re-render the gateway only when the set of enrolled keys
-  changed. It runs hourly on a schedule declared in `templates.yml`.
+  longer eligible, then import the gateway deploy, which restarts the gateway only when
+  its rendered configuration changed (the gateway change's change-aware deploy). It runs
+  hourly on a schedule declared in `templates.yml`, and the platform's shared
+  scheduled-job-silent alert watches it.
 - **30-day rotation with a grace overlap, enforced.** Every key has a hard 30-day
-  lifetime written into its record. The reconcile mints the successor when the
-  current key is 27 days old; both are valid until the old one's expiry. The gateway
+  lifetime written into its record. While a key change restarts the gateway, keys
+  rotate together on one cohort day every 27 days, so rotation restarts the gateway a
+  fixed number of times per cycle; if the gateway applies key changes without a
+  restart, each key's successor is minted on its own day 27. Both keys are valid until
+  the old one's expiry. The gateway
   deploy renders a key only while its recorded expiry is in the future and refuses a
   record with no parseable expiry, so expiry holds even if nobody remembers it — the
   same principle as `legacy_shared_expires` in the gateway change (its task 5.1).
 - **Offboarding is removal from the group.** A user removed from `inference-users`, or
   deactivated in Authentik, loses their key on the next reconcile, at most one hour
   later. The record is deleted with all its versions.
-- **The gateway UI is read-only.** Keys are never created or edited in the gateway UI.
-  The rendered config is already mounted read-only (`compose.yml:48`); this change also
-  sets the gateway's UI read-only switch (`UI_READ_ONLY`, per Joe; the variable name is
-  checked against the v1.5.0 binary before it is relied on).
+- **The gateway UI stays read-only.** Keys are never created or edited in the gateway UI.
+  The rendered config is mounted read-only (`compose.yml:48`), and the gateway change's
+  task 1.10 sets `UI_READ_ONLY`, which v1.5.0 reads to make its config store read-only
+  (`crates/agentgateway/src/config.rs:390-392` at tag v1.5.0). This change depends on
+  that task and does not set the switch again.
 - **Per-user observability and audit.** The gateway already labels every metric and
   access-log line with `apiKey.name` (`config.yaml.j2:44-56`), so `user-<name>` appears
   with no config change; the inference dashboard gains a per-user usage row. OpenBao
@@ -79,7 +86,8 @@ agent and operator identities. It does not work for a team:
 - **JWT at the gateway: considered and deferred.** Accepting Authentik access tokens
   directly (`jwtAuth` permissive composed with an optional `apiKey`) is possible at
   v1.5.0 (Joe, 2026-09-27) but gives JWT callers no personal budget, requires the
-  gateway to fetch Authentik's JWKS through Cloudflare (PR #289, still open), and does
+  gateway to fetch Authentik's JWKS through Cloudflare (the skip rule from PR #289,
+  merged to `dev`), and does
   not fit the SDK clients the team uses, which hold a static bearer key. Recorded in
   design decision 11 with the conditions for revisiting.
 
@@ -108,10 +116,12 @@ agent and operator identities. It does not work for a team:
 - OpenBao: new policy template `inference-user-self.hcl.j2` under
   `platform/services/openbao/deployment/config/policies/`; the orchestrator policy
   file gains the user-key paths and the new auth mount; a new
-  `configure-openbao-inference-oidc.yml` (auth mount, config, role) and
-  `apply-policy-inference-users.yml`; an audit device playbook.
+  `configure-openbao-inference-oidc.yml` (auth mount, config, role) through a shared
+  `tasks/configure-bao-oidc-mount.yml` extracted from `bootstrap-local-dev.yml`, which
+  calls it too; `tasks/apply-openbao-policy.yml` made render-aware for `.hcl.j2`, with
+  `apply-openbao-policies.yml` switched to it; an audit device playbook.
 - Gateway: `deploy-agentgateway.yml` (read user records, fail closed on a malformed
-  one), `config.yaml.j2` (render user keys), `compose.yml` (UI read-only), BATS.
+  one), `config.yaml.j2` (render user keys), BATS.
 - New playbook `reconcile-inference-user-keys.yml`; `platform/semaphore/templates.yml`
   (the scheduled template and its Dev variant).
 - o11y: an inference dashboard row per user identity.

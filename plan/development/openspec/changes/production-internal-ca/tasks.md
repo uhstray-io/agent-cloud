@@ -108,80 +108,66 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       consumer. The gateway's certificate directory is mounted as a directory in
       production and in the local overlay (replacing the single-file bundle mount), and
       its key is readable by the container's non-root user
-- [ ] 5.3 Hand to the companion change `inference-gateway-agentgateway` task group 6:
-      gateway listeners serve `current/` with `tls.root` set to the bundle, and both
-      gateways carry a `gateways.<name>.authorization.rules[]` `require` rule
-      `source.subjectAltNames.exists(n, n in [<allowlist>])` (design decision 5), the list
-      rendered from `agw_client_cert_allowlist` (leaf names resolved to their declared
-      SANs; default `caddy` only; an entry naming no declared client leaf fails the
-      render); Caddy's two inference blocks carry `tls_server_name`,
-      `tls_trust_pool file` and `tls_client_auth`. Verify whether each follows the
-      symlink swap and record the reload action per leaf. Confirm in local-dev that the
-      rule renders beside the `llm` shortcut and the gateway starts with it, and record
-      the status a failed rule returns and whether it is evaluated before API-key
-      authentication; if the rule cannot be rendered there, fall back to decision 5's
-      dedicated client-issuing hierarchy and record why. Add an access-log field
-      `client_cert_sha256` from `sha256.encode(source.certificate)` (agentgateway
-      v1.5.0 `schema/cel-functions.md:37`, `schema/cel.md:121`) for task 6.1's
-      client-leaf check, listed in both `frontendPolicies.accessLog.add` and
-      `frontendPolicies.accessLog.otlp.fields.add`: a set `otlp.fields` replaces the
-      parent list instead of extending it (`schema/config.md:18224`), and
-      `agentgateway-observability` task 1.2 sets one, so a field in the parent alone
-      never reaches Loki
+- [ ] 5.3 Hand the issued files to the companion change and nothing more: its task 6.1
+      owns the gateway listeners' TLS, the client allowlist rule and its render guard, and
+      its task 6.2 owns Caddy's transport. Here, confirm each consumer's leaf and key sit
+      at `current/` in the directory its container mounts, with the key readable by the
+      container's user, and record each leaf's reload action in the site-config
+      declaration: none for `agw-verifier` and `bench` (their users open the files per
+      call), `caddy reload --force` for `caddy` if task 5.1 found a directory mount and the
+      container restart otherwise, and the gateway server leaf's action from task 6.3
 - [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
       bundle delivered through the agreed channel, with the SAN the gateway's model
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
       `--ssl-keyfile`, `--enable-ssl-refresh`); nothing on the nodes is changed from here
-- [ ] 5.5 Validation gate: scenario "A client leaf authenticates", plus the companion's
-      gate that a request without a client certificate is refused at the gateway; a
-      request presenting the `agw-verifier` leaf from the gateway host is served, proving
-      scenario "An allowlisted non-Caddy client is served"; a throwaway client-profile
-      leaf declared with a SAN on no allowlist (issued as in 4.7, then removed) completes
-      the handshake and its request is refused, proving scenario "Another client leaf is
-      refused at the gateway"; the companion's BATS refusal of an allowlist entry naming
-      no declared client leaf proves scenario "An undeclared allowlist entry is refused at
-      render"
+- [ ] 5.5 Validation gate: scenario "A client leaf authenticates"; the gateway-side
+      scenarios (no client certificate refused, another client leaf refused, allowlisted
+      verifier served, undeclared entry refused at render) are proven by the companion's
+      task 6.4
 
 ## 6. Renewal and expiry alerting
+- [ ] 6.0 Extract the conformance collector's inline Loki push
+      (`collect-service-conformance.yml:271-285`) into `platform/playbooks/tasks/push-loki-lines.yml`,
+      whose inputs are the Loki URL and the streams, and whose caller decides whether a
+      failed push fails the run (the collector keeps its `failed_when: false`); switch the
+      collector to it in the same change; BATS asserts the collector includes the task and
+      carries no inline push. The renewal run, the personal-key reconcile and the benchmark
+      results all push through it
 - [ ] 6.1 `renew-internal-certs.yml`: for every declared leaf, read the current
-      certificate's expiry on the consumer; re-issue through task 4.1 when less than a
-      third of its lifetime remains; run the declared reload action; then prove the new
-      leaf in use on its own TLS path. Server profile: connect to the consumer's serving
-      listener and fail on a serial mismatch. Client profile: read the new leaf's
-      fingerprint from the file on its consumer host, send one probe request from that
-      host along the leaf's own path (`caddy`: through Caddy's inference route;
-      `agw-verifier`: a `uri` call from the gateway host to its published port; `bench`:
-      from the benchmark VM to the gateway listener), fail unless it completes (the
-      mutual TLS handshake and the allowlist rule both passed), and fail unless the
-      gateway's access record for that probe, read from Loki under
-      `{service="agentgateway", signal="access-log"}` at or after the probe's send time,
-      carries a `client_cert_sha256` equal to the new leaf's. Caddy's own listening port
-      is never checked for its client leaf. The client-leaf check therefore depends on
-      `agentgateway-observability` section 3 delivering access records to Loki in
-      production; before that, the check fails naming the missing dependency rather than
-      passing on the handshake alone. Push one Loki line per
-      leaf and one for the intermediate (the conformance collector's push shape). Emit
-      the step result. unverified: the exact PEM text the gateway hashes (v1.5.0
-      re-encodes it from DER, `crates/agentgateway/src/transport/tls.rs:1279-1283`, line
-      endings not checked); the local-dev drill records it so the Caddy-side digest is
-      computed over the same encoding
+      certificate's expiry on the consumer; when any leaf on a consumer host has less than
+      a third of its lifetime left, re-issue every declared leaf on that host through task
+      4.1, then run that host's reload action once (design decision 8). Prove each renewed
+      leaf in use: a server leaf by connecting to the consumer's serving listener and
+      failing on a serial mismatch; `agw-verifier` and `bench` by one request through the
+      gateway probe path (`inference-gateway-agentgateway` task 6.1a) from the leaf's host
+      with the new files, which must complete; `caddy` by `caddy reload --force` in the
+      Caddy container succeeding, the serial in `current/` on the Caddy host equalling the
+      issued one, and one request through Caddy's inference route completing. Caddy's own
+      listening port is never checked for its client leaf. Push through
+      `tasks/push-loki-lines.yml` one line per leaf and one for the intermediate, plus the
+      run's scheduled-job result line (task 6.4). Emit the step result
 - [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
       code; run `setup-templates.yml`
 - [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
       is inside its window, run the template, and confirm the gateway's serving listeners
-      present the new server serial, the gateway records each allowlisted client leaf's
-      new fingerprint on a probe along that leaf's path, and no request fails on the
-      public path during the run (a paced request loop through the public hostname)
-- [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, no renewal
-      line for thirty-six hours; deploy o11y through Semaphore
+      present the new server serial (recording whether the gateway's file watch picked up
+      the swap with no restart, which fixes its reload action), each client leaf passes its
+      proof in 6.1, and no request fails on the public path during the run (a paced
+      request loop through the public hostname)
+- [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, and the
+      shared "Scheduled job silent" rule (design decision 10) over a declared list of
+      scheduled jobs and the longest silence each may keep; this change declares
+      `renew-internal-certs` at thirty-six hours. Each listed job pushes one result line per
+      run under the bounded `job` label through `tasks/push-loki-lines.yml`. Deploy o11y
+      through Semaphore
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
       expiry alert; pausing the schedule past the window fires the silent-job alert (or the
       rule's `for` window shortened for the drill and restored); both reach the contact
       point, then the canary is removed
 - [ ] 6.6 Validation gate: scenarios "A server leaf inside its window is renewed and
-      served", "Caddy's client leaf is renewed and presented to the gateway", "A
-      fresh leaf is left alone", "A leaf near expiry raises an alert" and "A silent
-      renewal job raises an alert"
+      served", "Caddy's client leaf is renewed and loaded", "A per-call client leaf is
+      renewed and proven through the probe path", "A fresh leaf is left alone", "A leaf
+      near expiry raises an alert" and "A silent renewal job raises an alert"
 
 ## 7. Backup and restore
 - [ ] 7.1 `backup-step-ca-to-site-config.yml`: read the CA's certificates, encrypted keys

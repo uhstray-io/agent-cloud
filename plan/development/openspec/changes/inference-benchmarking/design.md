@@ -127,7 +127,10 @@ return 524 (dgx-spark `docs/LOAD-TESTING-2026-09-14.md`).
 
 **The platform** (this repository): Prometheus runs with the remote-write receiver
 enabled (`platform/services/o11y/deployment/compose.yml:25`); the conformance collector
-pushes structured lines to Loki (`platform/playbooks/collect-service-conformance.yml:274`);
+pushes structured lines to Loki inline in its own play
+(`platform/playbooks/collect-service-conformance.yml:271-285`), which
+`production-internal-ca` extracts into the shared `tasks/push-loki-lines.yml` that this
+change uses;
 Semaphore templates declare `survey_vars` and must never carry secrets
 (`platform/semaphore/templates.yml:10-11`); `apply-firewall.yml` takes
 `firewall_allow_rules` and `firewall_deny_egress`; `tasks/site-config-clone.yml` and
@@ -153,11 +156,16 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    harness agentgateway's suite uses and its `shared_prefix` data type and Poisson stages
    express agentgateway's workload directly, so our results are comparable in method.
    `guidellm` runs the calibration sweep that finds the saturation rate the ladder is
-   scaled to (decision 3). `vllm bench serve` repeats one ladder per campaign as a
-   cross-check, with `--percentile-metrics ttft,tpot,itl --metric-percentiles 50,90
-   --save-result`, run once per rate in a loop because it takes a single rate per
-   invocation; a disagreement beyond the tolerance in decision 4 between it and
-   inference-perf voids the campaign until explained. dgx-spark's `bench_c1c6.py` runs
+   scaled to (decision 3). `vllm bench serve` is a cross-check of how inference-perf
+   counts its latencies, so it runs only when that could have changed: when the
+   inference-perf or `vllm bench serve` image digest differs from the last cross-checked
+   pair. It then runs two stages of the scaled shape's ladder, 0.5 and 1.0 times
+   `R_sat`, against direct vLLM, with `--percentile-metrics ttft,tpot,itl
+   --metric-percentiles 50,90 --save-result`, one invocation per rate because it takes a
+   single rate per invocation; a disagreement beyond the tolerance in decision 4 voids
+   the campaign until explained. Alternative rejected: a full cross-check ladder every
+   campaign, because with both digests unchanged it repeats a comparison whose answer is
+   already recorded, at the GPU time of a whole ladder. dgx-spark's `bench_c1c6.py` runs
    its closed-loop C1 to C8 waves at a pinned dgx-spark commit, because it is the only
    tool whose earlier results exist; each campaign's C1, C2 and C4 aggregate tokens per
    second are compared with 44.3, 70.5 and 100.6 from 2026-09-15.
@@ -183,15 +191,27 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    nine times it, on hardware two orders of magnitude larger. Copying the absolute rates
    would put every stage far past this endpoint's knee, which is about 0.22 to 0.32
    requests per second for the code-reasoning prompts (dgx-spark load test). So the
-   campaign first runs a guidellm sweep for the workload shape to measure a saturation
-   rate `R_sat`, bounded above by 1 request per second. The measured ladder is then
-   `0.25` (warm-up, repeated and excluded), `0.25, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3` times
-   `R_sat`, finer near the knee where the gateway limits are set, and stopping at 1.3
-   because past saturation an open-loop stage only grows a queue (the load test found
-   depth raises latency, not errors). For the code-reasoning shape and an `R_sat` of 0.3
-   this is 0.075 to 0.39 requests per second, sub-1 throughout. Stages last 600 seconds
-   by default; a stage with fewer than 50 completed requests reports its percentiles
-   flagged as low-sample rather than hiding them.
+   campaign needs a saturation rate `R_sat` for the workload shape, bounded above by 1
+   request per second, measured by a guidellm sweep. A stored `R_sat` is reused while the
+   inputs that set it are unchanged: the workload file digest, the served model and
+   profile as `/v1/models` reports them, and the guidellm image digest, all recorded in
+   the calibration run's manifest. The sweep runs again only when any of them differs,
+   because a sweep costs a window of GPU time and does not replay its own rates exactly
+   (Context, "Seeds and replay"). The measured ladder is then `0.25, 0.5, 0.7, 0.85, 1.0,
+   1.15, 1.3` times `R_sat`, finer near the knee where the gateway limits are set, and
+   stopping at 1.3 because past saturation an open-loop stage only grows a queue (the load
+   test found depth raises latency, not errors). For the code-reasoning shape and an
+   `R_sat` of 0.3 this is 0.075 to 0.39 requests per second, sub-1 throughout. The
+   warm-up is its own stage before the ladder, at `0.25` times `R_sat` (a rate the ladder
+   repeats, so it is excluded) and lasting 120 seconds; it does not reach every
+   shared-prefix group at that rate, and the prefix-cache hit ratio task 3.1 reads during
+   the first measured stage shows whether that matters. Each measured stage lasts long
+   enough to send its sample target at its rate: duration = `N_min / rate`, with `N_min`
+   = 50 requests, rounded up to ten seconds, so the lowest stage above runs about 670
+   seconds and the highest about 130. A stage that still completes fewer than 50 requests
+   (past saturation, arrivals outrun completions) reports its percentiles flagged as
+   low-sample rather than hiding them. Alternative rejected: a fixed 600-second stage,
+   because it over-samples the fast stages and still under-samples the slowest ones.
    Alternative rejected: agentgateway's absolute ladder, for the reason above.
    Alternative rejected: a fixed sub-1 ladder with no calibration, because `R_sat` moves
    with the workload shape and the serving profile, and a stale ladder silently measures
@@ -199,16 +219,19 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
 
 4. **Two workload shapes, both committed files.** `agw-reference` is agentgateway's
    shape exactly (150 groups of 5, 6,000 system, 1,200 question, 1,000 output), kept for
-   method comparability and run at its own calibrated ladder. `agw-reference-scaled`
+   method comparability. It runs once per serving profile, at its own calibrated
+   ladder, as the comparability record, and is not part of the repeated campaigns, the
+   A/B or the capacity run. `agw-reference-scaled`
    keeps the group structure and divides every length by four (1,500 system, 300
    question, 250 output): the prefix-to-question-to-output ratio is preserved and a
    stage collects about four times the samples in the same time, which matters when
    `R_sat` for the full shape is a small fraction of a request per second (unverified
    estimate: a 1,000-token output at about 60 tokens per second single-stream is over 16
    seconds per request before queueing). The scaled shape is the default for the A/B and
-   the capacity run. Tolerance between tools and between repeated runs is recorded per
-   shape after the first three campaigns (task 3.4); until then a difference under 10
-   percent in a p50 is not reported as a change.
+   the capacity run, and the only shape the repeated campaigns run. Tolerance between
+   tools and between repeated runs is recorded for the scaled shape after its first three
+   campaigns (task 3.4); until then a difference under 10 percent in a p50 is not
+   reported as a change.
 
 5. **A dedicated VM that stays admitted at the vLLM API.** The runner is an
    Infrastructure-tier VM in site-config `proxmox/vm-specs.yml`, sized for client load
@@ -239,46 +262,44 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    SHA with its script digest recorded. Alternative rejected: pip installs on the host,
    because the tool version would then drift with the host rather than the manifest.
 
-7. **Results: an immutable bundle, a durable private copy, a summary in Loki.** Each run
-   writes `<run-id>/` on the VM (owner-only, never overwritten): `manifest.json`, each
-   tool's native output, the rendered (redacted) configs, and `summary.json` in one
-   schema across tools. The manifest carries: run id, requester, template, target,
-   workload shape and its file digest, ladder and stage durations, tool names and
-   versions, image digests, the dgx-spark harness commit, this repository's commit, the
-   served model and profile name as reported by `/v1/models` and the gateway version when
-   the target is the gateway, the window it ran in, abort outcome, and per-stage sample
-   counts. For replay it also carries every seed the tools use (for inference-perf
-   `load.base_seed` and `data.shared_prefix.seed`; for `vllm bench serve` `--seed`; for
-   guidellm its `seed` and the Poisson `random_seed`; for dgx-spark's harness `--seed`),
-   the sha256 of every dataset or prompt file, and the sha256 of each rendered
-   configuration after redaction. The playbook generates each seed once per campaign and
-   writes it into the configuration, because inference-perf's default seed is the clock
-   and its shared-prefix seed is unset (Context, "Seeds and replay"). A re-run from a
-   manifest renders from the recorded seeds and refuses when any configuration or file
-   digest differs from the stored one. What a re-run may still change: run id, time,
-   window, results, and inference-perf's realised arrival times, because its Poisson timer
-   is unseeded at `v0.7.0`; the stage rates and durations that shape those arrivals are in
-   the configuration digest. Alternative rejected: storing and replaying the full
-   generated request list and arrival schedule, because the seeds reproduce the prompts
-   for every pinned tool and the arrival schedule for all but one, at a fraction of the
-   bundle size; if tolerance work (task 3.4) shows inference-perf's arrival variance
-   matters, its `trace_replay` load type, which replays a request timing trace
-   (`inference_perf/config/loadgen/config.py:28`, `179-180`), is the follow-up. The bundle
-   is pushed on a new branch per run to the private site-config
-   repository under `benchmarks/<run-id>/`, through the existing clone and push tasks,
-   with a size cap; per-request raw data beyond the cap stays on the VM for a declared
-   retention and the manifest says so. One summary line per stage goes to Loki with
-   bounded labels (`service`, `env`, `target`, `tool`, `shape`) and the run id in the line
-   body; the dashboard reads those lines and overlays gateway and vLLM series for the same
-   window. Alternative rejected: this public repository, because bundles carry internal
-   hostnames and are data, not code. Alternative rejected: dgx-spark's `results/` as the
-   default, because it is the node owner's record and would need a second write key in
-   OpenBao; dgx-spark's own placement bundles stay there and our manifests reference
-   them by run id. Alternative rejected: Prometheus remote write for the summary, because
-   a playbook would need a protobuf and snappy client for a dozen points per run, and a
-   run id as a label is unbounded cardinality. Alternative rejected for now: an object
-   store, because no bucket or credential exists for it and git carries the current size
-   (open question 1).
+7. **Results: an immutable bundle on the runner, the manifest and summary in git, a
+   summary in Loki.** Each run writes `<run-id>/` on the VM (owner-only, never
+   overwritten): `manifest.json`, each tool's native output, the rendered (redacted)
+   configs, and `summary.json` in one schema across tools. The manifest carries: run id,
+   requester, template, target, workload shape and its file digest, ladder and stage
+   durations, tool names and versions, image digests, the dgx-spark harness commit, this
+   repository's commit, the served model and profile name as reported by `/v1/models`
+   and the gateway version when the target is the gateway, the window it ran in, abort
+   outcome, and per-stage sample counts. It also records every seed the tools use (for
+   inference-perf `load.base_seed` and `data.shared_prefix.seed`; for `vllm bench serve`
+   `--seed`; for guidellm its `seed` and the Poisson `random_seed`; for dgx-spark's
+   harness `--seed`), the sha256 of every dataset or prompt file, the sha256 of each
+   rendered configuration after redaction, and the name and sha256 of every file left in
+   the bundle on the VM. The playbook generates each seed once per campaign and writes it
+   into the configuration, because inference-perf's default seed is the clock and its
+   shared-prefix seed is unset (Context, "Seeds and replay"), so two runs' inputs can be
+   compared from their manifests. Alternative rejected: a re-run mode that replays a
+   stored manifest and refuses on any digest difference, because the recorded seeds and
+   digests already make two runs comparable, and a replay path with its own refusals is
+   machinery no goal of this change needs.
+   Only `manifest.json` and `summary.json` are pushed to the private site-config
+   repository under `benchmarks/<run-id>/`, on a new branch per run, through
+   `tasks/site-config-clone.yml` and `tasks/site-config-push.yml`, reporting names only.
+   Native outputs and redacted configs stay on the VM for a declared retention; the
+   manifest names them with their digests. One summary line per stage goes to Loki
+   through `tasks/push-loki-lines.yml` with bounded labels (`service`, `env`, `target`,
+   `tool`, `shape`) and the run id in the line body; the dashboard reads those lines and
+   overlays gateway and vLLM series for the same window. Alternative rejected: pushing
+   the whole bundle to git with a size cap, because per-request output grows with every
+   run and is only needed while a result is under investigation. Alternative rejected:
+   this public repository, because manifests carry internal hostnames and are data, not
+   code. Alternative rejected: dgx-spark's `results/` as the default, because it is the
+   node owner's record and would need a second write key in OpenBao; dgx-spark's own
+   placement bundles stay there and our manifests reference them by run id. Alternative
+   rejected: Prometheus remote write for the summary, because a playbook would need a
+   protobuf and snappy client for a dozen points per run, and a run id as a label is
+   unbounded cardinality. Alternative rejected for now: an object store, because no
+   bucket or credential exists for it (open question 1).
 
 8. **Benchmark traffic through the gateway is the `bench` identity.** Added to
    `agw_clients` in site-config, minted and enrolled by the gateway deploy like any
@@ -289,7 +310,10 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    trips the budget measures the budget, not the model. Whether the budget charges input
    tokens at the full rate for cached prefixes is unverified (task 1.4). The global
    request bucket is shared with the team; a ladder whose top stage exceeds half of it is
-   refused for the same reason. Direct-target runs use the vLLM key by shared read from
+   refused for the same reason. A check that the benchmark VM reaches the gateway and is
+   attributed as `bench`, outside a run, uses the gateway probe path
+   (`inference-gateway-agentgateway` task 6.1a) from the benchmark VM with the `bench`
+   leaf. Direct-target runs use the vLLM key by shared read from
    the gateway's secret path (single custody, never copied into a new path).
 
    Once the gateway's listeners require client certificates (gateway change task 6.1),
@@ -306,7 +330,7 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    serve` `v0.30.0` does not: its TLS setting is only on or off
    (`vllm/benchmarks/serve.py:2086-2089`, with `--insecure` at lines 1985-1991), so it
    runs against the direct vLLM target only, which is where decision 1 uses it, and it
-   leaves the team survey once the gateway requires client certificates (decision 11).
+   is operator-only (decision 11).
    unverified: how inference-perf `v0.7.0` is told which CA verifies the gateway's
    server certificate; task 2.1 records it.
 
@@ -339,30 +363,27 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
     (task 5.1 checks before the first run).
 
 11. **Self-serve is one Semaphore template with a narrow survey.** "Run Team Inference
-    Benchmark" targets the gateway only, as `bench`, within the team caps, inside a
-    standing low-rate window declared in inventory. Survey (no secret fields): shape
-    (preset list), tool (`inference-perf` default, `vllm-bench`), rates (comma list or the
-    preset `calibrated`), stage seconds, output tokens, input tokens (shared-prefix
-    lengths), served model name, and a free-text label. The tool list holds only tools
-    that run the measured ladder the spec defines: inference-perf does (decision 1), and
-    `vllm bench serve` draws Poisson arrivals at burstiness 1 and yields one result per
-    stage invocation (Context), so it stays on the list only if task 2.1 confirms its
-    saved result supplies every per-stage metric, including the in-flight count, and
-    only until the gateway requires client certificates, because it cannot present one
-    (decision 8); otherwise the list is `inference-perf` alone. guidellm and dgx-spark's
-    harness stay operator-only: guidellm is the calibration sweep and dgx-harness runs
-    closed-loop waves for baseline continuity (decision 1), and neither run is the staged
-    measured ladder, so offering them would produce team results the summary schema cannot
-    report as one. The playbook refuses either tool in team mode, whatever the survey
-    sends.
+    Benchmark" targets the gateway only, as `bench`, with inference-perf only, within
+    the team caps, inside a standing low-rate window declared in inventory. Survey (no
+    secret fields): shape (preset list), rates (comma list or the preset `calibrated`),
+    output tokens, input tokens (shared-prefix lengths), served model name, and a
+    free-text label. Stage durations are not a survey field: they follow from the rates
+    (decision 3), and the total is checked against the team duration cap. inference-perf
+    is the only team tool because it is the only one that runs the measured ladder the
+    spec defines and presents a client certificate to the gateway (decision 8). The
+    other three are operator-only from the start: guidellm is the calibration sweep,
+    dgx-harness runs closed-loop waves for baseline continuity (decision 1), and `vllm
+    bench serve` is the direct-target cross-check and cannot present a client
+    certificate. The playbook refuses any other tool in team mode, whatever an extra
+    variable sends.
     Alternative rejected: separate team run types and result schemas for calibration and
     continuity runs, because teams need latency and throughput figures for their own
     shape, which the measured ladder already gives. The requester is taken from
     Semaphore's task record (unverified: which field the playbook can read at run time;
-    task 7.1 settles it). Operator templates,
-    "Run Inference Benchmark A/B" and "Run Inference Capacity Benchmark", add the direct
-    and public targets and the higher caps, and require the window. All three call one
-    playbook; the team template's wrapper refuses a `bench_mode` other than team.
+    task 7.1 settles it). Operator templates, "Run Inference Benchmark A/B" and "Run
+    Inference Capacity Benchmark", add the direct and public targets, the other tools and
+    the higher caps, and require the window. All three call one playbook; the team
+    template's wrapper refuses a `bench_mode` other than team.
 
 ## Risks / Trade-offs
 
@@ -398,7 +419,7 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
 
 1. Is site-config the right durable home for bundles, or should they go to dgx-spark's
    `results/` beside the placement bundles, or an object store? Default if unanswered:
-   site-config `benchmarks/`, with a per-bundle size cap.
+   site-config `benchmarks/`, holding each run's manifest and summary only.
 2. The benchmark windows: which hours are standing low-rate (self-serve) and how an
    operator declares a capacity window. Default: self-serve any time within team caps;
    capacity and A/B runs only in a window Joe names, recorded in inventory with its date.

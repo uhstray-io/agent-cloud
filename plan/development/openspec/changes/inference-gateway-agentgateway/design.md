@@ -228,8 +228,8 @@ production start failed (see the last item).
   certificate** (a gateway `tls.root` makes client authentication mandatory in v1.5.0,
   `types/agent.rs` 564-579 at tag v1.5.0). Refined in review: the gateway admits a
   declared allowlist of client leaves by name, Caddy's by default plus the deploy's own
-  verifier and the benchmark runner (`production-internal-ca` decisions 4 and 5; task
-  6.1 here). vLLM serves HTTPS, and the gateway verifies it
+  verifier and the benchmark runner (decision 12 and task 6.1 here; the leaves are
+  declared by `production-internal-ca` decision 4). vLLM serves HTTPS, and the gateway verifies it
   with the model's `tls` block (`root`, `hostname`), which the simplified `llm:` config
   supports directly (`types/local.rs` 819-826), so no move to routing-based config is
   needed. An `https://` base URL adds a default TLS configuration only when `tls` is unset
@@ -243,8 +243,10 @@ production start failed (see the last item).
   OpenBao: change `inference-personal-keys`. Accepting Authentik JWTs directly at the
   gateway is deferred there, because v1.5.0 attaches budgets only to API keys.
 - **UI read-only, explicitly.** The config file is mounted read-only, so a UI write already
-  fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (the source reads
-  it at `ui.rs` 52-60), so no key or policy is ever managed there.
+  fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (v1.5.0 reads it
+  at `crates/agentgateway/src/config.rs:390-392` and switches the config store to read-only;
+  `ui.rs:53` refuses writes in that mode), so no key or policy is ever managed there. Task
+  1.10 is the one place this is set; `inference-personal-keys` depends on it.
 - **Grace period.** `legacy-shared` stays valid through the gateway for 14 days after the
   route switch (`legacy_shared_expires` = switch date + 14 days), then task 5.1 applies.
 - **Benchmarking** is its own change, `inference-benchmarking`, and runs before the budgets
@@ -255,8 +257,71 @@ production start failed (see the last item).
   agentgateway (Dev), task 1622) failed: Cloudflare's managed challenge answered the
   gateway's server-side fetch of Authentik's discovery document with an HTML 403, and v1.5.0
   loads that document at startup. A Cloudflare skip rule for Authentik's machine endpoints
-  (discovery, JWKS, token, userinfo, revoke, introspect, device) fixes it (PR #289); the
-  browser endpoints stay challenged. The same path serves any later JWKS validation.
+  (discovery, JWKS, token, userinfo, revoke, introspect, device) fixes it (PR #289, now
+  `platform/infra/cloudflare/waf.tf:129-135` on `dev`); the browser endpoints stay
+  challenged. The same path serves any later JWKS validation. The skip rule is the interim
+  fix: server-side OIDC calls belong on the LAN, through a split-horizon record for the
+  IdP's hostname that answers with the Caddy host (task 7.1, waiting on hickory-dns in
+  production).
+
+### Decisions recorded 2026-09-28
+
+11. **The deploy restarts the gateway only when its inputs changed.** `deploy.sh:47-53`
+    recreates the container on every run because a changed bind-mounted file is not a
+    compose change. That was safe while a person ran the deploy; it stops being safe once
+    scheduled and imported runs call it (`inference-personal-keys` imports the deploy on
+    every hourly reconcile), because each recreate drops every in-flight stream. v1.5.0
+    watches a file config source and reloads it on change (`state_manager.rs:141-142`,
+    `150-180` at tag v1.5.0), but the single-file mount at `compose.yml:48` hides a
+    replaced file from the container, so whether a key change can apply without a restart
+    is settled by a drill (task 1.12) before either branch is built. If it can, the
+    config moves to a directory mount and only an environment change recreates. If it
+    cannot, `deploy.sh` compares the sha256 of the rendered files with a label the running
+    container was started with and recreates only on a difference or when no container is
+    running. Alternative rejected: pass the template task's `changed` result to
+    `deploy.sh`, because a deploy that fails after the render leaves the files already
+    current, so the next run would see no change and leave the stale container serving;
+    the label records what the running container actually loaded. Alternative rejected:
+    a drift detector in each caller, because every caller would reimplement it and one
+    would drift.
+
+12. **The client allowlist is owned here.** Profiles alone do not identify the caller:
+    any client-profile leaf from the internal CA completes the handshake when `tls.root`
+    is set. So the gateway also checks which client it is, per request, against an
+    allowlist of declared client names. v1.5.0 supports this directly (source read at tag
+    `v1.5.0`, 2026-09-27):
+    - On a listener with a static certificate and `root` set, the listener records the
+      peer certificate's identity for every connection
+      (`crates/agentgateway/src/types/agent.rs:526-528` returns an identity mode unless
+      insecure mTLS is on; `crates/agentgateway/src/proxy/gateway.rs:1267-1270` passes it
+      to the socket; `crates/agentgateway/src/transport/stream.rs:241-245` parses it).
+    - The parsed identity carries every DNS, URI and IP subject alternative name
+      (`crates/agentgateway/src/transport/tls.rs:1256-1260`) and is exposed to CEL as
+      `source.subjectAltNames` (`schema/cel.md:117`; flattened into the source context at
+      `crates/agentgateway/src/cel/types.rs:288-291`).
+    - A gateway takes CEL authorization rules, `gateways.*.authorization.rules[]` with
+      `allow`, `deny` and `require` (`schema/config.md:51913-51917`).
+
+    Both gateway listeners therefore carry one `require` rule,
+    `source.subjectAltNames.exists(n, n in [<allowlist>])` (`exists` is among v1.5.0's
+    standard CEL functions, `schema/cel-functions.md:50`). The allowlist is the inventory
+    list `agw_client_cert_allowlist` on the gateway host, whose entries are leaf names from
+    `production-internal-ca` decision 4; the deploy resolves each to that leaf's DNS SAN,
+    so no name is typed twice, and refuses an entry that names no declared client-profile
+    leaf. The only default is `caddy`; `agw-verifier` and `bench` are added in inventory
+    where those leaves are declared. `require` is used rather than `deny`, because the
+    schema warns that a failing `deny` expression fails open (`schema/config.md:51916`).
+    Every probe of the gateway from outside Caddy goes through one shared task (6.1a), so
+    the allowlist, the leaf files and the name resolution are exercised the same way by
+    every change that needs a probe. Alternatives rejected: Caddy's name alone, because
+    the deploy's own probes and a direct benchmark run would then travel through Caddy,
+    which adds a hop to the benchmark's gateway-overhead A/B and ties the gateway's
+    verification to the edge's health; and a dedicated issuing hierarchy for the allowed
+    clients, with the gateway's `root` set to it alone, because it adds a second CA
+    hierarchy to back up, distribute and rotate. That hierarchy stays the fallback if task
+    6.1 finds the rule cannot be rendered beside the `llm` shortcut. Unverified: the HTTP
+    status the gateway returns when a `require` rule fails, and whether the rule is
+    evaluated before or after API-key authentication; task 6.1 records both.
 
 ## Risks / Trade-offs
 
@@ -278,6 +343,18 @@ production start failed (see the last item).
   auto-detect) and the admin interface stays on the container loopback (decision 9).
 - [Two gateways confuse the platform] → decision 1's record; agentgateway's config
   carries no placement or policy logic, and skynet's docs gain a pointer to the record.
+- [A failed OIDC discovery stops the whole gateway, `/v1` included] → the UI's first
+  production start (task 1622) failed on Authentik's discovery document, and one process
+  serves both the UI and `/v1`: v1.5.0 resolves discovery while compiling the config
+  (`crates/agentgateway/src/http/oidc/local.rs:150`), and a first load that fails fails
+  the start (`state_manager.rs:140`); a later reload that fails keeps the running state
+  (`state_manager.rs:301-311`). So an IdP or edge fault at restart takes the inference API
+  down with the UI. Mitigations: the Cloudflare skip rule now; the LAN split-horizon
+  record (task 7.1) next, so the fetch never transits Cloudflare; and decision 11, so the
+  gateway restarts only when its inputs change. `agw_ui_enabled: false` remains the
+  lever that renders no UI listener and no OIDC block, and with them no discovery fetch
+  (`config.yaml.j2:22-26`).
+- [Every deploy drops in-flight streams] → decision 11 (task 1.12).
 
 ## Migration Plan
 
@@ -296,6 +373,9 @@ production start failed (see the last item).
 5. Retire the shared key from the gateway; rotate at vLLM; hand dgx-spark the go for
    narrowing the node API CIDR to the gateway host. Write the record; amend plan 06;
    archive; retain the outcome into bank `agent-cloud-750a33b9`.
+6. Transport security (task group 6) after `production-internal-ca` has issued the leaves.
+   It has no ordering against the gateway's access-record export in
+   `agentgateway-observability`: no certificate proof in either change reads a Loki record.
 
 ## Open Questions
 

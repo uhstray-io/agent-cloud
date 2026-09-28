@@ -126,11 +126,42 @@
 
 - [ ] 1.10 `UI_READ_ONLY=true` in the gateway environment, and a BATS assertion that it is
       rendered; the UI must refuse writes itself, not only fail at the read-only mount
-      (design "Decisions recorded 2026-09-27")
+      (design "Decisions recorded 2026-09-27"). v1.5.0 reads the variable and switches the
+      config store to read-only (`crates/agentgateway/src/config.rs:390-392` at tag
+      v1.5.0), and the UI refuses writes in that mode (`crates/agentgateway/src/ui.rs:53`).
+      This is the only UI read-only task; `inference-personal-keys` relies on it. Proves
+      scenario "The UI refuses configuration writes"
 - [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
       2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
       rule (PR #289) applied, `agw_ui_enabled: true` (site-config #35), then Deploy
       agentgateway (Dev); proves gate 1.9
+- [ ] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
+      `compose up -d --force-recreate` on every run, so every deploy, and every playbook
+      that imports it, drops in-flight streams. First settle hot reload: v1.5.0 watches a
+      file config source and reloads it on change (`crates/agentgateway/src/state_manager.rs:141-142`
+      and `150-180` at tag v1.5.0, read 2026-09-28), but `compose.yml:48` mounts
+      `config.yaml` as a single file, and a template write replaces the inode the container
+      still holds (the lesson at `manage-caddy-sites.yml:14-20`). In local-dev, mount the
+      config through a directory, change one `apiKey` entry, and record whether the running
+      process serves the change with no restart and whether a failed reload keeps the old
+      state (`state_manager.rs:301-311` logs the error and keeps the previous state). Then:
+      - **Hot reload confirmed:** the config becomes a directory mount; a `config.yaml`
+        change is left to the watch and proven by the verify phase's keyed probe (6.1a);
+        only an `.env` change recreates, because a process's environment is fixed at start.
+      - **Not confirmed:** `deploy.sh` computes the sha256 of the rendered `config.yaml` and
+        `.env`, reads the value recorded in a label on the running `agentgateway`
+        container, and passes `--force-recreate` only when the two differ; otherwise it
+        runs plain `compose up -d`, which creates a missing container and starts a stopped
+        one. unverified: that the podman compose provider starts a stopped container on
+        plain `up -d`; the local drill checks it.
+      Either way the deploy task's `changed_when` reports a recreate or a reload, not the
+      constant `true` it carries today (`deploy-agentgateway.yml:206`). BATS: the recreate
+      flag is conditional and the label is written. Validation: a second deploy with no
+      input change leaves the container's start time unchanged; a rotated key is served
+      after one deploy; a deploy whose `deploy.sh` is made to fail after the render is
+      converged by the next plain deploy, because the label still names the old hash;
+      with the container removed, a plain deploy brings it back. Together these prove
+      scenario "An unchanged deploy does not restart the gateway"
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
@@ -225,46 +256,87 @@
       `agent-cloud-750a33b9`
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
-- [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates, bind-
-      mounted (the image has no shell); `tls.root` = the step-ca root, so a client
-      certificate is required; both gateways also carry the allowlist `require` rule
+- [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
+      mounted directory (`current/`; the image has no shell); `tls.root` = the step-ca
+      root, so a client certificate is required. This task is the single owner of the
+      client allowlist (design decision 12): both gateways carry the `require` rule
       `source.subjectAltNames.exists(n, n in [<allowlist>])`, because `root` alone admits
-      any leaf from the CA (`production-internal-ca` design decision 5). The list renders
-      from inventory `agw_client_cert_allowlist` (leaf names from that change's decision 4
-      table, resolved to their declared SANs; default `caddy` only; production adds
+      any leaf from the CA. The list renders from inventory `agw_client_cert_allowlist`,
+      whose entries are leaf names from `production-internal-ca` design decision 4's table,
+      resolved to their declared SANs (default `caddy` only; production adds
       `agw-verifier`, and `bench` once the benchmark VM exists); an entry naming no
-      declared client leaf fails the deploy before restart. BATS asserts both listeners
-      render `tls` with `root` and the rule, that the default list is `caddy` alone, and
-      that an undeclared entry is refused
-- [ ] 6.1a The deploy's own verification after 6.1 (today, `deploy-agentgateway.yml`):
-      the readiness probe (line 225, busybox `wget` from the sibling db container to
-      `http://<gateway>:19001`) is unaffected, because `readinessAddr` is a separate
-      plain listener (`config.yaml.j2:34`), not a `gateways` listener. The keyless 401
-      probe (lines 237-242, the same `wget` over `http://` to `:4000`) cannot survive:
-      busybox `wget` presents no client certificate, so the handshake fails before the key
-      check. It becomes a `uri` call from the gateway host to the published port with no
-      `Authorization` header, presenting the `agw-verifier` leaf, expecting 401. The keyed
-      probes (`_verify_url`, lines 265-268, `http://` to loopback on the published port)
-      become `https://` with `client_cert`/`client_key` = the `agw-verifier` leaf and
-      `ca_path` = the internal bundle. The `uri` module at ansible-core 2.21.0 offers
-      `ca_path`, `client_cert`, `client_key` and `validate_certs` and no server-name
-      override (`ansible-doc uri`, run 2026-09-27; the Semaphore image's ansible-core
-      version is unverified), so the URL names the gateway server leaf's SAN and a managed
-      hosts entry on the gateway host (an idempotent `lineinfile` task, as code) maps that
-      name to the published bind; `validate_certs: false` is never used. Local-dev keeps
-      `agw_verify_base_url` and sets it to the SAN form; unverified: how the Semaphore
-      container resolves that name on the `local-dev` network, settled before 6.1a lands
+      declared client-profile leaf fails the deploy before restart, naming the entry.
+      In local-dev first: confirm the rule renders beside the `llm` shortcut and the gateway
+      starts with it, and record the HTTP status a failed rule returns and whether the rule
+      is evaluated before API-key authentication (both unverified). If the rule cannot be
+      rendered there, fall back to a dedicated client-issuing hierarchy with the gateway's
+      `root` set to it alone, and record why as an amendment to decision 12. BATS asserts
+      both listeners render `tls` with `root` and the rule, that the default list is
+      `caddy` alone, and that an undeclared entry is refused
+- [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
+      from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
+      (`inference-personal-keys`), the renewal proof for the client leaves that are probed
+      directly (`production-internal-ca`), the benchmark VM's attribution check
+      (`inference-benchmarking`) and the access-record verify of `agentgateway-observability`
+      (its requirement "Every gateway request produces an access record in Loki"). Extract
+      it from `deploy-agentgateway.yml` into a new `platform/playbooks/tasks/agw-probe.yml`
+      whose inputs are the host it runs from (default the gateway host), the client leaf it
+      presents (default `agw-verifier`; the benchmark VM passes `bench`), the path, an
+      optional key (absent means keyless) and the expected status; the key-bearing call is
+      `no_log` and its result is never printed. What changes when 6.1 lands, per probe in
+      today's deploy: the readiness probe (`deploy-agentgateway.yml:266`, the busybox
+      `wget` defined at line 227, from the sibling db container to `:19001`) is unaffected,
+      because `readinessAddr` is a separate plain listener (`config.yaml.j2:34`), not a
+      `gateways` listener. The keyless 401 probe (`deploy-agentgateway.yml:318-326`, the same
+      `wget` over `http://` to `:4000`) cannot survive, because busybox `wget` presents no
+      client certificate and the handshake fails before the key check; it becomes the
+      shared task with no key, expecting 401. The keyed probes (`_verify_url`,
+      `deploy-agentgateway.yml:349-352`) become the shared task over `https://` with
+      `client_cert`/`client_key` = the presented leaf and `ca_path` = the internal bundle.
+      The `uri` module at ansible-core 2.21.0 offers `ca_path`, `client_cert`, `client_key`
+      and `validate_certs` and no server-name override (`ansible-doc uri`, run 2026-09-27;
+      the Semaphore image's ansible-core version is unverified), so the URL names the
+      gateway server leaf's SAN; `validate_certs: false` is never used. Interim name
+      resolution: an idempotent `lineinfile` on the probing host maps that SAN to the
+      published bind, with the trailing marker `# agent-cloud-managed: agw-probe (interim,
+      task 7.2)` and a `regexp` on that marker, so code finds, updates and later removes the
+      line. Local-dev keeps `agw_verify_base_url` and sets it to the SAN form; unverified:
+      how the Semaphore container resolves that name on the `local-dev` network, settled
+      before 6.1a lands
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
-      tls_client_auth <cert> <key> }` (Caddy 2.11.4; `tls_trusted_ca_certs` is deprecated
-      there); fix the deprecated form in `plan/architecture/05-platform-infra.md`
+      tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
+      host's mounted `current/` directory. The architecture document's deprecated
+      directive is corrected by `production-internal-ca` task 9.1, not here
 - [ ] 6.3 The model's `tls: {root, hostname}` and an `https://` base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
-      gateway, and so is one with a client leaf from the same CA whose SANs are on no
-      allowlist entry; a request with the `agw-verifier` leaf from the gateway host is
-      served; `Deploy agentgateway (Dev)` still passes its whole verify phase after group
-      6 (readiness, the keyless 401, the keyed `/v1/models` and chat round-trip, all over
-      6.1a's paths); the gateway refuses a vLLM certificate not issued by the internal CA;
-      the public path works end to end with every hop encrypted
+      gateway, proving scenario "A request without a client certificate is refused"; a
+      throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in
+      `production-internal-ca` task 4.7, then removed) completes the handshake and its
+      request is refused, proving scenario "Another client leaf is refused at the gateway";
+      a request with the `agw-verifier` leaf from the gateway host through 6.1a reaches the
+      key check, proving scenario "An allowlisted non-Caddy client is served"; the BATS
+      refusal of an undeclared entry proves scenario "An undeclared allowlist entry is
+      refused at render"; `Deploy agentgateway (Dev)` still passes its whole verify phase
+      after group 6 (readiness, the keyless 401, the keyed `/v1/models` and chat
+      round-trip, all through 6.1a); the gateway refuses a vLLM certificate not issued by
+      the internal CA; the public path works end to end with every hop encrypted
+
+## 7. Internal name resolution (follow-up; needs hickory-dns in production)
+- [ ] 7.1 Server-side OIDC off the Cloudflare path: a LAN split-horizon record for
+      `auth.uhstray.io` answering with the Caddy host, so the gateway's discovery, JWKS and
+      token calls (and OpenBao's, once `inference-personal-keys` adds its mount) reach
+      Authentik through Caddy without transiting Cloudflare. The Cloudflare skip rule for
+      Authentik's machine endpoints (`platform/infra/cloudflare/waf.tf:129-135`) is the
+      interim fix and stays until this record is proven; then decide, as a recorded
+      amendment, whether it is retired. hickory-dns runs in local-dev only today; production
+      is planned (`platform/services/dns/context/architecture.md:7`, `:45`), so this task
+      waits on it
+- [ ] 7.2 Replace 6.1a's interim `lineinfile` entries with records in the internal zone
+      for the gateway server leaf's SAN, and remove every line carrying the
+      `agent-cloud-managed: agw-probe` marker through the same task
+- [ ] 7.3 Validation gate: with the Cloudflare skip rule temporarily disabled in a declared
+      window, a gateway restart loads Authentik's discovery document and serves `/v1`; no
+      probing host carries the interim marker line

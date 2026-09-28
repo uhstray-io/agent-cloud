@@ -22,13 +22,51 @@ and key hashes only).
 - WHEN a LAN host connects to the gateway VM on the admin port
 - THEN the connection is refused
 
+#### Scenario: An unchanged deploy does not restart the gateway
+- WHEN the deploy runs and neither the rendered configuration nor the rendered
+  environment differs from what the running gateway started with
+- THEN the gateway container is not recreated and in-flight streams continue; when
+  either differs, or no gateway container is running, the deploy brings up a gateway on
+  the new rendering
+
+### Requirement: The gateway admits only declared client certificates
+Once the gateway listeners serve internal TLS, they SHALL require a client certificate
+chained to the platform's internal CA, and MUST admit a request only when the presented
+certificate carries, among its subject alternative names, the name of a client leaf on
+the gateway's declared allowlist. The allowlist SHALL name only declared client-profile
+leaves and MUST default to Caddy's leaf alone. Every check that probes the gateway from
+outside Caddy SHALL use one shared probe path that presents a declared client leaf.
+
+#### Scenario: A request without a client certificate is refused
+- WHEN a client connects to a gateway listener without a client certificate
+- THEN the TLS handshake fails
+
+#### Scenario: Another client leaf is refused at the gateway
+- WHEN a client presents a client-profile leaf from the internal CA whose subject
+  alternative names include no name on the gateway's allowlist
+- THEN the gateway refuses the request, although the TLS handshake completes
+
+#### Scenario: An allowlisted non-Caddy client is served
+- WHEN the shared probe path presents the declared verifier client leaf from the gateway
+  host, with the verifier on the allowlist
+- THEN the handshake completes and the request reaches the gateway's key check
+
+#### Scenario: An undeclared allowlist entry is refused at render
+- WHEN the gateway's allowlist names a leaf that is not a declared client-profile leaf
+- THEN the gateway deploy fails before restarting the gateway and names the entry
+
 ### Requirement: The operator UI is reachable only through SSO
 The gateway's built-in operator UI SHALL be served on its own listener, separate from
 the admin interface (which stays on the container loopback), and MUST authenticate
 browsers ITSELF with an OIDC policy against Authentik plus an authorization rule
 requiring the platform admin group, so that the gateway reports the UI as
 authenticated; Caddy SHALL be a plain TLS proxy in front, and the listener MUST NOT be
-reachable from any host other than the Caddy host.
+reachable from any host other than the Caddy host. The UI MUST run read-only, so that no
+key, policy or other configuration can be created, edited or removed from it.
+
+#### Scenario: The UI refuses configuration writes
+- WHEN an admin logged in to the gateway UI attempts to add or edit an API key
+- THEN the UI refuses the change and the rendered configuration is unchanged
 
 #### Scenario: UI requires an admin login
 - WHEN an unauthenticated browser opens the gateway's UI hostname

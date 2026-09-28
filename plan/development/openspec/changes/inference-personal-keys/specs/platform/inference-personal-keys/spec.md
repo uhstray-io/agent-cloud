@@ -67,25 +67,26 @@ the Authentik gate alone.
 ### Requirement: Keys are reconciled from group membership on a schedule
 A scheduled Semaphore template, declared in `templates.yml`, SHALL converge the key
 records to the group's active membership at least hourly: mint for new members,
-rotate aged keys, remove expired previous keys and revoke the keys of anyone no longer
-eligible. On every run it MUST compare the set of unexpired user keys it would enrol
-with the set the gateway has enrolled, read back from the gateway host, and MUST deploy
-the gateway when they differ, when the running gateway predates its rendered
-configuration, or when no gateway container is running, and only then; whether this run
-wrote a record MUST NOT decide it. It MUST fail before any write when the membership
-listing fails or the group is not found. On a listing that succeeded, an empty group is a
-valid answer; the run MUST refuse, unless explicitly allowed, only a plan that revokes at
-least the declared minimum count and more than the declared fraction of existing records.
-It MUST NOT print a key value.
+rotate due keys, remove expired previous keys and revoke the keys of anyone no longer
+eligible. Every run MUST import the gateway deploy, whether or not it wrote a record,
+and that deploy MUST restart the gateway only when the rendering differs from the one
+the running gateway started with or when no gateway container is running. It MUST fail
+before any write when the membership listing fails or the group is not found. On a
+listing that succeeded, an empty group is a valid answer; the run MUST refuse, unless
+explicitly allowed, a plan that revokes more than half of the existing records, unless
+the plan revokes a single record. Each run SHALL push one result line to Loki, and the
+platform's shared scheduled-job-silent alert MUST fire when none has arrived for three
+hours. It MUST NOT print a key value.
 
 #### Scenario: Unchanged membership does not restart the gateway
 - WHEN the reconcile runs with no member added or removed, no key due to rotate or
-  expire, and the gateway's enrolled key set equal to the desired set
-- THEN no OpenBao record changes and the gateway container is not recreated
+  expire, and the running gateway started from the current rendering
+- THEN no OpenBao record changes, the deploy runs, and the gateway container is not
+  recreated
 
 #### Scenario: A large drop does not revoke everyone
-- WHEN the membership listing succeeds but the plan would revoke two or more records
-  and more than half of the existing records, and `allow_mass_revoke` is not set
+- WHEN the membership listing succeeds but the plan would revoke more than half of the
+  existing records and more than one record, and `allow_mass_revoke` is not set
 - THEN the run fails naming the guard and the counts, and no record is deleted
 
 #### Scenario: The last member's removal revokes normally
@@ -103,13 +104,13 @@ It MUST NOT print a key value.
 #### Scenario: A revoked key stays refused after a failed deploy
 - WHEN a run deletes a removed member's record and its gateway deploy fails, and the
   next scheduled run finds no membership change
-- THEN the next run finds the enrolled key set still holding that key's hash, deploys
-  the gateway, and a request with the revoked key gets 401
+- THEN the next run's deploy finds the running gateway started from an older rendering,
+  brings up a gateway on the current one, and a request with the revoked key gets 401
 
 #### Scenario: Expiry converges without a record change
 - WHEN a key's recorded expiry passes and no record is due for any write
-- THEN the next run finds the expired key's hash in the enrolled set but not in the
-  desired set, deploys the gateway, and a request with that key gets 401
+- THEN the next run's deploy renders without the expired key, brings up a gateway on
+  that rendering, and a request with that key gets 401
 
 #### Scenario: A missing gateway container is redeployed
 - WHEN the gateway container is missing or stopped on its host and no record is due
@@ -117,22 +118,32 @@ It MUST NOT print a key value.
 - THEN the next run deploys the gateway, and a request with a current personal key is
   served
 
+#### Scenario: A stopped reconcile is detected
+- WHEN no reconcile result line reaches Loki for three hours
+- THEN the scheduled-job-silent alert fires naming the reconcile job
+
 #### Scenario: A non-conforming username is refused by name
 - WHEN a member's username does not match `^[a-z0-9][a-z0-9-]*$`
 - THEN that member gets no key, the run reports the username as refused, and every
   other member is still reconciled
 
 ### Requirement: Keys expire after 30 days with an enforced overlap
-Every key SHALL carry an expiry 30 days after issue. The reconcile SHALL mint a
-successor when the current key is 27 days old, and both keys SHALL be valid until the
-older key's expiry. The gateway deploy MUST render a key only while its recorded
-expiry is in the future and MUST fail on a record whose expiry is missing or
-unparseable, so that expiry is enforced by code on every deploy.
+Every key SHALL carry an expiry no later than 30 days after issue. When a key change
+restarts the gateway, the reconcile SHALL rotate all keys together on a declared cohort
+day, every 27 days from a declared anchor, so that rotation restarts the gateway a fixed
+number of times per cycle whatever the number of users; when the gateway applies key
+changes without a restart, it SHALL instead mint each key's successor when that key is
+27 days old. In both cases the old key SHALL stay valid until its recorded expiry, at
+most three days after its successor is minted. The gateway deploy MUST render a key only
+while its recorded expiry is in the future and MUST fail on a record whose expiry is
+missing or unparseable, so that expiry is enforced by code on every deploy.
 
 #### Scenario: Rotation overlaps
-- WHEN the reconcile runs on day 27 of a key's life
-- THEN a new key is stored, the old one is kept as the previous key with its original
-  expiry, and the gateway accepts both
+- WHEN the reconcile runs on a rotation day (the cohort day, or a key's day 27 when key
+  changes need no restart)
+- THEN each due key gets a new key, the old one is kept as the previous key with an
+  expiry no later than three days later, the gateway accepts both, and on the cohort
+  branch the whole cohort's rotation recreates the gateway at most once in that run
 
 #### Scenario: The old key stops working at its expiry
 - WHEN the reconcile runs after the previous key's expiry
@@ -169,14 +180,6 @@ inventory client name beginning with `user-` MUST be refused by the deploy.
 - WHEN `agw_clients` contains a name beginning with `user-`
 - THEN the gateway deploy fails before rendering
 
-### Requirement: Keys are managed only as code, never in the gateway UI
-The gateway's operator UI SHALL run read-only, with the rendered configuration mounted
-read-only, so that no key can be created, edited or revoked from the UI.
-
-#### Scenario: The UI cannot change keys
-- WHEN an admin logged in to the gateway UI attempts to add or edit an API key
-- THEN the change is refused and the rendered configuration is unchanged
-
 ### Requirement: Usage and key reads are attributable to a person
 Gateway metrics and access-log lines SHALL carry the personal identity, the inference
 dashboard MUST show per-user requests, tokens and budget blocks, and OpenBao SHALL
@@ -192,14 +195,3 @@ without writing key values in clear.
 - WHEN an operator queries the OpenBao audit log for reads of one user's record
 - THEN each read is listed with its time and the reading identity, and no entry
   contains the key value in clear
-
-### Requirement: Direct JWT authentication at the gateway is a recorded deferral
-The platform SHALL record, in this change's design and in the gateway's architecture
-page, that accepting Authentik JWTs at the gateway was considered and deferred, with
-the reasons (no personal budget for JWT callers at v1.5.0, the Cloudflare skip rule
-for JWKS retrieval, static-key SDK clients) and the conditions for revisiting.
-
-#### Scenario: The deferral is findable
-- WHEN a reader opens the gateway's architecture page
-- THEN it states that JWT authentication at the gateway is deferred, why, and what
-  would reopen it
