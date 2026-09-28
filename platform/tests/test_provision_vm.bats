@@ -211,3 +211,37 @@ YAML
   run ansible-playbook -i "$BATS_TEST_TMPDIR/inv.yml" "$BATS_TEST_TMPDIR/claim.yml" -e _decl_host=gw -e _ip=192.0.2.54
   [ "$status" -ne 0 ]
 }
+
+@test "provision-vm: the summary reports the login and runner checks, not the port wait" {
+  # Semaphore task 1753: port 22 open, the login failed (no key file on the runner) and the
+  # runner step was skipped, yet the summary printed "SSH: ok" and "Runner: configured".
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  local play="$BATS_TEST_TMPDIR/summary.yml"
+  python3 - "$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml" "$play" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+task, = (t for p in plays for t in p.get("tasks", []) if t.get("name") == "Provisioning complete")
+task = dict(task, register="summary")
+common = {"_vmid": 220, "_name": "dns", "_node": "n", "_ip": "x", "ansible_user": "u",
+          "target_service": "dns", "vm_running": {"json": {"data": {"status": "running"}}},
+          "agent_ping": {"status": 200}, "ssh_ready": {"changed": False}}
+cases = {
+    "failed": {"ssh_test": {"failed": True, "rc": 255}, "runner_setup": {"skipped": True, "changed": False}},
+    "ok": {"ssh_test": {"rc": 0, "changed": False}, "runner_setup": {"rc": 0, "changed": True}},
+}
+out = []
+for name, regs in cases.items():
+    out.append({"hosts": "localhost", "gather_facts": False, "vars": {**common, **regs},
+                "tasks": [task, {"name": "save", "ansible.builtin.copy": {
+                    "content": "{{ summary.msg }}", "dest": f"{sys.argv[2]}.{name}", "mode": "0600"}}]})
+yaml.safe_dump(out, open(sys.argv[2], "w"))
+PY
+  ansible-playbook -i localhost, -c local "$play" >/dev/null
+  assert_grep -qF "SSH port: open" "$play.failed"
+  assert_grep -qF "SSH login: NOT verified" "$play.failed"
+  assert_grep -qF "Runner: skipped" "$play.failed"
+  assert_grep -qF "SSH login: ok" "$play.ok"
+  assert_grep -qF "Runner: configured" "$play.ok"
+}
