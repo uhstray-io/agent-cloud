@@ -174,13 +174,29 @@
       changed_when: false
       check_mode: false
 
+    - name: Calculate sanitized sample-limit and series diagnostics
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/diagnose-o11y-budget-readback.py"]
+        stdin: >-
+          {{ {'sample_limit': _sample_limit.stdout,
+              'expected_sample_limit': o11y_scrape_sample_limit,
+              'head_series': _head_series.stdout} | to_json }}
+      register: _budget_readback_diagnostics
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Report sanitized sample-limit and series diagnostics
+      ansible.builtin.debug:
+        msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
+
     - name: Require matching live budgets and measurable cardinality
       ansible.builtin.assert:
         that:
           - _retention_comparison.rc == 0
-          - _sample_limit.stdout | trim | int == o11y_scrape_sample_limit | int
-          - (_head_series.stdout | from_json).data.result | length == 1
-          - (_head_series.stdout | from_json).data.result[0].value[1] | int > 0
+          - (_budget_readback_diagnostics.stdout | from_json).sample_limit_matches
+          - (_budget_readback_diagnostics.stdout | from_json).head_series_count_matches
+          - (_budget_readback_diagnostics.stdout | from_json).positive_head_series
         fail_msg: "A live retention/sample setting differs from inventory or active-series readback is absent."
 
     - name: Report the sanitized production budget receipt

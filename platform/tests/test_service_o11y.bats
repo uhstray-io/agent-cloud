@@ -1260,14 +1260,15 @@ PY
 @test "o11y: production budget receipt is read-only and emits bounded fields" {
   python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" \
     "$REPO_ROOT/platform/semaphore/templates.yml" \
-    "$REPO_ROOT/platform/playbooks/files/compare-o11y-budgets.py" <<'PY'
+    "$REPO_ROOT/platform/playbooks/files/compare-o11y-budgets.py" \
+    "$REPO_ROOT/platform/playbooks/files/diagnose-o11y-budget-readback.py" <<'PY'
 import json
 import subprocess
 import sys
 import yaml
 
 playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:3]]
-comparator = sys.argv[3]
+comparator, diagnostic = sys.argv[3:5]
 assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert "SEMAPHORE_TASK_ID" not in str(playbook)
 assert playbook[1]['tasks'][-2]['ansible.builtin.command']['argv'] == ['git', 'status', '--porcelain', '--untracked-files=all']
@@ -1281,6 +1282,62 @@ assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configurat
         'Read current guest root filesystem capacity',
         'Read current guest memory headroom',
         'Compare equivalent live and declared retention units'} <= names
+diagnostic_index = next(i for i, task in enumerate(tasks)
+                        if task.get('name') == 'Calculate sanitized sample-limit and series diagnostics')
+report_index = next(i for i, task in enumerate(tasks)
+                    if task.get('name') == 'Report sanitized sample-limit and series diagnostics')
+assert diagnostic_index < report_index < next(
+    i for i, task in enumerate(tasks) if task.get('name') == 'Require matching live budgets and measurable cardinality')
+diagnostic_task = tasks[diagnostic_index]
+assert diagnostic_task['ansible.builtin.command']['argv'] == [
+    'python3', '{{ playbook_dir }}/files/diagnose-o11y-budget-readback.py']
+assert diagnostic_task['delegate_to'] == 'localhost'
+assert diagnostic_task['changed_when'] is False and diagnostic_task['check_mode'] is False
+report_task = tasks[report_index]
+assert 'no_log' not in report_task and report_task['ansible.builtin.debug']['msg'] == \
+    '{{ _budget_readback_diagnostics.stdout | from_json }}'
+gate = next(task for task in tasks if task.get('name') == 'Require matching live budgets and measurable cardinality')
+assert gate['ansible.builtin.assert']['that'] == [
+    '_retention_comparison.rc == 0',
+    '(_budget_readback_diagnostics.stdout | from_json).sample_limit_matches',
+    '(_budget_readback_diagnostics.stdout | from_json).head_series_count_matches',
+    '(_budget_readback_diagnostics.stdout | from_json).positive_head_series',
+]
+assert set(json.loads(subprocess.run(
+    [sys.executable, diagnostic], input=json.dumps({'sample_limit': '2000',
+        'expected_sample_limit': 2000, 'head_series': json.dumps({'data': {'result': [
+            {'metric': {'instance': 'https://private.example/?token=secret'}, 'value': [1, '109']}]}})}),
+    text=True, capture_output=True, check=True).stdout)) == {
+        'sample_limit_matches', 'sample_limit_expected', 'sample_limit_observed',
+        'head_series_count_matches', 'head_series_count_observed',
+        'positive_head_series', 'head_series_observed'}
+def diagnose(sample, expected, response):
+    return json.loads(subprocess.run([sys.executable, diagnostic], input=json.dumps({
+        'sample_limit': sample, 'expected_sample_limit': expected,
+        'head_series': response}), text=True, capture_output=True, check=True).stdout)
+one = json.dumps({'data': {'result': [{'value': [1, '109']}]}})
+good = diagnose('2000\n', 2000, one)
+assert good['sample_limit_matches'] and good['head_series_count_matches']
+assert good['positive_head_series'] and good['head_series_observed'] == 109
+mismatch = diagnose('1500', 2000, one)
+assert not mismatch['sample_limit_matches'] and mismatch['sample_limit_observed'] == 1500
+assert not diagnose('not-a-number', 2000, one)['sample_limit_matches']
+assert not diagnose('+2000', 2000, one)['sample_limit_matches']
+assert not diagnose('2000', 2000, '{malformed')['head_series_count_matches']
+assert not diagnose('2000', 2000, json.dumps({'data': {'result': []}}))['positive_head_series']
+assert not diagnose('2000', 2000, json.dumps({'data': 'unexpected'}))['head_series_count_matches']
+assert not diagnose('2000', 2000, json.dumps({'data': {'result': 'unexpected'}}))['head_series_count_matches']
+multiple = json.dumps({'data': {'result': [{'value': [1, '1']}, {'value': [1, '2']}]}})
+assert diagnose('2000', 2000, multiple)['head_series_count_observed'] == 2
+assert not diagnose('2000', 2000, multiple)['positive_head_series']
+zero = json.dumps({'data': {'result': [{'value': [1, '0']}]}})
+assert not diagnose('2000', 2000, zero)['positive_head_series']
+private_response = json.dumps({'data': {'result': [{'metric': {
+    'instance': 'https://private.example/?token=secret'}, 'value': [1, '9']}]}})
+sanitized = subprocess.run([sys.executable, diagnostic], input=json.dumps({
+    'sample_limit': '2000', 'expected_sample_limit': 2000,
+    'head_series': private_response}), text=True, capture_output=True, check=True).stdout
+assert 'private.example' not in sanitized and 'token=secret' not in sanitized and 'https://' not in sanitized
 assert all('no_log' not in task for task in tasks if task['name'].startswith('Read ') and 'configuration' in task['name'])
 summary = tasks[-1]['ansible.builtin.debug']['msg']
 assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
