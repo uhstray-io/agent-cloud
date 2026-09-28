@@ -101,10 +101,6 @@
     _netmask: "{{ _decl.vm_netmask | default(_defaults.netmask | default(24)) }}"
     _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('ubuntu;24.04'))) }}"
 
-    # Semaphore runner config (injected on each VM for task execution)
-    _semaphore_url: "{{ semaphore_url | default('') }}"
-    _runner_token: "{{ runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default('')) }}"
-
   tasks:
     - name: "Require an explicit target_host when the service declares more than one"
       # Refusing beats guessing. With several declarations in the group, `first` is an
@@ -579,66 +575,220 @@
         state: started
       register: ssh_ready
 
-    # ── Post-provision validation ─────────────────────────────────────────
-    - name: "Verify SSH connectivity"
-      ansible.builtin.command:
-        cmd: >
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
-          -i "{{ ssh_private_key_path | default('') }}"
-          {{ ci_user | default(ansible_user) }}@{{ _ip }} "hostname && uname -a && cloud-init status"
-      register: ssh_test
-      retries: 3
-      delay: 15
-      until: ssh_test.rc == 0
-      ignore_errors: true
+
+    # ── Hand the VM to Ansible's own connection ───────────────────────────
+    # The post-boot checks used to shell out to `ssh -i <key-path variable>`. Nothing
+    # in the repo set that variable, so every Semaphore run passed `-i ""` and
+    # the login failed (tasks 1753/1755), and the runner step put its token in the argv
+    # of two processes and, on any failure, into the durable task log. Ansible already
+    # owns a connection to every inventory host: the orchestrator supplies its SSH
+    # credential through the inventory record, the same path every deploy uses
+    # (configure-host-network.yml, verify-host-access.yml). The next play logs in over
+    # that connection instead.
+    #
+    # A freshly cloned VM has freshly generated host keys, so any entry the controller
+    # holds for this address belongs to a previous occupant (a destroyed VM, or the
+    # squatter in docs/MISTAKES.md 3.6) and would refuse the login as a changed key.
+    # Only a clone made by THIS run is known to be new; an adopted VM keeps its entry.
+    - name: "Forget the controller's stale host key for a freshly cloned VM's address"
+      ansible.builtin.known_hosts:
+        name: "{{ item }}"
+        state: absent
       changed_when: false
-      check_mode: false
+      loop: >-
+        {{ [_ip] if (_decl.ansible_port | default(22) | int) == 22
+           else [_ip, '[' ~ _ip ~ ']:' ~ (_decl.ansible_port | int)] }}
+      loop_control:
+        label: "{{ item }}"
+      when: clone_result.json.data is defined
 
-    - name: "Show SSH test output"
-      ansible.builtin.debug:
-        var: ssh_test.stdout_lines
-      when: ssh_test is succeeded
+    # Named after the DECLARED inventory host, so the login uses exactly the transport
+    # settings (port, key file, interpreter) a later deploy to that host will use —
+    # add_host on an existing host merges into it rather than starting from nothing.
+    # A ledger-only workstation run has no declaration and falls back to the VM name.
+    # Only non-secret metadata travels here: add_host's result is printed under -v.
+    - name: "Hand the new VM to the post-boot play"
+      ansible.builtin.add_host:
+        name: "{{ _decl_host | default(_name, true) }}"
+        groups: _provisioned_vm
+        ansible_host: "{{ _ip }}"
+        ansible_user: "{{ ci_user | default(ansible_user) }}"
+        _pv_service: "{{ target_service }}"
+        _pv_vmid: "{{ _vmid }}"
+        _pv_name: "{{ _name }}"
+        _pv_node: "{{ _node }}"
+        _pv_status: "{{ vm_running.json.data.status | default(pre_start.json.data.status | default('unknown')) }}"
+        _pv_agent_ok: "{{ agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200 }}"
+        _pv_port_open: "{{ ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded }}"
+      changed_when: false
 
-    # ── Configure Semaphore runner ────────────────────────────────────────
-    - name: "Configure Semaphore runner"
-      ansible.builtin.command:
-        cmd: >
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
-          -i "{{ ssh_private_key_path | default('') }}"
-          {{ ci_user | default(ansible_user) }}@{{ _ip }}
-          "sudo tee /etc/semaphore/runner.env > /dev/null <<'ENVFILE'
-          SEMAPHORE_WEB_ROOT={{ _semaphore_url }}
-          SEMAPHORE_RUNNER_TOKEN={{ _runner_token }}
-          ENVFILE
-          sudo chmod 600 /etc/semaphore/runner.env
-          sudo systemctl enable --now semaphore-runner"
-      register: runner_setup
+# ── Post-boot: log in, wait for cloud-init, configure the runner ─────────────
+# Every connection-bound step tolerates its failure and records it, and the verdict
+# play at the very end fails the run. That ordering is forced: when every host of a
+# play fails, ansible-playbook stops and runs no later play (checked on ansible-core
+# 2.21 with a one-host failing play), so failing HERE would skip both the summary and
+# the Proxmox post-validate import. The VM already exists at this point; the operator
+# needs the summary and the cluster check more than an early stop.
+#
+# Under --check the connection-bound steps are skipped and reported "not checked": a
+# dry run must not be read as having proved a login it never attempted.
+- name: "Post-boot: log in to the new VM over the orchestrator's connection"
+  hosts: _provisioned_vm
+  gather_facts: false
+  become: false
+  vars:
+    _semaphore_url: "{{ semaphore_url | default('') }}"
+    _runner_token: "{{ runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default('')) }}"
+
+  tasks:
+    - name: "Log in over Ansible's connection"
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      register: _login
       ignore_errors: true
+      when: not ansible_check_mode
+
+    # Read-only: waits for, and reports, cloud-init's own verdict. Exit codes per
+    # https://docs.cloud-init.io/en/latest/reference/cli.html — 0 ran without error,
+    # 2 finished with recoverable errors, 1 crashed. rc 2 alone is not enough: the
+    # command module also returns rc 2 when the binary is missing (ENOENT), so the
+    # `status:` line cloud-init prints is required too.
+    - name: "Wait for cloud-init to finish"
+      ansible.builtin.command:
+        argv: [cloud-init, status, --wait]
+      register: _cloudinit
+      changed_when: false
+      failed_when: >-
+        (_cloudinit.rc | default(1)) not in [0, 2]
+        or 'status:' not in (_cloudinit.stdout | default(''))
+      check_mode: false
+      ignore_errors: true
+      ignore_unreachable: true
+      timeout: 900
+      when:
+        - _login is not skipped
+        - _login is succeeded
+
+    # A freshly provisioned host has not been through harden-ssh, so sudo may still want
+    # the bootstrap password; the shared resolver reads it from OpenBao (no_log inside).
+    - name: "Resolve the sudo password before writing the runner environment"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when:
         - not ansible_check_mode
-        - ssh_test is succeeded and _runner_token | length > 0
+        - _runner_token | length > 0
+        - _cloudinit is not skipped
+        - _cloudinit is succeeded
+        - _cloudinit is reachable
 
-    - name: "Show runner setup output"
-      ansible.builtin.debug:
-        var: runner_setup.stdout_lines
-      when: runner_setup is defined and runner_setup is succeeded
+    # The credential boundary: the token exists only in this task's module arguments,
+    # travels over Ansible's connection, and never appears in an argv or a log.
+    - name: "Write the Semaphore runner environment"
+      ansible.builtin.copy:
+        content: |
+          SEMAPHORE_WEB_ROOT={{ _semaphore_url }}
+          SEMAPHORE_RUNNER_TOKEN={{ _runner_token }}
+        dest: /etc/semaphore/runner.env
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      no_log: true
+      register: _runner_env
+      ignore_errors: true
+      ignore_unreachable: true
+      when:
+        - not ansible_check_mode
+        - _runner_token | length > 0
+        - _cloudinit is not skipped
+        - _cloudinit is succeeded
+        - _cloudinit is reachable
 
-    # Each line reports the check that proves it. `ssh_ready` only proves port 22 is open;
-    # the login is `ssh_test`, which is ignore_errors and fails on a runner with no key file.
-    # A skipped task still registers a result that the `succeeded` test accepts, so every
-    # line excludes `skipped` explicitly (Semaphore task 1753 printed "SSH: ok" and "Runner:
-    # configured" after a failed login and a skipped runner step).
+    # The unit and /etc/semaphore come from the template's autoinstall
+    # (platform/hypervisor/proxmox/cloud-init/autoinstall-user-data.yml).
+    - name: "Enable and start the Semaphore runner"
+      ansible.builtin.systemd:
+        name: semaphore-runner
+        enabled: true
+        state: "{{ 'restarted' if (_runner_env.changed | default(false)) else 'started' }}"
+      become: true
+      register: _runner_svc
+      ignore_errors: true
+      ignore_unreachable: true
+      when:
+        - _runner_env is not skipped
+        - _runner_env is succeeded
+        - _runner_env is reachable
+
+    # `succeeded` accepts a skipped result and an unreachable one, so each state
+    # names skipped and reachable explicitly (Semaphore task 1753 printed "SSH: ok"
+    # after a failed login and a skipped runner step).
+    - name: "Classify the post-boot results"
+      ansible.builtin.set_fact:
+        _pv_login: >-
+          {{ 'not checked' if (_login is not defined or _login is skipped)
+             else ('ok' if _login is succeeded else 'FAILED') }}
+        _pv_cloudinit: >-
+          {{ 'not checked' if (_cloudinit is not defined or _cloudinit is skipped)
+             else ('FAILED' if (_cloudinit is failed or _cloudinit is unreachable)
+             else ('done' if (_cloudinit.rc | default(1)) == 0
+             else 'done with recoverable errors')) }}
+        _pv_runner: >-
+          {{ 'not checked' if ansible_check_mode
+             else ('skipped (no runner token supplied)' if (_runner_token | length) == 0
+             else ('not attempted (login or cloud-init did not pass)' if (_runner_env is not defined or _runner_env is skipped)
+             else ('FAILED writing /etc/semaphore/runner.env' if (_runner_env is failed or _runner_env is unreachable)
+             else ('FAILED starting semaphore-runner' if (_runner_svc is failed or _runner_svc is unreachable)
+             else 'configured')))) }}
+        _pv_login_error: "{{ (_login.msg | default('')) | truncate(240) if (_login is defined and _login is failed) else '' }}"
+
     - name: "Provisioning complete"
       ansible.builtin.debug:
         msg: |
-          VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
-            IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
-            Status: {{ (vm_running.json.data.status | default(pre_start.json.data.status | default('unknown'))) }}{{ ' (check mode: not started)' if ansible_check_mode else '' }}
-            Agent: {{ 'ok' if (agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200) else 'pending' }}
-            SSH port: {{ 'open' if (ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded) else 'pending' }}
-            SSH login: {{ 'ok' if (ssh_test is defined and ssh_test is not skipped and ssh_test.rc | default(1) == 0) else 'NOT verified (no key file on this runner, or login refused); run Distribute SSH Keys then Verify Host Access' }}
-            Runner: {{ 'skipped' if (runner_setup is not defined or runner_setup is skipped) else ('configured' if runner_setup is succeeded else 'FAILED (see the task above)') }}
-          Next: deploy-service.yml -e target_service={{ target_service }}
+          VM {{ _pv_vmid }} ({{ _pv_name }}) provisioned on {{ _pv_node }}:
+            IP: {{ ansible_host }}, SSH: {{ ansible_user }}@{{ ansible_host }}
+            Status: {{ _pv_status }}{{ ' (check mode)' if ansible_check_mode else '' }}
+            Agent: {{ 'ok' if (_pv_agent_ok | bool) else 'pending' }}
+            SSH port: {{ 'open' if (_pv_port_open | bool) else 'pending' }}
+            SSH login: {{ _pv_login }}{{ ' (check mode)' if ansible_check_mode else '' }}
+            cloud-init: {{ _pv_cloudinit }}
+            Runner: {{ _pv_runner }}
+          Next: deploy-service.yml -e target_service={{ _pv_service }}
 
 - name: "Post-validate: VM running"
   ansible.builtin.import_playbook: proxmox-validate.yml
+
+# ── Verdict ────────────────────────────────────────────────────────────────────
+# Last, so the summary and the cluster post-validate have already run. A failed login
+# is the one that needs a diagnosis: cloud-init installed the public half of OpenBao
+# secret/services/ssh:public_key for the cloud-init user, and the orchestrator logs in
+# with whatever SSH credential its inventory record holds. The repo does not record
+# that the two are one key pair (the credential lives in Semaphore's key store, not in
+# code), so the message says what to compare rather than asserting it.
+- name: "Verdict: the new VM is reachable and configured"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _pv_host: "{{ groups['_provisioned_vm'] | default([]) | first | default('') }}"
+    _pv: "{{ hostvars[_pv_host] if (_pv_host | length) > 0 else {} }}"
+  tasks:
+    - name: "Fail loudly when a post-boot check failed"
+      ansible.builtin.assert:
+        that:
+          - (_pv._pv_login | default('')) != 'FAILED'
+          - not ((_pv._pv_cloudinit | default('')) is match('FAILED'))
+          - not ((_pv._pv_runner | default('')) is match('FAILED'))
+        fail_msg: >-
+          {% if (_pv._pv_login | default('')) == 'FAILED' %}The orchestrator could not log in to
+          {{ _pv.ansible_user | default('?') }}@{{ _pv.ansible_host | default('?') }}
+          ({{ _pv._pv_login_error | default('') }}). cloud-init installed the public half of
+          OpenBao secret/services/ssh:public_key for that user; check that the SSH credential
+          bound to Semaphore's inventory record (or the declared host's
+          ansible_ssh_private_key_file) is its private half — compare fingerprints — and that
+          the controller accepted the VM's new host key.{% elif (_pv._pv_cloudinit | default('')) is match('FAILED') %}cloud-init
+          on {{ _pv_host }} reported a crash or never finished; inspect `cloud-init status --long`
+          on the VM.{% else %}The Semaphore runner on {{ _pv_host }} was not configured:
+          {{ _pv._pv_runner | default('') }}.{% endif %} The VM itself exists; re-running
+          Provision VM adopts it instead of cloning again.
+        success_msg: "Post-boot checks for {{ _pv_host }}: login {{ _pv._pv_login | default('?') }}, cloud-init {{ _pv._pv_cloudinit | default('?') }}, runner {{ _pv._pv_runner | default('?') }}."
+      when: (_pv_host | length) > 0
