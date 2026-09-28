@@ -2,7 +2,8 @@
 
 Carries the inference gateway's metrics, traces and access records into the platform's
 Grafana with bounded labels, declared retention, an authenticated transport and no
-request content, in production and local-dev alike.
+request content, and keeps the uhstray.io team's prompt and completion content, for a
+limited time, only in the gateway's own access-controlled store.
 
 ## ADDED Requirements
 
@@ -39,23 +40,78 @@ these records; identity, model and token values MUST stay in the record body.
 - **WHEN** the Loki label names for the gateway's access records are listed
 - **THEN** the list contains no identity, model or token label
 
-### Requirement: No request content or credential leaves the gateway
-The gateway MUST NOT place prompt text, completion text, any request header value
-(including Authorization) or any API key material in any metric label, span attribute,
-access-record field, exported record or request-log database row, and prompt and
-completion logging SHALL remain disabled. The deployment MUST refuse to render a gateway
-configuration that would capture such content.
+### Requirement: Team prompt content is kept only in the gateway's own store
+When content logging is enabled, the gateway SHALL keep the prompt and completion
+content of team requests in its own request-log database, readable only through the
+gateway's authenticated operator interface by members of the platform admin group. No
+metric label, span attribute, access-record field, exported record or Loki line MAY
+contain prompt or completion text.
+
+#### Scenario: A team request's content is stored
+- **WHEN** content logging is enabled and a team identity sends a chat completion
+  through the gateway
+- **THEN** the gateway's request-log database holds a payload row for that request with
+  its prompt and completion
+
+#### Scenario: Loki holds no prompt text
+- **WHEN** a team identity sends a chat completion containing a unique marker string
+- **THEN** a Loki search for that marker string returns nothing and no span attribute in
+  the trace store contains it
+
+#### Scenario: Content is readable only by platform admins
+- **WHEN** an unauthenticated browser, or a signed-in user outside the platform admin
+  group, requests a stored log entry through the operator interface
+- **THEN** the gateway does not return the entry's content
+
+### Requirement: Content is kept only for uhstray.io team identities
+Every identity enrolled at the gateway SHALL declare its team. While content logging is
+enabled, the deployment MUST refuse to render any identity not declared as a uhstray.io
+team member, and the gateway MUST refuse requests from any key not marked as a team
+member. Users outside the team SHALL be served, when that feature exists, by a gateway
+instance that does not keep content.
+
+#### Scenario: A non-team identity is refused at render
+- **WHEN** content logging is enabled and inventory enrols an identity whose team is not
+  uhstray.io, or declares no team
+- **THEN** the deployment fails before the gateway is restarted and names the identity
+
+#### Scenario: A non-team key is refused at request time
+- **WHEN** content logging is enabled and a request arrives with a valid key whose
+  identity is not marked as a team member
+- **THEN** the gateway refuses the request and no payload row is written for it
+
+### Requirement: Stored content expires within the declared retention
+The platform SHALL delete request-log rows, with their content, once they are older than
+the declared retention period (30 days unless inventory declares otherwise), on a
+schedule declared as code, and MUST detect a retention job that has stopped running.
+
+#### Scenario: An expired row is removed
+- **WHEN** the scheduled prune runs and a request-log row is older than the retention
+  period
+- **THEN** the row and its payload are deleted and a second run deletes nothing
+
+#### Scenario: A stopped prune is detected
+- **WHEN** the oldest request-log row is older than the retention period plus two days
+- **THEN** the gateway deployment's verification fails and names the retention breach
+
+### Requirement: No header, request body or key reaches any signal or store
+The gateway MUST NOT place any request header value (including Authorization), any
+request body expression or any API key material in any metric label, span attribute,
+access-record field, exported record or request-log database attribute, and MUST NOT
+reference prompt or completion content in any telemetry field expression. The deployment
+MUST refuse to render a gateway configuration that would.
 
 #### Scenario: Content-capturing configuration is refused
 - **WHEN** a deployment is attempted with a telemetry field that reads prompt content,
-  completion content, a request header or an API key
+  completion content, a request header, the request body or an API key
 - **THEN** the deployment fails before the gateway is restarted and names the offending
   field
 
-#### Scenario: The request-log store holds no content
-- **WHEN** requests with prompts flow through the gateway for an hour
-- **THEN** the gateway's request-log payload table has no rows and no exported record or
-  span contains the prompt or the caller's key
+#### Scenario: Header and key are never stored
+- **WHEN** a team identity sends a request through the gateway with content logging
+  enabled
+- **THEN** neither the caller's key nor its Authorization header value appears in the
+  request-log database, in Loki or in the trace store
 
 ### Requirement: Gateway traces reach the platform trace store at a declared rate
 The gateway SHALL export spans for a declared fraction of requests to a self-hosted trace

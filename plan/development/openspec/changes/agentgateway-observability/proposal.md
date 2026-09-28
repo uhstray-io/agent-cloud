@@ -4,6 +4,12 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>. Requested by Joe, 2026-09-27: 
 production agentgateway (image `cr.agentgateway.dev/agentgateway:v1.5.0`) reports its
 metrics, traces and access logs to the platform's Grafana.
 
+Decisions by Joe, 2026-09-27: "Log content for our team so we can learn from our prompts
+and improve them. Don't log content for any users that are not part of the uhstray.io
+team, users outside of the uhstray.io team is not a feature that has been created, but
+will be created in the future." Tempo lives in the o11y stack; client-started traces are
+not continued and new traces are sampled at 10 percent.
+
 Companion changes: `inference-gateway-agentgateway` (owns the gateway; this change
 supersedes its telemetry task 3.1 and reverses the Tempo deferral in its design
 decision 6), `inference-telemetry-production` (owns the production o11y host, its
@@ -39,8 +45,9 @@ Two findings from reading the v1.5.0 source make this more than wiring:
   a prompt and completion payload table
   (`crates/agentgateway/src/telemetry/log_store/postgres_migrations/0001_create_request_log_schema.sql:25-29`).
   With the storage mode left unset, content that any CEL expression captures is persisted
-  there (`crates/agentgateway/src/telemetry/log.rs:1128-1131`). Nothing in the template
-  captures content today, but nothing pins that either.
+  there (`crates/agentgateway/src/telemetry/log.rs:1128-1131`). The storage mode is
+  process-wide: `frontendPolicies` is the only place an access-log policy can be set at
+  v1.5.0, so one gateway either keeps content for every identity or for none.
 
 ## What Changes
 
@@ -57,9 +64,23 @@ Two findings from reading the v1.5.0 source make this more than wiring:
   receiver; Alloy converts them into the existing Loki writer with a `service` label.
   Stdout stays for `podman logs`. The identity field moves from the deprecated
   `config.logging.fields` to `frontendPolicies.accessLog`.
-- **Content never leaves the gateway.** Prompts, completions, the Authorization header
-  and API keys are never added to any metric, span, log or database field; the request
-  log store is pinned to `metadata` mode. Prompt logging stays off.
+- **Team prompt and completion content is kept, in one place only.** The request-log
+  store (the gateway's own Postgres) runs in `database.llm: full` mode, and the team reads
+  it through the gateway UI's Logs page, which sits behind the gateway's Authentik login
+  and admin-group rule. Metrics, spans, OTLP exports and Loki stay metadata-only, because
+  Grafana has no per-record access control.
+- **Team-only, enforced.** Every enrolled identity declares its team. While content is
+  kept, the gateway deploy refuses to render any identity not marked as a uhstray.io
+  team member, and the gateway itself refuses requests from any key without that mark.
+  Users outside the team are a future feature; their planned path is a separate gateway
+  instance in `metadata` mode, recorded here and not built.
+- **Content expires.** Stored rows are pruned after a declared retention (30 days) by a
+  scheduled Semaphore job, because v1.5.0 has no pruning of its own and prompts can
+  carry pasted secrets. Any future backup of that database excludes the payload table.
+- **Credentials never leave the gateway.** No request header (the Authorization header
+  included), request body expression or API key material is ever added to any metric,
+  span, log or database field, and `llm.prompt` / `llm.completion` never appear in a
+  telemetry field expression; content reaches the database only through `full` mode.
 - **Transport.** The OTLP hop is mutual TLS with certificates from the internal CA; a
   plaintext hop is refused outside local-dev. The metrics scrape stays plaintext HTTP,
   restricted by host firewall, because v1.5.0's stats listener takes only an address.
@@ -79,7 +100,8 @@ Two findings from reading the v1.5.0 source make this more than wiring:
 ### New Capabilities
 - `platform/agentgateway-observability`: the gateway's metrics, traces and access logs
   reach the platform's Grafana with bounded labels, declared retention, an authenticated
-  transport and no request content.
+  transport and no request content; the team's prompt and completion content is kept
+  only in the gateway's own request-log store, for team identities only, and expires.
 
 ### Modified Capabilities
 None. The companion changes' requirements are unchanged; this change supplies the
@@ -89,8 +111,8 @@ dashboard" and the estate change's trace pilot.
 ## Impact
 
 - `platform/services/agentgateway/deployment/`: `templates/config.yaml.j2` (move logging
-  and tracing to `frontendPolicies`, OTLP log export, `database.llm: metadata`, TLS
-  paths), `templates/env.j2`, `compose.yml` (certificate mount, scrape labels),
+  and tracing to `frontendPolicies`, OTLP log export, `database.llm: full`, the `team`
+  key metadata and the runtime team rule, TLS paths), `templates/env.j2`, `compose.yml` (certificate mount, scrape labels),
   `compose.local.yml`.
 - `platform/services/o11y/deployment/`: `compose.yml` (Tempo service and volume, Alloy
   OTLP publish), `compose.local.yml`, `config/config.alloy` (receiver, Tempo exporter,
@@ -99,10 +121,14 @@ dashboard" and the estate change's trace pilot.
   `config/grafana/dashboards/agentgateway.json`, `templates/env.j2`.
 - `platform/playbooks/`: `deploy-agentgateway.yml` (render guards, stats verify),
   `deploy-o11y.yml` (OTLP and trace guards, receipt verify), `apply-firewall.yml`
-  (per-port sources).
+  (per-port sources), new `prune-agentgateway-request-logs.yml` with its scheduled
+  Semaphore template in `platform/semaphore/templates.yml`.
 - Tests: `platform/tests/test_service_agentgateway.bats`,
   `platform/tests/test_service_o11y.bats`, `platform/tests/test_apply_firewall.bats`.
-- site-config (private): gateway `agw_stats_bind`, OTLP endpoint and sampling; o11y
+- `inference-personal-keys`: its user-key rendering (its task 4.2) carries the `team`
+  metadata this change requires.
+- site-config (private): gateway `agw_stats_bind`, OTLP endpoint and sampling, content
+  mode, retention and each identity's team; o11y
   OTLP bind, trace enablement and retention; both hosts' firewall declarations; leaf
   declarations for the internal CA.
 - Docs: agentgateway `context/architecture.md`, o11y `README.md`, a dated amendment to
@@ -112,8 +138,11 @@ dashboard" and the estate change's trace pilot.
 ## Rollback Plan
 
 Every step is inventory-gated and reverts by a declaration change plus a Semaphore
-redeploy; no data is deleted.
+redeploy; no telemetry data is deleted.
 
+- Content logging: set the gateway's content mode to `metadata` and redeploy; new rows
+  carry no payload. Stored payload rows keep expiring through the scheduled prune; an
+  immediate purge is the same prune run with a retention of zero days.
 - Traces: unset the gateway's trace enablement and redeploy the gateway (the template
   renders no `frontendPolicies.tracing`); unset trace enablement on the o11y host and
   redeploy o11y (Alloy drops the trace pipeline). The Tempo volume is kept.
