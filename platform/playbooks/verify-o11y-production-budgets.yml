@@ -134,11 +134,11 @@
 
     - name: Parse Loki runtime configuration
       ansible.builtin.set_fact:
-        _loki_runtime: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config', 'defined') | list | first) }}"
+        _loki_runtime: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config.retention_period', 'defined') | list | first) }}"
 
     - name: Parse Tempo runtime configuration
       ansible.builtin.set_fact:
-        _tempo_runtime: "{{ (_tempo_config.stdout | from_yaml_all | select('mapping') | selectattr('compactor', 'defined') | list | first) }}"
+        _tempo_runtime: "{{ (_tempo_config.stdout | from_yaml_all | select('mapping') | selectattr('compactor.compaction.block_retention', 'defined') | list | first) }}"
 
     - name: Compare equivalent live and declared retention units
       ansible.builtin.command:
