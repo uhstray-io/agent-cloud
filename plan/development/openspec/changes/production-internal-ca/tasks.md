@@ -6,9 +6,11 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 
 ## 0. Branch and decisions
 - [ ] 0.1 Feature branch from `dev` (`feat/production-internal-ca`) in its own worktree
-- [ ] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
+- [x] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
       the dgx-spark handoff channel (1), offline root (2), mutual TLS towards vLLM (3), the
-      production internal zone name (4)
+      production internal zone name (4). Answered 2026-09-28: signed through a template,
+      root online, mutual TLS towards vLLM, a zone under `.internal` declared in site-config (design "Decisions recorded
+      2026-09-28")
 - [ ] 0.3 Validation gate: `openspec validate production-internal-ca` passes and the
       answers are written into `design.md` as dated amendments; this phase proves no spec
       scenario on its own and gates phase 1
@@ -119,7 +121,12 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
       bundle delivered through the agreed channel, with the SAN the gateway's model
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
-      `--ssl-keyfile`, `--enable-ssl-refresh`); nothing on the nodes is changed from here
+      `--ssl-keyfile`, `--enable-ssl-refresh`, and for mutual TLS `--ssl-cert-reqs` with
+      `--ssl-ca-certs` set to the internal root); nothing on the nodes is changed from here
+- [ ] 5.4a The `agw-upstream` client leaf on the gateway host (decision 3 of 2026-09-28),
+      issued like `agw-verifier`; rendered into the model's `tls.cert`/`tls.key`.
+      unverified: whether agentgateway v1.5.0 reloads model-side TLS files on change;
+      record it from the local drill and choose reload or restart in the renewal action
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates"; the gateway-side
       scenarios (no client certificate refused, another client leaf refused, allowlisted
       verifier served, undeclared entry refused at render) are proven by the companion's

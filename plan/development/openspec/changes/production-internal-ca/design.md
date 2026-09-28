@@ -196,6 +196,7 @@ engine; moving vLLM configuration into this repository.
    | `bench` client | benchmark VM | client | `inference-benchmarking` runs whose target is the gateway listener, sent directly and not through Caddy |
    | Gateway server | gateway host | server | `gateways.default.tls` and `gateways.ui.tls` |
    | vLLM server | DGX Spark head (handoff) | server | `--ssl-certfile`/`--ssl-keyfile` |
+   | `agw-upstream` client | gateway host | client | the model's `tls.cert`/`tls.key` towards vLLM, which requires a client certificate (`--ssl-cert-reqs`, `--ssl-ca-certs` = the internal root; open question 3, decided 2026-09-28) |
 
    One gateway leaf covers both listeners: they are the same process on the same host,
    so a second key buys nothing. The `agw-verifier` leaf lives on the gateway host
@@ -377,7 +378,35 @@ engine; moving vLLM configuration into this repository.
 6. Correct the documentation, write the recorded exception, archive, and retain the
    outcome into bank `agent-cloud-750a33b9`.
 
+## Decisions recorded 2026-09-28
+
+Joe answered the four open questions on 2026-09-28:
+
+1. **dgx-spark certificate channel: signed through a template.** dgx-spark generates the
+   vLLM server key and CSR on its head node; a Semaphore template here signs the CSR and
+   returns the certificate and bundle through the channel agreed with the dgx-spark
+   session. The key never leaves the node and the CA port stays closed to it.
+2. **Root key: online for the first rollout.** Backed up to site-config (decision on
+   backup); taking the root offline after backup is a later hardening change.
+3. **Mutual TLS towards vLLM: yes.** dgx-spark sets `--ssl-cert-reqs` and
+   `--ssl-ca-certs` (the internal root), and the gateway presents a new `agw-upstream`
+   client leaf through the model's `tls.cert`/`tls.key` (`llm.models[].tls.cert`/`.key`,
+   agentgateway v1.5.0 `schema/config.md:70130-70131`; field at `types/local.rs:820-822`). Limit, accepted: vLLM's TLS layer checks only that the
+   client leaf chains to the root, not which leaf it is; unverified: whether vLLM or its
+   server offers a SAN check. The vLLM API key stays the caller check; mutual TLS narrows
+   callers to holders of an internal-CA client leaf.
+4. **Internal zone: a name under the reserved `.internal` suffix, chosen by Joe and declared
+   in site-config** (the name itself stays out of this public repo). ICANN Board Resolution
+   2024.07.29.06 reserves
+   `.INTERNAL` from delegation in the DNS root zone permanently for private use
+   (<https://www.icann.org/en/board-activities-and-meetings/materials/approved-resolutions-special-meeting-of-the-icann-board-29-07-2024-en>),
+   so a SAN in it can never name a public host. Declared in site-config.
+
 ## Open Questions
+
+All four questions below were answered on 2026-09-28; see "Decisions recorded
+2026-09-28". They are kept for the record.
+
 
 1. **How dgx-spark receives its certificate.** The DGX Spark nodes are not in this
    repository's inventory, and the boundary keeps them dgx-spark's. Options: (a)

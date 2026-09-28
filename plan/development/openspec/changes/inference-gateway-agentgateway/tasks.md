@@ -330,7 +330,9 @@
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
       host's mounted `current/` directory. The architecture document's deprecated
       directive is corrected by `production-internal-ca` task 9.1, not here
-- [ ] 6.3 The model's `tls: {root, hostname}` and an `https://` base URL, once dgx-spark
+- [ ] 6.3 The model's `tls: {root, hostname, cert, key}` (the `agw-upstream` client leaf,
+      production-internal-ca task 5.4a; mutual TLS decided 2026-09-28) and an `https://`
+      base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
