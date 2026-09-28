@@ -25,9 +25,8 @@ import sys
 import yaml
 
 src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-wanted = ("Derive node capacity", "Report node capacity (most free memory first)")
-tasks = [t for t in src["tasks"] if t["name"] in wanted]
-assert len(tasks) == 2
+tasks = [t for t in src["tasks"] if t["name"] == "Derive node capacity"]
+assert len(tasks) == 1
 gib = 1073741824
 nodes = {"json": {"data": [
     {"node": "small", "status": "online", "cpu": 0.5, "maxcpu": 8, "mem": 12 * gib, "maxmem": 16 * gib},
@@ -38,8 +37,12 @@ res = {"json": {"data": [
     {"type": "qemu", "node": "big", "maxcpu": 4, "maxmem": 8 * gib, "status": "running"},
     {"type": "qemu", "node": "big", "maxcpu": 2, "maxmem": 2 * gib, "status": "stopped"},
     {"type": "qemu", "node": "big", "maxcpu": 2, "maxmem": 2 * gib, "status": "stopped", "template": 1},
+    {"type": "lxc", "node": "big", "maxcpu": 1, "maxmem": 1 * gib, "status": "running"},
+    {"type": "qemu", "node": "big", "status": "unknown"},
     {"type": "storage", "node": "big", "storage": "vm-lvms", "disk": 100 * gib, "maxdisk": 400 * gib},
     {"type": "qemu", "node": "small", "maxcpu": 2, "maxmem": 4 * gib, "status": "running"},
+    {"type": "storage", "node": "small", "storage": "vm-lvms", "status": "unknown"},
+    {"type": "pool", "pool": "p"},
 ]}}
 yaml.safe_dump([{"hosts": "localhost", "gather_facts": False,
                  "vars": {"pve_nodes": nodes, "pve_resources": res, "_vm_storage": "vm-lvms"},
@@ -53,12 +56,13 @@ import json
 import sys
 
 cap = json.load(open(sys.argv[1]))
-by = {c["node"]: c for c in cap}
-assert set(by) == {"big", "small"}, by
-big = by["big"]
-assert big["vms"] == 2 and big["vms_running"] == 1, big
-assert big["vcpus_configured"] == 6 and big["mem_configured_gb"] == 10.0, big
-assert big["mem_free_gb"] == 108.0 and big["vm_storage_free_gb"] == 300, big
-assert by["small"]["vm_storage_free_gb"] == "n/a", by["small"]
+assert [c["node"] for c in cap] == ["big", "small"], cap  # sorted by free memory
+big, small = cap
+assert big == {"node": "big", "cpu_used_pct": 10.0, "cores": 32, "vcpus_configured": 7,
+               "mem_used_gb": 20.0, "mem_total_gb": 128.0, "mem_free_gb": 108.0,
+               "mem_configured_gb": 11.0, "guests": 4, "guests_running": 2,
+               "vm_storage_free_gb": 300}, big
+assert small["cpu_used_pct"] == 50.0 and small["mem_free_gb"] == 4.0, small
+assert small["vm_storage_free_gb"] == "n/a", small
 PY
 }

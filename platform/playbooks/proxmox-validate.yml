@@ -95,35 +95,49 @@
       check_mode: false
 
     - name: "Derive node capacity"
+      # Guests are VMs and containers, templates excluded. maxcpu/maxmem are optional in
+      # the cluster/resources schema and `template` is absent on ordinary guests, so every
+      # read defaults: a guest missing a field must not abort the play that
+      # provision-template.yml imports. Storage without a size reads "n/a", never 0.
       ansible.builtin.set_fact:
         node_capacity: >-
           {%- set out = [] -%}
-          {%- for n in pve_nodes.json.data | selectattr('status', 'equalto', 'online') | sort(attribute='node') -%}
-          {#- `template` is absent on ordinary VMs, and strict undefined rejects rejectattr on it -#}
-          {%- set vms = [] -%}
-          {%- for v in pve_resources.json.data if v.type == 'qemu' and v.node == n.node and (v.template | default(0) | int) != 1 -%}
-          {%- set _ = vms.append(v) -%}
+          {%- set gib = 1073741824 -%}
+          {%- for n in pve_nodes.json.data | selectattr('status', 'equalto', 'online') -%}
+          {%- set g = namespace(n=0, running=0, cpu=0, mem=0) -%}
+          {%- for v in pve_resources.json.data
+                if v.type | default('') in ['qemu', 'lxc'] and v.node | default('') == n.node
+                and (v.template | default(0) | int) != 1 -%}
+          {%- set g.n = g.n + 1 -%}
+          {%- set g.running = g.running + (1 if v.status | default('') == 'running' else 0) -%}
+          {%- set g.cpu = g.cpu + (v.maxcpu | default(0) | int) -%}
+          {%- set g.mem = g.mem + (v.maxmem | default(0) | int) -%}
           {%- endfor -%}
-          {%- set stor = pve_resources.json.data | selectattr('type', 'equalto', 'storage') | selectattr('node', 'equalto', n.node) | selectattr('storage', 'equalto', _vm_storage) | list -%}
+          {%- set st = namespace(free='n/a') -%}
+          {%- for s in pve_resources.json.data
+                if s.type | default('') == 'storage' and s.node | default('') == n.node
+                and s.storage | default('') == _vm_storage and (s.maxdisk | default(0) | int) > 0 -%}
+          {%- set st.free = (((s.maxdisk | int) - (s.disk | default(0) | int)) / gib) | round(0) | int -%}
+          {%- endfor -%}
           {%- set _ = out.append({
                 'node': n.node,
                 'cpu_used_pct': ((n.cpu | default(0) | float) * 100) | round(1),
                 'cores': n.maxcpu | default(0) | int,
-                'vcpus_configured': vms | map(attribute='maxcpu') | map('int') | sum,
-                'mem_used_gb': ((n.mem | default(0) | int) / 1073741824) | round(1),
-                'mem_total_gb': ((n.maxmem | default(0) | int) / 1073741824) | round(1),
-                'mem_free_gb': (((n.maxmem | default(0) | int) - (n.mem | default(0) | int)) / 1073741824) | round(1),
-                'mem_configured_gb': ((vms | map(attribute='maxmem') | map('int') | sum) / 1073741824) | round(1),
-                'vms': vms | length,
-                'vms_running': vms | selectattr('status', 'equalto', 'running') | list | length,
-                'vm_storage_free_gb': (((stor | first | default({})).maxdisk | default(0) | int - (stor | first | default({})).disk | default(0) | int) / 1073741824) | round(0) | int if stor else 'n/a'
+                'vcpus_configured': g.cpu,
+                'mem_used_gb': ((n.mem | default(0) | int) / gib) | round(1),
+                'mem_total_gb': ((n.maxmem | default(0) | int) / gib) | round(1),
+                'mem_free_gb': (((n.maxmem | default(0) | int) - (n.mem | default(0) | int)) / gib) | round(1),
+                'mem_configured_gb': (g.mem / gib) | round(1),
+                'guests': g.n,
+                'guests_running': g.running,
+                'vm_storage_free_gb': st.free
               }) -%}
           {%- endfor -%}
-          {{ out }}
+          {{ out | sort(attribute='mem_free_gb', reverse=true) }}
 
     - name: "Report node capacity (most free memory first)"
       ansible.builtin.debug:
-        msg: "{{ node_capacity | sort(attribute='mem_free_gb', reverse=true) | map('to_json') | list }}"
+        msg: "{{ node_capacity | map('to_json') | list }}"
 
     # ── 3. Storage ───────────────────────────────────────────────────────
     - name: "Get storage on target node"
