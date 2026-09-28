@@ -430,6 +430,13 @@ PY
   refute_grep -q 'OIDC' "$BATS_TEST_TMPDIR/env"
 }
 
+@test "agentgateway: the config store is read-only whether or not the UI is on" {
+  for ui in true false; do
+    _render_ui "$ui"
+    assert_grep -qxF "UI_READ_ONLY=true" "$BATS_TEST_TMPDIR/env"
+  done
+}
+
 @test "agentgateway: agw_ui_enabled=false drops the Authentik shared read from the deploy" {
   local blk
   blk=$(sed -n '/_shared_reads: >-/,/_env_templates:/p' "$PLAYBOOK")
