@@ -20,6 +20,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "none" },
       "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "prometheus_tsdb_head_series{job=\"prometheus\"}", "instant": true }]
     },
     {
@@ -30,6 +31,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "options": { "colorMode": "none" },
       "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_bytes_received_total{job=\"loki\"}[5m])) or vector(0)", "instant": true }]
     },
     {
