@@ -1,0 +1,28 @@
+---
+# remove-ssh-key.yml — wipe what tasks/materialise-ssh-key.yml put on the runner.
+#
+# Include it from the `always:` of the block that included materialise-ssh-key.yml, with
+# the same ssh_key_result_var, so the key goes on failure too. Safe to run when nothing
+# was materialised, or when the result fact was never set.
+#
+# `check_mode: false` because the scratch directory was created for real during a dry
+# run too; a simulated delete would leave the key on the runner (see the header of
+# materialise-ssh-key.yml for why the scratch runs under --check at all).
+#
+# The wipe refuses any directory that is not one materialise-ssh-key.yml created (its
+# `.sshkey_` prefix): the path arrives through a fact, and a mis-set fact must not turn a
+# cleanup step into an arbitrary recursive delete.
+
+- name: "Remove SSH key: wipe the runner-local scratch directory"
+  ansible.builtin.file:
+    path: "{{ _rsk_dir }}"
+    state: absent
+  vars:
+    _rsk_dir: "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir | default('') }}"
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  when:
+    - ssh_key_result_var is defined
+    - _rsk_dir | length > 0
+    - (_rsk_dir | basename) is match('^\.sshkey_')

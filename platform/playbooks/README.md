@@ -85,28 +85,34 @@ Tasks that run on the Semaphore runner (e.g., fetching keys from OpenBao, writin
 
 ### SSH Keys
 
-SSH keys are fetched from OpenBao at runtime and written to temp files that are cleaned up in `always` blocks. The pattern:
+SSH keys are fetched from OpenBao at runtime and put on the runner only for the probe that
+needs them, through the shared `tasks/materialise-ssh-key.yml`, and wiped by
+`tasks/remove-ssh-key.yml` from `always` — so a failed probe does not leave the key behind.
+Do not hand-roll `tempfile` + `copy` again: `tempfile` has no check-mode support, so that
+pattern cannot pass a dry run (`platform/tests/test_materialise_ssh_key.py` holds the closed
+list of files allowed to write a private key).
 
 ```yaml
 - name: "Fetch key"
-  set_fact:
+  ansible.builtin.set_fact:
     _key: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:private_key', ...) }}"
-
-- name: "Write to temp file"
-  tempfile: { state: file }
-  register: _key_file
-  delegate_to: localhost
-
-- name: "Set contents"
-  copy: { content: "{{ _key }}\n", dest: "{{ _key_file.path }}", mode: "0600" }
-  delegate_to: localhost
   no_log: true
 
-# ... use _key_file.path ...
+- name: "Probe with a runner-local copy of the key"
+  block:
+    - name: "Materialise the key (runner-local, 0600)"
+      ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+      vars:
+        ssh_key_content: "{{ _key }}"
+        ssh_key_result_var: _probe_key
 
-- name: "Cleanup"  # in always block
-  file: { path: "{{ _key_file.path }}", state: absent }
-  delegate_to: localhost
+    # ... ssh -i {{ _probe_key.key }} ..., delegate_to: localhost, check_mode: false ...
+
+  always:
+    - name: "Remove the runner-local key"
+      ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+      vars:
+        ssh_key_result_var: _probe_key
 ```
 
 ## Playbook Reference
@@ -302,6 +308,8 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/site-config-clone.yml` | Implemented | Clone site-config into a scratch dir on a fresh `<prefix>-<UTC>-<6hex>` branch with the deploy key the caller read from OpenBao — written 0600 inside that dir, `IdentitiesOnly`, pinned GitHub host keys |
 | `tasks/site-config-push.yml` | Implemented | Stage ONE path, commit if changed, push the branch, report names and counts — never values. Pairs with the clone task; the caller wipes the scratch dir in an `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Implemented | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
+| `tasks/materialise-ssh-key.yml` | Implemented | Put ONE SSH private key on the runner for an `ssh -i` probe: a 0700 scratch dir holding the key at 0600 (plus a `known_hosts` path for a pinned host key), result fact of paths only, only the write `no_log`. Runs under `--check` too, so dry runs still test key auth. The single implementation used by `distribute-ssh-keys`, `harden-ssh` and `verify-host-access` |
+| `tasks/remove-ssh-key.yml` | Implemented | Wipe what `materialise-ssh-key.yml` made. Include it from the `always:` of the same block (an include cannot carry `always`); refuses any directory the materialise task did not create |
 | `tasks/distribute-ca-root.yml` | Implemented | Distribute the internal CA root to a host's trust store |
 | `tasks/distribute-caddy-site.yml` | Implemented | Place a per-service Caddy site fragment (composable Caddy model) |
 | `tasks/mint-internal-cert.yml` | Implemented | Mint a certificate from the internal step-ca |

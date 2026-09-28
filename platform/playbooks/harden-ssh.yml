@@ -96,72 +96,72 @@
           url=_bao_url, auth_method='approle',
           role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
       become: false
-
-    - name: "Write verification key to temp file"
-      ansible.builtin.tempfile:
-        state: file
-        prefix: ".verify_key_"
-      register: _key_file
-      delegate_to: localhost
-      become: false
-
-    - name: "Set verification key contents"
-      ansible.builtin.copy:
-        content: "{{ _mgmt_priv_key }}\n"
-        dest: "{{ _key_file.path }}"
-        mode: "0600"
-      delegate_to: localhost
-      become: false
       no_log: true
 
-    - name: "Verify password auth is rejected"
-      ansible.builtin.command:
-        cmd: >
-          ssh -o BatchMode=yes -o ConnectTimeout=10
-              -o StrictHostKeyChecking=accept-new
-              -o PubkeyAuthentication=no
-              {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
-              echo SHOULD_NOT_REACH
-      delegate_to: localhost
+    # The key goes on disk only for the probes, via the shared task, and is wiped in
+    # `always` — on a failed probe too, which the hand-rolled version did not do. Under
+    # --check this still runs: the scratch is runner-local
+    # (tasks/materialise-ssh-key.yml explains why that is allowed), and the key-auth
+    # probe then answers the question a dry run exists for — would the key still get in.
+    - name: "Verify the lockdown with a runner-local copy of the management key"
       become: false
-      register: _pw_test
-      failed_when: _pw_test.rc == 0
-      changed_when: false
-      ignore_errors: true
-      check_mode: false
+      block:
+        - name: "Materialise the verification key (runner-local, 0600)"
+          ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+          vars:
+            ssh_key_content: "{{ _mgmt_priv_key }}"
+            ssh_key_result_var: _verify_key
 
-    - name: "Confirm password auth disabled"
-      ansible.builtin.assert:
-        that: _pw_test.rc != 0
-        fail_msg: "WARNING: Password auth still works on {{ service_name | default(inventory_hostname) }}!"
-        success_msg: "{{ service_name | default(inventory_hostname) }}: password auth REJECTED"
+        - name: "Verify password auth is rejected"
+          ansible.builtin.command:
+            cmd: >
+              ssh -o BatchMode=yes -o ConnectTimeout=10
+                  -o StrictHostKeyChecking=accept-new
+                  -o PubkeyAuthentication=no
+                  {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
+                  echo SHOULD_NOT_REACH
+          delegate_to: localhost
+          become: false
+          register: _pw_test
+          failed_when: _pw_test.rc == 0
+          changed_when: false
+          ignore_errors: true
+          check_mode: false
 
-    - name: "Verify key auth still works"
-      ansible.builtin.command:
-        cmd: >
-          ssh -i {{ _key_file.path }}
-              -o BatchMode=yes -o ConnectTimeout=10
-              -o StrictHostKeyChecking=accept-new
-              -o PasswordAuthentication=no -o PubkeyAuthentication=yes
-              {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
-              echo KEY_AUTH_OK
-      delegate_to: localhost
-      become: false
-      register: _key_test
-      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
-      changed_when: false
-      check_mode: false
+        - name: "Confirm password auth disabled"
+          ansible.builtin.assert:
+            that: _pw_test.rc != 0
+            fail_msg: "WARNING: Password auth still works on {{ service_name | default(inventory_hostname) }}!"
+            success_msg: "{{ service_name | default(inventory_hostname) }}: password auth REJECTED"
 
-    - name: "Remove verification key"
-      ansible.builtin.file:
-        path: "{{ _key_file.path }}"
-        state: absent
-      delegate_to: localhost
-      become: false
+        - name: "Verify key auth still works"
+          ansible.builtin.command:
+            cmd: >
+              ssh -i {{ _verify_key.key }}
+                  -o BatchMode=yes -o ConnectTimeout=10
+                  -o StrictHostKeyChecking=accept-new
+                  -o PasswordAuthentication=no -o PubkeyAuthentication=yes
+                  {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
+                  echo KEY_AUTH_OK
+          delegate_to: localhost
+          become: false
+          register: _key_test
+          failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
+          changed_when: false
+          check_mode: false
+
+      always:
+        - name: "Remove the runner-local verification key"
+          ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+          vars:
+            ssh_key_result_var: _verify_key
 
     - name: "Lockdown complete"
       ansible.builtin.debug:
-        msg: "{{ service_name | default(inventory_hostname) }}: password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled"
+        msg: >-
+          {{ 'DRY RUN (sshd and sudoers changes simulated; the probes read the host as it is NOW) — '
+             if ansible_check_mode else '' }}{{ service_name | default(inventory_hostname) }}:
+          password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled
 
   handlers:
     - name: Restart sshd

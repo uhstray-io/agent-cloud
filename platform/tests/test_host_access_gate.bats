@@ -104,21 +104,25 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
 }
 
 @test "verify-host-access: the ssh task cannot run with an undefined key path" {
-  # failed_when: false does NOT catch task-ARGUMENT templating failures, so an
-  # undefined _keyfile.path aborts the play instead of reporting NO-GO —
-  # defeating the whole always-report design.
+  # failed_when: false does NOT catch task-ARGUMENT templating failures, so a
+  # probe with no materialised key aborts the play instead of reporting NO-GO —
+  # defeating the whole always-report design. The key comes from the shared
+  # tasks/materialise-ssh-key.yml, which sets materialised=false for an empty key.
   awk '/Connect using the key ONLY/{f=1} f&&/^      always:/{exit} f' "$PB" \
     > "$BATS_TEST_TMPDIR/probetask.txt"
-  grep -qF -- "_keyfile.path is defined" "$BATS_TEST_TMPDIR/probetask.txt"
+  grep -qF -- "_probe_key.materialised | default(false) | bool" "$BATS_TEST_TMPDIR/probetask.txt"
   grep -qF -- "_svc_key | length > 0" "$BATS_TEST_TMPDIR/probetask.txt"
 }
 
 @test "verify-host-access: cleanup removes BOTH temp files, always" {
-  awk '/^      always:/{f=1} f' "$PB" > "$BATS_TEST_TMPDIR/cleanup.txt"
+  # Both live in the materialised key's scratch directory, which the shared wipe
+  # removes whole; test_materialise_ssh_key.py proves that behaviourally.
+  awk '/^      always:/{f=1} f&&/^    # ── Escalation/{exit} f' "$PB" > "$BATS_TEST_TMPDIR/cleanup.txt"
   [ -s "$BATS_TEST_TMPDIR/cleanup.txt" ]
-  grep -qF -- "state: absent" "$BATS_TEST_TMPDIR/cleanup.txt"
-  grep -qF -- "{{ _keyfile.path }}" "$BATS_TEST_TMPDIR/cleanup.txt"
-  grep -qF -- ".known_hosts" "$BATS_TEST_TMPDIR/cleanup.txt"
+  grep -qF -- "ansible.builtin.include_tasks: tasks/remove-ssh-key.yml" "$BATS_TEST_TMPDIR/cleanup.txt"
+  grep -qF -- "ssh_key_result_var: _probe_key" "$BATS_TEST_TMPDIR/cleanup.txt"
+  # The pin must be written INTO that directory, or the wipe misses it.
+  grep -qF -- 'dest: "{{ _probe_key.known_hosts }}"' "$PB"
 }
 
 @test "verify-host-access: the verdict itself gates on the key probe" {
