@@ -623,15 +623,21 @@
         var: runner_setup.stdout_lines
       when: runner_setup is defined and runner_setup is succeeded
 
+    # Each line reports the check that proves it. `ssh_ready` only proves port 22 is open;
+    # the login is `ssh_test`, which is ignore_errors and fails on a runner with no key file.
+    # A skipped task still registers a result that the `succeeded` test accepts, so every
+    # line excludes `skipped` explicitly (Semaphore task 1753 printed "SSH: ok" and "Runner:
+    # configured" after a failed login and a skipped runner step).
     - name: "Provisioning complete"
       ansible.builtin.debug:
         msg: |
           VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
             IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
             Status: {{ (vm_running.json.data.status | default(pre_start.json.data.status | default('unknown'))) }}{{ ' (check mode: not started)' if ansible_check_mode else '' }}
-            Agent: {{ 'ok' if (agent_ping is defined and agent_ping.status == 200) else 'pending' }}
-            SSH: {{ 'ok' if ssh_ready is succeeded else 'pending' }}
-            Runner: {{ 'configured' if (runner_setup is defined and runner_setup is succeeded) else 'skipped' }}
+            Agent: {{ 'ok' if (agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200) else 'pending' }}
+            SSH port: {{ 'open' if (ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded) else 'pending' }}
+            SSH login: {{ 'ok' if (ssh_test is defined and ssh_test is not skipped and ssh_test.rc | default(1) == 0) else 'NOT verified (no key file on this runner, or login refused); run Distribute SSH Keys then Verify Host Access' }}
+            Runner: {{ 'skipped' if (runner_setup is not defined or runner_setup is skipped) else ('configured' if runner_setup is succeeded else 'FAILED (see the task above)') }}
           Next: deploy-service.yml -e target_service={{ target_service }}
 
 - name: "Post-validate: VM running"
