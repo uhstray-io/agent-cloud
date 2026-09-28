@@ -246,7 +246,8 @@ production start failed (see the last item).
   fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (v1.5.0 reads it
   at `crates/agentgateway/src/config.rs:390-392` and switches the config store to read-only;
   `ui.rs:53` refuses writes in that mode), so no key or policy is ever managed there. Task
-  1.10 is the one place this is set; `inference-personal-keys` depends on it.
+  1.10 is the one place this is set (done in PR #303, open against `dev` on 2026-09-28);
+  `inference-personal-keys` and `agentgateway-observability` decision 5 depend on it.
 - **Grace period.** `legacy-shared` stays valid through the gateway for 14 days after the
   route switch (`legacy_shared_expires` = switch date + 14 days), then task 5.1 applies.
 - **Benchmarking** is its own change, `inference-benchmarking`, and runs before the budgets
@@ -275,7 +276,9 @@ production start failed (see the last item).
     `150-180` at tag v1.5.0), but the single-file mount at `compose.yml:48` hides a
     replaced file from the container, so whether a key change can apply without a restart
     is settled by a drill (task 1.12) before either branch is built. If it can, the
-    config moves to a directory mount and only an environment change recreates. If it
+    config moves to a directory mount and only an environment change recreates; that
+    directory is mounted read-only and holds `config.yaml` only, never the deploy
+    directory or `.env` (`agentgateway-observability` decision 5 relies on it). If it
     cannot, `deploy.sh` compares the sha256 of the rendered files with a label the running
     container was started with and recreates only on a difference or when no container is
     running. Alternative rejected: pass the template task's `changed` result to

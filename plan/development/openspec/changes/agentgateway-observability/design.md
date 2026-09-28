@@ -4,9 +4,11 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>.
 
 ## Context
 
-See `proposal.md` for motivation. Rebased 2026-09-28 onto `origin/dev` at `7a24846`.
-Repository facts below were read in that tree. The agentgateway facts were read on
-2026-09-27 from tag `v1.5.0` (commit `fe6732474a96a0363dfb9822859af4e9bab360fa`, via
+See `proposal.md` for motivation. Rebased 2026-09-28 onto `origin/dev` at `7a24846`,
+then brought up to `origin/dev` at `a146382` (PR #301) by merge `f92b0bf`. Repository
+facts below were read in the `7a24846` tree; the line cites into `deploy-o11y.yml`,
+`datasources.yml` and `config.yaml.j2` were re-read at `f92b0bf` on 2026-09-28. The
+agentgateway facts were read on 2026-09-27 from tag `v1.5.0` (commit `fe6732474a96a0363dfb9822859af4e9bab360fa`, via
 `gh api repos/agentgateway/agentgateway/contents/<path>?ref=v1.5.0`). Where the upstream
 documentation, which tracks `main`, disagrees with v1.5.0, v1.5.0 wins.
 
@@ -25,6 +27,7 @@ Commits from `git log --oneline c9f99ca7..origin/dev` over
 | `a2ead67`, `9d5c609`, `74b5b24` | An opt-in, anonymous gateway trace canary in `Verify o11y Service` |
 | `f0435e7`, `9350efd` | The shared trace rollout gate and the gateway's sampling guard |
 | `9375948` | Receipt IDs taken from Semaphore task records |
+| `f87850f`, `97728e4` (PR #301) | A Loki-to-Tempo `TraceID` derived field on the Loki datasource, read back live by the o11y deploy, and runtime retention budgets verified |
 
 The gateway side, `platform/services/agentgateway/deployment/templates/config.yaml.j2`:
 
@@ -79,14 +82,22 @@ The o11y side:
 - `compose.yml:92-102`: Tempo `2.10.8`, single node, local storage, retention
   `O11Y_TEMPO_RETENTION` defaulting to `168h` (`config/tempo-config.yml:18-20`,
   `templates/env.j2:29`). No port is published from Tempo.
+- `config/grafana/provisioning/datasources/datasources.yml:21-27` (PR #301): the Loki
+  datasource carries a `TraceID` derived field whose matcher is
+  `"traceid":"([0-9a-f]{32})"` and whose target is datasource uid `tempo`. The o11y
+  deploy reads the live Loki datasource and requires exactly one such field
+  (`deploy-o11y.yml:349-372`). The Tempo datasource and its trace-to-metric and
+  trace-to-log mappings are at `datasources.yml:29-46`, read back live at
+  `deploy-o11y.yml:321-347`. unverified: whether the gateway's OTLP access records reach
+  Loki in a form that matcher finds; task 4.2 reads one real record first.
 - `config/prometheus.yml:27-33` scrapes `alloy:12345` and `tempo:3200`. The
   self-monitoring dashboard charts `tempo_distributor_spans_received_total{job="tempo"}`
   (`o11y-self-monitoring.json:95`), and the deploy asserts that panel
-  (`deploy-o11y.yml:446-451`).
+  (`deploy-o11y.yml:471-476`).
 - `agentgateway-traffic.json`, uid `agentgateway-traffic`, has eight Prometheus panels:
   scrape up, config synchronized, requests per second, requests by status, server error
   ratio, request latency p95, tokens per second, and first-token p95. It has no template
-  variables and no Loki or Tempo panel. `deploy-o11y.yml:476-477` requires exactly eight
+  variables and no Loki or Tempo panel. `deploy-o11y.yml:501-502` requires exactly eight
   panels.
 - `tasks/assert-o11y-trace-rollout.yml:9-29` requires, on the single receiver:
   `o11y_trace_rollout_enabled`, `o11y_alerts_enabled`, four numeric Semaphore receipt
@@ -256,6 +267,8 @@ This change owns the gateway side and lists the o11y items as dependencies.
    `{llm: metadata}`, never an omitted mode, because omission is v1.5.0's legacy
    capture. Rows land in the gateway's Postgres and are read through the UI Logs page,
    behind the Authentik login and the `platform-admins` rule (`config.yaml.j2:63-78`).
+   The admin listener serves the same log API without that login, inside the container
+   only; decision 5 and Risks record why that is accepted.
    Metrics, spans, OTLP records and Loki stay metadata-only, because Grafana has no
    per-record access control. Team members are told in their key handout that prompts
    and completions are kept for 90 days and are readable by platform admins.
@@ -271,8 +284,34 @@ This change owns the gateway side and lists the o11y items as dependencies.
    `inference-users` is the team (`inference-personal-keys` task 4.2). While content
    is `full`, the deploy refuses to render any identity whose team is not `uhstray`, or
    that declares no team. Why no runtime rule in `llm.policies.authorization`: every key
-   the gateway accepts comes from this one render (`config.yaml.j2:131-165`). The config
-   is mounted read-only, and the UI cannot write it. A runtime rule would guard against
+   the gateway accepts comes from this one render (`config.yaml.j2:131-165`), and the
+   UI cannot write it. That claim rests on three explicit controls, each enforced in
+   code, not assumed:
+   - **`UI_READ_ONLY=true` is a prerequisite for `full`.** v1.5.0 forces the config store
+     to read-only when the variable is set (`crates/agentgateway/src/config.rs:390-392`),
+     and every UI write handler then answers 403 (`ui.rs:52-60`, called at `:316`,
+     `:402`, `:451`, `:603` and `:673`; read 2026-09-28). Without it, the store is in its
+     default `File` mode (`lib.rs:442-450`) and a write fails only at the read-only
+     mount. The same UI router is also served on the admin listener with no login
+     (`management/admin.rs:199-205`), so the store's own refusal covers that
+     unauthenticated copy too, instead of relying only on the mount failing the write.
+     unverified: whether a write in `File` mode changes the running state before the
+     file write fails; the refusal makes the question moot. `inference-gateway-agentgateway` task 1.10 sets the variable
+     (PR #303, open against `dev` on 2026-09-28; this tree at `f92b0bf` does not carry
+     it yet). The render guards (task 2.5) refuse `agw_content_logging: full` unless the
+     rendered `.env` sets `UI_READ_ONLY=true`, and the site-config switch (task 2.12)
+     waits on it.
+   - **The config mount stays read-only and holds only `config.yaml`.** Today the file
+     is mounted alone, read-only (`compose.yml:48`). If the gateway change's hot-reload
+     drill (its task 1.12) moves the config to a directory mount, that directory is
+     mounted `:ro` and contains `config.yaml` and nothing else. It is never the deploy
+     directory, which holds the 0600 `.env` carrying the database URL with its password
+     (`templates/env.j2:26`) and the upstream key (line 32). A BATS assertion on
+     `compose.yml` holds both properties (task 2.7).
+   - **The admin listener's unauthenticated log API is an accepted risk** (Risks). It
+     stays pinned to the container loopback (`config.yaml.j2:33`) and unpublished.
+
+   A runtime rule would guard against
    a path that does not exist, and it would add an unverified evaluation-order question
    about whether `apiKey.team` is populated when authorization runs. **Future users
    outside the team** get a second gateway instance in `metadata` mode, because the mode
@@ -374,7 +413,7 @@ This change owns the gateway side and lists the o11y items as dependencies.
       `gen_ai_token_type`, rejections by `reason`, `agentgateway_requests_shed_total`,
       `agentgateway_build_info`, access records from Loki
       (`{service="agentgateway", signal="access-log"}`) and a Tempo search on uid
-      `tempo`. The eight-panel assert (`deploy-o11y.yml:477`) moves to the new count.
+      `tempo`. The eight-panel assert (`deploy-o11y.yml:502`) moves to the new count.
     - Client view: `agentgateway-client-view.json`, uid `agentgateway-client-view`, with
       p50 and p95 first-token latency from
       `agentgateway_gen_ai_server_time_to_first_token_bucket`, request duration, the 4xx
@@ -390,6 +429,25 @@ This change owns the gateway side and lists the o11y items as dependencies.
   by platform admins and by anyone holding the database password] → the prune and its
   alert (decision 7), admin-only UI access and the handout notice (decision 4). A secret
   found in a prompt is rotated, and a zero-day prune run purges the rows at once.
+- [With `full`, the admin listener serves team prompts and completions without a login]
+  → accepted. The admin listener merges the whole UI router with no `ui.policies`
+  (`management/admin.rs:185-205` at v1.5.0), and that router carries the log API
+  (`ui.rs:106-108`: `/api/logs/search`, `/api/logs/get`, `/api/logs/tail`). So any
+  process inside the gateway container's network namespace can read every stored
+  payload from `127.0.0.1:15000` with no Authentik login. Why this is accepted: the
+  listener is bound to the container loopback (`config.yaml.j2:33`) and has no
+  published port (`compose.yml:43-46`), so reaching it takes code execution inside the
+  gateway container or the host account that runs its container engine. Both already
+  reach the same rows without the listener: the container's environment is loaded from
+  the 0600 `.env` (`compose.yml:40-41`), which carries the database URL with its
+  password (`templates/env.j2:26`), and `agentgateway-db` answers on the compose
+  network. The listener adds no reader who could not already query
+  `request_log_payloads` directly. Alternative rejected: an image built without the
+  `ui` feature, the only switch at `admin.rs:199-208` that keeps the UI router off the
+  admin listener, because it also removes the authenticated operator UI. unverified:
+  whether v1.5.0 can run with no admin listener at all; task 2.10 settles it, and if it
+  can while the UI listener keeps working, that replaces this acceptance. The gateway
+  change's task 1.6 asserts that the admin port is never published.
 - [The prod inventory relies on `agw_otlp_host` alone] → the neither-switch refusal
   (decision 1) turns a missed site-config change into a named failure instead of silent
   loss.

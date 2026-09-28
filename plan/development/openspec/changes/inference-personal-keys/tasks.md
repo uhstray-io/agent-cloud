@@ -133,7 +133,30 @@ are the gateway change's tasks 1.10 and 1.12; this change reads their answers.
 - [ ] 5.2 Lifetime vars `inference_key_lifetime_days: 30` and
       `inference_key_grace_days: 3`, plus `inference_key_rotation_day` (1-28) for the cohort
       branch of design decision 9 (built only if gateway task 1.12 finds no hot reload);
-      the deploy and the reconcile read the same values
+      the deploy and the reconcile read the same values. On the cohort branch a minted
+      key's `expires_at` is the start (00:00 UTC) of the first cohort day after its issue
+      plus `inference_key_grace_days`, and `inference_key_lifetime_days` is not read; a
+      rotated key's `previous_expires_at` is its own `expires_at`. The hot-reload branch
+      is unchanged: `issued_at + 30 days`, successor at day 27
+- [ ] 5.2a Cohort-branch lockout drill, 31-day interval (design decision 9). The plan step
+      reads the current time from one fact, which a local-dev-only extra variable pins
+      (proposed name `inference_key_plan_now`; the reconcile refuses it outside
+      `local_mode`). With `inference_key_rotation_day: 1`:
+      - BATS or pytest over the plan arithmetic: a key issued 2026-10-01T00:17Z (1 October
+        to 1 November is 31 days) gets `expires_at` 2026-11-04T00:00Z; stepped hourly from
+        issue to expiry, no step finds the key expired while it has no successor; the
+        successor appears at the first step on 2026-11-01. The same holds for every month
+        pair of one year, February's 28 days included. Mutate the rule once to
+        `issued_at + inference_key_lifetime_days` and watch the test go red on the
+        October step 2026-10-31T00:17Z
+      - Local drill, through the local Semaphore, with the pinned clock at 2026-10-01T00:17Z
+        (mint), 2026-10-31T23:17Z (the key is served, no successor yet), 2026-11-01T00:17Z
+        (successor minted, both keys served), 2026-11-03T23:17Z (both served) and
+        2026-11-04T00:17Z (the old key gets 401, the successor is served). The served and
+        401 checks use the probe path of 5.4a. Proves scenario "A key is never expired
+        before its successor is minted". unverified: whether the gateway's own expiry
+        filter (task 4.1) reads the same pinned time; if it reads the wall clock, the
+        drill writes records whose times are shifted by the same offset instead
 - [ ] 5.3 `templates.yml`: template `Reconcile Inference User Keys`, `dev_variant: true`,
       `schedule: {cron: "17 * * * *"}`; run `setup-templates.yml`. Declare the job in the
       shared "Scheduled job silent" list (`production-internal-ca` task 6.4) at three hours;

@@ -74,9 +74,12 @@ record reached Loki.
 
 ### Requirement: Team prompt content is kept only in the gateway's own store
 When content logging is enabled, the gateway SHALL keep the prompt and completion
-content of team requests in its own request-log database. That content SHALL be
-readable only through the gateway's authenticated operator interface, by members of the
-platform admin group. When content logging is disabled, the gateway SHALL store request
+content of team requests in its own request-log database. Over the network, that
+content SHALL be readable only through the gateway's authenticated operator interface,
+by members of the platform admin group; the gateway's admin listener, which serves the
+same log API without a login, MUST stay bound to the container loopback and unpublished.
+The deploy MUST refuse to enable content logging unless the gateway environment makes
+the UI's configuration store read-only. When content logging is disabled, the gateway SHALL store request
 metadata without content. No metric label, span attribute, access-record field,
 exported record or Loki line MAY contain prompt or completion text.
 
@@ -95,6 +98,11 @@ exported record or Loki line MAY contain prompt or completion text.
 - **WHEN** an unauthenticated browser, or a signed-in user outside the platform admin
   group, requests a stored log entry through the operator interface
 - **THEN** the gateway does not return the entry's content
+
+#### Scenario: Content logging needs a read-only UI
+- **WHEN** content logging is requested for a gateway whose environment does not set
+  the UI's configuration store read-only
+- **THEN** the deploy fails before rendering and names the missing setting
 
 ### Requirement: Content is kept only for uhstray.io team identities
 Every identity enrolled at the gateway SHALL declare its team. While content logging is

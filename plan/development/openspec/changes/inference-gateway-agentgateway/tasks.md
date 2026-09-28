@@ -72,6 +72,18 @@
       `frontendPolicies.http.maxBufferSize: 20971520`; `config.statsAddr` on the LAN bind;
       `config.tracing.otlpEndpoint` to the o11y host; no `retry`, no `requestTimeout`
       2026-09-17: done; `config.database.url: $AGW_DATABASE_URL` added; limits shape per 4.2
+      2026-09-28 correction (the checked text above is kept as written): two names in it
+      are not what landed. The upstream variable is `agw_upstream_base_url`, rendered
+      whole as `params.baseUrl: {{ agw_upstream_base_url }}` (`config.yaml.j2:190`;
+      asserted at `deploy-agentgateway.yml:76-77`); `agw_vllm_upstream` appears in no
+      commit under `platform/` (`git log -S`, 2026-09-28). Tracing is
+      `frontendPolicies.tracing` (`config.yaml.j2:99-106`, PR #295), not
+      `config.tracing.otlpEndpoint`. Also as landed: the listener is
+      `gateways.default.port: 4000` (lines 56-58), and `statsAddr` is `0.0.0.0:19002`
+      inside the container (line 35), published on `AGW_STATS_BIND`, which defaults to
+      loopback (`templates/env.j2:13`). The same applies to 1.8's
+      `config.logging.fields.add.identity`, now `frontendPolicies.accessLog.add.identity`
+      (lines 85-87)
 - [x] 1.3 `templates/env.j2` (gitignored `.env` at deploy): `VLLM_API_KEY` from OpenBao
       `secret/services/agentgateway:vllm_api_key`; client keys rendered into the
       `apiKey` policy from `secret/services/agentgateway/clients/*`. 2026-09-17: client
@@ -124,13 +136,17 @@
       the blueprint; the local overlay removes the UI host publish so no unauthenticated
       path exists. Browser login as `agent-cloud-admin` and the prod `nc` are Joe's/prod
 
-- [ ] 1.10 `UI_READ_ONLY=true` in the gateway environment, and a BATS assertion that it is
+- [x] 1.10 `UI_READ_ONLY=true` in the gateway environment, and a BATS assertion that it is
       rendered; the UI must refuse writes itself, not only fail at the read-only mount
       (design "Decisions recorded 2026-09-27"). v1.5.0 reads the variable and switches the
       config store to read-only (`crates/agentgateway/src/config.rs:390-392` at tag
       v1.5.0), and the UI refuses writes in that mode (`crates/agentgateway/src/ui.rs:53`).
       This is the only UI read-only task; `inference-personal-keys` relies on it. Proves
       scenario "The UI refuses configuration writes"
+      2026-09-28: done in PR #303 (`templates/env.j2` renders `UI_READ_ONLY=true`
+      unconditionally, plus a BATS assertion on the rendered env). The PR is open against
+      `dev`; this tree at `f92b0bf` does not carry it yet. `agentgateway-observability`
+      decision 5 makes it a prerequisite for `agw_content_logging: full`
 - [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
       2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
       rule (PR #289) applied, `agw_ui_enabled: true` (site-config #35), then Deploy
@@ -148,6 +164,12 @@
       - **Hot reload confirmed:** the config becomes a directory mount; a `config.yaml`
         change is left to the watch and proven by the verify phase's keyed probe (6.1a);
         only an `.env` change recreates, because a process's environment is fixed at start.
+        The directory stays mounted `:ro` and holds `config.yaml` only: the deploy renders
+        into a dedicated subdirectory, never mounts the deploy directory, and never places
+        `.env` (0600, database URL and upstream key, `templates/env.j2:26`, `:32`) where
+        the container can read it as a file. The drill's directory mount follows the same
+        rule. `agentgateway-observability` decision 5 depends on this, and its task 2.7
+        asserts it in BATS.
       - **Not confirmed:** `deploy.sh` computes the sha256 of the rendered `config.yaml` and
         `.env`, reads the value recorded in a label on the running `agentgateway`
         container, and passes `--force-recreate` only when the two differ; otherwise it

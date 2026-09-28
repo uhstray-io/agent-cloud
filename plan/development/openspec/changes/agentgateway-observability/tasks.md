@@ -3,8 +3,9 @@
 Every task is idempotent, and live work runs through Semaphore templates; nothing is done
 over a shell on a VM. Pull requests are opened only when Joe asks for them (repo rule).
 
-Rebased 2026-09-28 onto `origin/dev` at `7a24846`. The landed state and its commits are
-in `design.md` Context.
+Rebased 2026-09-28 onto `origin/dev` at `7a24846`, then brought up to `origin/dev` at
+`a146382` (PR #301) by merge `f92b0bf`. The landed state and its commits are in
+`design.md` Context.
 
 ## Ownership and relation to other work
 
@@ -15,8 +16,9 @@ other task is gateway-side and belongs to this change.
 
 - `inference-gateway-agentgateway` task 3.1 is **superseded** by this change together
   with the landed o11y work. Its gate 3.3 is **proved here** by task 9.4, against the
-  separate client-view dashboard. Its task 1.10 (`UI_READ_ONLY=true`) stays with it, and
-  design decision 4 depends on it.
+  separate client-view dashboard. Its task 1.10 (`UI_READ_ONLY=true`) stays with it and
+  is done in PR #303 (open against `dev` on 2026-09-28); design decisions 4 and 5 depend
+  on it, and task 2.5 here refuses `full` without it.
 - `observability-estate` task 3.1 (the gate) has landed as
   `tasks/assert-o11y-trace-rollout.yml`, which this change reuses without a second gate.
   Task 3.2 is checked off there. Task 3.3 (the pilot service) is **absorbed** here, with
@@ -68,7 +70,7 @@ is a separate dashboard, with operations as a second dashboard.
         with a matrix of renders: logs only renders `accessLog.otlp` and no `tracing`;
         traces only renders `tracing` and no `accessLog.otlp`; both renders both;
         neither renders neither.
-      - Update the gate assertion at line 385 and `platform/tests/test_service_o11y.bats:1077`
+      - Update the gate assertion at line 385 and `platform/tests/test_service_o11y.bats:1086`
         to the trace switch.
       - Add one playbook-level test per refusal from 1.3, each mutated once to watch it
         go red (`CONTRIBUTING.md`, "Writing BATS Tests").
@@ -108,6 +110,12 @@ is a separate dashboard, with operations as a second dashboard.
       - refuse an `agw_content_logging` value outside `full` and `metadata`
       - refuse a team value outside `^[a-z0-9][a-z0-9-]*$`, the charset the playbook
         already enforces for names (lines 86-93)
+      - while `agw_content_logging == 'full'`, refuse unless the gateway environment sets
+        `UI_READ_ONLY=true` (design decision 5; `inference-gateway-agentgateway` task
+        1.10, PR #303). The guard runs before the render like the others, so it reads
+        the committed `templates/env.j2` on the controller (a `lookup('file')`), not an
+        inventory flag, and requires the literal line `UI_READ_ONLY=true`; removing
+        that line from the template fails a `full` deploy
 - [ ] 2.6 BATS scan of `config.yaml.j2` (design decision 6): extend the key-position scan
       at `test_service_agentgateway.bats:145-152` so it fails on `llm.prompt`,
       `llm.completion`, `request.headers`, `request.body` or any `apiKey.` member other
@@ -120,7 +128,13 @@ is a separate dashboard, with operations as a second dashboard.
       - Every key renders a `team`.
       - `database.llm` renders `metadata` when the variable is unset and `full` when it
         is set.
-      - Each refusal in 2.5 fires.
+      - Each refusal in 2.5 fires, including `full` against an environment without
+        `UI_READ_ONLY=true`.
+      - `compose.yml` mounts the gateway config `:ro`, and the mount source is
+        `config.yaml` or a directory that holds only `config.yaml`, never the deploy
+        directory or `.env` (design decision 5; it stays true if
+        `inference-gateway-agentgateway` task 1.12 moves the config to a directory
+        mount).
 - [ ] 2.8 `compose.yml`: rewrite the header comment that says the database holds "nothing
       a client needs back" (lines 7-8) so it names the request-log content and its
       retention
@@ -134,19 +148,24 @@ is a separate dashboard, with operations as a second dashboard.
       Authentik login, and refused for a signed-in user outside `platform-admins`; the
       conversation view renders for an admin. unverified today: that `ui.policies`
       covers the `/api/logs` paths, as the source reads (`types/local.rs:2060-2070`,
-      `:3968-3975`)
+      `:3968-3975`). Also record, from the v1.5.0 source and one local start, whether
+      the gateway can run with no admin listener while the UI listener keeps working;
+      the design's accepted risk on the admin listener's unauthenticated log API
+      (Risks) stands until this says it can
 - [ ] 2.11 Handout notice: the document the team's keys are handed out with (the gateway
       change's task 4.4 updates dgx-spark `docs/TEAM-ENDPOINT.md`; personal keys use
       their own handout) states that prompts and completions are kept for 90 days and
       are readable by platform admins
 - [ ] 2.12 site-config: declare `team: uhstray` for every `agw_clients` identity,
       including the enrolled legacy shared key and `skynet`, which Joe confirmed as
-      team-only on 2026-09-27. Only after 3.2's schedule is live, set
+      team-only on 2026-09-27. Only after 3.2's schedule is live and
+      `inference-gateway-agentgateway` task 1.10 (PR #303) is merged and deployed, set
       `agw_content_logging: full` and `agw_request_log_retention_days: 90`
 - [ ] 2.13 Validation gate: 2.6's planted field fails the scan, which proves scenario
       "Content-capturing configuration is refused". 2.9 proves scenarios "A non-team
       identity is refused at render" and "A team request's content is stored". 2.10
-      proves scenario "Content is readable only by platform admins"
+      proves scenario "Content is readable only by platform admins". 2.7's refusal of `full`
+      without `UI_READ_ONLY=true` proves scenario "Content logging needs a read-only UI"
 
 ## 3. Content retention (design decision 7)
 
@@ -282,11 +301,11 @@ is a separate dashboard, with operations as a second dashboard.
       identity, model and `gen_ai_token_type`, rejections by `reason`,
       `agentgateway_requests_shed_total`, `agentgateway_build_info`, access records
       (`{service="agentgateway", signal="access-log"}`, which needs 4.1) and a Tempo
-      search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:477`
+      search on uid `tempo`. Update the panel-count assert at `deploy-o11y.yml:502`
 - [ ] 7.2 **[o11y]** Client-view dashboard: `agentgateway-client-view.json`, uid
       `agentgateway-client-view`, with p50 and p95 first-token latency, request
       duration, the 4xx and 5xx ratio, and per-identity request rate, plus an `identity`
-      variable. The o11y deploy asserts it the way lines 455-478 assert the traffic
+      variable. The o11y deploy asserts it the way lines 480-504 assert the traffic
       dashboard
 - [ ] 7.3 **[o11y]** Replace the hard-coded `cluster = "agent-cloud-local"` at
       `config.alloy:44` and `config/prometheus.yml:8` with a value rendered from

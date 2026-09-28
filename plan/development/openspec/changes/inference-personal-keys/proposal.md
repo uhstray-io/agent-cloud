@@ -16,7 +16,7 @@ an operator typed into inventory. `agw_clients` is a flat list; the deploy mints
 `client_<name>` field per entry on `secret/services/agentgateway`, enrols its sha256
 hash, and a person receives the value through the site-config backup channel
 (`platform/playbooks/vars/secret-declarations/agentgateway.yml:16-29`,
-`platform/services/agentgateway/deployment/templates/config.yaml.j2:123-157`,
+`platform/services/agentgateway/deployment/templates/config.yaml.j2:131-165`,
 `platform/playbooks/manage-agentgateway-client-key.yml:19-25`). That works for four
 agent and operator identities. It does not work for a team:
 
@@ -31,7 +31,7 @@ agent and operator identities. It does not work for a team:
 - **Personal budgets need an API key.** In agentgateway v1.5.0 per-key token budgets
   attach only to API keys: the budget policy acts on budgets matched to an `apiKey`
   entry, and a JWT-authenticated caller gets no personal budget (Joe, 2026-09-27; the
-  budget shape the gateway renders today is `config.yaml.j2:140-156`). So "log in with
+  budget shape the gateway renders today is `config.yaml.j2:157-164`). So "log in with
   SSO and call the model" cannot, at this version, give each person their own spend
   guard.
 
@@ -63,8 +63,10 @@ agent and operator identities. It does not work for a team:
 - **Monthly rotation with a grace overlap, enforced.** Every key has a hard lifetime
   written into its record. While a key change restarts the gateway, keys rotate together
   on one fixed calendar day each month (Joe, 2026-09-28), so rotation restarts the
-  gateway a fixed number of times per cycle and a key lives at most 34 days; if the gateway applies key changes without a
-  restart, each key's successor is minted on its own day 27. Both keys are valid until
+  gateway a fixed number of times per cycle. Each key then expires at the next cohort day
+  plus the three grace days, at most 34 days after issue, so no key expires before its
+  successor is minted, even across a 31-day month. If the gateway applies key changes
+  without a restart, each key lives 30 days and its successor is minted on its own day 27. Both keys are valid until
   the old one's expiry. The gateway
   deploy renders a key only while its recorded expiry is in the future and refuses a
   record with no parseable expiry, so expiry holds even if nobody remembers it — the
@@ -78,7 +80,8 @@ agent and operator identities. It does not work for a team:
   (`crates/agentgateway/src/config.rs:390-392` at tag v1.5.0). This change depends on
   that task and does not set the switch again.
 - **Per-user observability and audit.** The gateway already labels every metric and
-  access-log line with `apiKey.name` (`config.yaml.j2:44-56`), so `user-<name>` appears
+  access-log line with `apiKey.name` (`config.yaml.j2:44-47` for metrics, `85-87` for
+  access-log lines), so `user-<name>` appears
   with no config change; the inference dashboard gains a per-user usage row. OpenBao
   gains an audit device configured as code, so "who read their key, and when" is
   answerable. No audit device is configured anywhere in the repository today (searched

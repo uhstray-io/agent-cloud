@@ -19,8 +19,10 @@ view.
 
 ## What has landed
 
-Read from this worktree at `7a24846`. The commit list comes from
-`git log --oneline c9f99ca7..origin/dev` over the gateway and o11y paths.
+Read from this worktree at `7a24846`, then brought up to `origin/dev` at `a146382`
+(PR #301) by merge `f92b0bf`, where the line cites into `deploy-o11y.yml`,
+`datasources.yml` and `config.yaml.j2` were re-read on 2026-09-28. The commit list comes
+from `git log --oneline c9f99ca7..origin/dev` over the gateway and o11y paths.
 
 - **Gateway policy blocks** (`13ff354`, PR #295): the gateway renders
   `frontendPolicies.accessLog` with `add.identity: apiKey.name`. When inventory sets
@@ -33,9 +35,9 @@ Read from this worktree at `7a24846`. The commit list comes from
   (`platform/services/o11y/deployment/compose.yml:92-102`). An Alloy OTLP gRPC receiver
   sends logs to the existing Loki writer and spans to `tempo:4317`
   (`config/config.alloy:108-146`). Grafana has a datasource with uid `tempo`
-  (`config/grafana/provisioning/datasources/datasources.yml:22-39`) and the dashboard
+  (`config/grafana/provisioning/datasources/datasources.yml:29-46`) and the dashboard
   `agentgateway-traffic.json` (uid `agentgateway-traffic`), whose eight panels the o11y
-  deploy asserts (`platform/playbooks/deploy-o11y.yml:476-477`).
+  deploy asserts (`platform/playbooks/deploy-o11y.yml:501-502`).
 - **Recovery-safe scrape receipt** (`5e2e36b`, PR #296): after readiness, the gateway
   deploy waits for a receiver-side sample of `agentgateway_config_synchronized` newer
   than the restart (`platform/playbooks/deploy-agentgateway.yml:279-316`).
@@ -53,6 +55,11 @@ Read from this worktree at `7a24846`. The commit list comes from
   (`config/prometheus.yml:27-33`). The self-monitoring dashboard charts
   `tempo_distributor_spans_received_total`
   (`config/grafana/dashboards/o11y-self-monitoring.json:95`).
+- **Log-to-trace link** (`f87850f`, `97728e4`, PR #301): the Loki datasource carries a
+  `TraceID` derived field pointing at datasource uid `tempo`
+  (`config/grafana/provisioning/datasources/datasources.yml:21-27`), and the o11y deploy
+  reads the live Loki datasource back and requires it
+  (`platform/playbooks/deploy-o11y.yml:349-372`).
 
 ## Why this change still exists
 
@@ -97,8 +104,11 @@ Gateway-side work, owned by this change:
 - **Team content is kept, and kept nowhere else.** The gateway renders
   `frontendPolicies.accessLog.database.llm: full` when inventory sets it. Every
   identity declares `team`, and the deploy refuses to render a non-team identity while
-  content is kept. Content is read only through the gateway UI's Logs page, behind
-  Authentik and the admin-group rule.
+  content is kept. Over the network, content is read only through the gateway UI's
+  Logs page, behind Authentik and the admin-group rule. The deploy refuses `full` unless
+  `UI_READ_ONLY=true` is set (`inference-gateway-agentgateway` task 1.10, PR #303). The
+  admin listener's unauthenticated copy of the log API, reachable only inside the
+  gateway container, is an accepted risk (`design.md`, Risks).
 - **Content expires after 90 days.** A scheduled prune deletes old rows, and a prune
   that stops running raises an alert. The gateway deploy never gates on the prune,
   because that deploy is how a key gets revoked.
@@ -160,7 +170,7 @@ dashboard. It also supplies the pilot for `observability-estate` task 3.3.
   gateway's trace switch instead of its host. The variable belongs to the gateway, so
   the edit is ours, and the o11y session reviews it.
 - Tests: `platform/tests/test_service_agentgateway.bats` (replaces the OTLP assertions at
-  lines 346-373 and the gate assertion at line 385), `test_service_o11y.bats:1077` and
+  lines 346-373 and the gate assertion at line 385), `test_service_o11y.bats:1086` and
   `test_apply_firewall.bats`.
 - `inference-personal-keys` task 4.2 renders `team: uhstray` on user keys.
 - site-config (private): `agw_otlp_logs`, `agw_otlp_traces`, `agw_stats_bind`,

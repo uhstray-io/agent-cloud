@@ -131,11 +131,13 @@ hours. It MUST NOT print a key value.
 When a key change restarts the gateway, the reconcile SHALL rotate all keys together on a
 declared fixed day of each calendar month, so that rotation restarts the gateway a fixed
 number of times per cycle whatever the number of users, and every key SHALL carry an
-expiry no later than the next cohort day plus the grace days (at most 34 days after
-issue). When the gateway applies key changes without a restart, every key SHALL carry an
-expiry no later than 30 days after issue and the reconcile SHALL mint each key's
-successor when that key is 27 days old. In both cases the old key SHALL stay valid until its recorded expiry, at
-most three days after its successor is minted. The gateway deploy MUST render a key only
+expiry equal to the start of the first cohort day after its issue plus the grace days (at
+most 34 days after issue); a fixed lifetime MUST NOT set the expiry on this branch. When
+the gateway applies key changes without a restart, every key SHALL carry an expiry no
+later than 30 days after issue and the reconcile SHALL mint each key's successor when
+that key is 27 days old. In both cases no key SHALL expire before its successor is
+minted, and the old key SHALL stay valid until its recorded expiry, at most three days
+after its successor is minted. The gateway deploy MUST render a key only
 while its recorded expiry is in the future and MUST fail on a record whose expiry is
 missing or unparseable, so that expiry is enforced by code on every deploy.
 
@@ -145,6 +147,13 @@ missing or unparseable, so that expiry is enforced by code on every deploy.
 - THEN each due key gets a new key, the old one is kept as the previous key with an
   expiry no later than three days later, the gateway accepts both, and on the cohort
   branch the whole cohort's rotation recreates the gateway at most once in that run
+
+#### Scenario: A key is never expired before its successor is minted
+- WHEN, on the cohort branch, a key is minted on a cohort day whose next cohort day is
+  31 days later, and the reconcile runs every hour from its issue until its expiry
+- THEN the key's recorded expiry is the next cohort day plus the grace days, the key is
+  accepted at every run before that cohort day, its successor is minted on that cohort
+  day while the key is still valid, and both keys are accepted until the key's expiry
 
 #### Scenario: The old key stops working at its expiry
 - WHEN the reconcile runs after the previous key's expiry

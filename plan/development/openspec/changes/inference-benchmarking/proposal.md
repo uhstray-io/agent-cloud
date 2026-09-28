@@ -28,7 +28,7 @@ The inference endpoint has a capacity figure, but no repeatable way to produce o
   different scripts, vantage points and prompt sets; none is an open-loop arrival test.
 - **The gateway's limits are placeholders.** The gateway template ships one global request
   bucket and a per-key hourly token budget with default figures
-  (`platform/services/agentgateway/deployment/templates/config.yaml.j2:153,169`), and the
+  (`platform/services/agentgateway/deployment/templates/config.yaml.j2:161,177-178`), and the
   gateway change's task 4.2 is still "derive both figures from the measured ceiling". Its
   conformance scenario asks for first-token latency "within an agreed margin of the direct
   path" (`inference-gateway-agentgateway/specs/platform/inference-gateway/spec.md`) with

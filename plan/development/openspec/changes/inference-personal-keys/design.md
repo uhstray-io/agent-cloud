@@ -6,14 +6,15 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>.
 
 Verified 2026-09-27 by reading the files named, unless marked otherwise.
 
-- **Gateway key rendering.** `config.yaml.j2:115-157` renders one `apiKey` entry per
+- **Gateway key rendering.** `config.yaml.j2:131-165` renders one `apiKey` entry per
   `agw_clients` name: `keyHash: sha256:<hex>` of the OpenBao value (plaintext only
-  under the local-dev flag, lines 126-130), `metadata.name` set to the identity,
+  under the local-dev flag, lines 134-138), `metadata.name` set to the identity,
   optional `allowedModels`, and a `budgets` entry `hourly-tokens` (`unit: Tokens`,
   `window.rolling: 1h`, `onBudgetExceeded: Block`) whose amount comes from
   `agw_client_policies.<name>.tokens_per_hour` or `agw_rate_tokens_per_hour`. Metrics
-  and access logs carry `identity: apiKey.name` (lines 44-56). One global
-  `localRateLimit` request bucket (lines 167-171).
+  carry `identity: apiKey.name` (lines 44-47), and so do access-log lines (lines 85-87)
+  and the OTLP access-log export (line 96). One global `localRateLimit` request bucket
+  (lines 175-179). Line numbers re-read 2026-09-28 at `f92b0bf`.
 - **Where client keys live.** `vars/secret-declarations/agentgateway.yml:16-29`
   declares `client_<name>` as `random`, length 48, on the service's own secret path,
   so `manage-secrets` mints once and reuses. The deploy asserts identity names match
@@ -34,9 +35,10 @@ Verified 2026-09-27 by reading the files named, unless marked otherwise.
 - **UI.** The config is mounted read-only (`compose.yml:48`). v1.5.0 reads `UI_READ_ONLY`
   and switches its config store to read-only (`crates/agentgateway/src/config.rs:390-392`
   at tag v1.5.0, read 2026-09-28), and the UI refuses writes in that mode
-  (`crates/agentgateway/src/ui.rs:53`). The variable is not yet set in this worktree's
-  `env.j2` (grep, 2026-09-28); the gateway change's task 1.10 sets it, and this change
-  depends on that task instead of setting it again.
+  (`crates/agentgateway/src/ui.rs:53`). The gateway change's task 1.10 sets
+  `UI_READ_ONLY=true` in `env.j2`, done in PR #303 (open against `dev` on 2026-09-28;
+  this tree at `f92b0bf` does not carry it yet, grep 2026-09-28). This change depends on
+  that task instead of setting it again.
 - **Budgets and JWT at v1.5.0 (Joe, 2026-09-27, not re-verified here).** Per-key token
   budgets attach only to API keys; a JWT-authenticated caller gets no personal budget;
   `jwtAuth` in permissive mode can be composed with an optional `apiKey`.
@@ -288,30 +290,44 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
 9. **Monthly lifetime, 3-day overlap, rotated as one cohort, expiry enforced by the
    deploy.** Joe, 2026-09-28, chose a fixed calendar day for the cohort ("Fixed calendar
    day"), accepting that a key can live up to 34 days: a month of up to 31 days plus the
-   3-day grace. Without hot reload the hard maximum is therefore
-   `expires_at <= next cohort day + grace days`, at most 34 days after issue; with hot
-   reload it stays `issued_at + 30 days` (`inference_key_lifetime_days: 30`,
-   `inference_key_grace_days: 3`). When successors
-   are minted depends on what a key change costs at the gateway, which the gateway
-   change's task 1.12 settles:
+   3-day grace. The expiry a key is minted with depends on the branch
+   (`inference_key_grace_days: 3` on both):
+   - Cohort branch: `expires_at` is the start (00:00 UTC) of the first cohort day after
+     issue plus the grace days, at most 34 days after issue. `inference_key_lifetime_days`
+     is not read on this branch.
+   - Hot-reload branch: `expires_at = issued_at + inference_key_lifetime_days` (30),
+     with the successor minted on day 27.
+
+   The cohort expiry is tied to the cohort day, not to a fixed lifetime, because a fixed
+   30-day lifetime locks users out. Two consecutive cohort days can be 31 days apart
+   (rotation day 1: 1 October to 1 November). A key minted on 1 October with
+   `issued_at + 30 days` would expire on 31 October, a day before 1 November mints its
+   successor, and its user would hold no valid key for that day. Tied to the next cohort
+   day, every key stays valid for the whole grace window after its successor is minted,
+   whatever the length of the month. When successors are minted depends on what a key
+   change costs at the gateway, which the gateway change's task 1.12 settles:
    - **A key change restarts the gateway (no hot reload).** Keys rotate as one cohort,
      so rotation costs a fixed number of restarts, not one per user. The cohort day is a
      fixed day of each calendar month, `inference_key_rotation_day` (1-28, so it exists in
      every month). On a cohort day's first run the reconcile mints a
-     successor for every current key issued before that day, and sets each old key's
-     `previous_expires_at` to the earlier of its own `expires_at` and the cohort day plus
-     the grace days. Rotation then restarts the gateway twice per cycle, on the cohort
-     day and three days later when the previous keys drop, whatever the number of users.
-     A member who joins mid-cycle gets a key the next cohort day succeeds early. Why a
+     successor for every current key issued before that day. Each old key's
+     `previous_expires_at` is its own `expires_at`, which is this cohort day plus the
+     grace days because the key was minted with the cohort expiry above; the successor's
+     `expires_at` is the next cohort day plus the grace days. Rotation then restarts the
+     gateway twice per cycle, on the cohort day and three days later when the previous
+     keys drop, whatever the number of users. A member who joins mid-cycle gets a key
+     that expires at the next cohort day plus the grace days, and that cohort day mints
+     its successor early. Why a
      calendar day and not every 27 days from an anchor: Joe chose the calendar day,
      2026-09-28, for a rotation date people can remember; the 27-day anchor kept the
      30-day maximum but drifts across the calendar. Rejected on that decision.
    - **Hot reload confirmed.** Each key gets its successor on its own day 27, because a
      key change then drops no stream and staggered rotations spread the user-facing
      churn; the rotation-day variable is not used.
-   In both branches both keys are enrolled until the old key's recorded expiry, so no
-   key is ever valid past its recorded expiry (at most 34 days after issue on the cohort
-   branch, 30 on the hot-reload branch) and the user has three days to swap. The gateway
+   In both branches both keys are enrolled until the old key's recorded expiry. No key
+   is ever valid past its recorded expiry (at most 34 days after issue on the cohort
+   branch, 30 on the hot-reload branch), no key expires before its successor is minted,
+   and the user has three days to swap. The gateway
    deploy renders a key only while `now < expires_at` (and the previous key only while
    `now < previous_expires_at`), and **fails** on a record whose expiry field is missing
    or unparseable, so a damaged record cannot become a non-expiring key. Keys are 48
