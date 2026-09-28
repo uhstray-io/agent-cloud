@@ -743,8 +743,12 @@ the `o11y` VM (`o11y_svc`).
 > recovery from a stopped gateway. Run
 > `Verify o11y Service` with
 > `expected_service=agentgateway`, `expect_metrics=true`,
-> `expect_logs=true`, and `expect_traces=true`; it must find a fresh access log
-> in Loki and a real service trace in Tempo from the last hour. Agentgateway
+> `expect_logs=true`, `expect_traces=true`, and
+> `emit_agentgateway_canary=true`; the opt-in canary sends 100 anonymous 401
+> requests directly to the gateway listener, then requires a fresh access log
+> in Loki and a trace in Tempo since the receiver-clock start mark. Five-percent
+> sampling makes a trace likely without a credential or an LLM call; a rare
+> zero-sample run must be retried rather than counted as proof. Agentgateway
 > sends both over the declared OTLP listener; Alloy labels access records with
 > `service=agentgateway` before forwarding them to Loki. Any missing signal
 > fails its named check.
