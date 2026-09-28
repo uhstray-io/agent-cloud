@@ -150,6 +150,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - 2026-09-26: still pending, and the catalog keeps growing twins: 62 `dev_variant`
         declarations on dev, 47 before 2026-09-25. Every production step of 7.2, 7.5 and 7.9
         ran through a `(Dev)` twin, because `main` lags `dev` by several hundred commits
+      - 2026-09-28: 67. Five workflow step templates had no twin at all (Lookup Service
+        Inventory, Validate Address Free and the three snapshots), so none could run in
+        production; `test_workflow_templates_are_dev_bound_until_promoted` now requires a
+        twin for every step template that does not predate the workflow
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
 - [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
