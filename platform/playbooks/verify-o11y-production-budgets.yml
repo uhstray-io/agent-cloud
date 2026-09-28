@@ -134,7 +134,7 @@
 
     - name: Read current guest root filesystem capacity
       ansible.builtin.command:
-        argv: [df, --block-size=1, --output=size,avail, /]
+        argv: [df, --block-size=1, "--output=size,avail", /]
       register: _guest_root_disk
       changed_when: false
       check_mode: false
