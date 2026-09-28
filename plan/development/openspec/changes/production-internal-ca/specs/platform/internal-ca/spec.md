@@ -66,13 +66,24 @@ A leaf issued with the server profile MUST NOT be usable for client authenticati
 leaf issued with the client profile MUST NOT be usable as a server certificate. Production
 issuance SHALL use provisioners separate from the bootstrap provisioner, each limited to
 the production leaf lifetime. Because every client-profile leaf chains to the same root,
-the gateway MUST also admit a request only when the presented client certificate carries
-Caddy's declared client name among its subject alternative names.
+the gateway MUST also admit a request only when the presented client certificate carries,
+among its subject alternative names, the name of a client leaf on the gateway's declared
+allowlist. The allowlist SHALL name only declared client-profile leaves, and MUST default
+to Caddy's leaf alone.
 
 #### Scenario: Another client leaf is refused at the gateway
 - WHEN a client presents a client-profile leaf from the production CA whose subject
-  alternative names do not include Caddy's declared client name
+  alternative names include no name on the gateway's allowlist
 - THEN the gateway refuses the request, although the TLS handshake completes
+
+#### Scenario: An allowlisted non-Caddy client is served
+- WHEN the gateway's own verification probe presents the declared verifier client leaf
+  from the gateway host, with the verifier on the allowlist
+- THEN the handshake completes and the request reaches the gateway's key check
+
+#### Scenario: An undeclared allowlist entry is refused at render
+- WHEN the gateway's allowlist names a leaf that is not a declared client-profile leaf
+- THEN the gateway deploy fails before restarting the gateway and names the entry
 
 #### Scenario: A server leaf is refused as a client
 - WHEN a client presents a server-profile leaf from the production CA to a listener that

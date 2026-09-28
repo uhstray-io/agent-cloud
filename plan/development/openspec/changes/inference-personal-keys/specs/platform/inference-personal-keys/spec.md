@@ -27,7 +27,15 @@ Each personal key SHALL be stored in OpenBao at `secret/users/<username>/inferen
 with its identity, issue time and expiry, written only by the controller AppRole.
 A user logged in through the inference OIDC mount MUST be able to read their own
 record and MUST NOT be able to read or list any other user's record or any path under
-`secret/services/`.
+`secret/services/`. Because the path is keyed on the username, users MUST NOT be able
+to change their own username in Authentik; the Authentik deploy SHALL enforce that
+setting and fail its verification when it is not in force.
+
+#### Scenario: Users cannot rename themselves
+- WHEN the Authentik deploy completes
+- THEN its verification reads the tenant's user username-change setting as disabled,
+  and a deploy that finds it enabled sets it back and fails if the read-back still
+  shows it enabled
 
 #### Scenario: A user reads their own key
 - WHEN a member logs in to OpenBao through Authentik on the inference OIDC mount and
@@ -62,13 +70,13 @@ records to the group's active membership at least hourly: mint for new members,
 rotate aged keys, remove expired previous keys and revoke the keys of anyone no longer
 eligible. On every run it MUST compare the set of unexpired user keys it would enrol
 with the set the gateway has enrolled, read back from the gateway host, and MUST deploy
-the gateway when they differ or when the running gateway predates its rendered
-configuration, and only then; whether this run wrote a record MUST NOT decide it. It
-MUST fail before any write when the membership listing fails or the group is not
-found. On a listing that succeeded, an empty group is a valid answer; the run MUST
-refuse, unless explicitly allowed, only a plan that revokes at least the declared
-minimum count and more than the declared fraction of existing records. It MUST NOT
-print a key value.
+the gateway when they differ, when the running gateway predates its rendered
+configuration, or when no gateway container is running, and only then; whether this run
+wrote a record MUST NOT decide it. It MUST fail before any write when the membership
+listing fails or the group is not found. On a listing that succeeded, an empty group is a
+valid answer; the run MUST refuse, unless explicitly allowed, only a plan that revokes at
+least the declared minimum count and more than the declared fraction of existing records.
+It MUST NOT print a key value.
 
 #### Scenario: Unchanged membership does not restart the gateway
 - WHEN the reconcile runs with no member added or removed, no key due to rotate or
@@ -102,6 +110,12 @@ print a key value.
 - WHEN a key's recorded expiry passes and no record is due for any write
 - THEN the next run finds the expired key's hash in the enrolled set but not in the
   desired set, deploys the gateway, and a request with that key gets 401
+
+#### Scenario: A missing gateway container is redeployed
+- WHEN the gateway container is missing or stopped on its host and no record is due
+  for any write
+- THEN the next run deploys the gateway, and a request with a current personal key is
+  served
 
 #### Scenario: A non-conforming username is refused by name
 - WHEN a member's username does not match `^[a-z0-9][a-z0-9-]*$`

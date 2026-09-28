@@ -69,10 +69,11 @@ The platform already has one, but only in local-dev:
   serves local-dev, where the CA host and the consumer are the same machine, so there is
   one implementation, not a local one and a production one.
 - **Declared leaves.** Every production leaf is declared in inventory with its consumer
-  host, profile (server or client), names and reload behaviour. The first set: Caddy's
-  client certificate for the gateway, the gateway's server certificate for its API and UI
-  listeners, and vLLM's server certificate on the head node (issued for dgx-spark through
-  a handoff).
+  host, profile (server or client), names and reload behaviour. The first set: three
+  client certificates the gateway admits by name (Caddy's; the gateway host's own
+  verifier, used by the deploy's probes; the benchmark runner's), the gateway's server
+  certificate for its API and UI listeners, and vLLM's server certificate on the head
+  node (issued for dgx-spark through a handoff).
 - **Root distribution to every consumer.** The public trust bundle (root plus
   intermediate, as `distribute-ca-root.yml` already builds it) is read from the CA host
   and placed on each consumer: Caddy's trust-pool file, the gateway's container mount,

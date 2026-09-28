@@ -181,14 +181,24 @@ engine; moving vLLM configuration into this repository.
 
    | Leaf | Consumer | Profile | Used by |
    |---|---|---|---|
-   | Caddy client | Caddy host | client | `tls_client_auth` towards both gateway listeners |
+   | `caddy` client | Caddy host | client | `tls_client_auth` towards both gateway listeners |
+   | `agw-verifier` client | gateway host | client | the gateway deploy's own keyed and keyless `uri` probes, the o11y deploy's access-record probe (`agentgateway-observability` task 3.5) and the personal-key 401 gates, all sent from the gateway host to its published port |
+   | `bench` client | benchmark VM | client | `inference-benchmarking` runs whose target is the gateway listener, sent directly and not through Caddy |
    | Gateway server | gateway host | server | `gateways.default.tls` and `gateways.ui.tls` |
    | vLLM server | DGX Spark head (handoff) | server | `--ssl-certfile`/`--ssl-keyfile` |
 
    One gateway leaf covers both listeners: they are the same process on the same host,
-   so a second key buys nothing. The gateway's own client certificate towards vLLM is not
-   in the first set; it is added only if dgx-spark turns on `--ssl-cert-reqs` (open
-   question 3).
+   so a second key buys nothing. The `agw-verifier` leaf lives on the gateway host
+   because the deploy's probes are `uri` calls from that host to the gateway's published
+   port (`platform/playbooks/deploy-agentgateway.yml`, the "Keyed probes" tasks); its key
+   is generated there and its CSR goes through the same issuance flow as every other
+   leaf. The `bench` leaf keeps the benchmark A/B meaningful: the direct-gateway target
+   stays one hop, so the measured difference is the gateway's own, not Caddy's. The
+   three client leaves are the gateway's client allowlist (decision 5); a client leaf
+   declared for any other purpose, such as the gateway's OTLP client leaf towards Alloy
+   (`agentgateway-observability` task 3.8), is not on it. The gateway's own client
+   certificate towards vLLM is not in the first set; it is added only if dgx-spark turns
+   on `--ssl-cert-reqs` (open question 3).
 
 5. **Profiles are enforced by extended key usage.** The gateway accepts any certificate
    that chains to its `root` (context above), so a server leaf that also carried client
@@ -202,10 +212,10 @@ engine; moving vLLM configuration into this repository.
    password is the key password and its lifetime was raised to a year for the local
    wildcard.
 
-   Profiles alone do not identify Caddy: any client-profile leaf from this CA, issued
-   for any future consumer, would also complete the handshake. So the gateway also
-   checks **which** client it is, per request, against Caddy's declared name. v1.5.0
-   supports this directly (source read at tag `v1.5.0`, 2026-09-27):
+   Profiles alone do not identify the caller: any client-profile leaf from this CA,
+   issued for any consumer, would also complete the handshake. So the gateway also
+   checks **which** client it is, per request, against an allowlist of declared client
+   names. v1.5.0 supports this directly (source read at tag `v1.5.0`, 2026-09-27):
    - On a listener with a static certificate and `root` set, the listener records the
      peer certificate's identity for every connection
      (`crates/agentgateway/src/types/agent.rs:526-528` returns an identity mode unless
@@ -218,19 +228,29 @@ engine; moving vLLM configuration into this repository.
    - A gateway takes CEL authorization rules, `gateways.*.authorization.rules[]` with
      `allow`, `deny` and `require` (`schema/config.md:51913-51917`).
 
-   Both gateway listeners therefore carry one `require` rule: Caddy's declared client
-   SAN (for example `caddy.<internal-zone>`, read from the leaf declaration in decision
-   4, never typed twice) is in `source.subjectAltNames`. `require` is used rather than
-   `deny`, because the schema warns that a failing `deny` expression fails open
-   (`schema/config.md:51916`). A client leaf with another name still completes the TLS
-   handshake, and its request is refused by the rule. Alternative rejected: a dedicated
-   issuing root or intermediate used only for Caddy's client leaf, with the gateway's
-   `root` set to it alone, because it adds a second CA hierarchy to back up, distribute
-   and rotate when v1.5.0 can bind the identity with one rule. It stays the fallback if
-   task 5.3 finds the rule cannot be rendered beside the `llm` shortcut the gateway
-   config uses. Unverified: the HTTP status the gateway returns when a `require` rule
-   fails, and whether the rule is evaluated before or after API-key authentication;
-   task 5.3 records both.
+   Both gateway listeners therefore carry one `require` rule: at least one of the
+   presented certificate's subject alternative names is on the gateway's client
+   allowlist, rendered as
+   `source.subjectAltNames.exists(n, n in [<allowlist>])` (`exists` is among
+   v1.5.0's standard CEL functions, `schema/cel-functions.md:50`). The allowlist is an
+   inventory list on the gateway host, `agw_client_cert_allowlist`, whose entries are
+   leaf names from the declaration in decision 4; the deploy resolves each to that
+   leaf's DNS SAN, so no name is typed twice, and refuses an entry that names no
+   declared client-profile leaf. The only default is `caddy`; `agw-verifier` and
+   `bench` are added in inventory where those leaves are declared. `require` is used
+   rather than `deny`, because the schema warns that a failing `deny` expression fails
+   open (`schema/config.md:51916`). A client leaf whose names are not on the list still
+   completes the TLS handshake, and its request is refused by the rule. Alternatives
+   rejected: Caddy's name alone, because the deploy's own probes and a direct benchmark
+   run would then need to travel through Caddy, which adds a hop to the benchmark's
+   gateway-overhead A/B and ties the gateway's verification to the edge's health; and a
+   dedicated issuing root or intermediate used only for the allowed clients, with the
+   gateway's `root` set to it alone, because it adds a second CA hierarchy to back up,
+   distribute and rotate when v1.5.0 can bind the identity with one rule. That hierarchy
+   stays the fallback if task 5.3 finds the rule cannot be rendered beside the `llm`
+   shortcut the gateway config uses. Unverified: the HTTP status the gateway returns
+   when a `require` rule fails, and whether the rule is evaluated before or after API-key
+   authentication; task 5.3 records both.
 
 6. **Thirty-day leaves, renewed daily inside the last third.** Default production leaf
    lifetime `720h`, inventory-parameterized. A scheduled template runs daily; a leaf is
@@ -261,14 +281,18 @@ engine; moving vLLM configuration into this repository.
    Caddy; for vLLM, `--enable-ssl-refresh` on the dgx-spark side. Then it proves the new
    leaf on the TLS path its profile serves. A server leaf (gateway, vLLM) is checked on
    the consumer's serving listener, comparing the served certificate's serial with the
-   one just issued. Caddy's client leaf is never served on Caddy's own port, so it is
+   one just issued. A client leaf is never served on its consumer's own port, so it is
    checked where it is verified: the task reads the new leaf's fingerprint from the file
-   on the Caddy host, sends one probe request through Caddy to the gateway, requires it
-   to complete (mutual TLS and the SAN rule in decision 5 both passed), and requires the
-   gateway's access record for that probe to carry the same client-certificate digest
-   (an access-log field computed with v1.5.0's `sha256.encode` over
-   `source.certificate`, `schema/cel-functions.md:37`, `schema/cel.md:121`). A mismatch
-   on either path fails the run. This catches the one failure a file check cannot: a
+   on its consumer host, sends one probe request from that host along the leaf's own path
+   (Caddy's inference route for `caddy`, the gateway host's published port for
+   `agw-verifier`, the gateway listener from the benchmark VM for `bench`), requires it
+   to complete (mutual TLS and the allowlist rule in decision 5 both passed), and
+   requires the gateway's access record for that probe, read from Loki, to carry the
+   same client-certificate digest (an access-log field computed with v1.5.0's
+   `sha256.encode` over `source.certificate`, `schema/cel-functions.md:37`,
+   `schema/cel.md:121`, listed in both the parent and the OTLP field lists because a set
+   OTLP list replaces the parent one, `schema/config.md:18224`). A mismatch on either
+   path fails the run. This catches the one failure a file check cannot: a
    renewed file that the running process never loaded.
 
 9. **Root distribution reads from the CA host.** `distribute-ca-root.yml` gains the same

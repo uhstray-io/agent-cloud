@@ -112,6 +112,16 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
    normalise to one identity). The deploy refuses any `agw_clients` entry that begins
    with `user-`, so an inventory name cannot shadow a person. A username change is an
    offboard plus an onboard: the old record is revoked and a new key minted.
+   Only an operator changes a username, in the users blueprint; a user never can. The
+   key path, the identity and the self-read policy are all keyed on the username, so a
+   user who could rename themselves could take a departed member's name. Authentik
+   `2024.12.3` (the image `compose.yml:16` pins) keeps that off with the tenant setting
+   `default_user_change_username`, default false (`authentik/tenants/models.py:63-65` at
+   tag `version/2024.12.3`). Blueprints cannot hold it: `Tenant` is in the blueprint
+   importer's excluded models at that tag (`authentik/blueprints/v1/importer.py:85-117`).
+   So `deploy-authentik.yml` sets it to false from an in-container script, the way it
+   already runs `verify-users.py.j2` (`deploy-authentik.yml:383-390`), and its read-back
+   verify fails naming the setting when it is not false.
    Alternative rejected: the Authentik `sub` claim, because it is an opaque hash that
    makes the metric label and the storage path unreadable to operators.
 
@@ -232,7 +242,9 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
       `config.yaml` the gateway container mounts (`compose.yml:48`), plus that file's
       modification time and the `agentgateway` container's start time. Import the
       gateway deploy when the two sets differ, or when the container started before
-      the file was last written (a render that landed without a successful restart).
+      the file was last written (a render that landed without a successful restart), or
+      when the host has no running `agentgateway` container (missing or stopped: nothing
+      is enrolled, whatever the file says).
       Otherwise do not deploy: the deploy recreates the gateway container, which drops
       in-flight streams, so an hourly run with nothing to converge must not restart it.
       Because the comparison is repeated every run, a deploy that failed is retried on
@@ -270,7 +282,10 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
 10. **Rendering: user keys join the same `apiKey` list, with their own defaults.** The
     deploy reads the user records (list plus one read each, `no_log`), filters by
     expiry, and passes them to the template, which renders them after the
-    `agw_clients` entries: `keyHash`, `metadata.name: user-<username>`, `allowedModels`
+    `agw_clients` entries: `keyHash`, `metadata.name: user-<username>`,
+    `metadata.team: uhstray` (the group `inference-users` is the team, so every personal
+    key is a team key; `agentgateway-observability` decision 12 requires the marker on
+    every entry while content logging is on), `allowedModels`
     from `agw_user_allowed_models` when set, and the `hourly-tokens` budget with
     `agw_user_tokens_per_hour`. The local-dev plaintext flag never applies to user
     keys: they are always hashes. During the overlap both keys carry the same identity
@@ -337,7 +352,8 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
    `bound_claims`; enable the audit device.
 3. Gateway: user-record read and expiry filter in the deploy; template rendering;
    UI read-only; BATS.
-4. Reconcile playbook and schedule; run it by hand once, then enable the schedule.
+4. Reconcile playbook and schedule; launch the template once from Semaphore, then enable
+   the schedule.
 5. Move person identities out of `agw_clients` once each person holds a personal key,
    using the existing revoke flow (remove from inventory, then revoke).
 6. Promote through `dev` to `main`; repeat 1 to 4 against production.

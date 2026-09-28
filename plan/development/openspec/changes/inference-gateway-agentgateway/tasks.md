@@ -227,10 +227,33 @@
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
 - [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates, bind-
       mounted (the image has no shell); `tls.root` = the step-ca root, so a client
-      certificate is required; both gateways also carry the `require` rule that Caddy's
-      declared client SAN is in `source.subjectAltNames`, because `root` alone admits any
-      leaf from the CA (`production-internal-ca` design decision 5); BATS asserts both
-      listeners render `tls` with `root` and the rule
+      certificate is required; both gateways also carry the allowlist `require` rule
+      `source.subjectAltNames.exists(n, n in [<allowlist>])`, because `root` alone admits
+      any leaf from the CA (`production-internal-ca` design decision 5). The list renders
+      from inventory `agw_client_cert_allowlist` (leaf names from that change's decision 4
+      table, resolved to their declared SANs; default `caddy` only; production adds
+      `agw-verifier`, and `bench` once the benchmark VM exists); an entry naming no
+      declared client leaf fails the deploy before restart. BATS asserts both listeners
+      render `tls` with `root` and the rule, that the default list is `caddy` alone, and
+      that an undeclared entry is refused
+- [ ] 6.1a The deploy's own verification after 6.1 (today, `deploy-agentgateway.yml`):
+      the readiness probe (line 225, busybox `wget` from the sibling db container to
+      `http://<gateway>:19001`) is unaffected, because `readinessAddr` is a separate
+      plain listener (`config.yaml.j2:34`), not a `gateways` listener. The keyless 401
+      probe (lines 237-242, the same `wget` over `http://` to `:4000`) cannot survive:
+      busybox `wget` presents no client certificate, so the handshake fails before the key
+      check. It becomes a `uri` call from the gateway host to the published port with no
+      `Authorization` header, presenting the `agw-verifier` leaf, expecting 401. The keyed
+      probes (`_verify_url`, lines 265-268, `http://` to loopback on the published port)
+      become `https://` with `client_cert`/`client_key` = the `agw-verifier` leaf and
+      `ca_path` = the internal bundle. The `uri` module at ansible-core 2.21.0 offers
+      `ca_path`, `client_cert`, `client_key` and `validate_certs` and no server-name
+      override (`ansible-doc uri`, run 2026-09-27; the Semaphore image's ansible-core
+      version is unverified), so the URL names the gateway server leaf's SAN and a managed
+      hosts entry on the gateway host (an idempotent `lineinfile` task, as code) maps that
+      name to the published bind; `validate_certs: false` is never used. Local-dev keeps
+      `agw_verify_base_url` and sets it to the SAN form; unverified: how the Semaphore
+      container resolves that name on the `local-dev` network, settled before 6.1a lands
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4; `tls_trusted_ca_certs` is deprecated
@@ -238,7 +261,10 @@
 - [ ] 6.3 The model's `tls: {root, hostname}` and an `https://` base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
-- [ ] 6.4 Validation gate: a request without Caddy's client certificate is refused at the
-      gateway, and so is one with a client leaf from the same CA naming another SAN; the
-      gateway refuses a vLLM certificate not issued by the internal CA; the
-      public path works end to end with every hop encrypted
+- [ ] 6.4 Validation gate: a request without a client certificate is refused at the
+      gateway, and so is one with a client leaf from the same CA whose SANs are on no
+      allowlist entry; a request with the `agw-verifier` leaf from the gateway host is
+      served; `Deploy agentgateway (Dev)` still passes its whole verify phase after group
+      6 (readiness, the keyless 401, the keyed `/v1/models` and chat round-trip, all over
+      6.1a's paths); the gateway refuses a vLLM certificate not issued by the internal CA;
+      the public path works end to end with every hop encrypted

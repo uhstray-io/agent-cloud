@@ -192,14 +192,20 @@ dashboard.
       through the gateway as the verifying identity (`agw_verify_client` on the gateway
       host, else its first `agw_clients` entry — the gateway deploy's own selection; the
       key comes through `_shared_reads` from `agentgateway`, `client_<name>`, in the
-      `no_log` credential step, and the request is a `uri` call whose result is never
-      printed) and records the send time. It then requires, within a bounded retry, a
+      `no_log` credential step, and the request is a `uri` call delegated to the gateway
+      host, to its published port, whose result is never printed) and records the send
+      time. Once the gateway listeners require client certificates (gateway change task
+      6.1), the call is `https://` and presents the `agw-verifier` client leaf on the
+      gateway host (`client_cert`/`client_key`, `ca_path` the internal bundle;
+      `production-internal-ca` decision 4). It then requires, within a bounded retry, a
       Loki record under `{service="agentgateway", signal="access-log"}` whose body names
       that identity and whose timestamp is at or after the send time, and requires the
       label set of that stream to contain no `identity`, model or token label. A 429 from
       the gateway's request bucket still satisfies the check, because a rejected request
       also leaves a record. It prints the record's status and timestamp, never the key
-- [ ] 3.5a Rejected-request record: the same verify sends one request with no key and
+- [ ] 3.5a Rejected-request record: the same verify sends one request with no key (from
+      the gateway host, presenting the `agw-verifier` leaf once group 6 lands, so the
+      refusal is the key check and not the TLS handshake) and
       requires a record at or after its send time carrying HTTP status 401 and a
       rejection reason. unverified: the access-log field name v1.5.0 uses for the
       rejection reason; read it from the line 3.7 records before writing the query
@@ -228,6 +234,11 @@ dashboard.
       receiver without a client certificate fails, proving scenario "A sender without a
       client certificate is rejected"; a production render with the plaintext flag set
       fails in 3.4, proving scenario "Plaintext export is refused in production"
+- [ ] 3.11 Follow-up, recorded not built: Alloy `v1.5.1`'s OTLP receiver cannot check a
+      client certificate's name (design decision 6), so the firewall declaration in 3.8 is
+      the only binding of sender to gateway. On each Alloy upgrade, read the receiver's
+      server TLS arguments at the new tag; when a name check exists, require the gateway's
+      OTLP client name there; otherwise record the version read in `design.md`
 
 ## 4. Dashboards
 
@@ -274,6 +285,15 @@ dashboard.
       probe not sampled", never as passed or failed. With no query endpoint declared, the
       verify reports the check as not run rather than passed. unverified: the access-record
       field v1.5.0 uses for the trace id; read it from the line 3.7 records
+- [ ] 5.4a Standing trace-receipt signal (design decision 11): add a scrape of Alloy's own
+      metrics (Alloy serves HTTP on 12345, `compose.yml:66`; nothing scrapes it today) and,
+      in `templates/alerts.yml.j2`, a rule rendered only when traces are enabled: the rate
+      of Alloy's exported-span counter is zero for `o11y_trace_silence_minutes` (default
+      30) while `rate(agentgateway_requests_total[5m]) > 0`. unverified: the counter's
+      name and the metrics path at Alloy `v1.5.1`; read both from the running local Alloy
+      and record them in `design.md` before writing the rule; task 6.1 measures the same
+      counter. BATS: the rule is absent when traces are disabled; drill: stop the trace
+      exporter's endpoint for the window in local-dev and see the alert fire
 - [ ] 5.5 BATS: the trace pipeline is absent from the rendered Alloy file when disabled or
       when no endpoint is declared; each refusal in 5.3 fires; the rendered exporter
       carries TLS whenever the endpoint is not host-local
@@ -290,7 +310,8 @@ dashboard.
 ## 6. Measure, record, reconcile
 
 - [ ] 6.1 After seven days in production: spans exported per day, measured at Alloy
-      (unverified: the metric name Alloy v1.5.1 exposes for exported spans), gateway
+      (unverified: the metric name Alloy v1.5.1 exposes for exported spans, which task
+      5.4a records and its alert uses), gateway
       access lines per day in Loki, active gateway series in Prometheus, the `request_logs` row count
       and the size of `request_log_payloads`; record them in `design.md`
 - [ ] 6.2 Set `agw_trace_sampling` from 6.1, with the Tempo owner's storage figure, and

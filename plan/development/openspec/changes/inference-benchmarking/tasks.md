@@ -30,6 +30,13 @@ only inside the windows named below.
       (`tokens_per_hour` sized per design decision 8, `allowed_models` the served names);
       redeploy the gateway; hand the key to the runner through the gateway's OpenBao path
       only. Record whether the budget charges cached prefix tokens at the full rate
+- [ ] 1.4a Once the gateway requires client certificates (`inference-gateway-agentgateway`
+      task 6.1): declare the `bench` client leaf for the benchmark VM through
+      `production-internal-ca` task 5.2 (key generated on the VM), add `bench` to the
+      gateway's `agw_client_cert_allowlist`, and render inference-perf's `cert_path` and
+      `key_path` for gateway-target runs (design decision 8); the preflight refuses a
+      gateway-target run whose leaf is missing or expires inside the planned duration, and
+      refuses `vllm-bench` against the gateway
 - [ ] 1.5 dgx-spark side (tracked, not done here): the vLLM API allow rule includes the
       benchmark VM; confirm with one direct `/v1/models` request from the VM
 - [ ] 1.6 Validation gate: the firewall probes prove scenario "Runner reaches exactly its
@@ -48,7 +55,9 @@ only inside the windows named below.
       same `load.base_seed` and `data.shared_prefix.seed` send the same prompts, and two
       `vllm bench serve` runs with the same `--seed` send the same prompts at the same
       intervals. Record whether `vllm bench serve`'s saved result carries an in-flight
-      count; if it does not, remove `vllm-bench` from the team survey (design decision 11)
+      count; if it does not, remove `vllm-bench` from the team survey (design decision 11).
+      Record how inference-perf `v0.7.0` is given the CA that verifies the gateway's
+      server certificate
 - [ ] 2.2 Workload files for `agw-reference` and `agw-reference-scaled` (design decision
       4) as committed inference-perf configs; equivalent parameters for the other tools
       rendered from the same source values, so one shape has one definition

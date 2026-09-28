@@ -101,15 +101,20 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 5.1 Establish which compose file production Caddy runs from (`caddy_compose_dir` in
       inventory versus the monorepo's `compose.yml`) and add a read-only certificate
       directory mount to that file as code; redeploy Caddy through Semaphore
-- [ ] 5.2 Declare and issue the Caddy client leaf and the gateway server leaf; distribute
-      the bundle to both. The gateway's certificate directory is mounted as a directory
-      in production and in the local overlay (replacing the single-file bundle mount), and
+- [ ] 5.2 Declare and issue the gateway server leaf and the three allowlisted client
+      leaves of design decision 4 (`caddy` on the Caddy host, `agw-verifier` on the
+      gateway host, `bench` on the benchmark VM once that host exists), each key generated
+      on its own host through the same CSR flow; distribute the bundle to each
+      consumer. The gateway's certificate directory is mounted as a directory in
+      production and in the local overlay (replacing the single-file bundle mount), and
       its key is readable by the container's non-root user
 - [ ] 5.3 Hand to the companion change `inference-gateway-agentgateway` task group 6:
       gateway listeners serve `current/` with `tls.root` set to the bundle, and both
-      gateways carry a `gateways.<name>.authorization.rules[]` `require` rule that Caddy's
-      declared client SAN is in `source.subjectAltNames` (design decision 5), rendered
-      from the leaf declaration; Caddy's two inference blocks carry `tls_server_name`,
+      gateways carry a `gateways.<name>.authorization.rules[]` `require` rule
+      `source.subjectAltNames.exists(n, n in [<allowlist>])` (design decision 5), the list
+      rendered from `agw_client_cert_allowlist` (leaf names resolved to their declared
+      SANs; default `caddy` only; an entry naming no declared client leaf fails the
+      render); Caddy's two inference blocks carry `tls_server_name`,
       `tls_trust_pool file` and `tls_client_auth`. Verify whether each follows the
       symlink swap and record the reload action per leaf. Confirm in local-dev that the
       rule renders beside the `llm` shortcut and the gateway starts with it, and record
@@ -118,28 +123,43 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       dedicated client-issuing hierarchy and record why. Add an access-log field
       `client_cert_sha256` from `sha256.encode(source.certificate)` (agentgateway
       v1.5.0 `schema/cel-functions.md:37`, `schema/cel.md:121`) for task 6.1's
-      client-leaf check
+      client-leaf check, listed in both `frontendPolicies.accessLog.add` and
+      `frontendPolicies.accessLog.otlp.fields.add`: a set `otlp.fields` replaces the
+      parent list instead of extending it (`schema/config.md:18224`), and
+      `agentgateway-observability` task 1.2 sets one, so a field in the parent alone
+      never reaches Loki
 - [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
       bundle delivered through the agreed channel, with the SAN the gateway's model
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
       `--ssl-keyfile`, `--enable-ssl-refresh`); nothing on the nodes is changed from here
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates", plus the companion's
-      gate that a request without Caddy's client certificate is refused at the gateway;
-      a throwaway client-profile leaf declared with a SAN other than Caddy's (issued as in
-      4.7, then removed) completes the handshake and its request is refused, proving
-      scenario "Another client leaf is refused at the gateway"
+      gate that a request without a client certificate is refused at the gateway; a
+      request presenting the `agw-verifier` leaf from the gateway host is served, proving
+      scenario "An allowlisted non-Caddy client is served"; a throwaway client-profile
+      leaf declared with a SAN on no allowlist (issued as in 4.7, then removed) completes
+      the handshake and its request is refused, proving scenario "Another client leaf is
+      refused at the gateway"; the companion's BATS refusal of an allowlist entry naming
+      no declared client leaf proves scenario "An undeclared allowlist entry is refused at
+      render"
 
 ## 6. Renewal and expiry alerting
 - [ ] 6.1 `renew-internal-certs.yml`: for every declared leaf, read the current
       certificate's expiry on the consumer; re-issue through task 4.1 when less than a
       third of its lifetime remains; run the declared reload action; then prove the new
       leaf in use on its own TLS path. Server profile: connect to the consumer's serving
-      listener and fail on a serial mismatch. Client profile (Caddy's leaf): read the new
-      leaf's fingerprint from the file on the Caddy host, send one probe request through
-      Caddy's inference route to the gateway, fail unless it completes (the mutual TLS
-      handshake and the SAN rule both passed), and fail unless the gateway's access
-      record for that probe carries a `client_cert_sha256` equal to the new leaf's;
-      Caddy's own listening port is never checked for this leaf. Push one Loki line per
+      listener and fail on a serial mismatch. Client profile: read the new leaf's
+      fingerprint from the file on its consumer host, send one probe request from that
+      host along the leaf's own path (`caddy`: through Caddy's inference route;
+      `agw-verifier`: a `uri` call from the gateway host to its published port; `bench`:
+      from the benchmark VM to the gateway listener), fail unless it completes (the
+      mutual TLS handshake and the allowlist rule both passed), and fail unless the
+      gateway's access record for that probe, read from Loki under
+      `{service="agentgateway", signal="access-log"}` at or after the probe's send time,
+      carries a `client_cert_sha256` equal to the new leaf's. Caddy's own listening port
+      is never checked for its client leaf. The client-leaf check therefore depends on
+      `agentgateway-observability` section 3 delivering access records to Loki in
+      production; before that, the check fails naming the missing dependency rather than
+      passing on the handshake alone. Push one Loki line per
       leaf and one for the intermediate (the conformance collector's push shape). Emit
       the step result. unverified: the exact PEM text the gateway hashes (v1.5.0
       re-encodes it from DER, `crates/agentgateway/src/transport/tls.rs:1279-1283`, line
@@ -149,9 +169,9 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       code; run `setup-templates.yml`
 - [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
       is inside its window, run the template, and confirm the gateway's serving listeners
-      present the new server serial, the gateway records Caddy's new client-leaf
-      fingerprint on a probe through Caddy, and no request fails on the public path during
-      the run (a paced request loop through the public hostname)
+      present the new server serial, the gateway records each allowlisted client leaf's
+      new fingerprint on a probe along that leaf's path, and no request fails on the
+      public path during the run (a paced request loop through the public hostname)
 - [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, no renewal
       line for thirty-six hours; deploy o11y through Semaphore
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the

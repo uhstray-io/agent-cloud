@@ -46,7 +46,15 @@ them (repo rule).
       member list
 - [ ] 2.6 BATS: group declared; tier gate admits only the group; the listing script
       prints names only
-- [ ] 2.7 Validation gate: local Authentik deploy converges twice; a non-member is
+- [ ] 2.6a `deploy-authentik.yml`: an in-container step sets the tenant setting
+      `default_user_change_username` to false (idempotent: changes nothing when already
+      false), and the read-back verify fails naming the setting when it is not false.
+      Blueprints cannot carry it at `2024.12.3`, which excludes `Tenant` from blueprint
+      import (`authentik/blueprints/v1/importer.py:85-117` at tag `version/2024.12.3`;
+      design decision 2). BATS: the step and the verify assertion exist
+- [ ] 2.7 Validation gate: local Authentik deploy converges twice, the second run
+      reporting the username setting unchanged and false, proving scenario "Users cannot
+      rename themselves"; a non-member is
       refused at the `openbao-inference` authorize step, proving scenario "A non-member
       cannot use the inference login" (Authentik half); a platform-business member not
       in the group is absent from the listing, proving scenario "Other tiers do not
@@ -85,11 +93,15 @@ them (repo rule).
       identity, keep only unexpired current and previous keys; refuse `agw_clients`
       names beginning with `user-`
 - [ ] 4.2 `config.yaml.j2`: render the user keys after `agw_clients`, hash only (the
-      plaintext flag never applies), identity `user-<username>`, budget
-      `agw_user_tokens_per_hour`, optional `agw_user_allowed_models`
+      plaintext flag never applies), identity `user-<username>`, `metadata.team:
+      uhstray` on every user key (the marker `agentgateway-observability` task 1.4
+      requires; that change's render guard refuses a key without it while content
+      logging is on), budget `agw_user_tokens_per_hour`, optional
+      `agw_user_allowed_models`
 - [ ] 4.3 `compose.yml` / `env.j2`: set the UI read-only switch confirmed in task 1.1
-- [ ] 4.4 BATS: user keys are never plaintext; the prefix refusal exists; the expiry
-      filter and the fail-closed branch exist
+- [ ] 4.4 BATS: user keys are never plaintext; every rendered user key carries
+      `team: uhstray`; the prefix refusal exists; the expiry filter and the fail-closed
+      branch exist
 - [ ] 4.5 Validation gate: a local record with a past expiry renders nothing and one
       with no expiry fails the deploy, proving scenario "A damaged record cannot become
       a permanent key"; two users with a small budget show one blocked while the other
@@ -108,7 +120,9 @@ them (repo rule).
       `max_versions: 2`, revoke deletes metadata; then the convergence check (desired
       unexpired key hashes against the `user-*` `keyHash` entries read back from the
       gateway host's rendered `config.yaml`, plus that file's modification time against
-      the `agentgateway` container's start time), importing the deploy on any difference
+      the `agentgateway` container's start time, plus whether a running `agentgateway`
+      container exists at all; a missing or stopped one is a deploy trigger), importing
+      the deploy on any difference
       whether or not this run wrote a record; `tasks/emit-step-result.yml` with counts,
       identities and the deploy reason. If task 1.3 finds v1.5.0 hot-reloads a changed
       config, the start-time comparison is replaced by a read of the running
@@ -122,6 +136,12 @@ them (repo rule).
       protected result (`platform/tests/test_no_request_in_loop_items.py` covers it);
       both guard classes exist; the deploy import is conditioned on the convergence
       check's result and not on the plan's write count
+- [ ] 5.4a Every "gets 401" or "is served" check in 4.5 and 5.5 is a `uri` request sent
+      from the gateway host to its published port, the path the gateway deploy's own
+      verify uses; once the gateway requires client certificates
+      (`inference-gateway-agentgateway` task 6.1), it presents the `agw-verifier` client
+      leaf (`production-internal-ca` decision 4), so a 401 is the key check refusing the
+      key and never a handshake failure
 - [ ] 5.5 Validation gate, local: a second run with no change recreates nothing,
       proving scenario "Unchanged membership does not restart the gateway"; emptying a
       group of three members refuses, proving scenario "A large drop does not revoke
@@ -133,7 +153,9 @@ them (repo rule).
       local inventory for one run) is converged by the next run with no record change,
       proving scenario "A revoked key stays refused after a failed deploy"; a key left to
       pass its short local expiry with no other change gets 401 after the next run,
-      proving scenario "Expiry converges without a record change"; a
+      proving scenario "Expiry converges without a record change"; with the gateway
+      container removed and no record change, the next run deploys it, proving scenario
+      "A missing gateway container is redeployed"; a
       username with a dot is refused by name while others reconcile, proving scenario
       "A non-conforming username is refused by name"; a new member gets a key, proving
       scenario "A declared member becomes eligible"; with the clock shifted by the

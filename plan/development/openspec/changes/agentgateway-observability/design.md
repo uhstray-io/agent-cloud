@@ -391,6 +391,19 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
    is being moved to internal TLS (gateway change section 6) and a firewall rule is not
    integrity protection.
 
+   The receiver cannot bind the sender's identity. At Alloy `v1.5.1` its server TLS
+   arguments are `client_ca_file` plus the shared TLS settings (`ca_file`, `cert_file`,
+   `key_file`, the version bounds, `reload_interval`, `cipher_suites`,
+   `include_system_ca_certs_pool`) and nothing else
+   (`internal/component/otelcol/config_tls.go:14-18`, `57-67` at tag `v1.5.1`); no
+   argument matches a client certificate's subject alternative name. So any client leaf
+   from the internal CA completes the handshake, and the firewall declaration in decision
+   7, which admits only the gateway host to the OTLP port, is the sole control that binds
+   the sender to the gateway. That is accepted for this change: the receiver takes
+   telemetry in and serves nothing back, so a forged sender can add records but read
+   none. Follow-up (task 3.11): revisit when an Alloy release can check the client name,
+   or give OTLP senders an issuing hierarchy of their own.
+
 7. **Per-port sources in `apply-firewall.yml`.** A new optional
    `firewall_detected_port_sources` map (published port to a list of sources) replaces
    `firewall_upstream_source` for the ports it names; unnamed detected ports keep today's
@@ -456,9 +469,14 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     deploy, when the gateway target is
     declared, requires `up{job="agentgateway"} == 1`. The o11y deploy's telemetry checks
     generate their own traffic first, so a healthy gateway that happens to be idle cannot
-    fail them: when OTLP logs are enabled it sends one keyed chat completion as the
-    verifying identity (key shared-read from `secret/services/agentgateway`, inside the
-    credential step) and one keyless request, then requires a Loki record under
+    fail them: when OTLP logs are enabled it sends, from the gateway host
+    (`delegate_to`, the same place the gateway deploy's own `uri` probes run), one keyed
+    chat completion as the verifying identity (key shared-read from
+    `secret/services/agentgateway`, inside the credential step) and one keyless request;
+    once the gateway listeners require client certificates (gateway change group 6),
+    both probes present the `agw-verifier` client leaf declared in
+    `production-internal-ca` decision 4, whose key lives only on the gateway host. It
+    then requires a Loki record under
     `{service="agentgateway", signal="access-log"}` for each, at or after its send time;
     when traces are enabled and `o11y_tempo_query_url` is declared, it looks up the
     probe's own trace id on that Tempo query endpoint, and requires the trace only while
@@ -466,6 +484,17 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     a sample. Each check extends the existing `tasks/verify-o11y-metrics.yml` pattern.
     Alternative rejected: requiring any record newer than the gateway's last deploy,
     because that fails a correct deploy whenever no client has called since.
+
+    A deploy-time check proves the path once; it cannot notice spans stopping later at
+    a sampling fraction below one. The standing production signal for traces is
+    therefore Alloy's own exported-span counter, scraped into Prometheus: an alert fires
+    when that counter's rate is zero for `o11y_trace_silence_minutes` (default 30) while
+    `agentgateway_requests_total` is rising and traces are enabled. No scrape of Alloy's
+    own metrics exists today: `config/prometheus.yml` scrapes only Prometheus itself and
+    the `scrape.d` fragments, while Alloy serves HTTP on port 12345
+    (`compose.yml:66`). unverified: the counter's name at Alloy `v1.5.1` and the path
+    that serves it; task 5.4a reads both from the running Alloy before the rule is
+    written, and task 6.1 measures the same counter.
 
 12. **Team membership is declared on every identity and enforced twice.** Each
     `apiKey` entry renders `metadata: {name: <identity>, team: <team>}`. Inventory
@@ -536,7 +565,10 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
   log-receipt check fails closed either way, because no record arrives.
 - [The Tempo endpoint does not exist yet, or its address or transport changes] → trace
   export renders only when the endpoint is declared; the o11y deploy's receipt check
-  fails loudly when spans stop arriving; retargeting is one inventory value.
+  proves the path once per deploy, and only while sampling is one (decision 11, task
+  5.4); in production, spans that stop arriving are caught by the alert on Alloy's
+  exported-span counter, which fires when that rate is zero while gateway requests are
+  flowing (decision 11, task 5.4a); retargeting is one inventory value.
 - [`otelcol.exporter.loki` line format is not yet observed] → task 3.7 records the line
   a real record produces before the dashboard's log queries are written.
 

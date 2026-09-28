@@ -226,7 +226,10 @@ production start failed (see the last item).
 - **Transport security end to end.** Caddy keeps the public certificate and re-encrypts to
   HTTPS listeners on the gateway, API and UI alike; the gateway **requires Caddy's client
   certificate** (a gateway `tls.root` makes client authentication mandatory in v1.5.0,
-  `types/agent.rs` 564-579 at tag v1.5.0). vLLM serves HTTPS, and the gateway verifies it
+  `types/agent.rs` 564-579 at tag v1.5.0). Refined in review: the gateway admits a
+  declared allowlist of client leaves by name, Caddy's by default plus the deploy's own
+  verifier and the benchmark runner (`production-internal-ca` decisions 4 and 5; task
+  6.1 here). vLLM serves HTTPS, and the gateway verifies it
   with the model's `tls` block (`root`, `hostname`), which the simplified `llm:` config
   supports directly (`types/local.rs` 819-826), so no move to routing-based config is
   needed. An `https://` base URL adds a default TLS configuration only when `tls` is unset

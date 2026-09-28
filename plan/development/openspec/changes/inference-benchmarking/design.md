@@ -292,6 +292,24 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    refused for the same reason. Direct-target runs use the vLLM key by shared read from
    the gateway's secret path (single custody, never copied into a new path).
 
+   Once the gateway's listeners require client certificates (gateway change task 6.1),
+   a gateway-target run from the benchmark VM also presents the `bench` client leaf
+   declared in `production-internal-ca` decision 4: its key is generated on the
+   benchmark VM, it is issued through the same CSR flow as every other leaf, and it is
+   on the gateway's client allowlist (that change's decision 5). The run goes straight
+   to the gateway listener, not through Caddy, so the A/B against direct vLLM still
+   measures the gateway's own overhead with one hop on each side. The playbook refuses a
+   gateway-target run when the leaf file is missing or expires within the run's planned
+   duration, and the manifest records the leaf's serial (never its key). inference-perf
+   `v0.7.0` takes a client certificate and key in its model-server config (`cert_path`,
+   `key_path`, `inference_perf/config/client/modelserver/config.py:39-40`). `vllm bench
+   serve` `v0.30.0` does not: its TLS setting is only on or off
+   (`vllm/benchmarks/serve.py:2086-2089`, with `--insecure` at lines 1985-1991), so it
+   runs against the direct vLLM target only, which is where decision 1 uses it, and it
+   leaves the team survey once the gateway requires client certificates (decision 11).
+   unverified: how inference-perf `v0.7.0` is told which CA verifies the gateway's
+   server certificate; task 2.1 records it.
+
 9. **Guardrails are code and are checked before and during a run.** Before: the rates,
    in-flight cap (24, the load test's practical offered-depth limit), output length
    (at most 4,096), input length and total duration are asserted against caps read with a
@@ -329,12 +347,14 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
     that run the measured ladder the spec defines: inference-perf does (decision 1), and
     `vllm bench serve` draws Poisson arrivals at burstiness 1 and yields one result per
     stage invocation (Context), so it stays on the list only if task 2.1 confirms its
-    saved result supplies every per-stage metric, including the in-flight count; if it
-    does not, the list is `inference-perf` alone. guidellm and dgx-spark's harness stay
-    operator-only: guidellm is the calibration sweep and dgx-harness runs closed-loop
-    waves for baseline continuity (decision 1), and neither run is the staged measured
-    ladder, so offering them would produce team results the summary schema cannot report
-    as one. The playbook refuses either tool in team mode, whatever the survey sends.
+    saved result supplies every per-stage metric, including the in-flight count, and
+    only until the gateway requires client certificates, because it cannot present one
+    (decision 8); otherwise the list is `inference-perf` alone. guidellm and dgx-spark's
+    harness stay operator-only: guidellm is the calibration sweep and dgx-harness runs
+    closed-loop waves for baseline continuity (decision 1), and neither run is the staged
+    measured ladder, so offering them would produce team results the summary schema cannot
+    report as one. The playbook refuses either tool in team mode, whatever the survey
+    sends.
     Alternative rejected: separate team run types and result schemas for calibration and
     continuity runs, because teams need latency and throughput figures for their own
     shape, which the measured ladder already gives. The requester is taken from
