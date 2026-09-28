@@ -193,7 +193,7 @@ SSH keys are fetched from OpenBao at runtime and written to temp files that are 
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
-| `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
+| `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name), and report each online node's capacity (live use, configured guest commitment, free VM storage), most free memory first, for placing a new VM |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
 | `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
 
