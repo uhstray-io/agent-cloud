@@ -41,16 +41,22 @@ benchmark suite README it cites, `agentgateway/benchmarks` at commit `522fc04`,
   `--save-result`, `--result-dir`, `--result-filename`, `--dataset-name` (`random`,
   `sharegpt`, `prefix_repetition`, …), `--backend` (`openai-chat` among others),
   `--base-url`, `--endpoint`, `--ignore-eos`, `--num-warmups`, `--goodput`. vLLM latest
-  release `v0.30.0` (2026-09-22). Unverified: that burstiness 1.0 is documented as a
-  Poisson process, how the tool takes an API key, and whether `vllm bench serve` runs on a
-  GPU-less host from the published `vllm/vllm-openai` image (task 2.1).
+  release `v0.30.0` (2026-09-22). At `v0.30.0`, `vllm/benchmarks/serve.py` documents
+  burstiness 1 as a Poisson process (lines 419 to 423) and draws each interval from a gamma
+  distribution with shape equal to the burstiness, which is exponential at 1 (lines 471 to
+  475); one invocation takes one rate, so a ladder is one invocation per stage, and its
+  saved result carries `completed` and `failed` counts (lines 1288 to 1289). Unverified:
+  whether the saved result carries an in-flight count, how the tool takes an API key, and
+  whether `vllm bench serve` runs on a GPU-less host from the published `vllm/vllm-openai`
+  image (task 2.1).
 - `guidellm`: latest `v0.7.4` (2026-09-16); image `ghcr.io/vllm-project/guidellm`
   (multi-arch). At v0.7.4 the README's command is `guidellm run --backend
   kind=openai_http,target=<url> --profile kind=<sweep|poisson|constant|synchronous|
   throughput|concurrent>`, with `rate=` for constant and Poisson and `warmup=`/`cooldown=`
   inside the profile. The operator's shorthand `--profile sweep/poisson` maps to that
   form; older releases used a different command, so the invocation is pinned with the
-  image. How `sweep` chooses its intermediate rates is unverified (task 2.1 records it).
+  image. How `sweep` chooses its intermediate rates is read from source below ("Seeds
+  and replay"); task 2.1 confirms it against the pinned image.
 - dgx-spark's harness (dgx-spark repository, read 2026-09-27): `vllm/bench_c1c6.py` is a
   stdlib-only closed-loop streamed benchmark (imports at lines 4 to 15) with prompt set
   `code-reasoning-v1` hashed into the result (`PROMPT_SET`, `prompt_sha256`), arguments
@@ -60,6 +66,34 @@ benchmark suite README it cites, `agentgateway/benchmarks` at commit `522fc04`,
   and `vllm/bench_manifest.py` writes `results/<run-id>/manifest.json` and
   `raw-results.json`, refusing an unpinned image digest. `vllm/public_probe.py` has modes
   `long`, `queue`, `efforts` against the public URL.
+
+**Seeds and replay at the pinned versions** (source read with
+`gh api .../contents/<path>?ref=<tag>`, 2026-09-27):
+
+- inference-perf `v0.7.0`: `load.base_seed` defaults to the current time in milliseconds
+  (`inference_perf/config/loadgen/config.py:225-228`); each worker reseeds with
+  `base_seed + worker id` (`inference_perf/loadgen/load_generator.py:491-496`), so the
+  worker count is part of the input; the `shared_prefix` data type reads its own
+  `data.shared_prefix.seed`, default unset (`inference_perf/config/datagen/config.py:74`,
+  `inference_perf/datagen/synthetic/shared_prefix_datagen.py:90`). The Poisson arrival
+  timer draws from an unseeded generator (`inference_perf/loadgen/load_timer.py:68-76`,
+  `np.random.default_rng()` with no argument), so prompts replay from recorded seeds but
+  the realised arrival times do not. The project's own comparison table says the same of
+  the prompt seeds (`docs/comparability.md:121`).
+- `vllm bench serve` `v0.30.0`: `--seed`, default `0`
+  (`vllm/benchmarks/datasets/datasets.py:1608`), seeds both Python's and NumPy's global
+  generators before the run (`vllm/benchmarks/serve.py:2025-2026`), and the arrival
+  intervals come from NumPy's global generator (`serve.py:475`), so one seed fixes both
+  the prompts and the arrival intervals.
+- guidellm `v0.7.4`: the Poisson strategy's `random_seed` defaults to `42` and seeds its
+  own generator (`src/guidellm/scheduler/strategies.py:582-585`, `662-663`); the run
+  arguments carry a `seed` of kind `static`, example value `42`
+  (`src/guidellm/benchmark/schemas/entrypoints.py:212-217`). A `sweep` runs synchronous
+  and throughput strategies first and spaces its later rates evenly between the two
+  measured rates (`src/guidellm/benchmark/profiles/sweep.py:55`, `121`, `128`), so a
+  calibration sweep does not replay its rates exactly even with its seeds fixed.
+- dgx-spark's harness takes `--seed` (listed above) and hashes its prompt set into the
+  result.
 
 **The endpoint** (dgx-spark `profiles/qwen3.8-flash-next-nvfp4/model.yaml`): tensor
 parallel 2 across both nodes, `max-model-len` 262144, `max-num-seqs` 8,
@@ -213,7 +247,24 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    versions, image digests, the dgx-spark harness commit, this repository's commit, the
    served model and profile name as reported by `/v1/models` and the gateway version when
    the target is the gateway, the window it ran in, abort outcome, and per-stage sample
-   counts. The bundle is pushed on a new branch per run to the private site-config
+   counts. For replay it also carries every seed the tools use (for inference-perf
+   `load.base_seed` and `data.shared_prefix.seed`; for `vllm bench serve` `--seed`; for
+   guidellm its `seed` and the Poisson `random_seed`; for dgx-spark's harness `--seed`),
+   the sha256 of every dataset or prompt file, and the sha256 of each rendered
+   configuration after redaction. The playbook generates each seed once per campaign and
+   writes it into the configuration, because inference-perf's default seed is the clock
+   and its shared-prefix seed is unset (Context, "Seeds and replay"). A re-run from a
+   manifest renders from the recorded seeds and refuses when any configuration or file
+   digest differs from the stored one. What a re-run may still change: run id, time,
+   window, results, and inference-perf's realised arrival times, because its Poisson timer
+   is unseeded at `v0.7.0`; the stage rates and durations that shape those arrivals are in
+   the configuration digest. Alternative rejected: storing and replaying the full
+   generated request list and arrival schedule, because the seeds reproduce the prompts
+   for every pinned tool and the arrival schedule for all but one, at a fraction of the
+   bundle size; if tolerance work (task 3.4) shows inference-perf's arrival variance
+   matters, its `trace_replay` load type, which replays a request timing trace
+   (`inference_perf/config/loadgen/config.py:28`, `179-180`), is the follow-up. The bundle
+   is pushed on a new branch per run to the private site-config
    repository under `benchmarks/<run-id>/`, through the existing clone and push tasks,
    with a size cap; per-request raw data beyond the cap stays on the VM for a declared
    retention and the manifest says so. One summary line per stage goes to Loki with
@@ -272,11 +323,23 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
 11. **Self-serve is one Semaphore template with a narrow survey.** "Run Team Inference
     Benchmark" targets the gateway only, as `bench`, within the team caps, inside a
     standing low-rate window declared in inventory. Survey (no secret fields): shape
-    (preset list), tool (`inference-perf` default, `guidellm`, `vllm-bench`,
-    `dgx-harness`), rates (comma list or the preset `calibrated`), stage seconds, output
-    tokens, input tokens (shared-prefix lengths), served model name, and a free-text
-    label. The requester is taken from Semaphore's task record (unverified: which field
-    the playbook can read at run time; task 7.1 settles it). Operator templates,
+    (preset list), tool (`inference-perf` default, `vllm-bench`), rates (comma list or the
+    preset `calibrated`), stage seconds, output tokens, input tokens (shared-prefix
+    lengths), served model name, and a free-text label. The tool list holds only tools
+    that run the measured ladder the spec defines: inference-perf does (decision 1), and
+    `vllm bench serve` draws Poisson arrivals at burstiness 1 and yields one result per
+    stage invocation (Context), so it stays on the list only if task 2.1 confirms its
+    saved result supplies every per-stage metric, including the in-flight count; if it
+    does not, the list is `inference-perf` alone. guidellm and dgx-spark's harness stay
+    operator-only: guidellm is the calibration sweep and dgx-harness runs closed-loop
+    waves for baseline continuity (decision 1), and neither run is the staged measured
+    ladder, so offering them would produce team results the summary schema cannot report
+    as one. The playbook refuses either tool in team mode, whatever the survey sends.
+    Alternative rejected: separate team run types and result schemas for calibration and
+    continuity runs, because teams need latency and throughput figures for their own
+    shape, which the measured ladder already gives. The requester is taken from
+    Semaphore's task record (unverified: which field the playbook can read at run time;
+    task 7.1 settles it). Operator templates,
     "Run Inference Benchmark A/B" and "Run Inference Capacity Benchmark", add the direct
     and public targets and the higher caps, and require the window. All three call one
     playbook; the team template's wrapper refuses a `bench_mode` other than team.

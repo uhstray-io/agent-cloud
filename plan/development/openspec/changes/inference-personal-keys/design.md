@@ -197,24 +197,56 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
 
 8. **Reconcile: one scheduled playbook, source of truth is group membership.**
    `reconcile-inference-user-keys.yml`:
-   1. On the Authentik host, a listing script inside the server container prints the
-      usernames of active `inference-users` members as JSON — names only.
+   1. On the Authentik host, a listing script inside the server container prints, as
+      JSON, whether the `inference-users` group was found and the usernames of its
+      active members — names only. It exits non-zero on any lookup error, and a group
+      that does not exist is reported as not found, never as an empty member list.
    2. On the controller, list `secret/metadata/users/`, read each `inference` record,
       and compute, per user: **mint** (eligible, no record), **rotate** (eligible,
       current key at least 30 − grace days old, no previous key pending),
       **expire-previous** (`previous_expires_at` passed), **revoke** (record exists,
       not eligible: delete metadata, all versions), or nothing.
-   3. Guard: when the listing is empty but records exist, refuse unless
-      `-e allow_mass_revoke=true`, so an Authentik fault that returns no members
-      cannot revoke everyone. A listing error fails the run before any write.
+   3. Guards, in two classes:
+      - **Failed listing.** A non-zero exit, output that does not parse, or a group
+        reported as not found fails the run before any write. `allow_mass_revoke`
+        does not override this: with no trustworthy listing there is nothing to
+        converge to.
+      - **Verified listing with a large drop.** The group exists and the lookup
+        succeeded, so an empty member list is a real answer and is reconciled like
+        any other. The run refuses, unless `-e allow_mass_revoke=true`, only when the
+        plan would revoke two or more records **and** more than half of the existing
+        records. So the last remaining member leaving (one revoke) is removed on the
+        next scheduled run like anyone else, which keeps the one-hour offboarding
+        bound, while a blueprint or membership fault that empties a populated group
+        still stops for an operator. Threshold values are inventory
+        (`inference_mass_revoke_min_count: 2`, `inference_mass_revoke_fraction: 0.5`).
    4. Every write is a merge through `tasks/bao-merge-keys.yml` with the new value
       pinned in a fact first (the double-evaluation lesson at
       `manage-agentgateway-client-key.yml:102-109`); all key-bearing tasks are
       `no_log` and nothing else is.
-   5. Import the gateway deploy **only if** any mint, rotate, expire or revoke
-      happened. The deploy recreates the gateway container, which drops in-flight
-      streams, so an unchanged hourly run must not restart it.
-   6. Emit a step result with counts and identity names, never values.
+   5. Converge the gateway against what it has actually enrolled, not against what
+      this run changed. After the writes, compute the **desired set**: the sha256 of
+      every user key the deploy would render now (current and previous keys, each only
+      while its expiry is in the future). Then read back the **enrolled set** from the
+      gateway host: the `keyHash` values of the `user-*` entries in the rendered
+      `config.yaml` the gateway container mounts (`compose.yml:48`), plus that file's
+      modification time and the `agentgateway` container's start time. Import the
+      gateway deploy when the two sets differ, or when the container started before
+      the file was last written (a render that landed without a successful restart).
+      Otherwise do not deploy: the deploy recreates the gateway container, which drops
+      in-flight streams, so an hourly run with nothing to converge must not restart it.
+      Because the comparison is repeated every run, a deploy that failed is retried on
+      the next run even when no record changed, and a key whose expiry passed drops
+      out of the desired set and forces a deploy without any record write. The
+      comparison is `no_log` (the desired set is computed from key values) and reports
+      only identity names and counts. Alternative rejected: deploying only when this
+      run wrote a record, because a failed deploy then leaves a revoked or expired key
+      accepted with nothing to retry it. Alternative rejected: a persisted
+      pending-deployment marker, because it records intent rather than the gateway's
+      state and misses a gateway whose rendered file was changed or lost by any other
+      path.
+   6. Emit a step result with counts, identity names and whether the gateway was
+      deployed and why (set difference, stale container, or nothing), never values.
 
    Schedule: hourly (`cron: "17 * * * *"`) as code in `templates.yml`, with a Dev
    variant. Hourly bounds both offboarding latency and expiry overshoot to about one
@@ -243,7 +275,7 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
     `agw_user_tokens_per_hour`. The local-dev plaintext flag never applies to user
     keys: they are always hashes. During the overlap both keys carry the same identity
     name; whether v1.5.0 counts a budget per key entry or per identity is not verified
-    (task 3.3). If per entry, a user's ceiling doubles for at most three days, which
+    (task 1.2). If per entry, a user's ceiling doubles for at most three days, which
     is accepted and written into the architecture page.
 
 11. **Deferred: Authentik JWTs accepted at the gateway directly.** Joe states v1.5.0 can
@@ -275,12 +307,16 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
 - [An inference user reaches the admin policy] → separate mount and client (decision
   5); `bound_claims` on both roles; a validation gate logs in as a non-admin member
   and requires the admin role to refuse.
-- [Authentik outage revokes everyone] → the empty-listing guard and fail-before-write
-  on listing errors (decision 8).
-- [Every change restarts the gateway and drops streams] → the deploy runs only on a
-  real change; rotations are spread by each user's own issue date. If v1.5.0
-  hot-reloads a changed config (task 3.4), the recreate can be dropped for key-only
-  changes.
+- [Authentik outage revokes everyone] → a failed listing or a missing group fails
+  before any write, and a verified listing that would revoke most records at once
+  stops for an operator (decision 8, step 3).
+- [A failed deploy leaves a revoked or expired key accepted] → every run compares the
+  desired key set with the set read back from the gateway host and deploys on any
+  difference (decision 8, step 5).
+- [Every change restarts the gateway and drops streams] → the deploy runs only when
+  the enrolled key set differs from the desired one; rotations are spread by each
+  user's own issue date. If v1.5.0 hot-reloads a changed config (task 1.3), the
+  recreate can be dropped for key-only changes.
 - [Production OpenBao is sealed after a reboot] → users cannot fetch keys until it is
   unsealed; the gateway keeps serving its rendered config, and a key that expires
   meanwhile still drops on the next deploy. Recorded, not solved here.

@@ -454,12 +454,18 @@ and publishing Alloy's OTLP port on the o11y host would admit every o11y upstrea
     `request_logs`, counts only) and a `request_logs` oldest row inside the retention
     window; with content mode off, it requires the payload table to gain no row. The o11y
     deploy, when the gateway target is
-    declared, requires `up{job="agentgateway"} == 1`; when OTLP logs are enabled, a Loki
-    line under `{service="agentgateway", signal="access-log"}` within ten minutes of the
-    gateway's last deploy; when traces are enabled and `o11y_tempo_query_url` is declared,
-    a search on that Tempo query endpoint returning a `service.name=agentgateway` trace
-    newer than the gateway's last deploy. Each check extends the existing
-    `tasks/verify-o11y-metrics.yml` pattern.
+    declared, requires `up{job="agentgateway"} == 1`. The o11y deploy's telemetry checks
+    generate their own traffic first, so a healthy gateway that happens to be idle cannot
+    fail them: when OTLP logs are enabled it sends one keyed chat completion as the
+    verifying identity (key shared-read from `secret/services/agentgateway`, inside the
+    credential step) and one keyless request, then requires a Loki record under
+    `{service="agentgateway", signal="access-log"}` for each, at or after its send time;
+    when traces are enabled and `o11y_tempo_query_url` is declared, it looks up the
+    probe's own trace id on that Tempo query endpoint, and requires the trace only while
+    sampling is `1`, reporting "not run" at a lower fraction because a caller cannot force
+    a sample. Each check extends the existing `tasks/verify-o11y-metrics.yml` pattern.
+    Alternative rejected: requiring any record newer than the gateway's last deploy,
+    because that fails a correct deploy whenever no client has called since.
 
 12. **Team membership is declared on every identity and enforced twice.** Each
     `apiKey` entry renders `metadata: {name: <identity>, team: <team>}`. Inventory

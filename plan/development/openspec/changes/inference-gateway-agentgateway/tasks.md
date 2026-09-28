@@ -227,7 +227,10 @@
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
 - [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates, bind-
       mounted (the image has no shell); `tls.root` = the step-ca root, so a client
-      certificate is required; BATS asserts both listeners render `tls` with `root`
+      certificate is required; both gateways also carry the `require` rule that Caddy's
+      declared client SAN is in `source.subjectAltNames`, because `root` alone admits any
+      leaf from the CA (`production-internal-ca` design decision 5); BATS asserts both
+      listeners render `tls` with `root` and the rule
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4; `tls_trusted_ca_certs` is deprecated
@@ -236,5 +239,6 @@
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
 - [ ] 6.4 Validation gate: a request without Caddy's client certificate is refused at the
-      gateway; the gateway refuses a vLLM certificate not issued by the internal CA; the
+      gateway, and so is one with a client leaf from the same CA naming another SAN; the
+      gateway refuses a vLLM certificate not issued by the internal CA; the
       public path works end to end with every hop encrypted

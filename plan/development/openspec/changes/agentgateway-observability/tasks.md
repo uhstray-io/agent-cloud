@@ -187,16 +187,29 @@ dashboard.
       refuse `o11y_otlp_enabled` without the three certificate files present when not
       plaintext; the gateway deploy refuses an `agw_otlp_endpoint` whose host is not the
       declared o11y host
-- [ ] 3.5 `deploy-o11y.yml` verify: when OTLP is enabled, require a Loki line under
-      `{service="agentgateway", signal="access-log"}` newer than the gateway's last
-      deploy, and require the label set of that stream to contain no `identity`, model or
-      token label
+- [ ] 3.5 `deploy-o11y.yml` verify: when OTLP is enabled, the verify first generates its
+      own traffic, so an idle gateway cannot fail it: it sends one keyed chat completion
+      through the gateway as the verifying identity (`agw_verify_client` on the gateway
+      host, else its first `agw_clients` entry — the gateway deploy's own selection; the
+      key comes through `_shared_reads` from `agentgateway`, `client_<name>`, in the
+      `no_log` credential step, and the request is a `uri` call whose result is never
+      printed) and records the send time. It then requires, within a bounded retry, a
+      Loki record under `{service="agentgateway", signal="access-log"}` whose body names
+      that identity and whose timestamp is at or after the send time, and requires the
+      label set of that stream to contain no `identity`, model or token label. A 429 from
+      the gateway's request bucket still satisfies the check, because a rejected request
+      also leaves a record. It prints the record's status and timestamp, never the key
+- [ ] 3.5a Rejected-request record: the same verify sends one request with no key and
+      requires a record at or after its send time carrying HTTP status 401 and a
+      rejection reason. unverified: the access-log field name v1.5.0 uses for the
+      rejection reason; read it from the line 3.7 records before writing the query
 - [ ] 3.6 Local: `o11y_otlp_plaintext: true`, `agw_otlp_endpoint` = `o11y-alloy:4317` on the
       shared `local-dev` network; deploy both through the local Semaphore
 - [ ] 3.7 unverified: the line format `otelcol.exporter.loki` v1.5.1 produces for a gateway
-      record (body plus attributes). Record one real line, with the identity redacted to
-      its name only, in `platform/services/o11y/deployment/README.md`; write the dashboard's
-      log queries against it
+      record (body plus attributes). Record one real line for a served request and one for
+      a request refused with 401, each with the identity redacted to its name only, in
+      `platform/services/o11y/deployment/README.md`; write the dashboard's and the
+      verify's log queries against them
 - [ ] 3.8 Production: declare the o11y receiver's server leaf and the gateway's client
       leaf through `production-internal-ca` task 4.1's issuance (names from site-config,
       keys generated on each host); site-config sets `o11y_otlp_enabled`,
@@ -209,7 +222,9 @@ dashboard.
       carries `client_ca_file` whenever the plaintext flag is unset; the plaintext guard
       refuses outside `local_mode`; the label hint names exactly `service` and `signal`
 - [ ] 3.10 Validation gate: 3.5 in production proves scenarios "A request is findable by
-      identity" and "Identity is not an index label"; a Semaphore-run TLS handshake to the
+      identity" and "Identity is not an index label"; 3.5a plus one request burst past
+      the verifying identity's request bucket, both found in Loki, proves scenario "A
+      rejected request still leaves a record"; a Semaphore-run TLS handshake to the
       receiver without a client certificate fails, proving scenario "A sender without a
       client certificate is rejected"; a production render with the plaintext flag set
       fails in 3.4, proving scenario "Plaintext export is refused in production"
@@ -250,9 +265,15 @@ dashboard.
       is missing; `deploy-agentgateway.yml` refuses `agw_traces_enabled` unless the
       declared o11y host has `o11y_traces_enabled`
 - [ ] 5.4 `deploy-o11y.yml` verify: when traces are enabled and `o11y_tempo_query_url` is
-      declared, a search on that endpoint for `service.name=agentgateway` returns a trace
-      newer than the gateway's last deploy; with no query endpoint declared, the verify
-      reports the check as not run rather than passed
+      declared, the verify reuses 3.5's own probe request instead of waiting for traffic:
+      it reads the trace id from that probe's access record and requires a lookup of that
+      trace id on the query endpoint to return a `service.name=agentgateway` trace. A
+      caller cannot force sampling (the spec's caller-context requirement), so the check
+      is required only while the gateway host's declared `agw_trace_sampling` is `1` (the
+      5.6 test window); at any lower fraction a missing trace is reported as "not run:
+      probe not sampled", never as passed or failed. With no query endpoint declared, the
+      verify reports the check as not run rather than passed. unverified: the access-record
+      field v1.5.0 uses for the trace id; read it from the line 3.7 records
 - [ ] 5.5 BATS: the trace pipeline is absent from the rendered Alloy file when disabled or
       when no endpoint is declared; each refusal in 5.3 fires; the rendered exporter
       carries TLS whenever the endpoint is not host-local

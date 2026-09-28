@@ -65,7 +65,14 @@ local-dev and production.
 A leaf issued with the server profile MUST NOT be usable for client authentication, and a
 leaf issued with the client profile MUST NOT be usable as a server certificate. Production
 issuance SHALL use provisioners separate from the bootstrap provisioner, each limited to
-the production leaf lifetime.
+the production leaf lifetime. Because every client-profile leaf chains to the same root,
+the gateway MUST also admit a request only when the presented client certificate carries
+Caddy's declared client name among its subject alternative names.
+
+#### Scenario: Another client leaf is refused at the gateway
+- WHEN a client presents a client-profile leaf from the production CA whose subject
+  alternative names do not include Caddy's declared client name
+- THEN the gateway refuses the request, although the TLS handshake completes
 
 #### Scenario: A server leaf is refused as a client
 - WHEN a client presents a server-profile leaf from the production CA to a listener that
@@ -89,14 +96,28 @@ root to the public repository.
 ### Requirement: Leaves are renewed on a schedule and the new certificate is served
 A Semaphore template on a schedule declared as code SHALL re-issue every declared leaf
 whose remaining lifetime is below one third of its total, replace it atomically in a
-mounted directory, run the leaf's declared reload action, and MUST fail the run if the
-consumer's port does not then present the newly issued certificate. A leaf outside its
-renewal window SHALL be left unchanged.
+mounted directory, run the leaf's declared reload action, and MUST fail the run unless
+the new certificate is proven in use on the TLS path its profile serves. A server leaf is
+proven on the consumer's serving listener, which MUST present the new serial. A client
+leaf is proven on the peer that verifies it: a request sent through the client after
+the reload action MUST complete its mutual TLS handshake with that peer, and the
+certificate the peer records for that request MUST match the fingerprint of the new
+leaf read from the client host's file; the client's own listening port is never the
+check. A leaf outside its renewal window SHALL be left unchanged.
 
-#### Scenario: A leaf inside its window is renewed and served
-- WHEN the renewal template runs while a leaf has less than a third of its lifetime left
-- THEN a new certificate with a new serial is written, the consumer's port presents that
-  serial, and requests through the consumer succeed throughout
+#### Scenario: A server leaf inside its window is renewed and served
+- WHEN the renewal template runs while a server leaf has less than a third of its
+  lifetime left
+- THEN a new certificate with a new serial is written, the consumer's serving listener
+  presents that serial, and requests through the consumer succeed throughout
+
+#### Scenario: Caddy's client leaf is renewed and presented to the gateway
+- WHEN the renewal template runs while Caddy's client leaf has less than a third of its
+  lifetime left
+- THEN a new certificate is written on the Caddy host, a probe request through Caddy
+  to the gateway completes after Caddy's reload, the client certificate the gateway
+  records for that probe matches the new leaf's fingerprint, and requests through
+  Caddy succeed throughout
 
 #### Scenario: A fresh leaf is left alone
 - WHEN the renewal template runs while every leaf has more than a third of its lifetime

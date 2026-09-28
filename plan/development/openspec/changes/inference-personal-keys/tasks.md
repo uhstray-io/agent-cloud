@@ -40,8 +40,10 @@ them (repo rule).
       gate (active `inference-users` members only) and a second binding on the
       `openbao` forward_auth application admitting the group
 - [ ] 2.5 Membership listing script (`templates/list-group-members.py.j2`), run inside
-      the server container like `verify-users.py.j2`; prints active usernames of one
-      group as JSON, nothing else; exits non-zero on any lookup error
+      the server container like `verify-users.py.j2`; prints, as JSON, whether the group
+      was found and the active usernames of its members, nothing else; exits non-zero on
+      any lookup error; a missing group is reported as not found, never as an empty
+      member list
 - [ ] 2.6 BATS: group declared; tier gate admits only the group; the listing script
       prints names only
 - [ ] 2.7 Validation gate: local Authentik deploy converges twice; a non-member is
@@ -98,20 +100,40 @@ them (repo rule).
 ## 5. Reconcile and schedule
 - [ ] 5.1 `reconcile-inference-user-keys.yml` as design decision 8: listing on the
       Authentik host, plan on the controller (mint, rotate, expire-previous, revoke),
-      the empty-listing guard with `allow_mass_revoke`, writes through
-      `tasks/bao-merge-keys.yml` with values pinned in facts, KV metadata
-      `max_versions: 2`, revoke deletes metadata; deploy imported only on change;
-      `tasks/emit-step-result.yml` with counts and identities
+      the two guard classes (a failed listing or a group not found fails before any
+      write; a verified listing refuses only a drop of at least
+      `inference_mass_revoke_min_count` records and more than
+      `inference_mass_revoke_fraction` of them, overridable with `allow_mass_revoke`),
+      writes through `tasks/bao-merge-keys.yml` with values pinned in facts, KV metadata
+      `max_versions: 2`, revoke deletes metadata; then the convergence check (desired
+      unexpired key hashes against the `user-*` `keyHash` entries read back from the
+      gateway host's rendered `config.yaml`, plus that file's modification time against
+      the `agentgateway` container's start time), importing the deploy on any difference
+      whether or not this run wrote a record; `tasks/emit-step-result.yml` with counts,
+      identities and the deploy reason. If task 1.3 finds v1.5.0 hot-reloads a changed
+      config, the start-time comparison is replaced by a read of the running
+      configuration, recorded in `design.md` with its source line before this task is
+      written
 - [ ] 5.2 Lifetime vars `inference_key_lifetime_days: 30` and
       `inference_key_grace_days: 3`; the deploy and the reconcile read the same values
 - [ ] 5.3 `templates.yml`: template `Reconcile Inference User Keys`, `dev_variant: true`,
       `schedule: {cron: "17 * * * *"}`; run `setup-templates.yml`
 - [ ] 5.4 BATS: no key-bearing task outside `no_log`; no visible task loops over a
       protected result (`platform/tests/test_no_request_in_loop_items.py` covers it);
-      the guard exists; the deploy import is conditional
+      both guard classes exist; the deploy import is conditioned on the convergence
+      check's result and not on the plan's write count
 - [ ] 5.5 Validation gate, local: a second run with no change recreates nothing,
-      proving scenario "Unchanged membership does not restart the gateway"; an empty
-      listing refuses, proving scenario "An empty listing does not revoke everyone"; a
+      proving scenario "Unchanged membership does not restart the gateway"; emptying a
+      group of three members refuses, proving scenario "A large drop does not revoke
+      everyone"; removing the only member revokes without the override, proving scenario
+      "The last member's removal revokes normally"; a listing pointed at a group name
+      that does not exist, and a listing script forced to exit non-zero, both fail with
+      no write, proving scenario "A failed listing changes nothing"; a revoke whose
+      gateway deploy is made to fail (the gateway image reference deliberately broken in
+      local inventory for one run) is converged by the next run with no record change,
+      proving scenario "A revoked key stays refused after a failed deploy"; a key left to
+      pass its short local expiry with no other change gets 401 after the next run,
+      proving scenario "Expiry converges without a record change"; a
       username with a dot is refused by name while others reconcile, proving scenario
       "A non-conforming username is refused by name"; a new member gets a key, proving
       scenario "A declared member becomes eligible"; with the clock shifted by the

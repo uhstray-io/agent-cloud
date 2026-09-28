@@ -202,6 +202,36 @@ engine; moving vLLM configuration into this repository.
    password is the key password and its lifetime was raised to a year for the local
    wildcard.
 
+   Profiles alone do not identify Caddy: any client-profile leaf from this CA, issued
+   for any future consumer, would also complete the handshake. So the gateway also
+   checks **which** client it is, per request, against Caddy's declared name. v1.5.0
+   supports this directly (source read at tag `v1.5.0`, 2026-09-27):
+   - On a listener with a static certificate and `root` set, the listener records the
+     peer certificate's identity for every connection
+     (`crates/agentgateway/src/types/agent.rs:526-528` returns an identity mode unless
+     insecure mTLS is on; `crates/agentgateway/src/proxy/gateway.rs:1267-1270` passes it
+     to the socket; `crates/agentgateway/src/transport/stream.rs:241-245` parses it).
+   - The parsed identity carries every DNS, URI and IP subject alternative name
+     (`crates/agentgateway/src/transport/tls.rs:1256-1260`) and is exposed to CEL as
+     `source.subjectAltNames` (`schema/cel.md:117`; flattened into the source context at
+     `crates/agentgateway/src/cel/types.rs:288-291`).
+   - A gateway takes CEL authorization rules, `gateways.*.authorization.rules[]` with
+     `allow`, `deny` and `require` (`schema/config.md:51913-51917`).
+
+   Both gateway listeners therefore carry one `require` rule: Caddy's declared client
+   SAN (for example `caddy.<internal-zone>`, read from the leaf declaration in decision
+   4, never typed twice) is in `source.subjectAltNames`. `require` is used rather than
+   `deny`, because the schema warns that a failing `deny` expression fails open
+   (`schema/config.md:51916`). A client leaf with another name still completes the TLS
+   handshake, and its request is refused by the rule. Alternative rejected: a dedicated
+   issuing root or intermediate used only for Caddy's client leaf, with the gateway's
+   `root` set to it alone, because it adds a second CA hierarchy to back up, distribute
+   and rotate when v1.5.0 can bind the identity with one rule. It stays the fallback if
+   task 5.3 finds the rule cannot be rendered beside the `llm` shortcut the gateway
+   config uses. Unverified: the HTTP status the gateway returns when a `require` rule
+   fails, and whether the rule is evaluated before or after API-key authentication;
+   task 5.3 records both.
+
 6. **Thirty-day leaves, renewed daily inside the last third.** Default production leaf
    lifetime `720h`, inventory-parameterized. A scheduled template runs daily; a leaf is
    re-issued when less than a third of its lifetime remains (the same threshold step's
@@ -228,10 +258,18 @@ engine; moving vLLM configuration into this repository.
 8. **Reload per consumer, then prove what is served.** After a renewal the task runs the
    leaf's declared reload action: none for the gateway if the drill shows the file watch
    works; a Caddy reload (or the restart that `manage-caddy-sites.yml` already uses) for
-   Caddy; for vLLM, `--enable-ssl-refresh` on the dgx-spark side. Then it connects to the
-   consumer's port and compares the served certificate's serial with the one just issued.
-   A mismatch fails the run. This catches the one failure a file check cannot: a renewed
-   file that the running process never loaded.
+   Caddy; for vLLM, `--enable-ssl-refresh` on the dgx-spark side. Then it proves the new
+   leaf on the TLS path its profile serves. A server leaf (gateway, vLLM) is checked on
+   the consumer's serving listener, comparing the served certificate's serial with the
+   one just issued. Caddy's client leaf is never served on Caddy's own port, so it is
+   checked where it is verified: the task reads the new leaf's fingerprint from the file
+   on the Caddy host, sends one probe request through Caddy to the gateway, requires it
+   to complete (mutual TLS and the SAN rule in decision 5 both passed), and requires the
+   gateway's access record for that probe to carry the same client-certificate digest
+   (an access-log field computed with v1.5.0's `sha256.encode` over
+   `source.certificate`, `schema/cel-functions.md:37`, `schema/cel.md:121`). A mismatch
+   on either path fails the run. This catches the one failure a file check cannot: a
+   renewed file that the running process never loaded.
 
 9. **Root distribution reads from the CA host.** `distribute-ca-root.yml` gains the same
    `delegate_to` shape: it reads root and intermediate from the CA container on the CA

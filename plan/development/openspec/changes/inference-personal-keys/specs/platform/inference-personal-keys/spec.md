@@ -60,19 +60,48 @@ the Authentik gate alone.
 A scheduled Semaphore template, declared in `templates.yml`, SHALL converge the key
 records to the group's active membership at least hourly: mint for new members,
 rotate aged keys, remove expired previous keys and revoke the keys of anyone no longer
-eligible. It MUST re-render the gateway only when the enrolled key set changed, MUST
-fail before any write when the membership listing fails, MUST refuse to revoke every
-record at once unless explicitly allowed, and MUST NOT print a key value.
+eligible. On every run it MUST compare the set of unexpired user keys it would enrol
+with the set the gateway has enrolled, read back from the gateway host, and MUST deploy
+the gateway when they differ or when the running gateway predates its rendered
+configuration, and only then; whether this run wrote a record MUST NOT decide it. It
+MUST fail before any write when the membership listing fails or the group is not
+found. On a listing that succeeded, an empty group is a valid answer; the run MUST
+refuse, unless explicitly allowed, only a plan that revokes at least the declared
+minimum count and more than the declared fraction of existing records. It MUST NOT
+print a key value.
 
 #### Scenario: Unchanged membership does not restart the gateway
-- WHEN the reconcile runs with no member added or removed and no key due to rotate or
-  expire
+- WHEN the reconcile runs with no member added or removed, no key due to rotate or
+  expire, and the gateway's enrolled key set equal to the desired set
 - THEN no OpenBao record changes and the gateway container is not recreated
 
-#### Scenario: An empty listing does not revoke everyone
-- WHEN the membership listing returns no members while key records exist and
-  `allow_mass_revoke` is not set
-- THEN the run fails naming the guard and no record is deleted
+#### Scenario: A large drop does not revoke everyone
+- WHEN the membership listing succeeds but the plan would revoke two or more records
+  and more than half of the existing records, and `allow_mass_revoke` is not set
+- THEN the run fails naming the guard and the counts, and no record is deleted
+
+#### Scenario: The last member's removal revokes normally
+- WHEN the listing succeeds, the group exists with no active members, and exactly one
+  key record exists
+- THEN that record is deleted without `allow_mass_revoke`, the gateway is deployed, and
+  a request with that key gets 401
+
+#### Scenario: A failed listing changes nothing
+- WHEN the listing script exits non-zero, prints output that does not parse, or
+  reports the group as not found
+- THEN the run fails before any OpenBao write or gateway deploy, even with
+  `allow_mass_revoke` set
+
+#### Scenario: A revoked key stays refused after a failed deploy
+- WHEN a run deletes a removed member's record and its gateway deploy fails, and the
+  next scheduled run finds no membership change
+- THEN the next run finds the enrolled key set still holding that key's hash, deploys
+  the gateway, and a request with the revoked key gets 401
+
+#### Scenario: Expiry converges without a record change
+- WHEN a key's recorded expiry passes and no record is due for any write
+- THEN the next run finds the expired key's hash in the enrolled set but not in the
+  desired set, deploys the gateway, and a request with that key gets 401
 
 #### Scenario: A non-conforming username is refused by name
 - WHEN a member's username does not match `^[a-z0-9][a-z0-9-]*$`

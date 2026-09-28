@@ -25,11 +25,25 @@ accept connections only from the observability host.
 - **THEN** the connection is refused
 
 ### Requirement: Every gateway request produces an access record in Loki
-The gateway SHALL export one access record per request to the platform's Loki, carrying
-at least the identity, requested and served model, input, output and reasoning token
-counts, first-token latency on streamed responses, HTTP status, rejection reason and
-duration. Only `service`, `component`, `signal` and `cluster` MAY be Loki labels on
-these records; identity, model and token values MUST stay in the record body.
+The gateway SHALL export one access record per request to the platform's Loki. Every
+record MUST carry the HTTP status and the duration. A request that reaches inference
+MUST also carry the identity, requested and served model, input, output and reasoning
+token counts, and first-token latency when the response is streamed. A request the
+gateway rejects before inference (a missing or invalid key, a rate-limit refusal or a
+token-budget refusal) MUST carry its rejection reason; on such a record the served
+model, the token counts and the first-token latency MAY be absent, the requested model
+MAY be absent when the request was refused before its body was read, and the identity
+MAY be absent only when authentication itself failed. Only `service`, `component`,
+`signal` and `cluster` MAY be Loki labels on these records; identity, model and token
+values MUST stay in the record body.
+
+#### Scenario: A rejected request still leaves a record
+- **WHEN** an enrolled identity's request is refused by the gateway's request rate
+  limit, and separately a request carrying no key is refused
+- **THEN** Loki holds one record for each: the refused identity's record carries that
+  identity, HTTP status 429 and its rejection reason; the keyless record carries HTTP
+  status 401 and its rejection reason; neither record is required to carry a served
+  model or token counts
 
 #### Scenario: A request is findable by identity
 - **WHEN** an enrolled identity sends one chat completion through the gateway

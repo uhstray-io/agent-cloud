@@ -58,7 +58,12 @@ fields redacted to their names, and a summary in one schema across tools. The ma
 MUST record the requester, template, target, workload shape and file digest, ladder and
 stage durations, tool names and versions, image digests, the dgx-spark harness commit when
 used, this repository's commit, the served model and profile, the gateway version when the
-gateway is the target, the window, the outcome and per-stage sample counts. The bundle
+gateway is the target, the window, the outcome and per-stage sample counts. So that a
+re-run sends the same requests, the manifest MUST also record every seed each tool uses
+for prompt generation and for its arrival process, the sha256 of every dataset or prompt
+file a tool reads, and the sha256 of each rendered tool configuration after redaction.
+The playbook MUST set every such seed explicitly in the rendered configuration and MUST
+NOT leave one to a tool default, because a default can be the current time. The bundle
 SHALL be copied on a new branch per run to the private results location, reporting names
 only.
 
@@ -74,8 +79,16 @@ only.
 #### Scenario: Result is reproducible from its manifest
 - WHEN an operator re-runs a campaign from a stored manifest's shape, ladder, tool and
   image digests
-- THEN the new run uses identical inputs and its manifest differs only in run id, time,
-  window and results
+- THEN the new run renders its tool configurations with the manifest's recorded seeds,
+  their post-redaction digests and the dataset and prompt file digests equal the stored
+  ones, and its manifest differs only in run id, time, window and results, plus the
+  realised arrival times of any tool whose arrival draw its pinned version does not seed
+
+#### Scenario: Re-run refuses a drifted input
+- WHEN a re-run's rendered configuration digest or a dataset or prompt file digest does
+  not match the stored manifest
+- THEN the playbook refuses before sending any request and names the file whose digest
+  differs
 
 ### Requirement: Gateway overhead is measured as an A/B against one backend
 The gateway-overhead benchmark SHALL run the same workload shape, ladder, tool and image
@@ -169,7 +182,15 @@ stream longer than the edge's 125-second read timeout.
 A Semaphore template SHALL let any team member run a benchmark against the gateway as
 `bench` within the team caps, choosing from a survey with no secret fields: workload
 shape, tool, rates, stage duration, output and input tokens, served model and a label.
-The template MUST NOT offer the direct or public targets.
+The tool choice MUST be limited to tools whose output satisfies the measured-run method
+above: Poisson arrivals and a per-stage report of every listed metric. The calibration
+sweep tool and the closed-loop continuity harness MUST NOT be offered, because their runs
+are not measured ladders. The template MUST NOT offer the direct or public targets.
+
+#### Scenario: Team template refuses a non-ladder tool
+- WHEN the team template is launched with the calibration sweep tool or the closed-loop
+  harness as its tool
+- THEN the playbook refuses before any request is sent and names the tools it accepts
 
 #### Scenario: Team run completes and is visible
 - WHEN a team member launches the template with in-cap values

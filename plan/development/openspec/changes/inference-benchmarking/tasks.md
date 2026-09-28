@@ -43,7 +43,12 @@ only inside the windows named below.
       record in `design.md`: its config schema at that version, how it takes the API key
       (never argv), which streamed delta it counts as first token, and, for guidellm, how
       `sweep` chooses rates. Confirm `vllm bench serve` runs on the GPU-less VM, or record
-      the image that does
+      the image that does. Confirm against the pinned images the seed behaviour design.md
+      records from source (Context, "Seeds and replay"): two inference-perf runs with the
+      same `load.base_seed` and `data.shared_prefix.seed` send the same prompts, and two
+      `vllm bench serve` runs with the same `--seed` send the same prompts at the same
+      intervals. Record whether `vllm bench serve`'s saved result carries an in-flight
+      count; if it does not, remove `vllm-bench` from the team survey (design decision 11)
 - [ ] 2.2 Workload files for `agw-reference` and `agw-reference-scaled` (design decision
       4) as committed inference-perf configs; equivalent parameters for the other tools
       rendered from the same source values, so one shape has one definition
@@ -52,21 +57,28 @@ only inside the windows named below.
       cannot raise it; lock on the runner; run-id directory creation that refuses an
       existing id
 - [ ] 2.4 Run playbook: preflight (caps, window, lock, budget and global-bucket plan
-      checks, image digests), render configs with owner-only permissions, run tool
-      containers, write the manifest and `summary.json`, redact configs, release the lock
-      in `always:`. Credential-handling tasks alone carry `no_log`
+      checks, image digests), render configs with owner-only permissions and every seed
+      set explicitly (generated once per campaign, or read from the manifest on a re-run),
+      run tool containers, write the manifest (seeds, dataset and prompt file sha256,
+      post-redaction config sha256) and `summary.json`, redact configs, release the lock
+      in `always:`. A re-run compares each rendered config and file digest with the stored
+      manifest and refuses on any difference, naming the file. Team mode refuses
+      `guidellm` and `dgx-harness`. Credential-handling tasks alone carry `no_log`
 - [ ] 2.5 Abort watcher (design decision 9) polling Prometheus; thresholds as inventory
       values with conservative defaults until task 3.1 sets them
 - [ ] 2.6 Tests: pytest for the manifest writer, the summary schema across the four
       tools' native outputs (fixtures), redaction and the budget-plan arithmetic; BATS
       for the playbook's refusals (unpinned image, cap above file, run outside window,
-      existing run id, team mode with a direct target)
+      existing run id, team mode with a direct target, team mode with `guidellm` or
+      `dgx-harness`, re-run with a drifted config or file digest); pytest that no rendered
+      config leaves a seed field unset
 - [ ] 2.7 Prove the whole contract against a local-dev upstream (the fake inference
       upstream or LM Studio) through the local Semaphore
 - [ ] 2.8 Validation gate: the BATS refusals prove scenarios "Tool image is pinned",
       "Caps cannot be raised from the survey", "Second concurrent run is refused" and "A
-      run id is never reused"; a scan of the local run's bundle and task output proves
-      scenario "Bundle contains no credential"
+      run id is never reused", "Re-run refuses a drifted input" and "Team template refuses
+      a non-ladder tool"; a scan of the local run's bundle and task output proves scenario
+      "Bundle contains no credential"
 
 ## 3. Direct baseline and calibration (window named by Joe, before the narrowing)
 - [ ] 3.1 guidellm sweep against direct vLLM for each shape; record `R_sat` per shape, the
@@ -93,7 +105,9 @@ only inside the windows named below.
       `agw_rate_requests_per_minute_total` and the default and per-identity
       `tokens_per_hour` from it, with the arithmetic as comments in site-config inventory;
       hand the figures to the gateway change's task 4.2
-- [ ] 4.4 Re-run of one stored manifest to show the inputs reproduce
+- [ ] 4.4 Re-run of one stored manifest with its recorded seeds: every rendered config
+      and dataset or prompt file digest matches the stored manifest, and the new manifest
+      differs only in the fields the spec scenario allows
 - [ ] 4.5 Validation gate: the A/B report proves scenario "Overhead report pairs the two
       targets"; the inventory comments prove scenario "Limits cite their run"; 4.4 proves
       scenario "Result is reproducible from its manifest"; a budget-exceeding plan refused

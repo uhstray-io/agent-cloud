@@ -106,36 +106,60 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       in production and in the local overlay (replacing the single-file bundle mount), and
       its key is readable by the container's non-root user
 - [ ] 5.3 Hand to the companion change `inference-gateway-agentgateway` task group 6:
-      gateway listeners serve `current/` with `tls.root` set to the bundle; Caddy's two
-      inference blocks carry `tls_server_name`, `tls_trust_pool file` and
-      `tls_client_auth`. Verify whether each follows the symlink swap and record the
-      reload action per leaf
+      gateway listeners serve `current/` with `tls.root` set to the bundle, and both
+      gateways carry a `gateways.<name>.authorization.rules[]` `require` rule that Caddy's
+      declared client SAN is in `source.subjectAltNames` (design decision 5), rendered
+      from the leaf declaration; Caddy's two inference blocks carry `tls_server_name`,
+      `tls_trust_pool file` and `tls_client_auth`. Verify whether each follows the
+      symlink swap and record the reload action per leaf. Confirm in local-dev that the
+      rule renders beside the `llm` shortcut and the gateway starts with it, and record
+      the status a failed rule returns and whether it is evaluated before API-key
+      authentication; if the rule cannot be rendered there, fall back to decision 5's
+      dedicated client-issuing hierarchy and record why. Add an access-log field
+      `client_cert_sha256` from `sha256.encode(source.certificate)` (agentgateway
+      v1.5.0 `schema/cel-functions.md:37`, `schema/cel.md:121`) for task 6.1's
+      client-leaf check
 - [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
       bundle delivered through the agreed channel, with the SAN the gateway's model
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
       `--ssl-keyfile`, `--enable-ssl-refresh`); nothing on the nodes is changed from here
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates", plus the companion's
-      gate that a request without Caddy's client certificate is refused at the gateway
+      gate that a request without Caddy's client certificate is refused at the gateway;
+      a throwaway client-profile leaf declared with a SAN other than Caddy's (issued as in
+      4.7, then removed) completes the handshake and its request is refused, proving
+      scenario "Another client leaf is refused at the gateway"
 
 ## 6. Renewal and expiry alerting
 - [ ] 6.1 `renew-internal-certs.yml`: for every declared leaf, read the current
       certificate's expiry on the consumer; re-issue through task 4.1 when less than a
-      third of its lifetime remains; run the declared reload action; connect to the
-      consumer's port and fail on a serial mismatch; push one Loki line per leaf and one
-      for the intermediate (the conformance collector's push shape). Emit the step result
+      third of its lifetime remains; run the declared reload action; then prove the new
+      leaf in use on its own TLS path. Server profile: connect to the consumer's serving
+      listener and fail on a serial mismatch. Client profile (Caddy's leaf): read the new
+      leaf's fingerprint from the file on the Caddy host, send one probe request through
+      Caddy's inference route to the gateway, fail unless it completes (the mutual TLS
+      handshake and the SAN rule both passed), and fail unless the gateway's access
+      record for that probe carries a `client_cert_sha256` equal to the new leaf's;
+      Caddy's own listening port is never checked for this leaf. Push one Loki line per
+      leaf and one for the intermediate (the conformance collector's push shape). Emit
+      the step result. unverified: the exact PEM text the gateway hashes (v1.5.0
+      re-encodes it from DER, `crates/agentgateway/src/transport/tls.rs:1279-1283`, line
+      endings not checked); the local-dev drill records it so the Caddy-side digest is
+      computed over the same encoding
 - [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
       code; run `setup-templates.yml`
 - [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
-      is inside its window, run the template, and confirm the gateway and Caddy present the
-      new serials with no failed requests on the public path during the run (a paced
-      request loop through the public hostname)
+      is inside its window, run the template, and confirm the gateway's serving listeners
+      present the new server serial, the gateway records Caddy's new client-leaf
+      fingerprint on a probe through Caddy, and no request fails on the public path during
+      the run (a paced request loop through the public hostname)
 - [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, no renewal
       line for thirty-six hours; deploy o11y through Semaphore
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
       expiry alert; pausing the schedule past the window fires the silent-job alert (or the
       rule's `for` window shortened for the drill and restored); both reach the contact
       point, then the canary is removed
-- [ ] 6.6 Validation gate: scenarios "A leaf inside its window is renewed and served", "A
+- [ ] 6.6 Validation gate: scenarios "A server leaf inside its window is renewed and
+      served", "Caddy's client leaf is renewed and presented to the gateway", "A
       fresh leaf is left alone", "A leaf near expiry raises an alert" and "A silent
       renewal job raises an alert"
 
