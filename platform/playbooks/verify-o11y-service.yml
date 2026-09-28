@@ -1,6 +1,6 @@
 ---
-# Run after generating a fresh log line for the named service. This read-only
-# onboarding gate checks actual collection, not just healthy o11y containers.
+# Run after generating a fresh log line for the named service. The optional
+# agentgateway canary emits credential-free traffic to prove trace intake.
 - name: Require a declared o11y receiver and a service identity
   hosts: localhost
   connection: local
@@ -31,8 +31,41 @@
           - expect_metrics | default('true') | string | lower in ['true', 'false']
           - expect_logs | default('true') | string | lower in ['true', 'false']
           - expect_traces | default('false') | string | lower in ['true', 'false']
+          - emit_agentgateway_canary | default('false') | string | lower in ['true', 'false']
           - (expect_metrics | default('true') | bool) or (expect_logs | default('true') | bool) or (expect_traces | default('false') | bool)
-        fail_msg: "Declare a lowercase service and at least one expected signal (metrics, logs, or traces)."
+          - not (emit_agentgateway_canary | default('false') | bool) or expected_service | default('') == 'agentgateway'
+          - not (emit_agentgateway_canary | default('false') | bool) or expect_traces | default('false') | bool
+          - not (emit_agentgateway_canary | default('false') | bool) or groups.get('agentgateway_svc', []) | length == 1
+        fail_msg: "Declare a lowercase service and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
+
+- name: Emit an optional gateway trace canary
+  hosts: agentgateway_svc
+  gather_facts: false
+  vars:
+    _canary_bind: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+  tasks:
+    - name: Mark the canary start on the Tempo receiver clock
+      ansible.builtin.command: date +%s
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      register: _canary_started
+      changed_when: false
+      check_mode: false
+      when: emit_agentgateway_canary | default('false') | bool
+
+    - name: Send anonymous requests directly to the gateway listener
+      ansible.builtin.uri:
+        url: "http://{{ _canary_bind }}:{{ agw_port | default(4000) }}/v1/models"
+        method: GET
+        status_code: 401
+        timeout: 5
+        use_netrc: false
+        use_proxy: false
+      loop: "{{ range(100) | list }}"
+      loop_control:
+        label: "request {{ item + 1 }}/100"
+      changed_when: false
+      check_mode: false
+      when: emit_agentgateway_canary | default('false') | bool
 
 - name: Verify the named service is collected
   hosts: o11y_svc
@@ -80,17 +113,22 @@
           - -q
           - -O
           - "-"
-          - "http://tempo:3200/api/search?tags={{ ('service.name=' ~ expected_service) | urlencode }}&start={{ (now(utc=true).timestamp() | int) - 3600 }}&end={{ now(utc=true).timestamp() | int }}&limit=20"
+          - "http://tempo:3200/api/search?tags={{ ('service.name=' ~ expected_service) | urlencode }}&start={{ (hostvars[groups['agentgateway_svc'][0]]._canary_started.stdout | int) - 60 if emit_agentgateway_canary | default('false') | bool else (now(utc=true).timestamp() | int) - 3600 }}&end={{ (now(utc=true).timestamp() | int) + 60 }}&limit=20"
       register: _service_traces
       changed_when: false
       check_mode: false
+      retries: 12
+      delay: 5
+      until: _service_traces.rc == 0 and (_service_traces.stdout | from_json).traces | default([]) | length > 0
+      ignore_errors: true
       when: expect_traces | default('false') | bool
 
     - name: Require a recent trace returned by Tempo
       ansible.builtin.assert:
         that:
-          - (_service_traces.stdout | from_json).traces | default([]) | length > 0
-        fail_msg: "Tempo has no {{ expected_service }} trace in the last hour; check source sampling, Alloy ingress, and Tempo intake."
+          - _service_traces.rc == 0
+          - (_service_traces.stdout | default('{}') | from_json).traces | default([]) | length > 0
+        fail_msg: "Tempo has no {{ expected_service }} trace in the requested window; check source sampling, Alloy ingress, and Tempo intake."
       when: expect_traces | default('false') | bool
 
     - name: Report verified signals

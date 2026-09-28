@@ -81,6 +81,12 @@ templates:
         type: string
         required: false
         default_value: "false"
+      - name: emit_agentgateway_canary
+        title: "Emit agentgateway trace canary"
+        description: "true to send 100 anonymous 401 requests directly to agentgateway before checking Tempo"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml
