@@ -100,16 +100,21 @@
           changed_when: true
           when: not ansible_check_mode
 
+        # Under --check the keygen is skipped and tempfile registers no path, so every step
+        # that reads or stores the pair skips too; the dry run reports what would happen
+        # (Semaphore task 1756 failed here on "'dict object' has no attribute 'path'").
         - name: "Read public key"
           ansible.builtin.slurp:
             src: "{{ _kd.path }}/id_ed25519.pub"
           register: _pub
+          when: not ansible_check_mode
 
         - name: "Read private key"
           ansible.builtin.slurp:
             src: "{{ _kd.path }}/id_ed25519"
           register: _priv
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Store keypair in OpenBao (secret/services/ssh/{{ service_name }})"
           ansible.builtin.uri:
@@ -125,10 +130,13 @@
           no_log: true
           when: not ansible_check_mode
 
+      # always, not block: a failed store must not leave the private key on the runner.
+      always:
         - name: "Wipe runner-local temp keys"
           ansible.builtin.file:
             path: "{{ _kd.path }}"
             state: absent
+          when: _kd.path is defined
 
     - name: "Decide whether a site-config clone is reachable"
       ansible.builtin.stat:

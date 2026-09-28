@@ -138,3 +138,26 @@ setup() {
   fi
   refute_grep -qE 'method: (PUT|DELETE|PATCH)' "$BACKUP"
 }
+
+@test "ssh keygen: a dry run for a new key finishes, and the temp key is wiped in always" {
+  # Semaphore task 1756: under --check the keygen skips and tempfile registers no path, so
+  # the unguarded slurp failed on "'dict object' has no attribute 'path'".
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  local play="$BATS_TEST_TMPDIR/gen.yml"
+  python3 - "$GEN" "$play" <<'PY'
+import sys
+import yaml
+
+src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+blk, = (t for t in src["tasks"] if t.get("name") == "Generate + store keypair when absent")
+assert [t["name"] for t in blk["always"]] == ["Wipe runner-local temp keys"], blk.get("always")
+assert all("Wipe" not in t["name"] for t in blk["block"])
+yaml.safe_dump([{"hosts": "localhost", "gather_facts": False,
+                 "vars": {"service_name": "t", "_bao_url": "http://bao.invalid",
+                          "_bao_auth": {"json": {"auth": {"client_token": "x"}}},
+                          "_existing": {"status": 404}},
+                 "tasks": [blk]}], open(sys.argv[2], "w"))
+PY
+  run ansible-playbook -i localhost, -c local --check "$play"
+  [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+}
