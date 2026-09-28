@@ -61,7 +61,7 @@ supersede it with a new entry and link both.
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | Test (anchored + active-construct) |
+| 2.15 | Matched a substring/token instead of the anchored construct, twice — **x2** | False green | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | Test (derived population + ratchet) |
@@ -104,7 +104,7 @@ supersede it with a new entry and link both.
 | 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | Convention (pre-commit hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
-| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
+| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x2** | Process | Convention -> **Test + declared dep** |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | Convention |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x3** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | Pre-commit gate + test |
@@ -127,7 +127,7 @@ supersede it with a new entry and link both.
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | Test (closed rule, mutation-proven) |
-| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
+| 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) — **x2** | Wrong code under validation | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | Test |
 | 10.12 | A numeric id crossed the Ansible→JSON boundary as a string, so an `!==` guard fired on every issue it checked | Silent type coercion | Test |

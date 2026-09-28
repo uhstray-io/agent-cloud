@@ -49,6 +49,12 @@ print('OK' if not problems else '; '.join(problems))
   [ "$output" = "OK" ]
 }
 
+@test "mistakes doc: repeat counts and three-strikes enforcement match" {
+  run python3 "$REPO_ROOT/platform/tests/check_mistakes_ledger.py" "$DOC"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK: $DOC" ]
+}
+
 @test "mistakes doc: every index row names where the rule is enforced" {
   # A row with a blank enforcement column is the failure this doc is about —
   # a rule recorded but not placed anywhere it can fire.
