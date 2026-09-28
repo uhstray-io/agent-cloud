@@ -963,7 +963,8 @@ canary = next(p for p in plays if p.get('name') == 'Emit an optional gateway tra
 mark, traffic = canary['tasks']
 assert mark['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
 assert traffic['ansible.builtin.uri']['status_code'] == 401
-assert traffic['ansible.builtin.uri']['url'].startswith('http://127.0.0.1:')
+assert '_canary_bind' in traffic['ansible.builtin.uri']['url']
+assert "['0.0.0.0', '::', '']" in canary['vars']['_canary_bind']
 assert traffic['loop'] == '{{ range(100) | list }}'
 assert 'headers' not in traffic['ansible.builtin.uri']
 tasks = next(p for p in plays if p.get('name') == 'Verify the named service is collected')['tasks']
@@ -975,7 +976,10 @@ assert traces['when'] == "expect_traces | default('false') | bool"
 assert 'service.name=' in traces['ansible.builtin.command']['argv'][-1]
 assert 'tempo:3200/api/search' in traces['ansible.builtin.command']['argv'][-1]
 assert '_canary_started.stdout' in traces['ansible.builtin.command']['argv'][-1]
+assert ' - 60' in traces['ansible.builtin.command']['argv'][-1]
+assert ' + 60' in traces['ansible.builtin.command']['argv'][-1]
 assert traces['retries'] == 12
+assert traces['ignore_errors'] is True
 assert require['when'] == "expect_traces | default('false') | bool"
 templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
 service = next(t for t in templates if t['name'] == 'Verify o11y Service')
