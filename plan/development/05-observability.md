@@ -683,6 +683,69 @@ the `o11y` VM (`o11y_svc`).
 > the follow-up config change requests neutral styling so color remains reserved
 > for actual status thresholds. Live confirmation of that display fix is pending.
 
+> **Agentgateway and legacy o11y expansion, 2026-09-27 EDT — plan:** The
+> reviewed `dev` receiver already scraped `agentgateway_config_synchronized`
+> in task 1638; that proves one named metric, not request traffic or tracing.
+> Agentgateway's standalone Grafana guide says its Kubernetes dashboard does
+> not apply to Docker and gives PromQL for request rate, errors, token usage,
+> time to first token, and MCP calls. Build a provisioned dashboard from those
+> queries and verify the series against the running gateway before claiming
+> populated panels. Its tracing guide distinguishes reloadable
+> `frontendPolicies.tracing` from startup-only `config.tracing`; use the
+> declared gateway OTLP endpoint and a stable `service.name`, keep sampling
+> bounded, and capture neither prompts nor completions.
+>
+> The original `uhstray-io/o11y` repository has one Docker/Prometheus
+> dashboard with host, container, alert, and version panels. Its node-exporter
+> and cAdvisor queries need named producer receipts before an adapted dashboard
+> is provisioned here. Seven Mimir dashboards use legacy `rows` layout and
+> require a Mimir data source; the deployed estate has Prometheus instead, so
+> defer them until Mimir is deployed and the queries/schema are modernized.
+> Reuse the original trace/log/metric correlation intent, not its unpinned
+> multi-process Tempo deployment or hard-coded object-store credentials.
+> Tempo, Alloy OTLP ingress, private network rules, a Grafana Tempo data
+> source, and a real trace readback are the new production acceptance path.
+> Preserve existing Prometheus, Loki, and Grafana volumes throughout.
+> The first Tempo tier uses a separate persistent local volume with seven-day
+> default retention, as the 2026-09-27 architecture decision records. MinIO's
+> upstream is archived; introducing it solely for these traces would increase
+> maintenance risk. Object storage and trace backup are later migration gates,
+> not claims about this first tier.
+>
+> Sources: [agentgateway observability](https://agentgateway.dev/docs/standalone/latest/documentation/observability/),
+> [LLM traffic](https://agentgateway.dev/docs/standalone/latest/documentation/llm/observability/),
+> [Grafana panels](https://agentgateway.dev/docs/standalone/latest/documentation/observability/metrics/grafana/),
+> [tracing configuration](https://agentgateway.dev/docs/standalone/latest/documentation/observability/traces/setup/),
+> [OTLP access-log export](https://agentgateway.dev/docs/standalone/latest/documentation/observability/access-logs/export/),
+> [Alloy OTLP receiver](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.receiver.otlp/),
+> [Alloy Loki exporter](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.loki/),
+> and [original o11y](https://github.com/uhstray-io/o11y).
+
+> **Original dashboard disposition, 2026-09-27 EDT:** The repository contains
+> one Docker/Prometheus dashboard and seven Mimir dashboards. Its targets-online,
+> alerts, uptime, and process-memory ideas map to the current Prometheus self
+> scrapes; targets-online and uptime are adapted into the estate dashboard,
+> while process memory was already present. The original Prometheus `ALERTS`
+> query does not represent this estate's Grafana-managed alerts, so alert counts
+> await a verified Grafana metric. Its node-exporter and cAdvisor panels
+> remain deferred until those exporters are deployed with named live receipts.
+> The seven Mimir dashboards are deferred because this estate has no Mimir data
+> source and their legacy row schema needs migration. No original data source
+> URLs, hard-coded object-store values, or unpinned images are imported.
+>
+> **Production trace receipt:** after the reviewed `dev` receiver and firewall
+> are applied, run `Deploy o11y (Dev)` to prove Tempo readiness and data-source
+> health, then `Deploy agentgateway (Dev)` to activate its 5% frontend tracing.
+> The gateway deploy refuses unless alerts are enabled, the named gateway
+> configuration metric is healthy on the receiver, Tempo answers, and the
+> gateway VM can open Alloy's declared port. Run `Verify o11y Service` with
+> `expected_service=agentgateway`, `expect_metrics=true`,
+> `expect_logs=true`, and `expect_traces=true`; it must find a fresh access log
+> in Loki and a real service trace in Tempo from the last hour. Agentgateway
+> sends both over the declared OTLP listener; Alloy labels access records with
+> `service=agentgateway` before forwarding them to Loki. Any missing signal
+> fails its named check.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

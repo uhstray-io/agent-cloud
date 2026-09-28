@@ -179,11 +179,22 @@ services:
 
 ## Tracing (Tempo) — the third pillar
 
-Traces answer "where did the latency/error happen across services?" — the question logs and metrics can't. Grafana **Tempo** is the backend; it "only requires object storage to operate" and runs as a single binary for our scale.
+Traces answer "where did the latency/error happen across services?" — the question logs and metrics can't. Grafana **Tempo** is the backend and runs as a single binary for our scale.
+
+> **2026-09-27 implementation decision:** The first receiver uses Tempo's
+> documented monolithic local backend on its own persistent volume, with
+> inventory-controlled seven-day retention and a private Alloy ingress. This
+> keeps the telemetry path self-hosted and avoids introducing MinIO's archived
+> upstream as a new production dependency. It does not provide replication or
+> restore for traces; capacity and disk health must be observed before widening
+> sampling. Move to a maintained object store when trace volume or durability
+> requirements exceed a single receiver. Prometheus, Loki, and Grafana volumes
+> are preserved during this addition. The S3 sketch below records the earlier
+> target design; it is not the deployed configuration.
 
 ### Deployment — monolithic Tempo, no Kafka
 
-Run `grafana/tempo` in **monolithic mode** (`-target=all`) — all components (distributor/ingester/querier/compactor/metrics-generator) in one process, **no Kafka** (Kafka is only required for *microservices* mode as of Tempo v3.0). Storage is the local filesystem locally, MinIO/S3 in prod — a single config param, no fork (matches the compose-overlay convention).
+Run `grafana/tempo` in **monolithic mode** (`-target=all`) — all required components in one process, with no Kafka. The first receiver uses local storage in both environments as recorded above. An object-store migration will be a separate reviewed change with a tested data path.
 
 ```yaml
 # platform/services/tempo/deployment/compose.yml (sketch) — local tier

@@ -1,5 +1,5 @@
 ---
-# deploy-o11y.yml — observability stack (Grafana+Prometheus+Loki+Alloy) deploy.
+# deploy-o11y.yml — observability stack (Grafana+Prometheus+Loki+Alloy+Tempo) deploy.
 #
 # Phase 1: Place repo + manage-secrets (Grafana admin password from OpenBao) +
 #          template .env. The committed config/ (scrape/loki/alloy/grafana
@@ -141,6 +141,19 @@
         fail_msg: "The receiver's gateway scrape target differs from the gateway's declared stats bind (agw_stats_bind must be declared)."
       when: agentgateway_metrics_address is defined or agentgateway_metrics_port is defined
 
+    - name: "Require a private declared OTLP bind when agentgateway tracing is enabled"
+      ansible.builtin.assert:
+        that:
+          - o11y_otlp_bind is defined
+          - o11y_otlp_bind is match('^[0-9]+(\\.[0-9]+){3}$')
+          - o11y_otlp_bind != '127.0.0.1'
+          - hostvars[groups['agentgateway_svc'][0]].agw_otlp_host == o11y_otlp_bind ~ ':' ~ (o11y_otlp_port | default(4317) | string)
+        fail_msg: "The gateway trace endpoint must equal the receiver's private OTLP bind and port."
+      when:
+        - not (local_mode | default(false) | bool)
+        - groups.get('agentgateway_svc', []) | length == 1
+        - hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -275,6 +288,16 @@
       until: _prom.rc == 0
       check_mode: false
 
+    - name: "Tempo ready (/ready) through the private compose network"
+      ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://tempo:3200/ready"
+      register: _tempo
+      changed_when: false
+      retries: 8
+      delay: 5
+      until: _tempo.rc == 0
+      check_mode: false
+      when: not ansible_check_mode
+
     - name: "Alloy healthy (collector config loaded)"
       ansible.builtin.command:
         argv: ["{{ _engine }}", inspect, --format, "{% raw %}{{.State.Health.Status}}{% endraw %}", o11y-alloy]
@@ -320,7 +343,7 @@
             curl -sS --config - "http://127.0.0.1:3000/api/datasources/uid/$1/health"
           - datasource-health
           - "{{ item }}"
-      loop: [prometheus, loki]
+      loop: [prometheus, loki, tempo]
       register: _datasource_health
       changed_when: false
       retries: 6
@@ -352,6 +375,32 @@
           - (_self_dashboard.stdout | from_json).dashboard.uid == 'o11y-self-monitoring'
           - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 6
         fail_msg: "Grafana did not provision the o11y self-monitoring dashboard."
+      when: not ansible_check_mode
+
+    - name: Read the provisioned agentgateway traffic dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/agentgateway-traffic
+      register: _agentgateway_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _agentgateway_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require the committed agentgateway traffic dashboard to be active
+      ansible.builtin.assert:
+        that:
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.uid == 'agentgateway-traffic'
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | length == 8
+        fail_msg: "Grafana did not provision the agentgateway traffic dashboard."
       when: not ansible_check_mode
 
     - name: Verify enabled Grafana alert provisioning after a real deploy
@@ -414,4 +463,4 @@
 
     - name: "Report"
       ansible.builtin.debug:
-        msg: "o11y healthy — Grafana, Prometheus, and Loki all answering (Grafana behind Caddy for TLS)."
+        msg: "o11y healthy — Grafana, Prometheus, Loki, and Tempo answering; Alloy collector healthy."

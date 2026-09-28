@@ -55,14 +55,6 @@ config:
       add:
         identity: apiKey.name
 
-{% if agw_otlp_endpoint | default('') %}
-  tracing:
-    # Alloy's OTLP receiver on the o11y host (grpc). Sampled low: traces land in
-    # Loki as structured log lines until Tempo has an owner (design §6).
-    otlpEndpoint: {{ agw_otlp_endpoint }}
-    randomSampling: {{ agw_trace_sampling | default('0.05') }}
-{% endif %}
-
 # The built-in operator UI, on its OWN listener (:4001) instead of the admin
 # interface (which stays on the container loopback, unpublished), and
 # authenticated BY THE GATEWAY: an OIDC authorization-code flow against Authentik
@@ -97,6 +89,24 @@ ui:
 {% endif %}
 
 frontendPolicies:
+{% if agw_otlp_host | default('') %}
+  tracing:
+    # The receiver is Alloy, which batches these spans to Tempo. Bound both
+    # newly started and client-propagated traces; no prompt/completion fields.
+    host: {{ agw_otlp_host }}
+    randomSampling: {{ agw_trace_sampling | default(0.05) }}
+    clientSampling: {{ agw_trace_sampling | default(0.05) }}
+    resources:
+      service.name: '"agentgateway"'
+  accessLog:
+    # Access logs share Alloy's OTLP receiver with traces. The service field
+    # becomes Loki's bounded service label; stdout logging stays available.
+    otlp:
+      host: {{ agw_otlp_host }}
+      fields:
+        add:
+          service: '"agentgateway"'
+{% endif %}
   http:
     # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the
     # gateway, is the component that answers 413.

@@ -1,0 +1,85 @@
+{
+  "uid": "agentgateway-traffic",
+  "title": "Agentgateway traffic",
+  "tags": ["agent-cloud", "agentgateway", "inference"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Gateway scrape up",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "targets": [{"refId": "A", "expr": "up{job=\"agentgateway\"}", "instant": true}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "Configuration synchronized",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "targets": [{"refId": "A", "expr": "agentgateway_config_synchronized{job=\"agentgateway\"}", "instant": true}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "title": "Requests per second",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\"}[5m]))", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {"colorMode": "none"}
+    },
+    {
+      "id": 4,
+      "title": "Requests by HTTP status",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "targets": [{"refId": "A", "expr": "sum by (status) (rate(agentgateway_requests_total{job=\"agentgateway\"}[5m]))", "legendFormat": "{{status}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "title": "Server error ratio",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\"}[5m])), 1e-9)"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "title": "Request latency p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\"}[5m])))"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "title": "LLM tokens per second",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "targets": [{"refId": "A", "expr": "sum by (gen_ai_token_type, gen_ai_request_model) (rate(agentgateway_gen_ai_client_token_usage_sum{job=\"agentgateway\"}[5m]))", "legendFormat": "{{gen_ai_token_type}} · {{gen_ai_request_model}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "title": "Time to first token p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(agentgateway_gen_ai_server_time_to_first_token_bucket{job=\"agentgateway\"}[5m])))", "legendFormat": "{{gen_ai_request_model}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    }
+  ]
+}

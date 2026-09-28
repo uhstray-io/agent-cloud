@@ -4,9 +4,8 @@
 // their stdout/stderr to Loki. The socket is mounted at /var/run/docker.sock by
 // compose.local.yml (the podman API is docker-API-compatible).
 //
-// Phase 2 (O11Y-DEPLOYMENT.md): add `otelcol.receiver.otlp` (with real metric/
-// log/trace consumers) for orb-agent telemetry, and tail the OpenBao audit log.
-// It is omitted here on purpose — an OTLP receiver with no output errors at boot.
+// Gateway traces and access logs arrive over OTLP/gRPC. Tempo receives spans;
+// Loki receives labeled access records alongside the local container logs.
 
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
@@ -103,5 +102,45 @@ prometheus.scrape "local_containers" {
 prometheus.remote_write "local" {
   endpoint {
     url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+otelcol.receiver.otlp "traces" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  output {
+    logs   = [otelcol.processor.attributes.gateway_logs.input]
+    traces = [otelcol.processor.batch.traces.input]
+  }
+}
+
+otelcol.processor.attributes "gateway_logs" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "insert"
+    value  = "service"
+  }
+  output {
+    logs = [otelcol.exporter.loki.gateway.input]
+  }
+}
+
+otelcol.exporter.loki "gateway" {
+  forward_to = [loki.write.default.receiver]
+}
+
+otelcol.processor.batch "traces" {
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
   }
 }

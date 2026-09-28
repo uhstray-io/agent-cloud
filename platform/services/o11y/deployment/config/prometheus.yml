@@ -28,6 +28,10 @@ scrape_configs:
     static_configs:
       - targets: ["alloy:12345"]
 
+  - job_name: tempo
+    static_configs:
+      - targets: ["tempo:3200"]
+
   # Phase 2 (O11Y-DEPLOYMENT.md) — per-target metrics:
   #   - Caddy: its admin API (:2019/metrics) binds LOOPBACK-ONLY, so it is not
   #     scrapeable cross-container. Phase 2 adds a dedicated routable metrics
