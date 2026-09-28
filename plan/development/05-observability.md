@@ -621,6 +621,22 @@
 private inventory (site-config#33), and the audit no longer inspects it. The production receiver is
 the `o11y` VM (`o11y_svc`).
 
+> **Production telemetry activation, 2026-09-27:** Scoped publication task
+> 1611 registered the reviewed `Probe o11y Metrics Endpoint (Dev)` template.
+> From receiver `o11y`, tasks 1613 and 1615 returned HTTP 200 for the
+> inventory-declared DGX vLLM and agentgateway `/metrics` endpoints. Private
+> site-config PR #34 then enabled DGX scraping and declared the gateway stats
+> listener; its inventory CI passed and a Claude review found no issues. The
+> existing `platform/semaphore/sync-inventory.yml` playbook read back the exact
+> merged private file in Semaphore production inventory record 2. At public
+> `dev` revision `c9f99ca7fcd3725f624e8c08cf6232c3fa620c4d`, check task
+> 1619 and real deploy task 1621 succeeded. Task 1621 rendered both remote
+> scrape files, reloaded Prometheus, and verified Grafana, Prometheus, Loki,
+> Alloy, and the persistent alert configuration. Exporter reachability and
+> service health are proved; named Prometheus series and DGX log receipt still
+> need separate live queries. The local wipe/redeploy remains deferred to
+> preserve its data.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

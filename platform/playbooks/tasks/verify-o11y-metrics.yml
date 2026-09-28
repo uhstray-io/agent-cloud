@@ -21,8 +21,7 @@
       - _scrapes_json.status == 'success'
       - _service_scrapes | length > 0
       - _unhealthy_scrapes | length == 0
-      - expected_instance | default('') | length == 0 or
-        (_service_scrapes | selectattr('metric.instance', 'equalto', expected_instance) | list | length == 1)
+      - expected_instance | default('') | length == 0 or _service_scrapes | length == 1
     fail_msg: >-
       Prometheus cannot verify {{ expected_service }} at
       {{ expected_instance | default('its declared endpoint') }}:
@@ -30,5 +29,7 @@
       scrapes found={{ _service_scrapes | length }}.
   vars:
     _scrapes_json: "{{ _scrapes.stdout | from_json }}"
-    _service_scrapes: "{{ _scrapes_json.data.result }}"
+    _service_scrapes: >-
+      {{ (_scrapes_json.data.result | selectattr('metric.instance', 'equalto', expected_instance) | list)
+         if expected_instance | default('') | length > 0 else _scrapes_json.data.result }}
     _unhealthy_scrapes: "{{ _service_scrapes | rejectattr('value.1', 'equalto', '1') | list }}"

@@ -70,6 +70,31 @@ templates:
         required: false
         default_value: "true"
 
+  - name: Verify o11y Metrics Target (Dev)
+    playbook: platform/playbooks/verify-o11y-metrics-target.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_service
+        title: "Service label"
+        description: "Prometheus service label to verify"
+        type: string
+        required: true
+      - name: expected_instance
+        title: "Metrics endpoint"
+        description: "Exact scraped host:port"
+        type: string
+        required: true
+      - name: expected_metric
+        title: "Metric name"
+        description: "One metric family expected from the exporter"
+        type: string
+        required: true
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact dev revision required on the Semaphore controller"
+        type: string
+        required: true
+
   - name: Probe o11y DGX Exporter (Dev)
     playbook: platform/playbooks/probe-o11y-dgx-exporter.yml
     repository: agent-cloud dev
