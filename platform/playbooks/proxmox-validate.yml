@@ -81,6 +81,64 @@
       ansible.builtin.debug:
         msg: "Cluster: {{ pve_nodes.json.data | map(attribute='node') | list | join(', ') }}"
 
+    # ── 2b. Node capacity (read-only report) ─────────────────────────────
+    # Where to place a new VM: each online node's live CPU and memory use, what its
+    # VMs are configured to take (the commitment that matters when they all run),
+    # and the VM storage's free space. Numbers only; the registered API result
+    # stays inside the no_log task and only the derived figures are printed.
+    - name: "Get cluster resources"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources"
+        method: GET
+      register: pve_resources
+      no_log: true
+      check_mode: false
+
+    - name: "Derive node capacity"
+      # Guests are VMs and containers, templates excluded. maxcpu/maxmem are optional in
+      # the cluster/resources schema and `template` is absent on ordinary guests, so every
+      # read defaults: a guest missing a field must not abort the play that
+      # provision-template.yml imports. Storage without a size reads "n/a", never 0.
+      ansible.builtin.set_fact:
+        node_capacity: >-
+          {%- set out = [] -%}
+          {%- set gib = 1073741824 -%}
+          {%- for n in pve_nodes.json.data | selectattr('status', 'equalto', 'online') -%}
+          {%- set g = namespace(n=0, running=0, cpu=0, mem=0) -%}
+          {%- for v in pve_resources.json.data
+                if v.type | default('') in ['qemu', 'lxc'] and v.node | default('') == n.node
+                and (v.template | default(0) | int) != 1 -%}
+          {%- set g.n = g.n + 1 -%}
+          {%- set g.running = g.running + (1 if v.status | default('') == 'running' else 0) -%}
+          {%- set g.cpu = g.cpu + (v.maxcpu | default(0) | int) -%}
+          {%- set g.mem = g.mem + (v.maxmem | default(0) | int) -%}
+          {%- endfor -%}
+          {%- set st = namespace(free='n/a') -%}
+          {%- for s in pve_resources.json.data
+                if s.type | default('') == 'storage' and s.node | default('') == n.node
+                and s.storage | default('') == _vm_storage and (s.maxdisk | default(0) | int) > 0 -%}
+          {%- set st.free = (((s.maxdisk | int) - (s.disk | default(0) | int)) / gib) | round(0) | int -%}
+          {%- endfor -%}
+          {%- set _ = out.append({
+                'node': n.node,
+                'cpu_used_pct': ((n.cpu | default(0) | float) * 100) | round(1),
+                'cores': n.maxcpu | default(0) | int,
+                'vcpus_configured': g.cpu,
+                'mem_used_gb': ((n.mem | default(0) | int) / gib) | round(1),
+                'mem_total_gb': ((n.maxmem | default(0) | int) / gib) | round(1),
+                'mem_free_gb': (((n.maxmem | default(0) | int) - (n.mem | default(0) | int)) / gib) | round(1),
+                'mem_configured_gb': (g.mem / gib) | round(1),
+                'guests': g.n,
+                'guests_running': g.running,
+                'vm_storage_free_gb': st.free
+              }) -%}
+          {%- endfor -%}
+          {{ out | sort(attribute='mem_free_gb', reverse=true) }}
+
+    - name: "Report node capacity (most free memory first)"
+      ansible.builtin.debug:
+        msg: "{{ node_capacity | map('to_json') | list }}"
+
     # ── 3. Storage ───────────────────────────────────────────────────────
     - name: "Get storage on target node"
       ansible.builtin.uri:
