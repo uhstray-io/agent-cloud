@@ -174,8 +174,27 @@
         - groups.get('agentgateway_svc', []) | length == 1
         - hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0
 
+    - name: "Require the observability cluster label"
+      ansible.builtin.assert:
+        that:
+          - (local_mode | default(false) | bool) or o11y_cluster is defined
+          - (o11y_cluster | default('agent-cloud-local')) is match('^[A-Za-z0-9_.-]+$')
+        fail_msg: "Production o11y requires a declared o11y_cluster label containing only letters, digits, dots, underscores, or hyphens."
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Render Alloy config with the inventory cluster label"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+        dest: "{{ _deploy_dir }}/config/config.alloy"
+        mode: "0644"
+
+    - name: "Render Prometheus config with the inventory cluster label"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/prometheus.yml.j2"
+        dest: "{{ _deploy_dir }}/config/prometheus.yml"
+        mode: "0644"
 
     - name: Read the placed revision when a candidate SHA is required
       ansible.builtin.command:
@@ -499,8 +518,47 @@
       ansible.builtin.assert:
         that:
           - (_agentgateway_dashboard.stdout | from_json).dashboard.uid == 'agentgateway-traffic'
-          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | length == 8
-        fail_msg: "Grafana did not provision the agentgateway traffic dashboard."
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.title == 'Agentgateway operations'
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | length == 14
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'identity') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'LLM tokens by identity, model, and token type') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Rejected access records (reason pending sample)') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Rate-limited requests (429)') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Agentgateway build') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent access records') | list | length == 1
+          - (_agentgateway_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent agentgateway traces') | list | length == 1
+        fail_msg: "Grafana did not provision the complete Agentgateway operations dashboard."
+      when: not ansible_check_mode
+
+    - name: Read the provisioned agentgateway client-view dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/agentgateway-client-view
+      register: _agentgateway_client_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _agentgateway_client_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require the committed agentgateway client-view dashboard to be active
+      ansible.builtin.assert:
+        that:
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.uid == 'agentgateway-client-view'
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.title == 'Agentgateway client view'
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | length == 6
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'identity') | list | length == 1
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'First-token latency p50') | list | length == 1
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'First-token latency p95') | list | length == 1
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Request duration p95') | list | length == 1
+        fail_msg: "Grafana did not provision the complete Agentgateway client-view dashboard."
       when: not ansible_check_mode
 
     - name: Verify enabled Grafana alert provisioning after a real deploy

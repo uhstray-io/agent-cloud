@@ -5,7 +5,7 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: agent-cloud-local
+    cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
 
 scrape_config_files:
   - /etc/prometheus/scrape.d/*.yml

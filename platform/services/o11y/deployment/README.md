@@ -39,6 +39,30 @@ real node addresses in `site-config`. Metrics use the `service`, `component`,
 `cluster`, `env`, and `node` labels. Retention defaults to 15 days for Prometheus
 and 7 days for Loki until measured ingestion justifies a change.
 
+Alloy's Loki external label and Prometheus's external label use the same
+`o11y_cluster` inventory value. Local development defaults to
+`agent-cloud-local`; production deploys require the label explicitly. This
+implements the cluster-label portion of `estate-wide-observability-instrumentation`
+task 3.3 (2026-09-28); the remaining instrumentation work stays with that change.
+The source configs are `templates/config.alloy.j2` and
+`templates/prometheus.yml.j2`; `Deploy o11y` renders their runtime files under
+`config/` before starting the containers.
+
+The agentgateway operations dashboard currently displays raw 4xx access records
+from Loki. Its `http.status` filter does not parse or group a rejection reason.
+Gateway tasks 4.2/4.3 must capture a real OTLP record and verify the exported
+line shape and reason field before a reason-grouped panel can be implemented or
+claimed complete.
+
+The production Semaphore inventory is a static copy of private site-config. After
+a private inventory change is reviewed and merged, run the code-managed
+operator-side `platform/semaphore/sync-inventory.yml` check and apply from the
+reviewed agent-cloud worktree against Semaphore. Set `inventory_source` to the
+production inventory file from the reviewed site-config revision, then verify
+Semaphore's readback matches that source before a Dev-bound deploy relies on the
+new values. Pin that deploy to the exact reviewed and pushed `dev` SHA. A
+site-config merge alone does not update Semaphore's inventory copy.
+
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
 Run `Verify o11y Metrics Target (Dev)` through Semaphore for each enabled

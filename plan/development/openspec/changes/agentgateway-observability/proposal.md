@@ -122,7 +122,8 @@ o11y-side work, owned by the o11y session per the handoff of 2026-09-28 and list
 as dependencies:
 
 - the operations dashboard: rename and extend `agentgateway-traffic`, and update its
-  eight-panel assert
+  panel-count assert. It currently shows raw 4xx Loki access records; reason grouping
+  remains gated on the gateway's 4.2/4.3 live record sample and verified field shape.
 - the new `agentgateway-client-view` dashboard
 - the receiver's mutual-TLS block
 - the `signal` label hint
@@ -181,6 +182,10 @@ dashboard. It also supplies the pilot for `observability-estate` task 3.3.
 
 Every step is inventory-gated. Each one reverts by a declaration change plus a Semaphore
 redeploy, and no telemetry data is deleted.
+
+Validation also uses the normal Semaphore deploy path with persistent volumes. Clean
+deploys and volume-wipe recovery drills are outside this change unless Joe explicitly
+requests one.
 
 - Traces: set `agw_otlp_traces: false` and redeploy the gateway. The template renders no
   `frontendPolicies.tracing`, and access records keep flowing.

@@ -1,12 +1,29 @@
 {
   "uid": "agentgateway-traffic",
-  "title": "Agentgateway traffic",
+  "title": "Agentgateway operations",
   "tags": ["agent-cloud", "agentgateway", "inference"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "30s",
   "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "identity",
+        "label": "Identity",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(agentgateway_requests_total{job=\"agentgateway\"}, identity)",
+        "query": {"query": "label_values(agentgateway_requests_total{job=\"agentgateway\"}, identity)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
@@ -32,7 +49,7 @@
       "type": "stat",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
-      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\"}[5m]))", "instant": true}],
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m]))", "instant": true}],
       "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
       "options": {"colorMode": "none"}
     },
@@ -42,7 +59,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
-      "targets": [{"refId": "A", "expr": "sum by (status) (rate(agentgateway_requests_total{job=\"agentgateway\"}[5m]))", "legendFormat": "{{status}}"}],
+      "targets": [{"refId": "A", "expr": "sum by (status) (rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m]))", "legendFormat": "{{status}}"}],
       "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
     },
     {
@@ -51,7 +68,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
-      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\"}[5m])), 1e-9)"}],
+      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\",status=~\"5..\", identity=~\"$identity\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
     },
     {
@@ -60,7 +77,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
-      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\"}[5m])))"}],
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))"}],
       "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
     },
     {
@@ -69,7 +86,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
-      "targets": [{"refId": "A", "expr": "sum by (gen_ai_token_type, gen_ai_request_model) (rate(agentgateway_gen_ai_client_token_usage_sum{job=\"agentgateway\"}[5m]))", "legendFormat": "{{gen_ai_token_type}} · {{gen_ai_request_model}}"}],
+      "targets": [{"refId": "A", "expr": "sum by (gen_ai_token_type, gen_ai_request_model) (rate(agentgateway_gen_ai_client_token_usage_sum{job=\"agentgateway\", identity=~\"$identity\"}[5m]))", "legendFormat": "{{gen_ai_token_type}} · {{gen_ai_request_model}}"}],
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
     },
     {
@@ -78,8 +95,60 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
-      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(agentgateway_gen_ai_server_time_to_first_token_bucket{job=\"agentgateway\"}[5m])))", "legendFormat": "{{gen_ai_request_model}}"}],
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(agentgateway_gen_ai_server_time_to_first_token_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))", "legendFormat": "{{gen_ai_request_model}}"}],
       "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "title": "LLM tokens by identity, model, and token type",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 29},
+      "targets": [{"refId": "A", "expr": "sum by (identity, gen_ai_request_model, gen_ai_token_type) (rate(agentgateway_gen_ai_client_token_usage_sum{job=\"agentgateway\"}[5m]))", "legendFormat": "{{identity}} · {{gen_ai_request_model}} · {{gen_ai_token_type}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 10,
+      "title": "Rejected access records (reason pending sample)",
+      "type": "logs",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37},
+      "description": "Shows 4xx access records. Grouping by rejection reason awaits a captured access record and verified OTLP-to-Loki field shape.",
+      "targets": [{"refId": "A", "expr": "{service=\"agentgateway\", signal=\"access-log\"} |~ `http[.]status([[:space:]]*=[[:space:]]*|\"?[[:space:]]*:[[:space:]]*\"?)[\"']?4[0-9]{2}`"}]
+    },
+    {
+      "id": 11,
+      "title": "Rate-limited requests (429)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 37},
+      "targets": [{"refId": "A", "expr": "sum(increase(agentgateway_requests_total{job=\"agentgateway\", status=\"429\", identity=~\"$identity\"}[5m]))", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 12,
+      "title": "Agentgateway build",
+      "type": "table",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 37},
+      "targets": [{"refId": "A", "expr": "agentgateway_build_info{job=\"agentgateway\"}", "instant": true, "format": "table"}],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 13,
+      "title": "Recent access records",
+      "type": "logs",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 45},
+      "targets": [{"refId": "A", "expr": "{service=\"agentgateway\", signal=\"access-log\"}"}]
+    },
+    {
+      "id": 14,
+      "title": "Recent agentgateway traces",
+      "type": "table",
+      "datasource": {"type": "tempo", "uid": "tempo"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 55},
+      "targets": [{"refId": "A", "queryType": "traceql", "query": "{ resource.service.name = \"agentgateway\" }"}]
     }
   ]
 }
