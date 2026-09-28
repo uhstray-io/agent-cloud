@@ -736,15 +736,19 @@ the `o11y` VM (`o11y_svc`).
 > **Production trace receipt:** after the reviewed `dev` receiver and firewall
 > are applied, run `Deploy o11y (Dev)` to prove Tempo readiness and data-source
 > health, then `Deploy agentgateway (Dev)` to activate its 5% frontend tracing.
-> The gateway deploy refuses unless alerts are enabled, the named gateway
-> configuration metric is healthy on the receiver, Tempo answers, and the
-> gateway VM can open Alloy's declared port. Run `Verify o11y Service` with
+> The gateway deploy refuses unless alerts are enabled, Tempo answers, and the
+> gateway VM can open Alloy's declared port. After the gateway starts, the
+> deploy waits for a receiver scrape of the named gateway configuration metric
+> timestamped after readiness; requiring it before startup would prevent
+> recovery from a stopped gateway. Run
+> `Verify o11y Service` with
 > `expected_service=agentgateway`, `expect_metrics=true`,
 > `expect_logs=true`, and `expect_traces=true`; it must find a fresh access log
 > in Loki and a real service trace in Tempo from the last hour. Agentgateway
 > sends both over the declared OTLP listener; Alloy labels access records with
 > `service=agentgateway` before forwarding them to Loki. Any missing signal
 > fails its named check.
+>
 > Agentgateway v1.5 rejects `config.logging` alongside
 > `frontendPolicies.accessLog`. Put bounded identity enrichment in both
 > `frontendPolicies.accessLog.add` and `accessLog.otlp.fields.add`: the OTLP
