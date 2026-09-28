@@ -781,8 +781,9 @@ the `o11y` VM (`o11y_svc`).
 > to-Alloy TCP reachability, and the named healthy gateway metric before any
 > gateway redeploy. Check mode did not produce a trace or access-log receipt.
 
-> **Production telemetry receipts, 2026-09-28 EDT:** the reviewed `dev`
-> receiver deployment (Semaphore task 1665) preserved the existing volumes,
+> **Production telemetry receipts, 2026-09-28 EDT:** the production receiver
+> deployment from a reviewed `dev` revision (Semaphore task 1665) preserved
+> the existing volumes,
 > proved Prometheus, Loki, Tempo, and Alloy healthy, verified Grafana could
 > query or proxy all three data sources, and read back both the observability
 > estate and agentgateway traffic dashboards. The gateway deploy (1673) proved
