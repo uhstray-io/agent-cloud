@@ -669,6 +669,20 @@ the `o11y` VM (`o11y_svc`).
 > self-scrape status is dashboard-visible but does not yet notify Discord.
 > Keep the local named volumes intact.
 
+> **Production dashboard receipt, 2026-09-28:** PR #291 merged to `dev` as
+> `92b95369892677b65e9fc251c62a556fca04e91e` after Claude Opus final-head
+> review and green CI. Semaphore check task 1647 and real deploy task 1648
+> both matched that exact clean revision. The real task passed Grafana's
+> Prometheus and Loki data-source health checks, read back the provisioned
+> `o11y-self-monitoring` dashboard, and verified the existing alert rules and
+> Discord contact point. In the signed-in Grafana UI, the new dashboard showed
+> four of four o11y scrapes up, 8.11K active Prometheus series, Loki receiving
+> 446 B/s, samples from all four jobs, and healthy Alloy components. These
+> values are point-in-time, not retention or long-term capacity evidence.
+> The first live view also showed red default styling on the two volume stats;
+> the follow-up config change makes them neutral so color remains reserved for
+> actual status thresholds.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

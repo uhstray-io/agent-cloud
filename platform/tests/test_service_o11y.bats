@@ -864,6 +864,7 @@ dashboard = json.loads((deploy / 'config/grafana/dashboards/o11y-self-monitoring
 assert dashboard['uid'] == 'o11y-self-monitoring'
 assert len(dashboard['panels']) >= 6
 assert all(panel['datasource']['uid'] == 'prometheus' for panel in dashboard['panels'])
+assert all(dashboard['panels'][index]['options']['colorMode'] == 'none' for index in (1, 2))
 expressions = '\n'.join(target['expr'] for panel in dashboard['panels'] for target in panel['targets'])
 for metric in ('up{', 'prometheus_tsdb_head_series', 'scrape_samples_scraped',
                'loki_distributor_bytes_received_total', 'loki_distributor_lines_received_total',
