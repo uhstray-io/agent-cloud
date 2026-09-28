@@ -385,9 +385,26 @@ assert gate < names.index('Refuse a cleartext OpenBao endpoint')
 assert gate < names.index('Manage secrets and render env + config')
 assert names.index("Require the declared receiver's Tempo to answer before gateway tracing") < names.index('Manage secrets and render env + config')
 assert names.index("Require the gateway host to reach Alloy's declared OTLP listener") < names.index('Manage secrets and render env + config')
-metric = next(task for task in tasks if task['name'] == "Read the receiver's named gateway metric before gateway tracing")
+assert not any('named gateway metric' in name for name in names)
+verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify agentgateway')['tasks']
+verify_names = [task['name'] for task in verify]
+metric = next(task for task in verify if task['name'] == 'Require the receiver to collect the restarted gateway')
 assert metric['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
 assert 'agentgateway_config_synchronized' in metric['ansible.builtin.command']['argv'][-1]
+assert 'timestamp(agentgateway_config_synchronized{job="agentgateway"}) and agentgateway_config_synchronized{job="agentgateway"} == 1' in metric['ansible.builtin.command']['argv'][-1]
+assert verify_names.index('Readiness listener answers (via the compose network)') < verify_names.index(metric['name'])
+assert verify_names.index('Mark gateway readiness time on the receiver') < verify_names.index(metric['name'])
+assert metric['retries'] > 1 and metric['delay'] > 0
+assert 'not ansible_check_mode' in metric['when']
+assert '_gateway_ready_epoch.stdout' in metric['until']
+assert '_gateway_metric_gate.rc == 0' in metric['until']
+dry = next(task for task in verify if task['name'] == 'Dry run: is agentgateway running?')
+assert '--format' in dry['ansible.builtin.command']['argv']
+assert '.State.Running' in dry['ansible.builtin.command']['argv'][-2]
+for name in verify_names:
+    if name.startswith('Dry run, agentgateway'):
+        task = next(task for task in verify if task['name'] == name)
+        assert "_dry_container.stdout | trim != 'true'" in task['when'][-1]
 PY
 }
 

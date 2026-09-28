@@ -145,32 +145,6 @@
       check_mode: false
       when: agw_otlp_host | default('') | length > 0
 
-    - name: "Read the receiver's named gateway metric before gateway tracing"
-      ansible.builtin.command:
-        argv:
-          - "{{ hostvars[groups['o11y_svc'][0]].container_engine | default('podman') }}"
-          - exec
-          - o11y-prometheus
-          - wget
-          - -q
-          - -O
-          - '-'
-          - 'http://127.0.0.1:9090/api/v1/query?query=agentgateway_config_synchronized%7Bjob%3D%22agentgateway%22%7D'
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
-      register: _gateway_metric_gate
-      changed_when: false
-      check_mode: false
-      when: agw_otlp_host | default('') | length > 0
-
-    - name: "Refuse tracing without a healthy named gateway series"
-      ansible.builtin.assert:
-        that:
-          - (_gateway_metric_gate.stdout | from_json).status == 'success'
-          - (_gateway_metric_gate.stdout | from_json).data.result | length == 1
-          - (_gateway_metric_gate.stdout | from_json).data.result[0].value[1] == '1'
-        fail_msg: "The receiver has no healthy agentgateway_config_synchronized series; tracing remains disabled."
-      when: agw_otlp_host | default('') | length > 0
-
     # The AppRole secret_id, the token OpenBao returns and every secret read cross
     # this connection — refuse a public cleartext endpoint before any of it is sent.
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -261,27 +235,27 @@
   tasks:
     # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
     # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
-    - name: "Dry run: does agentgateway exist yet?"
+    - name: "Dry run: is agentgateway running?"
       ansible.builtin.command:
-        argv: ["{{ _engine }}", inspect, "agentgateway"]
+        argv: ["{{ _engine }}", inspect, "--format", "{{ '{{.State.Running}}' }}", "agentgateway"]
       register: _dry_container
       changed_when: false
       failed_when: false
       check_mode: false
       when: ansible_check_mode
 
-    - name: "Dry run, agentgateway not deployed yet: report"
+    - name: "Dry run, agentgateway not running: report"
       ansible.builtin.debug:
-        msg: "check mode: agentgateway does not exist on this host yet; its verification (readiness, the 401, the keyed round-trip) needs a real deploy."
+        msg: "check mode: agentgateway is not running; its verification (readiness, the 401, the keyed round-trip) needs a real deploy."
       when:
         - ansible_check_mode
-        - _dry_container.rc != 0
+        - _dry_container.rc != 0 or _dry_container.stdout | trim != 'true'
 
-    - name: "Dry run, agentgateway not deployed yet: stop"
+    - name: "Dry run, agentgateway not running: stop"
       ansible.builtin.meta: end_host
       when:
         - ansible_check_mode
-        - _dry_container.rc != 0
+        - _dry_container.rc != 0 or _dry_container.stdout | trim != 'true'
 
     - name: "Find the gateway's address on its compose network"
       ansible.builtin.command:
@@ -301,6 +275,49 @@
       check_mode: false
       # Proves THIS run's container; a dry run started none, so there is nothing to prove.
       when: not ansible_check_mode
+
+    # A stopped gateway has no healthy metric, so this is a post-start receipt,
+    # not a prerequisite that makes recovery impossible. Allow the next scrape
+    # (15 s interval) to arrive after readiness; an instant query can otherwise
+    # return the previous container's last good sample.
+    - name: "Mark gateway readiness time on the receiver"
+      ansible.builtin.command:
+        argv: [date, +%s]
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      register: _gateway_ready_epoch
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - agw_otlp_host | default('') | length > 0
+
+    - name: "Require the receiver to collect the restarted gateway"
+      ansible.builtin.command:
+        argv:
+          - "{{ hostvars[groups['o11y_svc'][0]].container_engine | default('podman') }}"
+          - exec
+          - o11y-prometheus
+          - wget
+          - -q
+          - -O
+          - '-'
+          - "{{ 'http://127.0.0.1:9090/api/v1/query?query=' ~ ('timestamp(agentgateway_config_synchronized{job=\"agentgateway\"}) and agentgateway_config_synchronized{job=\"agentgateway\"} == 1' | urlencode) }}"
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      register: _gateway_metric_gate
+      changed_when: false
+      check_mode: false
+      retries: 18
+      delay: 5
+      until: >-
+        _gateway_metric_gate.rc == 0
+        and _gateway_metric_gate.stdout is match('^\\{')
+        and (_gateway_metric_gate.stdout | from_json).status == 'success'
+        and (_gateway_metric_gate.stdout | from_json).data.result | length == 1
+        and ((_gateway_metric_gate.stdout | from_json).data.result[0].value[1] | float)
+            > (_gateway_ready_epoch.stdout | float)
+      when:
+        - not ansible_check_mode
+        - agw_otlp_host | default('') | length > 0
 
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
