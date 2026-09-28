@@ -111,6 +111,7 @@ supersede it with a new entry and link both.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | Test (rootful case) |
+| 6.10 | Planned against the branch point while a peer session landed the same work on `dev`; the merged plan re-plans built code under new names | Assumption about files | Convention |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -2608,6 +2609,36 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 **Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
+
+### 6.10 Planned against the branch point while a peer session landed the same work on `dev`
+
+**What happened.** PR #290 (merged `c4c1e1c`, 2026-09-27) added the openspec change
+`agentgateway-observability`, written in a worktree cut from `dev` before the o11y session
+landed `32db674`, #295, #296, `a2ead67`, `f0435e7` and `9350efd`. Those commits already moved
+the gateway to `frontendPolicies.accessLog`/`.tracing`, put Tempo 2.10.8 in the o11y compose,
+added the Alloy OTLP receiver, the `agentgateway-traffic` dashboard and
+`tasks/assert-o11y-trace-rollout.yml`. The merged plan re-plans all of that under new
+variable names (`agw_otlp_endpoint`, `o11y_tempo_otlp_endpoint`, `o11y_traces_enabled`),
+treats Tempo as an unverified external dependency, and its task 5.6 needs sampling 1, which
+the landed guard (`deploy-agentgateway.yml:109-110`) refuses above 0.1. The first handoff
+draft to the o11y session, written from the plan, repeated the same stale picture and was
+reported as checked against the files. The grounding checkpoint's reuse and altitude
+reviews caught it the next morning; `git log origin/dev` showed the commits.
+
+**Root cause.** The plan's "current state" was read from the approach worktree, whose base
+was fixed when the worktree was cut, and from agentgateway v1.5.0 source. Nothing re-read
+`origin/dev` before the plan was written, reviewed or merged, and every reviewer, including
+the independent one, reviewed the diff against its own base rather than against current
+`dev`. A green merge proves no conflict in lines, not agreement with code other sessions
+landed in other files.
+
+**The rule.** Before writing, reviewing or merging a plan or handoff that describes code,
+`git fetch` and list what landed on `dev` since the branch point in the paths it describes
+(`git log <base>..origin/dev -- <paths>`), and rebase the plan's "current state" on that.
+When another session owns overlapping paths, name its landed commits in the plan. A plan's
+variable names follow the landed code, not a fresh design.
+
+**Enforced by.** Convention.
 
 ## 7. Which of these OPA can carry
 
