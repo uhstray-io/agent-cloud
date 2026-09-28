@@ -11,20 +11,20 @@
       "targets": [ { "refId": "A", "expr": "max(up{service=~\"$service\"})", "instant": true } ]
     },
     {
-      "title": "Container log lines per second",
+      "title": "Service log lines per second",
       "type": "timeseries",
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "sum(rate({container=~\"$service\"}[5m]))", "legendFormat": "{{container}}" } ]
+      "targets": [ { "refId": "A", "expr": "sum by (service) (rate({service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" } ]
     },
     {
-      "title": "Recent container logs",
+      "title": "Recent service logs",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
       "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true },
-      "targets": [ { "refId": "A", "expr": "{container=~\"$service\"}" } ]
+      "targets": [ { "refId": "A", "expr": "{service=~\"$service\"}" } ]
     }
   ],
   "schemaVersion": 39,
@@ -35,8 +35,8 @@
         "name": "service",
         "label": "Service",
         "type": "query",
-        "datasource": { "type": "loki", "uid": "loki" },
-        "query": "label_values({container=~\".+\"}, container)",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(up, service)",
         "refresh": 2,
         "includeAll": false,
         "multi": false,

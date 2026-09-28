@@ -26,7 +26,7 @@
       ansible.builtin.assert:
         that:
           - groups.get('o11y_svc', []) | length > 0
-          - expected_service | default('') is match('^[a-z][a-z0-9-]*$')
+          - expected_service | default('') is match('^[a-z][a-z0-9_-]*(/[a-z][a-z0-9_-]*)?$')
           - expected_instance | default('') | length == 0 or expected_instance is match('^[a-zA-Z0-9.-]+:[0-9]+$')
           - expect_metrics | default('true') | string | lower in ['true', 'false']
           - expect_logs | default('true') | string | lower in ['true', 'false']

@@ -132,6 +132,23 @@
       changed_when: false
       check_mode: false
 
+    - name: Read current guest root filesystem capacity
+      ansible.builtin.command:
+        argv: [df, --block-size=1, "--output=size,avail", /]
+      register: _guest_root_disk
+      changed_when: false
+      check_mode: false
+
+    - name: Read current guest memory headroom
+      ansible.builtin.command:
+        argv:
+          - awk
+          - '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2} END {if (total > 0) printf "%.2f", 100 * available / total; else exit 1}'
+          - /proc/meminfo
+      register: _guest_memory_headroom
+      changed_when: false
+      check_mode: false
+
     - name: Read Loki runtime retention
       ansible.builtin.set_fact:
         _loki_retention: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config.retention_period', 'defined') | list | first).limits_config.retention_period }}"
@@ -177,3 +194,6 @@
           tempo_retention: "{{ o11y_tempo_retention }}"
           scrape_sample_limit: "{{ o11y_scrape_sample_limit | int }}"
           active_prometheus_series: "{{ (_head_series.stdout | from_json).data.result[0].value[1] | int }}"
+          guest_root_filesystem_total_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[0] | int }}"
+          guest_root_filesystem_available_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[1] | int }}"
+          guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"

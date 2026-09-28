@@ -7,7 +7,8 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 ## What it is
 
 - **Grafana** (viz) + **Prometheus** (metrics scrape + TSDB) + **Loki** (logs) +
-  **Grafana Alloy** (logs and OTLP ingress) + **Tempo** (bounded trace storage).
+  **Grafana Alloy** (logs, metrics, profiles, and OTLP ingress) + **Tempo**
+  (bounded trace storage) + **Pyroscope** (private continuous-profile storage).
   The same Compose stack runs locally and on the production receiver.
 - Long-term metrics (**Mimir**), object-store backends (**MinIO**), and a
   separate **Alertmanager** remain deferred; Grafana manages the current alerts.
@@ -20,7 +21,7 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 - **Composable, no fork.** `compose.yml` is env-parameterized; `compose.local.yml`
   is a slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches
   Grafana; mounts the podman socket so Alloy can discover container logs).
-  `deploy.sh` is container-lifecycle-only. Prometheus scrapes all five o11y
+  `deploy.sh` is container-lifecycle-only. Prometheus scrapes all six o11y
   components. Production inventory renders DGX Spark and agentgateway scrape
   jobs; Alloy receives sampled traces and exports them to Tempo.
 - **Config is code.** `config/` (Prometheus scrape, Loki, Alloy, Grafana
@@ -30,7 +31,8 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 
 ## Consumers (why this exists)
 
-- Production DGX Spark and agentgateway metrics; receiver-side Grafana alerting.
+- Production DGX Spark and agentgateway metrics; receiver-side Grafana alerting
+  and an inventory-gated Alloy self-profile pilot.
 - Sampled agentgateway traces → Alloy OTLP → Tempo, with Grafana trace-to-log
   correlation configured. Loki's `traceid` derived field links matching logs
   back to Tempo. A 2026-09-28 operator click-through verified a same-span Loki
@@ -39,15 +41,30 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 - OpenBao audit ingestion, orb-agent OpenTelemetry, and future
   Reliability/NetClaw consumers remain separately gated.
 
+## Bounded signal identity
+
+Use `service` for metrics and Loki, `service.name` for OTLP resources, and
+`service_name` for profiles. Prometheus and Loki carry bounded `cluster` and
+`environment`; Grafana alerts add bounded `owner` and `severity` and group on
+service, environment, cluster, and alert name. Container and instance labels
+are drill-down context. Request/user IDs, trace IDs, timestamps, raw paths,
+addresses, prompts, and secrets are dropped from scraped metric labels and
+never promoted to Loki stream labels.
+
+Pyroscope is private, persistent, and retention-bounded. Alloy's self-profile
+scrape stays disabled until private inventory carries the config, privacy, and
+resource proof receipts. No other producer is enabled by this pilot.
+
 ## Files
 
 | File | Role |
 |---|---|
-| `deployment/compose.yml` | grafana + prometheus + loki + alloy + tempo; pinned images; healthchecks |
+| `deployment/compose.yml` | grafana + prometheus + loki + alloy + tempo + Pyroscope; pinned images; healthchecks |
 | `deployment/compose.local.yml` | slim overlay (caps, `label=disable`, `local-dev`, podman socket for Alloy) |
 | `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait Grafana healthy) |
 | `deployment/templates/env.j2` | image/port vars + Grafana admin pw (from OpenBao) |
 | `deployment/config/*` | committed config-as-code (Prometheus/Loki/Alloy/Grafana provisioning) |
+| `deployment/config/pyroscope-config.yml` | private v2 filesystem storage, persistent mount, and seven-day retention |
 | `platform/playbooks/drill-o11y-active-alert-delivery.yml` | Dev-bound production delivery proof against active rules; fixed scrape cleanup in `always` |
 | `platform/playbooks/recover-o11y-active-alert-drill.yml` | separate idempotent recovery after an interrupted active delivery drill |
 | `platform/playbooks/verify-o11y-production-budgets.yml` | read-only retention, sample-limit, and active-series receipt |

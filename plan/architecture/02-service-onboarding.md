@@ -65,6 +65,24 @@ flowchart TD
 
 ## Onboarding Checklist
 
+### Observability signal contract
+
+For every deployed service, record its stable identity (`service` and
+`service.name`), owner, cluster and environment context, applicable signal
+methods, profile support, and the finite value set for each indexed label.
+`service`, `cluster`, and `environment` are the shared bounded dimensions;
+`owner` and `severity` are bounded alert labels. Container and instance identity
+are drill-down details. Do not index request or user identifiers, trace IDs,
+timestamps, raw paths, addresses, prompts, or secrets as metric labels or Loki
+stream labels. Keep them in log bodies or structured metadata when needed.
+
+Declare remote metrics targets in private inventory and verify their exact
+service and endpoint. A missing signal is a coverage gap, never a healthy
+default. Profile producers are opt-in and require a supported endpoint, privacy
+review, measured resource headroom, retention budget, and a successful sample
+receipt before wider rollout. Record the signal proof and capacity evidence
+without private addresses or credentials.
+
 ### Phase 0: Planning
 
 - [ ] Classify the service (infrastructure / automation / AI / auxiliary)
