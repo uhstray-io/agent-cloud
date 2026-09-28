@@ -1046,7 +1046,9 @@ assert normal_names.index('Require the active alert drill to be recovered before
 templates = {item['name']: item for item in catalog['templates']}
 for name in ('Drill o11y Active Alert Delivery (Dev)', 'Recover o11y Active Alert Drill (Dev)'):
     assert templates[name]['repository'] == 'agent-cloud dev'
-    assert templates[name]['survey_vars'][0]['name'] == 'expected_repository_sha'
+    assert [var['name'] for var in templates[name]['survey_vars']] == ['expected_repository_sha', 'expected_receiver_sha']
+assert "_deployed_revision.stdout == expected_receiver_sha" in str(drill)
+assert "_deployed_revision.stdout == expected_receiver_sha" in str(recovery)
 PY
 }
 
@@ -1070,18 +1072,24 @@ for name in required:
 assert 'Trace rollout is blocked' in gate[1]['ansible.builtin.assert']['fail_msg']
 o11y_tasks = next(play for play in receiver if 'manage o11y secrets' in play.get('name', ''))['tasks']
 gateway_tasks = next(play for play in gateway if 'manage agentgateway secrets' in play.get('name', ''))['tasks']
-assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in o11y_tasks)
+receiver_gate = next(task for task in o11y_tasks if task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml')
+assert 'agw_otlp_host' in receiver_gate['when']
+assert 'o11y_trace_rollout_enabled' in receiver_gate['when']
 assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in gateway_tasks)
 PY
 }
 
 @test "o11y: production budget receipt is read-only and emits bounded fields" {
   python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" \
-    "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+    "$REPO_ROOT/platform/semaphore/templates.yml" \
+    "$REPO_ROOT/platform/playbooks/files/compare-o11y-budgets.py" <<'PY'
+import json
+import subprocess
 import sys
 import yaml
 
-playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:]]
+playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:3]]
+comparator = sys.argv[3]
 assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert "lookup('env', 'SEMAPHORE_TASK_ID')" in str(playbook[1]['tasks'][-1])
 assert playbook[2]['tasks'][0]['name'] == 'Require explicit production budget declarations'
@@ -1089,7 +1097,9 @@ tasks = playbook[2]['tasks']
 names = {task['name'] for task in tasks}
 assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configuration',
         'Read Tempo runtime configuration', 'Read the live Alloy sample limit',
-        'Read current Prometheus head series count'} <= names
+        'Read current Prometheus head series count',
+        'Compare equivalent live and declared retention units'} <= names
+assert all('no_log' not in task for task in tasks if task['name'].startswith('Read ') and 'configuration' in task['name'])
 summary = tasks[-1]['ansible.builtin.debug']['msg']
 assert set(summary) == {'status', 'semaphore_task_id', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
@@ -1099,5 +1109,18 @@ assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.buil
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
 template = next(t for t in catalog['templates'] if t['name'] == 'Verify o11y Production Budgets (Dev)')
 assert template['repository'] == 'agent-cloud dev'
+assert [var['name'] for var in template['survey_vars']] == ['expected_repository_sha', 'expected_receiver_sha']
+payload = {'declared': {'prom_time': '15d', 'prom_size': '1GB', 'loki_time': '7d', 'tempo_time': '168h'},
+           'live': {'prom_time': '360h0m0s', 'prom_size': '1073741824B',
+                    'loki_time': '168h0m0s', 'tempo_time': '7d'}}
+result = subprocess.run([sys.executable, comparator], input=json.dumps(payload), text=True, capture_output=True)
+assert result.returncode == 0, result.stderr
+payload['declared']['prom_size'] = '0B'
+payload['live']['prom_size'] = '0'
+result = subprocess.run([sys.executable, comparator], input=json.dumps(payload), text=True, capture_output=True)
+assert result.returncode == 0, result.stderr
+payload['live']['tempo_time'] = '6d'
+result = subprocess.run([sys.executable, comparator], input=json.dumps(payload), text=True, capture_output=True)
+assert result.returncode != 0 and 'tempo_time' in result.stderr
 PY
 }

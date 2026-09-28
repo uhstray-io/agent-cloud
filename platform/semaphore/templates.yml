@@ -1312,7 +1312,12 @@ templates:
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
-        description: "Exact deployed Dev revision required before the active-state delivery drill"
+        description: "Exact reviewed Dev revision for the controller playbook"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision, checked before the drill"
         type: string
         required: true
     # Exercises an already-active production rule/contact with one failed
@@ -1324,7 +1329,12 @@ templates:
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
-        description: "Exact deployed Dev revision required for active-drill recovery"
+        description: "Exact reviewed Dev revision for the recovery playbook"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact receiver revision recorded for the interrupted drill"
         type: string
         required: true
 
@@ -1334,7 +1344,12 @@ templates:
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
-        description: "Exact deployed Dev revision required for the read-only receipt"
+        description: "Exact reviewed Dev revision for the read-only receipt"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision to measure"
         type: string
         required: true
 

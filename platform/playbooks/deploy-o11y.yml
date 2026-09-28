@@ -121,7 +121,11 @@
 
     - name: "Require the recorded trace rollout gate"
       ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
-      when: o11y_trace_rollout_enabled | default(false) | bool
+      when: >-
+        (o11y_trace_rollout_enabled | default(false) | bool) or
+        (not (local_mode | default(false) | bool) and
+         groups.get('agentgateway_svc', []) | length == 1 and
+         hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0)
 
     - name: "Require complete DGX scrape settings when scraping is enabled"
       ansible.builtin.assert:

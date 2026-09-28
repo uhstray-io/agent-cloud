@@ -69,7 +69,8 @@ inventory rollout after a successful canary receipt.
 ## Production alert-delivery drill
 
 When production alerts are already enabled, use `Drill o11y Active Alert
-Delivery (Dev)` with the exact clean deployed Dev SHA. It checks that the
+Delivery (Dev)` with the reviewed Dev controller SHA and the exact current
+deployed receiver SHA. It checks that the
 service-down rule and all o11y rules are active, the Discord contact exists
 once, and the bot can read channel history before it adds a uniquely labeled
 failed scrape. The shared probe waits for the named `up=0`, Grafana firing, and
@@ -79,7 +80,7 @@ still present.
 
 If the controller stops before that verification, normal receiver deploys
 refuse the `.o11y-active-alert-drill` marker. Run
-`Recover o11y Active Alert Drill (Dev)` with the same deployed SHA. Recovery is
+`Recover o11y Active Alert Drill (Dev)` with the same two reviewed SHAs. Recovery is
 safe to repeat and clears the marker only after Prometheus no longer has the
 drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
@@ -98,11 +99,14 @@ explicit `o11y_prom_retention`, `o11y_prom_retention_size`,
 `o11y_scrape_sample_limit` values. Keep all receipt IDs and live inventory
 values in private `site-config`.
 
-Run `Verify o11y Production Budgets (Dev)` after deployment. It reads the live
+Run `Verify o11y Production Budgets (Dev)` against the current receiver. It reads the live
 Prometheus, Loki, Tempo, and Alloy settings plus active Prometheus series, then
 prints only those budget values, the series count, and its Semaphore task ID.
 Record that task ID as both the retention and cardinality receipt after
 reviewing the result. The check changes no configuration.
+Supply the reviewed Dev controller SHA and current deployed receiver SHA as
+separate survey values. This lets the evidence workflow verify the existing
+receiver before a gated redeploy, with both revisions recorded in Semaphore.
 
 The o11y self-monitoring dashboard requires five healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard

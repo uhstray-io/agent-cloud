@@ -25,6 +25,7 @@
       ansible.builtin.assert:
         that:
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
         fail_msg: "Semaphore checked out a different revision; no production drill was started."
 
@@ -85,7 +86,7 @@
     - name: Require the clean deployed reviewed revision
       ansible.builtin.assert:
         that:
-          - _deployed_revision.stdout == expected_repository_sha
+          - _deployed_revision.stdout == expected_receiver_sha
           - _deployed_changes.stdout | length == 0
         fail_msg: "Deploy the clean reviewed Dev revision before the active alert drill."
 

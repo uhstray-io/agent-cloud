@@ -23,6 +23,7 @@
       ansible.builtin.assert:
         that:
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
           - not ansible_check_mode
         fail_msg: "Semaphore checked out a different revision or is in check mode; recovery did not run."
@@ -67,8 +68,8 @@
 
     - name: Require the deployed receiver to match the reviewed revision
       ansible.builtin.assert:
-        that: _deployed_revision.stdout == expected_repository_sha
-        fail_msg: "Deploy the reviewed revision before recovering its active alert drill."
+        that: _deployed_revision.stdout == expected_receiver_sha
+        fail_msg: "The deployed receiver differs from the revision named for active-drill recovery."
 
     - name: Converge and verify the active production baseline
       ansible.builtin.include_tasks: tasks/o11y-recover-active-alert-drill.yml

@@ -25,6 +25,7 @@
       ansible.builtin.assert:
         that:
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
           - _controller_revision.stdout == expected_repository_sha
           - lookup('env', 'SEMAPHORE_TASK_ID') | default('') is match('^[1-9][0-9]*$')
           - not ansible_check_mode
@@ -62,8 +63,8 @@
 
     - name: Require the receiver to run the reviewed revision
       ansible.builtin.assert:
-        that: _receiver_revision.stdout == expected_repository_sha
-        fail_msg: "The production receiver is not on the reviewed Dev revision."
+        that: _receiver_revision.stdout == expected_receiver_sha
+        fail_msg: "The production receiver differs from the explicitly reviewed deployed revision."
 
     - name: Read Prometheus runtime retention flags
       ansible.builtin.command:
@@ -77,7 +78,6 @@
       register: _prom_flags
       changed_when: false
       check_mode: false
-      no_log: true
 
     - name: Read Loki runtime configuration
       ansible.builtin.command:
@@ -85,7 +85,6 @@
       register: _loki_config
       changed_when: false
       check_mode: false
-      no_log: true
 
     - name: Read Tempo runtime configuration
       ansible.builtin.command:
@@ -93,7 +92,6 @@
       register: _tempo_config
       changed_when: false
       check_mode: false
-      no_log: true
 
     - name: Read the live Alloy sample limit
       ansible.builtin.command:
@@ -123,13 +121,27 @@
       changed_when: false
       check_mode: false
 
-    - name: Require live budgets to match inventory and cardinality to be measurable
+    - name: Compare equivalent live and declared retention units
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/compare-o11y-budgets.py"]
+        stdin: >-
+          {{ {'declared': {'prom_time': o11y_prom_retention,
+                          'prom_size': o11y_prom_retention_size,
+                          'loki_time': o11y_loki_retention,
+                          'tempo_time': o11y_tempo_retention},
+              'live': {'prom_time': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.time'],
+                       'prom_size': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.size'],
+                       'loki_time': (_loki_config.stdout | from_yaml).limits_config.retention_period,
+                       'tempo_time': (_tempo_config.stdout | from_yaml).compactor.compaction.block_retention}} | to_json }}
+      register: _retention_comparison
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Require matching live budgets and measurable cardinality
       ansible.builtin.assert:
         that:
-          - (_prom_flags.stdout | from_json).data['storage.tsdb.retention.time'] == o11y_prom_retention
-          - (_prom_flags.stdout | from_json).data['storage.tsdb.retention.size'] == o11y_prom_retention_size
-          - (_loki_config.stdout | from_yaml).limits_config.retention_period == o11y_loki_retention
-          - (_tempo_config.stdout | from_yaml).compactor.compaction.block_retention == o11y_tempo_retention
+          - _retention_comparison.rc == 0
           - _sample_limit.stdout | trim | int == o11y_scrape_sample_limit | int
           - (_head_series.stdout | from_json).data.result | length == 1
           - (_head_series.stdout | from_json).data.result[0].value[1] | int > 0

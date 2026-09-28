@@ -812,8 +812,9 @@ the `o11y` VM (`o11y_svc`).
 > wipe/redeploy gate remains deferred to preserve local data.
 
 > **Next implementation gate:** add a Dev-bound Semaphore drill for the
-> production receiver's already-active alert rules. It must check the deployed
-> revision, active rule, declared Discord contact, and message-history access
+> production receiver's already-active alert rules. It must check the reviewed
+> controller revision and the separately declared current receiver revision,
+> active rule, declared Discord contact, and message-history access
 > before introducing one uniquely labeled failed scrape. Reuse the existing
 > fault and Discord receipt checks; remove only that scrape declaration in an
 > `always` path, reload Prometheus, and verify the active rule/contact remain.
@@ -848,7 +849,10 @@ Dev-bound budget verifier reports actual retention settings, current active
 Prometheus series, the sample limit, and its own Semaphore task ID without
 printing inventory addresses or contact settings. The production drill uses a
 separate active-state marker and recovery path; the local paused canary remains
-unchanged.
+unchanged. The drill and budget verifier accept the exact current deployed
+receiver SHA separately from the reviewed Dev controller SHA, allowing receipts
+to be earned before the stricter receiver trace gate is applied. Both revisions
+are explicit Semaphore survey inputs and read back before work begins.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
