@@ -1009,6 +1009,13 @@ templates:
 
   - name: Validate Secrets
     playbook: platform/playbooks/validate-secrets.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Seed Discovery Credentials
     playbook: platform/playbooks/seed-discovery-credentials.yml
@@ -1018,6 +1025,13 @@ templates:
 
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Store SSH Password
     playbook: platform/playbooks/store-ssh-password.yml
@@ -1467,6 +1481,16 @@ templates:
     # back null and the run still fetches main — so the variant is the only way to
     # run the fixed code.
     dev_variant: true
+    # Without this field the play falls back to target_service "ungrouped" and reaches no
+    # host, and the launcher refuses a non-survey extra var; production grew one-off
+    # "SSH Distribute: <group> (temp)" templates by hand instead (found onboarding the
+    # internal DNS and CA VMs, 2026-09-28).
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to receive the keys (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
@@ -1474,6 +1498,13 @@ templates:
     # it — verifying dev's code and then hardening with main's would mean the thing
     # checked is not the thing run, on the one action that can lock the host out.
     dev_variant: true
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Apply Firewall
     playbook: platform/playbooks/apply-firewall.yml
@@ -1553,6 +1584,13 @@ templates:
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Install QEMU Guest Agent
     playbook: platform/playbooks/install-qemu-guest-agent.yml
@@ -1569,6 +1607,13 @@ templates:
     # Variant for the same reason as Generate Service SSH Key: one branch for the
     # whole phase, rather than a guarantee that depends on files staying identical.
     dev_variant: true
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
