@@ -733,3 +733,27 @@ class ScopedPublicationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_templates_targeting_a_group_ask_for_it():
+    """A playbook whose play hosts are `{{ target_service }}` falls back to "ungrouped"
+    and reaches no host unless the template offers the field; the launcher refuses a
+    non-survey extra var. Six templates had no field (2026-09-28), and production grew
+    hand-made per-group copies instead."""
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
+    repo = _Path(__file__).resolve().parents[3]
+    catalog = _yaml.safe_load((repo / "platform/semaphore/templates.yml").read_text())["templates"]
+    missing = []
+    for tpl in catalog:
+        pb = repo / tpl.get("playbook", "")
+        if not pb.is_file():
+            continue
+        plays = _yaml.safe_load(pb.read_text()) or []
+        hosts = [str(p.get("hosts", "")) for p in plays if isinstance(p, dict)]
+        if any("target_service" in h for h in hosts):
+            fields = {v["name"] for v in tpl.get("survey_vars") or []}
+            if "target_service" not in fields:
+                missing.append(tpl["name"])
+    assert not missing, f"templates whose playbook targets target_service without the field: {missing}"
