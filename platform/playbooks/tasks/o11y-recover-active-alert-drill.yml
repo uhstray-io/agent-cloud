@@ -1,0 +1,123 @@
+---
+# Converge the production receiver back to its active alert baseline. Safe to
+# rerun after controller interruption; this never touches TSDB, Loki, or Tempo.
+- name: Remove only the active-drill scrape declaration
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
+    state: absent
+
+- name: Reload Prometheus after removing the drill target
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - curl
+      - -fsS
+      - -X
+      - POST
+      - http://prometheus:9090/-/reload
+  changed_when: false
+  check_mode: false
+
+- name: Read active Prometheus targets after recovery
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - curl
+      - -fsS
+      - http://prometheus:9090/api/v1/targets?state=active
+  register: _active_drill_targets
+  changed_when: false
+  check_mode: false
+
+- name: Require the drill scrape job to be absent
+  ansible.builtin.assert:
+    that: >-
+      (_active_drill_targets.stdout | from_json).data.activeTargets |
+      selectattr('scrapePool', 'equalto', 'o11y-production-active-alert-drill') |
+      list | length == 0
+    fail_msg: "The active-drill scrape target remains loaded; keep the recovery marker and investigate."
+
+- name: Read the production service-down rule after drill recovery
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - sh
+      - -c
+      - >-
+        printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
+  register: _active_drill_rule
+  changed_when: false
+  check_mode: false
+
+- name: Require the production service-down rule to remain active
+  ansible.builtin.assert:
+    that:
+      - (_active_drill_rule.stdout | from_json).uid == 'o11y_service_down'
+      - not ((_active_drill_rule.stdout | from_json).isPaused | bool)
+    fail_msg: "The active service-down rule was not preserved; keep the recovery marker and investigate."
+
+- name: Read all production o11y alert rules after drill recovery
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - sh
+      - -c
+      - >-
+        printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
+  register: _active_drill_rules
+  changed_when: false
+  check_mode: false
+
+- name: Require every o11y alert rule to remain active
+  ansible.builtin.assert:
+    that:
+      - _recovered_rules | length > 0
+      - _recovered_rules | selectattr('isPaused', 'defined') | list | length == _recovered_rules | length
+      - _recovered_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_rules | length
+      - _recovered_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
+    fail_msg: "An o11y rule is missing or paused after recovery; keep the marker and investigate."
+  vars:
+    _recovered_rules: "{{ _active_drill_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+
+- name: Read production contact points without displaying webhook settings
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - sh
+      - -c
+      - >-
+        printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/contact-points
+  register: _active_drill_contacts
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Count only the declared Discord contact point
+  ansible.builtin.set_fact:
+    _active_drill_contact_count: >-
+      {{ _active_drill_contacts.stdout | from_json |
+         selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
+  no_log: true
+
+- name: Require the production Discord contact point to remain present once
+  ansible.builtin.assert:
+    that: _active_drill_contact_count | int == 1
+    fail_msg: "The declared Discord contact point was not preserved; keep the recovery marker and investigate."
+
+- name: Clear the active-drill marker after recovery checks pass
+  ansible.builtin.file:
+    path: "{{ _deploy_dir }}/config/.o11y-active-alert-drill"
+    state: absent

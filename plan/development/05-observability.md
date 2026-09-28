@@ -811,6 +811,49 @@ the `o11y` VM (`o11y_svc`).
 > production alert-delivery proof; both remain open acceptance work. The local
 > wipe/redeploy gate remains deferred to preserve local data.
 
+> **Next implementation gate:** add a Dev-bound Semaphore drill for the
+> production receiver's already-active alert rules. It must check the reviewed
+> controller revision and the separately declared current receiver revision,
+> active rule, declared Discord contact, and message-history access
+> before introducing one uniquely labeled failed scrape. Reuse the existing
+> fault and Discord receipt checks; remove only that scrape declaration in an
+> `always` path, reload Prometheus, and verify the active rule/contact remain.
+> A marker blocks normal deploys after interruption until a separate reviewed
+> recovery template restores and verifies the active baseline. Keep the paused
+> canary and its recovery semantics intact.
+>
+> Once delivery and production metric/retention/cardinality receipts are
+> recorded in private inventory, a shared Ansible assertion must refuse both
+> receiver and gateway trace deploys when any receipt is absent. Prove one
+> deliberate refusal before adding the verified receipts, then redeploy from
+> reviewed `dev` through Semaphore and recheck the real trace path. Keep this
+> drill, assertion, tests, and documentation in one public PR; private receipt
+> values remain in `site-config`.
+
+2026-09-28: a read-only Grafana UI click-through opened a recent agentgateway
+`/v1/models` trace and followed its provisioned Logs link. Loki returned the
+matching OTLP log at the same time with matching span and trace IDs; the
+request had an HTTP 401 API-key-authentication result. This is a scoped
+trace-to-log receipt only. The live span view did not expose a Metrics link, so
+trace-to-metrics remains unverified even though the datasource declares its
+mapping. Receiver deployment now reads back the live dashboard's five
+component count and Tempo ingestion panels plus the live datasource mappings,
+so stale Grafana provisioning fails verification.
+
+The implementation's private inventory contract uses four numeric Semaphore
+task IDs: `o11y_metrics_receipt_id`, `o11y_alert_delivery_receipt_id`,
+`o11y_retention_receipt_id`, and `o11y_cardinality_receipt_id`. Trace rollout
+also requires `o11y_trace_rollout_enabled`, enabled alerting, declared
+Prometheus/Loki/Tempo retention, and an Alloy scrape sample limit. The
+Dev-bound budget verifier reports actual retention settings, current active
+Prometheus series, the sample limit, and its own Semaphore task ID without
+printing inventory addresses or contact settings. The production drill uses a
+separate active-state marker and recovery path; the local paused canary remains
+unchanged. The drill and budget verifier accept the exact current deployed
+receiver SHA separately from the reviewed Dev controller SHA, allowing receipts
+to be earned before the stricter receiver trace gate is applied. Both revisions
+are explicit Semaphore survey inputs and read back before work begins.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

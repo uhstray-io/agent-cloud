@@ -111,12 +111,8 @@
         fail_msg: "Gateway tracing needs the declared o11y OTLP listener and sampling in (0, 0.1]."
       when: agw_otlp_host | default('') | length > 0
 
-    - name: "Require the receiver's alert rollout gate before gateway tracing"
-      ansible.builtin.assert:
-        that:
-          - hostvars[groups['o11y_svc'][0]].o11y_alerts_enabled | default(false) | bool
-          - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
-        fail_msg: "Enable and verify o11y alerts and agentgateway metrics before exporting traces."
+    - name: "Require the recorded trace rollout gate before gateway tracing"
+      ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
       when: agw_otlp_host | default('') | length > 0
 
     - name: "Require the declared receiver's Tempo to answer before gateway tracing"

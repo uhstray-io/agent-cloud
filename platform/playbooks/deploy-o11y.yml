@@ -107,6 +107,26 @@
         fail_msg: "Production canary restoration is unfinished; run Restore o11y Alert Baseline (Dev) before deploying."
       when: not (local_mode | default(false) | bool)
 
+    - name: "Refuse a normal deploy while the active alert drill needs recovery"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-active-alert-drill"
+      register: _unfinished_active_alert_drill
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Require the active alert drill to be recovered before deploy"
+      ansible.builtin.assert:
+        that: not _unfinished_active_alert_drill.stat.exists
+        fail_msg: "An active production alert drill was interrupted; run Recover o11y Active Alert Drill (Dev) before deploying."
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Require the recorded trace rollout gate"
+      ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
+      when: >-
+        (o11y_trace_rollout_enabled | default(false) | bool) or
+        (not (local_mode | default(false) | bool) and
+         groups.get('agentgateway_svc', []) | length == 1 and
+         hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0)
+
     - name: "Require complete DGX scrape settings when scraping is enabled"
       ansible.builtin.assert:
         that:
@@ -298,6 +318,34 @@
       check_mode: false
       when: not ansible_check_mode
 
+    - name: Read the live Tempo datasource correlation settings
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/datasources/uid/tempo
+      register: _tempo_datasource_config
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _tempo_datasource_config.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require live Tempo trace-to-metric and trace-to-log mappings
+      ansible.builtin.assert:
+        that:
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.datasourceUid == 'prometheus'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.datasourceUid == 'loki'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+        fail_msg: "Grafana's live Tempo datasource is missing the committed trace correlation mappings."
+      when: not ansible_check_mode
+
     - name: "Alloy healthy (collector config loaded)"
       ansible.builtin.command:
         argv: ["{{ _engine }}", inspect, --format, "{% raw %}{{.State.Health.Status}}{% endraw %}", o11y-alloy]
@@ -395,8 +443,13 @@
       ansible.builtin.assert:
         that:
           - (_self_dashboard.stdout | from_json).dashboard.uid == 'o11y-self-monitoring'
-          - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 6
-        fail_msg: "Grafana did not provision the o11y self-monitoring dashboard."
+          - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 11
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'O11y components up (expected 5)') | list | length == 1
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | list | length == 1
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | list | length == 1
+          - "'tempo_distributor_spans_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'tempo_distributor_bytes_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+        fail_msg: "Grafana has a stale or incomplete o11y dashboard; redeploy must provision all five components and Tempo ingestion panels."
       when: not ansible_check_mode
 
     - name: Read the provisioned agentgateway traffic dashboard

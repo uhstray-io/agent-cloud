@@ -7,10 +7,10 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 ## What it is
 
 - **Grafana** (viz) + **Prometheus** (metrics scrape + TSDB) + **Loki** (logs) +
-  **Grafana Alloy** (collector: ships container logs to Loki; OTLP receiver for
-  agent telemetry is a Phase-2 add). A minimal local "LGTM-lite" stack.
-- Long-term metrics (**Mimir**), traces (**Tempo**), object-store backends
-  (**MinIO**), and **Alertmanager** are **prod** additions, out of local scope.
+  **Grafana Alloy** (logs and OTLP ingress) + **Tempo** (bounded trace storage).
+  The same Compose stack runs locally and on the production receiver.
+- Long-term metrics (**Mimir**), object-store backends (**MinIO**), and a
+  separate **Alertmanager** remain deferred; Grafana manages the current alerts.
 
 ## How it runs
 
@@ -20,9 +20,9 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 - **Composable, no fork.** `compose.yml` is env-parameterized; `compose.local.yml`
   is a slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches
   Grafana; mounts the podman socket so Alloy can discover container logs).
-  `deploy.sh` is container-lifecycle-only. The local profile scrapes only
-  Prometheus; production inventory can render static DGX Spark scrape jobs.
-  Caddy/cAdvisor/agent targets remain Phase 2 — see `config/prometheus.yml`.
+  `deploy.sh` is container-lifecycle-only. Prometheus scrapes all five o11y
+  components. Production inventory renders DGX Spark and agentgateway scrape
+  jobs; Alloy receives sampled traces and exports them to Tempo.
 - **Config is code.** `config/` (Prometheus scrape, Loki, Alloy, Grafana
   datasource + dashboard provisioning) is committed and mounted read-only —
   provisioned on boot, reproducible on a wipe+redeploy. The ONLY secret is the
@@ -30,10 +30,12 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 
 ## Consumers (why this exists)
 
-- **OpenBao audit → Loki** with alerting (AUTOMATION-COMPOSABILITY §audit) —
-  Phase 2.
-- **orb-agent OpenTelemetry** export → Alloy OTLP receiver — Phase 2.
-- Caddy metrics; future Reliability/NetClaw agents (IMPLEMENTATION_PLAN).
+- Production DGX Spark and agentgateway metrics; receiver-side Grafana alerting.
+- Sampled agentgateway traces → Alloy OTLP → Tempo, with Grafana trace-to-log
+  correlation configured. A 2026-09-28 operator click-through verified a
+  same-span Loki log; trace-to-metrics still needs a functional UI receipt.
+- OpenBao audit ingestion, orb-agent OpenTelemetry, and future
+  Reliability/NetClaw consumers remain separately gated.
 
 ## Files
 
@@ -44,5 +46,8 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 | `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait Grafana healthy) |
 | `deployment/templates/env.j2` | image/port vars + Grafana admin pw (from OpenBao) |
 | `deployment/config/*` | committed config-as-code (Prometheus/Loki/Alloy/Grafana provisioning) |
+| `platform/playbooks/drill-o11y-active-alert-delivery.yml` | Dev-bound production delivery proof against active rules; fixed scrape cleanup in `always` |
+| `platform/playbooks/recover-o11y-active-alert-drill.yml` | separate idempotent recovery after an interrupted active delivery drill |
+| `platform/playbooks/verify-o11y-production-budgets.yml` | read-only retention, sample-limit, and active-series receipt |
 
 `deployment/.env` is rendered per-deploy and gitignored.

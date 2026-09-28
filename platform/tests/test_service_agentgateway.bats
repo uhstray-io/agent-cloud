@@ -372,7 +372,7 @@ assert 'otlp' not in config['frontendPolicies']['accessLog']
 PY
 }
 
-@test "agentgateway: trace rollout gate runs before OpenBao and deploy" {
+@test "agentgateway: shared trace rollout gate runs before OpenBao and deploy" {
   python3 - "$PLAYBOOK" <<'PY'
 import sys
 import yaml
@@ -380,7 +380,9 @@ plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage agentgateway secrets')
 tasks = phase['tasks']
 names = [task['name'] for task in tasks]
-gate = names.index("Require the receiver's alert rollout gate before gateway tracing")
+gate = names.index('Require the recorded trace rollout gate before gateway tracing')
+assert tasks[gate]['ansible.builtin.include_tasks'] == 'tasks/assert-o11y-trace-rollout.yml'
+assert tasks[gate]['when'] == "agw_otlp_host | default('') | length > 0"
 assert gate < names.index('Refuse a cleartext OpenBao endpoint')
 assert gate < names.index('Manage secrets and render env + config')
 assert names.index("Require the declared receiver's Tempo to answer before gateway tracing") < names.index('Manage secrets and render env + config')
