@@ -7,7 +7,7 @@ The current o11y rollout proves a receiver and a few named producers, but it doe
 - Establish a declared, reviewable coverage inventory for every supported service, agent, VM, and managed infrastructure target, distinguishing deployed from planned or retired components and recording each signal's owner, collection method, expected endpoint, and verification receipt.
 - Extend the existing Alloy, Prometheus, Loki, Tempo, Grafana, and Semaphore paths for each target. Prefer native metrics and existing log discovery; use supported OpenTelemetry zero-code instrumentation for request-serving runtimes after compatibility and security checks. Add small manual spans only where automatic instrumentation cannot show a critical operation.
 - Make cross-signal identity, bounded cardinality, trace sampling, retention, redaction, private ingress, and missing-telemetry alerts part of the reusable onboarding and verification contract.
-- Measure the production receiver's ingestion, CPU, memory, disk, query load, and headroom before each rollout wave. If the measured forecast exceeds the declared budget, review a private VM-spec change and converge it through the existing Semaphore resize playbook before adding that wave.
+- Add a receiver-host metric and log source first, then measure the production receiver's ingestion, CPU, memory, disk, query load, and headroom before each rollout wave. If the measured forecast exceeds the declared budget, review a private VM-spec change and converge it through Semaphore; disk growth additionally requires an idempotent guest-filesystem workflow before adding that wave.
 - Roll out in reversible waves through reviewed `dev` code, private `site-config` declarations, and Dev-bound Semaphore automation. Preserve existing telemetry volumes during ordinary redeploy and validation.
 
 ## Capabilities
@@ -29,4 +29,4 @@ None. The current store has no ratified observability capability spec; this chan
 
 ## Rollback Plan
 
-Disable a target's declared instrumentation or scrape/OTLP route and redeploy it through Semaphore; revert receiver configuration and redeploy without deleting volumes. Preserve prior VM sizing declarations when increasing resources; do not attempt disk shrink. For a failed wave, restore the last reviewed `dev` configuration and verify the previous signal and alert baseline before resuming.
+An operator reverts a target's declared instrumentation or scrape/OTLP route through the reviewed branch workflow and redeploys it through Semaphore; receiver configuration reverts without deleting volumes. Preserve prior VM sizing declarations when increasing resources; do not attempt disk shrink. For a failed wave, restore the last reviewed `dev` configuration and verify the previous signal and alert baseline before resuming.
