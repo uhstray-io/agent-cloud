@@ -900,6 +900,19 @@ receiver SHA separately from the reviewed Dev controller SHA, allowing receipts
 to be earned before the stricter receiver trace gate is applied. Both revisions
 are explicit Semaphore survey inputs and read back before work begins.
 
+The requested production retention target is Prometheus 90d, Loki 45d, and
+Tempo 1080h (45d). Keep the approved 15d / 7d / 168h values effective until a
+capacity receipt is complete. The budget verifier reports current guest root
+filesystem and memory observations, but root may not hold the observability
+volumes and these values are not a forecast. The production deploy now refuses
+any retention tuple change without a nonzero Prometheus size cap and a numeric
+successful `o11y_capacity_receipt_id`. That receipt is not earnable until a
+private receiver-host collector has seven days of CPU/memory and per-backend
+stored-byte growth, the measured forecast leaves at least 30% free disk and
+25% memory headroom with CPU p95 below 70%, and any required guest growth path
+has backup-before-resize and idempotent filesystem expansion. Do not update
+private retention values or VM size until those checks pass.
+
 2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord
 delivery, and active-baseline restoration. Its task record has the receipt ID,
 but this Semaphore runner did not inject `SEMAPHORE_TASK_ID` into Ansible; the

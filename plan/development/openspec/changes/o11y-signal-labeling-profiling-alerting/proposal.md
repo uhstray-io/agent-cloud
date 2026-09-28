@@ -8,6 +8,7 @@ The receiver has working metrics, logs, traces, dashboards, and Discord alerts, 
 - Add a code-managed cardinality and service-visibility baseline, with a service overview that works for declared remote targets as well as local containers. Show freshness and missing-signal state without fabricating absent data.
 - Add Pyroscope as a private, persistent, separately provisioned profile backend. Pilot opt-in low-overhead pprof collection for an explicitly verified in-stack target before onboarding other runtimes; profile data joins on the service identity and has retention, capacity, and privacy gates.
 - Enrich Grafana-managed rules with ownership, severity, service, environment, and cluster context. Use bounded rule-level grouping and timing on the existing Discord contact point, with read-back and a delivery drill. Preserve the existing shared notification policy tree.
+- Record the production retention target of Prometheus 90d, Loki 45d, and Tempo 1080h (45d), while retaining current effective values until measured capacity evidence exists. Refuse production retention changes without a nonzero Prometheus size cap and a numeric ID referencing a separately reviewed successful capacity receipt.
 - Extend the estate-wide instrumentation plan and onboarding guidance so each service declares its signal methods, profile applicability, label budget, alert owner, and proof; roll out by reviewed `dev` changes and non-destructive Semaphore deploys.
 
 ## Capabilities
@@ -23,7 +24,7 @@ None. The estate-wide instrumentation capability is still an open change; this c
 ## Impact
 
 - Public repo: o11y Alloy, Prometheus, Grafana provisioning, dashboards, deploy verification, tests, onboarding and estate-instrumentation documentation.
-- Private site-config: only new environment-specific declarations and resource budgets; production topology and secrets stay private.
+- Private site-config: production target values and capacity receipt IDs remain private; current effective retentions are not changed until the measured gate is complete. Production topology and secrets stay private.
 - Runtime: Grafana, Prometheus, Loki, Alloy, Tempo, and a new private Pyroscope service. A profile producer is enabled only after its target, overhead, and retention budget are verified. No existing telemetry volume is removed.
 
 ## Rollback Plan

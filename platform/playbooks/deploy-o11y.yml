@@ -82,6 +82,24 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
+      ansible.builtin.assert:
+        that:
+          - o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')
+          - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          Production retention differs from the approved 15d / 7d / 168h baseline.
+          A nonzero Prometheus size cap and a numeric o11y_capacity_receipt_id that
+          references a separately reviewed successful capacity receipt are required.
+          The receipt cannot be earned until receiver host metrics,
+          seven-day backend growth/CPU/memory history, measured forecast, and the guest
+          growth/backup path are verified.
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_prom_retention | default('15d') | string) != '15d' or
+         (o11y_loki_retention | default('7d') | string) != '7d' or
+         (o11y_tempo_retention | default('168h') | string) != '168h')
+
     - name: "Require the production DNS zone and Caddy origin before rendering Grafana OIDC"
       ansible.builtin.assert:
         that:

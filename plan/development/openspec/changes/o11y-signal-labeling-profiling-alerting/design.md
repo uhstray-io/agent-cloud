@@ -15,6 +15,7 @@ Non-goals: instrumenting every service in this change, replacing the alert polic
 3. **Profiling.** Add Pyroscope to the existing Compose stack with an isolated persistent volume and internal-only port. Add the Grafana datasource. An Alloy `pyroscope.scrape` and `pyroscope.write` pipeline is enabled only for a verified in-stack pprof producer through inventory. Use a small initial retention/resource budget and explicit measurement before other runtimes join. A normal deploy never calls the clean workflow.
 4. **Alerting.** Keep the existing Discord contact. Add stable labels, dashboard/runbook annotations, and rule-level `notification_settings` grouping/timing. Do not file-provision the shared policy tree, whose replacement semantics could overwrite unrelated routes. Read back the rule settings and run a bounded delivery drill.
 5. **Estate adoption.** Amend the open estate-wide instrumentation plan with a per-service signal/label/profile/owner declaration and a phased capacity gate. Service onboarding references that contract. Avoid duplicating source truth in dashboard JSON or a second inventory.
+6. **Production retention capacity.** Target Prometheus 90d, Loki 45d, and Tempo 1080h (45d), but preserve the existing 15d / 7d / 168h effective values until measurement is complete. A production retention tuple that differs from that approved baseline requires a nonzero Prometheus size cap and a numeric ID referencing a separately reviewed successful capacity receipt before any deployment write. The ID is only a reference and does not establish capacity by itself. The receipt remains unavailable until a private receiver-host collector provides at least seven days of CPU and memory history and per-backend stored-byte growth, the forecast retains at least 30% free disk and 25% memory headroom with CPU p95 below 70%, and any guest growth path is idempotent with backup before resize. The budget verifier reports only current guest root filesystem and memory observations; root filesystem usage is not treated as the observability-volume forecast.
 
 ## Risks / Trade-offs
 
@@ -22,6 +23,7 @@ Non-goals: instrumenting every service in this change, replacing the alert polic
 - A service selector derived from Prometheus cannot enumerate log-only services. The dashboard must state this scope, while Logs Drilldown remains available for log-only producers and the estate inventory records coverage gaps.
 - Grouping delays delivery by the configured wait period. The delivery drill must allow for that delay and verify both firing and resolution.
 - Adding indexed labels increases series and stream counts. Establish baseline and compare before broad rollout; reject unbounded values at the collector or producer boundary.
+- Longer retention can exceed the receiver's storage capacity. A current root filesystem observation is not a forecast; keep the capacity receipt absent until the private host source, seven-day backend growth evidence, and guest growth/backup procedure are verified.
 
 ## Migration Plan
 

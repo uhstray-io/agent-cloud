@@ -63,3 +63,12 @@ The implementation SHALL be reviewed on an isolated branch, promoted through `de
 
 - **WHEN** a new o11y configuration is deployed
 - **THEN** normal deployment preserves existing volumes and produces source, CI, Semaphore, and runtime evidence separately
+
+### Requirement: Measured production retention expansion
+
+Production retention targets SHALL be Prometheus 90d, Loki 45d, and Tempo 1080h (45d). Effective production retention SHALL remain at the currently approved 15d / 7d / 168h tuple until capacity evidence is reviewed. Any production tuple change SHALL require a nonzero Prometheus size cap and a numeric ID referencing a separately reviewed successful capacity receipt before deployment writes begin; the ID alone SHALL NOT count as capacity evidence. The capacity receipt SHALL include at least seven days of receiver CPU and memory history, per-backend stored-byte growth, a forecast retaining at least 30% free disk and 25% memory headroom with CPU p95 below 70%, and an idempotent guest growth procedure with backup before resize. Root filesystem observations alone SHALL NOT be treated as observability-volume forecasts.
+
+#### Scenario: A production retention expansion lacks measured capacity
+
+- **WHEN** any declared production retention differs from 15d / 7d / 168h and no successful capacity receipt or nonzero Prometheus size cap is present
+- **THEN** the normal deployment refuses before placing files or rendering secrets, and existing telemetry volumes remain untouched

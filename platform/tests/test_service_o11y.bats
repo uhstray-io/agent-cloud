@@ -1090,9 +1090,16 @@ alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
-alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster')
+alloy = env.from_string(alloy_template).render(
+    o11y_cluster='test-cluster',
+    _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
+)
 assert 'pyroscope.scrape' not in alloy
-profiled_alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster', o11y_alloy_profile_pilot_enabled=True)
+profiled_alloy = env.from_string(alloy_template).render(
+    o11y_cluster='test-cluster',
+    _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
+    o11y_alloy_profile_pilot_enabled=True,
+)
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
 assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy"' in profiled_alloy
 assert 'scrape_interval = "60s"' in profiled_alloy
@@ -1271,12 +1278,16 @@ names = {task['name'] for task in tasks}
 assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configuration',
         'Read Tempo runtime configuration', 'Read the live Alloy sample limit',
         'Read current Prometheus head series count',
+        'Read current guest root filesystem capacity',
+        'Read current guest memory headroom',
         'Compare equivalent live and declared retention units'} <= names
 assert all('no_log' not in task for task in tasks if task['name'].startswith('Read ') and 'configuration' in task['name'])
 summary = tasks[-1]['ansible.builtin.debug']['msg']
 assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
-    'scrape_sample_limit', 'active_prometheus_series'}
+    'scrape_sample_limit', 'active_prometheus_series',
+    'guest_root_filesystem_total_bytes', 'guest_root_filesystem_available_bytes',
+    'guest_memory_headroom_percent'}
 assert 'http://' not in str(summary)
 assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
@@ -1295,6 +1306,55 @@ assert result.returncode == 0, result.stderr
 payload['live']['tempo_time'] = '6d'
 result = subprocess.run([sys.executable, comparator], input=json.dumps(payload), text=True, capture_output=True)
 assert result.returncode != 0 and 'tempo_time' in result.stderr
+
+PY
+}
+
+@test "o11y: changed production retention refuses missing capacity receipt before deploy writes" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import pathlib
+import re
+import sys
+import yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+tasks = phase['tasks']
+gate = next(task for task in tasks if task.get('name') == 'Require a capacity receipt and nonzero Prometheus cap for retention expansion')
+gate_index = tasks.index(gate)
+write_index = next(index for index, task in enumerate(tasks)
+                   if task.get('ansible.builtin.include_tasks') == 'tasks/place-monorepo.yml'
+                   or 'ansible.builtin.template' in task)
+assert gate_index < write_index
+assert '15d' in gate['when'] and '7d' in gate['when'] and '168h' in gate['when']
+assert 'local_mode' in gate['when']
+message = gate['ansible.builtin.assert']['fail_msg'].lower()
+assert 'o11y_capacity_receipt_id' in message
+assert 'seven-day backend growth' in message
+assert 'backup' in message
+assert 'separately reviewed successful capacity receipt' in message
+env = Environment()
+env.tests['match'] = lambda value, pattern: re.match(pattern, str(value)) is not None
+env.filters['bool'] = lambda value: value is True or str(value).lower() in ('true', 'yes', '1')
+def evaluate(expression, **context):
+    return env.compile_expression(expression)(**context)
+
+changed = {'local_mode': False, 'o11y_prom_retention': '90d',
+           'o11y_loki_retention': '45d', 'o11y_tempo_retention': '1080h'}
+baseline = {'local_mode': False, 'o11y_prom_retention': '15d',
+            'o11y_loki_retention': '7d', 'o11y_tempo_retention': '168h'}
+assert evaluate(gate['when'], **changed)
+assert evaluate(gate['when'], **{**baseline, 'o11y_prom_retention': '91d'})
+assert evaluate(gate['when'], **{**baseline, 'o11y_tempo_retention': '1090h'})
+assert not evaluate(gate['when'], **baseline)
+assert not evaluate(gate['when'], **{**changed, 'local_mode': True})
+requirements = gate['ansible.builtin.assert']['that']
+assert len(requirements) == 2
+assert not evaluate(requirements[0], o11y_prom_retention_size='0B')
+assert not evaluate(requirements[1], o11y_capacity_receipt_id='')
+assert evaluate(requirements[0], o11y_prom_retention_size='100GB')
+assert evaluate(requirements[1], o11y_capacity_receipt_id='1776')
 PY
 }
 

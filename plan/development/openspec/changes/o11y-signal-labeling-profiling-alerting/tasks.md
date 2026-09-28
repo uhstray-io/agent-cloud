@@ -21,3 +21,11 @@
 - [ ] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance.
 - [ ] 4.2 Push one PR against `dev`, obtain one CodeRabbit or Claude review, resolve feedback, and merge only with green CI.
 - [ ] 4.3 Deploy non-destructively through Semaphore from `dev`, record runtime and resource evidence, and validate the spec scenario “Configuration is promoted.”
+
+## 5. Production retention capacity gate
+
+- [x] 5.1 Record targets of Prometheus 90d, Loki 45d, and Tempo 1080h; keep the effective production tuple unchanged and refuse a tuple change without a nonzero Prometheus size cap and numeric ID referencing a separately reviewed successful capacity receipt.
+- [x] 5.2 Add read-only current guest root filesystem and memory observations to the budget receipt; label root filesystem values as observations, not a volume forecast.
+- [ ] 5.3 Add a private receiver-host metrics source with a reviewed private bind and source-scoped firewall proof; collect at least seven days of CPU, memory, filesystem, and per-backend stored-byte growth evidence.
+- [ ] 5.4 Derive and review a 90/45-day storage forecast meeting >=30% free disk, >=25% memory headroom, and CPU p95 <70%; implement idempotent guest partition/filesystem growth with backup before resize if required.
+- [ ] 5.5 Update private inventory and size the o11y VM only after the receipt passes; deploy the target retentions through Semaphore and verify all existing volumes remain intact.

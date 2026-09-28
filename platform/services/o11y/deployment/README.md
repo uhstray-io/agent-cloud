@@ -125,12 +125,28 @@ values in private `site-config`.
 
 Run `Verify o11y Production Budgets (Dev)` against the current receiver. It reads the live
 Prometheus, Loki, Tempo, and Alloy settings plus active Prometheus series, then
-prints only those budget values and the series count. Record the numeric ID
+prints those budget values, series count, current guest root filesystem capacity,
+and current memory headroom. Record the numeric ID
 from its successful Semaphore task record as both receipts after
 reviewing the result. The check changes no configuration.
 Supply the reviewed Dev controller SHA and current deployed receiver SHA as
 separate survey values. This lets the evidence workflow verify the existing
 receiver before a gated redeploy, with both revisions recorded in Semaphore.
+
+The budget receipt also reports current guest root filesystem size/free bytes
+and memory headroom. These are read-only observations; the root filesystem may
+not contain the named observability volumes, so they do not establish retention
+capacity. The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
+(45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
+is available. A normal deploy refuses any production tuple change unless
+`o11y_prom_retention_size` is nonzero and private inventory contains a numeric
+`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt. Do not create that receipt
+until receiver host metrics have at least seven days of CPU/memory and
+per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
+memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
+with backup before resize. The repository currently has no receiver host
+collector or backend growth receipt, so the target is not yet deployable. The
+numeric ID is only a reference; it is not itself a capacity forecast or proof.
 
 The o11y self-monitoring dashboard requires six healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard
