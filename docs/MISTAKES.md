@@ -111,7 +111,7 @@ supersede it with a new entry and link both.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | Test (rootful case) |
-| 6.10 | Planned against the branch point while a peer session landed the same work on `dev`; the merged plan re-plans built code under new names | Assumption about files | Convention |
+| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked | Assumption about files | Convention |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | Test |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | Convention |
@@ -2610,33 +2610,33 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
 
-### 6.10 Planned against the branch point while a peer session landed the same work on `dev`
+### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
-**What happened.** PR #290 (merged `c4c1e1c`, 2026-09-27) added the openspec change
-`agentgateway-observability`, written in a worktree cut from `dev` before the o11y session
-landed `32db674`, #295, #296, `a2ead67`, `f0435e7` and `9350efd`. Those commits already moved
-the gateway to `frontendPolicies.accessLog`/`.tracing`, put Tempo 2.10.8 in the o11y compose,
-added the Alloy OTLP receiver, the `agentgateway-traffic` dashboard and
-`tasks/assert-o11y-trace-rollout.yml`. The merged plan re-plans all of that under new
-variable names (`agw_otlp_endpoint`, `o11y_tempo_otlp_endpoint`, `o11y_traces_enabled`),
-treats Tempo as an unverified external dependency, and its task 5.6 needs sampling 1, which
-the landed guard (`deploy-agentgateway.yml:109-110`) refuses above 0.1. The first handoff
-draft to the o11y session, written from the plan, repeated the same stale picture and was
-reported as checked against the files. The grounding checkpoint's reuse and altitude
-reviews caught it the next morning; `git log origin/dev` showed the commits.
+**What happened.** PR #290 merged the openspec change `agentgateway-observability` at
+2026-09-27 22:05 EDT (`c4c1e1c`). Earlier that day Joe had said a different session would
+deploy Tempo. That session then landed overlapping work on `dev` after the merge: `32db674`
+(23:12 EDT, via #293), #295, #296, `a2ead67`, and `f0435e7`/`9350efd` (06:45 EDT on
+2026-09-28). Those commits moved the gateway to `frontendPolicies.accessLog`/`.tracing`,
+put Tempo 2.10.8 in the o11y compose, added the Alloy OTLP receiver, the
+`agentgateway-traffic` dashboard and `tasks/assert-o11y-trace-rollout.yml`. None of them
+is an ancestor of `c4c1e1c` (`git merge-base --is-ancestor`), so `dev` held none of it
+when the plan was written, reviewed or merged. The next morning I drafted the handoff to
+that session from the merged plan without re-reading `dev`, told Joe its claims "check
+out against the files", and only its facts about file lines had been checked, not whether
+the work it handed over already existed. The grounding checkpoint's `git log origin/dev`
+showed the commits; an independent review of the first version of this entry then found
+that its timeline, and so its root cause, were wrong.
 
-**Root cause.** The plan's "current state" was read from the approach worktree, whose base
-was fixed when the worktree was cut, and from agentgateway v1.5.0 source. Nothing re-read
-`origin/dev` before the plan was written, reviewed or merged, and every reviewer, including
-the independent one, reviewed the diff against its own base rather than against current
-`dev`. A green merge proves no conflict in lines, not agreement with code other sessions
-landed in other files.
+**Root cause.** Two things. The plan was merged while a peer session Joe had named was
+building part of the same scope, and nobody asked that session what it had in flight. Then
+a merged plan was treated as a description of current code: the handoff reused it hours
+later without re-reading `dev`, and "checked against the files" was said of a check that
+covered line numbers, not the claim that the handed-over work was still to do.
 
-**The rule.** Before writing, reviewing or merging a plan or handoff that describes code,
-`git fetch` and list what landed on `dev` since the branch point in the paths it describes
-(`git log <base>..origin/dev -- <paths>`), and rebase the plan's "current state" on that.
-When another session owns overlapping paths, name its landed commits in the plan. A plan's
-variable names follow the landed code, not a fresh design.
+**The rule.** A merged plan is not current state. Before acting on, handing off from, or
+merging a plan that describes code, `git fetch` and read `git log <plan's merge>..origin/dev`
+for the paths it describes, and when a named peer session owns part of the scope, ask it
+for its in-flight work first. Say "checked" only about the property that was checked.
 
 **Enforced by.** Convention.
 
