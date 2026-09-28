@@ -824,6 +824,8 @@ templates:
   # model input.
   - name: Snapshot Firewall
     playbook: platform/playbooks/snapshot-firewall.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target group
@@ -835,6 +837,8 @@ templates:
   # assessment's only model input.
   - name: Snapshot Service Assessment
     playbook: platform/playbooks/snapshot-service-assessment.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target group
@@ -844,6 +848,8 @@ templates:
 
   - name: Snapshot Access
     playbook: platform/playbooks/snapshot-access.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target group
@@ -928,6 +934,9 @@ templates:
   # declared address as reserved or active, and no other host claims it. Read-only.
   - name: Lookup Service Inventory
     playbook: platform/playbooks/lookup-service-inventory.yml
+    # main has no copy of this playbook yet (service deployment workflow, not promoted),
+    # so the dev-bound variant is the only runnable form before promotion.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target service
@@ -939,6 +948,9 @@ templates:
   # service's own running VM), and the NetBox VM record exists (created planned if absent).
   - name: Validate Address Free
     playbook: platform/playbooks/validate-address-free.yml
+    # main has no copy of this playbook yet (service deployment workflow, not promoted),
+    # so the dev-bound variant is the only runnable form before promotion.
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: Target service

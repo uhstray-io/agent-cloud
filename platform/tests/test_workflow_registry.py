@@ -214,3 +214,23 @@ def test_local_dry_run_executors_have_a_working_tree_twin():
     assert executors >= LOCAL_DRY_RUN_EXECUTORS
     for name in LOCAL_DRY_RUN_EXECUTORS:
         assert twins.get(name) == shared[name], name
+
+
+# Templates that predate the service deployment workflow and already run from main. Every
+# other template a step names is new with the workflow, so main has no copy of its playbook
+# until promotion and only a dev-bound variant can run in production (2026-09-28: Lookup
+# Service Inventory, Validate Address Free and the three snapshots had none).
+PREDATES_WORKFLOW = {"Create VM Template", "Check Secrets"}
+
+
+def test_workflow_templates_are_dev_bound_until_promoted():
+    catalog = {t["name"]: t for t in yaml.safe_load(CATALOG.read_text())["templates"]}
+    missing = sorted(
+        name
+        for step in STEPS
+        for key in ("executor", "snapshot")
+        if (name := step.get(key)) not in (None, "none", PER_SERVICE)
+        and name not in PREDATES_WORKFLOW
+        and not catalog[name].get("dev_variant")
+    )
+    assert not missing, f"workflow templates with no (Dev) variant: {missing}"
