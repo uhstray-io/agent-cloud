@@ -745,6 +745,9 @@ the `o11y` VM (`o11y_svc`).
 > sends both over the declared OTLP listener; Alloy labels access records with
 > `service=agentgateway` before forwarding them to Loki. Any missing signal
 > fails its named check.
+> Agentgateway v1.5 rejects `config.logging` alongside
+> `frontendPolicies.accessLog`. Put bounded identity enrichment under
+> `frontendPolicies.accessLog.add` when OTLP access-log export is enabled.
 
 > **First production Tempo rollout, 2026-09-27 EDT:** PRs #293 and private
 > site-config #37 merged after CodeRabbit approval and green checks. The
