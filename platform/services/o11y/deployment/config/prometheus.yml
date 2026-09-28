@@ -15,6 +15,19 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
+  # Self-monitoring stays on the private o11y network; no extra host ports.
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: alloy
+    static_configs:
+      - targets: ["alloy:12345"]
+
   # Phase 2 (O11Y-DEPLOYMENT.md) — per-target metrics:
   #   - Caddy: its admin API (:2019/metrics) binds LOOPBACK-ONLY, so it is not
   #     scrapeable cross-container. Phase 2 adds a dedicated routable metrics

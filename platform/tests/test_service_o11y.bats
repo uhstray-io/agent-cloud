@@ -842,6 +842,41 @@ PY
   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['uid']=='agent-cloud-overview'" "$f"
 }
 
+@test "o11y: self-monitoring scrapes feed the provisioned dashboard" {
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import json
+import pathlib
+import sys
+import yaml
+
+deploy = pathlib.Path(sys.argv[1])
+scrapes = yaml.safe_load((deploy / 'config/prometheus.yml').read_text())['scrape_configs']
+jobs = {job['job_name']: job['static_configs'][0]['targets'] for job in scrapes}
+assert {key: jobs[key] for key in ('prometheus', 'grafana', 'loki', 'alloy')} == {
+    'prometheus': ['localhost:9090'],
+    'grafana': ['grafana:3000'],
+    'loki': ['loki:3100'],
+    'alloy': ['alloy:12345'],
+}
+compose = yaml.safe_load((deploy / 'compose.yml').read_text())
+assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
+dashboard = json.loads((deploy / 'config/grafana/dashboards/o11y-self-monitoring.json').read_text())
+assert dashboard['uid'] == 'o11y-self-monitoring'
+assert len(dashboard['panels']) >= 6
+assert all(panel['datasource']['uid'] == 'prometheus' for panel in dashboard['panels'])
+expressions = '\n'.join(target['expr'] for panel in dashboard['panels'] for target in panel['targets'])
+for metric in ('up{', 'prometheus_tsdb_head_series', 'scrape_samples_scraped',
+               'loki_distributor_bytes_received_total', 'loki_distributor_lines_received_total',
+               'alloy_component_controller_running_components'):
+    assert metric in expressions, metric
+plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
+names = {task['name'] for task in verify['tasks']}
+assert 'Verify Grafana can query its provisioned data sources' in names
+assert 'Require the committed self-monitoring dashboard to be active' in names
+PY
+}
+
 @test "o11y: local overlay adds caps/SELinux/local-dev + the alloy socket, no ports republish" {
   local f="$DEPLOY_DIR/compose.local.yml"
   [ -f "$f" ]
