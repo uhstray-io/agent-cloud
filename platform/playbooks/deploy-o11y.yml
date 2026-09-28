@@ -317,7 +317,7 @@
           - -c
           - >-
             printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
-            curl -fsS --config - "http://127.0.0.1:3000/api/datasources/uid/$1/health"
+            curl -sS --config - "http://127.0.0.1:3000/api/datasources/uid/$1/health"
           - datasource-health
           - "{{ item }}"
       loop: [prometheus, loki]

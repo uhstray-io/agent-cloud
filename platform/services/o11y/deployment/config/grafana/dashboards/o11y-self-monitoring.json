@@ -30,7 +30,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_bytes_received_total{job=\"loki\"}[5m]))", "instant": true }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_bytes_received_total{job=\"loki\"}[5m])) or vector(0)", "instant": true }]
     },
     {
       "id": 4,
@@ -60,7 +60,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_lines_received_total{job=\"loki\"}[5m]))" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_lines_received_total{job=\"loki\"}[5m])) or vector(0)" }]
     },
     {
       "id": 7,

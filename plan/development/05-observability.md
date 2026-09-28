@@ -656,15 +656,18 @@ the `o11y` VM (`o11y_svc`).
 > **Self-monitoring integration, pending rollout:** Grafana already provisions
 > Prometheus and Loki by stable UID over the private o11y network. The next
 > reviewed Dev deploy adds internal Prometheus scrapes for Grafana, Loki, and
-> Alloy alongside Prometheus's existing self scrape. It enables Grafana's
-> `/metrics`, checks both provisioned data-source health endpoints, and requires
-> the committed `o11y-self-monitoring` dashboard to appear in Grafana. The
-> dashboard reports all four scrape states, active series, samples per scrape,
+> Alloy alongside Prometheus's existing self scrape. It explicitly declares
+> Grafana's already-enabled `/metrics`, checks both data-source health
+> endpoints, and requires the committed `o11y-self-monitoring` dashboard to
+> appear in Grafana. The dashboard reports all four scrape states, active
+> series, samples per scrape,
 > Loki received bytes and lines, Alloy component health, and process memory.
 > These are source-level implementation claims until the Dev-bound Semaphore
 > deploy and live dashboard readback succeed. The check does not imply that
 > each panel has data; verify representative series and Loki ingestion after
-> rollout. Keep the local named volumes intact.
+> rollout. Existing service-down alerts select `service` labels, so the new
+> self-scrape status is dashboard-visible but does not yet notify Discord.
+> Keep the local named volumes intact.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

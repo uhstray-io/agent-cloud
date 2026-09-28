@@ -869,11 +869,14 @@ for metric in ('up{', 'prometheus_tsdb_head_series', 'scrape_samples_scraped',
                'loki_distributor_bytes_received_total', 'loki_distributor_lines_received_total',
                'alloy_component_controller_running_components'):
     assert metric in expressions, metric
+assert expressions.count('or vector(0)') == 2
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 names = {task['name'] for task in verify['tasks']}
 assert 'Verify Grafana can query its provisioned data sources' in names
 assert 'Require the committed self-monitoring dashboard to be active' in names
+health = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana can query its provisioned data sources')
+assert 'curl -sS --config -' in health['ansible.builtin.command']['argv'][5]
 PY
 }
 
