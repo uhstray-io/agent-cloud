@@ -9,8 +9,10 @@
 #   1. Configures NOPASSWD sudo for ansible_user
 #   2. Hardens /etc/ssh/sshd_config and all sshd_config.d/*.conf files
 #   3. Restarts sshd
-#   4. Verifies password auth is rejected
-#   5. Verifies key auth still works
+#   4. Verifies key auth still works
+#   5. Verifies password auth is rejected — the server offers no password or
+#      keyboard-interactive method to the runner AND sshd's effective config says
+#      so; anything short of that proof fails the play
 #
 # Requires become (sudo). Pass become password via:
 #   Semaphore: set ansible_become_password in environment JSON
@@ -103,6 +105,8 @@
     # --check this still runs: the scratch is runner-local
     # (tasks/materialise-ssh-key.yml explains why that is allowed), and the key-auth
     # probe then answers the question a dry run exists for — would the key still get in.
+    # Key auth is checked FIRST: if it fails, the host is one step from a lockout and
+    # that is the failure the operator needs to see.
     - name: "Verify the lockdown with a runner-local copy of the management key"
       become: false
       block:
@@ -111,28 +115,6 @@
           vars:
             ssh_key_content: "{{ _mgmt_priv_key }}"
             ssh_key_result_var: _verify_key
-
-        - name: "Verify password auth is rejected"
-          ansible.builtin.command:
-            cmd: >
-              ssh -o BatchMode=yes -o ConnectTimeout=10
-                  -o StrictHostKeyChecking=accept-new
-                  -o PubkeyAuthentication=no
-                  {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
-                  echo SHOULD_NOT_REACH
-          delegate_to: localhost
-          become: false
-          register: _pw_test
-          failed_when: _pw_test.rc == 0
-          changed_when: false
-          ignore_errors: true
-          check_mode: false
-
-        - name: "Confirm password auth disabled"
-          ansible.builtin.assert:
-            that: _pw_test.rc != 0
-            fail_msg: "WARNING: Password auth still works on {{ service_name | default(inventory_hostname) }}!"
-            success_msg: "{{ service_name | default(inventory_hostname) }}: password auth REJECTED"
 
         - name: "Verify key auth still works"
           ansible.builtin.command:
@@ -156,12 +138,105 @@
           vars:
             ssh_key_result_var: _verify_key
 
+    # ── Is password auth REALLY off? Two independent views, both must agree ──
+    # The old probe ran `ssh -o BatchMode=yes -o PubkeyAuthentication=no` and passed
+    # on a non-zero exit. BatchMode disables password prompts (man ssh_config), so that
+    # ssh could never log in with a password and exited non-zero on EVERY host: the
+    # check could not fail. What decides a lockout is what the server OFFERS, so:
+    #   1. from the runner, the methods the server advertises after the `none`
+    #      request (`ssh -v` logs "Authentications that can continue: ..."), which is
+    #      the view an attacker or a locked-out operator has;
+    #   2. on the host, sshd's EFFECTIVE config (`sshd -T`), which covers drop-ins
+    #      the lineinfile edits above may have missed. Without `-C` it does not
+    #      evaluate Match blocks, which is why view 1 is not optional.
+    # Anything short of proof is a failure: an unreachable server, an unreadable
+    # config or a missing setting cannot pass. Both probes only read; the decision
+    # below is the one place that fails the host.
+    - name: "Probe password auth from the runner (what the server offers)"
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -v
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - PubkeyAuthentication=no
+          - -o
+          - PreferredAuthentications=password,keyboard-interactive
+          - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
+          - echo SHOULD_NOT_REACH
+      delegate_to: localhost
+      become: false
+      register: _pw_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Read sshd's effective authentication settings"
+      ansible.builtin.command:
+        argv: [sshd, -T]
+      become: true
+      register: _sshd_eff
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Decide whether password auth is really off"
+      ansible.builtin.set_fact:
+        _pw_problems: >-
+          {{ (['the runner never reached the authentication stage, so what the server
+                offers is unproven: ' ~ (_pw_probe.stderr_lines | default([]) | last | default('no output'))]
+              if (_pw_lines | length) == 0 else [])
+             + (['a login succeeded with public-key auth disabled'] if (_pw_probe.rc | default(1)) == 0 else [])
+             + (['the server still offers ' ~ (_pw_open | join(', ')) ~ ' to the runner']
+              if (_pw_open | length) > 0 else [])
+             + (['sshd -T could not be read (rc ' ~ (_sshd_eff.rc | default('?')) ~ ')']
+              if (_sshd_eff.rc | default(1)) != 0 else
+                ((['effective passwordauthentication is ' ~ (_eff_pw or 'absent')] if _eff_pw != 'no' else [])
+                 + (['effective kbdinteractiveauthentication is ' ~ (_eff_kbd or 'absent')] if _eff_kbd != 'no' else []))) }}
+      vars:
+        _pw_lines: "{{ _pw_probe.stderr | default('') | regex_findall('Authentications that can continue: (\\S+)') }}"
+        _pw_methods: "{{ _pw_lines | join(',') | split(',') | reject('equalto', '') | unique | list }}"
+        _pw_open: "{{ _pw_methods | select('in', ['password', 'keyboard-interactive']) | list }}"
+        _eff_pw: >-
+          {{ _sshd_eff.stdout | default('')
+             | regex_findall('(?im)^passwordauthentication\s+(\S+)\s*$') | first | default('') | lower }}
+        # OpenSSH before 8.7 reports the older name for the same setting.
+        _eff_kbd: >-
+          {{ _sshd_eff.stdout | default('')
+             | regex_findall('(?im)^(?:kbdinteractive|challengeresponse)authentication\s+(\S+)\s*$')
+             | first | default('') | lower }}
+
+    # Post-lockdown verification: a host that still takes passwords after hardening
+    # is a FAILED hardening, so this stops the play. No ignore_errors anywhere on the
+    # path to it: a failure that is recorded and then ignored is how the old check
+    # went green. Under --check the sshd edits were only simulated, so the probes
+    # read the host as it is NOW; the report below says so instead of failing the
+    # dry run over a change it did not make (plan/architecture/08, "Platform
+    # conventions" 2).
+    - name: "Confirm password auth disabled"
+      ansible.builtin.assert:
+        that: _pw_problems | length == 0
+        fail_msg: >-
+          Password auth is NOT proven off on {{ service_name | default(inventory_hostname) }}:
+          {{ _pw_problems | join('; ') }}.
+        success_msg: >-
+          {{ service_name | default(inventory_hostname) }}: password auth REJECTED — the server
+          offers no password or keyboard-interactive method and sshd's effective config agrees
+      when: not ansible_check_mode
+
     - name: "Lockdown complete"
       ansible.builtin.debug:
         msg: >-
           {{ 'DRY RUN (sshd and sudoers changes simulated; the probes read the host as it is NOW) — '
              if ansible_check_mode else '' }}{{ service_name | default(inventory_hostname) }}:
-          password REJECTED, key auth CONFIRMED, NOPASSWD sudo configured, root login disabled
+          password {{ 'REJECTED' if (_pw_problems | length) == 0
+                      else 'NOT YET REJECTED (' ~ (_pw_problems | join('; ')) ~ ')' }},
+          key auth CONFIRMED, NOPASSWD sudo configured, root login disabled
 
   handlers:
     - name: Restart sshd
