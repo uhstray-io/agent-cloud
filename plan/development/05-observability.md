@@ -807,27 +807,26 @@ the `o11y` VM (`o11y_svc`).
 > bound, GPU counter compatibility, receiver-outage buffering, and persistence
 > after reboot. The Grafana trace-to-log and trace-to-metric pivots are
 > provisioned but still need an operator click-through receipt. The trace
-> receiver is active before the required fail-closed enablement gate and
-> production alert-delivery proof; both remain open acceptance work. The local
+> receiver was active before the fail-closed enablement gate and
+> production alert-delivery proof. The gate refused the receipt-less check-mode
+> deploy in task 1700, and task 1701 proved delivery and restoration. The local
 > wipe/redeploy gate remains deferred to preserve local data.
 
-> **Next implementation gate:** add a Dev-bound Semaphore drill for the
-> production receiver's already-active alert rules. It must check the reviewed
+> **Implemented and exercised in task 1701:** the Dev-bound Semaphore drill for the
+> production receiver's already-active alert rules. It checks the reviewed
 > controller revision and the separately declared current receiver revision,
 > active rule, declared Discord contact, and message-history access
-> before introducing one uniquely labeled failed scrape. Reuse the existing
-> fault and Discord receipt checks; remove only that scrape declaration in an
-> `always` path, reload Prometheus, and verify the active rule/contact remain.
+> before introducing one uniquely labeled failed scrape. It reuses the existing
+> fault and Discord receipt checks, removes only that scrape declaration in an
+> `always` path, reloads Prometheus, and verifies the active rule/contact remain.
 > A marker blocks normal deploys after interruption until a separate reviewed
-> recovery template restores and verifies the active baseline. Keep the paused
-> canary and its recovery semantics intact.
+> recovery template restores and verifies the active baseline. The paused
+> canary and its recovery semantics remain intact.
 >
-> Once delivery and production metric/retention/cardinality receipts are
-> recorded in private inventory, a shared Ansible assertion must refuse both
-> receiver and gateway trace deploys when any receipt is absent. Prove one
-> deliberate refusal before adding the verified receipts, then redeploy from
-> reviewed `dev` through Semaphore and recheck the real trace path. Keep this
-> drill, assertion, tests, and documentation in one public PR; private receipt
+> Once the remaining production metric/retention/cardinality receipts are
+> recorded in private inventory, redeploy from reviewed `dev` through Semaphore
+> and recheck the real trace path. The shared assertion already refuses both
+> receiver and gateway trace deploys when any receipt is absent. Private receipt
 > values remain in `site-config`.
 
 2026-09-28: a read-only Grafana UI click-through opened a recent agentgateway
@@ -846,13 +845,21 @@ task IDs: `o11y_metrics_receipt_id`, `o11y_alert_delivery_receipt_id`,
 also requires `o11y_trace_rollout_enabled`, enabled alerting, declared
 Prometheus/Loki/Tempo retention, and an Alloy scrape sample limit. The
 Dev-bound budget verifier reports actual retention settings, current active
-Prometheus series, the sample limit, and its own Semaphore task ID without
-printing inventory addresses or contact settings. The production drill uses a
+Prometheus series and the sample limit without printing inventory addresses
+or contact settings. Record its numeric ID from the successful Semaphore task
+record. The production drill uses a
 separate active-state marker and recovery path; the local paused canary remains
 unchanged. The drill and budget verifier accept the exact current deployed
 receiver SHA separately from the reviewed Dev controller SHA, allowing receipts
 to be earned before the stricter receiver trace gate is applied. Both revisions
 are explicit Semaphore survey inputs and read back before work begins.
+
+2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord
+delivery, and active-baseline restoration. Its task record has the receipt ID,
+but this Semaphore runner did not inject `SEMAPHORE_TASK_ID` into Ansible; the
+play's earlier final message therefore printed a blank ID. The budget verifier
+must not depend on that variable. Record receipt IDs from successful Semaphore
+task records after reviewing each run's output.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

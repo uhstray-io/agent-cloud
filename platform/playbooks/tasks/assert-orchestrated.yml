@@ -9,12 +9,12 @@
 #     in its own committed vars (bootstrap-local-dev.yml only) AND was invoked
 #     with the `bootstrap` tag. The tag alone is NOT sufficient.
 #
-# MARKER IS PROVISIONAL — verify against a real production Semaphore task
-# before wiring this task into deploy playbooks (blocking precondition,
-# plan/development/LOCAL-DEV-DEPLOYMENT.md §11). Override the primary marker
-# via `orchestration_marker_var` once verified.
+# MARKER IS UNVERIFIED — production Semaphore task 1701 did not inject
+# SEMAPHORE_TASK_ID. BAO_ROLE_ID is an AppRole injection, not unique proof of
+# Semaphore origin. Keep this task unwired until a real orchestrator-only
+# marker is verified (plan/development/00-foundation-local-dev.md §11).
 #
-# Ships UNWIRED in Phase 0A; wiring happens after marker verification.
+# Ships UNWIRED in Phase 0A; wiring still waits for marker verification.
 
 - name: "Assert orchestrated context (Critical Rule #1)"
   ansible.builtin.assert:

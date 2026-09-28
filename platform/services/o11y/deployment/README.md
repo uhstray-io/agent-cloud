@@ -101,8 +101,8 @@ values in private `site-config`.
 
 Run `Verify o11y Production Budgets (Dev)` against the current receiver. It reads the live
 Prometheus, Loki, Tempo, and Alloy settings plus active Prometheus series, then
-prints only those budget values, the series count, and its Semaphore task ID.
-Record that task ID as both the retention and cardinality receipt after
+prints only those budget values and the series count. Record the numeric ID
+from its successful Semaphore task record as both receipts after
 reviewing the result. The check changes no configuration.
 Supply the reviewed Dev controller SHA and current deployed receiver SHA as
 separate survey values. This lets the evidence workflow verify the existing

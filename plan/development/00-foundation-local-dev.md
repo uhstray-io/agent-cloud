@@ -295,7 +295,7 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 
 | Item | Status | Resolution path |
 |---|---|---|
-| Semaphore-environment detection marker | Verify at P0A | Confirm against a real prod Semaphore task before wiring `assert-orchestrated.yml` |
+| Semaphore-environment detection marker | Unverified; task 1701 had no `SEMAPHORE_TASK_ID` | Find and verify a marker unique to a real production Semaphore task before wiring `assert-orchestrated.yml`; AppRole injection alone does not prove origin |
 | Owned-image inventory for multi-arch | P0B start | Audit which GHCR images exist + which build workflows need the manifest change |
 | Risk-class boundaries | Ratified (stricter) | Revisit after sustained local-pass→prod-pass agreement; relax medium to exclude app code |
 | Local data persistence | **Persistent by default** — file-backed OpenBao + named service volumes; survives a podman-machine restart | `make local-clean` is the only intentional wipe (removes the vault volume + init material); deeper resilience (snapshot, self-heal unseal, single-node Raft) in OPENBAO-HA-DEPLOYMENT.md Track A |
