@@ -1093,6 +1093,8 @@ playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv
 comparator = sys.argv[3]
 assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert "SEMAPHORE_TASK_ID" not in str(playbook)
+assert playbook[1]['tasks'][-2]['ansible.builtin.command']['argv'] == ['git', 'status', '--porcelain', '--untracked-files=all']
+assert playbook[1]['tasks'][-1]['ansible.builtin.assert']['that'] == '_controller_changes.stdout | length == 0'
 assert playbook[2]['tasks'][0]['name'] == 'Require explicit production budget declarations'
 tasks = playbook[2]['tasks']
 names = {task['name'] for task in tasks}

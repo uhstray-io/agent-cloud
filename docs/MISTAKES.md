@@ -46,6 +46,7 @@ supersede it with a new entry and link both.
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | Convention |
+| 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | Test (o11y receipt checks) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
@@ -718,6 +719,27 @@ or the operator's statement. Two independent vantages that both fail support "un
 host, is reported as exactly that: "no answer from X", "not in the listed range".
 
 **Enforced by.** Convention.
+
+### 1.20 Assumed the orchestrator injected a task ID into Ansible
+
+**What happened.** The production o11y alert drill succeeded as Semaphore task
+1701, but its final message read `SEMAPHORE_TASK_ID` from the Ansible environment
+and printed a blank receipt ID. The new budget verifier also required that
+variable, so it would have refused every run on this controller.
+
+**Root cause.** A provisional orchestrator marker was treated as a verified
+runtime interface without checking a real task. Semaphore's task API and UI
+hold the numeric ID; the playbook environment did not.
+
+**The rule.** Record receipt IDs from successful Semaphore task records. A
+playbook must not require or print an assumed task-id environment variable.
+Keep `assert-orchestrated.yml` unwired until a real orchestrator-only marker is
+verified; AppRole injection alone does not prove task origin.
+
+**Enforced by.** `platform/tests/test_service_o11y.bats` checks the active
+drill and budget verifier for the unsupported variable and requires the
+budget verifier's clean-checkout assertion. The marker remains explicitly
+unwired in `platform/playbooks/tasks/assert-orchestrated.yml`.
 
 ## 2. Tests that would have passed for the wrong reason
 

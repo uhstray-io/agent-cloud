@@ -31,6 +31,19 @@
           - not (local_mode | default(false) | bool)
         fail_msg: "Budget receipts require a real production run from the exact reviewed Dev revision."
 
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Controller checkout has uncommitted files; no budget receipt was issued."
+
 - name: Read production retention and cardinality settings
   hosts: o11y_svc
   gather_facts: false
