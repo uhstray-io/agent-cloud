@@ -174,6 +174,22 @@
       changed_when: false
       check_mode: false
 
+    - name: Calculate sanitized sample-limit and series diagnostics
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/diagnose-o11y-budget-readback.py"]
+        stdin: >-
+          {{ {'sample_limit': _sample_limit.stdout,
+              'expected_sample_limit': o11y_scrape_sample_limit,
+              'head_series': _head_series.stdout} | to_json }}
+      register: _budget_readback_diagnostics
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Report sanitized sample-limit and series diagnostics
+      ansible.builtin.debug:
+        msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
+
     - name: Require matching live budgets and measurable cardinality
       ansible.builtin.assert:
         that:

@@ -920,6 +920,23 @@ play's earlier final message therefore printed a blank ID. The budget verifier
 must not depend on that variable. Record receipt IDs from successful Semaphore
 task records after reviewing each run's output.
 
+2026-09-28: production o11y deploy task 1783 succeeded non-destructively at
+reviewed revision `1226d8b37521064273f250eee85c2ca518830b26`. Dev-bound,
+read-only budget verifier tasks 1784 and 1785 both reached the final aggregate
+assertion after retention comparison succeeded. Their output did not identify
+whether the live sample limit, head-series result count, or positive-series
+check failed, so no runtime cause is inferred. The verifier now reports each
+check separately with only normalized integers, result count, booleans, and
+fixed invalid markers; it discards Prometheus labels and never prints raw
+readback JSON, URLs, or credentials. Rerun the verifier through Semaphore to
+collect the specific live result before changing configuration.
+
+The production active-alert delivery drill, Semaphore task 1786, also succeeded
+at the same merged revision: the rule fired, a matching Discord receipt was
+observed, the temporary target was removed, all o11y rules and the contact
+remained present, and the recovery marker cleared. This confirms the alert drill
+path only; it does not resolve the separate budget readback failure.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
