@@ -71,7 +71,8 @@ def _run(tmp_path: Path, methods: str, sshd: str = LOCKED, check: bool = False):
                 "vars": {"ansible_user": "tester", "ansible_host": "192.0.2.10",
                          "service_name": "svc", "ansible_become": False,
                          # the probe runs inside the key block; stand in for its result
-                         "_verify_key": {"known_hosts": str(tmp_path / "known_hosts")}},
+                         "_verify_key": {"known_hosts": str(tmp_path / "known_hosts")},
+                         "_verify_pin": {"pinned": True, "addr": "192.0.2.10", "port": 22}},
                 "tasks": tasks}]
     (tmp_path / "bin").mkdir()
     for name, body in (("ssh", SSH_STUB), ("sshd", SSHD_STUB)):

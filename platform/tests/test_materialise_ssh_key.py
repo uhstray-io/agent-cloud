@@ -21,15 +21,51 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import test_check_mode_contract as check_mode_contract
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
 MATERIALISE = "tasks/materialise-ssh-key.yml"
 REMOVE = "tasks/remove-ssh-key.yml"
+PIN = "tasks/pin-ssh-host-key.yml"
 # Multi-line like a real key, with no key framing (the secret gates rightly refuse one).
 KEY = "STUB-KEY-MATERIAL-line-1\nSTUB-KEY-MATERIAL-line-2\nSTUB-KEY-MATERIAL-line-3"
 HOSTKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStubHostKey root@target"
+
+# The harness runs these tasks FOR REAL on the developer's machine, and `~` there is the
+# developer's home (the local connection expands it through the account, not $HOME). So
+# before any run, every file write in the lifted section and in the shared tasks must
+# target the runner scratch — the same closed rule the check-mode guard applies. A mutation
+# or a regression that aims a write elsewhere is refused here instead of executed
+# (docs/MISTAKES.md 3.9: a mutation run once overwrote the real ~/.ssh/known_hosts).
+SHARED = [MATERIALISE, REMOVE, PIN]
+
+
+def _stray_writes(tasks, rel=None) -> list[str]:
+    stray = []
+
+    def walk(items):
+        for task in items or []:
+            if not isinstance(task, dict):
+                continue
+            module, args = check_mode_contract._file_write(task)
+            if module and not check_mode_contract._in_runner_scratch(
+                    module, args, rel, check_mode_contract._scratch_result_vars()):
+                stray.append(f"{rel or 'section'}: {task.get('name')}")
+            for key in ("block", "rescue", "always"):
+                walk(task.get(key))
+
+    walk(tasks)
+    return stray
+
+
+def _refuse_real_writes(tasks):
+    stray = _stray_writes(tasks)
+    for shared in SHARED:
+        stray += _stray_writes(yaml.safe_load((PLAYBOOKS / shared).read_text()), f"platform/playbooks/{shared}")
+    assert not stray, f"refusing to run: these would write outside the runner scratch: {stray}"
+
 
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
@@ -94,23 +130,27 @@ def _section(playbook: str):
     path = PLAYBOOKS / playbook
     if playbook == "distribute-ssh-keys.yml":
         block = _named(path, "Test SSH key auth with a runner-local copy of the management key")
-        return [block], {"_mgmt_priv_key": KEY, "_ssh_user": "tester", "service_name": "svc",
-                         "ansible_host": "192.0.2.10"}, "_mgmt_key"
+        return [block], {"_mgmt_priv_key": KEY, "_ssh_user": "tester", "service_name": "svc"}, "_mgmt_key"
     if playbook == "harden-ssh.yml":
         block = _named(path, "Verify the lockdown with a runner-local copy of the management key")
-        return [block], {"_mgmt_priv_key": KEY, "ansible_user": "tester", "service_name": "svc",
-                         "ansible_host": "192.0.2.10"}, "_verify_key"
+        return [block], {"_mgmt_priv_key": KEY, "ansible_user": "tester", "service_name": "svc"}, "_verify_key"
     block = _named(path, "Key-only reachability probe")
     block = _replace(block, "Fetch the per-service private key from the secret store",
                      {"ansible.builtin.set_fact": {"_svc_key": KEY}})
-    block = _replace(block, "Read the target's own SSH host key over the existing connection",
-                     {"ansible.builtin.set_fact": {"_hostkey": {"stdout": HOSTKEY}}})
     return [block], {"_reach": {"rc": 0}, "_bao_url": "https://bao.example.test", "service_name": "svc",
                      "_target_addr": "192.0.2.10", "_target_user": "tester", "_target_port": 22}, "_probe_key"
 
 
-def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str):
+def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool = True, extra: dict | None = None):
     tasks, variables, result_var = _section(playbook)
+    variables = {**variables, **(extra or {})}
+    # The pin's raw read really runs (over the local connection); only the file it reads
+    # is a stand-in for the target's /etc/ssh host key.
+    hostkey = tmp_path / "ssh_host_ed25519_key.pub"
+    if host_key:
+        hostkey.write_text(HOSTKEY + "\n")
+    variables = {**variables, "ssh_host_key_files": [str(tmp_path / "absent.pub"), str(hostkey)]}
+    _refuse_real_writes(tasks)
     probe = {"ansible.builtin.debug": {"msg": "PROBE {{ " + result_var + " | to_json }}"}}
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
                 "tasks": [*tasks, probe]}]
@@ -125,7 +165,11 @@ def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", SSH_STUB=ssh, SSH_STUB_LOG=str(log),
                PATH=f"{tmp_path / 'bin'}:{env.get('PATH', '')}")
-    cmd = ["ansible-playbook", "-v", "-i", "localhost,", str(tmp_path / "h.yml")] + (["--check"] if check else [])
+    # ansible_host as an INVENTORY var, where real inventories put it: the playbooks read it
+    # through hostvars[inventory_hostname], which a play var does not reach.
+    (tmp_path / "inventory.ini").write_text("localhost ansible_connection=local ansible_host=192.0.2.10\n")
+    cmd = ["ansible-playbook", "-v", "-i", str(tmp_path / "inventory.ini"), str(tmp_path / "h.yml")] + (
+        ["--check"] if check else [])
     out = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True)
     calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     result = None
@@ -151,11 +195,13 @@ def test_key_section_probes_with_a_private_key_and_wipes_it(tmp_path, playbook, 
     assert (seen["key_mode"], seen["dir_mode"]) == ("0o600", "0o700"), seen
     assert result["materialised"] is True and seen["key"] == result["key"]
     assert not Path(result["dir"]).exists(), "the scratch directory survived the run"
-    if playbook == "verify-host-access.yml":
-        assert seen["known_hosts"] == "192.0.2.10 " + " ".join(HOSTKEY.split()[:2]) + "\n", seen
-    # No ssh call in these plays may record a host key in the runner's own known_hosts.
+    # Every ssh call trusts exactly the host key read over the Ansible connection, from the
+    # scratch file, and nothing in the runner's own known_hosts.
+    pinned = "192.0.2.10 " + " ".join(HOSTKEY.split()[:2]) + "\n"
     for call in calls:
         assert call.get("known_hosts_path") == result["known_hosts"], call
+        assert call.get("known_hosts") == pinned, call
+        assert "StrictHostKeyChecking=yes" in call["args"], call
     assert "STUB-KEY-MATERIAL" not in out.stdout + out.stderr
     # The scratch leaves nothing behind, so a dry run must not report it as a change.
     assert "changed=0" in out.stdout.rsplit("PLAY RECAP", 1)[1], out.stdout[-800:]
@@ -310,6 +356,24 @@ def test_every_ssh_call_uses_the_scratch_known_hosts(playbook):
     for argv in calls:
         files = [a.split("=", 1)[1] for a in argv if a.startswith("UserKnownHostsFile=")]
         assert len(files) == 1 and files[0].endswith(".known_hosts }}"), argv
+        checking = [a for a in argv if a.startswith("StrictHostKeyChecking=")]
+        assert checking == ["StrictHostKeyChecking=yes"], argv
+
+
+@pytest.mark.parametrize("playbook", CONVERTED)
+def test_the_host_key_is_pinned_by_the_shared_task_before_any_probe(playbook):
+    block = next(t for t in _tasks(PLAYBOOKS / playbook)
+                 if any(s.get("ansible.builtin.include_tasks") == MATERIALISE for s in t.get("block") or []))
+    steps = block["block"]
+    includes = [s.get("ansible.builtin.include_tasks") for s in steps]
+    assert PIN in includes, playbook
+    first_ssh = next(i for i, s in enumerate(steps) if "ansible.builtin.command" in s)
+    assert includes.index(MATERIALISE) < includes.index(PIN) < first_ssh, playbook
+    (pin,) = [s for s in steps if s.get("ansible.builtin.include_tasks") == PIN]
+    materialise = next(s for s in steps if s.get("ansible.builtin.include_tasks") == MATERIALISE)
+    assert pin["vars"]["ssh_key_result_var"] == materialise["vars"]["ssh_key_result_var"]
+    # only the shared task reads the host key; no third copy in a caller
+    assert "ssh_host_ed25519_key" not in (PLAYBOOKS / playbook).read_text(), playbook
 
 
 @needs_ansible
@@ -337,3 +401,37 @@ def test_materialise_and_remove_agree_on_the_temp_root():
     (wipe,) = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
     assert tmp["ansible.builtin.tempfile"]["path"] == wipe["vars"]["_rsk_root"]
     assert "(_rsk_dir | realpath | dirname) == _rsk_root" in wipe["when"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("playbook", CONVERTED)
+def test_no_readable_host_key_means_no_probe(tmp_path, playbook):
+    # An unpinned probe would have to trust whatever answers. Distribute and Harden refuse;
+    # the access gate reports it as NO-GO. Either way ssh is never run.
+    out, calls, _ = _run(tmp_path, playbook, check=False, ssh="ok", host_key=False)
+    assert [c for c in calls if "key" in c] == [], calls
+    if playbook == "verify-host-access.yml":
+        assert out.returncode == 0, out.stdout[-1500:]
+    else:
+        assert out.returncode != 0 and "Refusing" in out.stdout, out.stdout[-1500:]
+
+
+@needs_ansible
+def test_a_non_default_port_is_pinned_as_host_and_port(tmp_path):
+    out, calls, _ = _run(tmp_path, "verify-host-access.yml", check=True, ssh="ok", extra={"_target_port": 2222})
+    assert out.returncode == 0, out.stdout[-1500:]
+    (seen,) = [c for c in calls if "key" in c]
+    assert seen["known_hosts"] == "[192.0.2.10]:2222 " + " ".join(HOSTKEY.split()[:2]) + "\n", seen
+
+
+
+def test_the_harness_refuses_a_write_outside_the_scratch():
+    # Static: nothing is executed, so a failure of this guard cannot touch the machine.
+    ok = [{"ansible.builtin.copy": {"content": "x", "dest": "{{ _probe_key.known_hosts }}"},
+           "delegate_to": "localhost"}]
+    assert not _stray_writes(ok)
+    for dest in ("~/.ssh/known_hosts", "/etc/motd", "{{ _other.known_hosts }}"):
+        bad = [{"name": "w", "block": [{"name": "w", "ansible.builtin.copy": {"content": "x", "dest": dest},
+                                        "delegate_to": "localhost"}]}]
+        with pytest.raises(AssertionError, match="refusing to run"):
+            _refuse_real_writes(bad)

@@ -200,8 +200,8 @@
     # The key goes on disk only for the probe, via the shared task, and is wiped in
     # `always` — on a failed probe too. Under --check this still runs: the scratch is
     # runner-local (tasks/materialise-ssh-key.yml explains why that is allowed).
-    # accept-new records the host key in the scratch known_hosts, never the runner's
-    # own ~/.ssh/known_hosts, so neither a dry run nor a real one leaves it behind.
+    # The host key is pinned into the scratch known_hosts, never the runner's own
+    # ~/.ssh/known_hosts, so neither a dry run nor a real one leaves it behind.
     - name: "Test SSH key auth with a runner-local copy of the management key"
       block:
         - name: "Materialise the management key (runner-local, 0600)"
@@ -210,17 +210,36 @@
             ssh_key_content: "{{ _mgmt_priv_key }}"
             ssh_key_result_var: _mgmt_key
 
+        # StrictHostKeyChecking=yes against the host's own key, read over the Ansible
+        # connection this run already has (tasks/pin-ssh-host-key.yml says what that proves).
+        - name: "Pin the target's SSH host key read over the existing connection"
+          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+          vars:
+            ssh_key_result_var: _mgmt_key
+            ssh_host_key_result_var: _mgmt_pin
+            ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+            ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
+
+        - name: "Refuse an unpinned probe"
+          ansible.builtin.assert:
+            that: _mgmt_pin.pinned | bool
+            fail_msg: >-
+              Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
+              connection, so the ssh probe would have to trust whatever answers. Refusing.
+            quiet: true
+
         - name: "Test SSH key auth to host — {{ service_name }}"
           ansible.builtin.command:
             cmd: >
               ssh -i {{ _mgmt_key.key }}
                   -o BatchMode=yes
                   -o ConnectTimeout=10
-                  -o StrictHostKeyChecking=accept-new
+                  -o StrictHostKeyChecking=yes
                   -o UserKnownHostsFile={{ _mgmt_key.known_hosts }}
                   -o PasswordAuthentication=no
                   -o PubkeyAuthentication=yes
-                  {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
+                  -p {{ _mgmt_pin.port }}
+                  {{ _ssh_user }}@{{ _mgmt_pin.addr }}
                   echo KEY_AUTH_OK
           delegate_to: localhost
           register: _key_test

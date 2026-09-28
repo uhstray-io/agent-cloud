@@ -17,7 +17,7 @@ but under `check_mode: false` it runs for real. That is allowed only in the runn
 directory tasks/materialise-ssh-key.yml creates and tasks/remove-ssh-key.yml removes in the same
 run. The accepted paths are a CLOSED set: a materialise result's `dir`, `key` or `known_hosts`
 (result names read from the repo's own includes), plus the shared tasks' own expressions in
-their own files.
+their own files (materialise, remove, and pin-ssh-host-key.yml's known_hosts write).
 
 Guards on an enclosing block are inherited. Files still being retrofitted are listed in
 check_mode_allowlist.txt; a listed file that has become clean fails the test until its line is
@@ -59,10 +59,12 @@ FILE_WRITES = {"copy", "file", "tempfile", "lineinfile", "template", "blockinfil
                "assemble", "get_url", "unarchive"}
 MATERIALISE = "platform/playbooks/tasks/materialise-ssh-key.yml"
 REMOVE = "platform/playbooks/tasks/remove-ssh-key.yml"
+PIN = "platform/playbooks/tasks/pin-ssh-host-key.yml"
 # The shared tasks' own scratch expressions, each valid only in its own file.
 SCRATCH_INTERNAL = {
     MATERIALISE: {"{{ _msk_dir.path }}/id"},
     REMOVE: {"{{ _rsk_dir }}"},
+    PIN: {"{{ _pshk_kh }}"},
 }
 SCRATCH_RESULT_PATH = re.compile(r"^\{\{ (?P<var>\w+)\.(?:dir|key|known_hosts) \}\}$")
 

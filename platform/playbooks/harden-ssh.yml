@@ -107,9 +107,9 @@
     # probe then answers the question a dry run exists for — would the key still get in.
     # Key auth is checked FIRST: if it fails, the host is one step from a lockout and
     # that is the failure the operator needs to see. The password probe runs in this
-    # block too, only so both ssh calls share the scratch known_hosts (accept-new
-    # records the host key there, never in the runner's ~/.ssh/known_hosts); it reads
-    # no key and decides nothing — the decision is after the block.
+    # block too, only so both ssh calls share the scratch known_hosts holding the
+    # pinned host key (never the runner's ~/.ssh/known_hosts); it reads no key and
+    # decides nothing — the decision is after the block.
     - name: "Verify the lockdown with a runner-local copy of the management key"
       become: false
       block:
@@ -119,15 +119,34 @@
             ssh_key_content: "{{ _mgmt_priv_key }}"
             ssh_key_result_var: _verify_key
 
+        # StrictHostKeyChecking=yes against the host's own key, read over the Ansible
+        # connection this run already has (tasks/pin-ssh-host-key.yml says what that proves).
+        - name: "Pin the target's SSH host key read over the existing connection"
+          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+          vars:
+            ssh_key_result_var: _verify_key
+            ssh_host_key_result_var: _verify_pin
+            ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+            ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
+
+        - name: "Refuse an unpinned probe"
+          ansible.builtin.assert:
+            that: _verify_pin.pinned | bool
+            fail_msg: >-
+              Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
+              connection, so the ssh probe would have to trust whatever answers. Refusing.
+            quiet: true
+
         - name: "Verify key auth still works"
           ansible.builtin.command:
             cmd: >
               ssh -i {{ _verify_key.key }}
                   -o BatchMode=yes -o ConnectTimeout=10
-                  -o StrictHostKeyChecking=accept-new
+                  -o StrictHostKeyChecking=yes
                   -o UserKnownHostsFile={{ _verify_key.known_hosts }}
                   -o PasswordAuthentication=no -o PubkeyAuthentication=yes
-                  {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
+                  -p {{ _verify_pin.port }}
+                  {{ ansible_user }}@{{ _verify_pin.addr }}
                   echo KEY_AUTH_OK
           delegate_to: localhost
           become: false
@@ -146,14 +165,16 @@
               - -o
               - ConnectTimeout=10
               - -o
-              - StrictHostKeyChecking=accept-new
+              - StrictHostKeyChecking=yes
               - -o
               - PubkeyAuthentication=no
               - -o
               - PreferredAuthentications=password,keyboard-interactive
               - -o
               - "UserKnownHostsFile={{ _verify_key.known_hosts }}"
-              - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
+              - -p
+              - "{{ _verify_pin.port }}"
+              - "{{ ansible_user }}@{{ _verify_pin.addr }}"
               - echo SHOULD_NOT_REACH
           delegate_to: localhost
           become: false

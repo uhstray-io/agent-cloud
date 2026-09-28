@@ -79,6 +79,7 @@ supersede it with a new entry and link both.
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
+| 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | Test: harness refuses to run a section with any write outside the runner scratch (mutation-proven) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1720,6 +1721,43 @@ after the POST stops the task if the server did not record check mode, as a trip
 since Semaphore starts a task on creation (review of PR #220).
 `platform/tests/test_semaphore_launch.py` fails if the flag is ever sent at the top level, and
 covers the version gate, undeclared survey fields, a busy template and the tripwire.
+
+### 3.9 A mutation test overwrote the operator's real `~/.ssh/known_hosts`
+
+**What happened.** On 2026-09-28, while mutation-checking the shared SSH host-key pin
+(`platform/playbooks/tasks/pin-ssh-host-key.yml`), one mutation changed the pin's
+known_hosts `dest` from the scratch path to `~/.ssh/known_hosts`, to prove the tests catch a
+write to the runner's own file. They did catch it, but only after running it:
+`platform/tests/test_materialise_ssh_key.py` executes each playbook's key section FOR REAL
+on the developer's machine (`connection: local`, `check_mode: false` scratch writes), so the
+mutated copy task wrote the stub pin line over `/Users/stray/.ssh/known_hosts` at 17:27:59.
+The file went from its real contents to 67 bytes (`[192.0.2.10]:2222 ssh-ed25519 ...Stub...`).
+The only other copy found was `~/.ssh/known_hosts.old` (11,783 bytes, 2026-09-22). No APFS
+local snapshot existed and the Time Machine destination was not mounted. The file was left
+as found for the operator to decide on restoring; nothing else under `~/.ssh` changed.
+A first fix set `HOME` to the test directory. Its own proof test wrote its harmless probe
+file into the REAL home, which showed that the local connection expands `~` through the
+account, not `$HOME`. That fix was withdrawn and the probe file removed.
+
+**Root cause.** A test harness that runs playbook tasks for real on a workstation had no
+boundary between "the scratch this code is supposed to write" and "anywhere a changed task
+points". Mutation testing exists to change the code under test, so any write path in the
+executed section could be redirected to live state. The static check-mode guard would have
+refused the same mutation without executing anything, but the behavioural tests ran first.
+
+**The rule.** A test that executes playbook tasks on the developer's machine proves,
+statically and before running, that every file write in what it executes targets the
+scratch it owns, and refuses to run otherwise. A mutation never redirects a write to a real
+path while a harness can execute it. `$HOME` is not a sandbox for Ansible's local
+connection.
+
+**Enforced by.** Test. `_refuse_real_writes` in `platform/tests/test_materialise_ssh_key.py`
+applies the check-mode guard's closed runner-scratch rule (`_file_write`,
+`_in_runner_scratch` in `platform/tests/test_check_mode_contract.py`) to the lifted section
+and every shared task file before each ansible run.
+`test_the_harness_refuses_a_write_outside_the_scratch` covers it statically. Re-running the
+same mutation afterwards turned the tests red by refusal, and a checksum of the real
+`~/.ssh/known_hosts` was identical before and after the whole mutation set.
 
 ## 4. Data handling
 

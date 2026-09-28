@@ -194,43 +194,20 @@
         # StrictHostKeyChecking=accept-new, an on-path server could impersonate
         # the inventory host, accept our public key, and make the probe report
         # success — so the gate would prove key auth against an attacker while
-        # the real host has none. Reading the host's own public key over the
-        # ALREADY-ESTABLISHED Ansible connection roots the probe's trust in the
-        # same channel Ansible is already using, rather than in whatever answers
-        # on the network. (That channel is only as trustworthy as the connection
-        # itself — but it is strictly better than trusting an unknown key, and it
-        # is the strongest root available before the host is hardened.)
-        - name: "Read the target's own SSH host key over the existing connection"
-          ansible.builtin.raw: "cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || cat /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || true"
-          register: _hostkey
-          delegate_to: "{{ inventory_hostname }}"
-          changed_when: false
-          failed_when: false
-          check_mode: false
+        # the real host has none. The shared task reads the host's own public key
+        # over the ALREADY-ESTABLISHED Ansible connection and writes it into the
+        # scratch known_hosts; it explains what that pin does and does not prove.
+        - name: "Pin the target's SSH host key read over the existing connection"
+          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+          vars:
+            ssh_key_result_var: _probe_key
+            ssh_host_key_result_var: _probe_pin
+            ssh_host_key_addr: "{{ _target_addr }}"
+            ssh_host_key_port: "{{ _target_port }}"
 
         - name: "Record whether the host key was readable"
           ansible.builtin.set_fact:
-            _hostkey_ok: "{{ ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2 }}"
-
-        - name: "Write a known_hosts pinned to that key"
-          ansible.builtin.copy:
-            # OpenSSH keys a non-default port as [host]:port. Writing the bare
-            # host for such a target means the pin never matches and
-            # StrictHostKeyChecking=yes refuses the connection — another false
-            # NO-GO, from the opposite direction.
-            content: "{{ _kh_host }} {{ (_hostkey.stdout | default('') | trim).split(' ')[0] }} {{ (_hostkey.stdout | default('') | trim).split(' ')[1] }}\n"
-            dest: "{{ _probe_key.known_hosts }}"
-            mode: "0600"
-          # Runner-local scratch inside the key's directory, wiped with it. A simulated
-          # write here would leave the probe no pin to check against under --check.
-          check_mode: false
-          changed_when: false
-          vars:
-            _kh_host: "{{ _target_addr if ((_target_port | int) == 22) else ('[' ~ _target_addr ~ ']:' ~ _target_port) }}"
-          when:
-            - _svc_key | length > 0
-            - _probe_key.materialised | default(false) | bool
-            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+            _hostkey_ok: "{{ _probe_pin.pinned | default(false) | bool }}"
 
         - name: "Connect using the key ONLY — password auth refused, host key pinned"
           ansible.builtin.command:
@@ -270,7 +247,7 @@
           when:
             - _svc_key | length > 0
             - _probe_key.materialised | default(false) | bool
-            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+            - _probe_pin.pinned | default(false) | bool
             # An empty user would template to "@host" and fail as an ARGUMENT
             # error rather than a probe failure — indistinguishable from an abort.
             - (_target_user | default('') | trim | length) > 0

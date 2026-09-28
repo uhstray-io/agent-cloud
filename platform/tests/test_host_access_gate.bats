@@ -99,8 +99,11 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   grep -qF -- "StrictHostKeyChecking=yes" "$BATS_TEST_TMPDIR/probe.txt"
   ! grep -qF -- "accept-new" "$BATS_TEST_TMPDIR/probe.txt"
   grep -qF -- "UserKnownHostsFile=" "$BATS_TEST_TMPDIR/probe.txt"
-  # And the pin must be derived from the host over the existing connection.
-  grep -qE 'Read the target.s own SSH host key over the existing connection' "$PB"
+  # And the pin must be derived from the host over the existing connection, by the
+  # shared task Distribute SSH Keys and Harden SSH use too.
+  grep -qF -- 'ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml' "$PB"
+  grep -qE "read the target's own host key over the existing connection" \
+    "$REPO_ROOT/platform/playbooks/tasks/pin-ssh-host-key.yml"
 }
 
 @test "verify-host-access: the ssh task cannot run with an undefined key path" {
@@ -121,8 +124,12 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   [ -s "$BATS_TEST_TMPDIR/cleanup.txt" ]
   grep -qF -- "ansible.builtin.include_tasks: tasks/remove-ssh-key.yml" "$BATS_TEST_TMPDIR/cleanup.txt"
   grep -qF -- "ssh_key_result_var: _probe_key" "$BATS_TEST_TMPDIR/cleanup.txt"
-  # The pin must be written INTO that directory, or the wipe misses it.
-  grep -qF -- 'dest: "{{ _probe_key.known_hosts }}"' "$PB"
+  # The pin must be written INTO that directory, or the wipe misses it: the shared pin
+  # task writes the materialised result's known_hosts, and is handed this probe's key.
+  grep -qF -- "_pshk_kh: \"{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}\"" \
+    "$REPO_ROOT/platform/playbooks/tasks/pin-ssh-host-key.yml"
+  awk '/Pin the target.s SSH host key/{f=1} f&&/Record whether the host key/{exit} f' "$PB" \
+    | grep -qF -- "ssh_key_result_var: _probe_key"
 }
 
 @test "verify-host-access: the verdict itself gates on the key probe" {
@@ -223,34 +230,30 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
 @test "verify-host-access: known_hosts uses the [host]:port form off port 22" {
   # OpenSSH keys a non-default port as [host]:port. A bare host entry would never
   # match, so StrictHostKeyChecking=yes would refuse — a false NO-GO from the
-  # opposite direction.
-  #
-  # Asserted on the CONTENT line itself, not on the block: the _kh_host variable
-  # definition survives even if content: stops using it, so a looser check passed
-  # a mutation that swapped content: back to the bare address. Found by mutation-
-  # testing this very assertion.
-  # Select the known_hosts content line specifically. A plain `head -1` grabs the
-  # KEY-MATERIAL task's content line instead — which is how an earlier version of
-  # this test passed against the correct file for the wrong reason.
+  # opposite direction. The pin now lives in the shared task; assert on ITS content
+  # line, not on the block: a variable definition survives even if content: stops
+  # using it (found by mutation-testing the earlier version of this assertion).
+  local pin="$REPO_ROOT/platform/playbooks/tasks/pin-ssh-host-key.yml"
   local content_line
-  content_line=$(grep -E '^            content: .*_hostkey\.stdout' "$PB" | head -1)
+  content_line=$(grep -E '^    content: .*_pshk_fields' "$pin" | head -1)
   [ -n "$content_line" ]
   case "$content_line" in
-    *'{{ _kh_host }}'*) ;;
-    *) echo "known_hosts content does not use _kh_host: $content_line"; return 1 ;;
+    *'{{ _pshk_host }}'*) ;;
+    *) echo "known_hosts content does not use _pshk_host: $content_line"; return 1 ;;
   esac
-  # And _kh_host must actually switch on the port.
   local kh_def
-  kh_def=$(grep -E '^            _kh_host: ' "$PB" | head -1)
+  kh_def=$(awk '/^    _pshk_host: /{f=1;next} f&&/^    [a-z_]+:/{exit} f' "$pin")
   [ -n "$kh_def" ]
   case "$kh_def" in
-    *"(_target_port | int) == 22"*) ;;
-    *) echo "_kh_host does not switch on the port: $kh_def"; return 1 ;;
+    *"(_pshk_pin.port | int) == 22"*) ;;
+    *) echo "_pshk_host does not switch on the port: $kh_def"; return 1 ;;
   esac
   case "$kh_def" in
     *"']:'"*) ;;
-    *) echo "_kh_host does not build the [host]:port form: $kh_def"; return 1 ;;
+    *) echo "_pshk_host does not build the [host]:port form: $kh_def"; return 1 ;;
   esac
+  # And this gate hands the pin the port its probe connects to.
+  grep -qF -- 'ssh_host_key_port: "{{ _target_port }}"' "$PB"
 }
 
 @test "templates: every Phase 1 step has a dev variant" {
