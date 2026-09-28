@@ -4,13 +4,13 @@
   "panels": [
     {
       "id": 1,
-      "title": "O11y components up (expected 4)",
+      "title": "O11y components up (expected 5)",
       "type": "stat",
-      "description": "Prometheus, Grafana, Loki, and Alloy self scrapes. A missing target lowers the count.",
+      "description": "Prometheus, Grafana, Loki, Alloy, and Tempo self scrapes. A missing target lowers the count.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "min": 0, "max": 4, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 3 }, { "color": "green", "value": 4 }] } }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy\"})", "instant": true }]
+      "fieldConfig": { "defaults": { "min": 0, "max": 5, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 4 }, { "color": "green", "value": 5 }] } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo\"})", "instant": true }]
     },
     {
       "id": 2,
@@ -42,7 +42,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
       "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 5,
@@ -52,7 +52,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 6,
@@ -78,11 +78,42 @@
       "id": 8,
       "title": "O11y process memory",
       "type": "timeseries",
-      "description": "Resident memory for all four o11y processes; compare trends with data volume.",
+      "description": "Resident memory for all five o11y processes; compare trends with data volume.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_resident_memory_bytes{job=~\"prometheus|grafana|loki|alloy\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_resident_memory_bytes{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
+    },
+    {
+      "id": 9,
+      "title": "Tempo spans / sec",
+      "type": "timeseries",
+      "description": "Incoming trace volume at Tempo's distributor. A quiet gateway can legitimately leave this at zero.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(tempo_distributor_spans_received_total{job=\"tempo\"}[5m])) or vector(0)" }]
+    },
+    {
+      "id": 10,
+      "title": "Tempo trace bytes / sec",
+      "type": "timeseries",
+      "description": "Received span payload volume; compare with retention and available receiver disk.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(tempo_distributor_bytes_received_total{job=\"tempo\"}[5m])) or vector(0)" }]
+    },
+    {
+      "id": 11,
+      "title": "Prometheus uptime",
+      "type": "stat",
+      "description": "Adapted from the original o11y Docker/Prometheus dashboard; time since the current Prometheus process started.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": { "colorMode": "none" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "time() - process_start_time_seconds{job=\"prometheus\"}", "instant": true }]
     }
   ],
   "schemaVersion": 39,

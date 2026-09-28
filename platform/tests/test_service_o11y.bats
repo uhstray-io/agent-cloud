@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Structural tests for the o11y stack (platform/services/o11y/deployment).
-# Verifies the composable shape: env-parameterized 4-service compose, pinned
+# Verifies the composable shape: env-parameterized compose, pinned
 # images, healthchecks, container-only deploy.sh (no secret gen), committed
 # config-as-code (Prometheus/Loki/Alloy/Grafana provisioning) + a valid
 # dashboard, and an overlay-safe local profile.
@@ -852,11 +852,12 @@ import yaml
 deploy = pathlib.Path(sys.argv[1])
 scrapes = yaml.safe_load((deploy / 'config/prometheus.yml').read_text())['scrape_configs']
 jobs = {job['job_name']: job['static_configs'][0]['targets'] for job in scrapes}
-assert {key: jobs[key] for key in ('prometheus', 'grafana', 'loki', 'alloy')} == {
+assert {key: jobs[key] for key in ('prometheus', 'grafana', 'loki', 'alloy', 'tempo')} == {
     'prometheus': ['localhost:9090'],
     'grafana': ['grafana:3000'],
     'loki': ['loki:3100'],
     'alloy': ['alloy:12345'],
+    'tempo': ['tempo:3200'],
 }
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
@@ -869,9 +870,11 @@ assert all(panels[panel_id]['options']['colorMode'] == 'none' for panel_id in (2
 expressions = '\n'.join(target['expr'] for panel in dashboard['panels'] for target in panel['targets'])
 for metric in ('up{', 'prometheus_tsdb_head_series', 'scrape_samples_scraped',
                'loki_distributor_bytes_received_total', 'loki_distributor_lines_received_total',
-               'alloy_component_controller_running_components'):
+               'alloy_component_controller_running_components',
+               'tempo_distributor_spans_received_total', 'tempo_distributor_bytes_received_total',
+               'process_start_time_seconds'):
     assert metric in expressions, metric
-assert expressions.count('or vector(0)') == 2
+assert expressions.count('or vector(0)') == 4
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 names = {task['name'] for task in verify['tasks']}
@@ -879,6 +882,89 @@ assert 'Verify Grafana can query its provisioned data sources' in names
 assert 'Require the committed self-monitoring dashboard to be active' in names
 health = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana can query its provisioned data sources')
 assert 'curl -sS --config -' in health['ansible.builtin.command']['argv'][5]
+PY
+}
+
+@test "o11y: agentgateway dashboard uses the declared scrape and documented traffic metrics" {
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import json
+import pathlib
+import sys
+import yaml
+
+deploy = pathlib.Path(sys.argv[1])
+dashboard = json.loads((deploy / 'config/grafana/dashboards/agentgateway-traffic.json').read_text())
+assert dashboard['uid'] == 'agentgateway-traffic'
+assert len(dashboard['panels']) == 8
+assert all(panel['datasource']['uid'] == 'prometheus' for panel in dashboard['panels'])
+queries = '\n'.join(target['expr'] for panel in dashboard['panels'] for target in panel['targets'])
+for metric in ('up{job="agentgateway"}', 'agentgateway_config_synchronized',
+               'agentgateway_requests_total', 'agentgateway_request_duration_seconds_bucket',
+               'agentgateway_gen_ai_client_token_usage_sum',
+               'agentgateway_gen_ai_server_time_to_first_token_bucket'):
+    assert metric in queries, metric
+assert 'or vector(0)' not in queries
+plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
+names = {task['name'] for task in verify['tasks']}
+assert 'Read the provisioned agentgateway traffic dashboard' in names
+assert 'Require the committed agentgateway traffic dashboard to be active' in names
+PY
+}
+
+@test "o11y: private Alloy OTLP input has a bounded persistent Tempo consumer" {
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import pathlib
+import sys
+import yaml
+
+deploy = pathlib.Path(sys.argv[1])
+compose = yaml.safe_load((deploy / 'compose.yml').read_text())
+assert compose['services']['tempo']['image'].endswith('grafana/tempo:2.10.8}')
+assert 'tempo-data:/var/tempo' in compose['services']['tempo']['volumes']
+assert not compose['services']['tempo'].get('ports')
+assert list(compose['services']['tempo']['environment']) == ['O11Y_TEMPO_RETENTION']
+assert '${O11Y_OTLP_BIND:-127.0.0.1}' in compose['services']['alloy']['ports'][0]
+tempo = yaml.safe_load((deploy / 'config/tempo-config.yml').read_text())
+assert tempo['storage']['trace']['backend'] == 'local'
+assert tempo['compactor']['compaction']['block_retention'] == '${O11Y_TEMPO_RETENTION:-168h}'
+alloy = (deploy / 'config/config.alloy').read_text()
+assert 'otelcol.receiver.otlp "traces"' in alloy
+assert 'otelcol.processor.attributes.gateway_logs.input' in alloy
+assert 'otelcol.exporter.loki "gateway"' in alloy
+assert 'loki.attribute.labels' in alloy
+assert 'otelcol.processor.batch.traces.input' in alloy
+assert 'otelcol.exporter.otlp.tempo.input' in alloy
+assert 'endpoint = "tempo:4317"' in alloy
+datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())['datasources']
+assert {d['uid'] for d in datasources} == {'prometheus', 'loki', 'tempo'}
+assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in datasources)
+plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+verify = next(p for p in plays if p.get('name') == 'Phase 3: Verify o11y')
+assert any(t['name'] == 'Tempo ready (/ready) through the private compose network' for t in verify['tasks'])
+PY
+}
+
+@test "o11y: service receipt can require a real Tempo trace without assuming remote logs" {
+  python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-service.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+inputs = plays[0]['tasks'][-1]['ansible.builtin.assert']['that']
+assert any('expect_logs' in item for item in inputs)
+assert any('expect_traces' in item for item in inputs)
+tasks = plays[1]['tasks']
+logs = next(t for t in tasks if t['name'] == 'Query recent Loki logs for the service')
+traces = next(t for t in tasks if t['name'] == 'Search recent Tempo traces for the service')
+require = next(t for t in tasks if t['name'] == 'Require a recent trace returned by Tempo')
+assert logs['when'] == "expect_logs | default('true') | bool"
+assert traces['when'] == "expect_traces | default('false') | bool"
+assert 'service.name=' in traces['ansible.builtin.command']['argv'][-1]
+assert 'tempo:3200/api/search' in traces['ansible.builtin.command']['argv'][-1]
+assert require['when'] == "expect_traces | default('false') | bool"
+templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
+service = next(t for t in templates if t['name'] == 'Verify o11y Service')
+assert {v['name'] for v in service['survey_vars']} >= {'expect_logs', 'expect_traces'}
 PY
 }
 

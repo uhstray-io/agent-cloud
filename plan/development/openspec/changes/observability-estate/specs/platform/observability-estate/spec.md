@@ -52,6 +52,22 @@ The platform SHALL enable trace ingestion only after the metrics, alert delivery
 - **WHEN** the operator requests trace deployment before those gates are recorded as passed
 - **THEN** the deployment refuses to enable the trace receiver and reports the missing gate
 
+#### Scenario: Agentgateway trace reaches Tempo
+- **WHEN** the reviewed gateway sends a sampled request through its declared OTLP endpoint
+- **THEN** Alloy forwards the span to Tempo and the access record to Loki with the same stable service identity
+- **AND** Grafana can pivot from the trace to service logs and metrics, and the receiver is not considered ready before real metrics, logs, and a trace are read back
+
+### Requirement: Imported observability dashboards have live sources
+The platform SHALL provision an agentgateway dashboard from the standalone metric contract and SHALL migrate original o11y dashboard content only when its referenced backend and exporters are deployed. Provisioned dashboards MUST use stable data-source UIDs and retained queryable metric names.
+
+#### Scenario: Agentgateway traffic is visible
+- **WHEN** a production gateway request completes and its metrics are scraped
+- **THEN** the provisioned dashboard displays request and LLM activity from that target, or names the missing required series during verification
+
+#### Scenario: Legacy dashboard requires an absent backend
+- **WHEN** a dashboard from the original o11y repository requires Mimir or an undeployed exporter
+- **THEN** its migration is recorded as deferred rather than provisioning an empty or misleading dashboard
+
 ### Requirement: Local validation uses the proposed revision
 The platform SHALL validate the exact proposed revision through an isolated local Semaphore repository/template binding without repointing the shared worktree binding. Grafana SHALL complete an Authentik sign-in through the chain-verified TLS route before local acceptance.
 

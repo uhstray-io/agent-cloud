@@ -330,6 +330,7 @@ _render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
   gather_facts: false
   vars:
     $flag
+    agw_otlp_host: "${2:-}"
     agw_clients: [stray]
     agw_models: [{name: m}]
     agw_upstream_base_url: "http://upstream.invalid:8000/v1"
@@ -339,6 +340,44 @@ _render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
     - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/env.j2", dest: "$BATS_TEST_TMPDIR/env", mode: "0600"}
 YML
   ansible-playbook -i localhost, -c local "$play" >/dev/null
+}
+
+@test "agentgateway: optional OTLP policy has bounded sampling and stable service identity" {
+  _render_ui false receiver.test:4317
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert 'tracing' not in config['config']
+tracing = config['frontendPolicies']['tracing']
+assert tracing['host'] == 'receiver.test:4317'
+assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
+assert tracing['resources']['service.name'] == '"agentgateway"'
+access = config['frontendPolicies']['accessLog']['otlp']
+assert access['host'] == 'receiver.test:4317'
+assert access['fields']['add']['service'] == '"agentgateway"'
+PY
+  _render_ui false
+  refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
+}
+
+@test "agentgateway: trace rollout gate runs before OpenBao and deploy" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage agentgateway secrets')
+tasks = phase['tasks']
+names = [task['name'] for task in tasks]
+gate = names.index("Require the receiver's alert rollout gate before gateway tracing")
+assert gate < names.index('Refuse a cleartext OpenBao endpoint')
+assert gate < names.index('Manage secrets and render env + config')
+assert names.index("Require the declared receiver's Tempo to answer before gateway tracing") < names.index('Manage secrets and render env + config')
+assert names.index("Require the gateway host to reach Alloy's declared OTLP listener") < names.index('Manage secrets and render env + config')
+metric = next(task for task in tasks if task['name'] == "Read the receiver's named gateway metric before gateway tracing")
+assert metric['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
+assert 'agentgateway_config_synchronized' in metric['ansible.builtin.command']['argv'][-1]
+PY
 }
 
 @test "agentgateway: UI on by default — listener, OIDC policy, playground route, OIDC env" {

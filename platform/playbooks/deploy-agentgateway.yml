@@ -26,7 +26,7 @@
 #   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
 #   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
 #                                        false makes the key optional (still sent when present)
-#   agw_otlp_endpoint      (optional) Alloy OTLP receiver on the o11y host
+#   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 
@@ -99,6 +99,77 @@
       ansible.builtin.assert:
         that: not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)
         fail_msg: "agw_plaintext_keys renders raw client keys into config.yaml; it is only allowed with local_mode: true."
+
+    - name: "Require a declared o11y receiver for agentgateway tracing"
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length == 1
+          - agw_otlp_host is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$')
+          - agw_otlp_host == (hostvars[groups['o11y_svc'][0]].o11y_otlp_bind | default('')) ~ ':' ~ (hostvars[groups['o11y_svc'][0]].o11y_otlp_port | default(4317) | string)
+          - agw_trace_sampling | default(0.05) | float > 0
+          - agw_trace_sampling | default(0.05) | float <= 0.1
+        fail_msg: "Gateway tracing needs the declared o11y OTLP listener and sampling in (0, 0.1]."
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Require the receiver's alert rollout gate before gateway tracing"
+      ansible.builtin.assert:
+        that:
+          - hostvars[groups['o11y_svc'][0]].o11y_alerts_enabled | default(false) | bool
+          - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
+        fail_msg: "Enable and verify o11y alerts and agentgateway metrics before exporting traces."
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Require the declared receiver's Tempo to answer before gateway tracing"
+      ansible.builtin.command:
+        argv:
+          - "{{ hostvars[groups['o11y_svc'][0]].container_engine | default('podman') }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - /dev/null
+          - http://tempo:3200/ready
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      changed_when: false
+      check_mode: false
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Require the gateway host to reach Alloy's declared OTLP listener"
+      ansible.builtin.wait_for:
+        host: "{{ agw_otlp_host.split(':')[0] }}"
+        port: "{{ agw_otlp_host.split(':')[1] | int }}"
+        timeout: 5
+        state: started
+      changed_when: false
+      check_mode: false
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Read the receiver's named gateway metric before gateway tracing"
+      ansible.builtin.command:
+        argv:
+          - "{{ hostvars[groups['o11y_svc'][0]].container_engine | default('podman') }}"
+          - exec
+          - o11y-prometheus
+          - wget
+          - -q
+          - -O
+          - '-'
+          - 'http://127.0.0.1:9090/api/v1/query?query=agentgateway_config_synchronized%7Bjob%3D%22agentgateway%22%7D'
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      register: _gateway_metric_gate
+      changed_when: false
+      check_mode: false
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Refuse tracing without a healthy named gateway series"
+      ansible.builtin.assert:
+        that:
+          - (_gateway_metric_gate.stdout | from_json).status == 'success'
+          - (_gateway_metric_gate.stdout | from_json).data.result | length == 1
+          - (_gateway_metric_gate.stdout | from_json).data.result[0].value[1] == '1'
+        fail_msg: "The receiver has no healthy agentgateway_config_synchronized series; tracing remains disabled."
+      when: agw_otlp_host | default('') | length > 0
 
     # The AppRole secret_id, the token OpenBao returns and every secret read cross
     # this connection — refuse a public cleartext endpoint before any of it is sent.

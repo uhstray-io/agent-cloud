@@ -1,4 +1,4 @@
-# Observability stack — Grafana + Prometheus + Loki + Grafana Alloy.
+# Observability stack — Grafana + Prometheus + Loki + Alloy + Tempo.
 # Podman-compatible compose. Plan: plan/development/O11Y-DEPLOYMENT.md.
 #
 # Ansible's deploy-o11y.yml templates .env (the Grafana admin password from
@@ -73,6 +73,12 @@ services:
     depends_on:
       loki:
         condition: service_healthy
+      tempo:
+        condition: service_started
+    ports:
+      # The production bind is a private interface declared in site-config;
+      # local defaults to loopback. Firewall policy admits only named senders.
+      - "${O11Y_OTLP_BIND:-127.0.0.1}:${O11Y_OTLP_PORT:-4317}:4317"
     healthcheck:
       # The alloy image ships no wget/curl/nc — only bash. A /dev/tcp connect to
       # the HTTP server port (12345, set via --server.http.listen-addr) proves the
@@ -82,6 +88,18 @@ services:
       timeout: 5s
       retries: 8
       start_period: 20s
+
+  tempo:
+    image: ${O11Y_TEMPO_IMAGE:-docker.io/grafana/tempo:2.10.8}
+    container_name: o11y-tempo
+    restart: always
+    command: ["-target=all", "-config.file=/etc/tempo/config.yml", "-config.expand-env=true"]
+    environment:
+      O11Y_TEMPO_RETENTION: ${O11Y_TEMPO_RETENTION:-168h}
+    volumes:
+      - ./config/tempo-config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    networks: [o11y]
 
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
@@ -106,6 +124,8 @@ services:
         condition: service_healthy
       loki:
         condition: service_healthy
+      tempo:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
       interval: 15s
@@ -121,3 +141,4 @@ volumes:
   prometheus-data:
   loki-data:
   grafana-data:
+  tempo-data:

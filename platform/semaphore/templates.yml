@@ -69,6 +69,18 @@ templates:
         type: string
         required: false
         default_value: "true"
+      - name: expect_logs
+        title: "Expect recent logs"
+        description: "true when this service ships a named Loki log stream"
+        type: string
+        required: false
+        default_value: "true"
+      - name: expect_traces
+        title: "Expect recent traces"
+        description: "true to require a service.name trace in Tempo from the last hour"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml

@@ -33,6 +33,10 @@ services:
     # compatible). Read-only; label=disable for the VM SELinux.
     volumes:
       - /run/podman/podman.sock:/var/run/docker.sock:ro
+  tempo:
+    mem_limit: 384m
+    security_opt:
+      - label=disable
   grafana:
     mem_limit: 256m
     security_opt:
