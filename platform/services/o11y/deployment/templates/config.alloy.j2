@@ -123,7 +123,7 @@ prometheus.relabel "bounded_labels" {
   // series labels. Keep bounded service and component labels intact.
   rule {
     action = "labeldrop"
-    regex  = "(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)"
+    regex  = {{ _o11y_forbidden_metric_label_names_regex | to_json }}
   }
 }
 

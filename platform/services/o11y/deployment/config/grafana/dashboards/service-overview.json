@@ -16,7 +16,7 @@
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "sum(rate({service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" } ]
+      "targets": [ { "refId": "A", "expr": "sum by (service) (rate({service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" } ]
     },
     {
       "title": "Recent service logs",

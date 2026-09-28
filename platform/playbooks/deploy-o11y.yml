@@ -64,6 +64,11 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
+    # Shared by Alloy and every Prometheus scrape job. Drop known sensitive or
+    # request-specific label names while retaining declared bounded dimensions
+    # such as service, identity, model, status, device, and GPU labels.
+    _o11y_forbidden_metric_label_names_regex: >-
+      (?i)(^|_)(request_id|requestid|user_id|userid|client_id|clientid|session_id|sessionid|trace_id|traceid|span_id|spanid|email|api_key|apikey|access_token|refresh_token|token_value|token_id|password|secret|authorization|cookie|prompt|prompt_text|raw_path|path|http_target|address|remote_addr|remote_address|source_ip|client_ip|timestamp|url|uri|query|query_text)(_|$)
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -398,6 +403,7 @@
             curl -fsS --config - http://127.0.0.1:3000/api/datasources/uid/pyroscope
       register: _pyroscope_datasource_config
       changed_when: false
+      no_log: true
       retries: 6
       delay: 5
       until: _pyroscope_datasource_config.rc == 0
@@ -425,6 +431,7 @@
             http://127.0.0.1:3000/api/datasources/proxy/uid/pyroscope/ready
       register: _pyroscope_datasource
       changed_when: false
+      no_log: true
       retries: 6
       delay: 5
       until: _pyroscope_datasource.rc == 0
@@ -683,7 +690,7 @@
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
               - _o11y_rules | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules | length
               - _o11y_rules | selectattr('notification_settings', 'defined') | list | length == _o11y_rules | length
-              - _o11y_rules | rejectattr('notification_settings.group_by', 'defined') | list | length == 0
+              - _o11y_rules | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
               - _o11y_rules | rejectattr('notification_settings.group_wait', 'equalto', '30s') | list | length == 0
               - _o11y_rules | rejectattr('notification_settings.group_interval', 'equalto', '5m') | list | length == 0
               - _o11y_rules | rejectattr('notification_settings.repeat_interval', 'equalto', '4h') | list | length == 0

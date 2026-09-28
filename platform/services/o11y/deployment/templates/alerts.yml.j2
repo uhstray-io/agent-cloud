@@ -46,7 +46,7 @@ groups:
         for: 2m
         annotations:
           summary: A declared service metrics endpoint is unreachable.
-          dashboard_url: /d/service-overview
+          dashboard_url: '/d/service-overview?var-service={% raw %}{{ $labels.service }}{% endraw %}'
           description: Check the declared metrics target and its service onboarding receipt.
         labels:
           severity: critical

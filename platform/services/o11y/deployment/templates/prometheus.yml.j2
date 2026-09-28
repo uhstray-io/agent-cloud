@@ -13,35 +13,71 @@ scrape_config_files:
 
 scrape_configs:
   - job_name: prometheus
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["localhost:9090"]
-        labels: {service: o11y/prometheus}
+        labels:
+          service: o11y/prometheus
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   # Self-monitoring stays on the private o11y network; no extra host ports.
   - job_name: grafana
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["grafana:3000"]
-        labels: {service: o11y/grafana}
+        labels:
+          service: o11y/grafana
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   - job_name: loki
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["loki:3100"]
-        labels: {service: o11y/loki}
+        labels:
+          service: o11y/loki
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   - job_name: alloy
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["alloy:12345"]
-        labels: {service: o11y/alloy}
+        labels:
+          service: o11y/alloy
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   - job_name: tempo
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["tempo:3200"]
-        labels: {service: o11y/tempo}
+        labels:
+          service: o11y/tempo
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   - job_name: pyroscope
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: ["pyroscope:4040"]
-        labels: {service: o11y/pyroscope}
+        labels:
+          service: o11y/pyroscope
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
   # Phase 2 (O11Y-DEPLOYMENT.md) — per-target metrics:
   #   - Caddy: its admin API (:2019/metrics) binds LOOPBACK-ONLY, so it is not

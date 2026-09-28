@@ -525,7 +525,7 @@ PY
 }
 
 @test "o11y: DGX scrape jobs render from inventory with GPU optional" {
-  python3 - "$DEPLOY_DIR/templates/scrape-dgx-spark.yml.j2" <<'PY'
+  python3 - "$DEPLOY_DIR/templates/scrape-dgx-spark.yml.j2" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import sys
 
@@ -535,6 +535,9 @@ from jinja2 import Environment, StrictUndefined
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 values = {
     'dgx_spark_nodes': [
@@ -546,6 +549,7 @@ values = {
     'dgx_spark_head_address': '192.0.2.1',
     'dgx_spark_head_name': 'spark-1',
     'dgx_spark_api_port': 8000,
+    '_o11y_forbidden_metric_label_names_regex': policy,
 }
 
 for gpu in (False, True):
@@ -558,6 +562,7 @@ for gpu in (False, True):
     )
     assert jobs[0]['static_configs'][1]['targets'] == ['192.0.2.2:9100']
     assert jobs[-1]['static_configs'][0]['labels']['node'] == 'spark-1'
+    assert all(job['metric_relabel_configs'][0]['regex'] == policy for job in jobs)
 PY
 }
 
@@ -732,7 +737,7 @@ PY
 }
 
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {
-  python3 - "$DEPLOY_DIR/templates/scrape-agentgateway.yml.j2" <<'PY'
+  python3 - "$DEPLOY_DIR/templates/scrape-agentgateway.yml.j2" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import sys
 
@@ -741,17 +746,26 @@ from jinja2 import Environment, StrictUndefined
 
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
+env.filters['bool'] = bool
+plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
 config = yaml.safe_load(env.from_string(open(sys.argv[1], encoding='utf-8').read()).render(
     agentgateway_metrics_address='gateway.example.test',
     agentgateway_metrics_port=19002,
+    o11y_cluster='test-cluster',
+    o11y_environment='prod',
+    local_mode=False,
+    _o11y_forbidden_metric_label_names_regex=policy,
 ))
 job = config['scrape_configs'][0]
 assert job['job_name'] == 'agentgateway'
 assert job['metrics_path'] == '/metrics'
 assert job['static_configs'] == [{
     'targets': ['gateway.example.test:19002'],
-    'labels': {'service': 'agentgateway', 'component': 'gateway', 'environment': 'prod'},
+    'labels': {'service': 'agentgateway', 'component': 'gateway', 'cluster': 'test-cluster', 'environment': 'prod'},
 }]
+assert job['metric_relabel_configs'][0]['regex'] == policy
 PY
 }
 
@@ -777,7 +791,7 @@ for enabled in (False, True):
         assert [rule['uid'] for rule in rules] == ['o11y_service_down'] + [target['uid'] for target in declared]
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
-        assert rules[0]['annotations']['dashboard_url'] == '/d/service-overview'
+        assert rules[0]['annotations']['dashboard_url'] == '/d/service-overview?var-service={{ $labels.service }}'
         assert rules[0]['labels']['owner'] == 'platform-operations'
         assert rules[0]['labels']['environment'] == 'prod'
         if declared:
@@ -841,6 +855,8 @@ settings = {
     'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
 }
 healthy = {'uid': 'o11y_service_down', 'isPaused': False, 'notification_settings': settings}
+wrong_group = {'uid': 'o11y_service_down', 'isPaused': False,
+               'notification_settings': settings | {'group_by': ['instance']}}
 for rules, expected in [
     ([healthy], True),
     ([healthy, {'uid': 'unrelated', 'isPaused': True}], True),
@@ -848,6 +864,7 @@ for rules, expected in [
     ([{'uid': 'unrelated', 'isPaused': False}], False),
     ([{'uid': 'o11y_service_down'}], False),
     ([{'uid': 'o11y_service_down', 'isPaused': False}], False),
+    ([wrong_group], False),
 ]:
     scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
     assert all(bool(check(_o11y_rules=scoped)) for check in checks) is expected
@@ -885,8 +902,14 @@ deploy = pathlib.Path(sys.argv[1])
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
-rendered_prometheus = env.from_string(prometheus_template).render(o11y_cluster='test-cluster')
+rendered_prometheus = env.from_string(prometheus_template).render(
+    o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
+    _o11y_forbidden_metric_label_names_regex=policy,
+)
 prometheus_config = yaml.safe_load(rendered_prometheus)
 assert prometheus_config['global']['external_labels']['cluster'] == 'test-cluster'
 scrapes = prometheus_config['scrape_configs']
@@ -899,6 +922,11 @@ assert {key: jobs[key] for key in ('prometheus', 'grafana', 'loki', 'alloy', 'te
     'tempo': ['tempo:3200'],
     'pyroscope': ['pyroscope:4040'],
 }
+for job in scrapes:
+    labels = job['static_configs'][0]['labels']
+    assert labels['cluster'] == 'test-cluster'
+    assert labels['environment'] == 'prod'
+    assert job['metric_relabel_configs'][0]['regex'] == policy
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
 pyroscope = compose['services']['pyroscope']
@@ -938,6 +966,9 @@ verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11
 names = {task['name'] for task in verify['tasks']}
 assert 'Verify Grafana can query its provisioned data sources' in names
 assert 'Require the committed self-monitoring dashboard to be active' in names
+for task_name in ('Read the provisioned Pyroscope datasource', 'Verify Grafana can proxy the private Pyroscope datasource'):
+    task = next(task for task in verify['tasks'] if task['name'] == task_name)
+    assert task['no_log'] is True
 readback = next(task for task in verify['tasks'] if task['name'] == 'Require the committed self-monitoring dashboard to be active')
 assert any('O11y components up (expected 6)' in condition for condition in readback['ansible.builtin.assert']['that'])
 assert any('Profile samples written / sec' in condition for condition in readback['ansible.builtin.assert']['that'])
@@ -1268,7 +1299,7 @@ PY
 }
 
 @test "o11y: service identity and forbidden dimensions are bounded across signals" {
-  python3 - "$DEPLOY_DIR" <<'PY'
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import pathlib
 import re
@@ -1277,6 +1308,16 @@ import yaml
 from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
+plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
+phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
+policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
+forbidden = re.compile(policy)
+for label in ('request_id', 'user_id', 'client_id', 'session_id', 'trace_id', 'email', 'api_key',
+              'prompt', 'raw_path', 'remote_addr', 'timestamp', 'token_value'):
+    assert forbidden.search(label), label
+for label in ('service', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
+              'gen_ai_request_model', 'gen_ai_token_type', 'gpu', 'device', 'node'):
+    assert not forbidden.search(label), label
 repo = deploy.parents[3]
 caddy = yaml.safe_load((repo / 'platform/services/caddy/deployment/compose.yml').read_text())
 local_inventory = yaml.safe_load((repo / 'platform/inventory/local-dev.yml.example').read_text())
@@ -1291,28 +1332,30 @@ assert service['query'] == 'label_values(up, service)'
 queries = [target['expr'] for panel in overview['panels'] for target in panel['targets']]
 assert all('{service=~"$service"}' in query or 'service=~"$service"' in query for query in queries)
 assert all('container=' not in query for query in queries)
+log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Service log lines per second')
+assert log_rate['targets'][0]['expr'] == 'sum by (service) (rate({service=~"$service"}[5m]))'
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
-alloy = env.from_string(alloy_template).render(o11y_cluster='test-cluster')
+alloy = env.from_string(alloy_template).render(
+    o11y_cluster='test-cluster', _o11y_forbidden_metric_label_names_regex=policy,
+)
 assert 'target_label  = "service"' in alloy
 assert '__meta_docker_container_label_com_docker_compose_service' in alloy
 assert '__meta_docker_container_label_com_docker_compose_project' in alloy
 assert 'separator     = "/"' in alloy
 assert 'value  = "service,signal"' in alloy
 assert 'prometheus.relabel "bounded_labels"' in alloy
-for forbidden in ('request_id', 'user_id', 'trace_id', 'traceid', 'raw_path', 'path', 'address', 'timestamp', 'prompt', 'secret'):
-    assert forbidden in alloy
+assert f'regex  = {json.dumps(policy)}' in alloy
 assert 'loki.attribute.labels' in alloy
 
 for name in ('scrape-agentgateway.yml.j2', 'scrape-dgx-spark.yml.j2'):
     template = (deploy / 'templates' / name).read_text()
     assert 'metric_relabel_configs:' in template
     assert 'action: labeldrop' in template
-    for forbidden in ('request_id', 'user_id', 'trace_id', 'raw_path', 'path', 'address', 'timestamp', 'prompt', 'secret'):
-        assert forbidden in template
+    assert '_o11y_forbidden_metric_label_names_regex | to_json' in template
 
 alerts = (deploy / 'templates/alerts.yml.j2').read_text()
 assert f"'service': '{caddy_target['service']}'" in alerts

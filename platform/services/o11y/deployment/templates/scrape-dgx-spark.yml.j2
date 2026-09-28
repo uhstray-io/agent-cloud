@@ -3,7 +3,7 @@ scrape_configs:
   - job_name: dgx-spark-node
     metric_relabel_configs:
       - action: labeldrop
-        regex: '(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)'
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
 {% for node in dgx_spark_nodes %}
       - targets: [{{ (node.address ~ ':' ~ (dgx_spark_node_exporter_port | string)) | to_json }}]
@@ -13,7 +13,7 @@ scrape_configs:
   - job_name: dgx-spark-gpu
     metric_relabel_configs:
       - action: labeldrop
-        regex: '(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)'
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
 {% for node in dgx_spark_nodes %}
       - targets: [{{ (node.address ~ ':' ~ (dgx_spark_gpu_exporter_port | string)) | to_json }}]
@@ -23,7 +23,7 @@ scrape_configs:
   - job_name: dgx-spark-vllm
     metric_relabel_configs:
       - action: labeldrop
-        regex: '(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)'
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: [{{ (dgx_spark_head_address ~ ':' ~ (dgx_spark_api_port | string)) | to_json }}]
         labels: {service: vllm, component: head, cluster: dgx-spark, environment: prod, node: {{ dgx_spark_head_name | to_json }}}

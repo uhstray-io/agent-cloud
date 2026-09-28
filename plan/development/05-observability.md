@@ -18,6 +18,15 @@ drill-down only. Request IDs, user IDs, trace IDs, raw paths, addresses, prompt
 content, and secrets must stay out of Prometheus labels and Loki stream labels;
 keep investigation detail in log bodies or structured metadata.
 
+All Prometheus scrape paths and Alloy container metrics apply the shared
+forbidden-label-name policy for known sensitive and request-specific names.
+This is a deny list, not an allowlist: it cannot identify arbitrary
+vendor-specific identifiers. Before enabling a producer, inspect a
+representative metrics exposition, record its retained bounded dimensions
+(including any model, GPU, device, or node labels), and verify that its schema
+does not expose sensitive or unbounded identifiers. Extend the shared policy
+when that review finds additional label names to drop.
+
 For each deployed target, declare its stable service identity, owner, cluster
 and environment values, signal methods, profile applicability, finite label
 values, and proof. Local Compose discovery uses `<project>/<service>` so

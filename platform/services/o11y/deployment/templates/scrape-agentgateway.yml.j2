@@ -4,7 +4,11 @@ scrape_configs:
     metrics_path: /metrics
     metric_relabel_configs:
       - action: labeldrop
-        regex: '(request_id|user_id|trace_id|traceid|raw_path|path|address|timestamp|prompt|secret)'
+        regex: {{ _o11y_forbidden_metric_label_names_regex | to_json }}
     static_configs:
       - targets: [{{ (agentgateway_metrics_address ~ ':' ~ (agentgateway_metrics_port | string)) | to_json }}]
-        labels: {service: agentgateway, component: gateway, environment: prod}
+        labels:
+          service: agentgateway
+          component: gateway
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
