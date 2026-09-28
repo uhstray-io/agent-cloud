@@ -1296,6 +1296,13 @@ assert diagnostic_task['changed_when'] is False and diagnostic_task['check_mode'
 report_task = tasks[report_index]
 assert 'no_log' not in report_task and report_task['ansible.builtin.debug']['msg'] == \
     '{{ _budget_readback_diagnostics.stdout | from_json }}'
+gate = next(task for task in tasks if task.get('name') == 'Require matching live budgets and measurable cardinality')
+assert gate['ansible.builtin.assert']['that'] == [
+    '_retention_comparison.rc == 0',
+    '(_budget_readback_diagnostics.stdout | from_json).sample_limit_matches',
+    '(_budget_readback_diagnostics.stdout | from_json).head_series_count_matches',
+    '(_budget_readback_diagnostics.stdout | from_json).positive_head_series',
+]
 assert set(json.loads(subprocess.run(
     [sys.executable, diagnostic], input=json.dumps({'sample_limit': '2000',
         'expected_sample_limit': 2000, 'head_series': json.dumps({'data': {'result': [
@@ -1315,6 +1322,7 @@ assert good['positive_head_series'] and good['head_series_observed'] == 109
 mismatch = diagnose('1500', 2000, one)
 assert not mismatch['sample_limit_matches'] and mismatch['sample_limit_observed'] == 1500
 assert not diagnose('not-a-number', 2000, one)['sample_limit_matches']
+assert not diagnose('+2000', 2000, one)['sample_limit_matches']
 assert not diagnose('2000', 2000, '{malformed')['head_series_count_matches']
 assert not diagnose('2000', 2000, json.dumps({'data': {'result': []}}))['positive_head_series']
 assert not diagnose('2000', 2000, json.dumps({'data': 'unexpected'}))['head_series_count_matches']

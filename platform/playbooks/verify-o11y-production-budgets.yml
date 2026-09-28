@@ -194,9 +194,9 @@
       ansible.builtin.assert:
         that:
           - _retention_comparison.rc == 0
-          - _sample_limit.stdout | trim | int == o11y_scrape_sample_limit | int
-          - (_head_series.stdout | from_json).data.result | length == 1
-          - (_head_series.stdout | from_json).data.result[0].value[1] | int > 0
+          - (_budget_readback_diagnostics.stdout | from_json).sample_limit_matches
+          - (_budget_readback_diagnostics.stdout | from_json).head_series_count_matches
+          - (_budget_readback_diagnostics.stdout | from_json).positive_head_series
         fail_msg: "A live retention/sample setting differs from inventory or active-series readback is absent."
 
     - name: Report the sanitized production budget receipt

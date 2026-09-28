@@ -8,7 +8,6 @@ import re
 import sys
 from typing import Any
 
-
 INTEGER = re.compile(r"^[0-9]+$")
 
 
