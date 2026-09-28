@@ -366,10 +366,14 @@ is a separate dashboard, with operations as a second dashboard.
       (delivered by 8.1); `inference-telemetry-production` 1.4 (per-port sources
       available after 5.1)
 - [ ] 9.4 Validation gate:
-      - After any private site-config inventory change, run the reviewed
-        `platform/semaphore/sync-inventory.yml` check and apply through Semaphore,
-        then verify Semaphore readback before a Dev-bound deploy relies on those values.
-        A site-config merge alone does not update Semaphore's static inventory copy.
+      - After a private site-config inventory change is reviewed and merged, run the
+        code-managed operator-side `platform/semaphore/sync-inventory.yml` check and
+        apply from the reviewed agent-cloud worktree against Semaphore. Set
+        `inventory_source` to the production inventory file from the reviewed
+        site-config revision, then verify Semaphore readback matches the source before
+        a Dev-bound deploy relies on the values. Pin that deploy to the exact reviewed
+        and pushed `dev` SHA. A site-config merge alone does not update Semaphore's
+        static inventory copy.
       - After an hour of production traffic, run the normal `Deploy o11y (Dev)`
         Semaphore template from the merged `dev` revision, preserving Prometheus, Loki,
         Tempo and Grafana volumes. Read back both dashboards and the previously recorded

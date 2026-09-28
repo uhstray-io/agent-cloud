@@ -55,9 +55,13 @@ line shape and reason field before a reason-grouped panel can be implemented or
 claimed complete.
 
 The production Semaphore inventory is a static copy of private site-config. After
-changing private inventory, run the reviewed `sync-inventory.yml` check and apply
-through Semaphore and verify its readback before a Dev-bound deploy relies on the
-new values. A site-config merge alone does not update Semaphore's inventory copy.
+a private inventory change is reviewed and merged, run the code-managed
+operator-side `platform/semaphore/sync-inventory.yml` check and apply from the
+reviewed agent-cloud worktree against Semaphore. Set `inventory_source` to the
+production inventory file from the reviewed site-config revision, then verify
+Semaphore's readback matches that source before a Dev-bound deploy relies on the
+new values. Pin that deploy to the exact reviewed and pushed `dev` SHA. A
+site-config merge alone does not update Semaphore's inventory copy.
 
 Deployment does not establish target reachability. Confirm each target reports
 `up == 1` after the observability host and DGX firewall source rules are set.
