@@ -172,11 +172,20 @@ PY
 
 @test "netbox-allocate: a reserve dry run does not fail on the create it skipped" {
   # The create is skipped under --check, so the post-reserve refusal must be too, or a
-  # dry run can never pass once the DHCP boundary check has cleared.
-  sed -n '/Refuse to report success for an address a reserve run failed to create/,/^$/p' "$PLAYBOOK" \
-    > "$BATS_TEST_TMPDIR/refuse.yml"
-  assert_grep -qF -- '- not ansible_check_mode' "$BATS_TEST_TMPDIR/refuse.yml"
-  assert_grep -qF -- '- _reserve' "$BATS_TEST_TMPDIR/refuse.yml"
+  # dry run can never pass once the DHCP boundary check has cleared. Parsed, not grepped:
+  # the guard has to be in the task's own `when`, not in its `that` or a comment.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+refuse, = (t for t in play["tasks"]
+           if t["name"] == "Refuse to report success for an address a reserve run failed to create")
+when = refuse["when"] if isinstance(refuse["when"], list) else [refuse["when"]]
+assert "not ansible_check_mode" in when and "_reserve" in when, when
+that = refuse["ansible.builtin.assert"]["that"]
+assert not any("check_mode" in str(c) for c in that), that
+PY
 }
 
 @test "netbox-allocate: a report run reads each address once, not twice" {
