@@ -846,6 +846,7 @@ PY
   python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import pathlib
+import re
 import sys
 import yaml
 
@@ -892,6 +893,14 @@ assert '/api/datasources/uid/tempo' in tempo_config['ansible.builtin.command']['
 correlation = next(task for task in verify['tasks'] if task['name'] == 'Require live Tempo trace-to-metric and trace-to-log mappings')
 assert any('tracesToMetrics.datasourceUid' in condition for condition in correlation['ansible.builtin.assert']['that'])
 assert any('tracesToLogsV2.datasourceUid' in condition for condition in correlation['ansible.builtin.assert']['that'])
+loki = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())
+loki = next(source for source in loki['datasources'] if source['uid'] == 'loki')
+trace_link = next(field for field in loki['jsonData']['derivedFields'] if field['name'] == 'TraceID')
+assert trace_link['datasourceUid'] == 'tempo'
+assert re.search(trace_link['matcherRegex'], '{"traceid":"' + 'a' * 32 + '"}').group(1) == 'a' * 32
+assert not re.search(trace_link['matcherRegex'], '{"traceid":"short"}')
+assert trace_link['url'] == '$${__value.raw}'
+assert any(task['name'] == 'Require the live Loki log-to-trace link' for task in verify['tasks'])
 health = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana can query its provisioned data sources')
 assert 'curl -sS --config -' in health['ansible.builtin.command']['argv'][5]
 PY

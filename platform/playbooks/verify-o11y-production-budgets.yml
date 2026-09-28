@@ -132,6 +132,14 @@
       changed_when: false
       check_mode: false
 
+    - name: Parse Loki runtime configuration
+      ansible.builtin.set_fact:
+        _loki_runtime: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config', 'defined') | list | first) }}"
+
+    - name: Parse Tempo runtime configuration
+      ansible.builtin.set_fact:
+        _tempo_runtime: "{{ (_tempo_config.stdout | from_yaml_all | select('mapping') | selectattr('compactor', 'defined') | list | first) }}"
+
     - name: Compare equivalent live and declared retention units
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/compare-o11y-budgets.py"]
@@ -142,8 +150,8 @@
                           'tempo_time': o11y_tempo_retention},
               'live': {'prom_time': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.time'],
                        'prom_size': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.size'],
-                       'loki_time': (_loki_config.stdout | from_yaml).limits_config.retention_period,
-                       'tempo_time': (_tempo_config.stdout | from_yaml).compactor.compaction.block_retention}} | to_json }}
+                       'loki_time': _loki_runtime.limits_config.retention_period,
+                       'tempo_time': _tempo_runtime.compactor.compaction.block_retention}} | to_json }}
       register: _retention_comparison
       delegate_to: localhost
       changed_when: false
