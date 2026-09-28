@@ -4,13 +4,13 @@
   "panels": [
     {
       "id": 1,
-      "title": "O11y components up (expected 6)",
+      "title": "O11y components up (expected 7)",
       "type": "stat",
-      "description": "Prometheus, Grafana, Loki, Alloy, Tempo, and Pyroscope self scrapes. A missing target lowers the count.",
+      "description": "Prometheus, Grafana, Loki, Alloy, Tempo, Pyroscope, and the private receiver-host exporter. A missing target lowers the count.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "min": 0, "max": 6, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 5 }, { "color": "green", "value": 6 }] } }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"})", "instant": true }]
+      "fieldConfig": { "defaults": { "min": 0, "max": 7, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 6 }, { "color": "green", "value": 7 }] } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"})", "instant": true }]
     },
     {
       "id": 2,
@@ -42,7 +42,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
       "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 5,
@@ -52,7 +52,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 6,
@@ -78,7 +78,7 @@
       "id": 8,
       "title": "O11y process memory",
       "type": "timeseries",
-      "description": "Resident memory for all six o11y processes; compare trends with data volume.",
+      "description": "Resident memory for the six o11y processes that expose process metrics; compare trends with data volume.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
@@ -124,6 +124,46 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [{ "refId": "A", "expr": "sum(rate(pyroscope_write_sent_profiles_total{job=\"alloy\"}[5m]))" }]
+    },
+    {
+      "id": 13,
+      "title": "Receiver-host CPU busy",
+      "type": "timeseries",
+      "description": "Host CPU busy percentage from the private node_exporter source.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{job=\"receiver-host\",mode=\"idle\"}[5m])))" }]
+    },
+    {
+      "id": 14,
+      "title": "Receiver-host available memory",
+      "type": "timeseries",
+      "description": "Available host memory as a percentage of total memory.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "100 * node_memory_MemAvailable_bytes{job=\"receiver-host\"} / node_memory_MemTotal_bytes{job=\"receiver-host\"}" }]
+    },
+    {
+      "id": 15,
+      "title": "Receiver-host root free bytes",
+      "type": "timeseries",
+      "description": "Free bytes on the host root filesystem; deployment verification checks this matches guest-visible `/`.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "node_filesystem_avail_bytes{job=\"receiver-host\",mountpoint=\"/\"}" }]
+    },
+    {
+      "id": 16,
+      "title": "Receiver-host load average (1m)",
+      "type": "timeseries",
+      "description": "One-minute host load average; compare with the CPU trend above.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "node_load1{job=\"receiver-host\"}" }]
     }
   ],
   "schemaVersion": 39,

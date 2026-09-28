@@ -913,6 +913,20 @@ stored-byte growth, the measured forecast leaves at least 30% free disk and
 has backup-before-resize and idempotent filesystem expansion. Do not update
 private retention values or VM size until those checks pass.
 
+On 2026-09-28, Dev-bound production verifier task 1789 passed its declared
+retention, sample-limit, and active-series checks while retaining the approved
+15d / 7d / 168h values and zero Prometheus size cap. Its guest-root observation
+was below the required 30% free-space margin. It did not resolve any named
+volume, so it is not a capacity receipt and cannot authorize the new host
+collector or a retention/VM change. The code-managed verifier now resolves the
+Prometheus, Loki, Tempo, Grafana, and Pyroscope volumes from the exact running
+containers and compares each source mount with `podman volume inspect`; the
+normal production deploy refuses to change config or pull images unless every
+backing filesystem has at least 30% free space. A clean first deploy requires
+all five backend containers and corresponding Compose volumes to be absent and
+uses the same threshold on guest root. Orphaned volumes and partial existing
+stacks fail closed. No resize is performed by either path.
+
 2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord
 delivery, and active-baseline restoration. Its task record has the receipt ID,
 but this Semaphore runner did not inject `SEMAPHORE_TASK_ID` into Ansible; the

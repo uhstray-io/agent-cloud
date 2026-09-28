@@ -12,6 +12,27 @@
 name: o11y
 
 services:
+  node-exporter:
+    image: ${O11Y_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
+    container_name: o11y-node-exporter
+    restart: always
+    # node_exporter reads host procfs and filesystem data; keep that access in
+    # this dedicated container, not the externally reachable Alloy receiver.
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem
+      - --collector.filesystem.mount-points-include=^/$
+      - --collector.loadavg
+    volumes:
+      - /:/host:ro,rslave
+    networks: [o11y]
+
   prometheus:
     image: ${O11Y_PROM_IMAGE:-docker.io/prom/prometheus:v3.1.0}
     container_name: o11y-prometheus
