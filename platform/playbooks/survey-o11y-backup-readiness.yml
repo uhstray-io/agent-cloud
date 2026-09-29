@@ -161,7 +161,18 @@
     - name: Summarize backup listing without exposing storage or artifact details
       ansible.builtin.set_fact:
         _backup_summary: >-
-          {%- set ns = namespace(complete=true, artifacts=0) -%}
+          {%- set ns = namespace(complete=true, backend_types_complete=true, artifacts=0, pbs=0, non_pbs=0) -%}
+          {%- for storage in _backup_storages | default([]) -%}
+          {%- if storage.type is defined and storage.type is string and (storage.type | trim | length) > 0 -%}
+          {%- if storage.type | trim | lower == 'pbs' -%}
+          {%- set ns.pbs = ns.pbs + 1 -%}
+          {%- else -%}
+          {%- set ns.non_pbs = ns.non_pbs + 1 -%}
+          {%- endif -%}
+          {%- else -%}
+          {%- set ns.backend_types_complete = false -%}
+          {%- endif -%}
+          {%- endfor -%}
           {%- for result in _backup_content_reads.results | default([]) -%}
           {%- if result.status | default(0) | int == 200
                 and result.json is defined
@@ -174,13 +185,19 @@
           {%- set ns.complete = false -%}
           {%- endif -%}
           {%- endfor -%}
-          {{ {'listing_complete': ns.complete, 'candidate_artifact_count': ns.artifacts} }}
+          {{ {'listing_complete': ns.complete,
+              'backend_types_complete': ns.backend_types_complete,
+              'pbs_storage_count': ns.pbs,
+              'non_pbs_storage_count': ns.non_pbs,
+              'candidate_artifact_count': ns.artifacts} }}
       no_log: true
 
     - name: Require complete read-only backup listing
       ansible.builtin.assert:
-        that: _backup_summary.listing_complete | bool
-        fail_msg: "At least one backup-content listing failed or returned malformed data; no readiness result is issued."
+        that:
+          - _backup_summary.listing_complete | bool
+          - _backup_summary.backend_types_complete | bool
+        fail_msg: "Backup-content listing or storage backend classification was incomplete; no readiness result is issued."
 
     - name: Report sanitized backup and restore prerequisites
       ansible.builtin.debug:
@@ -188,6 +205,8 @@
           survey: read-only
           target_vm_verified: true
           backup_capable_storage_count: "{{ _backup_storages | length | int }}"
+          backup_capable_pbs_storage_count: "{{ _backup_summary.pbs_storage_count | int }}"
+          backup_capable_non_pbs_storage_count: "{{ _backup_summary.non_pbs_storage_count | int }}"
           candidate_backup_artifact_count: "{{ _backup_summary.candidate_artifact_count | int }}"
           artifact_immutability_verified: false
           isolated_restore_target_verified: false
