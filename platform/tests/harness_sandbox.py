@@ -28,6 +28,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+DEFAULT_TIMEOUT_SECONDS = 120
+
 if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
     SANDBOX = "sandbox-exec"
 elif platform.system() == "Linux" and shutil.which("bwrap"):
@@ -65,9 +67,11 @@ def env_for(tmp_path: Path, base: dict | None = None) -> dict:
     return env
 
 
-def run(cmd: list[str], tmp_path: Path, *, cwd: Path, env: dict, denied: list[str] | None = None):
+def run(cmd: list[str], tmp_path: Path, *, cwd: Path, env: dict, denied: list[str] | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS):
     """subprocess.run(cmd) confined as described above. `denied` adds explicit denials (the
-    sandbox's own proof uses one); they only bind under a kernel sandbox."""
+    sandbox's own proof uses one); they only bind under a kernel sandbox. A timeout returns a
+    sanitized failed result because captured Ansible output can contain fixture credentials."""
     denied = [os.path.realpath(d) for d in (denied or [])]
     writable = [os.path.realpath(tmp_path), temp_root(), os.path.realpath(tempfile.gettempdir())]
     if SANDBOX == "sandbox-exec":
@@ -79,4 +83,12 @@ def run(cmd: list[str], tmp_path: Path, *, cwd: Path, env: dict, denied: list[st
         for path in denied:
             binds += ["--ro-bind-try", path, path]
         cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", *binds, "--", *cmd]
-    return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
+    try:
+        return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd,
+            124,
+            stdout="",
+            stderr=f"test command timed out after {timeout:g}s; captured output suppressed",
+        )

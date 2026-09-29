@@ -219,7 +219,7 @@ jobs:
       - name: Run Python core tests
         env:
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v --durations=20 --deselect=platform/services/netbox/deployment/tests/
+        run: pytest -x -v --durations=20 --deselect=platform/services/netbox/deployment/tests/
 
   python-netbox:
     name: Python NetBox
