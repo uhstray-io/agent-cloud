@@ -57,8 +57,13 @@
 #   - The tag prefix `agent-cloud:` is RESERVED for this playbook. A rule added by hand
 #     with a comment starting `agent-cloud:` is treated as this playbook's own and is
 #     pruned when no declaration produces that exact tag. Comment hand rules differently.
-#   - SSH (anti-orphan): no 22/tcp rule is ever pruned unless firewall_controller_cidr is
-#     declared and is one of firewall_ssh_cidrs. Narrowing firewall_ssh_cidrs on a host
+#   - SSH (anti-orphan): no rule that admits inbound SSH is ever pruned unless
+#     firewall_controller_cidr is declared and is one of firewall_ssh_cidrs. "Admits SSH"
+#     is read from the stored rule, not its tag: an allow/limit rule (INPUT, `in on`, or
+#     route) whose destination ports cover 22 — a single port, a comma list, an a:b range,
+#     or no port clause at all (every port) — over tcp or any protocol (ufw prints no
+#     `proto` for any). Denials and `out` rules never admit SSH, so deleting one is not
+#     guarded; a rule that cannot be read counts as admitting. Narrowing firewall_ssh_cidrs on a host
 #     without it fails before any delete ("would prune SSH from X; declare
 #     firewall_controller_cidr"), in check mode too. An SSH allow from a declared CIDR is
 #     never stale, compared after normalising the address as ufw stores it.
@@ -75,8 +80,10 @@
 # Inventory (site-config):
 #   firewall_ssh_cidrs       REQUIRED list of CIDRs allowed to SSH (group var)
 #   firewall_controller_cidr the orchestrator's (Semaphore's) SSH source. When set it MUST be
-#                            one of firewall_ssh_cidrs, compared by equality like every CIDR
-#                            check here (no ipaddr on the runner): Semaphore reaches the host
+#                            one of firewall_ssh_cidrs, both compared in the spelling ufw
+#                            stores (filter_plugins/ufw_rules.py, stdlib ipaddress; ansible.utils
+#                            ipaddr is not on the runner), so 192.0.2.5 equals 192.0.2.5/32.
+#                            Semaphore reaches the host
 #                            only over SSH, so dropping its source orphans the host from
 #                            automation. OPA's firewall content rule reads the same value
 #                            (change service-deployment-workflow). Optional until site-config
@@ -198,28 +205,14 @@
     # The tag of each SSH allow (header note "Convergence"): the drift guard, the
     # anti-lockout asserts and the declared set all read this one expression.
     _fw_ssh_tags: "{{ _ssh_cidrs | map('regex_replace', '^', 'agent-cloud:in:22/tcp:') | list }}"
-    # ...and its spec as `ufw show added` prints it (src/parser.py get_command, 0.36.2), with
-    # the address normalised the way ufw stores it (src/util.py normalize_address, 0.36.2):
-    # a host mask (/32, /128) is dropped and an IPv4 CIDR is masked to its network, so a
-    # declared `192.0.2.5/32` or `192.0.2.77/24` matches the stored `192.0.2.5` or
-    # `192.0.2.0/24`. Not reproduced: dotted netmasks and IPv6 canonical form.
+    # The SSH CIDRs as ufw stores them (filter_plugins/ufw_rules.py ufw_address: host mask
+    # dropped, IPv4 masked to its network, dotted netmask to a prefix — src/util.py
+    # normalize_address, 0.36.2), so `192.0.2.5/32` equals the stored `192.0.2.5`.
+    _fw_ssh_cidrs_stored: "{{ _ssh_cidrs | map('ufw_address') | list }}"
+    # ...and each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command).
     _fw_ssh_specs: >-
-      {%- set out = [] -%}
-      {%- for c in _ssh_cidrs -%}
-      {%- set a = c.split('/') -%}
-      {%- if a | length == 1 or a[1] in ['32', '128'] -%}
-      {%- set n = a[0] -%}
-      {%- elif ':' not in c and a[1] is match('^\\d+$') -%}
-      {%- set o = a[0].split('.') | map('int') | list -%}
-      {%- set blk = 2 ** (32 - (a[1] | int)) -%}
-      {%- set v = ((o[0] * 16777216 + o[1] * 65536 + o[2] * 256 + o[3]) // blk) * blk -%}
-      {%- set n = [v // 16777216, v // 65536 % 256, v // 256 % 256, v % 256] | join('.') ~ '/' ~ a[1] -%}
-      {%- else -%}
-      {%- set n = c -%}
-      {%- endif -%}
-      {%- set _ = out.append('allow from ' ~ n ~ ' to any port 22 proto tcp') -%}
-      {%- endfor -%}
-      {{ out }}
+      {{ _fw_ssh_cidrs_stored | map('regex_replace', '^', 'allow from ')
+         | map('regex_replace', '$', ' to any port 22 proto tcp') | list }}
     _route_rules: "{{ firewall_route_rules | default([]) }}"
     _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
     _engine: "{{ container_engine | default('podman') }}"
@@ -262,7 +255,7 @@
     - name: "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)"
       ansible.builtin.assert:
         that:
-          - firewall_controller_cidr in _ssh_cidrs
+          - (firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored
         fail_msg: >-
           firewall_controller_cidr {{ firewall_controller_cidr }} is not in firewall_ssh_cidrs
           {{ _ssh_cidrs | to_json }}: enabling UFW would cut Semaphore off from this host.
@@ -620,11 +613,14 @@
     - name: "Plan: the rules this run deletes"
       ansible.builtin.set_fact:
         _fw_prune: "{{ _fw_stale | reject('in', _fw_held) | list }}"
-        # Every 22/tcp rule it would delete, of any family (anti-orphan guard below).
+        # Every rule it would delete that admits inbound SSH, read from the STORED spec, not
+        # the tag: proto any and a missing port mean ALL (ufw prints neither), and a comma
+        # list or a:b range may cover 22. INPUT and route allows count; denials and `out`
+        # rules do not (filter_plugins/ufw_rules.py ufw_rule_admits_port).
         _fw_prune_ssh: >-
           {%- set out = [] -%}
           {%- for r in _fw_stale | reject('in', _fw_held)
-                if r.spec is search('port 22 proto tcp$') or ':22/tcp:' in r.tag -%}
+                if r.spec | ufw_rule_admits_port(22) -%}
           {%- set _ = out.append(r) -%}
           {%- endfor -%}
           {{ out }}
@@ -667,7 +663,8 @@
         that:
           - >-
             (_fw_prune_ssh | length == 0)
-            or (firewall_controller_cidr is defined and firewall_controller_cidr in _ssh_cidrs)
+            or (firewall_controller_cidr is defined
+                and (firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored)
         fail_msg: >-
           would prune SSH from {% for r in _fw_prune_ssh %}{{ r.spec.split(' from ')[1].split(' ')[0]
           if ' from ' in r.spec else r.spec }}{{ '' if loop.last else ', ' }}{% endfor %}

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import harness_sandbox
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -58,7 +59,9 @@ def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: 
     env = harness_sandbox.env_for(tmp_path)
     # The stubs come first, so neither a real ufw nor a real podman can be reached.
     env.update(PATH=f"{bindir}:{env['PATH']}", UFW_STUB_STATE=str(state_file), UFW_STUB_LOG=str(log),
-               PODMAN_STUB=str(tmp_path / "podman.json"))
+               PODMAN_STUB=str(tmp_path / "podman.json"),
+               # the lifted play sits outside platform/playbooks, so its filters are named here
+               ANSIBLE_FILTER_PLUGINS=str(PLAYBOOK.parent / "filter_plugins"))
     if drop:
         env["UFW_STUB_DROP"] = drop
     if collateral:
@@ -275,3 +278,37 @@ def test_a_dual_family_rule_stored_for_one_family_only_is_still_pruned(tmp_path)
     r, state = _run(tmp_path, {}, state=before)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _rules(state) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
+
+
+@pytest.mark.parametrize("spec", [
+    "allow from 198.51.100.0/24 to any port 22",                 # proto any: ufw prints no proto
+    "allow from 198.51.100.0/24 to any port 22,2222 proto tcp",  # multiport
+    "allow from 198.51.100.0/24 to any port 20:30 proto tcp",    # range
+    "allow from 198.51.100.0/24",                                # no port clause: every port
+    "route allow from 198.51.100.0/24 to any port 22 proto tcp",
+])
+def test_a_stale_rule_that_admits_ssh_in_any_spelling_is_refused(tmp_path, spec):
+    before = {"active": True, "rules": [[spec, "agent-cloud:in:9999/tcp:198.51.100.0/24"]]}
+    r, state = _run(tmp_path, {}, state=before)
+    assert r.returncode != 0
+    assert "would prune SSH from 198.51.100.0/24 on target" in r.stdout
+    assert spec in _rules(state)
+    assert not any('"delete"' in line for line in _log(tmp_path))
+
+
+def test_a_stale_udp_only_port_22_rule_is_pruned_without_the_controller_cidr(tmp_path):
+    spec = "allow from 198.51.100.0/24 to any port 22 proto udp"
+    r, state = _run(tmp_path, {}, state={"active": True, "rules": [[spec, _tag("in", "22/udp", "198.51.100.0/24")]]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert spec not in _rules(state)
+
+
+def test_the_controller_cidr_is_compared_in_the_spelling_ufw_stores(tmp_path):
+    # Declared as 192.0.2.5/32, controller given as 192.0.2.5: one source, so the old CIDR's
+    # SSH allow may be pruned.
+    old = "198.51.100.0/24"
+    before = {"active": True, "rules": [[f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)]]}
+    r, state = _run(tmp_path, {"firewall_ssh_cidrs": ["192.0.2.5/32"], "firewall_controller_cidr": "192.0.2.5"},
+                    state=before)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state) == {"allow from 192.0.2.5 to any port 22 proto tcp": _tag("in", "22/tcp", "192.0.2.5/32")}
