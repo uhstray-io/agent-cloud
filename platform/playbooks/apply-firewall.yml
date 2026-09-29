@@ -30,10 +30,12 @@
 # The tag is built from the rule's own fields, never from its declaration source, so the
 # same rule declared twice (an SSH CIDR also listed as a static 22/tcp rule, a detected
 # port also declared statically) carries ONE tag and runs cannot flip-flop it. The peer
-# is last because it is the only field that may itself contain ':' (IPv6). Spell one
-# address one way across declarations: `192.0.2.10` and `192.0.2.10/32` may be stored
-# as ONE ufw rule under two tags, leaving a declared tag absent — which the drift guard
-# below refuses rather than pruning around it.
+# is last because it is the only field that may itself contain ':' (IPv6), and it is the
+# address as ufw stores it (filter_plugins/ufw_rules.py ufw_address), not as declared:
+# `192.0.2.10` and `192.0.2.10/32` are one ufw rule, so they are one tag. A rule tagged by
+# an earlier version with a non-canonical declared spelling (`.../32`, a CIDR with host bits
+# set) carries an undeclared tag now; the add re-tags it in place (same spec, new comment)
+# and the prune plan reads the rules after the adds, so it is never pruned for the rename.
 # The declared set is built ONCE, after port and bridge detection, by
 # filter_plugins/ufw_rules.py ufw_desired_rules: each rule's ufw command, its tag, and the
 # spec `ufw show added` prints for it. That module is the only definition of the add and
@@ -45,8 +47,11 @@
 # here stops the run BEFORE anything is deleted) → delete each TAGGED rule whose tag is not
 # declared → when anything was deleted, re-read and assert every declared SSH allow
 # survived → default policies + enable, each only when the live state differs. A converged
-# host whose rules all name an address costs the two reads and nothing else: no add, no
-# re-read, and the final report reuses the first status read.
+# host costs the two reads, plus one add command per declared rule that names no address —
+# two per podman bridge on a rootful podman host (its 53/udp and 53/tcp allows) and one per
+# rule from `any` — each answered "Skipping adding existing rule", which is not a change
+# (changed=0). Nothing else: no re-read, and the final report reuses the first status read.
+# Only a host whose declared rules all name an address costs the two reads alone.
 #   - A rule naming no address (podman bridge DNS, anything `from any`) is re-added every
 #     run. ufw stores it once per IP family and `show added` prints the two as one line
 #     (src/frontend.py get_show_added, 0.36.2), so a lost half (a `ufw delete NUM`, IPV6
@@ -160,8 +165,9 @@
 #                            boundary, not merely a credential withheld. Default EMPTY —
 #                            a host that declares none emits an unchanged rule set.
 #                            Omit `port` to deny the destination entirely. A target must
-#                            be a single host unless the entry sets `broad: true` (see
-#                            the egress note below for why).
+#                            be a single host unless the entry sets `broad: true` with a
+#                            `reason`, and is never a supernet of (or equal to) an SSH CIDR
+#                            (see the egress note below for why).
 #   ICMP echo is left at UFW's default (allowed) so ping-based monitoring works.
 #
 # Rootful podman / Docker & the FORWARD chain: published container ports are DNAT'd
@@ -195,9 +201,14 @@
 # same /24 that firewall_ssh_cidrs declares for management, so a guard phrased as "reject
 # a denial falling within an SSH CIDR" would reject every legitimate entry. The real
 # hazard is the opposite: a denial BROADER than the management network, which would cut
-# the host off the LAN wholesale. ansible.utils (ipaddr) is deliberately not installed on
-# the runner, so containment cannot be computed — requiring a single host makes a supernet
-# impossible by construction, and `broad: true` is the explicit, reviewable opt-out.
+# the host off the LAN wholesale. So a denial must name one address unless it sets
+# `broad: true` with a `reason` (the explicit, reviewable opt-out), and broad or not it is
+# refused when it contains or equals any SSH CIDR. Containment is computed with stdlib
+# ipaddress in filter_plugins/ufw_rules.py ufw_egress_problems — ansible.utils (ipaddr) is
+# still not installed on the runner and need not be — on networks with host bits masked,
+# as ufw stores them, so `192.0.0.0/16` over a `192.0.2.0/24` SSH CIDR is refused and
+# `192.0.2.1/24` is the same network as `192.0.2.0/24`. A denial INSIDE an SSH CIDR, a single
+# host or a narrower broad range, is accepted: that is where the real targets are.
 #
 # Usage (via Semaphore): -e target_service=openhands_svc
 
@@ -326,41 +337,22 @@
     # rule set must be complete the moment the firewall goes live, so there is no window in
     # which the host is active but uncontained.
     - name: "Validate each egress denial (single host unless explicitly broad)"
+      # filter_plugins/ufw_rules.py ufw_egress_problems (stdlib ipaddress; unit-tested in
+      # platform/tests/test_ufw_rules_filter.py): `to` is one address or network; a single
+      # host unless `broad: true` with a `reason`; never a supernet of, nor equal to, a
+      # declared SSH CIDR — compared as networks the way ufw stores them, so `broad` cannot
+      # express the self-lock in any spelling; `port`, when the key is present, one port
+      # 1-65535; `proto`, when present, tcp, udp or any.
       ansible.builtin.assert:
         that:
-          - (item.to | default('')) | length > 0
-          - >-
-            ('/' not in item.to)
-            or ((item.to.split('/') | last) == '32')
-            or (item.broad | default(false) | bool)
-          # `broad: true` is an escape hatch, not a bypass of the thing the guard exists
-          # for. A target that EQUALS a declared SSH CIDR is refused even when flagged
-          # broad — that is the exact self-lock, and no opt-in should be able to express
-          # it. (Strict containment would need ipaddr, which the orchestrator does not
-          # install; equality catches the case that actually happens, which is someone
-          # copying a management CIDR into the denial list.)
-          - item.to not in _ssh_cidrs
-          # And a broad denial must say why, so it cannot be set in passing.
-          - >-
-            (not (item.broad | default(false) | bool))
-            or ((item.reason | default('')) | length > 0)
-          # A port, when the key is present, is one port 1-65535: a null or empty `port` would
-          # otherwise read as "no port" and widen a scoped denial to the whole destination.
-          - >-
-            (item.port is not defined)
-            or (((item.port | string) is match('^[0-9]+$'))
-                and (item.port | int) >= 1 and (item.port | int) <= 65535)
-          - (item.proto is not defined) or (item.proto in ['tcp', 'udp', 'any'])
+          - _fw_egress_problems | length == 0
         fail_msg: >-
-          firewall_deny_egress entry {{ item | to_json }} is invalid: `to` is required and
-          must be a single host (no prefix, or /32) unless the entry sets `broad: true`.
-          A denial broader than firewall_ssh_cidrs would cut this host off from the
-          management network — see §2.5 in docs/MISTAKES.md. `broad: true` permits a
-          wider mask but never one EQUAL to a declared SSH CIDR, and requires a `reason`.
-          `port`, when given, is one port 1-65535; `proto`, when given, is tcp, udp or any.
-      loop: "{{ _deny_egress }}"
-      loop_control:
-        label: "{{ item.to | default('(missing to)') }}"
+          firewall_deny_egress on {{ inventory_hostname }} is refused: {{ _fw_egress_problems | join('; ') }}.
+          A denial broader than firewall_ssh_cidrs would cut this host off from the management
+          network — see §2.5 in docs/MISTAKES.md.
+      vars:
+        _fw_egress_problems: "{{ _deny_egress | ufw_egress_problems(_ssh_cidrs) }}"
+      when: _deny_egress | length > 0
 
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
@@ -461,7 +453,8 @@
         # each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command)
         _fw_ssh_specs: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='spec') | list }}"
 
-    # Read BEFORE adding, so a converged host costs these two reads and no add at all.
+    # Read BEFORE adding, so a converged host costs these two reads and adds only the rules
+    # naming no address, which are re-asserted every run (header note "Convergence").
     # `show added` lists the STORED rules in ufw's normalised command form, comment
     # included, whether or not ufw is active (src/frontend.py get_show_added, 0.36.2).
     - name: "Read the rules ufw holds, with their comments"  # noqa: command-instead-of-module
@@ -531,12 +524,13 @@
 
     - name: "Plan: stale tagged rules, untagged rules, declared rules not yet on the host"
       ansible.builtin.set_fact:
-        # A rule whose spec is an SSH allow from a declared CIDR is never stale, whatever its
-        # tag says (anti-lockout): the add above retags it in a real run, and a dry run
-        # must not plan to delete it.
+        # A rule whose spec is declared is never stale, whatever its tag says: the add above
+        # retags it in a real run, and a dry run (no add, no re-read) must not plan to delete
+        # it. Deleting by a declared spec would remove the declared rule itself; SSH allows
+        # are the lockout case of the same rule (review of #348).
         _fw_stale: >-
           {{ _fw_current | selectattr('tag') | rejectattr('tag', 'in', _fw_declared)
-             | rejectattr('spec', 'in', _fw_ssh_specs) | list }}
+             | rejectattr('spec', 'in', _fw_desired | map(attribute='spec') | list) | list }}
         _fw_untagged: "{{ _fw_current | rejectattr('tag') | map(attribute='spec') | list }}"
         _fw_missing: "{{ _fw_desired | ufw_absent(_fw_current) | map(attribute='tag') | list }}"
         _fw_masking: "{{ _fw_current | ufw_masking(_fw_desired) }}"
@@ -553,9 +547,11 @@
         # A detected-port rule carries the same tag as a static one (header note), so the
         # detected family is recognised by its peer: an INPUT or route allow FROM one of the
         # declared upstream sources. Conservative: a static rule from an upstream is held too.
+        # Both sides in ufw's stored spelling: ufw_parse_added normalises the tag's peer, and
+        # the declared sources are normalised here, so `192.0.2.7/32` names `192.0.2.7`.
         _fw_held: >-
           {{ (_fw_stale | selectattr('family', 'in', ['in', 'route'])
-              | selectattr('peer', 'in', _upstream_sources) | list)
+              | selectattr('peer', 'in', _upstream_sources | map('ufw_address') | list) | list)
              if _fw_detection_empty else [] }}
 
     - name: "Plan: the rules this run deletes"
@@ -637,9 +633,9 @@
           - _fw_missing | length == 0
         fail_msg: >-
           Declared rules not found on {{ inventory_hostname }} after adding them: {{ _fw_missing }}.
-          A rule reported added did not land, two declarations spell one ufw rule differently
-          (e.g. an address with and without /32), or ufw prints the rule in a form other than the
-          spec filter_plugins/ufw_rules.py computes for it. Nothing was deleted.
+          A rule reported added did not land, two declarations with different tags name one ufw
+          rule, or ufw prints the rule in a form other than the spec filter_plugins/ufw_rules.py
+          computes for it. Nothing was deleted.
       when: not ansible_check_mode
 
     - name: "Prune each stale TAGGED rule, by its rule spec"  # noqa: command-instead-of-module

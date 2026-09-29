@@ -7,9 +7,15 @@ Building — the ONE place the playbook's rule format lives:
   {cmd, tag, spec, family, is_ssh, dual_family}. `cmd` is the ufw argument list without the comment,
   `tag` the comment naming the rule, `spec` the form `ufw show added` prints it in. A rule
   declared twice (an SSH CIDR also listed as a static 22/tcp rule) appears once.
-- ufw_tag: `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
-  peer is last because it is the only field that may itself contain ':' (IPv6).
+- ufw_tag (a module function, not an exported filter: no playbook spells a tag):
+  `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
+  peer is last because it is the only field that may itself contain ':' (IPv6). The
+  builders pass the peer as ufw stores it (ufw_address), so one address spelled two ways
+  (`192.0.2.10`, `192.0.2.10/32`) is one rule under one tag.
 - ufw_is_ipv4: a single IPv4 address, by stdlib ipaddress (so 999.1.1.1 is not one).
+- ufw_egress_problems: why each firewall_deny_egress entry must be refused ([] when none):
+  containment against the SSH CIDRs by stdlib ipaddress, so a supernet of the management
+  network is refused even when flagged broad.
 - ufw_delete_args: the arguments that delete a stored rule by its spec.
 
 Reading — what the prune step must answer from a stored rule, not from its tag:
@@ -157,7 +163,9 @@ def ufw_parse_added(lines):
 
     Only lines naming a rule (`ufw ...`) count; the header and "(None)" do not. The spec is
     ufw's own form with the comment stripped, which is what `ufw delete` takes back. `family`
-    and `peer` are read from the tag ('' when untagged or the tag has fewer fields).
+    and `peer` are read from the tag ('' when untagged or the tag has fewer fields); the peer
+    is given in the spelling ufw stores (ufw_address), so a tag written by an earlier version
+    in the declared spelling (`192.0.2.7/32`) still names the same source.
     """
     out = []
     for line in lines or []:
@@ -167,7 +175,7 @@ def ufw_parse_added(lines):
         comment = match.group("comment") or ""
         tag = comment if comment.startswith(TAG_PREFIX) else ""
         fields = tag.split(":", 3)
-        family, peer = (fields[1], fields[3]) if len(fields) == 4 else ("", "")
+        family, peer = (fields[1], ufw_address(fields[3])) if len(fields) == 4 else ("", "")
         out.append({"spec": match.group("spec"), "tag": tag, "family": family, "peer": peer})
     return out
 
@@ -204,7 +212,11 @@ def _names_no_address(spec):
 
 
 def _rule(family, cmd, port_proto, peer, spec, is_ssh=False):
-    return {"cmd": cmd, "tag": ufw_tag(family, port_proto, peer), "spec": spec, "family": family,
+    # The tag names the peer as ufw stores it, never as declared: `192.0.2.10` and
+    # `192.0.2.10/32` are one stored rule, so they must be one tag, or the second add rewrites
+    # the first's comment and the drift guard finds a declared tag missing. An interface name
+    # (in-on) is not an address and passes through unchanged.
+    return {"cmd": cmd, "tag": ufw_tag(family, port_proto, ufw_address(peer)), "spec": spec, "family": family,
             "is_ssh": is_ssh, "dual_family": _names_no_address(spec)}
 
 
@@ -217,6 +229,90 @@ def _allow_route(peer, port, proto):
     # proto-first: the form verified on the first rootful host (bootstrap hotfix)
     return _rule("route", f"route allow proto {proto} from {peer} to any port {port}", f"{port}/{proto}", peer,
                  _stored_command("allow", src=peer, port=port, proto=proto, route=True))
+
+
+_BOOL_TRUE = ("y", "yes", "on", "1", "true", "t")
+_BOOL_FALSE = ("n", "no", "off", "0", "false", "f")
+_EGRESS_PROTOS = ("tcp", "udp", "any")
+
+
+def _flag(value):
+    """True/False for the spellings Ansible's `bool` filter accepts; None for anything else."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    return True if text in _BOOL_TRUE else False if text in _BOOL_FALSE else None
+
+
+def _network(text):
+    """The IPv4/IPv6 network an address or CIDR names (host bits masked, as ufw stores it), or
+    None when it is not one (`any`, a name, a typo)."""
+    try:
+        return ipaddress.ip_network(str(text).strip(), strict=False)
+    except ValueError:
+        return None
+
+
+def ufw_egress_problems(deny_egress, ssh_cidrs):
+    """Every reason a firewall_deny_egress declaration must be refused, one string each; [] when
+    it may be applied (apply-firewall.yml, "Validate each egress denial").
+
+    The hazard is a denial BROADER than the management network (docs/MISTAKES.md 2.5): the
+    destinations worth denying sit INSIDE firewall_ssh_cidrs, so containment in an SSH CIDR is
+    accepted and a denial that contains, or equals, an SSH CIDR is refused. Per entry:
+
+    - `to` is one IPv4/IPv6 address or network. `any` and anything unparseable are refused: a
+      denial of the whole address space is not a scoped denial.
+    - It names one address (no prefix, /32, /255.255.255.255, /128) unless `broad: true`, and a
+      broad entry carries a non-blank `reason`.
+    - Broad or not, it is never a supernet of, nor equal to, a declared SSH CIDR. Compared as
+      networks with host bits masked, as ufw stores them (src/util.py normalize_address,
+      0.36.2), so 192.0.2.1/24 equals 192.0.2.0/24 and 192.0.2.5 equals 192.0.2.5/32.
+      Addresses of different families never contain each other.
+    - `port`, when the key is present, is one port 1-65535: a null or empty port must not read
+      as "no port" and widen a scoped denial to the whole destination. `proto`, when present,
+      is tcp, udp or any.
+
+    An SSH CIDR that is not an address cannot be compared, so with any denial declared it is a
+    problem too; `any` is the whole address space, which no accepted denial can contain.
+    """
+    entries = list(deny_egress or [])
+    if not entries:
+        return []
+    problems, ssh = [], []
+    for cidr in ssh_cidrs or []:
+        if ufw_address(cidr) == "any":
+            ssh += [ipaddress.ip_network("0.0.0.0/0"), ipaddress.ip_network("::/0")]
+        elif (net := _network(cidr)) is None:
+            problems.append(f"SSH CIDR {cidr!r} is not an address, so no denial can be proved to leave it reachable")
+        else:
+            ssh.append(net)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            problems.append(f"{entry!r}: an entry is a mapping with at least `to`")
+            continue
+        to = entry.get("to")
+        net = _network(to) if to is not None and str(to).strip() else None
+        if net is None:
+            problems.append(f"{to!r}: `to` is required and must be an IPv4/IPv6 address or network")
+        broad = _flag(entry.get("broad", False))
+        if broad is None:
+            problems.append(f"{to!r}: `broad` must be true or false, not {entry['broad']!r}")
+        if net is not None and net.num_addresses > 1 and not broad:
+            problems.append(f"{to!r}: names more than one address; a wider denial sets `broad: true` and a `reason`")
+        if broad and not str(entry.get("reason") or "").strip():
+            problems.append(f"{to!r}: `broad: true` requires a `reason`")
+        for cidr in ssh:
+            if net is not None and net.version == cidr.version and net.supernet_of(cidr):
+                problems.append(f"{to!r}: contains or equals the SSH CIDR {cidr}, which would cut this host off "
+                                f"the management network; `broad` never permits that")
+        if "port" in entry:
+            port = str(entry["port"])
+            if not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+                problems.append(f"{to!r}: `port` {entry['port']!r} is not one port 1-65535")
+        if "proto" in entry and entry["proto"] not in _EGRESS_PROTOS:
+            problems.append(f"{to!r}: `proto` {entry['proto']!r} is not tcp, udp or any")
+    return problems
 
 
 def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), upstreams=(), rootful=False,
@@ -299,6 +395,7 @@ def ufw_delete_args(spec):
 class FilterModule:
     def filters(self):
         return {"ufw_address": ufw_address, "ufw_rule_admits_port": ufw_rule_admits_port,
-                "ufw_is_ipv4": ufw_is_ipv4, "ufw_tag": ufw_tag, "ufw_parse_added": ufw_parse_added,
+                "ufw_is_ipv4": ufw_is_ipv4, "ufw_egress_problems": ufw_egress_problems,
+                "ufw_parse_added": ufw_parse_added,
                 "ufw_desired_rules": ufw_desired_rules, "ufw_absent": ufw_absent,
                 "ufw_masking": ufw_masking, "ufw_delete_args": ufw_delete_args}

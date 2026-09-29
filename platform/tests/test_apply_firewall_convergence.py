@@ -72,9 +72,9 @@ def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check:
         (bindir / name).chmod(0o755)
     env = harness_sandbox.env_for(tmp_path)
     # The stubs come first, so neither a real ufw nor a real podman can be reached.
-    env.update(PATH=f"{bindir}:{env['PATH']}",
-               # the lifted play sits outside platform/playbooks, so its filters are named here
-               ANSIBLE_FILTER_PLUGINS=str(PLAYBOOK.parent / "filter_plugins"))
+    # The lifted play sits outside platform/playbooks; its filters come from the repository
+    # ansible.cfg, which applies because the run's cwd is the repository root.
+    env.update(PATH=f"{bindir}:{env['PATH']}")
     if drop:
         env["UFW_STUB_DROP"] = drop
     if collateral:
@@ -384,7 +384,70 @@ def test_the_controller_cidr_is_compared_in_the_spelling_ufw_stores(tmp_path):
     r, state = _run(tmp_path, {"firewall_ssh_cidrs": ["192.0.2.5/32"], "firewall_controller_cidr": "192.0.2.5"},
                     state=before)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert _rules(state) == {"allow from 192.0.2.5 to any port 22 proto tcp": _tag("in", "22/tcp", "192.0.2.5/32")}
+    assert _rules(state) == {"allow from 192.0.2.5 to any port 22 proto tcp": _tag("in", "22/tcp", "192.0.2.5")}
+
+
+def test_rules_tagged_in_a_declared_spelling_are_retagged_then_converge(tmp_path):
+    # Tags once carried the peer as DECLARED; they now carry it as ufw stores it. A host whose
+    # rules were tagged by the earlier version (`.../32`, a CIDR with host bits set) holds
+    # tags this run no longer declares. They are retagged by the add — not pruned before it,
+    # SSH included, with no controller CIDR declared — and the next run changes nothing.
+    ssh, web, route = ("192.0.2.5/32", "198.51.100.77/24", "192.0.2.6/32")
+    host = {"firewall_ssh_cidrs": [ssh], "firewall_rootful": True, "firewall_detect_ports": False,
+            "firewall_allow_rules": [{"port": 8080, "from": web}],
+            "firewall_route_rules": [{"port": 9000, "from": route}],
+            "firewall_deny_egress": [{"to": "198.51.100.1/32", "port": 8200}]}
+    specs = {"allow from 192.0.2.5 to any port 22 proto tcp": ("in", "22/tcp", "192.0.2.5"),
+             "allow from 198.51.100.0/24 to any port 8080 proto tcp": ("in", "8080/tcp", "198.51.100.0/24"),
+             "route allow from 192.0.2.6 to any port 9000 proto tcp": ("route", "9000/tcp", "192.0.2.6"),
+             "deny out to 198.51.100.1 port 8200 proto tcp": ("out-deny", "8200/tcp", "198.51.100.1")}
+    declared = {"allow from 192.0.2.5 to any port 22 proto tcp": ssh,
+                "allow from 198.51.100.0/24 to any port 8080 proto tcp": web,
+                "route allow from 192.0.2.6 to any port 9000 proto tcp": route,
+                "deny out to 198.51.100.1 port 8200 proto tcp": "198.51.100.1/32"}
+    before = {"active": True, "rules": [[spec, _tag(f, pp, declared[spec])] for spec, (f, pp, _) in specs.items()]}
+    first, state = _run(tmp_path, host, state=before)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert _changed(first) > 0
+    assert _rules(state) == {spec: _tag(*fields) for spec, fields in specs.items()}
+    assert not any('"delete"' in line for line in _log(tmp_path)), _log(tmp_path)
+    (tmp_path / "ufw.log").unlink()
+    second, again = _run(tmp_path, host, state=state)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert _changed(second) == 0, second.stdout
+    assert again == state
+    assert [line for line in _log(tmp_path) if line.startswith('["ufw"')] == [
+        '["ufw", "show", "added"]', '["ufw", "status", "verbose"]']
+
+
+def test_a_dry_run_over_older_tags_plans_no_delete_of_a_declared_rule(tmp_path):
+    # In --check there is no add and no re-read, so a declared rule still carrying an older
+    # tag spelling must not appear in the delete plan, and a static port-22 allow from a
+    # source outside firewall_ssh_cidrs must not trip the anti-orphan guard (review of #348).
+    host = {"firewall_ssh_cidrs": ["192.0.2.5"], "firewall_detect_ports": False,
+            "firewall_allow_rules": [{"port": 8080, "from": "198.51.100.77/24"},
+                                     {"port": 22, "from": "203.0.113.9/32"}]}
+    before = {"active": True, "rules": [
+        ["allow from 192.0.2.5 to any port 22 proto tcp", _tag("in", "22/tcp", "192.0.2.5")],
+        ["allow from 198.51.100.0/24 to any port 8080 proto tcp", _tag("in", "8080/tcp", "198.51.100.77/24")],
+        ["allow from 203.0.113.9 to any port 22 proto tcp", _tag("in", "22/tcp", "203.0.113.9/32")]]}
+    r, state = _run(tmp_path, host, state=before, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state == before
+    plan = r.stdout[r.stdout.index("TASK [Report the convergence plan]"):]
+    assert re.search(r'"delete_stale_tagged": \[\]', plan), plan
+
+
+def test_an_upstream_declared_non_canonically_still_holds_its_rules_on_empty_detection(tmp_path):
+    # The held set is recognised by peer; the tag's peer is ufw's spelling (whichever version
+    # wrote it), so the declared upstream is compared in that spelling too.
+    stale = [["allow from 192.0.2.7 to any port 443 proto tcp", _tag("in", "443/tcp", "192.0.2.7")],
+             ["route allow from 192.0.2.7 to any port 443 proto tcp", _tag("route", "443/tcp", "192.0.2.7/32")]]
+    r, state = _run(tmp_path, {"firewall_upstream_source": "192.0.2.7/32"},
+                    state={"active": True, "rules": stale}, podman={"ports": {}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert stale[0][0] in _rules(state) and stale[1][0] in _rules(state)
+    assert "found no published ports, so 2 stale rule(s)" in r.stdout
 
 
 def test_a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchanged(tmp_path):
@@ -407,6 +470,11 @@ def test_a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchan
     assert re.search(r"\bwhole\s*:.*changed=0", r.stdout), r.stdout
     adds = [line for line in _log(tmp_path, "whole") if MUTATING.search(line)]
     assert len(adds) == 2 and all('"in", "on", "podman1"' in line for line in adds), adds
+    # The whole cost of a converged rootful-podman host (apply-firewall.yml header, the
+    # playbook README): the two reads plus two skipped adds per bridge; no re-read, no final
+    # status capture.
+    ufw_calls = [line for line in _log(tmp_path, "whole") if line.startswith('["ufw"')]
+    assert ufw_calls == ['["ufw", "show", "added"]', '["ufw", "status", "verbose"]', *adds], ufw_calls
 
 
 def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule(tmp_path):
@@ -421,10 +489,14 @@ def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rul
     assert not any('"delete"' in line for line in _log(tmp_path))
 
 
-def test_an_egress_port_or_proto_that_is_not_one_is_refused_before_any_rule_is_added(tmp_path):
+def test_an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added(tmp_path):
+    # ufw_egress_problems' cases are unit-tested in test_ufw_rules_filter.py; this proves the
+    # playbook refuses on it before a single rule is added, one host per shape.
     bad = {"null_port": {"port": None}, "empty_port": {"port": ""}, "port_zero": {"port": 0},
            "port_high": {"port": 70000}, "null_proto": {"port": 8200, "proto": None},
-           "icmp": {"port": 8200, "proto": "icmp"}}
+           "icmp": {"port": 8200, "proto": "icmp"},
+           # a supernet of the SSH CIDR: refused even flagged broad and justified
+           "supernet": {"to": "192.0.0.0/16", "broad": True, "reason": "stated"}}
     hosts = {name: {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", **entry}]}} for name, entry in bad.items()}
     hosts["good"] = {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", "port": "8200", "proto": "any"},
                                                        {"to": "198.51.100.2", "port": 53, "proto": "udp"}]}}

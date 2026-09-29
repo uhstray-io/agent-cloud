@@ -106,6 +106,16 @@ def test_show_added_is_read_into_spec_and_tag():
     ]
 
 
+def test_every_exported_filter_is_called_by_a_playbook():
+    # The tag has one definition, reached through ufw_desired_rules; a filter no playbook
+    # calls is a second, untested way in. ufw_tag stays a module function for the builders.
+    playbooks = Path(__file__).resolve().parents[1] / "playbooks"
+    text = "\n".join(p.read_text() for p in playbooks.rglob("*.yml"))
+    exported = rules.FilterModule().filters()
+    assert "ufw_tag" not in exported
+    assert [name for name in exported if name not in text] == []
+
+
 def test_the_tag_names_the_rule_with_the_peer_last():
     assert rules.ufw_tag("in", "22/tcp", "192.0.2.0/24") == "agent-cloud:in:22/tcp:192.0.2.0/24"
     assert rules.ufw_tag("out-deny", "any", "198.51.100.2") == "agent-cloud:out-deny:any:198.51.100.2"
@@ -128,10 +138,10 @@ def test_every_declared_rule_kind_has_its_command_tag_and_stored_spec_in_add_ord
         # SSH first: these must land before any other rule and before enable (anti-lockout)
         ("allow from 192.0.2.0/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:192.0.2.0/24",
          "allow from 192.0.2.0/24 to any port 22 proto tcp", "in", True),
-        # the command and tag keep the declared spelling; the spec is ufw's stored one
-        ("allow from 198.51.100.77/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:198.51.100.77/24",
+        # the command keeps the declared spelling; the tag and the spec use ufw's stored one
+        ("allow from 198.51.100.77/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:198.51.100.0/24",
          "allow from 198.51.100.0/24 to any port 22 proto tcp", "in", True),
-        ("allow from 192.0.2.5/32 to any port 8080 proto tcp", "agent-cloud:in:8080/tcp:192.0.2.5/32",
+        ("allow from 192.0.2.5/32 to any port 8080 proto tcp", "agent-cloud:in:8080/tcp:192.0.2.5",
          "allow from 192.0.2.5 to any port 8080 proto tcp", "in", False),
         ("allow from 192.0.2.10 to any port 53 proto udp", "agent-cloud:in:53/udp:192.0.2.10",
          "allow from 192.0.2.10 to any port 53 proto udp", "in", False),
@@ -197,6 +207,27 @@ def test_a_rule_declared_twice_appears_once_and_keeps_its_first_place():
     assert [r["tag"] for r in again] == ["agent-cloud:in:22/tcp:192.0.2.0/24", "agent-cloud:in:8080/tcp:192.0.2.5"]
 
 
+def test_one_address_spelled_two_ways_is_one_rule_under_one_tag():
+    # ufw stores both spellings as one rule; two tags for it would leave one declared tag absent.
+    got = rules.ufw_desired_rules(
+        ["192.0.2.5/32", "192.0.2.5"], allow_rules=[{"port": 80, "from": "192.0.2.10/32"},
+                                                    {"port": 80, "from": "192.0.2.10"}],
+        route_rules=[{"port": 9000, "from": "198.51.100.77/24"}],
+        detected=["443 tcp"], upstreams=["192.0.2.7/255.255.255.255", "192.0.2.7"],
+        deny_egress=[{"to": "198.51.100.1/32", "port": 8200}, {"to": "198.51.100.1", "port": 8200}],
+        bridges=["podman1"])
+    assert [r["tag"] for r in got] == [
+        "agent-cloud:in:22/tcp:192.0.2.5", "agent-cloud:in:80/tcp:192.0.2.10",
+        "agent-cloud:route:9000/tcp:198.51.100.0/24", "agent-cloud:in:443/tcp:192.0.2.7",
+        "agent-cloud:in-on:53/udp:podman1", "agent-cloud:in-on:53/tcp:podman1",
+        "agent-cloud:out-deny:8200/tcp:198.51.100.1"]
+    # and a stored tag's peer reads back in the same spelling, whichever version wrote it
+    [old, new] = rules.ufw_parse_added([
+        "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7/32'",
+        "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7'"])
+    assert old["peer"] == new["peer"] == "192.0.2.7" and old["tag"] != new["tag"]
+
+
 def test_a_rule_naming_no_address_is_marked_dual_family():
     got = {r["spec"]: r["dual_family"] for r in rules.ufw_desired_rules(
         ["192.0.2.0/24", "any"], allow_rules=[{"port": 80, "from": "any"}], bridges=["podman1"],
@@ -251,3 +282,89 @@ def test_an_explicit_null_is_never_read_as_a_default():
     [_, allow] = rules.ufw_desired_rules(["192.0.2.0/24"],
                                          allow_rules=[{"port": 80, "proto": None, "from": "192.0.2.5"}])
     assert allow["cmd"] == "allow from 192.0.2.5 to any port 80 proto None"
+
+
+# ── Egress denials (ufw_egress_problems). RFC 5737 / RFC 3849 documentation ranges stand in
+# for the declared management prefixes; real addresses live only in site-config.
+MGMT = ["192.0.2.0/24", "198.51.100.0/24"]
+
+
+@pytest.mark.parametrize("entry", [
+    # the shape the runner hosts declare: every target INSIDE the management prefix, which is
+    # why the guard must never be phrased as "reject anything within an SSH CIDR" (MISTAKES 2.5)
+    {"to": "192.0.2.164", "port": 8200, "comment": "secret store"},
+    {"to": "192.0.2.117", "port": 3000},
+    {"to": "192.0.2.110/32", "port": 8006},
+    {"to": "192.0.2.5/255.255.255.255"},
+    {"to": " 192.0.2.9 ", "port": "8200", "proto": "any"},
+    {"to": "192.0.2.10", "port": 53, "proto": "udp"},
+    {"to": "2001:db8::1/128"},
+    {"to": "2001:db8::1", "broad": False},
+    # a wider mask, flagged and justified: outside the management prefixes, or inside one
+    {"to": "203.0.113.0/24", "broad": True, "reason": "third-party range"},
+    {"to": "192.0.2.128/25", "broad": "yes", "reason": "the upper half, not the whole prefix"},
+])
+def test_an_egress_denial_the_platform_really_declares_is_accepted(entry):
+    assert rules.ufw_egress_problems([entry], MGMT) == []
+
+
+@pytest.mark.parametrize("entry,why", [
+    # a supernet of the management network: the self-lock, refused even flagged and justified
+    ({"to": "192.0.0.0/16", "broad": True, "reason": "stated"}, "contains or equals the SSH CIDR 192.0.2.0/24"),
+    ({"to": "192.0.2.0/24", "broad": True, "reason": "stated"}, "contains or equals the SSH CIDR 192.0.2.0/24"),
+    # the same network spelled with host bits set, as ufw would store it
+    ({"to": "192.0.2.1/24", "broad": True, "reason": "stated"}, "contains or equals the SSH CIDR 192.0.2.0/24"),
+    ({"to": "192.0.2.77/255.255.255.0", "broad": True, "reason": "x"}, "contains or equals"),
+    ({"to": "0.0.0.0/0", "broad": True, "reason": "everything"}, "contains or equals the SSH CIDR 198.51.100.0/24"),
+    # wider than one address without the flag, or flagged without a reason
+    ({"to": "192.0.2.0/24"}, "names more than one address"),
+    ({"to": "203.0.113.0/24"}, "names more than one address"),
+    ({"to": "203.0.113.0/24", "broad": True}, "requires a `reason`"),
+    ({"to": "203.0.113.0/24", "broad": True, "reason": "  "}, "requires a `reason`"),
+    ({"to": "203.0.113.0/24", "broad": "maybe", "reason": "x"}, "`broad` must be true or false"),
+    # no destination, or one that is not an address (`any` would deny all egress)
+    ({"port": 8200}, "`to` is required"),
+    ({"to": ""}, "`to` is required"),
+    ({"to": None}, "`to` is required"),
+    ({"to": "any"}, "`to` is required"),
+    ({"to": "vault.example.test"}, "`to` is required"),
+    ({"to": "999.1.1.1"}, "`to` is required"),
+    # a port that is not one port: null or empty must not read as "no port" and widen the denial
+    ({"to": "198.51.100.1", "port": None}, "is not one port"),
+    ({"to": "198.51.100.1", "port": ""}, "is not one port"),
+    ({"to": "198.51.100.1", "port": 0}, "is not one port"),
+    ({"to": "198.51.100.1", "port": 70000}, "is not one port"),
+    ({"to": "198.51.100.1", "port": "22,80"}, "is not one port"),
+    ({"to": "198.51.100.1", "port": True}, "is not one port"),
+    ({"to": "198.51.100.1", "port": 8200, "proto": None}, "is not tcp, udp or any"),
+    ({"to": "198.51.100.1", "port": 8200, "proto": "icmp"}, "is not tcp, udp or any"),
+    ("192.0.2.164", "an entry is a mapping"),
+])
+def test_an_egress_denial_that_is_not_scoped_is_refused(entry, why):
+    problems = rules.ufw_egress_problems([entry], MGMT)
+    assert any(why in p for p in problems), problems
+
+
+def test_egress_containment_is_compared_in_the_spelling_ufw_stores():
+    # A /32 SSH CIDR and the bare address are one host: denying it is denying the SSH source.
+    assert rules.ufw_egress_problems([{"to": "192.0.2.5"}], ["192.0.2.5/32"])
+    assert rules.ufw_egress_problems([{"to": "192.0.2.5/32"}], ["192.0.2.5"])
+    # A broad range over a single-host SSH source contains it.
+    assert rules.ufw_egress_problems([{"to": "192.0.2.0/28", "broad": True, "reason": "x"}], ["192.0.2.5"])
+    # IPv6: a supernet is refused, and families never contain each other.
+    assert rules.ufw_egress_problems([{"to": "2001:db8::/16", "broad": True, "reason": "x"}], ["2001:db8::/32"])
+    assert rules.ufw_egress_problems([{"to": "192.0.0.0/8", "broad": True, "reason": "x"}], ["2001:db8::/32"]) == []
+
+
+def test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe():
+    assert rules.ufw_egress_problems([], ["mgmt-net"]) == []  # nothing declared: nothing to prove
+    [problem] = rules.ufw_egress_problems([{"to": "198.51.100.1"}], ["mgmt-net"])
+    assert "SSH CIDR 'mgmt-net' is not an address" in problem
+    # `any` is the whole address space: a host inside it is fine, the whole space is not
+    assert rules.ufw_egress_problems([{"to": "198.51.100.1"}], ["any"]) == []
+    assert rules.ufw_egress_problems([{"to": "::/0", "broad": True, "reason": "x"}], ["any"])
+
+
+def test_every_problem_of_an_entry_is_reported_not_only_the_first():
+    problems = rules.ufw_egress_problems([{"to": "192.0.0.0/16", "port": 0, "proto": "icmp"}], MGMT)
+    assert len(problems) == 4, problems  # not broad, contains the SSH CIDR, port, proto
