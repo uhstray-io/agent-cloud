@@ -421,10 +421,14 @@ def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rul
     assert not any('"delete"' in line for line in _log(tmp_path))
 
 
-def test_an_egress_port_or_proto_that_is_not_one_is_refused_before_any_rule_is_added(tmp_path):
+def test_an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added(tmp_path):
+    # ufw_egress_problems' cases are unit-tested in test_ufw_rules_filter.py; this proves the
+    # playbook refuses on it before a single rule is added, one host per shape.
     bad = {"null_port": {"port": None}, "empty_port": {"port": ""}, "port_zero": {"port": 0},
            "port_high": {"port": 70000}, "null_proto": {"port": 8200, "proto": None},
-           "icmp": {"port": 8200, "proto": "icmp"}}
+           "icmp": {"port": 8200, "proto": "icmp"},
+           # a supernet of the SSH CIDR: refused even flagged broad and justified
+           "supernet": {"to": "192.0.0.0/16", "broad": True, "reason": "stated"}}
     hosts = {name: {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", **entry}]}} for name, entry in bad.items()}
     hosts["good"] = {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", "port": "8200", "proto": "any"},
                                                        {"to": "198.51.100.2", "port": 53, "proto": "udp"}]}}
