@@ -857,14 +857,13 @@ templates:
         type: string
         required: true
 
-  # The workflow conformance collector: reads task history, writes each service's step status
-  # to NetBox (and Loki when collector_loki_url is set). The only writer of that status.
-  - name: Collect Service Conformance
+  # The workflow conformance collector: runs from Dev, writes each service's step status to
+  # NetBox, and writes Loki only when its private ingestion path is declared. The only writer.
+  - name: Collect Service Conformance (Dev)
     playbook: platform/playbooks/collect-service-conformance.yml
-    # The (Dev) copy runs the collector from dev before promotion. It never carries the
-    # schedule (setup-templates.yml attaches schedules to the base only), so production
-    # does not get a second scheduled writer; it is launched by hand.
-    dev_variant: true
+    # Keep this live Dev template's name so full-catalog publication updates it in place. Its
+    # declared schedule attaches here; no main-bound base or generated second copy is published.
+    repository: agent-cloud dev
     schedule:
       cron: "*/15 * * * *"
 
@@ -1443,6 +1442,12 @@ templates:
       - name: semaphore_allow_scoped_create
         title: "Create one missing template"
         description: "Default false. Requires one exact name and verified project, inventory, and variable-group IDs."
+        type: string
+        required: false
+        default_value: "false"
+      - name: semaphore_allow_scoped_schedule
+        title: "Publish one declared Dev schedule"
+        description: "Default false. Requires one existing scheduled (Dev) template; no template creation or binding changes."
         type: string
         required: false
         default_value: "false"

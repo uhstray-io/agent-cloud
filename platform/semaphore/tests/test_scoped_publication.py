@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 NAME = "Store tududi API Token (Dev)"
+CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
     "id": 206,
     "name": NAME,
@@ -654,6 +655,76 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play()
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.writes), 1, "Identical second publication must perform no writes")
+
+    def test_controller_scoped_schedule_opt_in_is_exact_and_verified(self):
+        self.records[0].update(name=CONFORMANCE_NAME, playbook="platform/playbooks/collect-service-conformance.yml")
+        unrelated_schedule = {"id": 401, "project_id": 1, "template_id": 99,
+                              "name": "Unrelated schedule", "cron_format": "0 2 * * *", "active": True}
+        type(self).schedules = [copy.deepcopy(unrelated_schedule)]
+        code, output = self.run_play(selection=[CONFORMANCE_NAME],
+                                     semaphore_allow_scoped_schedule="true")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [("POST", "/api/project/1/schedules")])
+        self.assertEqual(self.schedules[0], unrelated_schedule)
+        self.assertEqual(self.schedules[1]["template_id"], 206)
+        self.assertEqual(self.schedules[1]["name"], CONFORMANCE_NAME)
+        self.assertEqual(self.schedules[1]["cron_format"], "*/15 * * * *")
+        self.assertTrue(self.schedules[1]["active"])
+
+        self.setUp()
+        self.records[0].update(name=CONFORMANCE_NAME, playbook="platform/playbooks/collect-service-conformance.yml")
+        type(self).schedules = [{"id": 400, "project_id": 1, "template_id": 206,
+                                 "name": CONFORMANCE_NAME, "cron_format": "0 * * * *", "active": False}]
+        code, output = self.run_play(selection=[CONFORMANCE_NAME],
+                                     semaphore_allow_scoped_schedule="true")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [("PUT", "/api/project/1/schedules/400")])
+        self.assertEqual(self.schedules[0]["cron_format"], "*/15 * * * *")
+        self.assertTrue(self.schedules[0]["active"])
+
+        self.setUp()
+        self.records[0].update(name=CONFORMANCE_NAME, playbook="platform/playbooks/collect-service-conformance.yml")
+        type(self).schedules = [{"id": 400, "project_id": 1, "template_id": 999,
+                                 "name": CONFORMANCE_NAME, "cron_format": "0 * * * *", "active": True}]
+        code, output = self.run_play(selection=[CONFORMANCE_NAME],
+                                     semaphore_allow_scoped_schedule="true")
+        self.assertNotEqual(code, 0)
+        self.assertIn("already belongs to a different template", output)
+        self.assertEqual(self.writes, [])
+
+    def test_controller_scoped_schedule_refuses_non_dev_multi_missing_and_generated(self):
+        invalid_cases = ((["Deploy NetBox"], {}),
+                         ([CONFORMANCE_NAME, "Deploy NetBox"], {}),
+                         ([CONFORMANCE_NAME], {"semaphore_allow_scoped_create": "true"}))
+        for selection, extra in invalid_cases:
+            with self.subTest(selection=selection, extra=extra):
+                self.setUp()
+                code, output = self.run_play(controller_wrapper=True, selection=selection,
+                                             semaphore_allow_scoped_schedule="true",
+                                             _semaphore_url="http://127.0.0.1:3000", **extra)
+                self.assertNotEqual(code, 0)
+                self.assertIn("Scoped schedule publication requires one existing (Dev) template", output)
+                self.assertEqual(self.requests, [])
+
+        self.setUp()
+        self.records.clear()
+        code, _ = self.run_play(selection=[CONFORMANCE_NAME],
+                                semaphore_allow_scoped_schedule="true")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.writes, [])
+
+        self.setUp()
+        # A generated Dev variant inherits schedules but is not the directly
+        # Dev-bound declaration that this opt-in is designed to publish.
+        code, output = self.run_play(selection=["Collect Service Conformance (Dev)"],
+                                     semaphore_allow_scoped_schedule="true",
+                                     _base_templates=[{"name": "Collect Service Conformance",
+                                                      "playbook": "platform/playbooks/collect-service-conformance.yml",
+                                                      "dev_variant": True,
+                                                      "schedule": {"cron": "*/15 * * * *"}}])
+        self.assertNotEqual(code, 0)
+        self.assertIn("directly Dev-bound", output)
+        self.assertEqual(self.writes, [])
 
     def test_invalid_scope_refuses_before_network(self):
         for selection in ([], "all", [NAME, NAME], ["missing"]):

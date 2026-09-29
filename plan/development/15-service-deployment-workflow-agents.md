@@ -363,6 +363,8 @@ One entry per step:
 
 **Acceptance criteria:** after one scheduled run the dashboard shows every service with a deploy playbook; a deliberately failed step appears with its excerpt within one schedule interval.
 
+**Current correction, 2026-09-29:** the last production collector run (task 1341) reported `loki: skipped`. Source declared the schedule on the unsuffixed base, but live Semaphore has only `Collect Service Conformance (Dev)` (ID 234) and no schedule. Keep that exact name, bind it directly to `agent-cloud dev`, and attach its one schedule through full-catalog publication so it updates in place. Make dashboard absence explicit and reduce Service Overview health per service so partial scrape failures remain visible. Production inventory read-back shows Loki bound privately, but the collector sender CIDR has no Loki firewall allowance and no collector ingestion URL; Alloy's host port is OTLP/gRPC and has no collector OTLP/HTTP path. Do not infer an address or add direct Loki ingress. Production log delivery remains blocked until the collector-to-receiver path and sender rule are chosen and declared; delivery errors must fail visibly.
+
 ### Phase 3: New executors
 
 **Goal:** every step has an executor.

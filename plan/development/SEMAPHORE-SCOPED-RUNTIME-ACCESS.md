@@ -36,7 +36,11 @@ flowchart LR
 2. Add exact-name, existing-record-only template publication. Reject empty,
    unknown, duplicate or ambiguous selections before writes. Preserve current
    inventory, environment and operational settings; refuse mismatched repository
-   or playbook bindings. Scoped survey publication never publishes schedules.
+   or playbook bindings. Scoped survey publication skips schedules by default.
+   A separate explicit opt-in may upsert one schedule only when the selected
+   declaration is a directly Dev-bound `(Dev)` template with an existing
+   matching record; it must preserve all bindings and refuse schedule collisions,
+   broad selections, and missing templates. Read back the selected schedule.
    A separate bootstrap installs only the generated Dev publisher with explicit
    reviewed target IDs; no full-catalog update or controller restart.
 3. Exercise the actual playbook against disposable HTTP fixtures: one-template
@@ -61,8 +65,23 @@ instance/pair identity and exact relevant revisions, as specified in the
 Before expanding beyond dev-test, implement and review provisioning refusal:
 agent-cloud requires a valid dev-test pass; every later pair requires both passes.
 Missing, failed or stale evidence must reject activation before engine writes,
-while preserving the kill switch. This enforcement is not implemented by the
-token-default fix; other pairs remain disabled until that prerequisite is met.
+   while preserving the kill switch. This enforcement is not implemented by the
+   token-default fix; other pairs remain disabled until that prerequisite is met.
+
+### Follow-up: publish one declared Dev schedule
+
+Implemented in `platform/playbooks/publish-semaphore-templates.yml` and
+`platform/semaphore/setup-templates.yml`; the publisher survey defaults the
+opt-in to false. The scoped publisher's default remains survey-only. When explicitly enabled, it
+may publish a schedule only for one selected existing `(Dev)` template whose
+declaration binds directly to `agent-cloud dev` and contains a schedule. The
+publisher rejects creation and binding inputs in this mode. The applier reads the
+schedule list, refuses ambiguous or differently-bound same-name schedules,
+upserts the selected declaration only, and verifies the saved template ID,
+cron,
+and active state. This lets the conformance collector's Dev-bound schedule be
+applied through the reviewed controller publisher without opening full-catalog
+publication.
 
 ## Validation Criteria
 

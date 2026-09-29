@@ -22,7 +22,7 @@
   "description": "Per-service status of every service deployment workflow step, as last recorded by Collect Service Conformance (the only writer). Plan 15; change service-deployment-workflow task 7.5.",
   "panels": [
     {
-      "title": "Failing steps",
+      "title": "Recent failed step reports",
       "type": "stat",
       "datasource": {
         "type": "loki",
@@ -34,10 +34,10 @@
         "x": 0,
         "y": 0
       },
-      "description": "(service, step) pairs whose latest recorded result is fail.",
+      "description": "Unique (service, step) pairs with a fail report in the last 16 minutes. Recent successful reports may overlap this window for up to one collector interval. No conformance records in the window means telemetry is unavailable, not zero failures.",
       "fieldConfig": {
         "defaults": {
-          "noValue": "0",
+          "noValue": "No recent data",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "count(sum by (service, step) (count_over_time({job=\"agent-cloud-conformance\", status=\"fail\"} [16m])))"
+          "expr": "count(sum by (service, step) (count_over_time({job=\"agent-cloud-conformance\", status=\"fail\"} [16m]))) or (sum(count_over_time({job=\"agent-cloud-conformance\"} [16m])) * 0)"
         }
       ]
     },
@@ -81,7 +81,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "noValue": "0",
+          "noValue": "No recent data",
           "thresholds": {
             "mode": "absolute",
             "steps": [

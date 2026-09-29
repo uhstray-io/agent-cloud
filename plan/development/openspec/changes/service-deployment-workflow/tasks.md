@@ -256,18 +256,36 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         - custom fields: 1335, 1336, re-checked by 1337 (all three unchanged);
         - `workflow-collector` token minted into `collector_api_token`: 1338, 1339;
         - collector: dry run 1340, real run 1341 (ok=30, changed=1, failed=0).
-        **The NetBox write is proven live.** It PATCHed the workflow custom fields on seven
+        The contemporaneous task record describes PATCHing workflow custom fields on seven
         existing VM records (caddy, n8n, nemoclaw, netbox, nocodb, openbao, semaphore); it
-        creates and replaces no record. Seven services have no VM record;
-        none was unreachable or ambiguous. It reported four real failures from history:
+        records no create or replacement. Seven services have no VM record; none was recorded
+        unreachable or ambiguous. Re-read task 1341's raw report before relying on its
+        `netbox_written` receipt. The record listed four failures from history:
         agentgateway and github-runner provision-vm, authentik oidc-config, postiz
         secrets-approle. OPEN:
         - the production Loki push: `collector_loki_url` is not set in the production
           inventory, so the push was skipped;
-        - a schedule: the (Dev) copy carries none, and the scheduled base runs `main`, which
-          has no collector until promotion.
+        - the source schedule was attached to the unsuffixed base while the generated (Dev)
+          copy carried none; live Semaphore had only the (Dev) template and no schedule.
         - 2026-09-26: the collector has not run since task 1341, so NetBox and Loki do not yet
           carry the systemd-enablement and service-validate results recorded that day (7.2, 7.9).
+      - Correction plan, 2026-09-29: the collector record for task 1341 says `loki: skipped`;
+        its NetBox write summary needs raw-output read-back before it is treated as verified.
+        The Grafana panels therefore show no recent samples, and the failure stat's `noValue: 0`
+        can misstate missing telemetry as healthy. Source declared the
+        schedule on the unsuffixed base, but live Semaphore has only the `Collect Service
+        Conformance (Dev)` template (ID 234) and no schedule. Keep that exact name, bind it
+        directly to `agent-cloud dev`, and attach its one schedule through the explicit,
+        single-template Dev schedule opt-in on the controller publisher. Do not use the
+        unavailable full-catalog publication path. Make missing Loki samples read as `No data`; in
+        Service Overview use the minimum target health per service, list failed targets, and retain
+        the existing Prometheus-derived selector scope for metric-enabled services. Production
+        inventory read-back shows Loki bound to a private address, but the collector sender CIDR
+        has no Loki firewall allowance and no collector ingestion URL is declared. Alloy's host
+        port is OTLP/gRPC; no collector OTLP/HTTP path is declared. Do not infer an address or add
+        direct Loki ingress. Production log delivery remains blocked until the collector-to-
+        receiver path and sender rule are chosen and declared; delivery errors must then fail
+        visibly.
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,

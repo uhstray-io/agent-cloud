@@ -37,6 +37,18 @@
         fail_msg: "The controller may create one declared (Dev) template per run."
       when: semaphore_allow_scoped_create | default(false) | bool
 
+    - name: "Limit scoped schedule publication to one Dev template"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json | from_json | length == 1
+          - (semaphore_template_names_json | from_json | first) is match('^.+ \(Dev\)$')
+          - not (semaphore_allow_scoped_create | default(false) | bool)
+          - semaphore_project_id | default('') | string | trim | length == 0
+          - semaphore_inventory_id | default('') | string | trim | length == 0
+          - semaphore_environment_id | default('') | string | trim | length == 0
+        fail_msg: "Scoped schedule publication requires one existing (Dev) template and accepts no create bindings."
+      when: semaphore_allow_scoped_schedule | default(false) | bool
+
 - name: "Publish the selected declared surveys using controller runtime access"
   ansible.builtin.import_playbook: ../semaphore/setup-templates.yml
   vars:
