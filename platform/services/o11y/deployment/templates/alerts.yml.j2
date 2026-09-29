@@ -62,6 +62,57 @@ groups:
           group_interval: 5m
           repeat_interval: 4h
 {% endif %}
+      - uid: o11y_receiver_root_disk_low
+        title: Receiver host root filesystem below 10%
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1200, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: '100 * node_filesystem_avail_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"} / node_filesystem_size_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"}'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: lt, params: [10] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: Alerting
+        executionErrorState: Alerting
+        for: 15m
+        annotations:
+          summary: The o11y receiver host root filesystem has less than 10% free space.
+          dashboard_url: /d/o11y-self-monitoring
+          description: Review guest root and named-volume backing capacity before retention or growth changes.
+        labels:
+          severity: warning
+          service: 'o11y/receiver-host'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
 {# The local inventory generated before this rollout still needs the Caddy pilot
    contract; a declared inventory list overrides this default. #}
 {% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}

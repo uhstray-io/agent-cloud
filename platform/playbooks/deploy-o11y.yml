@@ -824,6 +824,7 @@
           ansible.builtin.assert:
             that:
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
+              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_receiver_root_disk_low') | list | length == 1
               - _o11y_rules | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules | length
               - _o11y_rules | selectattr('notification_settings', 'defined') | list | length == _o11y_rules | length
               - _o11y_rules | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0

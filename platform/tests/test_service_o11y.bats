@@ -788,16 +788,27 @@ targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy',
 for enabled in (False, True):
     for declared in ([], targets):
         rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False, o11y_alerts_enabled=enabled))['groups'][0]['rules']
-        assert [rule['uid'] for rule in rules] == ['o11y_service_down'] + [target['uid'] for target in declared]
+        assert [rule['uid'] for rule in rules] == ['o11y_service_down', 'o11y_receiver_root_disk_low'] + [target['uid'] for target in declared]
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
         assert rules[0]['annotations']['dashboard_url'] == '/d/service-overview?var-service={{ $labels.service }}'
         assert rules[0]['labels']['owner'] == 'platform-operations'
         assert rules[0]['labels']['environment'] == 'prod'
+        disk_rule = rules[1]
+        assert disk_rule['for'] == '15m'
+        assert disk_rule['labels']['severity'] == 'warning'
+        assert disk_rule['labels']['service'] == 'o11y/receiver-host'
+        assert disk_rule['labels']['owner'] == 'platform-operations'
+        assert disk_rule['data'][0]['model']['expr'] == (
+            '100 * node_filesystem_avail_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"} '
+            '/ node_filesystem_size_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"}'
+        )
+        assert disk_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [10]}
+        assert disk_rule['noDataState'] == 'Alerting'
         if declared:
-            assert rules[1]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
-            assert rules[1]['labels']['service'] == 'caddy-reverse-proxy/caddy'
-            assert rules[1]['labels']['owner'] == 'platform-operations'
+            assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
+            assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
+            assert rules[2]['labels']['owner'] == 'platform-operations'
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
@@ -808,7 +819,7 @@ for enabled in (False, True):
         assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
         assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
         if declared:
-            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[1]['data'][0]['model']['expr']
+            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[2]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
     if enabled:
         receiver = contact['contactPoints'][0]['receivers'][0]
@@ -819,13 +830,59 @@ for enabled in (False, True):
     else:
         assert contact['deleteContactPoints'][0]['uid'] == 'o11y_ops_discord'
 local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rules']
-assert local_rules[1]['uid'] == 'o11y_missing_caddy'
+assert local_rules[1]['uid'] == 'o11y_receiver_root_disk_low'
+assert local_rules[1]['isPaused'] is True
+assert local_rules[2]['uid'] == 'o11y_missing_caddy'
 canary = 'o11y-fault-probe-' + 'a' * 12
 canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabled=True,
                                               o11y_alert_canary_service=canary))['groups'][0]['rules']
 assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
 assert canary_rules[0]['isPaused'] is False
 assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
+PY
+}
+
+@test "o11y: backup readiness survey is reviewed, credential-safe, read-only, and sanitized" {
+  python3 - "$REPO_ROOT/platform/playbooks/survey-o11y-backup-readiness.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+
+import yaml
+
+playbook = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+survey = next(play for play in playbook if play.get('name') == 'Survey Proxmox backup readiness')
+tasks = survey['tasks']
+api_reads = [task for task in tasks if 'ansible.builtin.uri' in task]
+assert len(api_reads) == 3
+assert all(task['ansible.builtin.uri']['method'] == 'GET' for task in api_reads)
+assert all(task.get('no_log') is True for task in api_reads)
+assert all(task.get('check_mode') is False for task in api_reads)
+credential_tasks = [
+    task for task in tasks
+    if task['name'] in ('Read Proxmox API credentials from OpenBao', 'Derive Proxmox API connection values')
+]
+assert len(credential_tasks) == 2
+assert all(task.get('no_log') is True for task in credential_tasks)
+summarize = next(task for task in tasks if task['name'] == 'Summarize backup listing without exposing storage or artifact details')
+assert summarize.get('no_log') is True
+assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-bao-transport.yml' for task in tasks)
+assert any(task.get('ansible.builtin.assert', {}).get('that') == "_pve_host is match('^https://')" for task in tasks)
+summary = next(task for task in tasks if task['name'] == 'Report sanitized backup and restore prerequisites')
+fields = summary['ansible.builtin.debug']['msg']
+assert set(fields) == {
+    'survey', 'target_vm_verified', 'backup_capable_storage_count',
+    'candidate_backup_artifact_count', 'artifact_immutability_verified',
+    'isolated_restore_target_verified', 'restore_test_verified', 'next_gate',
+}
+assert fields['artifact_immutability_verified'] is False
+assert fields['isolated_restore_target_verified'] is False
+assert fields['restore_test_verified'] is False
+templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
+item, = (item for item in templates if item['name'] == 'Survey o11y Backup Readiness (Dev)')
+assert item['playbook'] == 'platform/playbooks/survey-o11y-backup-readiness.yml'
+assert item['repository'] == 'agent-cloud dev'
+sha, = (field for field in item['survey_vars'] if field['name'] == 'expected_repository_sha')
+assert sha['required'] is True
+assert len(item['survey_vars']) == 1
 PY
 }
 
@@ -855,15 +912,17 @@ settings = {
     'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
 }
 healthy = {'uid': 'o11y_service_down', 'isPaused': False, 'notification_settings': settings}
+healthy_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False, 'notification_settings': settings}
 wrong_group = {'uid': 'o11y_service_down', 'isPaused': False,
                'notification_settings': settings | {'group_by': ['instance']}}
 for rules, expected in [
-    ([healthy], True),
-    ([healthy, {'uid': 'unrelated', 'isPaused': True}], True),
-    ([healthy, {'uid': 'o11y_missing_caddy', 'isPaused': True}], False),
+    ([healthy, healthy_disk], True),
+    ([healthy, healthy_disk, {'uid': 'unrelated', 'isPaused': True}], True),
+    ([healthy, healthy_disk, {'uid': 'o11y_missing_caddy', 'isPaused': True}], False),
+    ([healthy], False),
     ([{'uid': 'unrelated', 'isPaused': False}], False),
-    ([{'uid': 'o11y_service_down'}], False),
-    ([{'uid': 'o11y_service_down', 'isPaused': False}], False),
+    ([{'uid': 'o11y_service_down'}, healthy_disk], False),
+    ([healthy, {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False}], False),
     ([wrong_group], False),
 ]:
     scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
