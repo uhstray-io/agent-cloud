@@ -33,7 +33,7 @@ flowchart LR
 1. Split the current serial test job into independent Python core, Python NetBox, BATS, and Rego jobs. Python core runs root `pytest` with only the existing NetBox node ID prefix deselected, so future `testpaths` additions still run. Python NetBox runs its explicit directory. Both Python jobs report the 20 slowest tests for diagnosis. Keep the original Python dependencies available to BATS, including its signing and playbook checks. Acceptance: the Python collections are disjoint and their union equals the current root collection.
 2. Add an `always()` aggregate `Unit Tests` job that succeeds only if all four result values are `success`. Acceptance: a failed or cancelled group makes the aggregate fail.
 3. Run the PR's normal CI and compare job durations with the measured serial baseline. Acceptance: all groups and the aggregate pass; report actual wall time rather than a projected saving.
-4. Bound every child process launched through `platform/tests/harness_sandbox.py` to 120 seconds and run Python core with pytest fail-fast (`-x`). The full PR #342 Python core baseline was 12m06s, while the two PR #338 attempts exceeded 30 and 45 minutes. The per-process cap leaves room for a slow playbook test while ending a stuck harness promptly; fail-fast stops the suite after the first failure. Timeout results suppress captured stdout and stderr because test output may contain fixture credentials. These safeguards bound execution and improve diagnosis; they do not identify the cause of the earlier stalls.
+4. Bound every child process launched through `platform/tests/harness_sandbox.py` to 120 seconds and run Python core with pytest fail-fast (`-x`). The full PR #342 Python core baseline was 12m06s, while the two PR #338 attempts exceeded 30 and 45 minutes. The per-process cap leaves room for a slow playbook test while ending a stuck harness promptly; fail-fast stops the suite after the first failure. A timeout raises a sanitized error with captured stdout and stderr suppressed, so a hang cannot satisfy a negative test and fixture credentials stay out of the error. These safeguards bound execution and improve diagnosis; they do not identify the cause of the earlier stalls.
 
 ## Validation Criteria
 
@@ -44,7 +44,7 @@ flowchart LR
 | Rego | Both pinned-image `check --strict` and `test` remain covered |
 | Gate | Aggregate fails for any non-success dependency |
 | CI | Every required group and the aggregate are green on the PR head |
-| Harness timeout | A timed-out child fails with sanitized output within the configured limit |
+| Harness timeout | A timed-out child raises a sanitized failure within the configured limit |
 
 ## Security Considerations
 
