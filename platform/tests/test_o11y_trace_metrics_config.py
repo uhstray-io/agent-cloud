@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
 
@@ -113,5 +114,78 @@ def test_production_metrics_enablement_requires_all_recorded_gates_and_live_read
     )
     assert "| default([], true) | list | sort" in processor_check
     assert "['service-graphs', 'span-metrics']" in processor_check
+    config_tasks = [task for task in deploy_tasks if task.get("no_log") is True]
+    assert any(task["name"] == "Read Tempo's effective metrics-generator configuration" for task in config_tasks)
+    parse_task = next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Parse Tempo's effective configuration YAML documents"
+    )
+    assert "from_yaml_all" in parse_task["ansible.builtin.set_fact"]["_tempo_config_documents"]
+    candidate_task = next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Select Tempo configuration documents by expected top-level keys"
+    )
+    candidate_filter = candidate_task["ansible.builtin.set_fact"]["_tempo_config_candidates"]
+    assert "from_yaml_all" in candidate_filter
+    assert "selectattr('metrics_generator', 'defined')" in candidate_filter
+    assert "selectattr('overrides', 'defined')" in candidate_filter
+    candidate_gate = next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Require exactly one identifiable Tempo configuration document"
+    )
+    assert candidate_gate["ansible.builtin.assert"]["that"] == "_tempo_config_candidates | length == 1"
+    assert "_tempo_config_candidates | length" in candidate_gate["ansible.builtin.assert"]["fail_msg"]
+    assert "_tempo_config_documents | length" in candidate_gate["ansible.builtin.assert"]["fail_msg"]
     trace_gate = next(task for task in deploy_tasks if "recorded trace rollout gate" in task["name"])
     assert "o11y_trace_derived_metrics_enabled | default(false) | bool" in trace_gate["when"]
+
+
+def test_tempo_status_config_readback_selects_one_mapping_from_multiple_yaml_documents():
+    # Generic multi-document contract fixture; this does not claim the exact live Tempo response shape.
+    response = """\
+server:
+  http_listen_port: 3200
+---
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+overrides:
+  defaults:
+    metrics_generator:
+      processors: []
+      max_active_series: 2000
+"""
+    with pytest.raises(yaml.composer.ComposerError, match="expected a single document"):
+        yaml.safe_load(response)
+
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
+    deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
+    candidate_task = next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Select Tempo configuration documents by expected top-level keys"
+    )
+    candidate_filter = candidate_task["ansible.builtin.set_fact"]["_tempo_config_candidates"].strip()
+    assert candidate_filter.startswith("{{") and candidate_filter.endswith("}}")
+    environment = Environment()
+    environment.filters["from_yaml_all"] = yaml.safe_load_all
+    select_candidates = environment.compile_expression(candidate_filter[2:-2])
+
+    def matching_configs(config_text: str) -> list[dict]:
+        return select_candidates(_tempo_config={"stdout": config_text})
+
+    candidates = matching_configs(response)
+    assert len(list(yaml.safe_load_all(response))) == 2
+    assert len(candidates) == 1
+    assert candidates[0]["overrides"]["defaults"]["metrics_generator"]["max_active_series"] == 2000
+    assert matching_configs("") == []
+    assert matching_configs("server:\n  http_listen_port: 3200\n") == []
+    ambiguous_response = yaml.safe_dump_all(
+        list(yaml.safe_load_all(response)) + [candidates[0]]
+    )
+    assert len(matching_configs(ambiguous_response)) == 2

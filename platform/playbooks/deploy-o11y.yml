@@ -523,20 +523,56 @@
           - sh
           - -c
           - curl -fsS http://tempo:3200/status/config
+      # Tempo's status config can expose remote-storage credentials.
       register: _tempo_config
+      no_log: true
       changed_when: false
       retries: 6
       delay: 5
       until: _tempo_config.rc == 0
       when: not ansible_check_mode
 
+    - name: Parse Tempo's effective configuration YAML documents
+      ansible.builtin.set_fact:
+        _tempo_config_documents: "{{ _tempo_config.stdout | from_yaml_all | list }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Select Tempo configuration documents by expected top-level keys
+      ansible.builtin.set_fact:
+        _tempo_config_candidates: >-
+          {{ _tempo_config.stdout
+             | from_yaml_all
+             | list
+             | select('mapping')
+             | selectattr('metrics_generator', 'defined')
+             | selectattr('overrides', 'defined')
+             | list }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require exactly one identifiable Tempo configuration document
+      ansible.builtin.assert:
+        that: _tempo_config_candidates | length == 1
+        fail_msg: >-
+          Tempo's effective config endpoint did not return exactly one identifiable
+          configuration document ({{ _tempo_config_candidates | length }} matched
+          among {{ _tempo_config_documents | length }} YAML documents).
+      when: not ansible_check_mode
+
+    - name: Retain the matching effective Tempo configuration
+      ansible.builtin.set_fact:
+        _tempo_effective_config: "{{ _tempo_config_candidates[0] }}"
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Require the effective Tempo processor, remote-write, and series limits
       ansible.builtin.assert:
         that:
-          - (((_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.processors | default([], true) | list | sort) == ((['service-graphs', 'span-metrics'] | sort) if o11y_trace_derived_metrics_enabled | default(false) | bool else []))
-          - (_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.max_active_series | int == 2000
-          - (_tempo_config.stdout | from_yaml).metrics_generator.storage.remote_write | selectattr('url', 'equalto', 'http://prometheus:9090/api/v1/write') | list | length == 1
-          - (_tempo_config.stdout | from_yaml).metrics_generator.storage.path == '/var/tempo/generator/wal'
+          - (_tempo_effective_config.overrides.defaults.metrics_generator.processors | default([], true) | list | sort) == ((['service-graphs', 'span-metrics'] | sort) if o11y_trace_derived_metrics_enabled | default(false) | bool else [])
+          - _tempo_effective_config.overrides.defaults.metrics_generator.max_active_series | int == 2000
+          - _tempo_effective_config.metrics_generator.storage.remote_write | selectattr('url', 'equalto', 'http://prometheus:9090/api/v1/write') | list | length == 1
+          - _tempo_effective_config.metrics_generator.storage.path == '/var/tempo/generator/wal'
         fail_msg: "Tempo's effective derived-metrics configuration does not match the bounded, gated source configuration."
       when: not ansible_check_mode
 
