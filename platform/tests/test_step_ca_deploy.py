@@ -176,3 +176,15 @@ def test_a_change_written_but_never_reloaded_is_reloaded(tmp_path):
     converged = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
     plan = _plan(tmp_path, converged, running=[_jwk("admin", "8760h0m0s")])
     assert plan == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}
+
+
+def test_the_issuer_password_comes_from_a_fact_manage_secrets_actually_sets():
+    # Production task 1971 failed here: the add read `secrets[...]`, which manage-secrets only
+    # defines as a task var of its template task, while the lifted tests stubbed a `secrets`
+    # fact and passed. Check the name against the real producer, not a stub.
+    import re
+    producer = yaml.safe_load((REPO / "platform/playbooks/tasks/manage-secrets.yml").read_text())
+    facts = {k for task in producer for k in (task.get("ansible.builtin.set_fact") or {})}
+    add = _task(_play(DEPLOY, "Phase 2.5"), "Add each missing issuing provisioner")
+    used = re.match(r"\{\{\s*(\w+)\[", add["ansible.builtin.command"]["stdin"]).group(1)
+    assert used in facts, f"{used} is not a fact manage-secrets.yml sets ({sorted(facts)})"

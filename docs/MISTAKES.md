@@ -74,6 +74,7 @@ and why.
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | Convention |
+| 2.25 | Lifted-task tests stubbed an upstream play's output under a fact name the real producer never sets; the first production run failed on it | False-green fixture | Test (name checked against the producer) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -1543,6 +1544,32 @@ production podman version was unknown, then built on the workstation's anyway. W
 a capability of a production tool is established on the version production runs (its man
 page at that tag, or a read-only report from the host), never on the workstation's.
 
+
+### 2.25 A test stubbed an upstream play's fact under a name the producer never sets (widens 2.22)
+
+**What happened.** On 2026-09-29 the first production run of `Deploy step-ca (Dev)` (Semaphore
+task 1971) failed at "Add each missing issuing provisioner": the task read the issuer password
+from `secrets[...]`, and `tasks/manage-secrets.yml` sets no `secrets` fact. It defines `secrets`
+only as a variable of its own template task; the resolved values live in the `_resolved` fact.
+The task is `no_log`, so the templating error was hidden. The lifted-task unit tests and an
+independent review's end-to-end run on throwaway CAs both replaced Phase 1 with a stub that set
+a `secrets` fact, so both passed. The review also asserted that manage-secrets sets it with
+set_fact, citing the template task's `vars:` line. The CA was left safe: root created, API on
+loopback, no ACME, no issuer provisioners yet.
+
+**Root cause.** 2.22's rule is about an external provider's response shape. Here the interface
+was internal: a fact one play leaves for a later play. The stub encoded the consumer's
+assumption about the name instead of the producer's actual output, and nothing compared the two.
+
+**The rule.** Supersedes 2.22's scope. A test that stubs what an earlier play or task file
+produces must take the name from the producer, or carry a check that the producer really sets
+it; a stub is never evidence of an interface. A reviewer's claim that a fact exists cites the
+set_fact line, not a line that mentions the name.
+
+**Enforced by.** `test_the_issuer_password_comes_from_a_fact_manage_secrets_actually_sets` in
+`platform/tests/test_step_ca_deploy.py`, for this interface. The general case is Convention;
+proposal: a shared helper for lifted-task tests that refuses to stub a fact name no task in the
+named producer file sets.
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
