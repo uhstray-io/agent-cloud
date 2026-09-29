@@ -32,4 +32,6 @@ def test_run_timeout_suppresses_captured_child_output(tmp_path, monkeypatch):
 
     assert "captured output suppressed" in str(error.value)
     assert secret_marker not in str(error.value)
+    assert error.value.__suppress_context__ is True
+    assert error.value.__cause__ is None
     assert time.monotonic() - started < 2
