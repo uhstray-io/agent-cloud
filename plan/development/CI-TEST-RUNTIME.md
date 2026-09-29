@@ -6,7 +6,7 @@
 
 ## Problem
 
-Long test groups delayed feedback and made hangs difficult to localize. Two PR #338 Python core attempts exceeded 45 minutes and 30 minutes; their logs were unavailable, so the stalled test and root cause remain unverified. A completed PR #342 Python core run took 12m06s. This points to an intermittent or run-specific stall, not a proven code regression.
+Long test groups delayed feedback and made hangs difficult to localize. Two earlier PR #338 Python core attempts exceeded 45 minutes and 30 minutes; their logs were unavailable. The cause is unverified. Completed post-split observations were: PR #342 Python core 12m06s; PR #338 run 36601767394, Python core 15m01s and Bash 11m26s; PR #338 run 36602570294, Python core and Bash both 11m51s.
 
 ## Design Principles
 
@@ -45,7 +45,7 @@ flowchart LR
 | Gate | Aggregate fails for any non-success dependency |
 | CI | Every required group and the aggregate are green on the PR head |
 | Harness timeout | A timed-out child raises a sanitized failure within the configured limit |
-| Python core runtime | The job terminates at its 20-minute ceiling |
+| Python core runtime | The job finishes before 20m; cancellation at the ceiling makes the aggregate gate fail |
 
 ## Security Considerations
 
