@@ -193,15 +193,17 @@ ancestry, and Podman's volume/graph filesystem capacity. It uses kernel device
 numbers to resolve `/dev/mapper` aliases against `lsblk`; ambiguous mappings
 fail closed. At that point, no runtime diagnostic receipt had been collected.
 
-Read-only production Semaphore task 1801 later confirmed that node-exporter was
-running with private PID isolation, a read-only host-root mount, one private
-network, and no published ports. Podman documents a private PID namespace as
-the default; task 1801's diagnostic normalized its raw PID readback to
-`private`. The deploy guard accepts only unset, empty, or `private` values and
-continues to reject host or unknown modes ([Podman run
-reference](https://docs.podman.io/en/latest/markdown/podman-run.1.html)). The
-previous deploy failure was an assertion mismatch: the source still expected
-host PID although the observed runtime was private. Task 1801 also confirmed
+Read-only production Semaphore task 1801 reported node-exporter with private
+PID isolation, a read-only host-root mount, one private network, and no
+published ports. Its diagnostic normalized raw PID readbacks of `None`, empty,
+or `private` to `private`. Podman documents a private PID namespace as the
+default ([Podman run
+reference](https://docs.podman.io/en/latest/markdown/podman-run.1.html)); the
+deploy guard accepts only unset, empty, or `private` values and rejects host or
+unknown modes. Task 1796 failed at the host-PID assertion while the source
+declared host PID; the cause of that declaration/runtime mismatch remains
+unresolved. No stale-container or Compose explanation has been established.
+Task 1801 also reported
 the guest root is ext4 on an LVM-backed
 virtual disk and that Podman's volume and graph paths share that filesystem;
 free space was 6.88%, below the 30% retention-expansion gate. Exact device
@@ -215,10 +217,11 @@ Dev-bound read-only Semaphore task 1802, at controller revision
 `o11y/receiver-host` target at `node-exporter:9100` and returned
 `node_filesystem_avail_bytes`. Semaphore tasks 1803 and 1804 also returned
 `node_cpu_seconds_total` and `node_memory_MemAvailable_bytes` for the same exact
-target. These three metrics plus task 1801's isolation readback prove private
-host CPU, memory, and filesystem visibility. Log delivery, a successful full
-deploy after the source correction, the seven-day capacity forecast, and the
-backup/restore prerequisite remain unproven.
+target. These receipts prove presence of the three metric families at that
+target, not that their samples describe the host `/` mountpoint or its values.
+The host-versus-guest root filesystem comparison remains pending a successful
+full deploy. Log delivery, the seven-day capacity forecast, and the
+backup/restore prerequisite also remain unproven.
 
 The o11y self-monitoring dashboard requires seven healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard

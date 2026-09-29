@@ -947,11 +947,12 @@ graph filesystem capacity. It joins findmnt and lsblk by kernel major/minor so
 device-mapper aliases are not guessed; unresolved topology fails closed. The
 diagnostic readback itself did not change deployment behavior or retention.
 
-2026-09-28: read-only production Semaphore task 1801 confirmed node-exporter is
-running with private PID isolation, its `/` host mount read-only, one private
-network, and no published port. The earlier task 1796 failure came from the
-deploy assertion expecting host PID; the runtime readback showed private PID.
-Task 1801 also found guest root is ext4 on an LVM-backed virtual disk and
+2026-09-28: read-only production Semaphore task 1801 reported node-exporter
+with private PID isolation, its `/` host mount read-only, one private network,
+and no published port. Its diagnostic normalized raw PID readbacks of `None`,
+empty, or `private` to `private`. Task 1796 failed at the host-PID assertion
+while the source declared host PID; the cause of that declaration/runtime
+mismatch remains unresolved. Task 1801 also found guest root is ext4 on an LVM-backed virtual disk and
 Podman's volume/graph paths share that filesystem; only 6.88% was free, so the
 30% retention-expansion gate remains closed. Exact device identifiers and
 capacities remain in the private Semaphore receipt. The `snapshot-vm.yml`
@@ -961,12 +962,12 @@ verified backup/restore receipt exists, and no guest growth was performed.
 2026-09-28: Dev-bound read-only Semaphore task 1802 at controller revision
 `5a9d17c7e26778049e1747ee48089985ae16121e` verified the exact
 `o11y/receiver-host` target at `node-exporter:9100` and returned
-`node_filesystem_avail_bytes`. Tasks 1801 and 1802 prove exporter isolation and
-only the host-filesystem metric. Semaphore task 1803 returned
+`node_filesystem_avail_bytes`. Tasks 1802–1804 prove presence of the named
+metric families at the exact target; they do not verify the host `/`
+mountpoint or metric values. Semaphore task 1803 returned
 `node_cpu_seconds_total` and task 1804 returned `node_memory_MemAvailable_bytes`
-for the same exact target. Together with task 1801, these prove host CPU, memory,
-and filesystem visibility through the private exporter. Log delivery, a
-successful full deploy after the source correction, the seven-day capacity
+for the same exact target. The host-versus-guest root filesystem check remains
+pending a successful full deploy. Log delivery, the seven-day capacity
 forecast, and backup/restore receipt remain unproven.
 
 2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord

@@ -984,7 +984,7 @@ assert 'Require the receiver-host exporter to remain private and read-only' in n
 assert 'Verify receiver-host metrics and host-versus-guest root filesystem' in names
 runtime_check = next(task for task in verify['tasks'] if task['name'] == 'Require the receiver-host exporter to remain private and read-only')
 runtime_conditions = runtime_check['ansible.builtin.assert']['that']
-assert any("pid_mode" in condition and "[none, '', 'private']" in condition for condition in runtime_conditions)
+assert "(_receiver_host_runtime.stdout | from_json).pid_mode in [none, '', 'private']" in runtime_conditions
 assert any('networks.keys()' in condition and 'o11y' in condition for condition in runtime_conditions)
 assert any("'/'" in condition and "'/host'" in condition and 'RW' in condition for condition in runtime_conditions)
 metrics_check = next(task for task in verify['tasks'] if task['name'] == 'Verify receiver-host metrics and host-versus-guest root filesystem')
