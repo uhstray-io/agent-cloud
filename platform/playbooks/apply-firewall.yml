@@ -47,8 +47,11 @@
 # here stops the run BEFORE anything is deleted) → delete each TAGGED rule whose tag is not
 # declared → when anything was deleted, re-read and assert every declared SSH allow
 # survived → default policies + enable, each only when the live state differs. A converged
-# host whose rules all name an address costs the two reads and nothing else: no add, no
-# re-read, and the final report reuses the first status read.
+# host costs the two reads, plus one add command per declared rule that names no address —
+# two per podman bridge on a rootful podman host (its 53/udp and 53/tcp allows) and one per
+# rule from `any` — each answered "Skipping adding existing rule", which is not a change
+# (changed=0). Nothing else: no re-read, and the final report reuses the first status read.
+# Only a host whose declared rules all name an address costs the two reads alone.
 #   - A rule naming no address (podman bridge DNS, anything `from any`) is re-added every
 #     run. ufw stores it once per IP family and `show added` prints the two as one line
 #     (src/frontend.py get_show_added, 0.36.2), so a lost half (a `ufw delete NUM`, IPV6
@@ -450,7 +453,8 @@
         # each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command)
         _fw_ssh_specs: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='spec') | list }}"
 
-    # Read BEFORE adding, so a converged host costs these two reads and no add at all.
+    # Read BEFORE adding, so a converged host costs these two reads and adds only the rules
+    # naming no address, which are re-asserted every run (header note "Convergence").
     # `show added` lists the STORED rules in ufw's normalised command form, comment
     # included, whether or not ufw is active (src/frontend.py get_show_added, 0.36.2).
     - name: "Read the rules ufw holds, with their comments"  # noqa: command-instead-of-module

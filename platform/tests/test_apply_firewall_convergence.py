@@ -452,6 +452,11 @@ def test_a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchan
     assert re.search(r"\bwhole\s*:.*changed=0", r.stdout), r.stdout
     adds = [line for line in _log(tmp_path, "whole") if MUTATING.search(line)]
     assert len(adds) == 2 and all('"in", "on", "podman1"' in line for line in adds), adds
+    # The whole cost of a converged rootful-podman host (apply-firewall.yml header, the
+    # playbook README): the two reads plus two skipped adds per bridge; no re-read, no final
+    # status capture.
+    ufw_calls = [line for line in _log(tmp_path, "whole") if line.startswith('["ufw"')]
+    assert ufw_calls == ['["ufw", "show", "added"]', '["ufw", "status", "verbose"]', *adds], ufw_calls
 
 
 def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule(tmp_path):
