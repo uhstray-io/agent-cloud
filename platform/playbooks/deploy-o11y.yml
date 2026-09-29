@@ -64,6 +64,10 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
+    _o11y_retention_expansion: >-
+      {{ (o11y_prom_retention | default('15d') | string) != '15d' or
+         (o11y_loki_retention | default('7d') | string) != '7d' or
+         (o11y_tempo_retention | default('168h') | string) != '168h' }}
     # Shared by Alloy and every Prometheus scrape job. Drop known sensitive or
     # request-specific label names while retaining declared bounded dimensions
     # such as service, identity, model, status, device, and GPU labels.
@@ -96,9 +100,47 @@
           growth/backup path are verified.
       when: >-
         not (local_mode | default(false) | bool) and
-        ((o11y_prom_retention | default('15d') | string) != '15d' or
-         (o11y_loki_retention | default('7d') | string) != '7d' or
-         (o11y_tempo_retention | default('168h') | string) != '168h')
+        (_o11y_retention_expansion | bool)
+
+    - name: Require Podman before a retention-expansion volume inspection
+      ansible.builtin.assert:
+        that: container_engine | default('podman') == 'podman'
+        fail_msg: "The production o11y volume-capacity gate currently requires rootless Podman."
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
+
+    - name: Read o11y volume backing capacity before retention expansion
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/inspect-o11y-volume-capacity.py {{ container_engine | default('podman') }} 30"
+      register: _o11y_volume_preflight
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
+
+    - name: Require resolved o11y volumes and at least thirty percent headroom for retention expansion
+      ansible.builtin.assert:
+        that: _o11y_volume_preflight.rc == 0
+        fail_msg: >-
+          Production retention expansion is blocked until the existing named volumes resolve
+          to their backing filesystems and every backing filesystem has at least 30%
+          free space. A clean first deploy is allowed only when all five backend
+          containers are absent and guest root has the same headroom. This playbook
+          never resizes storage. Read-only volume receipt: {{ _o11y_volume_preflight.stdout | trim }}
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
+
+    - name: Require the production backing-filesystem capacity receipt
+      ansible.builtin.assert:
+        that: (_o11y_volume_preflight.stdout | from_json).status in ['observed', 'first_deploy']
+        fail_msg: "The sanitized o11y capacity readback did not report an acceptable state."
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
 
     - name: "Require the production DNS zone and Caddy origin before rendering Grafana OIDC"
       ansible.builtin.assert:
@@ -361,6 +403,82 @@
       until: _prom.rc == 0
       check_mode: false
 
+    - name: Read the receiver-host exporter runtime boundary
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          - >-
+            {% raw %}{"pid_mode":{{json .HostConfig.PidMode}},"mounts":{{json .Mounts}},"ports":{{json .HostConfig.PortBindings}},"networks":{{json .NetworkSettings.Networks}}}{% endraw %}
+          - o11y-node-exporter
+      register: _receiver_host_runtime
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+
+    - name: Require the receiver-host exporter to remain private and read-only
+      ansible.builtin.assert:
+        that:
+          - (_receiver_host_runtime.stdout | from_json).pid_mode == 'host'
+          - (_receiver_host_runtime.stdout | from_json).ports is none or (_receiver_host_runtime.stdout | from_json).ports == {}
+          - (_receiver_host_runtime.stdout | from_json).networks | length == 1
+          - (_receiver_host_runtime.stdout | from_json).networks.keys() | first == 'o11y' or (_receiver_host_runtime.stdout | from_json).networks.keys() | first is search('_o11y$')
+          - (_receiver_host_runtime.stdout | from_json).mounts | selectattr('Source', 'equalto', '/') | selectattr('Destination', 'equalto', '/host') | selectattr('RW', 'equalto', false) | list | length == 1
+        fail_msg: "Receiver-host metrics are not isolated to the private Compose network with a read-only host root and no published port."
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+
+    - name: Read receiver-host metrics from the private Prometheus API
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-prometheus
+          - wget
+          - -qO-
+          - >-
+            http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2Cservice%3D%22o11y%2Freceiver-host%22%2C__name__%3D~%22node_cpu_seconds_total%7Cnode_memory_MemAvailable_bytes%7Cnode_memory_MemTotal_bytes%7Cnode_load1%7Cnode_filesystem_size_bytes%7Cnode_filesystem_avail_bytes%22%7D
+      register: _receiver_host_metrics
+      changed_when: false
+      check_mode: false
+      retries: 12
+      delay: 5
+      until: >-
+        _receiver_host_metrics.rc == 0 and
+        _receiver_host_metrics.stdout is search('node_memory_MemAvailable_bytes') and
+        _receiver_host_metrics.stdout is search('node_filesystem_avail_bytes')
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+
+    - name: Read guest-visible root filesystem size and free bytes
+      ansible.builtin.command:
+        argv: [df, --block-size=1, "--output=size,avail", /]
+      register: _receiver_guest_root_df
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+
+    - name: Verify receiver-host metrics and host-versus-guest root filesystem
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/verify-o11y-receiver-host-metrics.py"
+        stdin: "{{ {'prometheus': _receiver_host_metrics.stdout, 'guest_df': _receiver_guest_root_df.stdout} | to_json }}"
+      delegate_to: localhost
+      register: _receiver_host_metrics_check
+      changed_when: false
+      failed_when: _receiver_host_metrics_check.rc != 0
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+
     - name: "Tempo ready (/ready) through the private compose network"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://tempo:3200/ready"
       register: _tempo
@@ -606,13 +724,13 @@
         that:
           - (_self_dashboard.stdout | from_json).dashboard.uid == 'o11y-self-monitoring'
           - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 11
-          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'O11y components up (expected 6)') | list | length == 1
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'O11y components up (expected 7)') | list | length == 1
           - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | list | length == 1
           - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | list | length == 1
           - "'tempo_distributor_spans_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'tempo_distributor_bytes_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Profile samples written / sec') | list | length == 1
-        fail_msg: "Grafana has a stale or incomplete o11y dashboard; redeploy must provision all six components and signal-ingestion panels."
+        fail_msg: "Grafana has a stale or incomplete o11y dashboard; redeploy must provision all seven scrape targets and signal-ingestion panels."
       when: not ansible_check_mode
 
     - name: Read the provisioned agentgateway traffic dashboard

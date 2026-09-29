@@ -21,9 +21,14 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
 - **Composable, no fork.** `compose.yml` is env-parameterized; `compose.local.yml`
   is a slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches
   Grafana; mounts the podman socket so Alloy can discover container logs).
-  `deploy.sh` is container-lifecycle-only. Prometheus scrapes all six o11y
+  `deploy.sh` is container-lifecycle-only. Prometheus scrapes six o11y
   components. Production inventory renders DGX Spark and agentgateway scrape
-  jobs; Alloy receives sampled traces and exports them to Tempo.
+  jobs; Alloy receives sampled traces and exports them to Tempo. A separate
+  node_exporter service collects only receiver CPU, memory, root filesystem,
+  and load metrics on the private o11y network, with host PID and a read-only
+  host-root mount; it has no published host port and Alloy receives no host-root
+  mount. Runtime isolation and exact root-filesystem parity remain unverified
+  until a non-destructive Semaphore deploy passes its readbacks.
 - **Config is code.** `config/` (Prometheus scrape, Loki, Alloy, Grafana
   datasource + dashboard provisioning) is committed and mounted read-only —
   provisioned on boot, reproducible on a wipe+redeploy. The ONLY secret is the
@@ -55,11 +60,20 @@ Pyroscope is private, persistent, and retention-bounded. Alloy's self-profile
 scrape stays disabled until private inventory carries the config, privacy, and
 resource proof receipts. No other producer is enabled by this pilot.
 
+The receiver-host exporter is a measurement source, not capacity acceptance.
+Production deploys first resolve each existing data volume from its running
+container mount, compare the container and volume-inspect mountpoints, and
+require at least 30% free space on every backing filesystem. A budget receipt
+reports each volume's allocated bytes and backing filesystem total/free bytes
+without exposing mount paths. Seven-day history, per-backend growth, and the
+30%/25%/CPU-p95 forecast still gate retention or VM changes. Remote metric
+sources continue to require source-scoped firewall proof.
+
 ## Files
 
 | File | Role |
 |---|---|
-| `deployment/compose.yml` | grafana + prometheus + loki + alloy + tempo + Pyroscope; pinned images; healthchecks |
+| `deployment/compose.yml` | grafana + prometheus + loki + alloy + tempo + Pyroscope + private receiver-host node_exporter; pinned images; healthchecks |
 | `deployment/compose.local.yml` | slim overlay (caps, `label=disable`, `local-dev`, podman socket for Alloy) |
 | `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait Grafana healthy) |
 | `deployment/templates/env.j2` | image/port vars + Grafana admin pw (from OpenBao) |
@@ -68,6 +82,7 @@ resource proof receipts. No other producer is enabled by this pilot.
 | `platform/playbooks/drill-o11y-active-alert-delivery.yml` | Dev-bound production delivery proof against active rules; fixed scrape cleanup in `always` |
 | `platform/playbooks/recover-o11y-active-alert-drill.yml` | separate idempotent recovery after an interrupted active delivery drill |
 | `platform/playbooks/verify-o11y-production-budgets.yml` | read-only retention, sample-limit, and active-series receipt |
+| `platform/playbooks/files/inspect-o11y-volume-capacity.py` | read-only exact container-volume mount resolution and sanitized backing-filesystem/stored-byte receipt |
 
 `deployment/.env` is rendered per-deploy and gitignored.
 Semaphore's production inventory is a static copy of the private site-config

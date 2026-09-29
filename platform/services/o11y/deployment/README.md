@@ -133,10 +133,36 @@ Supply the reviewed Dev controller SHA and current deployed receiver SHA as
 separate survey values. This lets the evidence workflow verify the existing
 receiver before a gated redeploy, with both revisions recorded in Semaphore.
 
-The budget receipt also reports current guest root filesystem size/free bytes
-and memory headroom. These are read-only observations; the root filesystem may
-not contain the named observability volumes, so they do not establish retention
-capacity. The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
+The budget receipt reports current guest root filesystem size/free bytes,
+memory headroom, and read-only mount/storage observations for each existing
+Prometheus, Loki, Tempo, Grafana, and Pyroscope named volume. Volume names are
+derived from destination-specific mounts on the running containers, then
+cross-checked against `podman volume inspect`; unresolved or ambiguous mounts
+refuse a receipt. Allocated bytes are measured through `podman unshare du` so
+rootless volume ownership is read inside Podman's user namespace. The receipt
+reports those bytes and backing filesystem total/free bytes without printing
+mount paths. A production retention expansion refuses to change config or pull
+images unless each resolved volume filesystem has at least 30% free space.
+Ordinary deploy and recovery remain available without this expansion gate.
+The read-only volume receipt is intentionally limited to rootless Podman until
+the Docker listing and mount formats have equivalent tested support.
+Task 1789 (2026-09-28) passed the
+retention/sample/cardinality checks but observed only 805,421,056 bytes free on
+the 10,464,022,528-byte guest root; that guest observation alone does not prove
+where the named volumes live. Record exact volume-backed measurements before
+any retention or growth decision. During a retention expansion, a clean first
+deploy is allowed only when all five backend containers and corresponding
+named volumes are absent, and Podman's `store.volumePath` from
+`podman info --format json` is an absolute existing directory whose backing
+filesystem meets the same 30% threshold. This measures where Podman will create
+the named volumes instead of assuming its storage shares guest `/`. The
+read-only budget verifier remains fail-closed on missing, partial, or ambiguous
+volume state. This playbook does not resize storage. Full-disk recovery requires
+a separately reviewed backup-and-growth workflow. The destructive clean-deploy
+playbook rejects any nonbaseline production retention tuple before removing
+containers or volumes.
+
+The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
 (45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
 is available. A normal deploy refuses any production tuple change unless
 `o11y_prom_retention_size` is nonzero and private inventory contains a numeric
@@ -144,11 +170,17 @@ is available. A normal deploy refuses any production tuple change unless
 until receiver host metrics have at least seven days of CPU/memory and
 per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
-with backup before resize. The repository currently has no receiver host
-collector or backend growth receipt, so the target is not yet deployable. The
-numeric ID is only a reference; it is not itself a capacity forecast or proof.
+with backup before resize. The 30% current backing-filesystem preflight is
+limited to production retention expansion; it does not block ordinary deploy
+or recovery. Code now includes a private-network receiver-host
+node_exporter with no published port, read-only root mount, and bounded CPU,
+memory, root-filesystem, and load collectors. Its exact container isolation,
+metrics availability, and host-versus-guest root filesystem parity require a
+passing Semaphore runtime readback. No seven-day history or backend growth
+receipt exists, so the target remains undeployable. The numeric ID is only a
+reference; it is not itself a capacity forecast or proof.
 
-The o11y self-monitoring dashboard requires six healthy component scrapes and
+The o11y self-monitoring dashboard requires seven healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard
 and Tempo datasource correlation mappings; a stale four-component dashboard
 or missing trace-to-metric/log mapping fails verification. A production UI
