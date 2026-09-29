@@ -32,6 +32,7 @@ removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -585,6 +586,11 @@ def test_the_parse_cache_rereads_an_edited_file(tmp_path):
     assert _load(f) == [{"a": 1}]
     f.write_text("- a: 22\n")
     assert _load(f) == [{"a": 22}]
+    # Same size, so only the mtime half of the key can tell the two apart.
+    f.write_text("- a: 33\n")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert _load(f) == [{"a": 33}]
 
 
 def test_every_pinned_name_has_exactly_its_one_definition():
