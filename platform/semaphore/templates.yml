@@ -567,6 +567,37 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy step-ca
+    playbook: platform/playbooks/deploy-step-ca.yml
+    # The production internal CA (openspec production-internal-ca). Refuses to run until
+    # inventory declares the first-boot settings; the "(Dev)" variant runs the dev code.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy step-ca
+    playbook: platform/playbooks/clean-deploy-step-ca.yml
+    # DESTRUCTIVE: deletes the CA root and intermediate; the redeploy issues a new root
+    # every client must trust again. Refuses unless confirm_ca_reset names the host.
+    dev_variant: true
+    survey_vars:
+      - name: confirm_ca_reset
+        title: "Confirm: host whose CA is reset"
+        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy after the reset (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so

@@ -123,6 +123,12 @@ templates:
     playbook: platform/playbooks/clean-deploy-dns.yml
   - name: "Clean Deploy step-ca (Local)"
     playbook: platform/playbooks/clean-deploy-step-ca.yml
+    survey_vars:
+      - name: confirm_ca_reset
+        title: "Confirm: host whose CA is reset"
+        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy Caddy (Local)"
     playbook: platform/playbooks/clean-deploy-caddy.yml
   - name: "Clean Deploy Authentik (Local)"

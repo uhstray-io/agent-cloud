@@ -5,7 +5,16 @@
 #          template .env. step-ca auto-initializes its root/intermediate into
 #          its volume on first boot (stable thereafter).
 # Phase 2: deploy.sh — container lifecycle (compose up, wait healthy).
-# Phase 3: Verify the CA is up + the root cert exists.
+# Phase 2.5: Issuance policy: the admin lifetime, and one issuing JWK provisioner per
+#          leaf profile (issuer-server, issuer-client), each with its own password
+#          from OpenBao. Read first, then add or update only what differs.
+# Phase 3: Verify the CA is up + the root cert exists; outside local_mode also that
+#          ACME is off, the port is published on the declared bind only, and print the
+#          root fingerprint (compare it across runs: the root must not change).
+#
+# First boot fixes the CA's name, DNS names and ACME switch into the step-ca-data
+# volume for good, so outside local_mode Phase 1 refuses to run until inventory
+# declares them (openspec production-internal-ca, tasks 2.1-2.2).
 #
 # Plan: plan/development/INTERNAL-CA-DEPLOYMENT.md.
 
@@ -21,13 +30,39 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # init_password protects the CA keys at rest (keys stay in the volume).
+    # init_password protects the CA keys at rest (keys stay in the volume). The issuer
+    # passwords encrypt the issuing provisioners' keys in ca.json; they reach the
+    # container only on the stdin of Phase 2.5's add step, never in .env.
     _secret_definitions:
       - { name: init_password, type: random, length: 40 }
+      - { name: issuer_server_password, type: random, length: 40 }
+      - { name: issuer_client_password, type: random, length: 40 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    # The name, DNS names and ACME switch are written into the volume at first boot and
+    # never read again; a production CA initialised from the local defaults would keep
+    # ACME on and the wrong name until a reset.
+    - name: "Refuse a production CA without its first-boot settings"
+      ansible.builtin.assert:
+        that:
+          - stepca_name is defined and (stepca_name | string | length) > 0
+          - stepca_dns_names is defined and (stepca_dns_names | string | length) > 0
+          - (stepca_init_acme | default('') | string) == 'false'
+          - (stepca_bind | default('127.0.0.1') | string) == '127.0.0.1'
+        fail_msg: >-
+          {{ inventory_hostname }}: declare stepca_name, stepca_dns_names and
+          stepca_init_acme: "false" (and keep stepca_bind at 127.0.0.1) in inventory before
+          the first production deploy. step-ca writes them into its volume at first boot.
+        quiet: true
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -66,9 +101,10 @@
 # ── Phase 2.5: Issuance policy ──────────────────────────────────────────────
 # step-ca's default JWK claims cap leaf certs at 24h. Internal certs that Caddy
 # serves directly (token-mint, no ACME auto-renew locally) would then expire
-# daily. Raise the admin provisioner's x509 duration so a long-lived wildcard
-# can be minted and simply re-minted on each consumer deploy. Idempotent:
-# re-applying the same duration is a no-op in effect.
+# daily, so the admin provisioner's x509 duration is raised. The issuing
+# provisioners (one per leaf profile) sign the declared leaves; their lifetime is
+# stepca_leaf_dur. Everything here reads the provisioner list first and changes only
+# what differs: a second run adds nothing and does not reload the CA.
 - name: "Phase 2.5: Configure step-ca issuance policy"
   hosts: step_ca_svc
   gather_facts: false
@@ -76,8 +112,66 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _max_dur: "{{ stepca_x509_max_dur | default('8760h') }}"
+    _leaf_dur: "{{ stepca_leaf_dur | default('720h') }}"
+    # step stores durations in Go form: 720h is kept as 720h0m0s.
+    # ponytail: hour-only values (the only form used here); other spellings compare unequal.
+    _max_dur_stored: "{{ (_max_dur ~ '0m0s') if (_max_dur is match('^[0-9]+h$')) else _max_dur }}"
+    _leaf_dur_stored: "{{ (_leaf_dur ~ '0m0s') if (_leaf_dur is match('^[0-9]+h$')) else _leaf_dur }}"
+    _issuers:
+      - { name: issuer-server, secret: issuer_server_password }
+      - { name: issuer-client, secret: issuer_client_password }
 
   tasks:
+    - name: "Is the CA container running"
+      ansible.builtin.command: "{{ _engine }} container exists step-ca"
+      register: _ca_present
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Read the provisioner list"
+      ansible.builtin.command: >-
+        {{ _engine }} exec step-ca step ca provisioner list
+        --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+      register: _prov_list
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: _prov_list.rc == 0
+      check_mode: false
+      when: _ca_present.rc == 0
+
+    - name: "Plan the provisioner changes"
+      ansible.builtin.set_fact:
+        _prov_plan: >-
+          {%- set by_name = {} -%}
+          {%- for p in (_prov_list.stdout | from_json) -%}
+            {%- set _ = by_name.update({p.name: (p.claims | default({}, true))}) -%}
+          {%- endfor -%}
+          {%- set admin = by_name.get('admin', {}) -%}
+          {%- set add = _issuers | rejectattr('name', 'in', by_name.keys() | list) | map(attribute='name') | list -%}
+          {%- set upd = [] -%}
+          {%- for i in _issuers -%}
+            {%- set c = by_name.get(i.name, {}) -%}
+            {%- if i.name in add or c.get('maxTLSCertDuration') != _leaf_dur_stored
+                  or c.get('defaultTLSCertDuration') != _leaf_dur_stored -%}
+              {%- set _ = upd.append(i.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ {'admin': admin.get('maxTLSCertDuration') != _max_dur_stored
+                        or admin.get('defaultTLSCertDuration') != _max_dur_stored,
+              'add': add, 'update': upd} }}
+      when: _ca_present.rc == 0
+
+    - name: "Report the provisioner plan"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'CA container not present (not deployed yet): provisioners are configured by the
+          first real run' if _ca_present.rc != 0 else
+          ('admin lifetime ' ~ ('to ' ~ _max_dur ~ ' ' if _prov_plan.admin else 'unchanged ')
+          ~ '| add ' ~ (_prov_plan.add | join(', ') or 'none')
+          ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan.update | join(', ') or 'none')) }}
+
     - name: "Raise the admin provisioner x509 cert duration"
       # Literal block + inner-sh backslash continuation: a folded scalar (>-)
       # keeps newlines around the more-indented flag lines, which `sh -c` then
@@ -91,14 +185,53 @@
             --password-file /tmp/pw
           rc=$?; rm -f /tmp/pw; exit $rc
         '
-      register: _prov
+      register: _prov_admin
       changed_when: true
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _ca_present.rc == 0 and _prov_plan.admin
+
+    # Credential task: the password arrives on stdin and is written to a 0600 file that
+    # is removed before the shell exits. `add` of an existing name fails, which is why
+    # the list above decides.
+    - name: "Add each missing issuing provisioner"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - step-ca
+          - sh
+          - -c
+          - >-
+            umask 077; cat > /tmp/ipw;
+            step ca provisioner add "$0" --type JWK --create --password-file /tmp/ipw;
+            rc=$?; rm -f /tmp/ipw; exit $rc
+          - "{{ item.name }}"
+        stdin: "{{ secrets[item.secret] }}"
+        stdin_add_newline: false
+      loop: "{{ _issuers | selectattr('name', 'in', _prov_plan.add | default([])) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _prov_add
+      changed_when: true
+      no_log: true
+      when: not ansible_check_mode and _ca_present.rc == 0
+
+    - name: "Set the issuing provisioners' leaf lifetime"
+      ansible.builtin.command: >-
+        {{ _engine }} exec step-ca step ca provisioner update {{ item }}
+        --x509-max-dur={{ _leaf_dur }} --x509-default-dur={{ _leaf_dur }}
+      loop: "{{ _prov_plan.update | default([]) }}"
+      register: _prov_upd
+      changed_when: true
+      when: not ansible_check_mode and _ca_present.rc == 0
 
     - name: "Reload step-ca to apply the policy (SIGHUP)"
       ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
       changed_when: true
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - _ca_present.rc == 0
+        - _prov_admin is changed or _prov_add is changed or _prov_upd is changed
       # No post-reload health wait here: Phase 3's retried `step ca health` is
       # the single gate, and it settles the reload (retries/until 'ok').
 
@@ -111,6 +244,20 @@
     _engine: "{{ container_engine | default('podman') }}"
 
   tasks:
+    # A dry run against a host whose CA has never been deployed has nothing to verify;
+    # a real run always has a container here (Phase 2 started it).
+    - name: "Is the CA container running"
+      ansible.builtin.command: "{{ _engine }} container exists step-ca"
+      register: _ca_up
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Report a dry run against a CA not deployed yet"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: no step-ca container yet; the first real run creates the CA."
+      when: _ca_up.rc != 0 and ansible_check_mode
+
     - name: "CA health (chain-verified, no --insecure)"
       ansible.builtin.command: >-
         {{ _engine }} exec step-ca step ca health
@@ -121,6 +268,7 @@
       delay: 3
       until: "'ok' in _ca_health.stdout"
       check_mode: false
+      when: _ca_up.rc == 0 or not ansible_check_mode
 
     - name: "Confirm the root cert exists (subject)"
       ansible.builtin.command: >-
@@ -128,7 +276,41 @@
       register: _root
       changed_when: false
       check_mode: false
+      when: _ca_up.rc == 0 or not ansible_check_mode
+
+    - name: "Read the root fingerprint"
+      ansible.builtin.command: >-
+        {{ _engine }} exec step-ca step certificate fingerprint /home/step/certs/root_ca.crt
+      register: _root_fp
+      changed_when: false
+      check_mode: false
+      when: _ca_up.rc == 0 or not ansible_check_mode
+
+    - name: "Read the provisioners and the published port"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "{{ _engine }} exec step-ca step ca provisioner list --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt"
+        - "{{ _engine }} port step-ca"
+      register: _ca_state
+      changed_when: false
+      check_mode: false
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+
+    - name: "Refuse a production CA with ACME on or its API off loopback"
+      ansible.builtin.assert:
+        that:
+          - (_ca_state.results[0].stdout | from_json | selectattr('type', 'equalto', 'ACME') | list | length) == 0
+          - (_ca_state.results[0].stdout | from_json | selectattr('name', 'in', ['issuer-server', 'issuer-client']) | list | length) == 2
+          - _ca_state.results[1].stdout_lines | length > 0
+          - _ca_state.results[1].stdout_lines | reject('search', '-> ' ~ (stepca_bind | default('127.0.0.1')) ~ ':') | list | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: the CA must run with no ACME provisioner, both issuing
+          provisioners, and its API published on {{ stepca_bind | default('127.0.0.1') }} only.
+          Published: {{ _ca_state.results[1].stdout_lines }}.
+        quiet: true
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool) and not ansible_check_mode)
 
     - name: "Report"
       ansible.builtin.debug:
-        msg: "step-ca healthy. Root: {{ _root.stdout | trim }}"
+        msg: "step-ca healthy. Root: {{ _root.stdout | trim }}. Root fingerprint: {{ _root_fp.stdout | trim }}"
+      when: _ca_up.rc == 0 or not ansible_check_mode
