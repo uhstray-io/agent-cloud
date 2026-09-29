@@ -32,7 +32,7 @@ and why.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | Convention + loader test; hook proposed (count ≥ 3) |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x4** | Unverified claim | Convention (hook proposed) |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | Convention |
@@ -236,7 +236,7 @@ that implement it, not the setting's name.
 
 ### 1.3 A masked exit code reported as success
 
-**Occurrences: 2** — (first undated), 2026-09-25
+**Occurrences: 4** — (first undated), 2026-09-25, 2026-09-28, 2026-09-29
 
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
@@ -263,6 +263,25 @@ not fire: it names exit codes, and this pipe also hid the one line that said not
 a filter for failures cannot tell "none failed" from "none ran". Corollary: a test claim
 needs the run's own count of executed tests (`N passed`, the final `ok N`), never the
 absence of a failure line; and run BATS the way the hook does, without `-j`.
+
+**Occurrence 3 — 2026-09-28.** The first push of PR #319's branch ran through a
+`grep -v` filter for brevity. The push was refused and the filter left nothing that said
+so; it was noticed only because the PR head had not moved. It was pushed again with its
+output visible. Why the rule did not fire: it was written about test runs and background
+jobs, and a push did not read as either.
+
+**Occurrence 4 — 2026-09-29.** Three branch pushes were chained in one background command,
+each piped through `grep -vE '^ok |^# ' | tail -2`. The first push failed: its visible
+remainder was `error: failed to push some refs`, and the filter had discarded the pre-push
+hook's reason. The same push, run again with its whole output redirected to a file,
+passed, so the cause of the first failure is not recoverable. Why the rule did not fire:
+the pipe was added for output volume, the same reason as the first occurrence, and a
+push's exit status was not treated as one that matters.
+
+**Proposal (count ≥ 3, Convention alone is no longer acceptable).** A Claude Code
+PreToolUse hook on Bash that refuses a command in which `git push`, `pytest`, `bats` or
+`make` feeds a pipe, unless the command sets `set -o pipefail` or reads `PIPESTATUS`. The
+allowed form redirects to a file and filters the file afterwards.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
