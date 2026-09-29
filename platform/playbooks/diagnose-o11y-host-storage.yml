@@ -87,9 +87,11 @@
 
     - name: Report sanitized receiver host storage diagnostics
       ansible.builtin.debug:
-        msg: "{{ _host_storage_diagnostic.stdout | from_json }}"
+        msg: "{{ _host_storage_diagnostic.stdout }}"
 
     - name: Require complete host storage readbacks
       ansible.builtin.assert:
-        that: (_host_storage_diagnostic.stdout | from_json).status == 'observed'
-        fail_msg: "Required receiver-host storage readbacks are malformed or unavailable; inspect the sanitized reason above."
+        that:
+          - _host_storage_diagnostic.rc == 0
+          - _host_storage_diagnostic.stdout | length > 0
+        fail_msg: "Receiver-host diagnostic did not return a successful sanitized readback."

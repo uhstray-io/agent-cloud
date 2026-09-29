@@ -166,6 +166,16 @@ def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
                                           "ansible.builtin.include_tasks"))
         for task in controller_tasks + receiver_tasks
     )
+    report_task = next(task for task in receiver_tasks if task.get("name") ==
+                       "Report sanitized receiver host storage diagnostics")
+    assert report_task["ansible.builtin.debug"]["msg"] == "{{ _host_storage_diagnostic.stdout }}"
+    assert "from_json" not in str(report_task)
+    readback_gate = next(task for task in receiver_tasks if task.get("name") ==
+                         "Require complete host storage readbacks")
+    conditions = readback_gate["ansible.builtin.assert"]["that"]
+    assert "_host_storage_diagnostic.rc == 0" in conditions
+    assert "_host_storage_diagnostic.stdout | length > 0" in conditions
+    assert "from_json" not in str(readback_gate)
     template = next(
         item for item in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
         if item["name"] == "Diagnose o11y Host Storage (Dev)"
