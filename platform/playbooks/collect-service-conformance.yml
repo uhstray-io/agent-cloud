@@ -56,6 +56,12 @@
          .catalog['service-agent'].service_deploy_templates }}
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
     _o11y_bind: "{{ (hostvars[groups['o11y_svc'][0]].o11y_otlp_bind if groups.get('o11y_svc', []) | length == 1 else '') | default('') }}"
+    _o11y_private_ipv4_pattern: >-
+      (?x)\A(?:
+      10\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      |192\.168\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      |172\.(?:1[6-9]|2[0-9]|3[01])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      )\Z
     _semaphore_host: "{{ groups.get('semaphore_svc', []) | first | default('') }}"
     _collector_otlp_url: "{{ hostvars.get(_semaphore_host, {}).get('collector_otlp_url', '') }}"
 
@@ -72,7 +78,7 @@
       ansible.builtin.assert:
         that:
           - groups.get('o11y_svc', []) | length == 1
-          - _o11y_bind is match('^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)')
+          - _o11y_bind is match(_o11y_private_ipv4_pattern)
           - groups.get('semaphore_svc', []) | length == 1
           - _collector_otlp_url == 'http://' ~ _o11y_bind ~ ':4318/v1/logs'
         fail_msg: "Production conformance delivery requires collector_otlp_url to match the declared private Alloy OTLP/HTTP receiver."
@@ -311,10 +317,17 @@
         status_code: [200]
       register: _otlp
       changed_when: true
+      failed_when: false
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
         - _agg.otlp_payload.resourceLogs | length > 0
+
+    - name: "Classify the OTLP response without exposing its body"
+      ansible.builtin.set_fact:
+        _otlp_delivery_ok: >-
+          {{ (_otlp | default({})).get('status', 0) | int == 200
+             and (((((_otlp | default({})).get('json') or {}).get('partialSuccess') or {}).get('rejectedLogRecords', 0) | int) == 0) }}
 
     - name: "Report"
       ansible.builtin.debug:
@@ -327,4 +340,13 @@
           history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
           loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"
-          otlp: "{{ 'delivered' if (_otlp.status | default(0)) == 200 else ('check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if _otlp is skipped or _otlp is not defined else 'failed'))) }}"
+          otlp: "{{ 'check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if local_mode | default(false) | bool else ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed'))) }}"
+
+    - name: "Fail after reporting unsuccessful production OTLP delivery"
+      ansible.builtin.fail:
+        msg: "Conformance OTLP delivery failed; see the preceding report for status."
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+        - _agg.otlp_payload.resourceLogs | length > 0
+        - not (_otlp_delivery_ok | default(false) | bool)

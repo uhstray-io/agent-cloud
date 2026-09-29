@@ -326,7 +326,7 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
 
 
 def otlp_logs_payload(streams: list[dict]) -> dict:
-    """Encode the collector's bounded Loki stream labels and body as OTLP/HTTP logs.
+    """Encode conformance-specific Loki labels and the body as OTLP/HTTP logs.
 
     Keep task details in the record body. Alloy owns the `loki.attribute.labels`
     hint, so the sender cannot request extra Loki labels.
@@ -335,7 +335,7 @@ def otlp_logs_payload(streams: list[dict]) -> dict:
     for stream in streams:
         labels = stream["stream"]
         if set(labels) != {"job", "service", "step", "status"}:
-            raise ValueError("conformance log labels do not match the bounded label contract")
+            raise ValueError("conformance labels do not match the fixed label contract")
         if labels["job"] != "agent-cloud-conformance":
             raise ValueError("conformance log job label is not bounded")
         if labels["status"] not in {"pass", "fail", "skip", "no_history", "history_incomplete"}:

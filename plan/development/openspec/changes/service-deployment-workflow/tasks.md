@@ -285,8 +285,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         receiver now listens on port 4318, separate from gateway OTLP/gRPC on 4317. The
         production collector requires its URL to exactly match the private `o11y_otlp_bind`
         and `/v1/logs`, posts only to Alloy, and fails visibly on delivery errors. Task and
-        error details remain in the record body; Alloy's exporter policy limits Loki labels to
-        `job`, `service`, `step`, and `status`. Local development retains direct Loki push. The
+        error details remain in the record body; Alloy applies `job`, `service`, `step`, and
+        `status` as conformance-specific Loki labels, and the shared Loki writer also adds
+        `cluster` and `environment`. Local development retains direct Loki push. The
         private site-config URL and controller-CIDR firewall rule are a separate companion
         change;
         live delivery and Loki read-back remain unverified until both changes are reviewed,

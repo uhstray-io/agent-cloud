@@ -90,9 +90,9 @@ criteria not met, error context, undo availability and Semaphore task reference.
 #### Scenario: Production conformance logs use the declared private OTLP receiver
 - **WHEN** the production collector publishes conformance records
 - **THEN** it sends OTLP/HTTP to the exact declared private Alloy bind on port `4318` at
-  `/v1/logs`, delivery failure fails the collector visibly, and Alloy indexes only the
-  bounded `job`, `service`, `step`, and `status` labels while keeping task and error details
-  in the log body
+  `/v1/logs`, delivery failure fails the collector visibly, and Alloy applies bounded
+  conformance-specific `job`, `service`, `step`, and `status` labels. The shared Loki writer
+  also adds `cluster` and `environment` labels; task and error details remain in the log body.
 
 #### Scenario: NetBox outage does not block deployment
 - **WHEN** NetBox is unreachable during a workflow run

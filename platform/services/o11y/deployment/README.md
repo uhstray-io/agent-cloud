@@ -318,6 +318,7 @@ the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
 This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
 Site-config allows TCP/4318 only from the controller CIDR. The collector checks
 that its URL exactly matches the receiver bind and fails visibly when delivery
-fails. Alloy exports the records to Loki with only `job`, `service`, `step`, and
-`status` as labels; task identifiers and error details stay in the log body.
+fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
+specific Loki labels. The shared Loki writer also adds `cluster` and
+`environment` labels; task identifiers and error details stay in the log body.
 Local development keeps the loopback direct-Loki path.
