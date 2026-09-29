@@ -267,6 +267,12 @@ It reads backup-capable node storage and backup
 content listings for that VM using OpenBao-sourced credentials. Its output
 contains only status and counts. A listed artifact is a candidate; the survey
 does not prove immutability, an isolated restore target, or restore success.
+The first production survey attempt, Semaphore task 1828, failed before any
+Proxmox request because the Authorization header was templated from play-level
+URI defaults before the OpenBao-derived token facts existed. The survey now
+attaches that header to each request after credential derivation; this was a
+controller-side evaluation-order failure, not evidence of a Proxmox or storage
+problem. Credential and request task logging remains suppressed.
 Follow the official [Proxmox storage reference](https://pve.proxmox.com/pve-docs/pvesm.1.html)
 for storage content semantics. Do not grow the guest or change retention until
 an immutable backup artifact has been restored and validated on a declared

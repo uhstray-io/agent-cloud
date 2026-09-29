@@ -1015,6 +1015,14 @@ storage and matching backup-content candidate counts only. Immutability,
 isolated restore target, and restore success remain unknown; no backup, restore,
 retention change, or guest growth occurred.
 
+2026-09-29: the first production survey attempt, Semaphore task 1828, failed
+before contacting Proxmox. The Authorization header lived in play-level URI
+module defaults and was interpolated before the OpenBao credential tasks set
+the token facts. The fix moves the header onto the three URI tasks, after
+credential derivation, while retaining scoped `no_log` and redirect refusal.
+This was a controller-side ordering failure, not a Proxmox API or storage
+readback result; no Proxmox state was changed.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

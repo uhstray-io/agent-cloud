@@ -858,12 +858,17 @@ assert all(task.get('no_log') is True for task in api_reads)
 assert all(task.get('check_mode') is False for task in api_reads)
 uri_defaults = survey['module_defaults']['ansible.builtin.uri']
 assert uri_defaults['follow_redirects'] == 'none'
+assert 'headers' not in uri_defaults
 credential_tasks = [
     task for task in tasks
     if task['name'] in ('Read Proxmox API credentials from OpenBao', 'Derive Proxmox API connection values')
 ]
 assert len(credential_tasks) == 2
 assert all(task.get('no_log') is True for task in credential_tasks)
+derive_index = tasks.index(credential_tasks[1])
+assert all(tasks.index(task) > derive_index for task in api_reads)
+expected_headers = {'Authorization': 'PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}'}
+assert all(task['ansible.builtin.uri']['headers'] == expected_headers for task in api_reads)
 summarize = next(task for task in tasks if task['name'] == 'Summarize backup listing without exposing storage or artifact details')
 assert summarize.get('no_log') is True
 summary_template = summarize['ansible.builtin.set_fact']['_backup_summary']
