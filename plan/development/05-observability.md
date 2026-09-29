@@ -1095,6 +1095,33 @@ the existing ops contact, and matching Discord delivery was independently
 verified. This verifies delivery for the low-space event, not for other alert
 classes, and is not a seven-day capacity forecast.
 
+## 2026-09-29 restore-feasibility gate
+
+Artifact-detail Semaphore task 1953 found one non-PBS backup candidate and a
+parseable source layout with complete disk sizes. A disk's backup-inclusion
+flag was absent, so inclusion remains unverified; parsed layout is not evidence
+that all guest state is in the backup. Immutability, isolated-target
+verification, and restore success remain false. Read-only cluster validation
+task 1955 reported image-storage capacity, but did not inspect physical disks,
+LVM, or filesystems.
+
+The Dev-bound artifact survey is being extended with GET-only target
+feasibility facts: source-layout parsing and complete sizes separately from
+whether one supported artifact candidate exists, explicit inclusion flags,
+point-in-time Proxmox-reported capacity for distinct active, non-shared
+image-storage IDs on online nodes other than the source VM's node against the
+complete source disk-layout size plus 30% remaining headroom, and whether a
+cluster VMID candidate was returned. Missing or malformed `shared` data fails
+closed. The VMID is neither printed nor reserved; storage is not selected.
+These facts do not establish a usable backup or physical-disk
+datastore readiness. User-selected placement is local-only PBS on a separately
+declared cluster node held in private `site-config`. A reviewed physical-storage
+survey and idempotent disk/LVM/filesystem automation for the declared layout
+must precede any storage write; no device is inferred safe to format. The
+feasibility survey's reviewed Dev run remains pending. Preserve current
+telemetry volumes and 15d/7d/168h retention until isolated restore, cleanup,
+and seven-day capacity gates pass.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

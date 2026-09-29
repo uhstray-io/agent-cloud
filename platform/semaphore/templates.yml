@@ -1416,9 +1416,11 @@ templates:
         description: "Exact reviewed Dev revision for the read-only artifact detail survey"
         type: string
         required: true
-    # Reports allow-listed artifact metadata and VM disk layout only.
-    # Proxmox storage names, volume IDs, hashes, and free-form metadata stay hidden.
-    # Missing protection metadata remains unknown; this task never writes Proxmox.
+    # Reports allow-listed artifact facts, source disk layout, single supported-
+    # candidate status, and aggregate off-source non-shared image-capacity/VMID
+    # feasibility only. No names, IDs, hashes, capacities, or free-form data
+    # are shown. A VMID is not reserved;
+    # missing protection stays unknown, and this task never writes PVE.
 
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml

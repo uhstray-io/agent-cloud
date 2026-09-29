@@ -207,7 +207,7 @@ def test_playbook_is_dev_bound_read_only_and_keeps_raw_api_results_hidden():
     play = next(item for item in plays if item.get("name") == "Survey o11y backup artifact details")
     tasks = play["tasks"]
     api_reads = [task for task in tasks if "ansible.builtin.uri" in task]
-    assert len(api_reads) == 4
+    assert len(api_reads) == 7
     assert all(task["ansible.builtin.uri"]["method"] == "GET" for task in api_reads)
     assert all(task.get("no_log") is True for task in api_reads)
     assert all(task.get("check_mode") is False for task in api_reads)
