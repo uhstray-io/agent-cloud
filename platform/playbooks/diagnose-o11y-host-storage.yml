@@ -1,0 +1,95 @@
+---
+# Read-only investigation of receiver-host exporter isolation and storage.
+# The on-target helper captures raw runtime output and emits normalized fields.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require an exact controller revision and real diagnostic run
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+        fail_msg: "Pass the exact reviewed Dev commit SHA and run without check mode."
+
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed controller revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed controller checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Semaphore checkout contains uncommitted files."
+
+- name: Diagnose receiver-host and Podman storage read-only
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: Require rootless Podman and production receiver scope
+      ansible.builtin.assert:
+        that:
+          - _engine == 'podman'
+          - not (local_mode | default(false) | bool)
+        fail_msg: "This diagnostic is limited to the production rootless Podman receiver."
+
+    - name: Read the deployed receiver revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _receiver_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact deployed receiver revision
+      ansible.builtin.assert:
+        that:
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - _receiver_revision.stdout == expected_receiver_sha
+          - not ansible_check_mode
+        fail_msg: "Pass the exact currently deployed receiver SHA; no changes are made."
+
+    - name: Collect and normalize receiver host storage diagnostics
+      ansible.builtin.command:
+        argv: [python3, -]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-o11y-host-storage.py') }}"
+      register: _host_storage_diagnostic
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Report sanitized receiver host storage diagnostics
+      ansible.builtin.debug:
+        msg: "{{ _host_storage_diagnostic.stdout | from_json }}"
+
+    - name: Require complete host storage readbacks
+      ansible.builtin.assert:
+        that: (_host_storage_diagnostic.stdout | from_json).status == 'observed'
+        fail_msg: "Required receiver-host storage readbacks are malformed or unavailable; inspect the sanitized reason above."

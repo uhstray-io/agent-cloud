@@ -1379,6 +1379,23 @@ templates:
         type: string
         required: true
 
+  - name: Diagnose o11y Host Storage (Dev)
+    playbook: platform/playbooks/diagnose-o11y-host-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only diagnostic"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision to inspect"
+        type: string
+        required: true
+    # Read-only exporter isolation and storage layout diagnostics. No secrets,
+    # configuration writes, image pulls, or deployment tasks are involved.
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's
