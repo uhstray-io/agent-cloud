@@ -101,6 +101,7 @@
       {{ (_catalog | selectattr('_publish_name', 'in', semaphore_template_names) | list)
          if _scoped else _catalog }}
     _allow_scoped_create: "{{ semaphore_allow_scoped_create | default(false) | bool }}"
+    _allow_scoped_schedule: "{{ semaphore_allow_scoped_schedule | default(false) | bool }}"
 
 
   tasks:
@@ -119,6 +120,24 @@
           - semaphore_template_names | difference(_catalog | map(attribute='_publish_name') | list) | length == 0
         fail_msg: "Supply a nonempty list of unique, exact declared template names, including any (Dev) suffix."
       when: _scoped
+
+    - name: "Require one existing directly Dev-bound scheduled declaration for scoped schedule publication"
+      ansible.builtin.assert:
+        that:
+          - _scoped
+          - _selected_templates | length == 1
+          - not (_selected_templates[0]._generated | default(false))
+          - _selected_templates[0]._publish_name is match('^.+ \(Dev\)$')
+          - _selected_templates[0].repository | default('agent-cloud') == _dev_repo_name
+          - _selected_templates[0].schedule is defined
+          - not _allow_scoped_create
+          - semaphore_project_id | default('') | string | trim | length == 0
+          - semaphore_inventory_id | default('') | string | trim | length == 0
+          - semaphore_environment_id | default('') | string | trim | length == 0
+        fail_msg: >-
+          Scoped schedule publication requires one existing directly Dev-bound template
+          with a declared schedule; create and binding inputs are not accepted.
+      when: _allow_scoped_schedule
 
     - name: "Require explicit bindings for a one-template scoped bootstrap"
       ansible.builtin.assert:
@@ -456,7 +475,22 @@
         follow_redirects: none
       register: _schedules
       check_mode: false
-      when: not _scoped
+      when: not _scoped or _allow_scoped_schedule
+
+    - name: "Refuse ambiguous or differently-bound selected schedules"
+      ansible.builtin.assert:
+        that:
+          - _same_name_schedules | length <= 1
+          - _same_name_schedules | length == 0 or (_same_name_schedules | first).project_id | int == _project_id | int
+          - _same_name_schedules | length == 0 or (_same_name_schedules | first).template_id | int == _target_template_id | int
+        fail_msg: "The selected schedule name is ambiguous or already belongs to a different template."
+      vars:
+        _same_name_schedules: "{{ _schedules.json | default([]) | selectattr('name', 'equalto', item.name) | list }}"
+        _target_template_id: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | map(attribute='id') | first }}"
+      loop: "{{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _allow_scoped_schedule
 
     - name: "Create or update each declared schedule"
       ansible.builtin.uri:
@@ -474,7 +508,7 @@
         status_code: [200, 201, 204]
       when:
         - not ansible_check_mode
-        - not _scoped
+        - not _scoped or _allow_scoped_schedule
       vars:
         _sched_ids: "{{ (_schedules.json | default([])) | selectattr('name', 'equalto', item.name) | map(attribute='id') | list }}"
         _tpl_id: "{{ (_templates_after.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first) }}"
@@ -489,10 +523,40 @@
       loop_control:
         label: "{{ item.name }} ({{ item.schedule.cron }})"
 
+    - name: "Read schedules after scoped schedule publication"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _schedules_after
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - _allow_scoped_schedule
+
+    - name: "Verify the selected scoped schedule readback"
+      ansible.builtin.assert:
+        that:
+          - _saved_schedules | length == 1
+          - (_saved_schedules | first).project_id | int == _project_id | int
+          - (_saved_schedules | first).template_id | int == _target_template_id | int
+          - (_saved_schedules | first).cron_format == item.schedule.cron
+          - (_saved_schedules | first).active | bool == item.schedule.active | default(true) | bool
+        fail_msg: "Scoped schedule publication readback failed for '{{ item._publish_name }}'."
+      vars:
+        _saved_schedules: "{{ _schedules_after.json | selectattr('name', 'equalto', item.name) | list }}"
+        _target_template_id: "{{ _templates_after.json | selectattr('name', 'equalto', item._publish_name) | map(attribute='id') | first }}"
+      loop: "{{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: _allow_scoped_schedule
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           Applied {{ _selected_templates | length }} templates
           ({{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list | length }}
-          declared schedules; schedule publication {{ 'skipped' if _scoped else 'enabled' }})
+          declared schedules; schedule publication {{ 'enabled for one selected template' if _allow_scoped_schedule else ('skipped' if _scoped else 'enabled') }})
           to Semaphore at {{ _semaphore_url }}

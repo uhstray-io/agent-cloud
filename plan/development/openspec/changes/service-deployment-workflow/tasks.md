@@ -275,8 +275,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         can misstate missing telemetry as healthy. Source declared the
         schedule on the unsuffixed base, but live Semaphore has only the `Collect Service
         Conformance (Dev)` template (ID 234) and no schedule. Keep that exact name, bind it
-        directly to `agent-cloud dev`, and attach its one schedule through full-catalog
-        publication so it updates in place. Make missing Loki samples read as `No data`; in
+        directly to `agent-cloud dev`, and attach its one schedule through the explicit,
+        single-template Dev schedule opt-in on the controller publisher. Do not use the
+        unavailable full-catalog publication path. Make missing Loki samples read as `No data`; in
         Service Overview use the minimum target health per service, list failed targets, and retain
         the existing Prometheus-derived selector scope for metric-enabled services. Production
         inventory read-back shows Loki bound to a private address, but the collector sender CIDR

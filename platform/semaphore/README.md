@@ -163,8 +163,18 @@ first update its own Dev template to expose these fields by selecting
 `["Publish Semaphore Template Surveys (Dev)"]` with the existing survey.
 Repository URL/branch and template repository/playbook bindings must match the
 declaration. The selected surveys are updated and read back; inventory,
-environment, arguments and operational settings are preserved. No schedules,
-service jobs, repository records, inventory records or credentials are changed.
+environment, arguments and operational settings are preserved. By default, no
+schedules, service jobs, repository records, inventory records or credentials
+are changed.
+
+To publish one code-declared Dev schedule, set
+`semaphore_allow_scoped_schedule=true` and select exactly one existing scheduled
+template whose name ends in `(Dev)` and whose declaration binds directly to
+`agent-cloud dev`. The publisher refuses missing templates, creation or binding
+IDs, main-bound templates, ambiguous schedules, and a same-name schedule already
+bound elsewhere. It upserts only that schedule and verifies its saved template,
+cadence and active state. Ordinary scoped survey updates keep schedule writes
+disabled.
 
 **Deployment status:** installed and used in production. On 2026-09-25 the Dev
 publisher updated one survey (Provision NetBox Automation Token (Dev), tasks 1329

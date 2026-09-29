@@ -1445,6 +1445,12 @@ templates:
         type: string
         required: false
         default_value: "false"
+      - name: semaphore_allow_scoped_schedule
+        title: "Publish one declared Dev schedule"
+        description: "Default false. Requires one existing scheduled (Dev) template; no template creation or binding changes."
+        type: string
+        required: false
+        default_value: "false"
       - name: semaphore_project_id
         title: "Verified project ID for create"
         type: string
