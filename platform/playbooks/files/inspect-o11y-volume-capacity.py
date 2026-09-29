@@ -117,23 +117,47 @@ def main() -> int:
                 for volume in volumes
             ):
                 return result("orphaned_o11y_volume", volume=logical_name)
-        root_free_percent = round(100 * root_available / root_total, 2) if root_total else 0
-        if root_free_percent < minimum_free_percent:
+        podman_info = run(engine, "info", "--format", "json")
+        if podman_info is None:
+            return result("podman_info_unavailable")
+        try:
+            info = json.loads(podman_info.stdout)
+        except json.JSONDecodeError:
+            return result("podman_info_invalid")
+        store = info.get("store") if isinstance(info, dict) else None
+        volume_path = store.get("volumePath") if isinstance(store, dict) else None
+        if not isinstance(volume_path, str) or not os.path.isabs(volume_path) or not os.path.isdir(volume_path):
+            return result("podman_volume_path_unresolved")
+        volume_fs = fs_capacity(volume_path)
+        if volume_fs is None:
+            return result("podman_volume_filesystem_unavailable")
+        volume_total, volume_available, _volume_fsid = volume_fs
+        volume_free_percent = round(100 * volume_available / volume_total, 2) if volume_total else 0
+        if volume_free_percent < minimum_free_percent:
             return result(
-                "first_deploy_guest_root_free_below_threshold",
+                "first_deploy_volume_filesystem_free_below_threshold",
                 guest_root_filesystem_total_bytes=root_total,
                 guest_root_filesystem_available_bytes=root_available,
-                guest_root_filesystem_free_percent=root_free_percent,
+                volume_store_filesystem_total_bytes=volume_total,
+                volume_store_filesystem_available_bytes=volume_available,
+                volume_store_filesystem_free_percent=volume_free_percent,
                 required_free_percent=minimum_free_percent,
             )
-        print(json.dumps({
-            "status": "first_deploy",
-            "guest_root_filesystem_total_bytes": root_total,
-            "guest_root_filesystem_available_bytes": root_available,
-            "guest_root_filesystem_free_percent": root_free_percent,
-            "required_free_percent": minimum_free_percent,
-            "volumes": [],
-        }, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "status": "first_deploy",
+                    "guest_root_filesystem_total_bytes": root_total,
+                    "guest_root_filesystem_available_bytes": root_available,
+                    "volume_store_filesystem_total_bytes": volume_total,
+                    "volume_store_filesystem_available_bytes": volume_available,
+                    "volume_store_filesystem_free_percent": volume_free_percent,
+                    "required_free_percent": minimum_free_percent,
+                    "volumes": [],
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if missing:
         return result("backend_container_set_partial", missing_container=sorted(missing)[0])
@@ -215,12 +239,17 @@ def main() -> int:
                 volumes=reports,
             )
 
-    print(json.dumps({
-        "status": "observed",
-        "guest_root_filesystem_total_bytes": root_total,
-        "guest_root_filesystem_available_bytes": root_available,
-        "volumes": reports,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "status": "observed",
+                "guest_root_filesystem_total_bytes": root_total,
+                "guest_root_filesystem_available_bytes": root_available,
+                "volumes": reports,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

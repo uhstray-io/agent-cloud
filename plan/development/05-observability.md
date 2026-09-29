@@ -925,7 +925,10 @@ bytes are measured via `podman unshare du` for rootless access. Only a productio
 retention expansion requires every backing filesystem to have at least 30% free
 space before config or image changes. A clean first deployment under that gate
 requires all five backend containers and corresponding Compose volumes to be
-absent and uses the same threshold on guest root. The read-only verifier fails
+absent, then validates Podman's `store.volumePath` from `podman info --format
+json` as an absolute existing directory and applies the same threshold to its
+backing filesystem. This measures where Podman will create named volumes
+without assuming its storage shares guest `/`. The read-only verifier fails
 closed on missing, partial, or ambiguous volume state, while normal deployment
 and recovery remain available. The destructive clean-deploy playbook refuses a
 nonbaseline retention tuple before wiping anything. No resize is performed by

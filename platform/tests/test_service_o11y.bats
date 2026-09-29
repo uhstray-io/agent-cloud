@@ -1313,8 +1313,10 @@ assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group
 assert "SEMAPHORE_TASK_ID" not in str(playbook)
 assert playbook[1]['tasks'][-2]['ansible.builtin.command']['argv'] == ['git', 'status', '--porcelain', '--untracked-files=all']
 assert playbook[1]['tasks'][-1]['ansible.builtin.assert']['that'] == '_controller_changes.stdout | length == 0'
-assert playbook[2]['tasks'][0]['name'] == 'Require explicit production budget declarations'
 tasks = playbook[2]['tasks']
+declaration_task = next(task for task in tasks
+                       if task.get('name') == 'Require explicit production budget declarations')
+assert declaration_task['ansible.builtin.assert']['that']
 names = {task['name'] for task in tasks}
 assert {'Read Prometheus runtime retention flags', 'Read Loki runtime configuration',
         'Read Tempo runtime configuration', 'Read the live Alloy sample limit',
@@ -1384,7 +1386,7 @@ assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
     'scrape_sample_limit', 'active_prometheus_series',
     'guest_root_filesystem_total_bytes', 'guest_root_filesystem_available_bytes',
-    'guest_memory_headroom_percent'}
+    'guest_memory_headroom_percent', 'o11y_volume_capacity'}
 assert 'http://' not in str(summary)
 assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
@@ -1424,7 +1426,7 @@ write_index = next(index for index, task in enumerate(tasks)
                    if task.get('ansible.builtin.include_tasks') == 'tasks/place-monorepo.yml'
                    or 'ansible.builtin.template' in task)
 assert gate_index < write_index
-assert '15d' in gate['when'] and '7d' in gate['when'] and '168h' in gate['when']
+assert '_o11y_retention_expansion' in gate['when']
 assert 'local_mode' in gate['when']
 message = gate['ansible.builtin.assert']['fail_msg'].lower()
 assert 'o11y_capacity_receipt_id' in message
@@ -1441,11 +1443,15 @@ changed = {'local_mode': False, 'o11y_prom_retention': '90d',
            'o11y_loki_retention': '45d', 'o11y_tempo_retention': '1080h'}
 baseline = {'local_mode': False, 'o11y_prom_retention': '15d',
             'o11y_loki_retention': '7d', 'o11y_tempo_retention': '168h'}
-assert evaluate(gate['when'], **changed)
-assert evaluate(gate['when'], **{**baseline, 'o11y_prom_retention': '91d'})
-assert evaluate(gate['when'], **{**baseline, 'o11y_tempo_retention': '1090h'})
-assert not evaluate(gate['when'], **baseline)
-assert not evaluate(gate['when'], **{**changed, 'local_mode': True})
+expansion_expression = phase['vars']['_o11y_retention_expansion'].removeprefix('{{').removesuffix('}}').strip()
+assert '_o11y_retention_expansion' in gate['when']
+assert evaluate(expansion_expression, **changed)
+assert evaluate(expansion_expression, **{**baseline, 'o11y_prom_retention': '91d'})
+assert evaluate(expansion_expression, **{**baseline, 'o11y_tempo_retention': '1090h'})
+assert not evaluate(expansion_expression, **baseline)
+assert evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=False)
+assert not evaluate(gate['when'], _o11y_retention_expansion=False, local_mode=False)
+assert not evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=True)
 requirements = gate['ansible.builtin.assert']['that']
 assert len(requirements) == 2
 assert not evaluate(requirements[0], o11y_prom_retention_size='0B')
@@ -1601,6 +1607,7 @@ no_containers = False
 partial_containers = False
 orphaned_volume = None
 orphaned_project_volume = False
+podman_volume_path = '/tmp'
 du_calls = []
 def fake_run(_engine, *args):
     if args[:2] == ('ps', '-a'):
@@ -1625,6 +1632,9 @@ def fake_run(_engine, *args):
                 'com.docker.compose.volume': 'pyroscope-data',
             }})
         return SimpleNamespace(returncode=0, stdout=json.dumps(volumes))
+    if args == ('info', '--format', 'json'):
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'store': {
+            'volumePath': podman_volume_path, 'graphRoot': '/different/graph/root'}}))
     if args[:2] == ('unshare', 'du'):
         du_calls.append((_engine, args))
         return SimpleNamespace(returncode=0, stdout='24 /tmp\n')
@@ -1661,10 +1671,15 @@ module.sys.argv = [str(script), 'podman', '30']
 original_allocated_bytes = module.allocated_bytes
 module.allocated_bytes = lambda *_args: (_ for _ in ()).throw(AssertionError('threshold mode must skip byte walks'))
 orphaned_volume = 'other_pyroscope-data'
+module.fs_capacity = lambda path: (1000, 200, 1) if path == '/' else (1000, 500, 2)
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 0
-assert json.loads(captured.getvalue())['status'] == 'first_deploy'
+first_deploy = json.loads(captured.getvalue())
+assert first_deploy['status'] == 'first_deploy'
+assert first_deploy['guest_root_filesystem_available_bytes'] == 200
+assert first_deploy['volume_store_filesystem_available_bytes'] == 500
+assert first_deploy['volume_store_filesystem_free_percent'] == 50
 orphaned_volume = 'o11y_pyroscope-data'
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
@@ -1681,8 +1696,20 @@ captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 0
 assert json.loads(captured.getvalue())['status'] == 'first_deploy'
+module.fs_capacity = lambda path: (1000, 800, 1) if path == '/' else (1000, 200, 2)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+assert json.loads(captured.getvalue())['reason'] == 'first_deploy_volume_filesystem_free_below_threshold'
+podman_volume_path = 'relative/path'
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+assert json.loads(captured.getvalue())['reason'] == 'podman_volume_path_unresolved'
+podman_volume_path = '/tmp'
 no_containers = False
 missing_mount.clear()
+module.fs_capacity = lambda _path: (1000, 500, 1)
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 0
@@ -1695,7 +1722,7 @@ module.fs_capacity = lambda _path: (1000, 200, 1)
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 1
-assert json.loads(captured.getvalue())['reason'] == 'first_deploy_guest_root_free_below_threshold'
+assert json.loads(captured.getvalue())['reason'] == 'first_deploy_volume_filesystem_free_below_threshold'
 module.sys.argv = [str(script), 'docker']
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):

@@ -152,7 +152,10 @@ the 10,464,022,528-byte guest root; that guest observation alone does not prove
 where the named volumes live. Record exact volume-backed measurements before
 any retention or growth decision. During a retention expansion, a clean first
 deploy is allowed only when all five backend containers and corresponding
-named volumes are absent and guest root meets the same 30% threshold. The
+named volumes are absent, and Podman's `store.volumePath` from
+`podman info --format json` is an absolute existing directory whose backing
+filesystem meets the same 30% threshold. This measures where Podman will create
+the named volumes instead of assuming its storage shares guest `/`. The
 read-only budget verifier remains fail-closed on missing, partial, or ambiguous
 volume state. This playbook does not resize storage. Full-disk recovery requires
 a separately reviewed backup-and-growth workflow. The destructive clean-deploy
