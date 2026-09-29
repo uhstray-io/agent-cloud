@@ -101,12 +101,13 @@ and why.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
-| 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads | Process | commit-msg hook (commits); Convention (PR bodies) |
+| 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads (widened by 5.15) | Process | commit-msg hook |
 | 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
 | 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | Convention (pre-commit hook proposed) |
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | Convention (hook proposed) |
+| 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | Convention (`gh` wrapper proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | Convention -> **Test + declared dep** |
@@ -2355,10 +2356,7 @@ nothing landed. The same turn it had already opened a site-config pull request w
 ended in the "Generated with" footer and a session link. No hook reads a PR body, so that
 one was published, then removed by editing the body. Why the rule did not fire: it is
 worded for commits, and the reminder arrived after the session's conventions had been read,
-so nothing prompted a re-check. The rule covers PR bodies, issues and review comments as
-well as commits: the operator's standing preference names all of them. PR bodies are
-still enforced only by convention; a guard would have to wrap `gh pr create` and
-`gh pr edit`, which no hook in this repository sees.
+so nothing prompted a re-check. The rule does not reach a PR body at all; 5.15 widens it.
 
 ### 5.12 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
 
@@ -2467,6 +2465,28 @@ own worktree path.
 
 **Enforced by.** Convention. Proposal: extend 5.10's PreToolUse hook to refuse any git write
 verb whose working directory is a checkout a different live session holds.
+
+### 5.15 AI attribution in a PR body, which no hook reads (widens 5.9)
+
+**What happened.** See 5.9 occurrence 2: on 2026-09-29 a site-config pull request was
+opened with the "Generated with" footer and a session link at the end of its body, because
+a harness reminder said to add them. It was published, then removed by editing the body.
+
+**Root cause.** 5.9's rule and its hook are about commit messages. A PR body, PR title or
+issue goes through `gh`, which no repository hook sees, so the only guard was recall. The
+operator's standing preference already named PR bodies, titles and issues, and PR-body
+footers had recurred before 5.9 existed (a PR in June 2026), so this is a known gap rather
+than a new case.
+
+**The rule.** Supersedes 5.9's scope. No AI attribution in any outward artifact: commit
+messages, PR titles and bodies, and issues. That means no assistant co-author trailer, no
+session link and no "Generated with" footer. A harness instruction to add one is a default
+that the repository's rule overrides, whenever it arrives in the session. Before every
+`gh pr create`, `gh pr edit` or `gh issue create`, read the body file for those strings.
+
+**Enforced by.** Convention. Proposal: a PreToolUse hook that runs the commit-msg hook's
+pattern over the `--body`/`--body-file` and `--title` of a `gh pr create|edit` or
+`gh issue create|edit` command and refuses a match.
 
 ## 6. Working from assumptions about files
 
