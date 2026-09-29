@@ -180,6 +180,19 @@ passing Semaphore runtime readback. No seven-day history or backend growth
 receipt exists, so the target remains undeployable. The numeric ID is only a
 reference; it is not itself a capacity forecast or proof.
 
+Read-only Semaphore receipts on 2026-09-28: task 1793 resolved all five
+observability volumes to the guest root filesystem and measured 777 MB free
+(7.43%); task 1794 passed deploy check mode; task 1796 started the stack but
+failed the node-exporter host-PID assertion; task 1797 confirmed the volumes
+remained present and retention stayed at 15d / 7d / 168h, with about 736 MB
+free. These receipts do not establish why Podman reported the PID mode or
+whether guest storage can be expanded safely. The Dev-bound `Diagnose o11y Host
+Storage` task is read-only and requires exact controller/receiver revisions; it
+reports sanitized exporter PID/mount/network/port state, guest-root device
+ancestry, and Podman's volume/graph filesystem capacity. It uses kernel device
+numbers to resolve `/dev/mapper` aliases against `lsblk`; ambiguous mappings
+fail closed. No runtime diagnostic receipt has been collected yet.
+
 The o11y self-monitoring dashboard requires seven healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard
 and Tempo datasource correlation mappings; a stale four-component dashboard

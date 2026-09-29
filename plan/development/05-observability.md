@@ -934,6 +934,20 @@ and recovery remain available. The destructive clean-deploy playbook refuses a
 nonbaseline retention tuple before wiping anything. No resize is performed by
 either path.
 
+2026-09-28: production budget task 1793 resolved all five observability volumes
+to guest root and measured 777 MB free (7.43%). Check-mode deploy task 1794
+passed. Non-destructive deploy task 1796 started the stack but failed the
+node-exporter host-PID assertion; post-run budget task 1797 confirmed volumes
+were preserved, retention remained 15d / 7d / 168h, and guest-root free space
+was about 736 MB. These observations do not explain the PID readback or approve
+storage growth. The Dev-bound read-only `Diagnose o11y Host Storage` task now
+requires exact controller and receiver SHAs, then reports sanitized exporter
+PID/mount/network/port state, guest-root block ancestry, and Podman's volume and
+graph filesystem capacity. It joins findmnt and lsblk by kernel major/minor so
+device-mapper aliases are not guessed; unresolved topology fails closed. No
+diagnostic receipt exists yet, and neither deployment behavior nor retention
+was changed by this diagnostic work.
+
 2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord
 delivery, and active-baseline restoration. Its task record has the receipt ID,
 but this Semaphore runner did not inject `SEMAPHORE_TASK_ID` into Ansible; the
