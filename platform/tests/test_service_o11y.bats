@@ -914,6 +914,12 @@ assert set(fields) == {
 assert fields['artifact_immutability_verified'] is False
 assert fields['isolated_restore_target_verified'] is False
 assert fields['restore_test_verified'] is False
+readiness_guard = next(task for task in tasks if task.get('name') == 'Require complete read-only backup listing')
+assert readiness_guard['ansible.builtin.assert']['that'] == [
+    '_backup_summary.listing_complete | bool',
+    '_backup_summary.backend_types_complete | bool',
+]
+assert tasks.index(readiness_guard) < tasks.index(summary)
 templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
 item, = (item for item in templates if item['name'] == 'Survey o11y Backup Readiness (Dev)')
 assert item['playbook'] == 'platform/playbooks/survey-o11y-backup-readiness.yml'
