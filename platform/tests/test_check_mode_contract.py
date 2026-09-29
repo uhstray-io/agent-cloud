@@ -32,6 +32,7 @@ removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -312,8 +313,20 @@ def _allowlist() -> set[str]:
     return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
 
 
+_PARSED: dict[Path, tuple[tuple[int, int], object]] = {}
+
+
 def _load(path: Path):
-    return yaml.load(path.read_text(), Loader=_Loader)  # noqa: S506 - SafeLoader subclass
+    """Each file is parsed once per content state; the SSH harnesses re-check the whole repo
+    before every ansible run, which was ~0.6 s of parsing per call. Keyed on mtime and size,
+    so an edited file is read again. Callers treat the result as read-only (a test that edits
+    a document deep-copies it first)."""
+    st = path.stat()
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _PARSED.get(path)
+    if hit is None or hit[0] != key:
+        hit = _PARSED[path] = (key, yaml.load(path.read_text(), Loader=_Loader))  # noqa: S506 - SafeLoader subclass
+    return hit[1]
 
 
 @pytest.mark.parametrize("path", _files(), ids=lambda p: str(p.relative_to(REPO)))
@@ -565,6 +578,19 @@ def test_the_harness_mode_treats_every_file_write_as_forced():
     found = violations_in(yaml.safe_load("- name: w\n  ansible.builtin.copy:\n    content: x\n    dest: /etc/motd\n"),
                           None, all_writes=True)
     assert found == ["w: copy" + OUTSIDE]
+
+
+def test_the_parse_cache_rereads_an_edited_file(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text("- a: 1\n")
+    assert _load(f) == [{"a": 1}]
+    f.write_text("- a: 22\n")
+    assert _load(f) == [{"a": 22}]
+    # Same size, so only the mtime half of the key can tell the two apart.
+    f.write_text("- a: 33\n")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert _load(f) == [{"a": 33}]
 
 
 def test_every_pinned_name_has_exactly_its_one_definition():
