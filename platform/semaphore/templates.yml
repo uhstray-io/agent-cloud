@@ -1396,6 +1396,18 @@ templates:
     # Read-only exporter isolation and storage layout diagnostics. No secrets,
     # configuration writes, image pulls, or deployment tasks are involved.
 
+  - name: Survey o11y Backup Readiness (Dev)
+    playbook: platform/playbooks/survey-o11y-backup-readiness.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox survey"
+        type: string
+        required: true
+    # Reports sanitized backup-capable storage and candidate artifact counts.
+    # It does not mutate Proxmox or prove immutability or restore success.
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's

@@ -994,6 +994,27 @@ observed, the temporary target was removed, all o11y rules and the contact
 remained present, and the recovery marker cleared. This confirms the alert drill
 path only; it does not resolve the separate budget readback failure.
 
+2026-09-28: non-destructive production o11y deploy task 1822 succeeded on
+reviewed `dev` SHA `c0f65d9b4dca84a3c5b2e33f7e876e72ccac8b25` and passed the
+receiver-host-versus-guest root metric check. Read-only budget task 1823
+resolved all five named volumes to the shared guest-root backing filesystem
+and measured 7.06% free. The deploy preserved the existing volumes and they
+remained mounted/observed; this does not prove historical data continuity
+inside each volume. Retention remains Prometheus 15d, Loki 7d, Tempo 168h, and
+the Prometheus size cap remains 0B. Task 1823 observed 13,088 head series,
+87.55% guest memory headroom, and sample limit 2,000. These are point-in-time
+readings, not a seven-day forecast or Loki/Tempo growth history. The log source
+and seven-day baseline remain outstanding.
+
+The receiver-root warning rule evaluates the verified
+`job="receiver-host",service="o11y/receiver-host",mountpoint="/"` series and
+routes through the existing ops contact. It is configured below 10% free for
+15m; its live firing and Discord delivery still require a post-merge deploy and
+drill. The Dev-bound read-only backup readiness survey reports backup-capable
+storage and matching backup-content candidate counts only. Immutability,
+isolated restore target, and restore success remain unknown; no backup, restore,
+retention change, or guest growth occurred.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

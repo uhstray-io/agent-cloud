@@ -109,3 +109,33 @@ Complete the remaining o11y/agentgateway user-visible and owning-task receipts f
 
 - Which source-only service directories correspond to current production workloads? Resolve from private inventory and Semaphore/live readback in the census, then record lifecycle explicitly.
 - What are the actual per-backend daily ingestion and compression factors? Measure after current acceptance; they determine the VM number but do not change this design.
+
+## 2026-09-28 production receipts and bounded follow-up
+
+Non-destructive production o11y deploy task 1822 succeeded on reviewed `dev`
+SHA `c0f65d9b4dca84a3c5b2e33f7e876e72ccac8b25` and passed the receiver-host
+versus guest-root metric check. Read-only budget task 1823 resolved all five
+named volumes to the shared guest-root backing filesystem and measured 7.06%
+free. The deploy preserved existing volumes and they remained mounted and
+observed; this does not establish historical data continuity inside every
+volume. Retention remains Prometheus 15d, Loki 7d, Tempo 168h, and the
+Prometheus size cap remains 0B. Task 1823 observed 13,088 active head series,
+87.55% guest memory headroom, and sample limit 2,000. These are point-in-time
+readings, not a seven-day capacity forecast or Loki/Tempo growth trend. Log
+delivery and the seven-day baseline remain open.
+
+The provisioned root-filesystem warning is scoped to the verified
+`receiver-host` job, `o11y/receiver-host` service, and `/` mountpoint. It uses a
+less-than-10% threshold for 15 minutes, warning severity, and the existing ops
+contact; missing filesystem samples become alerting. Source and render tests
+are not live firing evidence. A post-merge production deploy and delivery drill
+remain required.
+
+The Dev-bound backup readiness survey uses OpenBao-sourced Proxmox credentials
+and read-only API requests against the single declared `o11y_svc` VM. It emits
+only the count of active node storage entries that declare backup content and
+the count of matching backup-content records. Those records are candidates
+only: the survey cannot establish immutable retention, identify an isolated
+restore target, or prove a restore. The separately reviewed restore workflow
+must validate the restored guest filesystem and telemetry-volume access, then
+record isolated-target cleanup before guest growth is allowed.
