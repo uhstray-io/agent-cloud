@@ -61,3 +61,15 @@ scan() { printf '%s\n' "$@" | "$HOOK" -; }
   run env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$HOOK"
   [ "$status" -eq 1 ]
 }
+
+@test "staged-diff gates: every git diff --cached filter includes renamed files" {
+  # A --diff-filter without R skips a renamed file's content, so a leak moved in by a
+  # rename passes the gate (review of #339; the private-IP, credential and .env hooks had
+  # ACM until 2026-09-29).
+  cfg="$BATS_TEST_DIRNAME/../../.pre-commit-config.yaml"
+  hook="$BATS_TEST_DIRNAME/../../scripts/check-machine-paths.sh"
+  run grep -hoE -- '--diff-filter=[A-Z]+' "$cfg" "$hook"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -ge 4 ]
+  refute_contains "$(printf '%s\n' "$output" | grep -v R || true)" "diff-filter"
+}
