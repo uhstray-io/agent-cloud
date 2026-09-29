@@ -300,7 +300,8 @@ active Prometheus series, and 87.73% guest memory headroom. Retention remains
 Prometheus 15d with a 0B size cap, Loki 7d, and Tempo 168h. Mounted-volume
 observations do not prove historical data continuity. These are point-in-time
 readings, not a seven-day forecast; at the time of task 1831, disk-alert firing
-and Discord delivery were still unverified.
+and Discord delivery were still unverified; both were verified by the later
+2026-09-29 low-space event described below.
 
 At approximately 2026-09-29 04:56 UTC, the Grafana alert list showed
 `o11y_receiver_root_disk_low` firing with a healthy evaluation. Its detail view
