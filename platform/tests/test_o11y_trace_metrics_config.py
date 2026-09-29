@@ -195,8 +195,8 @@ def _run_production_assert(tmp_path, response, enabled):
     ]
     fixture_path = tmp_path / "tempo-assert.yml"
     fixture_path.write_text(yaml.safe_dump(fixture_playbook), encoding="utf-8")
+    # The filter comes from the repository ansible.cfg, which applies from cwd=ROOT.
     env = harness_sandbox.env_for(tmp_path)
-    env["ANSIBLE_FILTER_PLUGINS"] = str(PLUGIN.parent)
     return harness_sandbox.run(
         ["ansible-playbook", "-i", "localhost,", str(fixture_path)],
         tmp_path,

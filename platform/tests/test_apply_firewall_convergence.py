@@ -72,9 +72,9 @@ def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check:
         (bindir / name).chmod(0o755)
     env = harness_sandbox.env_for(tmp_path)
     # The stubs come first, so neither a real ufw nor a real podman can be reached.
-    env.update(PATH=f"{bindir}:{env['PATH']}",
-               # the lifted play sits outside platform/playbooks, so its filters are named here
-               ANSIBLE_FILTER_PLUGINS=str(PLAYBOOK.parent / "filter_plugins"))
+    # The lifted play sits outside platform/playbooks; its filters come from the repository
+    # ansible.cfg, which applies because the run's cwd is the repository root.
+    env.update(PATH=f"{bindir}:{env['PATH']}")
     if drop:
         env["UFW_STUB_DROP"] = drop
     if collateral:

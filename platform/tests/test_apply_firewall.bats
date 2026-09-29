@@ -202,7 +202,9 @@ with open(sys.argv[2], "w") as target:
 PYTHON
 
   local values
-  export ANSIBLE_FILTER_PLUGINS="$BATS_TEST_DIRNAME/../playbooks/filter_plugins"
+  # The lifted play sits in a temp dir; its filters come from the repository ansible.cfg,
+  # which applies from the repository root whatever directory bats was started in.
+  cd "$BATS_TEST_DIRNAME/../.."
   for values in '"192.0.2.10"' '["192.0.2.10","198.51.100.10"]'; do
     run ansible-playbook "$BATS_TEST_TMPDIR/upstream.yml" -e "{\"firewall_upstream_source\":$values}"
     [ "$status" -eq 0 ]

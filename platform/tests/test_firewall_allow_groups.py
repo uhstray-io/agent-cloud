@@ -32,9 +32,9 @@ def _render(tmp_path: Path, host_vars: dict, groups: dict) -> subprocess.Complet
     (tmp_path / "play.yml").write_text(yaml.safe_dump(lifted))
     return harness_sandbox.run(
         ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")],
-        tmp_path, cwd=REPO,
-        # the lifted play sits outside platform/playbooks, so its filters are named here
-        env={**harness_sandbox.env_for(tmp_path), "ANSIBLE_FILTER_PLUGINS": str(PLAYBOOK.parent / "filter_plugins")})
+        # the lifted play sits outside platform/playbooks; the repository ansible.cfg (cwd)
+        # supplies its filters
+        tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
 
 
 def test_a_group_rule_expands_to_one_rule_per_member(tmp_path):

@@ -94,10 +94,11 @@ def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False):
                     "tasks": tasks}]
         path = tmp_path / "play.yml"
         path.write_text(yaml.safe_dump(harness, sort_keys=False))
-        env = {"PATH": os.environ["PATH"], "ANSIBLE_NOCOLOR": "1", "ANSIBLE_LOCAL_TEMP": str(tmp_path),
-               "ANSIBLE_FILTER_PLUGINS": str(ROOT / "platform/playbooks/filter_plugins")}
+        # The playbook filters come from the repository ansible.cfg, which applies from cwd=ROOT.
+        env = {"PATH": os.environ["PATH"], "ANSIBLE_NOCOLOR": "1", "ANSIBLE_LOCAL_TEMP": str(tmp_path)}
         result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path), *(["--check"] if check else [])],
-                                env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+                                cwd=ROOT, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                timeout=120)
     finally:
         server.shutdown()
         server.server_close()
