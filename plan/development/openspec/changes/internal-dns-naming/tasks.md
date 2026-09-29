@@ -24,20 +24,19 @@ and `<site>` stay placeholders in this repository; their values live in site-con
 - [ ] 1.2 On each managed host, declare `dns_instances` (and `dns_hostname`,
       `dns_address` or `dns_mgmt_address` only where the defaults do not hold): `vm01` of
       `gateway`, `openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca` and `caddy`
-- [ ] 1.3 Declare the records-only group `dns_records_only` for hosts this repository does
-      not manage: the two DGX Spark nodes (`dgx01` of `vllm-primary`, serving; `dgx02`,
-      `serves: false`) and the Proxmox nodes (host and management addresses). No
-      `ansible_host` on any of them
-- [ ] 1.4 `platform/playbooks/preflight-target-group.yml` refuses
-      `dns_records_only` (and any group whose hosts all lack `ansible_host`) as a target,
-      so a `target_service` survey value cannot aim a play at a machine this repository
-      does not manage
+- [ ] 1.3 Declare the all-hosts list `dns_records_only_hosts` (design decision 9) for
+      machines this repository does not manage: the two DGX Spark nodes (`dgx01` of
+      `vllm-primary`, serving; `dgx02`, `serves: false`) and the Proxmox nodes (host
+      address, and a management address only where it is distinct). They are list
+      entries, never inventory hosts or a group, so no `hosts:` pattern (including `all`
+      or a `target_service` survey value) can reach them
+- [ ] 1.4 Confirm no DGX Spark or Proxmox node is an inventory host in the Semaphore
+      inventory; any that is gets moved into the list by this change
 - [ ] 1.5 `platform/inventory/local-dev.yml.example` gains the same variables with
       placeholder values and a local site label, beside the existing `dns_records`
-- [ ] 1.6 Validation gate: `ansible-inventory --graph` against the Semaphore inventory
-      lists the records-only hosts with no `ansible_host`, and `Preflight Target Group`
-      refuses `dns_records_only`; this phase proves no spec scenario on its own and gates
-      phase 2
+- [ ] 1.6 Validation gate: `ansible-inventory --list` against the Semaphore inventory
+      shows `dns_records_only_hosts` as a variable and none of its hostnames among the
+      inventory's hosts; this phase proves no spec scenario on its own and gates phase 2
 
 ## 2. Render and guard (agent-cloud)
 - [ ] 2.1 A record builder that reads every inventory host and returns the full record set
@@ -60,12 +59,16 @@ and `<site>` stay placeholders in this repository; their values live in site-con
 - [ ] 2.5 pytest for every refusal of 2.2 and for the record set of the applied map
       (design "Applied to what exists today" in `05-platform-infra.md`), with a mutation
       check per guard: remove the guard, watch its test fail, restore it (the mutation
-      rule of `CONTRIBUTING.md` "Writing BATS Tests", applied to pytest)
+      rule of `CONTRIBUTING.md` "Writing BATS Tests", applied to pytest);
+      it also proves a hostname that is both an inventory host and a
+      `dns_records_only_hosts` entry is refused, and a list entry produces the same host,
+      instance and PTR records a managed host would
 - [ ] 2.6 Validation gate: the pytest suite proves scenarios "A reserved label is refused
       at render", "An invalid label is refused", "A retired ordinal is refused", "A
       load-balanced service points at the load balancer", "A non-serving member is named
-      but not pooled", "Moving the front door is one record" and "A role move changes one
-      CNAME" (the last two by diffing the rendered zone before and after the change)
+      but not pooled", "Moving the front door is one record", "A role move changes one
+      CNAME" (these two by diffing the rendered zone before and after the change) and
+      "Records-only machines are never inventory hosts"
 
 ## 3. Live behaviour in local-dev
 - [ ] 3.1 Through `Deploy DNS (Local)` with a local declaration, measure the pinned
@@ -85,10 +88,7 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       is taken out of use; record the finding with its citation in design.md. Until it
       is proven, a second serving `vllm-primary` member is listed to the gateway by
       instance name
-- [ ] 3.4 BATS under `platform/tests/`: no play in `platform/playbooks/` names `all` or
-      `dns_records_only` in `hosts:`; the test is mutated once (a throwaway play naming
-      the group) to watch it fail
-- [ ] 3.5 Validation gate: against local hickory-dns, scenario "Scale-out adds an instance
+- [ ] 3.4 Validation gate: against local hickory-dns, scenario "Scale-out adds an instance
       without a client change" (declare a second serving member, redeploy, query the
       service name) and scenario "A reverse lookup names the host" pass; scenario "A
       production wildcard is refused" passes through the render and through an NXDOMAIN

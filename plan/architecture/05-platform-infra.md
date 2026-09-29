@@ -316,7 +316,9 @@ Deliberation, verification log and the phased plan: OpenSpec change
 
 ## Internal DNS naming (decided 2026-09-28)
 
-Status: **Accepted.** Decisions by Joe, 2026-09-28. Author: Joseph A. Wisneski IV
+Status: **Proposed (decisions by Joe 2026-09-28).** Joe decided the scheme and the
+defaults of its open questions in conversation on 2026-09-28; as with the section above,
+it becomes Accepted when the operator confirms this text. Author: Joseph A. Wisneski IV
 <stray@uhstray.io>.
 
 The question Joe put: "we'll want to have DNS names that simplify routing/access to those
@@ -338,7 +340,7 @@ declared in site-config, not in this repository.
 | Service | `<service>.<site>.<zone>` | `vllm-primary.<site>.<zone>` | CNAME to the load balancer's service name where one fronts it; otherwise one A record per serving member | 30–60 s |
 | Instance | `<class><NN>.<service>.<site>.<zone>` | `dgx01.vllm-primary.<site>.<zone>` | CNAME to the member's host name | 60 s |
 | Host | `<hostname>.host.<site>.<zone>` | a Proxmox VM or node by its hostname | A, plus the matching PTR | 3600 s |
-| Management | `<hostname>.mgmt.<site>.<zone>` | a Proxmox node's UI or a BMC | A, plus the matching PTR | 3600 s |
+| Management | `<hostname>.mgmt.<site>.<zone>` | a BMC, or a Proxmox node's UI on its own address | A, plus the matching PTR; only for a management address distinct from the host address (otherwise the host name serves) | 3600 s |
 
 - **Clients use service names and nothing else.** Adding capacity adds an instance and,
   for a pool, one more A record under the service name. No client configuration changes.
@@ -386,7 +388,10 @@ list. The platform services `openbao`, `semaphore`, `netbox`, `authentik`, `dns`
 `caddy` each have one instance, `vm01`. An HTTP service's name becomes a CNAME to
 `caddy.<site>.<zone>` once Caddy carries a route for that internal name; until then it is
 the A record of its one member. Either way the change is one record and clients keep the
-name. Proxmox nodes have a host name and a management name.
+name. Proxmox nodes have a host name, and a management name where their management
+address is distinct from it. Machines this repository does not manage (the DGX Spark
+nodes, the Proxmox nodes) are declared in a site-config variables list, not as inventory
+hosts, so no playbook can target them.
 
 **Alternatives rejected.**
 

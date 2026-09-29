@@ -95,9 +95,11 @@ name or site label (site-config values, chosen by Joe).
    | Service | `<service>.<site>.<zone>` | CNAME to the front's service name, or one A per serving member | 30–60 s |
    | Instance | `<class><NN>.<service>.<site>.<zone>` | CNAME to the member's host name | 60 s |
    | Host | `<hostname>.host.<site>.<zone>` | A and PTR | 3600 s |
-   | Management | `<hostname>.mgmt.<site>.<zone>` | A and PTR when the management address is distinct; otherwise CNAME to the host name | 3600 s |
+   | Management | `<hostname>.mgmt.<site>.<zone>` | A and PTR; exists only for a management address distinct from the host address | 3600 s |
 
-   The address of a machine is written once, in its host record; every other name reaches
+   A machine whose management interface (a Proxmox node's UI, for example) answers on its
+   host address has no management name; the host name serves, so every address keeps a
+   single PTR. The address of a machine is written once, in its host record; every other name reaches
    it through a CNAME or is rendered from the same declaration. Alternative rejected:
    *flat names* (`dgx01-vllm-primary.<site>.<zone>`). A flat name cannot be delegated to
    another server per service, cannot hold a per-service subtree for SRV records, and
@@ -166,7 +168,8 @@ name or site label (site-config values, chosen by Joe).
    validator accepts what these rules forbid (context).
 
 9. **Records are declared in site-config inventory, in this shape.** The render reads
-   every host in the inventory, not only the `dns_svc` group.
+   every managed inventory host, not only the `dns_svc` group, plus one variables list
+   for machines this repository does not manage.
 
    ```yaml
    # site-config, all-hosts variables
@@ -188,28 +191,34 @@ name or site label (site-config values, chosen by Joe).
    dns_instances:
      - {service: gateway, instance: vm01}          # serves: true unless stated
 
-   # site-config, a records-only group for hosts this repository does not manage
-   dns_records_only:
-     hosts:
-       <spark-1 hostname>:
-         dns_address: <address>
-         dns_instances: [{service: vllm-primary, instance: dgx01}]
-       <spark-2 hostname>:
-         dns_address: <address>
-         dns_instances: [{service: vllm-primary, instance: dgx02, serves: false}]
-       <proxmox node>:
-         dns_address: <address>
-         dns_mgmt_address: <address>
+   # site-config, all-hosts variables: machines this repository does not manage.
+   # A plain list, NOT inventory hosts, so no play can ever target them.
+   dns_records_only_hosts:
+     - hostname: <spark-1 hostname>
+       address: <address>
+       instances: [{service: vllm-primary, instance: dgx01}]
+     - hostname: <spark-2 hostname>
+       address: <address>
+       instances: [{service: vllm-primary, instance: dgx02, serves: false}]
+     - hostname: <proxmox node>
+       address: <address>
+       mgmt_address: <address>
    ```
 
-   Records-only hosts carry no `ansible_host` and must never be a play's target. No play
-   in `platform/playbooks/` uses `hosts: all` today (grep of every `hosts:` line,
-   2026-09-28); plays name a group, `localhost`, or a `target_service` survey value
-   (`hosts: "{{ target_service }}"` appears in 11 plays and two more default it). A survey
-   value could name the records-only group, so the shared target-group preflight refuses
-   it (task 1.4), and a BATS test fails on any play that names it or `all` (task 3.4).
-   The existing flat `dns_records` list stays accepted during migration and passes the
-   same guard. Alternative rejected: *a single central record list* in the DNS host's
+   Machines this repository does not manage (the DGX Spark nodes, the Proxmox nodes) are
+   entries in `dns_records_only_hosts`, not inventory hosts or a group. An inventory host
+   can be a play's target however it is declared: a host without `ansible_host` is still
+   contacted, because Ansible falls back to the inventory hostname (checked 2026-09-28:
+   `ansible -i <inventory> all -m ping` against such a host attempted SSH to its inventory
+   name), and a play's `hosts:` pattern can be `all`. `platform/playbooks/` has 25 plays in 24 files whose `hosts:` is
+   a `target_service` survey value (11 use `"{{ target_service }}"` bare, 14 give it a
+   default; grep of every `hosts:` line, 2026-09-28), and only 4 of those 24 files
+   reference `preflight-target-group.yml`, so a survey value of `all` or a records-only
+   group name would reach those machines. A variables list is outside the inventory's host
+   set, so no pattern can match it. The render reads the list together with the managed
+   hosts, and the guard treats both the same way, including refusing a hostname declared
+   in both. The existing flat `dns_records` list stays accepted during migration and
+   passes the same guard. Alternative rejected: *a single central record list* in the DNS host's
    variables. It separates a host's name from the host's declaration, so moving a
    service between hosts would mean editing two places that nothing ties together.
 
@@ -270,7 +279,7 @@ name or site label (site-config values, chosen by Joe).
 
 - **hickory-dns answer behaviour is unverified** (context). If CNAME answers do not carry
   the in-zone target, clients pay a second query; if multi-A order never rotates, every
-  client picks the same first member. Task 2.1 measures both before any client depends
+  client picks the same first member. Task 3.1 measures both before any client depends
   on them; the fallback for the second is a load balancer in front of the pool.
 - **A pool of A records keeps a dead member.** Accepted where no load balancer exists;
   the 30–60 s TTL bounds the cache, and removing the record is one inventory edit and a
@@ -288,7 +297,7 @@ name or site label (site-config values, chosen by Joe).
 
 1. Guard and render land with local-dev declarations only; the local wildcard stays.
 2. Production DNS deploys with the scheme from its first run (no wildcard, host and
-   management names, the records-only group).
+   management names, the records-only list).
 3. NetBox `dns_name` values are rewritten to host names; the reconcile passes.
 4. Consumers move one at a time through their own changes: the CA's leaf SANs, the
    gateway's `tls.hostname`, Caddy's `tls_server_name`, then clients to service names.

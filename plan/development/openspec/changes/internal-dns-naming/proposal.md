@@ -42,8 +42,9 @@ certificates depend on.
 - A site-config inventory shape that declares every name: the site label and zone, the
   service list (with the load balancer that fronts each, if any), and per host its host
   name, management address and the instances it carries. Hosts this repository does not
-  manage (the DGX Spark nodes, the Proxmox nodes) are declared in a records-only group
-  that no playbook targets.
+  manage (the DGX Spark nodes, the Proxmox nodes) are declared as entries in a
+  variables list, `dns_records_only_hosts`, not as inventory hosts, so no play can
+  target them.
 - The DNS deploy renders service, instance, host, management and reverse (PTR) records
   from that declaration, refuses an invalid or reserved label and a CNAME that shares an
   owner with other data, and renders no wildcard in production.
@@ -75,7 +76,7 @@ certificates depend on.
   `platform/services/dns/context/architecture.md`, `plan/architecture/05-platform-infra.md`,
   root `CLAUDE.md` workflow rows.
 - site-config: the naming variables, `dns_instances` on each managed host, the
-  records-only group, and NetBox `dns_name` values rewritten to host names.
+  `dns_records_only_hosts` list, and NetBox `dns_name` values rewritten to host names.
 - NetBox: `dns_name` on the platform's IP-address records; no schema change.
   `netbox-allocate-ip.yml` sets `dns_name` only when it creates an address
   (`platform/playbooks/netbox-allocate-ip.yml:311-335`) and has no update path, so

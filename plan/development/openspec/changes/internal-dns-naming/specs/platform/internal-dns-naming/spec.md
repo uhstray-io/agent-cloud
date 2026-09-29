@@ -10,15 +10,18 @@ name it uses. `<zone>` and `<site>` are declared in site-config.
 The platform SHALL build every internal name in one of four families under
 `<site>.<zone>`: service `<service>.<site>.<zone>`, instance
 `<class><NN>.<service>.<site>.<zone>`, host `<hostname>.host.<site>.<zone>` and management
-`<hostname>.mgmt.<site>.<zone>`. Clients MUST address a service by its service name.
+`<hostname>.mgmt.<site>.<zone>`. A management name MUST exist only for a management
+address distinct from the host address. Clients MUST address a service by its service
+name.
 Instance ordinals MUST be two digits and a retired ordinal MUST NOT be declared again.
 
 #### Scenario: Scale-out adds an instance without a client change
 - WHEN a second serving member is declared for a service that has no front, and the DNS
   deploy runs
 - THEN the service name answers with both members' addresses, the new instance name
-  exists, and no client configuration, certificate or gateway entry that uses the service
-  name changes
+  exists, and no client configuration or certificate that uses the service name changes;
+  a load balancer in front of the pool changes only if it lists members by instance name
+  (the gateway does until its handling of several addresses is proven)
 
 #### Scenario: A retired ordinal is refused
 - WHEN a host declares an instance whose service and ordinal are listed as retired
@@ -80,6 +83,20 @@ a wildcard record.
 - WHEN a wildcard record is declared for an inventory that is not in local mode
 - THEN the render fails, and a query for an undeclared name under `<site>.<zone>` answers
   NXDOMAIN
+
+### Requirement: Machines this repository does not manage are declared as records only
+Machines that no playbook in this repository manages SHALL be declared as entries in the
+`dns_records_only_hosts` variables list, never as inventory hosts or groups, so that no
+play's host pattern can match them. The render MUST produce the same host, instance and
+reverse records for a list entry as for a managed host, and MUST refuse a hostname that
+is both a list entry and an inventory host.
+
+#### Scenario: Records-only machines are never inventory hosts
+- WHEN the DGX Spark nodes are declared in `dns_records_only_hosts` and the DNS deploy
+  renders the zone
+- THEN their host and instance records are rendered, a play whose host pattern is `all`
+  matches none of them, and a render in which one of those hostnames is also an
+  inventory host fails naming it
 
 ### Requirement: Host and management names carry reverse records
 Every host address and every distinct management address SHALL have one PTR record naming
