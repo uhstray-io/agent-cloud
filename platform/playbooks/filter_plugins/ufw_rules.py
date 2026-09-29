@@ -47,8 +47,12 @@ def ufw_address(addr):
     would never match its own stored form.
     """
     text = str(addr).strip()
-    if text in ("0.0.0.0/0", "::/0"):
-        return "any"
+    stored = _stored_address(text)
+    return "any" if stored in ("0.0.0.0/0", "::/0") else stored
+
+
+def _stored_address(text):
+    """ufw's normalize_address: host masks dropped, IPv4 masked to its network."""
     host, _, mask = text.partition("/")
     try:
         ip = ipaddress.ip_address(host)

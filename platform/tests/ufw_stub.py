@@ -59,8 +59,11 @@ def _normalise(addr):
     if not mask or mask in (("128",) if v6 else ("32", "255.255.255.255")):
         return str(ipaddress.ip_address(host))
     if v6:
-        return f"{ipaddress.ip_address(host)}/{mask}"
-    return str(ipaddress.ip_network(addr, strict=False))
+        out = f"{ipaddress.ip_address(host)}/{mask}"
+    else:
+        out = str(ipaddress.ip_network(addr, strict=False))
+    # ufw prints the whole address space as `any` (src/parser.py get_command).
+    return "any" if out in ("0.0.0.0/0", "::/0") else out
 
 
 def _parse(tokens):

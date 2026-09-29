@@ -163,6 +163,19 @@ def test_a_second_run_changes_nothing(tmp_path):
     assert "Status: active" in second.stdout[second.stdout.index("TASK [Report]"):]
 
 
+def test_a_rule_from_the_whole_address_space_converges(tmp_path):
+    # ufw prints 0.0.0.0/0 as `any` (the short form `allow 8080/tcp`); compared literally,
+    # the declared rule would never match its stored form and fail the drift guard.
+    host = {"firewall_allow_rules": [{"port": 8080, "from": "0.0.0.0/0"}]}
+    first, state = _run(tmp_path, host)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert "allow 8080/tcp" in _rules(state)
+    second, again = _run(tmp_path, host, state=state)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert _changed(second) == 0, second.stdout
+    assert again == state
+
+
 def test_a_rule_retagged_by_the_add_is_not_then_pruned_as_stale(tmp_path):
     # Stored under the tag an older spelling of its declaration produced. The add retags it;
     # the prune plan must read the rules AFTER the add, or it deletes the declared rule by spec.
