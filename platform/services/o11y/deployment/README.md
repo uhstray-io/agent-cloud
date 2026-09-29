@@ -273,6 +273,9 @@ URI defaults before the OpenBao-derived token facts existed. The survey now
 attaches that header to each request after credential derivation; this was a
 controller-side evaluation-order failure, not evidence of a Proxmox or storage
 problem. Credential and request task logging remains suppressed.
+The same dynamic play-level header pattern was removed from `snapshot-vm.yml`:
+its Proxmox requests now attach Authorization only after the connection facts
+are frozen, while retaining the existing certificate setting and `no_log`.
 Follow the official [Proxmox storage reference](https://pve.proxmox.com/pve-docs/pvesm.1.html)
 for storage content semantics. Do not grow the guest or change retention until
 an immutable backup artifact has been restored and validated on a declared
@@ -296,5 +299,11 @@ observed all five named volumes mounted on guest root with 6.75% free, 13,503
 active Prometheus series, and 87.73% guest memory headroom. Retention remains
 Prometheus 15d with a 0B size cap, Loki 7d, and Tempo 168h. Mounted-volume
 observations do not prove historical data continuity. These are point-in-time
-readings, not a seven-day forecast; disk-alert firing and Discord delivery
-remain unverified.
+readings, not a seven-day forecast; at the time of task 1831, disk-alert firing
+and Discord delivery were still unverified.
+
+At approximately 2026-09-29 04:56 UTC, the Grafana alert list showed
+`o11y_receiver_root_disk_low` firing with a healthy evaluation. Its detail view
+reported 6.72676% free on `receiver-host` `/`, and Grafana showed one active
+notification routed to `agent-cloud-ops`. This is Grafana routing/delivery
+status; no independent Discord message receipt was verified.

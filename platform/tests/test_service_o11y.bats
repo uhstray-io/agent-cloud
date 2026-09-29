@@ -906,6 +906,30 @@ assert len(item['survey_vars']) == 1
 PY
 }
 
+@test "o11y: snapshot workflow attaches Proxmox credentials after connection freeze" {
+  python3 - "$REPO_ROOT/platform/playbooks/snapshot-vm.yml" <<'PY'
+import sys
+
+import yaml
+
+playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+defaults = playbook['module_defaults']['ansible.builtin.uri']
+assert defaults['validate_certs'] is False
+assert 'headers' not in defaults
+tasks = playbook['tasks']
+freeze_index = next(
+    index for index, task in enumerate(tasks)
+    if task['name'] == 'Resolve + freeze the Proxmox connection'
+)
+requests = [task for task in tasks if 'ansible.builtin.uri' in task]
+assert len(requests) == 4
+expected = {'Authorization': 'PVEAPIToken={{ _pve_tid }}={{ _pve_sec }}'}
+assert all(task['ansible.builtin.uri']['headers'] == expected for task in requests)
+assert all(tasks.index(task) > freeze_index for task in requests)
+assert all(task.get('no_log') is True for task in requests)
+PY
+}
+
 @test "o11y: real alert-enabled deploy verifies live rule and contact state" {
   python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
