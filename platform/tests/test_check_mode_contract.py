@@ -36,13 +36,13 @@ import os
 import re
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-PLAYBOOKS = REPO / "platform/playbooks"
-# Semaphore's own playbooks and shared tasks run under the same dry-run flag.
-SEMAPHORE = REPO / "platform/semaphore"
+# playbook_yaml.files(): platform/playbooks and platform/semaphore (Semaphore's own playbooks
+# and shared tasks run under the same dry-run flag).
 ALLOWLIST = Path(__file__).with_name("check_mode_allowlist.txt")
 
 COMMANDS = {"command", "shell", "raw", "script"}
@@ -88,13 +88,6 @@ PINNED_DEFINITIONS = {
                  " | default('') }}"),
     "_pshk_kh": (PIN, "set_fact", "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"),
 }
-
-
-class _Loader(yaml.SafeLoader):
-    """Tolerates custom tags (for example `!unsafe`) the checker does not need."""
-
-
-_Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
 
 
 def _module(task: dict) -> tuple[str, object] | tuple[None, None]:
@@ -304,29 +297,15 @@ def violations_in(doc, rel: str | None = None, all_writes: bool = False) -> list
     return found
 
 
-def _files() -> list[Path]:
-    return sorted([*PLAYBOOKS.rglob("*.yml"), *SEMAPHORE.rglob("*.yml")])
-
-
 def _allowlist() -> set[str]:
     lines = ALLOWLIST.read_text().splitlines() if ALLOWLIST.exists() else []
     return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
 
 
-_PARSED: dict[Path, tuple[tuple[int, int], object]] = {}
-
-
-def _load(path: Path):
-    """Each file is parsed once per content state; the SSH harnesses re-check the whole repo
-    before every ansible run, which was ~0.6 s of parsing per call. Keyed on mtime and size,
-    so an edited file is read again. Callers treat the result as read-only (a test that edits
-    a document deep-copies it first)."""
-    st = path.stat()
-    key = (st.st_mtime_ns, st.st_size)
-    hit = _PARSED.get(path)
-    if hit is None or hit[0] != key:
-        hit = _PARSED[path] = (key, yaml.load(path.read_text(), Loader=_Loader))  # noqa: S506 - SafeLoader subclass
-    return hit[1]
+# Each file is parsed once per content state and shared with the other repository guards; the
+# SSH harnesses re-check the whole repo before every ansible run (~0.6 s of parsing per call).
+_files = playbook_yaml.files
+_load = playbook_yaml.load
 
 
 @pytest.mark.parametrize("path", _files(), ids=lambda p: str(p.relative_to(REPO)))

@@ -82,6 +82,9 @@
     status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
   register: _role_id_resp
   delegate_to: localhost
+  # The response IS half the AppRole credential (role_id + secret_id is the login), and -v
+  # prints it whether or not anything consumes it (platform/tests/test_no_request_in_loop_items.py).
+  no_log: true
   check_mode: false
 
 - name: "Read existing stored credentials (idempotency read-guard)"
