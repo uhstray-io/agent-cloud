@@ -127,12 +127,24 @@ Each row is a rule from the linked page, read 2026-09-22.
    > extra var outranks every `set_fact`. So the shared tasks also assert at runtime that the
    > directory and the known_hosts path sit directly under the temp root, in a `.sshkey_`
    > directory, before writing. That root is computed INLINE from the runner's environment
-   > and never held in a variable, so nothing can move it. The tests that execute these
+   > and never held in a variable, so no variable can move it; the runner's `TMPDIR` itself
+   > still does. The tests that execute these
    > tasks run under a default-deny write sandbox where the host has one
    > (`platform/tests/harness_sandbox.py`: `sandbox-exec` on macOS, allowing only the
    > test's directory, the temp root and `/dev`; `bwrap` on Linux). The GitHub-hosted CI
    > runner has neither, so there the source guard and the runtime assert are the
    > enforcement.
+   >
+   > **Known limits, recorded 2026-09-28 (review of PR #319).** (a) In `shell`/`command`
+   > tasks the source guard recognises engine verbs and a fixed set of host writes (`mkdir`,
+   > `chmod`, `chown`, `mv`, `ln`, `tee`, `touch`, `install`, `truncate`, `systemctl`;
+   > `platform/tests/test_check_mode_contract.py:52-62`), but not output redirection (`>`),
+   > `cp`, `rm` or `dd`, and it classes a `changed_when: false` task as a read (`:242-243`).
+   > Such a write is stopped only by the kernel sandbox, which the CI runner lacks (the runner
+   > is a disposable VM). (b) The runtime assert bounds a class, not this run: any
+   > genuine `<temp root>/.sshkey_*` directory passes, so reaching another run's scratch needs
+   > launch-level extra vars or control of `TMPDIR`; the worst case is disturbing a concurrent
+   > run's scratch, not escaping it. (c) `TMPDIR` itself moves the root.
 3. **Verify is a tag.** Each state-changing playbook tags its verification tasks `verify`,
    and also tags `verify` on anything verification needs: OpenBao authentication, the
    transport guard, and every `rescue` and `always` section of a block that contains verify

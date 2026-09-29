@@ -13,7 +13,10 @@ hook, a test, CI, or an OPA policy. The `Enforced by` column is the honest
 status, not the aspiration.
 
 Entries are appended, never rewritten. If a rule turns out to be wrong,
-supersede it with a new entry and link both.
+supersede it with a new entry and link both. One exception (added 2026-09-28): text that
+exposes something this public repository must not hold (a credential, an address, a machine
+path or username) is redacted in place, with a dated note in the entry saying what was removed
+and why.
 
 ## How to use this file
 
@@ -1732,7 +1735,10 @@ known_hosts `dest` from the scratch path to `~/.ssh/known_hosts`, to prove the t
 write to the runner's own file. They did catch it, but only after running it:
 `platform/tests/test_materialise_ssh_key.py` executes each playbook's key section FOR REAL
 on the developer's machine (`connection: local`, `check_mode: false` scratch writes), so the
-mutated copy task wrote the stub pin line over `/Users/stray/.ssh/known_hosts` at 17:27:59.
+mutated copy task wrote the stub pin line over the operator's `~/.ssh/known_hosts` at 17:27:59
+(path redacted 2026-09-28 under the header's redaction exception: the original wording spelled
+out a machine path, which the manual pre-push audit in AGENTS.md forbids because it reveals a
+username).
 The file went from its real contents to 67 bytes (`[192.0.2.10]:2222 ssh-ed25519 ...Stub...`).
 The only other copy found was `~/.ssh/known_hosts.old` (11,783 bytes, 2026-09-22). No APFS
 local snapshot existed and the Time Machine destination was not mounted. The file was left
