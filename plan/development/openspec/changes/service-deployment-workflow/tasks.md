@@ -279,13 +279,18 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         single-template Dev schedule opt-in on the controller publisher. Do not use the
         unavailable full-catalog publication path. Make missing Loki samples read as `No data`; in
         Service Overview use the minimum target health per service, list failed targets, and retain
-        the existing Prometheus-derived selector scope for metric-enabled services. Production
-        inventory read-back shows Loki bound to a private address, but the collector sender CIDR
-        has no Loki firewall allowance and no collector ingestion URL is declared. Alloy's host
-        port is OTLP/gRPC; no collector OTLP/HTTP path is declared. Do not infer an address or add
-        direct Loki ingress. Production log delivery remains blocked until the collector-to-
-        receiver path and sender rule are chosen and declared; delivery errors must then fail
-        visibly.
+        the existing Prometheus-derived selector scope for metric-enabled services. Initial
+        private inventory read-back showed no controller-to-Loki ingress or collector URL.
+        Implementation on `feature/conformance-otlp-ingress`: a dedicated Alloy OTLP/HTTP log
+        receiver now listens on port 4318, separate from gateway OTLP/gRPC on 4317. The
+        production collector requires its URL to exactly match the private `o11y_otlp_bind`
+        and `/v1/logs`, posts only to Alloy, and fails visibly on delivery errors. Task and
+        error details remain in the record body; Alloy's exporter policy limits Loki labels to
+        `job`, `service`, `step`, and `status`. Local development retains direct Loki push. The
+        private site-config URL and controller-CIDR firewall rule are a separate companion
+        change;
+        live delivery and Loki read-back remain unverified until both changes are reviewed,
+        synchronized into Semaphore inventory, and deployed.
       - OPEN (review of PR #195): the spec's collector reads Semaphore, Prometheus and
         NetBox; this collector reads Semaphore and NetBox only. The Prometheus read is not
         implemented because the two steps it would evidence (`instrument-host`,

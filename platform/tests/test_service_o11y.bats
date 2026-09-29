@@ -1254,7 +1254,10 @@ assert compose['services']['tempo']['image'].endswith('grafana/tempo:2.10.8}')
 assert 'tempo-data:/var/tempo' in compose['services']['tempo']['volumes']
 assert not compose['services']['tempo'].get('ports')
 assert list(compose['services']['tempo']['environment']) == ['O11Y_TEMPO_RETENTION']
-assert '${O11Y_OTLP_BIND:-127.0.0.1}' in compose['services']['alloy']['ports'][0]
+alloy_ports = compose['services']['alloy']['ports']
+assert len(alloy_ports) == 2
+assert '${O11Y_OTLP_BIND:-127.0.0.1}' in alloy_ports[0] and alloy_ports[0].endswith('}:4317')
+assert '${O11Y_OTLP_BIND:-127.0.0.1}' in alloy_ports[1] and alloy_ports[1].endswith(':4318:4318')
 tempo = yaml.safe_load((deploy / 'config/tempo-config.yml').read_text())
 assert tempo['storage']['trace']['backend'] == 'local'
 assert tempo['compactor']['compaction']['block_retention'] == '${O11Y_TEMPO_RETENTION:-168h}'
@@ -1277,6 +1280,7 @@ assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy"' in profile
 assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
 assert 'otelcol.receiver.otlp "traces"' in alloy
+assert 'grpc {\n    endpoint = "0.0.0.0:4317"' in alloy
 assert 'otelcol.processor.attributes.gateway_logs.input' in alloy
 assert 'otelcol.exporter.loki "gateway"' in alloy
 assert 'loki.attribute.labels' in alloy
@@ -1285,6 +1289,12 @@ assert 'cluster = "test-cluster"' in alloy
 assert 'otelcol.processor.batch.traces.input' in alloy
 assert 'otelcol.exporter.otlp.tempo.input' in alloy
 assert 'endpoint = "tempo:4317"' in alloy
+assert 'otelcol.receiver.otlp "conformance"' in alloy
+assert 'http {\n    endpoint = "0.0.0.0:4318"' in alloy
+assert 'otelcol.processor.attributes.conformance_logs.input' in alloy
+assert 'otelcol.exporter.loki "conformance"' in alloy
+assert 'action = "upsert"' in alloy
+assert 'value  = "job,service,step,status"' in alloy
 datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())['datasources']
 assert {d['uid'] for d in datasources} == {'prometheus', 'loki', 'tempo', 'pyroscope'}
 assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in datasources)
@@ -1294,6 +1304,9 @@ phase_one = next(p for p in plays if p.get('name') == 'Phase 1: Place repo + man
 cluster_guard = next(t for t in phase_one['tasks'] if t['name'] == 'Require the observability cluster label')
 assert any('o11y_cluster is defined' in item for item in cluster_guard['ansible.builtin.assert']['that'])
 assert any("local_mode | default(false) | bool" in item for item in cluster_guard['ansible.builtin.assert']['that'])
+http_guard = next(t for t in phase_one['tasks'] if t['name'] == 'Require a private bind for the fixed conformance OTLP/HTTP listener')
+assert any('o11y_otlp_bind' in item for item in http_guard['ansible.builtin.assert']['that'])
+assert any('172\\\\.' in item for item in http_guard['ansible.builtin.assert']['that'])
 for name, src, dest in (
     ('Render Alloy config with the inventory cluster label', 'templates/config.alloy.j2', 'config/config.alloy'),
     ('Render Prometheus config with the inventory cluster label', 'templates/prometheus.yml.j2', 'config/prometheus.yml'),

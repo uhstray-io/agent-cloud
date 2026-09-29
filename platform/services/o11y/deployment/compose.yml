@@ -100,6 +100,9 @@ services:
       # The production bind is a private interface declared in site-config;
       # local defaults to loopback. Firewall policy admits only named senders.
       - "${O11Y_OTLP_BIND:-127.0.0.1}:${O11Y_OTLP_PORT:-4317}:4317"
+      # Keep controller conformance OTLP/HTTP on its own port and pipeline;
+      # the existing gateway OTLP/gRPC listener remains independently bound above.
+      - "${O11Y_OTLP_BIND:-127.0.0.1}:4318:4318"
     healthcheck:
       # The alloy image ships no wget/curl/nc — only bash. A /dev/tcp connect to
       # the HTTP server port (12345, set via --server.http.listen-addr) proves the

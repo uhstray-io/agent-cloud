@@ -310,3 +310,14 @@ Grafana showed one notification routed to the existing ops contact, and
 matching Discord delivery was independently verified. This verifies delivery
 for the low-space event; it does not prove delivery for other alert classes or
 a seven-day capacity forecast.
+
+## Service conformance log receiver
+
+The production service conformance collector sends OTLP/HTTP logs to Alloy on
+the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
+This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
+Site-config allows TCP/4318 only from the controller CIDR. The collector checks
+that its URL exactly matches the receiver bind and fails visibly when delivery
+fails. Alloy exports the records to Loki with only `job`, `service`, `step`, and
+`status` as labels; task identifiers and error details stay in the log body.
+Local development keeps the loopback direct-Loki path.

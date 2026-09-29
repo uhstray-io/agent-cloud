@@ -551,7 +551,9 @@
       loop: "{{ _selected_templates | selectattr('schedule', 'defined') | rejectattr('_generated', 'defined') | list }}"
       loop_control:
         label: "{{ item._publish_name }}"
-      when: _allow_scoped_schedule
+      when:
+        - not ansible_check_mode
+        - _allow_scoped_schedule
 
     - name: "Report"
       ansible.builtin.debug:

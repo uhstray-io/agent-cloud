@@ -162,6 +162,25 @@ def test_loki_streams_label_every_result():
     }]
 
 
+def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
+    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "fail",
+                     "error": "task output detail"})
+    agg = _agg(_task(8, "error", 1, out))
+    streams = step_results.loki_streams(agg, 1700000000000000000)
+    payload = step_results.otlp_logs_payload(streams)
+    (record,) = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    attributes = {entry["key"]: entry["value"]["stringValue"] for entry in record["attributes"]}
+    assert {key: attributes[key] for key in ("job", "service", "step", "status")} == {
+        "job": "agent-cloud-conformance", "service": "tududi",
+        "step": "secrets-approle", "status": "fail",
+    }
+    assert set(attributes) == {"job", "service", "step", "status"}
+    assert record["timeUnixNano"] == "1700000000000000000"
+    assert json.loads(record["body"]["stringValue"]) == {
+        "check_mode": False, "error": "task output detail", "task_id": 8,
+    }
+
+
 def test_groups_map_to_their_hosts_service_name():
     groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
     assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {
