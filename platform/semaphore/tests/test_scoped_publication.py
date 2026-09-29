@@ -182,7 +182,7 @@ class ScopedPublicationTests(unittest.TestCase):
         cls.auth_values = {}
 
     def run_play(self, selection=None, bootstrap=False, controller_wrapper=False, full_catalog=False,
-                 provision=False, provision_wrapper=False, **overrides):
+                 provision=False, provision_wrapper=False, check_mode=False, **overrides):
         extra = {
             "_semaphore_url": self.endpoint,
             "semaphore_template_names_json": json.dumps([NAME] if selection is None else selection),
@@ -214,9 +214,12 @@ class ScopedPublicationTests(unittest.TestCase):
             playbook = f"platform/{directory}/provision-seed-environment.yml"
             extra.update(semaphore_project_id=1, semaphore_inventory_id=37, semaphore_source_environment_id=42)
             extra.setdefault("seed_template", "Seed Postiz Secrets")
+        command = ["ansible-playbook", "-i", "localhost,", playbook]
+        if check_mode:
+            command.append("--check")
+        command.extend(["-e", json.dumps(extra)])
         result = subprocess.run(
-            ["ansible-playbook", "-i", "localhost,", playbook,
-             "-e", json.dumps(extra)],
+            command,
             cwd=ROOT, env=env, capture_output=True, text=True, timeout=90,
         )
         output = result.stdout + result.stderr
@@ -725,6 +728,24 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("directly Dev-bound", output)
         self.assertEqual(self.writes, [])
+
+    def test_scoped_schedule_check_mode_skips_readback_without_writing(self):
+        self.setUp()
+        self.records[0].update(name=CONFORMANCE_NAME,
+                               playbook="platform/playbooks/collect-service-conformance.yml")
+        code, output = self.run_play(selection=[CONFORMANCE_NAME], check_mode=True,
+                                     semaphore_allow_scoped_schedule="true")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [])
+        self.assertIn("schedule publication enabled for one selected template", output)
+
+        self.setUp()
+        code, output = self.run_play(controller_wrapper=True, selection=["Deploy NetBox"],
+                                     check_mode=True, semaphore_allow_scoped_schedule="true",
+                                     _semaphore_url="http://127.0.0.1:3000")
+        self.assertNotEqual(code, 0)
+        self.assertIn("Scoped schedule publication requires one existing (Dev) template", output)
+        self.assertEqual(self.requests, [])
 
     def test_invalid_scope_refuses_before_network(self):
         for selection in ([], "all", [NAME, NAME], ["missing"]):

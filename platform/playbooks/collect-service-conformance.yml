@@ -18,8 +18,9 @@
 #          its last 20 lines. A service is named by its inventory group's service_name.
 #   write  NetBox custom fields on each service's VM (declared in
 #          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
-#          workflow-collector token (view/change VMs only); and, when collector_loki_url is
-#          set, one Loki line per step result labelled service, step, status
+#          workflow-collector token (view/change VMs only); in local-dev, one direct Loki line
+#          per step; in production, OTLP/HTTP to the dedicated private Alloy receiver, with
+#          task details in the record body and only job/service/step/status as Loki labels
 #
 # A NetBox that is down or holds no VM for a service never fails the run: the collector
 # records what it could not write and tries again next interval (spec scenario "NetBox outage
@@ -54,6 +55,15 @@
       {{ (lookup('file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json)
          .catalog['service-agent'].service_deploy_templates }}
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+    _o11y_bind: "{{ (hostvars[groups['o11y_svc'][0]].o11y_otlp_bind if groups.get('o11y_svc', []) | length == 1 else '') | default('') }}"
+    _o11y_private_ipv4_pattern: >-
+      (?x)\A(?:
+      10\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      |192\.168\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      |172\.(?:1[6-9]|2[0-9]|3[01])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+      )\Z
+    _semaphore_host: "{{ groups.get('semaphore_svc', []) | first | default('') }}"
+    _collector_otlp_url: "{{ hostvars.get(_semaphore_host, {}).get('collector_otlp_url', '') }}"
 
   tasks:
     - name: "Refuse a controller API destination override before authentication"
@@ -63,6 +73,16 @@
           - _semaphore_url == 'http://127.0.0.1:3000'
           - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
         fail_msg: "The collector may only use the controller's fixed loopback API."
+
+    - name: "Require the exact private Alloy OTLP/HTTP destination in production"
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length == 1
+          - _o11y_bind is match(_o11y_private_ipv4_pattern)
+          - groups.get('semaphore_svc', []) | length == 1
+          - _collector_otlp_url == 'http://' ~ _o11y_bind ~ ':4318/v1/logs'
+        fail_msg: "Production conformance delivery requires collector_otlp_url to match the declared private Alloy OTLP/HTTP receiver."
+      when: not (local_mode | default(false) | bool)
 
     - name: "Semaphore runtime access (injected token, or the controller AppRole)"
       ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
@@ -242,7 +262,7 @@
     - name: "Record the aggregate for the report and the dashboard"
       ansible.builtin.set_stats:
         data:
-          conformance: "{{ _agg | dict2items | rejectattr('key', 'equalto', 'loki_streams') | items2dict }}"
+          conformance: "{{ _agg | dict2items | rejectattr('key', 'in', ['loki_streams', 'otlp_payload']) | items2dict }}"
         per_host: false
         aggregate: false
 
@@ -268,8 +288,8 @@
       no_log: true
       when: not ansible_check_mode
 
-    # ── Loki ────────────────────────────────────────────────────────────────────────────
-    - name: "Loki: one line per step result"
+    # Local-dev retains the loopback direct-Loki path; production uses the private OTLP receiver.
+    - name: "Local Loki: one line per step result"
       ansible.builtin.uri:
         url: "{{ collector_loki_url }}/loki/api/v1/push"
         method: POST
@@ -282,8 +302,32 @@
       failed_when: false
       when:
         - not ansible_check_mode
+        - local_mode | default(false) | bool
         - collector_loki_url is defined
         - _agg.loki_streams | length > 0
+
+    - name: "Production Alloy: deliver conformance records over OTLP/HTTP"
+      ansible.builtin.uri:
+        url: "{{ _collector_otlp_url }}"
+        method: POST
+        body_format: json
+        body: "{{ _agg.otlp_payload }}"
+        headers:
+          Content-Type: application/json
+        status_code: [200]
+      register: _otlp
+      changed_when: true
+      failed_when: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+        - _agg.otlp_payload.resourceLogs | length > 0
+
+    - name: "Classify the OTLP response without exposing its body"
+      ansible.builtin.set_fact:
+        _otlp_delivery_ok: >-
+          {{ (_otlp | default({})).get('status', 0) | int == 200
+             and (((((_otlp | default({})).get('json') or {}).get('partialSuccess') or {}).get('rejectedLogRecords', 0) | int) == 0) }}
 
     - name: "Report"
       ansible.builtin.debug:
@@ -296,3 +340,13 @@
           history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
           loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"
+          otlp: "{{ 'check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if local_mode | default(false) | bool else ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed'))) }}"
+
+    - name: "Fail after reporting unsuccessful production OTLP delivery"
+      ansible.builtin.fail:
+        msg: "Conformance OTLP delivery failed; see the preceding report for status."
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+        - _agg.otlp_payload.resourceLogs | length > 0
+        - not (_otlp_delivery_ok | default(false) | bool)

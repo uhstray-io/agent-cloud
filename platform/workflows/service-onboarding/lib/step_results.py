@@ -325,6 +325,37 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
     return streams
 
 
+def otlp_logs_payload(streams: list[dict]) -> dict:
+    """Encode conformance-specific Loki labels and the body as OTLP/HTTP logs.
+
+    Keep task details in the record body. Alloy owns the `loki.attribute.labels`
+    hint, so the sender cannot request extra Loki labels.
+    """
+    records = []
+    for stream in streams:
+        labels = stream["stream"]
+        if set(labels) != {"job", "service", "step", "status"}:
+            raise ValueError("conformance labels do not match the fixed label contract")
+        if labels["job"] != "agent-cloud-conformance":
+            raise ValueError("conformance log job label is not bounded")
+        if labels["status"] not in {"pass", "fail", "skip", "no_history", "history_incomplete"}:
+            raise ValueError("conformance log status label is not bounded")
+        attributes = [
+            {"key": key, "value": {"stringValue": str(labels[key])}}
+            for key in ("job", "service", "step", "status")
+        ]
+        for timestamp, body in stream["values"]:
+            records.append({"timeUnixNano": str(timestamp), "attributes": attributes,
+                            "body": {"stringValue": body}})
+    if not records:
+        return {"resourceLogs": []}
+    return {"resourceLogs": [{
+        "resource": {"attributes": [{"key": "service.name",
+                                      "value": {"stringValue": "agent-cloud-conformance"}}]},
+        "scopeLogs": [{"scope": {"name": "agent-cloud-conformance"}, "logRecords": records}],
+    }]}
+
+
 def main() -> int:
     data = json.load(sys.stdin)
     mode = data["mode"]
@@ -346,7 +377,9 @@ def main() -> int:
                         full, data.get("retained") or {},
                         incomplete_services(full, data["templates"], data["registry"], by_group, deploys))
         if data.get("now_ns"):
-            out["loki_streams"] = loki_streams(out, int(data["now_ns"]))
+            streams = loki_streams(out, int(data["now_ns"]))
+            out["loki_streams"] = streams
+            out["otlp_payload"] = otlp_logs_payload(streams)
     else:
         raise SystemExit(f"unknown mode {mode!r}")
     json.dump(out, sys.stdout, sort_keys=True)

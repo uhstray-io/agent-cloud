@@ -240,6 +240,15 @@
         - groups.get('agentgateway_svc', []) | length == 1
         - hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0
 
+    - name: "Require a private bind for the fixed conformance OTLP/HTTP listener"
+      ansible.builtin.assert:
+        that:
+          - o11y_otlp_bind is defined
+          - o11y_otlp_bind is match('^[0-9]+(\\.[0-9]+){3}$')
+          - o11y_otlp_bind is match('^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)')
+        fail_msg: "Production conformance OTLP/HTTP must bind the private interface already declared for OTLP."
+      when: not (local_mode | default(false) | bool)
+
     - name: "Require the observability cluster label"
       ansible.builtin.assert:
         that:

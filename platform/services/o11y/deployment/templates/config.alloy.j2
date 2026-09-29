@@ -158,6 +158,33 @@ otelcol.exporter.loki "gateway" {
   forward_to = [loki.write.default.receiver]
 }
 
+// Controller conformance uses OTLP/HTTP on a separate receiver from gateway gRPC.
+// Conformance-specific labels are fixed to the bounded dimensions validated by the collector.
+// The shared loki.write adds the external cluster and environment labels.
+otelcol.receiver.otlp "conformance" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    logs = [otelcol.processor.attributes.conformance_logs.input]
+  }
+}
+
+otelcol.processor.attributes "conformance_logs" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "job,service,step,status"
+  }
+  output {
+    logs = [otelcol.exporter.loki.conformance.input]
+  }
+}
+
+otelcol.exporter.loki "conformance" {
+  forward_to = [loki.write.default.receiver]
+}
+
 otelcol.processor.batch "traces" {
   output {
     traces = [otelcol.exporter.otlp.tempo.input]

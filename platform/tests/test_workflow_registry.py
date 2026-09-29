@@ -6,6 +6,9 @@ platform/agent-orchestration ("Four least-privilege agent identities").
 """
 
 import json
+import os
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -175,6 +178,143 @@ def test_only_the_collector_writes_workflow_status():
         if "ac_workflow_status" in p.read_text() or "/loki/api/v1/push" in p.read_text()
     )
     assert writers == ["platform/playbooks/collect-service-conformance.yml"]
+
+
+def test_production_conformance_uses_the_exact_private_otlp_receiver():
+    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    tasks = collector["tasks"]
+    pattern = collector["vars"]["_o11y_private_ipv4_pattern"]
+    assert re.match(pattern, "10.23.45.67")
+    assert re.match(pattern, "192.168.1.2")
+    assert re.match(pattern, "172.16.1.2")
+    assert re.match(pattern, "172.31.255.255")
+    assert not re.match(pattern, "10.23.45.67@external.example")
+    assert not re.match(pattern, "10.23.45.67suffix")
+    assert not re.match(pattern, "10.23.45.999")
+    assert not re.match(pattern, "172.32.1.2")
+    guard = next(t for t in tasks if t.get("name") ==
+                 "Require the exact private Alloy OTLP/HTTP destination in production")
+    assert guard["when"] == "not (local_mode | default(false) | bool)"
+    assert "hostvars.get(_semaphore_host, {}).get('collector_otlp_url', '')" in collector["vars"]["_collector_otlp_url"]
+    assert any("_collector_otlp_url == 'http://' ~ _o11y_bind ~ ':4318/v1/logs'" in item
+               for item in guard["ansible.builtin.assert"]["that"])
+    assert any("_o11y_bind is match(_o11y_private_ipv4_pattern)" in item
+               for item in guard["ansible.builtin.assert"]["that"])
+    push = next(t for t in tasks if t.get("name") ==
+                "Production Alloy: deliver conformance records over OTLP/HTTP")
+    assert push["ansible.builtin.uri"]["body_format"] == "json"
+    assert push["ansible.builtin.uri"]["url"] == "{{ _collector_otlp_url }}"
+    assert push["ansible.builtin.uri"]["status_code"] == [200]
+    assert push["failed_when"] is False
+    assert "retries" not in push
+    assert "not (local_mode | default(false) | bool)" in push["when"]
+    local = next(t for t in tasks if t.get("name") == "Local Loki: one line per step result")
+    assert "local_mode | default(false) | bool" in local["when"]
+    assert "collector_loki_url is defined" in local["when"]
+    classify = next(t for t in tasks if t.get("name") == "Classify the OTLP response without exposing its body")
+    assert "rejectedLogRecords" in classify["ansible.builtin.set_fact"]["_otlp_delivery_ok"]
+    assert tasks.index(classify) < next(i for i, t in enumerate(tasks) if t.get("name") == "Report")
+    report = next(t for t in tasks if t.get("name") == "Report")
+    fail = next(t for t in tasks if t.get("name") == "Fail after reporting unsuccessful production OTLP delivery")
+    assert tasks.index(report) < tasks.index(fail)
+    assert fail["ansible.builtin.fail"]["msg"] == (
+        "Conformance OTLP delivery failed; see the preceding report for status."
+    )
+
+
+def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp_path):
+    bind = ".".join(("10", "23", "45", "67"))
+    playbook = REPO / "platform/playbooks/collect-service-conformance.yml"
+    bind_octets = bind.split(".")
+    invalid_binds = [
+        f"{bind}@external.example",
+        f"{bind}suffix",
+        ".".join((*bind_octets[:3], "999")),
+    ]
+    cases = [
+        (bind, {}),
+        (bind, {"collector_otlp_url": f"http://{bind}:4317/v1/logs"}),
+        *((bad_bind, {"collector_otlp_url": f"http://{bad_bind}:4318/v1/logs"})
+          for bad_bind in invalid_binds),
+    ]
+    for inventory_bind, host_vars in cases:
+        inventory = {
+            "all": {"children": {
+                "semaphore_svc": {"hosts": {"semaphore": host_vars}},
+                "o11y_svc": {"hosts": {"o11y": {"o11y_otlp_bind": inventory_bind}}},
+            }},
+        }
+        inventory_path = tmp_path / "inventory.yml"
+        inventory_path.write_text(yaml.safe_dump(inventory))
+        env = os.environ.copy()
+        env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+                   ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+        result = subprocess.run(
+            ["ansible-playbook", "-i", str(inventory_path), str(playbook),
+             "-e", json.dumps({"local_mode": False})],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode != 0
+        assert "Production conformance delivery requires collector_otlp_url" in output
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_status", "expected_rc", "private_marker"),
+    [
+        ({"status": 200, "json": {}}, "delivered", 0, None),
+        ({"status": 503, "content": "private response body"}, "failed", 1, "private response body"),
+        ({"msg": "connection refused"}, "failed", 1, "connection refused"),
+        ({"status": 200, "json": {"partialSuccess": {"rejectedLogRecords": 2,
+                                                       "errorMessage": "private partial detail"}}},
+         "failed", 1, "private partial detail"),
+    ],
+)
+def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, expected_status,
+                                                              expected_rc, private_marker):
+    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    tasks = collector["tasks"]
+    selected = [next(t for t in tasks if t.get("name") == name) for name in (
+        "Classify the OTLP response without exposing its body",
+        "Report",
+        "Fail after reporting unsuccessful production OTLP delivery",
+    )]
+    fixture = [{
+        "name": "Exercise conformance OTLP response reporting",
+        "hosts": "localhost",
+        "gather_facts": False,
+        "vars": {
+            "local_mode": False,
+            "_otlp": response,
+            "_agg": {"report": {}, "otlp_payload": {"resourceLogs": [{}]}},
+            "_nb_writes": {"results": []},
+            "_vm_missing": [],
+            "_vm_ambiguous": [],
+            "_vm_unreachable": [],
+            "_pick": {"stdout": json.dumps({"window_full": []})},
+            "_loki": {"status": 204},
+        },
+        "tasks": selected,
+    }]
+    fixture_path = tmp_path / "otlp-response.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(fixture_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert (result.returncode != 0) == (expected_rc != 0)
+    assert f'"otlp": "{expected_status}"' in output
+    if expected_rc:
+        assert "Conformance OTLP delivery failed; see the preceding report for status." in output
+        assert output.index(f'"otlp": "{expected_status}"') < output.index(
+            "Conformance OTLP delivery failed; see the preceding report for status."
+        )
+    if private_marker:
+        assert private_marker not in output
 
 
 def _emitted_evidence() -> dict[str, set[str]]:
