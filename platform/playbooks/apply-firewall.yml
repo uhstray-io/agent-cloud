@@ -42,6 +42,10 @@
 #                            a whole subnet — a CIDR grants every host in it.
 #   firewall_allow_rules     optional STATIC extras [{port, proto(=tcp), from, comment}]
 #                            for ports to allow regardless of detection (INPUT).
+#   firewall_allow_groups    optional [{port, proto(=tcp), group, comment}]: one INPUT rule
+#                            per member of an inventory group, from its ansible_host
+#                            (e.g. "every agent_cloud host may query DNS"). An unknown
+#                            group or a member without an IPv4 ansible_host is refused.
 #   firewall_rootful         host runs containers under ROOTFUL podman or Docker
 #                            (default: true when container_engine == 'docker', else
 #                            false). Rootful/Docker publish ports via DNAT, so the
@@ -118,7 +122,22 @@
   vars:
     target_service: "ungrouped"
     _ssh_cidrs: "{{ firewall_ssh_cidrs | default([]) }}"
-    _rules: "{{ firewall_allow_rules | default([]) }}"
+    # firewall_allow_groups: [{port, proto(=tcp), group, comment}] expands to one INPUT
+    # rule per member of an inventory group, from that member's ansible_host. It keeps
+    # "every host of X may reach this port" from becoming a hand-kept address list that
+    # drifts as hosts are added. A member whose ansible_host is not an IPv4 address is
+    # refused below rather than silently dropped.
+    _group_rules: >-
+      {%- set out = [] -%}
+      {%- for r in firewall_allow_groups | default([]) -%}
+      {%- for h in groups[r.group] | default([]) -%}
+      {%- set _ = out.append({'port': r.port, 'proto': r.proto | default('tcp'),
+                              'from': hostvars[h].ansible_host | default(''),
+                              'comment': (r.comment | default(r.group)) ~ ': ' ~ h}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    _rules: "{{ (firewall_allow_rules | default([])) + _group_rules }}"
     _route_rules: "{{ firewall_route_rules | default([]) }}"
     _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
     _engine: "{{ container_engine | default('podman') }}"
@@ -197,6 +216,18 @@
       when:
         - ansible_check_mode
         - _ufw_pkg is changed
+
+    - name: "Refuse a group rule that names an unknown group or a member without an IPv4 address"
+      ansible.builtin.assert:
+        that:
+          - (firewall_allow_groups | default([])) | map(attribute='group') | reject('in', groups) | list | length == 0
+          - _group_rules | map(attribute='from') | reject('match', '^\\d{1,3}(\\.\\d{1,3}){3}$') | list | length == 0
+        fail_msg: >-
+          firewall_allow_groups on {{ inventory_hostname }} names a group that does not exist, or a
+          member whose ansible_host is not an IPv4 address; refusing rather than dropping a source.
+          Groups: {{ (firewall_allow_groups | default([])) | map(attribute='group') | list }}.
+          Sources: {{ _group_rules | map(attribute='from') | list }}.
+      when: (firewall_allow_groups | default([])) | length > 0
 
     - name: "Allow SSH (22/tcp) from each admin CIDR — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw allow from {{ item }} to any port 22 proto tcp"
