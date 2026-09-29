@@ -1,0 +1,204 @@
+# GET-only physical-storage survey for the privately declared PBS host node.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Survey declared PBS-node storage without mutation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts | first | default('') }}"
+    _target_node: "{{ hostvars[_o11y_host].proxmox_pbs_storage_node | default('') if _o11y_host else '' }}"
+  tasks:
+    - name: Require exact reviewed checkout and private node declaration
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _o11y_hosts | length == 1
+          - _target_node | string is match('^[A-Za-z0-9._-]{1,64}$')
+          - _target_node not in ['.', '..']
+        fail_msg: "This read-only survey requires one private PBS-node declaration and an exact reviewed revision."
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact reviewed revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+    - name: Read controller changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "The reviewed controller checkout contains uncommitted files."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    - name: Read Proxmox node listing before constructing a per-node URL
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Validate that the private target is uniquely online
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", validate-node]
+        stdin: "{{ {'target_node': _target_node, 'nodes': _pve_nodes.json.data} | to_json }}"
+      register: _target_node_validation
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require validated online target node
+      ansible.builtin.assert:
+        that: _target_node_validation.rc == 0
+        fail_msg: "The private target node was not uniquely present and online; no node storage reads were attempted."
+
+    - name: Keep validated target node in protected task state
+      ansible.builtin.set_fact:
+        _validated_target_node: "{{ (_target_node_validation.stdout | from_json).node }}"
+      no_log: true
+
+    - name: Read physical disks and partitions
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/disks/list?include-partitions=1"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _physical_disks
+      no_log: true
+      check_mode: false
+
+    - name: Read LVM volume groups and physical volumes
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/disks/lvm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _lvm_inventory
+      no_log: true
+      check_mode: false
+
+    - name: Read LVM thin pools
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/disks/lvmthin"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _thinpool_inventory
+      no_log: true
+      check_mode: false
+
+    - name: Read Proxmox-managed directories
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/disks/directory"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _directory_inventory
+      no_log: true
+      check_mode: false
+
+    - name: Read Proxmox storage status for this node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _storage_inventory
+      no_log: true
+      check_mode: false
+
+    - name: Build fixed aggregate physical-storage receipt
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: >-
+          {{ {'disks': {'status': _physical_disks.status, 'json': {'data': _physical_disks.json.data}},
+              'lvm': {'status': _lvm_inventory.status, 'json': {'data': _lvm_inventory.json.data}},
+              'thinpool': {'status': _thinpool_inventory.status, 'json': {'data': _thinpool_inventory.json.data}},
+              'directories': {'status': _directory_inventory.status, 'json': {'data': _directory_inventory.json.data}},
+              'storage': {'status': _storage_inventory.status, 'json': {'data': _storage_inventory.json.data}}}
+             | to_json }}
+      register: _physical_storage_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require valid sanitized physical-storage receipt
+      ansible.builtin.assert:
+        that: _physical_storage_inspection.rc == 0
+        fail_msg: >-
+          Physical-storage survey refused:
+          {{ ((_physical_storage_inspection.stdout | from_json).refusal
+              | default('Proxmox returned invalid physical-storage data.')) }}
+
+    - name: Keep sanitized physical-storage receipt
+      ansible.builtin.set_fact:
+        _physical_storage_receipt: "{{ _physical_storage_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Report aggregate facts without private identifiers
+      ansible.builtin.debug:
+        msg: "{{ _physical_storage_receipt }}"

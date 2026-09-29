@@ -1422,6 +1422,19 @@ templates:
     # are shown. A VMID is not reserved;
     # missing protection stays unknown, and this task never writes PVE.
 
+  - name: Survey o11y PBS Physical Storage (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only physical-storage survey"
+        type: string
+        required: true
+    # Uses the private proxmox_pbs_storage_node declaration on the sole o11y_svc
+    # host. Reports coarse aggregate counts/bands only; no node, device, storage,
+    # capacity value, or private identifier is visible. No selection or writes.
+
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
     repository: agent-cloud dev

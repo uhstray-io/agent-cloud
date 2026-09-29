@@ -53,6 +53,14 @@ The platform SHALL compare observed and forecast ingestion, storage, CPU, and me
 - **THEN** the workflow verifies the exact job and VM, adds the VM only to an enabled explicit-VMID selection, preserves other job settings and members, verifies the readback, and reports a no-op on repetition; jobs selected by all, pool, or exclusion fail closed
 - **AND** backup artifact presence and an isolated restore remain required before guest disk growth or longer retention
 
+### Requirement: Backup storage preparation is evidence-gated
+The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering local backup-storage preparation. The survey SHALL source the node from private inventory, verify that it is uniquely online, and emit only allow-listed aggregate facts and coarse reported-capacity bands. Missing usage data SHALL remain unknown; survey output SHALL NOT identify a device as safe, select a disk, establish physical locality or filesystem readiness, or authorize a write.
+
+#### Scenario: Physical storage survey reports structural facts only
+- **WHEN** an operator runs the reviewed physical-storage survey for the privately declared online node
+- **THEN** it reports aggregate disk, partition, usage-class, LVM, thin-pool, managed-directory, and storage-status facts without exposing device paths, serials, storage or filesystem names, or exact capacities
+- **AND** it performs only GET requests and reports device safety, filesystem readiness, PBS suitability, and write authorization as false
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 

@@ -190,14 +190,44 @@ node/storage reads fail closed. A returned
 the value is suppressed and no ID is reserved. Neither result proves a future
 restore can be placed or that an artifact is usable.
 
+Reviewed Dev task 1964 at merged SHA
+`2c8382c77b8ccf2542b69faf72044a18d2c7f9fc` completed this feasibility
+receipt; publisher tasks 1962 (check mode) and 1963 (apply) passed. It reported
+one supported non-PBS candidate, complete source disk sizes, backup inclusion
+unverified, three distinct off-source non-shared image-storage IDs meeting the
+point-in-time capacity/headroom test, and a current VMID candidate that was not
+reserved. Immutability, an isolated target, and restore success remain
+unverified. The storage count is based on Proxmox status rows, not a physical
+device mapping or a reservation.
+
 The selected backup destination remains local-only PBS on a separately declared
 cluster node; the node declaration belongs in private `site-config`. The
 current image-capacity and VMID checks do not establish that node's physical
-disk safety or PBS datastore readiness. Before any disk or storage write, a
-separate reviewed GET-only physical-storage survey must use verified Proxmox
-API contracts and report only structural aggregate facts. Then reviewed,
-idempotent disk/LVM/filesystem automation must match the private declared
-layout; no unused device may be presumed safe or selected automatically.
+disk safety or PBS datastore readiness. The new Dev-bound physical-storage
+survey reads only `/nodes/{node}/disks/list?include-partitions=1`, `/disks/lvm`,
+`/disks/lvmthin`, `/disks/directory`, and `/nodes/{node}/storage`, after
+validating the private node declaration against the live node list. These
+official Proxmox endpoints expose device paths, usage classes, VG/PV and thin
+pool sizes, managed mount paths/devices/types/options, and storage status. The
+survey maps these to allow-listed aggregate counts and coarse reported-capacity
+bands under `no_log`; it emits no names, IDs, paths, serials, mount details, or
+exact capacities. See the upstream [disk inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm),
+[LVM API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm),
+[thin-pool API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVMThin.pm),
+[directory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/Directory.pm),
+and [storage status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
+The Proxmox API token needs `Sys.Audit` for node/disk inventory and
+`Datastore.Audit` (or `Datastore.AllocateSpace`) for each visible storage
+status read.
+An absent disk `used` field remains unknown. Directory entries can represent
+local directories or mounted shares; the survey does not establish locality.
+Storage capacity bands are reported as per-storage counts rather than summed
+capacity, since separate storage declarations may overlap backing resources.
+All reported capacity is descriptive, not PBS suitability or physical
+readiness. The survey is GET-only and never selects a device. Separately
+reviewed idempotent disk/LVM/filesystem automation must match the private
+declared layout before any write; no unused device may be presumed safe or
+selected automatically. Live survey execution remains pending.
 
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
