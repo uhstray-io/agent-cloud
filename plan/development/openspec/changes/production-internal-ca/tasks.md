@@ -40,31 +40,46 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       scenario "Deploy converges and keeps the root"
 
 ## 2. Deploy step-ca to production
-- [ ] 2.1 `deploy-step-ca.yml`: create the issuing provisioners idempotently (read the
+- [x] 2.1 `deploy-step-ca.yml`: create the issuing provisioners idempotently (read the
       provisioner list first; add only what is missing), one per profile or one with
       per-profile templates as task 4.4 decides; their passwords are new `random` entries
       in `_secret_definitions` (`secret/services/step-ca`), so manage-secrets generates
       them once and reuses them; maximum and default lifetime from a new
       `stepca_leaf_dur` (default `720h`). Keep the `admin` provisioner's local behaviour
       unchanged; make Phase 2.5's lifetime raise report `changed` only when the value
-      actually differs
+      actually differs. Done 2026-09-29: two JWK provisioners (`issuer-server`,
+      `issuer-client`; decision 4.4 of 2026-09-29), planned from the provisioner list and
+      added or updated only on a difference; the CLI sequence was checked against a
+      throwaway step-ca 0.30.2 container (add of an existing name fails, so the list
+      decides). Tests: `platform/tests/test_step_ca_deploy.py`
 - [ ] 2.2 Production parameters flow through the existing `env.j2` variables (bind,
       name, DNS names, ACME switch); add a parameter only where one is missing. Confirm the
-      ACME provisioner is absent after first boot with `stepca_init_acme: "false"`
-- [ ] 2.3 `clean-deploy-step-ca.yml`: refuse unless `-e confirm_ca_reset=<inventory
+      ACME provisioner is absent after first boot with `stepca_init_acme: "false"`.
+      2026-09-29: Phase 1 refuses a production run without `stepca_name`, `stepca_dns_names`,
+      `stepca_init_acme: "false"` and a loopback bind; Phase 3 asserts no ACME provisioner and
+      the loopback publish (the image's `entrypoint.sh:80` enables ACME only for the literal
+      `"true"`). The after-first-boot confirmation is task 2.6's first real run
+- [x] 2.3 `clean-deploy-step-ca.yml`: refuse unless `-e confirm_ca_reset=<inventory
       hostname>` names the target, following `destroy-vm.yml`'s `confirm_destroy`
       assertion; update `templates-local.yml`'s `Clean Deploy step-ca (Local)` and any
-      make target that calls the playbook to pass it
+      make target that calls the playbook to pass it. Done 2026-09-29 (no make target calls
+      it); the refusal is tested with no, a wrong and the right confirmation
 - [ ] 2.4 `platform/semaphore/templates.yml`: a `Deploy step-ca` template (production
       inventory, `main`) and its generated `(Dev)` variant; no production clean-deploy
-      template; run `setup-templates.yml`
+      template; run `setup-templates.yml`. Amended 2026-09-29 (Joe): a production
+      `Clean Deploy step-ca` template is added too, guarded by a required `confirm_ca_reset`
+      survey with no default, so the reset refusal is proven in production. Both are declared
+      as dev-bound `(Dev)` templates (`repository: agent-cloud dev`) with no main-bound twin
+      until promotion, because main's playbooks lack the guards (review of #349). Publishing
+      them is the remaining step
 - [ ] 2.4a `platform/semaphore/templates.yml`: a signing template for dgx-spark's vLLM
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
       agreed with the dgx-spark session
-- [ ] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
+- [x] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
       reset refuses without confirmation, production inventory values render the loopback
-      bind and ACME off
+      bind and ACME off. Done 2026-09-29 as pytest (`test_step_ca_deploy.py`, 17 cases,
+      mutation-checked): the lifted tasks run against a stub host
 - [ ] 2.6 Run `Deploy step-ca (Dev)` twice; record the root fingerprint after each run
 - [ ] 2.7 Validation gate: scenarios "Deploy converges and keeps the root" and "Reset
       without confirmation is refused"

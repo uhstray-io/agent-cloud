@@ -6,8 +6,12 @@
 #
 # Ansible's deploy-step-ca.yml templates .env (the init/key password from
 # OpenBao) before this starts; deploy.sh is container-lifecycle only — no key or
-# secret generation. The root KEY lives encrypted in the volume; only the
-# password lives in OpenBao (step-ca is not an external-keystore client).
+# secret generation. The root KEY lives encrypted in the volume, and its password
+# comes from OpenBao (step-ca is not an external-keystore client). The image's
+# entrypoint also writes that password to /home/step/secrets/password (0644, same
+# volume) and prints it to the container log on first boot, so the volume and the
+# first-boot log are as sensitive as the password (production-internal-ca design,
+# "Recorded risk 2026-09-29").
 # Plan: plan/development/INTERNAL-CA-DEPLOYMENT.md.
 
 name: step-ca

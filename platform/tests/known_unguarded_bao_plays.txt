@@ -33,7 +33,6 @@ deploy-o11y.yml
 deploy-orb-agent.yml
 deploy-postiz.yml
 deploy-service.yml
-deploy-step-ca.yml
 deploy-tududi.yml
 deploy-uhhcraft.yml
 deploy-wisbot.yml
