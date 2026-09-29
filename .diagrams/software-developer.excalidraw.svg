@@ -5,17 +5,17 @@
     <style class="style-fonts">
       @font-face {
         font-family: "Virgil";
-        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/stray/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Virgil.woff2");
+        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/%3Cuser%3E/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Virgil.woff2");
       }
       @font-face {
         font-family: "Cascadia";
-        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/stray/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Cascadia.woff2");
+        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/%3Cuser%3E/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Cascadia.woff2");
       }
       @font-face {
         font-family: "Assistant";
-        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/stray/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Assistant-Regular.woff2");
+        src: url("https://file%2B.vscode-resource.vscode-cdn.net/c%3A/Users/%3Cuser%3E/.vscode/extensions/pomdtr.excalidraw-editor-3.7.4/public//dist/excalidraw-assets/Assistant-Regular.woff2");
       }
     </style>
-    
+
   </defs>
   <rect x="0" y="0" width="245.5" height="91" fill="#ffffff"></rect><g stroke-linecap="round" transform="translate(10 10) rotate(0 112.75 35.5)"><path d="M17.75 0 C76.01 3.36, 134.62 1.12, 207.75 0 M17.75 0 C75.15 -1, 132.02 -1.63, 207.75 0 M207.75 0 C219.64 -0.1, 227.23 5.67, 225.5 17.75 M207.75 0 C220.93 1.48, 227.72 6.17, 225.5 17.75 M225.5 17.75 C226.99 29.75, 223.89 43.36, 225.5 53.25 M225.5 17.75 C224.98 26.01, 226.21 31.69, 225.5 53.25 M225.5 53.25 C226.3 65.2, 218.37 69.46, 207.75 71 M225.5 53.25 C225.57 66.35, 220.16 72.72, 207.75 71 M207.75 71 C162.57 71.78, 120.25 72.01, 17.75 71 M207.75 71 C157.18 68.93, 108.95 68.73, 17.75 71 M17.75 71 C6.59 69.31, -1.41 66.11, 0 53.25 M17.75 71 C4.97 69.64, -1.06 66.77, 0 53.25 M0 53.25 C-0.68 40.09, 0.57 28.24, 0 17.75 M0 53.25 C0.73 44.87, 0.26 35.74, 0 17.75 M0 17.75 C-1.97 5.24, 3.95 1.11, 17.75 0 M0 17.75 C0.87 4.88, 3.68 -0.05, 17.75 0" stroke="#1e1e1e" stroke-width="2" fill="none"></path></g></svg>

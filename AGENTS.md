@@ -572,6 +572,7 @@ git add <files>
 git diff --staged | grep -iE '^\+.*(10\.[0-9]|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)' | grep -viE 'target|host:|subnet|scope|example|placeholder'
 git diff --staged | grep -iE '^\+.*(password|secret|token|api[_-]?key|bearer)\s*[:=]\s*\S{8}'
 git diff --staged | grep -iE '^\+.*/(Users|home)/[a-z0-9._-]+/'   # machine paths leak usernames
+#    (also a pre-commit gate: no-machine-paths, scripts/check-machine-paths.sh)
 
 # 3. Run the authoritative scanner (same tool the CI Security Scan uses) — this, not the
 #    greps above, is what decides "clean". It catches IP ranges, tokens, JWTs, keys, usernames.
