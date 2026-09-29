@@ -360,7 +360,7 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
     person's identity is for here; (b) the gateway would fetch Authentik's JWKS from the
     public issuer, which sits behind Cloudflare's challenge and needs the skip rule from
     PR #289 (merged to `dev`, `platform/infra/cloudflare/waf.tf:129-135`; its production
-    apply is gateway task 1.11) or the LAN split-horizon record of gateway task 7.1; (c) the Authentik provider must sign with a certificate (RS256, published as
+    apply is gateway task 1.11) or the internal-resolver split-horizon record of gateway task 7.1; (c) the Authentik provider must sign with a certificate (RS256, published as
     JWKS) — the existing providers do reference the self-signed certificate
     (`agentgateway-oidc.yaml:48-49`, `openbao-oidc.yaml:36-37`), so this one is not a
     blocker; (d) the clients in use (OpenAI-compatible SDKs, OpenCode, pi) hold a static

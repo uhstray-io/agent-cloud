@@ -87,8 +87,10 @@ certificates depend on.
   This change defines what that deploy serves. Local-dev keeps its wildcard until its names are migrated.
 - Out of scope, recorded: cross-site names under the bare `<service>.<zone>` form
   (reserved, not built); dynamic registration (the RFC 2136 challenge sub-zone of
-  `platform/services/dns/context/architecture.md:45-46` stays its own work); split-horizon
-  answers for public names (`inference-gateway-agentgateway` group 7).
+  `platform/services/dns/context/architecture.md:45-46` stays its own work); which public
+  names get a split-horizon answer (`inference-gateway-agentgateway` group 7). The
+  mechanism that renders them, a declared list, is in scope since 2026-09-29 (design
+  decision 15, task 2.5a).
 
 ## Rollback Plan
 

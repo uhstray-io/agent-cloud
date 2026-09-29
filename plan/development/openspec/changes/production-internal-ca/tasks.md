@@ -23,20 +23,20 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       platform/services/step-ca/deployment`, `container_engine: podman`,
       `stepca_bind: 127.0.0.1`, `stepca_init_acme: "false"`, a production `stepca_name`,
       and the firewall variables of task 3.1. Sync the Semaphore inventory record
-- [ ] 1.2 Workflow steps `lookup-inventory` and `validate-address` (the address reserved
+- [x] 1.2 Workflow steps `lookup-inventory` and `validate-address` (the address reserved
       in NetBox before provisioning, or the reason it could not be recorded as the
       agentgateway change did). 2026-09-28: address reserved in NetBox (Semaphore task
-      1734) and the NetBox VM records created (tasks 1749/1750, DNS and CA hosts); a
-      `lookup-inventory` run is not recorded here
-- [ ] 1.3 Workflow steps `provision-vm`, `cloud-init`, `ssh-keys` (Generate Service SSH
+      1734, reserve mode) and the NetBox VM records created: Lookup Service Inventory
+      1741/1742 and Validate Address Free 1749/1750, for the DNS and CA hosts
+- [x] 1.3 Workflow steps `provision-vm`, `cloud-init`, `ssh-keys` (Generate Service SSH
       Key, Distribute SSH Keys), `ssh-key-backup` (Back Up Service SSH Key),
       `access-harden` (Verify Host Access, then Harden SSH). 2026-09-28/29, for the DNS
       and CA hosts as pairs: provision 1753/1755, key generate 1763/1764, backup
-      1767/1768, distribute 1807/1808, Harden SSH 1811/1812; a Verify Host Access run is
-      not recorded here
+      1767/1768, Verify Host Access 1769/1770, distribute 1807/1808, Harden SSH 1811/1812
+      (targets read back from Semaphore 2026-09-29)
 - [x] 1.4 Validation gate: key-only SSH to the CA host works from the controller and from a
-      workstation and password authentication is refused (2026-09-28: Harden SSH 1811/1812,
-      DNS and CA hosts, passed its password-rejection probe; Joe's workstation key-only login confirmed); this is the precondition for
+      workstation and password authentication is refused (2026-09-29: Harden SSH 1812 on the CA
+      host passed its password-rejection probe; Joe's workstation key-only login confirmed); this is the precondition for
       scenario "Deploy converges and keeps the root"
 
 ## 2. Deploy step-ca to production

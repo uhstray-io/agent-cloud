@@ -73,12 +73,19 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       it also proves a hostname that is both an inventory host and a
       `dns_records_only_hosts` entry is refused, and a list entry produces the same host,
       instance and PTR records a managed host would
+- [ ] 2.5a The declared split-horizon list (design decision 15, amended 2026-09-29): the
+      builder reads the site-config list (proposed name `dns_split_horizon`), renders each
+      entry as its own single-name Primary zone answered only to the declared clients,
+      and the guard of 2.2 refuses a name outside `<site>.<zone>` that is not on it;
+      pytest for both. The entries themselves (the identity-provider name) are declared by
+      `inference-gateway-agentgateway` task 7.1
 - [ ] 2.6 Validation gate: the pytest suite proves scenarios "A reserved label is refused
       at render", "An invalid label is refused", "A retired ordinal is refused", "A
       load-balanced service points at the load balancer", "A non-serving member is named
       but not pooled", "Moving the front door is one record", "A role move changes one
       CNAME" (these two by diffing the rendered zone before and after the change) and
-      "Records-only machines are never inventory hosts"
+      "Records-only machines are never inventory hosts" and "A public name outside the
+      split-horizon list is refused"
 
 ## 3. Live behaviour in local-dev
 - [ ] 3.1 Through `Deploy DNS (Local)` with a local declaration, measure the pinned

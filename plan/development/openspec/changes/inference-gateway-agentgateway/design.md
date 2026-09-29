@@ -355,7 +355,7 @@ production start failed (see the last item).
   (`crates/agentgateway/src/http/oidc/local.rs:150`), and a first load that fails fails
   the start (`state_manager.rs:140`); a later reload that fails keeps the running state
   (`state_manager.rs:301-311`). So an IdP or edge fault at restart takes the inference API
-  down with the UI. Mitigations: the Cloudflare skip rule now; the LAN split-horizon
+  down with the UI. Mitigations: the Cloudflare skip rule now; the internal-resolver split-horizon
   record (task 7.1) next, so the fetch never transits Cloudflare; and decision 11, so the
   gateway restarts only when its inputs change. `agw_ui_enabled: false` remains the
   lever that renders no UI listener and no OIDC block, and with them no discovery fetch

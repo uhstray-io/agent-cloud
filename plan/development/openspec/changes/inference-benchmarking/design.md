@@ -160,7 +160,8 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    counts its latencies, so it runs only when that could have changed: when the
    inference-perf or `vllm bench serve` image digest differs from the last cross-checked
    pair. It then runs two stages of the scaled shape's ladder, 0.5 and 1.0 times
-   `R_sat`, against direct vLLM, with `--percentile-metrics ttft,tpot,itl
+   `R_sat`, against direct vLLM (until mutual TLS is on; decision 8's 2026-09-29
+   amendment moves the cross-check to guidellm), with `--percentile-metrics ttft,tpot,itl
    --metric-percentiles 50,90 --save-result`, one invocation per rate because it takes a
    single rate per invocation; a disagreement beyond the tolerance in decision 4 voids
    the campaign until explained. Alternative rejected: a full cross-check ladder every
@@ -337,10 +338,15 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    (`production-internal-ca`, decision 3 of 2026-09-28), and backend TLS lands before the
    benchmarks, so a client that cannot present a certificate reaches neither vLLM
    directly nor the gateway listener (gateway task 6.4). `vllm bench serve` therefore
-   runs against the public route only, where Caddy presents its own client leaf. The
-   direct-vLLM and direct-gateway numbers come from inference-perf presenting the `bench`
-   leaf. unverified: whether guidellm can present a client certificate; task 2.1 records
-   it, and a guidellm run that cannot is limited to the public route as well.
+   runs against the public route only, where Caddy presents its own client leaf, and
+   decision 10 caps that route at 0.3 requests per second: below the 0.5 and 1.0 times
+   `R_sat` stages the cross-check needs. So once mutual TLS is on, decision 1's
+   cross-check becomes guidellm against inference-perf on the direct target, both
+   presenting the `bench` leaf, and `vllm bench serve` is a public-route comparison
+   under decision 10's cap, not a cross-check. unverified: whether guidellm can present a
+   client certificate; task 2.1 records it. If it cannot, the calibration sweep (decision
+   3) and the cross-check both lose the direct target, and how to calibrate is an open
+   question for Joe (Open Questions).
    unverified: how inference-perf `v0.7.0` is told which CA verifies the gateway's
    server certificate; task 2.1 records it.
 
@@ -383,8 +389,8 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
     spec defines and presents a client certificate to the gateway (decision 8). The
     other three are operator-only from the start: guidellm is the calibration sweep,
     dgx-harness runs closed-loop waves for baseline continuity (decision 1), and `vllm
-    bench serve` is the direct-target cross-check and cannot present a client
-    certificate. The playbook refuses any other tool in team mode, whatever an extra
+    bench serve` cannot present a client certificate, so after mutual TLS it is a
+    public-route comparison only (decision 8, amended 2026-09-29). The playbook refuses any other tool in team mode, whatever an extra
     variable sends.
     Alternative rejected: separate team run types and result schemas for calibration and
     continuity runs, because teams need latency and throughput figures for their own
@@ -426,6 +432,12 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
 7. Archive; retain the outcome into bank `agent-cloud-750a33b9`.
 
 ## Open Questions
+
+- **Calibration if guidellm cannot present a client certificate (2026-09-29).** Once
+  vLLM requires client certificates, a tool without one reaches only the public route,
+  which decision 10 caps at 0.3 requests per second. If task 2.1 finds guidellm cannot
+  present the `bench` leaf, the saturation sweep (decision 3) and the cross-check need
+  another tool or a window before mutual TLS. For Joe to decide when task 2.1 reports.
 
 1. Is site-config the right durable home for bundles, or should they go to dgx-spark's
    `results/` beside the placement bundles, or an object store? Default if unanswered:

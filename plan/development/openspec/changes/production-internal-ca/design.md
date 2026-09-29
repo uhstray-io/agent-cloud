@@ -90,14 +90,15 @@ marked as such.
 host for the DGX Spark nodes (the vLLM upstream appears only as a value on the gateway and
 Caddy hosts). The VM template is two cores, 2 GB, 20G (`vm-specs.yml` lines 9-11).
 
+`plan/ARCHITECTURE-REFERENCE.md`, which the root `CLAUDE.md` cites for the credential
+backup policy, does not exist on that branch; the policy used here is the one encoded in
+the backup playbook and in `plan/architecture/04-credentials-access.md` line 375.
+
 > **Updated 2026-09-29.** The CA VM is now declared in site-config (a vm-specs entry and a
 > `step_ca_svc` group), provisioned, key-only over SSH and firewalled to SSH only
 > (`firewall_allow_rules: []`, port detection off), all through Semaphore. The step-ca
 > service is not deployed, and its service variables (`stepca_bind`, `stepca_init_acme`,
 > `stepca_name`) are not declared yet.
-`plan/ARCHITECTURE-REFERENCE.md`, which the root `CLAUDE.md` cites for the credential
-backup policy, does not exist on that branch; the policy used here is the one encoded in
-the backup playbook and in `plan/architecture/04-credentials-access.md` line 375.
 
 **Consumers (upstream sources, fetched 2026-09-27).**
 
@@ -425,7 +426,6 @@ it); the Caddy leaf `vm01.caddy` and `caddy`. The gateway's model `tls.hostname`
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded
 2026-09-28". They are kept for the record.
-
 
 1. **How dgx-spark receives its certificate.** The DGX Spark nodes are not in this
    repository's inventory, and the boundary keeps them dgx-spark's. Options: (a)
