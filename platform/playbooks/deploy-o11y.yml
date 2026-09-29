@@ -532,33 +532,16 @@
       until: _tempo_config.rc == 0
       when: not ansible_check_mode
 
-    - name: Validate Tempo's effective metrics-generator configuration
-      ansible.builtin.command:
-        argv:
-          - python3
-          - "{{ playbook_dir }}/files/verify-tempo-metrics-config.py"
-          - "{{ 'true' if o11y_trace_derived_metrics_enabled | default(false) | bool else 'false' }}"
-        stdin: "{{ _tempo_config.stdout }}"
-      delegate_to: localhost
-      register: _tempo_metrics_config_check
-      # The endpoint response passed on stdin can contain remote-storage credentials.
-      no_log: true
-      changed_when: false
-      failed_when: false
-      when: not ansible_check_mode
-
     - name: Require exactly one valid Tempo configuration and bounded metrics settings
+      # Parse credential-bearing /status/config output in memory; never stage it as module input.
       ansible.builtin.assert:
-        that:
-          - _tempo_metrics_config_check.rc == 0
-          - (_tempo_metrics_config_check.stdout | from_json).status == 'verified'
-          - (_tempo_metrics_config_check.stdout | from_json).processors_match | bool
-          - (_tempo_metrics_config_check.stdout | from_json).max_active_series_match | bool
-          - (_tempo_metrics_config_check.stdout | from_json).remote_write_match | bool
-          - (_tempo_metrics_config_check.stdout | from_json).wal_path_match | bool
+        that: >-
+          (_tempo_config.stdout
+           | tempo_metrics_config_check(o11y_trace_derived_metrics_enabled | default(false) | bool)).valid
         fail_msg: >-
           Tempo's effective config readback failed validation. Sanitized checker result:
-          {{ _tempo_metrics_config_check.stdout | from_json }}
+          {{ _tempo_config.stdout
+             | tempo_metrics_config_check(o11y_trace_derived_metrics_enabled | default(false) | bool) }}
       when: not ansible_check_mode
 
     - name: "Pyroscope ready (/ready) through the private compose network"

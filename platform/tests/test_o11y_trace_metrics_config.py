@@ -12,13 +12,14 @@ from jinja2 import Environment, StrictUndefined
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y.yml"
-CHECKER = ROOT / "platform/playbooks/files/verify-tempo-metrics-config.py"
-checker_spec = importlib.util.spec_from_file_location("tempo_metrics_checker", CHECKER)
-tempo_checker = importlib.util.module_from_spec(checker_spec)
-checker_spec.loader.exec_module(tempo_checker)
+PLUGIN = ROOT / "platform/playbooks/filter_plugins/tempo_config.py"
+plugin_spec = importlib.util.spec_from_file_location("tempo_config", PLUGIN)
+tempo_config = importlib.util.module_from_spec(plugin_spec)
+plugin_spec.loader.exec_module(tempo_config)
 
 
 def _render_env(derived_metrics: bool) -> dict[str, str]:
+    """Render the service environment with derived metrics either disabled or gated on."""
     template = Environment(undefined=StrictUndefined)
     template.filters["bool"] = bool
     source = (DEPLOY / "templates/env.j2").read_text(encoding="utf-8")
@@ -38,6 +39,7 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
 
 
 def _tempo_config(processors: str) -> dict:
+    """Render the Tempo config's environment substitutions for a processor list."""
     source = (DEPLOY / "config/tempo-config.yml").read_text(encoding="utf-8")
     source = re.sub(r"\$\{O11Y_TEMPO_RETENTION:-168h\}", "168h", source)
     source = re.sub(r"\$\{O11Y_TEMPO_METRIC_PROCESSORS:-\[\]}", processors, source)
@@ -45,6 +47,7 @@ def _tempo_config(processors: str) -> dict:
 
 
 def test_tempo_metrics_are_disabled_by_default_and_gated_enablement_is_bounded():
+    """Keep Tempo derived metrics disabled by default and bound enabled dimensions."""
     assert _render_env(False)["O11Y_TEMPO_METRIC_PROCESSORS"] == "[]"
     assert _render_env(True)["O11Y_TEMPO_METRIC_PROCESSORS"] == "[service-graphs, span-metrics]"
 
@@ -75,6 +78,7 @@ def test_tempo_metrics_are_disabled_by_default_and_gated_enablement_is_bounded()
 
 
 def test_tempo_datasource_keeps_log_link_and_provisions_service_map_metric_and_profile_links():
+    """Keep trace-to-log links and provision Tempo's metrics and profile correlations."""
     config = yaml.safe_load(
         (DEPLOY / "config/grafana/provisioning/datasources/datasources.yml").read_text(
             encoding="utf-8"
@@ -98,6 +102,7 @@ def test_tempo_datasource_keeps_log_link_and_provisions_service_map_metric_and_p
 
 
 def test_production_metrics_enablement_requires_all_recorded_gates_and_live_readback():
+    """Require recorded capacity/backup gates and validate the live Tempo config in memory."""
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
     gate = next(task for task in deploy_tasks if "numeric capacity and backup/restore receipts" in task["name"])
@@ -114,16 +119,9 @@ def test_production_metrics_enablement_requires_all_recorded_gates_and_live_read
         for task in deploy_tasks
         if task["name"] == "Require exactly one valid Tempo configuration and bounded metrics settings"
     )
-    assert "_tempo_metrics_config_check.rc == 0" in tempo_readback["ansible.builtin.assert"]["that"]
-    assert "processors_match" in str(tempo_readback["ansible.builtin.assert"]["that"])
-    checker_task = next(
-        task for task in deploy_tasks
-        if task["name"] == "Validate Tempo's effective metrics-generator configuration"
-    )
-    assert checker_task["no_log"] is True
-    assert checker_task["delegate_to"] == "localhost"
-    assert checker_task["ansible.builtin.command"]["stdin"] == "{{ _tempo_config.stdout }}"
-    assert "verify-tempo-metrics-config.py" in str(checker_task["ansible.builtin.command"]["argv"])
+    assert "tempo_metrics_config_check" in tempo_readback["ansible.builtin.assert"]["that"]
+    assert "tempo_metrics_config_check" in tempo_readback["ansible.builtin.assert"]["fail_msg"]
+    assert "_tempo_config.stdout" in tempo_readback["ansible.builtin.assert"]["that"]
     config_tasks = [task for task in deploy_tasks if task.get("no_log") is True]
     assert any(task["name"] == "Read Tempo's effective metrics-generator configuration" for task in config_tasks)
     assert "_tempo_config_candidates" not in str(deploy_tasks)
@@ -131,48 +129,88 @@ def test_production_metrics_enablement_requires_all_recorded_gates_and_live_read
     assert "o11y_trace_derived_metrics_enabled | default(false) | bool" in trace_gate["when"]
 
 
-def _fixture_config(processors):
+def _fixture_config(
+    processors,
+    *,
+    remote_url="http://prometheus:9090/api/v1/write",
+    wal_path="/var/tempo/generator/wal",
+    max_active_series=2000,
+):
+    """Build one effective Tempo config mapping with controllable expected settings."""
     return {
+        "fixture_secret_marker": "tempo-config-must-not-appear-in-logs",
         "metrics_generator": {
             "storage": {
-                "path": "/var/tempo/generator/wal",
-                "remote_write": [{"url": "http://prometheus:9090/api/v1/write"}],
+                "path": wal_path,
+                "remote_write": [{"url": remote_url}],
             }
         },
         "overrides": {
             "defaults": {
                 "metrics_generator": {
                     "processors": processors,
-                    "max_active_series": 2000,
+                    "max_active_series": max_active_series,
                 }
             }
         },
     }
 
 
-def test_tempo_metrics_checker_returns_only_sanitized_results():
-    # Generic multi-document contract fixture; not a claim about the exact live response shape.
-    response = """\
-server:
-  http_listen_port: 3200
----
-metrics_generator:
-  storage:
-    path: /var/tempo/generator/wal
-    remote_write:
-      - url: http://prometheus:9090/api/v1/write
-overrides:
-  defaults:
-    metrics_generator:
-      processors: []
-      max_active_series: 2000
-"""
-    with pytest.raises(yaml.composer.ComposerError, match="expected a single document"):
-        yaml.safe_load(response)
-    code, result = tempo_checker.validate(response, enabled=False)
-    assert code == 0
+def _yaml_response(*documents):
+    """Create a generic multi-document response fixture with a non-config document first."""
+    # Generic multi-document contract fixture; not the exact live Tempo response shape.
+    return yaml.safe_dump_all([{"server": {"http_listen_port": 3200}}, *documents])
+
+
+def _assert_task():
+    """Return the production Tempo assert task for an isolated localhost play."""
+    playbook = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
+    return next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Require exactly one valid Tempo configuration and bounded metrics settings"
+    )
+
+
+def _run_production_assert(tmp_path, response, enabled):
+    """Run the production assert after registering synthetic status output from cat."""
+    config_path = tmp_path / "tempo-status-config.yml"
+    config_path.write_text(response, encoding="utf-8")
+    read_result = {
+        "name": "Read synthetic Tempo config as a registered command result",
+        "ansible.builtin.command": {"argv": ["cat", str(config_path)]},
+        "register": "_tempo_config",
+        "no_log": True,
+        "changed_when": False,
+    }
+    fixture_playbook = [
+        {
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {"o11y_trace_derived_metrics_enabled": enabled},
+            "tasks": [read_result, _assert_task()],
+        }
+    ]
+    fixture_path = tmp_path / "tempo-assert.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture_playbook), encoding="utf-8")
+    env = harness_sandbox.env_for(tmp_path)
+    env["ANSIBLE_FILTER_PLUGINS"] = str(PLUGIN.parent)
+    return harness_sandbox.run(
+        ["ansible-playbook", "-i", "localhost,", str(fixture_path)],
+        tmp_path,
+        cwd=ROOT,
+        env=env,
+    )
+
+
+def test_tempo_filter_returns_only_sanitized_results():
+    """Return only scalar validation details from a valid generic multi-document fixture."""
+    result = tempo_config.tempo_metrics_config_check(_yaml_response(_fixture_config([])), False)
     assert result == {
         "status": "verified",
+        "valid": True,
         "reason": None,
         "document_count": 2,
         "candidate_count": 1,
@@ -181,120 +219,139 @@ overrides:
         "remote_write_match": True,
         "wal_path_match": True,
     }
-    assert "http://prometheus" not in str(result)
+    assert "tempo-config-must-not-appear-in-logs" not in str(result)
 
 
-def test_tempo_checker_counts_large_multi_document_input_as_documents():
-    # Models the production failure's reported counts without asserting a live Tempo response.
+def test_tempo_filter_counts_multi_document_input_without_coercion():
+    """Count parsed YAML documents and matching config mappings as integers."""
+    # Synthetic counts verify document counting, not the exact live Tempo response shape.
     response = "\n---\n".join(
         ["metrics_generator: {}\noverrides: {}"] * 37257 + ["server: {}"] * 22
     )
-    code, result = tempo_checker.validate(response, enabled=False)
-    assert code == 2
+    result = tempo_config.tempo_metrics_config_check(response, False)
     assert result["document_count"] == 37279
     assert result["candidate_count"] == 37257
-    assert result["status"] == "refused"
+    assert result["valid"] is False
 
 
-@pytest.mark.parametrize("processors", [None, "absent"])
-def test_tempo_checker_accepts_null_or_omitted_disabled_processors(processors):
-    config = _fixture_config([])
-    if processors == "absent":
-        del config["overrides"]["defaults"]["metrics_generator"]["processors"]
-    else:
-        config["overrides"]["defaults"]["metrics_generator"]["processors"] = processors
-    code, result = tempo_checker.validate(yaml.safe_dump(config), enabled=False)
-    assert code == 0
-    assert result["processors_match"] is True
-
-
-def _run_tempo_checker_task(tmp_path, response, enabled, expected_status, documents, candidates):
-    playbook = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
-    deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
-    checker_task = next(
-        task for task in deploy_tasks
-        if task["name"] == "Validate Tempo's effective metrics-generator configuration"
+def _mutated_config(**changes):
+    """Produce a valid candidate mapping with selected validation fields changed."""
+    config = _fixture_config(["service-graphs", "span-metrics"])
+    config["overrides"]["defaults"]["metrics_generator"].update(
+        {key: value for key, value in changes.items() if key in {"processors", "max_active_series"}}
     )
-    (tmp_path / "files").symlink_to(CHECKER.parent, target_is_directory=True)
-    fixture_playbook = [
-        {
-            "hosts": "localhost",
-            "connection": "local",
-            "gather_facts": False,
-            "vars": {
-                "_tempo_config": {"stdout": response},
-                "o11y_trace_derived_metrics_enabled": enabled,
-                "expected_status": expected_status,
-                "expected_documents": documents,
-                "expected_candidates": candidates,
-            },
-            "tasks": [
-                checker_task,
-                {
-                    "name": "Assert sanitized Tempo checker result",
-                    "ansible.builtin.assert": {
-                        "that": [
-                            "(_tempo_metrics_config_check.stdout | from_json).status == expected_status",
-                            "(_tempo_metrics_config_check.stdout | from_json).document_count == expected_documents",
-                            "(_tempo_metrics_config_check.stdout | from_json).candidate_count == expected_candidates",
-                            "_tempo_metrics_config_check.rc == (0 if expected_status == 'verified' else 2)",
-                        ]
-                    },
-                },
-            ],
-        }
-    ]
-    fixture_path = tmp_path / "tempo-check.yml"
-    fixture_path.write_text(yaml.safe_dump(fixture_playbook), encoding="utf-8")
-    inventory = tmp_path / "inventory.yml"
-    inventory.write_text("all:\n  hosts:\n    localhost:\n      ansible_connection: local\n", encoding="utf-8")
-    env = harness_sandbox.env_for(tmp_path)
-    return harness_sandbox.run(
-        ["ansible-playbook", "-i", str(inventory), str(fixture_path)],
-        tmp_path,
-        cwd=ROOT,
-        env=env,
-    )
+    if "remote_url" in changes:
+        config["metrics_generator"]["storage"]["remote_write"][0]["url"] = changes["remote_url"]
+    if "remote_write" in changes:
+        config["metrics_generator"]["storage"]["remote_write"] = changes["remote_write"]
+    if "wal_path" in changes:
+        config["metrics_generator"]["storage"]["path"] = changes["wal_path"]
+    return config
 
 
-@pytest.mark.parametrize(
-    ("response", "enabled", "status", "documents", "candidates"),
-    [
-        (
-            yaml.safe_dump({"server": {"http_listen_port": 3200}})
-            + "---\n"
-            + yaml.safe_dump(_fixture_config([])),
-            False,
-            "verified",
-            2,
-            1,
-        ),
-        ("", False, "refused", 0, 0),
-        (
-            yaml.safe_dump_all(
-                [
-                    {"server": {"http_listen_port": 3200}},
-                    _fixture_config(["service-graphs", "span-metrics"]),
+ANSIBLE_ASSERT_CASES = [
+    pytest.param(_yaml_response(_fixture_config([])), False, True, id="disabled-empty-processors"),
+    pytest.param(_yaml_response(_fixture_config(None)), False, True, id="disabled-null-processors"),
+    pytest.param(
+        _yaml_response(_mutated_config(processors=["span-metrics", "service-graphs"])),
+        True,
+        True,
+        id="enabled-processors-order-independent",
+    ),
+    pytest.param(_yaml_response(_mutated_config(processors=[])), True, False, id="enabled-processors-missing"),
+    pytest.param(
+        _yaml_response(_mutated_config(processors=["span-metrics"])),
+        True,
+        False,
+        id="enabled-single-processor",
+    ),
+    pytest.param(
+        _yaml_response(_fixture_config(["service-graphs", "span-metrics"])),
+        False,
+        False,
+        id="disabled-processors-present",
+    ),
+    pytest.param(
+        _yaml_response(_mutated_config(processors=["service-graphs", "span-metrics", "span-metrics"])),
+        True,
+        False,
+        id="duplicate-processor",
+    ),
+    pytest.param(
+        _yaml_response(_mutated_config(remote_url="http://wrong.invalid/write")),
+        True,
+        False,
+        id="wrong-remote-write-url",
+    ),
+    pytest.param(
+        _yaml_response(
+            _mutated_config(
+                remote_write=[
+                    {"url": "http://prometheus:9090/api/v1/write"},
+                    {"url": "http://prometheus:9090/api/v1/write"},
                 ]
-            ),
-            True,
-            "verified",
-            2,
-            1,
+            )
         ),
-        (yaml.safe_dump_all([_fixture_config([]), _fixture_config([])]), False, "refused", 2, 2),
-    ],
-    ids=[
-        "generic-two-document-contract",
-        "empty-response",
-        "enabled-two-document-contract",
-        "ambiguous-mapping",
-    ],
-)
-def test_ansible_executes_production_tempo_checker_task(
-    tmp_path, response, enabled, status, documents, candidates
+        True,
+        False,
+        id="duplicate-remote-write-target",
+    ),
+    pytest.param(
+        """\
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        url: http://wrong.invalid/write
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]
+      max_active_series: 2000
+""",
+        True,
+        False,
+        id="duplicate-expected-url-key",
+    ),
+    pytest.param(_yaml_response(_mutated_config(wal_path="/tmp/tempo-wal")), True, False, id="wrong-wal-path"),
+    pytest.param(
+        _yaml_response(_mutated_config(max_active_series="2000")),
+        True,
+        False,
+        id="series-limit-string",
+    ),
+    pytest.param(
+        _yaml_response(_mutated_config(max_active_series=True)),
+        True,
+        False,
+        id="series-limit-boolean",
+    ),
+    pytest.param("", False, False, id="empty-response"),
+    pytest.param(
+        yaml.safe_dump_all([_fixture_config([]), _fixture_config([])]),
+        False,
+        False,
+        id="ambiguous-config",
+    ),
+    pytest.param("metrics_generator: [\n", False, False, id="malformed-yaml"),
+]
+
+
+@pytest.mark.parametrize(("response", "enabled", "valid"), ANSIBLE_ASSERT_CASES)
+def test_ansible_executes_production_tempo_assert_with_registered_command_result(
+    tmp_path, response, enabled, valid
 ):
-    result = _run_tempo_checker_task(
-        tmp_path, response, enabled, status, documents, candidates
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    """Exercise the production assertion against registered synthetic command output."""
+    result = _run_production_assert(tmp_path, response, enabled)
+    assert (result.returncode == 0) is valid, result.stdout + result.stderr
+    assert "tempo-config-must-not-appear-in-logs" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("raw", [None, "x" * (4 * 1024 * 1024 + 1)])
+def test_tempo_filter_refuses_bad_or_oversize_input_without_details(raw):
+    """Fail closed for invalid inputs and oversized config without returning source text."""
+    result = tempo_config.tempo_metrics_config_check(raw, False)
+    assert result["valid"] is False
+    assert result["status"] == "refused"
+    assert result["processors_match"] is False
