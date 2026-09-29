@@ -314,6 +314,107 @@ playbook, because vLLM cannot authenticate gateway-issued keys.
 Deliberation, verification log and the phased plan: OpenSpec change
 `plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
 
+## Internal DNS naming (decided 2026-09-28)
+
+Status: **Accepted.** Decisions by Joe, 2026-09-28. Author: Joseph A. Wisneski IV
+<stray@uhstray.io>.
+
+The question Joe put: "we'll want to have DNS names that simplify routing/access to those
+resources. For example, dgx-spark can be dgx01.vllm-primary.<zone>. Think of a strong
+naming strategy that allows us to horizontally scale resources through our internal DNS."
+(The zone name in his message is replaced with `<zone>`; this repository is public.) His
+three answers that shaped it: the site label is in every name from day one; a
+service name resolves to the load balancer wherever one exists (agentgateway for
+inference, Caddy for HTTP), and to several address records only where there is none; the
+decision is recorded both here and as an OpenSpec change.
+
+In the names below `<zone>` is the internal zone and `<site>` is the site label. Both are
+declared in site-config, not in this repository.
+
+**Decision. Four name families, one tree per site.**
+
+| Family | Shape | Example | Record | TTL |
+|---|---|---|---|---|
+| Service | `<service>.<site>.<zone>` | `vllm-primary.<site>.<zone>` | CNAME to the load balancer's service name where one fronts it; otherwise one A record per serving member | 30–60 s |
+| Instance | `<class><NN>.<service>.<site>.<zone>` | `dgx01.vllm-primary.<site>.<zone>` | CNAME to the member's host name | 60 s |
+| Host | `<hostname>.host.<site>.<zone>` | a Proxmox VM or node by its hostname | A, plus the matching PTR | 3600 s |
+| Management | `<hostname>.mgmt.<site>.<zone>` | a Proxmox node's UI or a BMC | A, plus the matching PTR | 3600 s |
+
+- **Clients use service names and nothing else.** Adding capacity adds an instance and,
+  for a pool, one more A record under the service name. No client configuration changes.
+- **Service names say what the thing does, never what it runs on:** `vllm-primary`,
+  `vllm-embed`, `openbao`, `gateway`. Hardware appears only in the instance class
+  (`dgx`, `vm`), so replacing the hardware changes an instance, not a service.
+- **Instance ordinals are two digits and never reused.** A retired `dgx02` stays retired;
+  its replacement is `dgx03`. Certificates, dashboards, logs and resolver caches that
+  still carry the old name can never point at a different machine.
+- **Health lives in the load balancer, not in DNS.** A pool of A records has no health
+  checks: a member that fails stays in the answer until its record is removed. That is
+  why a service with a load balancer resolves to the load balancer.
+- **Reserved labels.** The bare `<service>.<zone>` form is kept for future cross-site
+  names. `host`, `mgmt`, `ns`, any label starting with `_` (SRV owner names, RFC 2782
+  `_Service._Proto.Name`), and every declared site label cannot be service names.
+- **Label rules.** Lowercase `a-z`, `0-9` and `-`; a label starts with a letter, ends with
+  a letter or digit, and is at most 63 characters (RFC 1035 §2.3.1 and §2.3.4). No
+  underscores, except in SRV owner names.
+- **Records are code.** Names are declared in site-config inventory and rendered into the
+  zone by the DNS deploy (`platform/playbooks/deploy-dns.yml:43-47` renders the zone file
+  from `platform/services/dns/deployment/templates/zone.local-dev.j2`). NetBox, the IPAM
+  authority (`plan/development/03-guardrails-governance.md:1217`, `:1227`), records the
+  host name in each address's `dns_name`; a read-only reconcile check fails when the two
+  disagree. The direction stays NetBox → DNS → certificates
+  (`plan/development/03-guardrails-governance.md:1301-1303`, D8): the address is
+  allocated in NetBox first and the inventory carries the same value.
+- **Public names stay public.** `auth.uhstray.io` and the other Cloudflare-fronted
+  hostnames stay in the public zone. A LAN split-horizon answer for them is separate work
+  (`plan/development/openspec/changes/inference-gateway-agentgateway/tasks.md:349-363`,
+  group 7).
+- **Certificates follow the names.** Each member's leaf carries its instance name and its
+  service name as SANs; the gateway's model `tls.hostname` is the service name. A TLS
+  wildcard matches exactly one label (RFC 9525 §6.3), so the one-label local-dev wildcard
+  (`*.agent-cloud.test`, line 201 of this document) does not cover names under a site
+  label.
+
+**Applied to what exists today.** `inference.<site>.<zone>` is a CNAME to
+`gateway.<site>.<zone>`, the agentgateway service, whose one instance is
+`vm01.gateway.<site>.<zone>`. `vllm-primary.<site>.<zone>` is the API-serving pool: its A
+set holds `dgx01` (spark-1, which serves the API) only. spark-2 is named
+`dgx02.vllm-primary.<site>.<zone>` because it is part of that deployment (the model is
+split across both nodes, and losing spark-2 takes the service down), but as a Ray worker
+with no API it is excluded from the pool's A set and from every load-balancer backend
+list. The platform services `openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca` and
+`caddy` each have one instance, `vm01`. An HTTP service's name becomes a CNAME to
+`caddy.<site>.<zone>` once Caddy carries a route for that internal name; until then it is
+the A record of its one member. Either way the change is one record and clients keep the
+name. Proxmox nodes have a host name and a management name.
+
+**Alternatives rejected.**
+
+1. *No site label* (`<service>.<zone>`). Rejected: a second site would force every client
+   and every certificate to be renamed at the moment the platform is busiest. Adding the
+   label now costs one label.
+2. *Flat names* (`dgx01-vllm-primary.<site>.<zone>`). Rejected: a flat name cannot be
+   delegated, cannot carry a per-service subtree, and hides the service/instance
+   relationship that tooling reads from the name.
+3. *Always several A records, even behind a load balancer.* Rejected: DNS carries no
+   health, so a failed member keeps receiving traffic until its record is removed, and
+   resolver caches extend that by the TTL. Taking a failed member out of service is the
+   load balancer's job.
+4. *Hardware in service names* (`dgx-vllm`). Rejected: moving the model to other hardware
+   would rename the service and break every client that uses it.
+
+**Consequences.** Production renders no wildcard record: a mistyped name must answer
+NXDOMAIN, not resolve somewhere. (Once any name exists under `<site>.<zone>`, a
+zone-apex wildcard would not answer for that subtree anyway; RFC 4592 §2.2.1.) The zone
+gains CNAME, PTR and SRV records and a reverse zone; the pinned hickory-dns image parses
+all three record types from a zone file, and how it answers them is checked live before
+production depends on it (the change's tasks). The production internal CA's example SANs
+(`plan/development/openspec/changes/production-internal-ca/design.md:182-190`, decision 4)
+are updated to this scheme through that change, not by editing it here.
+
+Deliberation, rejected alternatives in full and the phased plan: OpenSpec change
+`plan/development/openspec/changes/internal-dns-naming`.
+
 ## Adding a New Service to the Proxy
 
 For a new service needing external HTTPS, follow these steps alongside the SERVICE-INTEGRATION-PLAN.md onboarding checklist.
