@@ -106,6 +106,16 @@ def test_show_added_is_read_into_spec_and_tag():
     ]
 
 
+def test_every_exported_filter_is_called_by_a_playbook():
+    # The tag has one definition, reached through ufw_desired_rules; a filter no playbook
+    # calls is a second, untested way in. ufw_tag stays a module function for the builders.
+    playbooks = Path(__file__).resolve().parents[1] / "playbooks"
+    text = "\n".join(p.read_text() for p in playbooks.rglob("*.yml"))
+    exported = rules.FilterModule().filters()
+    assert "ufw_tag" not in exported
+    assert [name for name in exported if name not in text] == []
+
+
 def test_the_tag_names_the_rule_with_the_peer_last():
     assert rules.ufw_tag("in", "22/tcp", "192.0.2.0/24") == "agent-cloud:in:22/tcp:192.0.2.0/24"
     assert rules.ufw_tag("out-deny", "any", "198.51.100.2") == "agent-cloud:out-deny:any:198.51.100.2"

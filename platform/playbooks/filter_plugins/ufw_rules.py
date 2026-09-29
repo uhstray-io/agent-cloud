@@ -7,7 +7,8 @@ Building — the ONE place the playbook's rule format lives:
   {cmd, tag, spec, family, is_ssh, dual_family}. `cmd` is the ufw argument list without the comment,
   `tag` the comment naming the rule, `spec` the form `ufw show added` prints it in. A rule
   declared twice (an SSH CIDR also listed as a static 22/tcp rule) appears once.
-- ufw_tag: `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
+- ufw_tag (a module function, not an exported filter: no playbook spells a tag):
+  `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
   peer is last because it is the only field that may itself contain ':' (IPv6). The
   builders pass the peer as ufw stores it (ufw_address), so one address spelled two ways
   (`192.0.2.10`, `192.0.2.10/32`) is one rule under one tag.
@@ -394,7 +395,7 @@ def ufw_delete_args(spec):
 class FilterModule:
     def filters(self):
         return {"ufw_address": ufw_address, "ufw_rule_admits_port": ufw_rule_admits_port,
-                "ufw_is_ipv4": ufw_is_ipv4, "ufw_egress_problems": ufw_egress_problems, "ufw_tag": ufw_tag,
+                "ufw_is_ipv4": ufw_is_ipv4, "ufw_egress_problems": ufw_egress_problems,
                 "ufw_parse_added": ufw_parse_added,
                 "ufw_desired_rules": ufw_desired_rules, "ufw_absent": ufw_absent,
                 "ufw_masking": ufw_masking, "ufw_delete_args": ufw_delete_args}
