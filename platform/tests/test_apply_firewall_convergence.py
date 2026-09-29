@@ -5,7 +5,9 @@ against a stub `ufw` and `podman` on PATH (ufw_stub.py), which keep the firewall
 file and reproduce the ufw 0.36.2 behaviour the playbook relies on. Left out: the sudo
 resolver, fact gathering, the non-Linux skip, the apt install and its dry-run stop, and each
 task's own `become` — none of them decides which rule is added or deleted. Runs through
-harness_sandbox, so the ansible run cannot write outside the test's temp dir.
+harness_sandbox, so the ansible run cannot write outside the test's temp dir. Cases that
+differ only in their inputs share one run over several hosts (_run_many), each host with
+its own stub state, since every ansible-playbook spawn costs seconds.
 """
 
 import json
@@ -14,7 +16,6 @@ import sys
 from pathlib import Path
 
 import harness_sandbox
-import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -31,26 +32,39 @@ def _tag(family, port_proto, peer):
     return f"agent-cloud:{family}:{port_proto}:{peer}"
 
 
-def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: dict | None = None,
-         podman: dict | None = None, check: bool = False, drop: str | None = None,
-         collateral: str | None = None):
-    """Run the lifted play once; returns (CompletedProcess, state after)."""
+def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check: bool = False,
+              drop: str | None = None, collateral: str | None = None):
+    """Run the lifted play ONCE over several firewalled hosts; returns (CompletedProcess, {host: state}).
+
+    `hosts` maps a host name to {"vars": ..., "state": ..., "podman": ...}. Each host keeps its
+    own stub state, log and podman fixture (play-level `environment` from its host vars), so
+    cases that differ only in their inputs share one ansible-playbook spawn. A host that fails
+    an assert stops alone; the others run on.
+    """
     play, = yaml.safe_load(PLAYBOOK.read_text())
     names = [t.get("name") for t in play["tasks"]]
     tasks = [dict(t) for t in play["tasks"][names.index(FIRST):] if t.get("name") not in SKIPPED]
     for task in tasks:
         task.pop("become", None)
+    stub_env = {"UFW_STUB_STATE": "{{ ufw_stub_state }}", "UFW_STUB_LOG": "{{ ufw_stub_log }}",
+                "PODMAN_STUB": "{{ podman_stub }}"}
     (tmp_path / "play.yml").write_text(yaml.safe_dump(
-        [{"hosts": "target", "gather_facts": False, "become": False, "vars": play["vars"], "tasks": tasks}]))
-    inventory = {"all": {"hosts": {"target": {"ansible_connection": "local",
-                                              "firewall_ssh_cidrs": [SSH], **host_vars}},
-                         "children": {g: {"hosts": {h: {"ansible_host": a} for h, a in m.items()}}
-                                      for g, m in (groups or {}).items()}}}
+        [{"hosts": "targets", "gather_facts": False, "become": False, "vars": play["vars"],
+          "environment": stub_env, "tasks": tasks}]))
+    targets = {}
+    for name, spec in hosts.items():
+        files = _files(tmp_path, name, len(hosts) == 1)
+        files["state"].parent.mkdir(parents=True, exist_ok=True)
+        if spec.get("state") is not None:
+            files["state"].write_text(json.dumps(spec["state"]))
+        files["podman"].write_text(json.dumps(spec.get("podman") or {}))
+        targets[name] = {"ansible_connection": "local", "firewall_ssh_cidrs": [SSH], **spec.get("vars", {}),
+                         "ufw_stub_state": str(files["state"]), "ufw_stub_log": str(files["log"]),
+                         "podman_stub": str(files["podman"])}
+    inventory = {"all": {"children": {"targets": {"hosts": targets},
+                                      **{g: {"hosts": {h: {"ansible_host": a} for h, a in m.items()}}
+                                         for g, m in (groups or {}).items()}}}}
     (tmp_path / "inv.yml").write_text(yaml.safe_dump(inventory))
-    state_file, log = tmp_path / "ufw.json", tmp_path / "ufw.log"
-    if state is not None:
-        state_file.write_text(json.dumps(state))
-    (tmp_path / "podman.json").write_text(json.dumps(podman or {}))
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     for name in ("ufw", "podman"):
@@ -58,8 +72,7 @@ def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: 
         (bindir / name).chmod(0o755)
     env = harness_sandbox.env_for(tmp_path)
     # The stubs come first, so neither a real ufw nor a real podman can be reached.
-    env.update(PATH=f"{bindir}:{env['PATH']}", UFW_STUB_STATE=str(state_file), UFW_STUB_LOG=str(log),
-               PODMAN_STUB=str(tmp_path / "podman.json"),
+    env.update(PATH=f"{bindir}:{env['PATH']}",
                # the lifted play sits outside platform/playbooks, so its filters are named here
                ANSIBLE_FILTER_PLUGINS=str(PLAYBOOK.parent / "filter_plugins"))
     if drop:
@@ -68,8 +81,26 @@ def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: 
         env["UFW_STUB_COLLATERAL"] = collateral
     cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")]
     result = harness_sandbox.run(cmd + (["--check"] if check else []), tmp_path, cwd=REPO, env=env)
-    after = json.loads(state_file.read_text()) if state_file.exists() else None
+    after = {}
+    for name in hosts:
+        state_file = _files(tmp_path, name, len(hosts) == 1)["state"]
+        after[name] = json.loads(state_file.read_text()) if state_file.exists() else None
     return result, after
+
+
+def _files(tmp_path: Path, host: str, single: bool) -> dict:
+    """A single host keeps its files at the top of tmp_path (a second run reuses them)."""
+    base = tmp_path if single else tmp_path / host
+    return {"state": base / "ufw.json", "log": base / "ufw.log", "podman": base / "podman.json"}
+
+
+def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: dict | None = None,
+         podman: dict | None = None, check: bool = False, drop: str | None = None,
+         collateral: str | None = None):
+    """Run the lifted play once against the one host `target`; returns (CompletedProcess, state after)."""
+    result, after = _run_many(tmp_path, {"target": {"vars": host_vars, "state": state, "podman": podman}},
+                              groups, check=check, drop=drop, collateral=collateral)
+    return result, after["target"]
 
 
 def _rules(state):
@@ -80,8 +111,8 @@ def _changed(result) -> int:
     return int(re.search(r"target\s*:.*changed=(\d+)", result.stdout).group(1))
 
 
-def _log(tmp_path):
-    path = tmp_path / "ufw.log"
+def _log(tmp_path, host: str | None = None):
+    path = (tmp_path / host if host else tmp_path) / "ufw.log"
     return path.read_text().splitlines() if path.exists() else []
 
 
@@ -110,6 +141,8 @@ def test_every_declared_rule_kind_is_added_with_its_tag(tmp_path):
         "deny out to 198.51.100.2": _tag("out-deny", "any", "198.51.100.2"),
     }
     assert state["active"] is True
+    # a run that changed the firewall reports the state it left, not the one it found
+    assert "Status: active" in r.stdout[r.stdout.index("TASK [Report]"):]
 
 
 def test_a_second_run_changes_nothing(tmp_path):
@@ -118,10 +151,41 @@ def test_a_second_run_changes_nothing(tmp_path):
     first, state = _run(tmp_path, host)
     assert first.returncode == 0, first.stdout + first.stderr
     assert _changed(first) > 0
+    (tmp_path / "ufw.log").unlink()
     second, again = _run(tmp_path, host)
     assert second.returncode == 0, second.stdout + second.stderr
     assert _changed(second) == 0, second.stdout
     assert again == state
+    # Converged: the two reads taken before adding are the whole run. No add, no re-read,
+    # no final status capture (the report reuses the first read).
+    ufw_calls = [line for line in _log(tmp_path) if line.startswith('["ufw"')]
+    assert ufw_calls == ['["ufw", "show", "added"]', '["ufw", "status", "verbose"]']
+    assert "Status: active" in second.stdout[second.stdout.index("TASK [Report]"):]
+
+
+def test_a_rule_from_the_whole_address_space_converges(tmp_path):
+    # ufw prints 0.0.0.0/0 as `any` (the short form `allow 8080/tcp`); compared literally,
+    # the declared rule would never match its stored form and fail the drift guard.
+    host = {"firewall_allow_rules": [{"port": 8080, "from": "0.0.0.0/0"}]}
+    first, state = _run(tmp_path, host)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert "allow 8080/tcp" in _rules(state)
+    second, again = _run(tmp_path, host, state=state)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert _changed(second) == 0, second.stdout
+    assert again == state
+
+
+def test_a_rule_retagged_by_the_add_is_not_then_pruned_as_stale(tmp_path):
+    # Stored under the tag an older spelling of its declaration produced. The add retags it;
+    # the prune plan must read the rules AFTER the add, or it deletes the declared rule by spec.
+    spec = "allow from 192.0.2.5 to any port 8080 proto tcp"
+    before = {"active": True, "rules": [[f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+                                        [spec, _tag("in", "8080/tcp", "192.0.2.5/32")]]}
+    r, state = _run(tmp_path, {"firewall_allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}, state=before)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state)[spec] == _tag("in", "8080/tcp", "192.0.2.5")
+    assert not any('"delete"' in line for line in _log(tmp_path))
 
 
 def test_a_stale_tagged_rule_of_every_kind_is_pruned(tmp_path):
@@ -174,7 +238,7 @@ def test_a_declared_rule_that_did_not_land_stops_the_run_before_any_delete(tmp_p
     before = {"active": True, "rules": [[f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)]]}
     r, state = _run(tmp_path, CONTROLLER, state=before, drop=f"from {SSH} to any port 22")
     assert r.returncode != 0
-    assert "Declared rule tags not found" in r.stdout and "Nothing was deleted" in r.stdout
+    assert "Declared rules not found" in r.stdout and "Nothing was deleted" in r.stdout
     assert state["rules"] == before["rules"]
     assert not any('"delete"' in line for line in _log(tmp_path))
 
@@ -232,14 +296,16 @@ def test_empty_detection_holds_the_upstream_rules_unless_told_it_is_real(tmp_pat
              ["route allow from 192.0.2.7 to any port 443 proto tcp", _tag("route", "443/tcp", upstream)],
              ["allow from 198.51.100.7 to any port 9000 proto tcp", _tag("in", "9000/tcp", "198.51.100.7")]]
     host = {"firewall_upstream_source": upstream}
-    r, state = _run(tmp_path, host, state={"active": True, "rules": stale}, podman={"ports": {}})
+    case = {"state": {"active": True, "rules": stale}, "podman": {"ports": {}}}
+    r, states = _run_many(tmp_path, {"held": {"vars": host, **case},
+                                     "pruned": {"vars": {**host, "firewall_prune_when_detection_empty": True},
+                                                **case}})
     assert r.returncode == 0, r.stdout + r.stderr
-    rules = _rules(state)
+    rules = _rules(states["held"])
     assert stale[0][0] in rules and stale[1][0] in rules and stale[2][0] not in rules
-    assert "found no published ports, so 2 stale rule(s)" in r.stdout
-    r, state = _run(tmp_path, {**host, "firewall_prune_when_detection_empty": True}, podman={"ports": {}})
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert _rules(state) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
+    assert "Port detection on held found no published ports, so 2 stale rule(s)" in r.stdout
+    assert "Port detection on pruned" not in r.stdout
+    assert _rules(states["pruned"]) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
 
 
 def test_ssh_cidrs_spelled_non_canonically_are_matched_as_ufw_stores_them(tmp_path):
@@ -258,17 +324,17 @@ def test_ssh_cidrs_spelled_non_canonically_are_matched_as_ufw_stores_them(tmp_pa
 
 
 def test_the_post_prune_check_fails_when_a_delete_took_an_ssh_allow(tmp_path):
-    before = {"active": True, "rules": [
-        ["allow from 198.51.100.7 to any port 9000 proto tcp", _tag("in", "9000/tcp", "198.51.100.7")]]}
-    r, _ = _run(tmp_path, {}, state=before)
-    assert r.returncode == 0, r.stdout + r.stderr
-    (tmp_path / "ufw.log").unlink()
-    before_run2 = json.loads((tmp_path / "ufw.json").read_text())
-    before_run2["rules"].append(["allow from 198.51.100.8 to any port 9001 proto tcp",
-                                 _tag("in", "9001/tcp", "198.51.100.8")])
-    r, state = _run(tmp_path, {}, state=before_run2, collateral="port 22")
+    # The declared SSH allow is in place; the stub's delete of the stale rule also takes it.
+    # On the second host a hand rule still carries the SSH allow's tag after the delete: the
+    # check reads tag AND spec, so that tag alone does not pass it.
+    rules = [[f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+             ["allow from 198.51.100.8 to any port 9001 proto tcp", _tag("in", "9001/tcp", "198.51.100.8")]]
+    masked = [["allow from 203.0.113.9 to any port 5432 proto tcp", _tag("in", "22/tcp", SSH)], *rules]
+    r, _ = _run_many(tmp_path, {"plain": {"state": {"active": True, "rules": rules}},
+                                "masked": {"state": {"active": True, "rules": masked}}}, collateral="port 22")
     assert r.returncode != 0
-    assert "is missing a declared SSH allow" in r.stdout
+    for host in ("plain", "masked"):
+        assert f"After pruning, {host} is missing a declared SSH allow" in r.stdout, host
     assert "TASK [Enable UFW]" not in r.stdout
 
 
@@ -280,20 +346,27 @@ def test_a_dual_family_rule_stored_for_one_family_only_is_still_pruned(tmp_path)
     assert _rules(state) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
 
 
-@pytest.mark.parametrize("spec", [
+SSH_SPELLINGS = [
     "allow from 198.51.100.0/24 to any port 22",                 # proto any: ufw prints no proto
     "allow from 198.51.100.0/24 to any port 22,2222 proto tcp",  # multiport
     "allow from 198.51.100.0/24 to any port 20:30 proto tcp",    # range
     "allow from 198.51.100.0/24",                                # no port clause: every port
     "route allow from 198.51.100.0/24 to any port 22 proto tcp",
-])
-def test_a_stale_rule_that_admits_ssh_in_any_spelling_is_refused(tmp_path, spec):
-    before = {"active": True, "rules": [[spec, "agent-cloud:in:9999/tcp:198.51.100.0/24"]]}
-    r, state = _run(tmp_path, {}, state=before)
+]
+
+
+def test_a_stale_rule_that_admits_ssh_in_any_spelling_is_refused(tmp_path):
+    # One host per spelling, one run: every host must refuse on its own. The spellings
+    # themselves are unit-tested in test_ufw_rules_filter.py; this proves the wiring.
+    hosts = {f"h{i}": {"state": {"active": True, "rules": [[spec, "agent-cloud:in:9999/tcp:198.51.100.0/24"]]}}
+             for i, spec in enumerate(SSH_SPELLINGS)}
+    r, states = _run_many(tmp_path, hosts)
     assert r.returncode != 0
-    assert "would prune SSH from 198.51.100.0/24 on target" in r.stdout
-    assert spec in _rules(state)
-    assert not any('"delete"' in line for line in _log(tmp_path))
+    for i, spec in enumerate(SSH_SPELLINGS):
+        host = f"h{i}"
+        assert f"would prune SSH from 198.51.100.0/24 on {host};" in r.stdout, (spec, r.stdout)
+        assert spec in _rules(states[host]), spec
+        assert not any('"delete"' in line for line in _log(tmp_path, host)), spec
 
 
 def test_a_stale_udp_only_port_22_rule_is_pruned_without_the_controller_cidr(tmp_path):
@@ -312,3 +385,57 @@ def test_the_controller_cidr_is_compared_in_the_spelling_ufw_stores(tmp_path):
                     state=before)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _rules(state) == {"allow from 192.0.2.5 to any port 22 proto tcp": _tag("in", "22/tcp", "192.0.2.5/32")}
+
+
+def test_a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchanged(tmp_path):
+    # `show added` prints a dual-family rule once whichever halves are stored, so presence by
+    # tag cannot see a lost half. The rule is re-added every run: the lost half comes back,
+    # and on a host holding both ufw only skips, which is not a change.
+    rootful = {"firewall_rootful": True, "firewall_detect_ports": False}
+    bridge = {"bridges": {"podman": "podman1"}}
+    whole = [[f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+             ["allow in on podman1 to any port 53 proto udp", _tag("in-on", "53/udp", "podman1")],
+             ["allow in on podman1 to any port 53 proto tcp", _tag("in-on", "53/tcp", "podman1")]]
+    lost = [list(r) for r in whole]
+    lost[1].append("v4")  # the v6 half of the udp rule is gone
+    r, states = _run_many(tmp_path, {
+        "lost": {"vars": rootful, "podman": bridge, "state": {"active": True, "rules": lost}},
+        "whole": {"vars": rootful, "podman": bridge, "state": {"active": True, "rules": whole}}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert states["lost"]["rules"] == whole and states["whole"]["rules"] == whole
+    assert re.search(r"\blost\s*:.*changed=[1-9]", r.stdout), r.stdout
+    assert re.search(r"\bwhole\s*:.*changed=0", r.stdout), r.stdout
+    adds = [line for line in _log(tmp_path, "whole") if MUTATING.search(line)]
+    assert len(adds) == 2 and all('"in", "on", "podman1"' in line for line in adds), adds
+
+
+def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule(tmp_path):
+    # A hand rule under the reserved prefix carries the SSH allow's tag. The SSH allow is still
+    # added; the masking rule is kept (its tag is declared, so it is never pruned) and reported.
+    masked = "allow from 203.0.113.9 to any port 5432 proto tcp"
+    r, state = _run(tmp_path, {}, state={"active": True, "rules": [[masked, _tag("in", "22/tcp", SSH)]]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state) == {masked: _tag("in", "22/tcp", SSH),
+                             f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
+    assert "holds 1 rule(s) whose comment names a declared rule" in r.stdout and masked in r.stdout
+    assert not any('"delete"' in line for line in _log(tmp_path))
+
+
+def test_an_egress_port_or_proto_that_is_not_one_is_refused_before_any_rule_is_added(tmp_path):
+    bad = {"null_port": {"port": None}, "empty_port": {"port": ""}, "port_zero": {"port": 0},
+           "port_high": {"port": 70000}, "null_proto": {"port": 8200, "proto": None},
+           "icmp": {"port": 8200, "proto": "icmp"}}
+    hosts = {name: {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", **entry}]}} for name, entry in bad.items()}
+    hosts["good"] = {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", "port": "8200", "proto": "any"},
+                                                       {"to": "198.51.100.2", "port": 53, "proto": "udp"}]}}
+    r, states = _run_many(tmp_path, hosts)
+    assert r.returncode != 0
+    for name in bad:
+        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
+        assert states[name] is None, name  # the stub never ran a write: no state file
+    assert re.search(r"\bgood\s*:.*failed=0", r.stdout), r.stdout
+    assert _rules(states["good"]) == {
+        f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH),
+        "deny out to 198.51.100.1 port 8200": _tag("out-deny", "8200/any", "198.51.100.1"),
+        "deny out to 198.51.100.2 port 53 proto udp": _tag("out-deny", "53/udp", "198.51.100.2")}

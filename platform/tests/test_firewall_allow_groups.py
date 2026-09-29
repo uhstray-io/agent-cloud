@@ -32,7 +32,9 @@ def _render(tmp_path: Path, host_vars: dict, groups: dict) -> subprocess.Complet
     (tmp_path / "play.yml").write_text(yaml.safe_dump(lifted))
     return harness_sandbox.run(
         ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")],
-        tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+        tmp_path, cwd=REPO,
+        # the lifted play sits outside platform/playbooks, so its filters are named here
+        env={**harness_sandbox.env_for(tmp_path), "ANSIBLE_FILTER_PLUGINS": str(PLAYBOOK.parent / "filter_plugins")})
 
 
 def test_a_group_rule_expands_to_one_rule_per_member(tmp_path):
@@ -58,6 +60,7 @@ def test_no_group_rules_leaves_the_static_rules_alone(tmp_path):
 @pytest.mark.parametrize("groups,rule_group", [
     ({"members": {"a": "192.0.2.10"}}, "missing"),        # unknown group
     ({"members": {"a": "dns.example.test"}}, "members"),  # member without an IPv4 address
+    ({"members": {"a": "999.1.1.1"}}, "members"),         # four octets, not an IPv4 address
 ])
 def test_an_unresolvable_group_rule_is_refused(tmp_path, groups, rule_group):
     r = _render(tmp_path, {"firewall_allow_groups": [{"port": 53, "group": rule_group}]}, groups)

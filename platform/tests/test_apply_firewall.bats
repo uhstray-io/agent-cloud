@@ -7,6 +7,9 @@
 # that `ufw allow` governs. The playbook must therefore (a) emit `ufw route allow`
 # rules and (b) query the engine as root so detection actually sees the containers.
 # These tests also pin the anti-lockout invariant (SSH + route allows BEFORE enable).
+# The exact ufw command forms are built by filter_plugins/ufw_rules.py and asserted in
+# test_ufw_rules_filter.py; the runs against a stub ufw live in
+# test_apply_firewall_convergence.py.
 #
 # Run: bats platform/tests/test_apply_firewall.bats
 
@@ -24,26 +27,37 @@ setup() {
   grep -qF "_engine: \"{{ container_engine | default('podman') }}\"" "$PLAYBOOK"
 }
 
-@test "firewall: firewall_route_rules is wired to a _route_rules loop var" {
+@test "firewall: firewall_route_rules is wired into the declared rule set" {
   grep -qF '_route_rules: "{{ firewall_route_rules | default([]) }}"' "$PLAYBOOK"
+  blk=$(task_block "$PLAYBOOK" "Compute the declared rules")
+  assert_grep -qF 'route_rules=_route_rules' <<<"$blk"
 }
 
-@test "firewall: STATIC route rules emit ufw route allow (FORWARD) over _route_rules" {
-  # proto-first form, matching the bootstrap hotfix syntax verified on .117.
-  grep -qE 'ufw route allow proto \{\{ item\.proto \| default\(.tcp.\) \}\} from \{\{ item\.from \}\} to any port \{\{ item\.port \}\}' "$PLAYBOOK"
-  # The static route task must iterate the route-rules list, not the INPUT list.
-  grep -qF 'loop: "{{ _route_rules }}"' "$PLAYBOOK"
+@test "firewall: no ufw rule command or tag is hand-built in the playbook (one definition)" {
+  # The command forms and the `agent-cloud:` tag are built in ONE place,
+  # filter_plugins/ufw_rules.py ufw_desired_rules, and their exact text is asserted by
+  # platform/tests/test_ufw_rules_filter.py (route rules proto-first, bridge DNS scoped to
+  # 53, egress with an optional port). A copy here could disagree with the declared set
+  # the prune step compares against, which is what the drift guard exists to catch.
+  local code
+  code=$(grep -vE '^\s*#' "$PLAYBOOK")
+  refute_grep -qE "agent-cloud:" <<<"$code"
+  refute_grep -qE 'ufw (route )?(allow|deny|limit) ' <<<"$code"
+  # Both add tasks run the prepared command with its tag, and nothing else.
+  for task in "Allow SSH (22/tcp) from each admin CIDR" "Add each other declared rule"; do
+    blk=$(task_block "$PLAYBOOK" "$task")
+    assert_grep -qF "ansible.builtin.command: \"ufw {{ item.cmd }} comment '{{ item.tag }}'\"" <<<"$blk"
+  done
 }
 
 @test "firewall: DETECTED ports get a route-allow mirror, gated on _rootful" {
-  # Each auto-detected published port must also get a FORWARD rule on rootful
-  # hosts — now once per declared upstream, since the source may be a list, so
-  # the loop item is a (port-line, source) pair rather than the port line.
-  grep -qF 'ufw route allow proto {{ item.0.split()[1] }} from {{ item.1 }} to any port {{ item.0.split()[0] }}' "$PLAYBOOK"
-  # The mirror task is gated so rootless hosts (host-terminating ports) skip it.
-  grep -q 'Allow each DETECTED published port on the FORWARD chain' "$PLAYBOOK"
-  # A `- _rootful` when-condition must exist guarding the detected-route mirror.
-  grep -qE '^\s*- _rootful\s*$' "$PLAYBOOK"
+  # Each auto-detected published port also gets a FORWARD rule on rootful hosts, once per
+  # declared upstream; rootless hosts (host-terminating ports) get none. The mirror itself
+  # is ufw_desired_rules' (test_ufw_rules_filter.py
+  # test_detected_ports_get_no_forward_mirror_on_a_rootless_host); here: it is fed _rootful.
+  blk=$(task_block "$PLAYBOOK" "Compute the declared rules")
+  assert_grep -qF 'rootful=_rootful | bool' <<<"$blk"
+  assert_grep -qF 'detected=_detected.stdout_lines | default([])' <<<"$blk"
 }
 
 @test "firewall: detection runs as root on rootful/Docker (become follows _rootful)" {
@@ -53,15 +67,15 @@ setup() {
   ! grep -qE '^\s*become:\s*false\s*$' "$PLAYBOOK"
 }
 
-@test "firewall: anti-lockout intact — SSH + route allows precede enable, reset_connection present" {
-  local enable_line ssh_line route_line
-  enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  ssh_line=$(grep -n 'to any port 22 proto tcp' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  route_line=$(grep -n 'ufw route allow' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  [ -n "$enable_line" ] && [ -n "$ssh_line" ] && [ -n "$route_line" ]
-  # Both the SSH allow and the first route rule must be added BEFORE enabling UFW.
-  [ "$ssh_line" -lt "$enable_line" ]
-  [ "$route_line" -lt "$enable_line" ]
+@test "firewall: anti-lockout intact — SSH allows first, every add before enable, reset_connection present" {
+  # The SSH allows are their own task, added before any other rule; every other add
+  # (static, route, detected, bridge DNS, egress) precedes enabling UFW.
+  assert_precedes "$PLAYBOOK" 'name: "Allow SSH \(22/tcp\) from each admin CIDR' 'name: "Add each other declared rule'
+  assert_precedes "$PLAYBOOK" 'name: "Add each other declared rule' 'ufw --force enable'
+  blk=$(task_block "$PLAYBOOK" "Allow SSH (22/tcp) from each admin CIDR")
+  assert_grep -qF "loop: \"{{ _fw_to_add | selectattr('is_ssh') | list }}\"" <<<"$blk"
+  blk=$(task_block "$PLAYBOOK" "Add each other declared rule")
+  assert_grep -qF "loop: \"{{ _fw_to_add | rejectattr('is_ssh') | list }}\"" <<<"$blk"
   # The fresh-handshake check that proves SSH survives the firewall must remain.
   grep -q 'ansible.builtin.meta: reset_connection' "$PLAYBOOK"
 }
@@ -71,24 +85,19 @@ setup() {
   # resolving a sibling by name sends a DNS query INPUT to the host that
   # default-deny DROPS. Rootful podman hosts must allow that DNS query in.
   # Docker (in-netns 127.0.0.11) and rootless podman (own netns) never cross host
-  # UFW, so the task is gated on _rootful AND _engine == 'podman'.
+  # UFW, so bridge detection is gated on _rootful AND _engine == 'podman'. The rule
+  # itself (53/udp+tcp only, never the whole bridge) is asserted in test_ufw_rules_filter.py.
   grep -qF '_allow_bridge_dns: "{{ firewall_allow_bridge_dns | default(true) | bool }}"' "$PLAYBOOK"
-  # Scoped to DNS (53/udp+tcp) — NOT a blanket allow on the whole bridge.
-  grep -qF 'ufw allow in on {{ item.0 }} to any port 53 proto {{ item.1 }}' "$PLAYBOOK"
-  ! grep -qF 'ufw allow in on {{ item }}' "$PLAYBOOK"
-  # Detection iterates the podman networks' bridge interfaces.
-  grep -qF 'podman network inspect' "$PLAYBOOK"
-  # Gated on the podman engine (so Docker hosts skip it)...
-  grep -qE "^\s*- _engine == 'podman'\s*$" "$PLAYBOOK"
-  # ...AND on _rootful, right alongside the podman check — removing _rootful must
-  # fail this test (the gate must also exclude rootless podman, not just Docker).
-  grep -B1 -E "^\s*- _engine == 'podman'\s*$" "$PLAYBOOK" | grep -qE "^\s*- _rootful\s*$"
-  # The bridge allow must be added BEFORE enabling UFW (anti-lockout ordering).
-  local enable_line bridge_line
-  enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  bridge_line=$(grep -n 'ufw allow in on {{ item.0 }}' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  [ -n "$enable_line" ] && [ -n "$bridge_line" ]
-  [ "$bridge_line" -lt "$enable_line" ]
+  blk=$(task_block "$PLAYBOOK" "Detect podman bridge interfaces")
+  assert_grep -qF 'podman network inspect' <<<"$blk"
+  assert_grep -qE '^\s*- _allow_bridge_dns\s*$' <<<"$blk"
+  # Removing _rootful must fail this test: the gate must also exclude rootless podman.
+  assert_grep -qE '^\s*- _rootful\s*$' <<<"$blk"
+  assert_grep -qE "^\s*- _engine == 'podman'\s*$" <<<"$blk"
+  # The bridges found feed the declared set, which is added before enable (anti-lockout test).
+  blk=$(task_block "$PLAYBOOK" "Compute the declared rules")
+  assert_grep -qF 'bridges=_bridges.stdout_lines | default([])' <<<"$blk"
+  assert_precedes "$PLAYBOOK" 'name: "Detect podman bridge interfaces' 'name: "Compute the declared rules'
 }
 
 # ── Egress containment (firewall_deny_egress) ──────────────────────────────────
@@ -107,10 +116,11 @@ setup() {
   grep -qF '_deny_egress: "{{ firewall_deny_egress | default([]) }}"' "$PLAYBOOK"
 }
 
-@test "firewall: egress denials emit ufw deny out, with the port clause optional" {
-  # Omitting `port` denies the destination entirely; supplying it scopes the denial.
-  grep -qF 'ufw deny out to {{ item.to }}' "$PLAYBOOK"
-  grep -qF "(' port ' ~ item.port ~ ' proto ' ~ (item.proto | default('tcp'))) if item.port is defined else ''" "$PLAYBOOK"
+@test "firewall: egress denials feed the declared rule set" {
+  # Omitting `port` denies the destination entirely; supplying it scopes the denial. The
+  # `ufw deny out` forms are asserted in test_ufw_rules_filter.py.
+  blk=$(task_block "$PLAYBOOK" "Compute the declared rules")
+  assert_grep -qF 'deny_egress=_deny_egress' <<<"$blk"
   grep -qF 'loop: "{{ _deny_egress }}"' "$PLAYBOOK"
 }
 
@@ -128,14 +138,10 @@ setup() {
 }
 
 @test "firewall: egress denials are applied BEFORE enable (no uncontained window)" {
-  local enable_line deny_line assert_line
-  enable_line=$(grep -n 'ufw --force enable' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  deny_line=$(grep -n 'ufw deny out to' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  assert_line=$(grep -n 'Validate each egress denial' "$PLAYBOOK" | head -1 | cut -d: -f1)
-  [ -n "$enable_line" ] && [ -n "$deny_line" ] && [ -n "$assert_line" ]
-  # Validation precedes the rules, and the rules precede enabling.
-  [ "$assert_line" -lt "$deny_line" ]
-  [ "$deny_line" -lt "$enable_line" ]
+  # Validation precedes building the rules, and the rules precede enabling.
+  assert_precedes "$PLAYBOOK" 'name: "Validate each egress denial' 'name: "Compute the declared rules'
+  assert_precedes "$PLAYBOOK" 'name: "Compute the declared rules' 'name: "Add each other declared rule'
+  assert_precedes "$PLAYBOOK" 'name: "Add each other declared rule' 'ufw --force enable'
 }
 
 @test "firewall: the default outbound policy is still allow (denials are specific)" {
@@ -209,7 +215,7 @@ YAML
 }
 
 @test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {
-  local pb="$PLAYBOOK" blk task
+  local pb="$PLAYBOOK" blk
   # A service can have more than one legitimate upstream — a reverse proxy AND
   # the automation host that drives its API. Widening the single value to a
   # CIDR would have granted every host in that subnet, so the declaration takes
@@ -220,16 +226,11 @@ YAML
   blk=$(task_block "$pb" "Normalise the upstream source(s) to a list")
   [ -n "$blk" ]
   assert_grep -qF 'is not string' <<<"$blk"
-  # Both rule families (INPUT and the rootful FORWARD mirror) fan out over
-  # ports x sources, and neither reads the raw variable any more — a leftover
-  # direct reference would silently apply only the first source.
-  for task in \
-    "Allow each DETECTED published port from the upstream (e.g. Caddy)" \
-    "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)"; do
-    blk=$(task_block "$pb" "$task")
-    assert_grep -qF 'loop: "{{ (_detected.stdout_lines | default([])) | product(_upstream_sources) | list }}"' <<<"$blk"
-  done
-  refute_grep -qE 'ufw (route )?allow.*\{\{ firewall_upstream_source \}\}' "$pb"
+  # The declared set fans out over the normalised list and never reads the raw
+  # variable — a leftover direct reference would silently apply only the first source.
+  blk=$(task_block "$pb" "Compute the declared rules")
+  assert_grep -qF 'upstreams=_upstream_sources' <<<"$blk"
+  refute_grep -qF 'firewall_upstream_source' <<<"$blk"
   # The guard still refuses an empty declaration rather than opening nothing
   # quietly, and it now asserts on the normalised list.
   blk=$(task_block "$pb" "Require an upstream source when detected ports exist")
@@ -238,49 +239,48 @@ YAML
 
 @test "apply-firewall: blank upstream sources stop before either detected-port rule" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  # Execute the real normalization, guard and rule tasks in their original order.
-  # Replace only the firewall command with debug so no host firewall is touched.
+  # Execute the real normalization, guard and rule-building tasks in their original
+  # order, then print the commands that would be added. Nothing reaches a firewall.
   python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR/upstream.yml" <<'PYTHON'
 import json
 import sys
 import yaml
 
-names = {
+names = [
     "Normalise the upstream source(s) to a list",
     "Require an upstream source when detected ports exist",
-    "Allow each DETECTED published port from the upstream (e.g. Caddy)",
-    "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)",
-}
+    "Compute the declared rules (command, tag, stored spec), SSH first",
+]
 with open(sys.argv[1]) as source:
     tasks = [task for task in yaml.safe_load(source)[0]["tasks"] if task["name"] in names]
-assert len(tasks) == len(names)
-for task in tasks:
-    if "ansible.builtin.command" in task:
-        task["ansible.builtin.debug"] = {"msg": task.pop("ansible.builtin.command")}
-        task.pop("changed_when")
+assert [task["name"] for task in tasks] == names
+tasks.append({"name": "Show the rule commands",
+              "ansible.builtin.debug": {"msg": "{{ _fw_desired | map(attribute='cmd') | list }}"}})
 play = {"hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {"_rootful": True, "_detected": {"stdout_lines": ["443 tcp", "53 udp"]}},
+        "vars": {"_ssh_cidrs": ["192.0.2.0/24"], "_rules": [], "_route_rules": [], "_deny_egress": [],
+                 "_rootful": True, "_detected": {"stdout_lines": ["443 tcp", "53 udp"]}},
         "tasks": tasks}
 with open(sys.argv[2], "w") as target:
     json.dump([play], target)
 PYTHON
 
   local values
+  export ANSIBLE_FILTER_PLUGINS="$BATS_TEST_DIRNAME/../playbooks/filter_plugins"
   for values in '"192.0.2.10"' '["192.0.2.10","198.51.100.10"]'; do
     run ansible-playbook "$BATS_TEST_TMPDIR/upstream.yml" -e "{\"firewall_upstream_source\":$values}"
     [ "$status" -eq 0 ]
-    assert_contains "$output" 'ufw allow from 192.0.2.10 to any port 443 proto tcp'
-    assert_contains "$output" 'ufw route allow proto udp from 192.0.2.10 to any port 53'
+    assert_contains "$output" 'allow from 192.0.2.10 to any port 443 proto tcp'
+    assert_contains "$output" 'route allow proto udp from 192.0.2.10 to any port 53'
     if [[ "$values" == *198.51.100.10* ]]; then
-      assert_contains "$output" 'ufw allow from 198.51.100.10 to any port 443 proto tcp'
-      assert_contains "$output" 'ufw route allow proto udp from 198.51.100.10 to any port 53'
+      assert_contains "$output" 'allow from 198.51.100.10 to any port 443 proto tcp'
+      assert_contains "$output" 'route allow proto udp from 198.51.100.10 to any port 53'
     fi
   done
   for values in '["192.0.2.10",""]' '["192.0.2.10","  "]' '["192.0.2.10",null]' '""' '"  "' '[]'; do
     run ansible-playbook "$BATS_TEST_TMPDIR/upstream.yml" -e "{\"firewall_upstream_source\":$values}"
     [ "$status" -ne 0 ]
     assert_contains "$output" 'Set firewall_upstream_source'
-    refute_contains "$output" 'TASK [Allow each DETECTED published port'
+    refute_contains "$output" 'TASK [Compute the declared rules'
   done
 }
 
