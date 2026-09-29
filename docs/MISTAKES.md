@@ -79,7 +79,7 @@ supersede it with a new entry and link both.
 | 3.6 | Allocated a static address from the inventory alone; it belonged to a live production runner that the inventory never declared, and the new VM was configured onto it | Live state | Playbook guard + test (provision-vm address probe) |
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | Test: committed launcher places and gates the flag before launch |
-| 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | Test: harness refuses to run a section with any write outside the runner scratch (mutation-proven) |
+| 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | Test (pinned targets + definitions, before every run) + runtime path asserts + sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | Pre-commit (existing) |
@@ -1753,13 +1753,34 @@ scratch it owns, and refuses to run otherwise. A mutation never redirects a writ
 path while a harness can execute it. `$HOME` is not a sandbox for Ansible's local
 connection.
 
-**Enforced by.** Test. `_refuse_real_writes` in `platform/tests/test_materialise_ssh_key.py`
-applies the check-mode guard's closed runner-scratch rule (`_file_write`,
-`_in_runner_scratch` in `platform/tests/test_check_mode_contract.py`) to the lifted section
-and every shared task file before each ansible run.
-`test_the_harness_refuses_a_write_outside_the_scratch` covers it statically. Re-running the
-same mutation afterwards turned the tests red by refusal, and a checksum of the real
-`~/.ssh/known_hosts` was identical before and after the whole mutation set.
+**Enforced by.** Test and sandbox, in three independent lines.
+1. Before every ansible run, `_refuse_real_writes` in
+   `platform/tests/test_materialise_ssh_key.py` applies the check-mode guard's
+   runner-scratch rule (`violations_in(..., all_writes=True)`,
+   `platform/tests/test_check_mode_contract.py`) to every file write in the lifted section
+   and the shared task files. It also applies the repository-wide pinned-definition check
+   (`pinned_definition_problems`). A write must carry no `vars:`, must hit its file's one
+   pinned target, and every name in that target must have exactly one pinned definition.
+2. The shared tasks assert at runtime that the scratch directory and the known_hosts path
+   sit under the temp root before anything is written into them.
+3. Every harness run goes through `platform/tests/harness_sandbox.py`. On macOS that is
+   `sandbox-exec`, denying writes under `/Users` and any explicitly denied path; on Linux
+   with `bwrap`, a read-only root. `test_the_sandbox_blocks_a_write_the_static_guard_never_saw`
+   proves the sandbox against a canary directory. The GitHub-hosted CI runner has no kernel
+   sandbox, so there lines 1 and 2 are the enforcement.
+The original mutation now fails by static refusal. A checksum of the real
+`~/.ssh/known_hosts` was identical before and after every mutation run.
+
+**Update 2026-09-28 (PR #319 review).** The first form of line 1 compared only the literal
+`dest:`/`path:` text. The reviewer, aiming only at its own scratch, routed around it twice,
+and both times ansible wrote before a test went red. X2 redefined the target variable in the
+task's `vars:` while the `dest` text stayed `{{ _pshk_kh }}`. X3 pointed the tempfile's
+`path:` elsewhere, and the wipe (correctly) left six key directories behind. Replayed against
+the current form, with targets only in a canary directory: with the source guard on, both are
+refused before any write. With it switched off, the runtime assert refuses X2, and the
+sandbox blocks X3 and an X2 whose assert was also removed ("Destination ... not writable").
+The canary stayed empty throughout. The lesson: a guard that reads source is necessary, not
+sufficient, next to code that executes.
 
 ## 4. Data handling
 

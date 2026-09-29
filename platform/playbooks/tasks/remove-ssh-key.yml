@@ -15,13 +15,19 @@
 # root, computed here by the same expression the materialise task hands tempfile, not
 # read back from the fact.
 
+# Resolved by set_fact, not task vars: the forced write below carries no `vars:` at all, and
+# each name here has exactly one pinned definition in the repository
+# (test_check_mode_contract.py), so neither can be redefined around the check.
+- name: "Remove SSH key: resolve the directory and the temp root"
+  ansible.builtin.set_fact:
+    _rsk_dir: "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir | default('') }}"
+    _rsk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+  when: ssh_key_result_var is defined
+
 - name: "Remove SSH key: wipe the runner-local scratch directory"
   ansible.builtin.file:
     path: "{{ _rsk_dir }}"
     state: absent
-  vars:
-    _rsk_dir: "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir | default('') }}"
-    _rsk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
   delegate_to: localhost
   become: false
   check_mode: false

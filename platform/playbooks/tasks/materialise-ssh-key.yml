@@ -45,8 +45,11 @@
 # runner-scratch class of plan/architecture/08-ansible-automation-standards.md (decision
 # 2026-09-28): a task may write under --check only inside a runner-local temp directory
 # created in the same run and removed in `always`, and nothing outside it.
-# platform/tests/test_check_mode_contract.py enforces it: a forced write must target this
-# result's paths. The wipe carries it too; a simulated delete would leave the key behind.
+# platform/tests/test_check_mode_contract.py enforces it: a forced write here carries no
+# `vars:` and hits exactly its pinned target, and the names in that target (`_msk_dir`, the
+# tempfile's root) have one pinned definition in the repository. The task below also checks
+# the directory at runtime before writing into it. The wipe carries `check_mode: false` too;
+# a simulated delete would leave the key behind.
 # The scratch tasks report `changed_when: false`: they leave nothing behind, so a dry run
 # that reported them as changes would misstate what the real run would do.
 #
@@ -98,6 +101,19 @@
   check_mode: false
   changed_when: false
   when: (ssh_key_content | default('') | string | length) > 0
+
+# Belt and braces for the static pin on tempfile's `path` (test_check_mode_contract.py): the
+# directory must sit directly under the temp root with this task's prefix, or nothing is
+# written into it. Checked at runtime because a guard that only reads the source can be
+# routed around by indirection (PR #319 review).
+- name: "Materialise SSH key: refuse a scratch directory outside the temp root"
+  ansible.builtin.assert:
+    that:
+      - (_msk_dir.path | realpath | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)
+      - (_msk_dir.path | basename) is match('^\.sshkey_')
+    fail_msg: "The SSH key scratch directory is not under the runner's temp root; refusing to write the key."
+    quiet: true
+  when: _msk_dir.path is defined
 
 - name: "Materialise SSH key: record the directory before anything is written into it"
   ansible.builtin.set_fact:

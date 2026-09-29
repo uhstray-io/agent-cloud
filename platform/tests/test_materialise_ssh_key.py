@@ -17,9 +17,9 @@ import json
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import test_check_mode_contract as check_mode_contract
 import yaml
@@ -33,38 +33,39 @@ PIN = "tasks/pin-ssh-host-key.yml"
 KEY = "STUB-KEY-MATERIAL-line-1\nSTUB-KEY-MATERIAL-line-2\nSTUB-KEY-MATERIAL-line-3"
 HOSTKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStubHostKey root@target"
 
-# The harness runs these tasks FOR REAL on the developer's machine, and `~` there is the
-# developer's home (the local connection expands it through the account, not $HOME). So
-# before any run, every file write in the lifted section and in the shared tasks must
-# target the runner scratch — the same closed rule the check-mode guard applies. A mutation
-# or a regression that aims a write elsewhere is refused here instead of executed
-# (docs/MISTAKES.md 3.9: a mutation run once overwrote the real ~/.ssh/known_hosts).
+# The harness runs these tasks FOR REAL on the developer's machine. Two independent lines keep
+# it inside its scratch (docs/MISTAKES.md 3.9: a mutation run once overwrote the real
+# ~/.ssh/known_hosts; PR #319 review: a source guard alone was routed around by indirection):
+# 1. before any run, the check-mode contract's runner-scratch rule applied to EVERY file write
+#    in the lifted section and the shared tasks, plus the repository-wide pinned definitions;
+# 2. the run itself goes through harness_sandbox.run (a kernel sandbox where one exists).
+# Turning line 1 off is allowed only to prove line 2, and only under a kernel sandbox.
 SHARED = [MATERIALISE, REMOVE, PIN]
+STATIC_GUARD = os.environ.get("SSH_HARNESS_STATIC_GUARD", "1") != "0"
 
 
 def _stray_writes(tasks, rel=None) -> list[str]:
-    stray = []
-
-    def walk(items):
-        for task in items or []:
-            if not isinstance(task, dict):
-                continue
-            module, args = check_mode_contract._file_write(task)
-            if module and not check_mode_contract._in_runner_scratch(
-                    module, args, rel, check_mode_contract._scratch_result_vars()):
-                stray.append(f"{rel or 'section'}: {task.get('name')}")
-            for key in ("block", "rescue", "always"):
-                walk(task.get(key))
-
-    walk(tasks)
-    return stray
+    return check_mode_contract.violations_in(tasks, rel, all_writes=True)
 
 
 def _refuse_real_writes(tasks):
+    if not STATIC_GUARD:
+        assert harness_sandbox.SANDBOX, "the static guard may be disabled only under a kernel sandbox"
+        return
     stray = _stray_writes(tasks)
     for shared in SHARED:
-        stray += _stray_writes(yaml.safe_load((PLAYBOOKS / shared).read_text()), f"platform/playbooks/{shared}")
+        rel = f"platform/playbooks/{shared}"
+        stray += _stray_writes(yaml.safe_load((PLAYBOOKS / shared).read_text()), rel)
+    stray += check_mode_contract.pinned_definition_problems()
     assert not stray, f"refusing to run: these would write outside the runner scratch: {stray}"
+
+
+def _ansible(tmp_path: Path, args: list[str], tasks, env_extra: dict | None = None, denied=None):
+    """Every ansible run in this file: guard first, then the sandboxed run."""
+    _refuse_real_writes(tasks)
+    env = harness_sandbox.env_for(tmp_path)
+    env.update(env_extra or {})
+    return harness_sandbox.run(["ansible-playbook", *args], tmp_path, cwd=REPO, env=env, denied=denied)
 
 
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
@@ -150,7 +151,6 @@ def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool
     if host_key:
         hostkey.write_text(HOSTKEY + "\n")
     variables = {**variables, "ssh_host_key_files": [str(tmp_path / "absent.pub"), str(hostkey)]}
-    _refuse_real_writes(tasks)
     probe = {"ansible.builtin.debug": {"msg": "PROBE {{ " + result_var + " | to_json }}"}}
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
                 "tasks": [*tasks, probe]}]
@@ -162,15 +162,12 @@ def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool
     stub.chmod(0o755)
     (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
     log = tmp_path / "ssh.log"
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_NOCOLOR="1", SSH_STUB=ssh, SSH_STUB_LOG=str(log),
-               PATH=f"{tmp_path / 'bin'}:{env.get('PATH', '')}")
     # ansible_host as an INVENTORY var, where real inventories put it: the playbooks read it
     # through hostvars[inventory_hostname], which a play var does not reach.
     (tmp_path / "inventory.ini").write_text("localhost ansible_connection=local ansible_host=192.0.2.10\n")
-    cmd = ["ansible-playbook", "-v", "-i", str(tmp_path / "inventory.ini"), str(tmp_path / "h.yml")] + (
-        ["--check"] if check else [])
-    out = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True)
+    args = ["-v", "-i", str(tmp_path / "inventory.ini"), str(tmp_path / "h.yml")] + (["--check"] if check else [])
+    out = _ansible(tmp_path, args, tasks, {"SSH_STUB": ssh, "SSH_STUB_LOG": str(log),
+                                           "PATH": f"{tmp_path / 'bin'}:{os.environ.get('PATH', '')}"})
     calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     result = None
     for line in out.stdout.splitlines():
@@ -235,14 +232,11 @@ def test_an_empty_key_is_refused_unless_the_caller_reports_it(tmp_path):
                       "always": [{"ansible.builtin.include_tasks": REMOVE, "vars": {"ssh_key_result_var": "_k"}}]},
                      {"ansible.builtin.debug": {"msg": "PROBE {{ _k | to_json }}"}}]
     (tmp_path / "tasks").symlink_to(PLAYBOOKS / "tasks")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
     for allow, ok in ((False, False), (True, True)):
         (tmp_path / "h.yml").write_text(yaml.safe_dump([{"hosts": "localhost", "connection": "local",
                                                          "gather_facts": False, "vars": {"allow": allow},
                                                          "tasks": harness_tasks}]))
-        out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml"), "--check"],
-                             cwd=REPO, env=env, text=True, capture_output=True)
+        out = _ansible(tmp_path, ["-i", "localhost,", str(tmp_path / "h.yml"), "--check"], harness_tasks)
         assert (out.returncode == 0) is ok, out.stdout[-1500:]
         if ok:
             assert '\\"materialised\\": false' in out.stdout, out.stdout[-1500:]
@@ -251,7 +245,7 @@ def test_an_empty_key_is_refused_unless_the_caller_reports_it(tmp_path):
 
 
 def test_remove_refuses_a_directory_it_did_not_create():
-    task = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())[0]
+    (task,) = [t for t in yaml.safe_load((PLAYBOOKS / REMOVE).read_text()) if "ansible.builtin.file" in t]
     assert task["ansible.builtin.file"]["state"] == "absent"
     assert task.get("check_mode") is False, "a simulated delete leaves the key on the runner"
     assert any(".sshkey_" in str(w) for w in task["when"]), task["when"]
@@ -388,9 +382,7 @@ def test_remove_deletes_only_a_scratch_dir_under_the_temp_root(tmp_path):
                 "vars": {"_k": {"materialised": True, "dir": str(decoy)}},
                 "tasks": [{"ansible.builtin.include_tasks": REMOVE, "vars": {"ssh_key_result_var": "_k"}}]}]
     (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")],
-                         cwd=REPO, env=env, text=True, capture_output=True)
+    out = _ansible(tmp_path, ["-i", "localhost,", str(tmp_path / "h.yml")], harness[0]["tasks"])
     assert out.returncode == 0, out.stdout[-1500:]
     assert (decoy / "keep").exists(), "the wipe deleted a .sshkey_ directory it did not create"
 
@@ -398,8 +390,9 @@ def test_remove_deletes_only_a_scratch_dir_under_the_temp_root(tmp_path):
 def test_materialise_and_remove_agree_on_the_temp_root():
     root = yaml.safe_load((PLAYBOOKS / MATERIALISE).read_text())
     (tmp,) = [t for t in root if "ansible.builtin.tempfile" in t]
-    (wipe,) = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
-    assert tmp["ansible.builtin.tempfile"]["path"] == wipe["vars"]["_rsk_root"]
+    resolve, wipe = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
+    assert tmp["ansible.builtin.tempfile"]["path"] == resolve["ansible.builtin.set_fact"]["_rsk_root"]
+    assert tmp["ansible.builtin.tempfile"]["path"] == check_mode_contract.SCRATCH_ROOT
     assert "(_rsk_dir | realpath | dirname) == _rsk_root" in wipe["when"]
 
 
@@ -427,11 +420,34 @@ def test_a_non_default_port_is_pinned_as_host_and_port(tmp_path):
 
 def test_the_harness_refuses_a_write_outside_the_scratch():
     # Static: nothing is executed, so a failure of this guard cannot touch the machine.
-    ok = [{"ansible.builtin.copy": {"content": "x", "dest": "{{ _probe_key.known_hosts }}"},
-           "delegate_to": "localhost"}]
-    assert not _stray_writes(ok)
-    for dest in ("~/.ssh/known_hosts", "/etc/motd", "{{ _other.known_hosts }}"):
+    for dest in ("~/.ssh/known_hosts", "/etc/motd", "{{ _other.known_hosts }}", "{{ _probe_key.known_hosts }}"):
         bad = [{"name": "w", "block": [{"name": "w", "ansible.builtin.copy": {"content": "x", "dest": dest},
                                         "delegate_to": "localhost"}]}]
         with pytest.raises(AssertionError, match="refusing to run"):
             _refuse_real_writes(bad)
+
+
+@needs_ansible
+@pytest.mark.skipif(harness_sandbox.SANDBOX is None, reason="no kernel sandbox on this host (see harness_sandbox)")
+def test_the_sandbox_blocks_a_write_the_static_guard_never_saw(tmp_path, tmp_path_factory):
+    # The target is a CANARY directory this test creates and denies explicitly; the real home
+    # is never aimed at. A crafted play bypasses the static guard on purpose.
+    canary = tmp_path_factory.mktemp("sandbox-canary")
+    target = canary / "written"
+    play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+             "tasks": [{"ansible.builtin.copy": {"content": "x", "dest": str(target)}}]}]
+    (tmp_path / "h.yml").write_text(yaml.safe_dump(play))
+    out = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")], tmp_path,
+                              cwd=REPO, env=harness_sandbox.env_for(tmp_path), denied=[str(canary)])
+    assert out.returncode != 0 and not target.exists(), out.stdout[-1500:]
+    # and the same run, not denied, writes: the failure above is the sandbox, not the play
+    out = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")], tmp_path,
+                              cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+    assert out.returncode == 0 and target.exists(), out.stdout[-1500:]
+
+
+def test_the_sandbox_profile_denies_the_home_tree():
+    profile = harness_sandbox._profile(["/private/var/folders/x"], ["/private/var/folders/x/canary"])
+    assert '(deny file-write* (subpath "/Users"))' in profile
+    # explicit denials come LAST, since later rules win
+    assert profile.rindex("(deny file-write*") > profile.index("(allow file-write*")

@@ -13,10 +13,11 @@ These lift the real tasks out of harden-ssh.yml and run them on localhost with `
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
+import test_check_mode_contract as check_mode_contract
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -80,11 +81,13 @@ def _run(tmp_path: Path, methods: str, sshd: str = LOCKED, check: bool = False):
         stub.write_text(body)
         stub.chmod(0o755)
     (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_NOCOLOR="1", SSH_STUB_METHODS=methods, SSHD_STUB=sshd,
-               PATH=f"{tmp_path / 'bin'}:{env.get('PATH', '')}")
+    # Sandboxed like every harness that executes playbook tasks (harness_sandbox.py), and
+    # guarded first: the lifted tasks must write no file at all.
+    assert not check_mode_contract.violations_in(tasks, None, all_writes=True)
+    env = harness_sandbox.env_for(tmp_path)
+    env.update(SSH_STUB_METHODS=methods, SSHD_STUB=sshd, PATH=f"{tmp_path / 'bin'}:{os.environ.get('PATH', '')}")
     cmd = ["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")] + (["--check"] if check else [])
-    return subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True)
+    return harness_sandbox.run(cmd, tmp_path, cwd=REPO, env=env)
 
 
 @needs_ansible

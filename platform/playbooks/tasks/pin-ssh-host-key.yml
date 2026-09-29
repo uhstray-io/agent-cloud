@@ -70,20 +70,44 @@
   vars:
     _pshk_key: "{{ lookup('ansible.builtin.vars', ssh_key_result_var, default={}) }}"
 
-- name: "Pin SSH host key: write known_hosts pinned to that key (runner scratch)"
-  ansible.builtin.copy:
+# The target path and the line are resolved here, by set_fact, so the forced write below
+# carries no `vars:`; `_pshk_kh` and `_pshk_root` each have exactly one pinned definition in
+# the repository (test_check_mode_contract.py).
+- name: "Pin SSH host key: resolve the known_hosts path and the pinned line"
+  ansible.builtin.set_fact:
+    _pshk_kh: "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"
+    _pshk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
     # OpenSSH keys a non-default port as [host]:port; a bare entry would never match and
     # StrictHostKeyChecking=yes would refuse — a false failure from the opposite direction.
-    content: "{{ _pshk_host }} {{ _pshk_fields[0] }} {{ _pshk_fields[1] }}\n"
-    dest: "{{ _pshk_kh }}"
-    mode: "0600"
+    _pshk_line: >-
+      {{ (_pshk_pin.addr if ((_pshk_pin.port | int) == 22) else ('[' ~ _pshk_pin.addr ~ ']:' ~ _pshk_pin.port))
+         ~ ' ' ~ (_pshk_fields[:2] | join(' ')) }}
   vars:
     _pshk_pin: "{{ lookup('ansible.builtin.vars', ssh_host_key_result_var) }}"
-    _pshk_kh: "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"
     _pshk_fields: "{{ ((_pshk_read.stdout | default('') | trim).splitlines() | first | default('')).split() }}"
-    _pshk_host: >-
-      {{ _pshk_pin.addr if ((_pshk_pin.port | int) == 22)
-         else ('[' ~ _pshk_pin.addr ~ ']:' ~ _pshk_pin.port) }}
+  when:
+    - _pshk_read.stdout is defined
+    - (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
+
+# The known_hosts path arrives through the materialise RESULT fact, which a caller can
+# overwrite; so it is checked at runtime to be the known_hosts inside a scratch directory
+# directly under the temp root, before anything is written (PR #319 review).
+- name: "Pin SSH host key: refuse a known_hosts outside the scratch directory"
+  ansible.builtin.assert:
+    that:
+      - (_pshk_kh | basename) == 'known_hosts'
+      - (_pshk_kh | dirname | basename) is match('^\.sshkey_')
+      - (_pshk_kh | realpath | dirname | dirname) == _pshk_root
+    fail_msg: "The pinned known_hosts path is not inside the SSH key scratch directory; refusing to write it."
+    quiet: true
+  when: _pshk_line is defined and _pshk_read.stdout is defined
+    and (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
+
+- name: "Pin SSH host key: write known_hosts pinned to that key (runner scratch)"
+  ansible.builtin.copy:
+    content: "{{ _pshk_line }}\n"
+    dest: "{{ _pshk_kh }}"
+    mode: "0600"
   delegate_to: localhost
   become: false
   check_mode: false

@@ -235,22 +235,22 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
   # using it (found by mutation-testing the earlier version of this assertion).
   local pin="$REPO_ROOT/platform/playbooks/tasks/pin-ssh-host-key.yml"
   local content_line
-  content_line=$(grep -E '^    content: .*_pshk_fields' "$pin" | head -1)
+  content_line=$(grep -E '^    content: ' "$pin" | head -1)
   [ -n "$content_line" ]
   case "$content_line" in
-    *'{{ _pshk_host }}'*) ;;
-    *) echo "known_hosts content does not use _pshk_host: $content_line"; return 1 ;;
+    *'{{ _pshk_line }}'*) ;;
+    *) echo "known_hosts content does not use _pshk_line: $content_line"; return 1 ;;
   esac
   local kh_def
-  kh_def=$(awk '/^    _pshk_host: /{f=1;next} f&&/^    [a-z_]+:/{exit} f' "$pin")
+  kh_def=$(awk '/^    _pshk_line: /{f=1;next} f&&/^  [a-z_]+:/{exit} f' "$pin")
   [ -n "$kh_def" ]
   case "$kh_def" in
     *"(_pshk_pin.port | int) == 22"*) ;;
-    *) echo "_pshk_host does not switch on the port: $kh_def"; return 1 ;;
+    *) echo "_pshk_line does not switch on the port: $kh_def"; return 1 ;;
   esac
   case "$kh_def" in
     *"']:'"*) ;;
-    *) echo "_pshk_host does not build the [host]:port form: $kh_def"; return 1 ;;
+    *) echo "_pshk_line does not build the [host]:port form: $kh_def"; return 1 ;;
   esac
   # And this gate hands the pin the port its probe connects to.
   grep -qF -- 'ssh_host_key_port: "{{ _target_port }}"' "$PB"

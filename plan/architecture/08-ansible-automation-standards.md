@@ -112,10 +112,22 @@ Each row is a rule from the linked page, read 2026-09-22.
    > Distribute SSH Keys, Harden SSH or Verify Host Access could not test key auth at all
    > (`ansible.builtin.tempfile` has no check-mode support, so the hand-rolled key file
    > never existed under `--check`). The one implementation is
-   > `platform/playbooks/tasks/materialise-ssh-key.yml` with `tasks/remove-ssh-key.yml`;
-   > `platform/tests/test_check_mode_contract.py` fails any file-writing task forced to
-   > run under `--check` whose target is not that directory's `dir`, `key` or
-   > `known_hosts` path.
+   > `platform/playbooks/tasks/materialise-ssh-key.yml` with `tasks/remove-ssh-key.yml`
+   > (and `tasks/pin-ssh-host-key.yml` for the pinned known_hosts). Enforcement is three
+   > independent lines, because a guard that only reads source can be routed around by
+   > indirection (PR #319 review):
+   > `platform/tests/test_check_mode_contract.py` accepts a file write forced to run
+   > under `--check` only in one of those shared files, delegated to the runner, with no
+   > `vars:` on it or any enclosing block, aimed at that file's one pinned target
+   > expression (for the tempfile, the pinned temp-root expression). Every name a target
+   > is built from must be defined exactly once in the repository, by its pinned
+   > expression. Anything else is a violation: a task, block, play or include `vars:`
+   > entry, another `set_fact` or a `register`. At runtime, the shared tasks assert that the
+   > directory and the known_hosts path really sit under the temp root before writing.
+   > The tests that execute these tasks run under a kernel sandbox where the host has one
+   > (`platform/tests/harness_sandbox.py`: `sandbox-exec` on macOS, `bwrap` on Linux). The
+   > GitHub-hosted CI runner has neither, so there the source guard and the runtime assert
+   > are the enforcement.
 3. **Verify is a tag.** Each state-changing playbook tags its verification tasks `verify`,
    and also tags `verify` on anything verification needs: OpenBao authentication, the
    transport guard, and every `rescue` and `always` section of a block that contains verify
@@ -209,4 +221,4 @@ allowlist as it is fixed.
 | Date | Change |
 |---|---|
 | 2026-09-22 | Initial version from the official documentation |
-| 2026-09-28 | Decision (Joe): runner-scratch class — runner-local temp writes removed in the same run may run under `--check`; enforced by the check-mode guard |
+| 2026-09-28 | Decision (Joe): runner-scratch class — runner-local temp writes removed in the same run may run under `--check`; enforced by the check-mode guard (pinned targets and definitions), runtime path asserts, and a sandboxed test harness |
