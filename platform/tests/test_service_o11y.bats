@@ -915,6 +915,7 @@ import yaml
 playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 defaults = playbook['module_defaults']['ansible.builtin.uri']
 assert defaults['validate_certs'] is False
+assert defaults['follow_redirects'] == 'none'
 assert 'headers' not in defaults
 tasks = playbook['tasks']
 freeze_index = next(

@@ -27,6 +27,8 @@
   module_defaults:
     ansible.builtin.uri:
       validate_certs: false
+      # Never forward the Proxmox bearer header if an endpoint redirects.
+      follow_redirects: none
   vars:
     # Operator-side secret (extra-var or env). When present, the OpenBao lookup is
     # skipped — so this runs without Semaphore/AppRole creds.
