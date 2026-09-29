@@ -140,7 +140,7 @@ see no change of base URL.
   o11y `config.alloy` (OTLP receiver) and `scrape.d`, `plan/development/06-inference-skynet.md`
   amendment, `plan/architecture/` record, `docs/MISTAKES.md` 2.21,
   `plan/architecture/02-service-onboarding.md` Known Gaps (IPAM lookup).
-- site-config (branch `feat/agentgateway-host`): vm-specs vmid 216; `agentgateway_svc` group
+- site-config (branch `feat/agentgateway-host`): the vm-specs entry; `agentgateway_svc` group
   (upstream, identities, limit figures, firewall vars, UI bind); `admin.inference.uhstray.io`
   plain block in `caddy_managed_sites`; `agentgateway` in `authentik_apps` +
   `agentgateway_redirect_uri`/`agentgateway_launch_url`; gateway `agw_oidc_issuer` +

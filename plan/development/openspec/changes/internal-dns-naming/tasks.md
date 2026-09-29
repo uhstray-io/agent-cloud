@@ -9,12 +9,13 @@ and `<site>` stay placeholders in this repository; their values live in site-con
 - [x] 0.1 Feature branch from `dev` (`docs/internal-dns-naming`) in its own worktree,
       carrying this change and the ratified section in
       `plan/architecture/05-platform-infra.md` ("Internal DNS naming (decided 2026-09-28)")
-- [ ] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
+- [x] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
       LAN clients and the gateway's mutual TLS (1), digit-first hostnames (2), `ca` or
-      `step-ca` (3), which prefixes get reverse zones (4)
-- [ ] 0.3 Validation gate: `openspec validate internal-dns-naming --strict` passes and the
+      `step-ca` (3), which prefixes get reverse zones (4). Decided 2026-09-28: all four
+      defaults (design, Open Questions); question 1 amended 2026-09-29
+- [x] 0.3 Validation gate: `openspec validate internal-dns-naming --strict` passes and the
       answers are written into `design.md` as dated amendments; this phase proves no spec
-      scenario on its own and gates phase 1
+      scenario on its own and gates phase 1 (valid 2026-09-29)
 
 ## 1. Inventory declaration (site-config)
 - [ ] 1.1 Declare the all-hosts naming variables in the shape of design decision 9:
@@ -32,7 +33,10 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       entries, never inventory hosts or a group, so no `hosts:` pattern (including `all`
       or a `target_service` survey value) can reach them
 - [ ] 1.4 Confirm no GPU or hypervisor node is an inventory host in the Semaphore
-      inventory; any that is gets moved into the list by this change
+      inventory; any that is gets moved into the list by this change. Checked 2026-09-29
+      against site-config `main`: the GPU nodes are not inventory hosts (a list variable on
+      the o11y host), but the hypervisor nodes are (the `servers` group). Every consumer of
+      that group is checked before any move
 - [ ] 1.5 `platform/inventory/local-dev.yml.example` gains the same variables with
       placeholder values and a local site label, beside the existing `dns_records`
 - [ ] 1.6 Declare the site's concrete record map in site-config: which hosts carry which
@@ -69,12 +73,19 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       it also proves a hostname that is both an inventory host and a
       `dns_records_only_hosts` entry is refused, and a list entry produces the same host,
       instance and PTR records a managed host would
+- [ ] 2.5a The declared split-horizon list (design decision 15, amended 2026-09-29): the
+      builder reads the site-config list (proposed name `dns_split_horizon`), renders each
+      entry as its own single-name Primary zone answered only to the declared clients,
+      and the guard of 2.2 refuses a name outside `<site>.<zone>` that is not on it;
+      pytest for both. The entries themselves (the identity-provider name) are declared by
+      `inference-gateway-agentgateway` task 7.1
 - [ ] 2.6 Validation gate: the pytest suite proves scenarios "A reserved label is refused
       at render", "An invalid label is refused", "A retired ordinal is refused", "A
       load-balanced service points at the load balancer", "A non-serving member is named
       but not pooled", "Moving the front door is one record", "A role move changes one
       CNAME" (these two by diffing the rendered zone before and after the change) and
-      "Records-only machines are never inventory hosts"
+      "Records-only machines are never inventory hosts" and "A public name outside the
+      split-horizon list is refused"
 
 ## 3. Live behaviour in local-dev
 - [ ] 3.1 Through `Deploy DNS (Local)` with a local declaration, measure the pinned
@@ -125,13 +136,14 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       proving scenario "Agreement passes"
 
 ## 5. Consumers
-- [ ] 5.1 Propose to `production-internal-ca`, as a dated amendment on that change (not an
+- [x] 5.1 Propose to `production-internal-ca`, as a dated amendment on that change (not an
       edit from here), that decision 4's SAN examples
       (`plan/development/openspec/changes/production-internal-ca/design.md:186-187`) and
       its declared leaf list use this scheme: each member leaf carries its instance and
       service names, the gateway leaf also carries `inference.<site>.<zone>`, and the
       names get DNS records instead of being verification-only; its open question 4
-      (`:396-399`) keeps the zone name a site-config value
+      (`:396-399`) keeps the zone name a site-config value. Done 2026-09-29: that change's
+      design, "Amendment 2026-09-29: leaf names follow the internal naming scheme"
 - [ ] 5.2 Propose to `inference-gateway-agentgateway` that task 7.2's records are the
       gateway's instance and service names, that task 6.2's `tls_server_name` is
       `gateway.<site>.<zone>`, and that task 6.3's model `tls.hostname` is
@@ -150,6 +162,11 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       deploy template does not exist yet in `platform/semaphore/templates.yml`, it is
       added there (with its `(Dev)` variant) by the change that deploys production DNS,
       and this task waits on it
+- [ ] 6.1a Repoint the admitted hosts' resolver at the internal DNS, with the router kept
+      second (decisions 2026-09-29): site-config `net_nameservers`, and `vm_nameserver` for
+      new VMs, converged by `configure-host-network.yml` through Semaphore; one host
+      first, with a parallel `dig` check (rule #5). The DGX nodes are the dgx-spark
+      session's to repoint
 - [ ] 6.2 Run the production DNS deploy through Semaphore, then the reconcile
 - [ ] 6.3 Validation gate: against production hickory-dns, scenarios "A load-balanced
       service points at the load balancer", "A non-serving member is named but not

@@ -55,3 +55,9 @@ Caddy can solve ACME DNS-01 against the internal zone.
   working inventory / site-config.
 - **One engine, two environments.** The laptop and prod run the same image and
   templates, parameterized by env/inventory — never forked.
+- **Clients are declared (prod, 2026-09-29).** Only agent-cloud hosts (one firewall
+  rule per `agent_cloud` member, from `firewall_allow_groups`), the DGX Spark nodes and a
+  future Tailscale subnet router query :53. They query it directly, with the router as
+  their second resolver; pfSense does not forward the zone. Add a client class as a
+  firewall source in site-config, never a subnet (`plan/architecture/05-platform-infra.md`,
+  "Internal DNS clients").

@@ -24,7 +24,8 @@ only inside the windows named below.
       Harden SSH
 - [ ] 1.3 Firewall declaration per design decision 5 (`firewall_allow_rules`, SSH inbound
       only; `firewall_deny_egress` except the vLLM API port, the gateway listener, the o11y
-      Loki and Prometheus ports, the public hostname and the pinned registries); apply with
+      Loki and Prometheus ports, the public hostname, the internal DNS host on 53 and the
+      pinned registries); apply with
       Apply Firewall
 - [ ] 1.4 Add `bench` to `agw_clients` and an `agw_client_policies.bench` entry
       (`tokens_per_hour` sized per design decision 8, `allowed_models` the served names);
@@ -51,7 +52,8 @@ only inside the windows named below.
       dgx-spark's `vllm/bench_c1c6.py` at a pinned dgx-spark commit). For each tool,
       record in `design.md`: its config schema at that version, how it takes the API key
       (never argv), which streamed delta it counts as first token, and, for guidellm, how
-      `sweep` chooses rates. Confirm `vllm bench serve` runs on the GPU-less VM, or record
+      `sweep` chooses rates, and whether guidellm can present a client certificate and key
+      (design decision 8, amended 2026-09-29). Confirm `vllm bench serve` runs on the GPU-less VM, or record
       the image that does. Confirm against the pinned images the seed behaviour design.md
       records from source (Context, "Seeds and replay"): two inference-perf runs with the
       same `load.base_seed` and `data.shared_prefix.seed` send the same prompts, and two
@@ -99,8 +101,10 @@ only inside the windows named below.
       warm-up, and the abort thresholds set from the idle and saturated readings
 - [ ] 3.2 inference-perf measured ladder against direct vLLM for the scaled shape; the
       reference shape's ladder once, as the comparability record for this serving profile
-- [ ] 3.3 `vllm bench serve` cross-check at 0.5 and 1.0 times the scaled shape's `R_sat`
-      (the first campaign has no cross-checked digest pair yet); dgx-spark harness C1 to
+- [ ] 3.3 Cross-check at 0.5 and 1.0 times the scaled shape's `R_sat` (the first campaign
+      has no cross-checked digest pair yet): `vllm bench serve` against direct vLLM while
+      vLLM does not yet require client certificates, otherwise guidellm with the `bench`
+      leaf (design decision 8, amended 2026-09-29); dgx-spark harness C1 to
       C8; compare C1, C2 and C4 with 44.3, 70.5 and 100.6
 - [ ] 3.4 Repeat the scaled shape's ladder of 3.2 in two more windows; record run-to-run
       and tool-to-tool tolerance for the scaled shape in `design.md` decision 4, replacing

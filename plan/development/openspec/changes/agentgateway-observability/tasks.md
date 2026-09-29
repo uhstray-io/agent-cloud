@@ -17,7 +17,7 @@ other task is gateway-side and belongs to this change.
 - `inference-gateway-agentgateway` task 3.1 is **superseded** by this change together
   with the landed o11y work. Its gate 3.3 is **proved here** by task 9.4, against the
   separate client-view dashboard. Its task 1.10 (`UI_READ_ONLY=true`) stays with it and
-  is done in PR #303 (open against `dev` on 2026-09-28); design decisions 4 and 5 depend
+  is done in PR #303 (merged into `dev` on 2026-09-28 (merge `255b251`); `templates/env.j2:38` renders it); design decisions 4 and 5 depend
   on it, and task 2.5 here refuses `full` without it.
 - `observability-estate` task 3.1 (the gate) has landed as
   `tasks/assert-o11y-trace-rollout.yml`, which this change reuses without a second gate.
@@ -42,7 +42,12 @@ is a separate dashboard, with operations as a second dashboard.
       production and local gateway inventories declare `agw_otlp_host` and
       `agw_trace_sampling`, and whether the receiver declares `o11y_otlp_bind`. Record
       the result in `design.md` Context. unverified today: the production values
-      (`platform/services/o11y/deployment/README.md:114-115` records a production trace)
+      (`platform/services/o11y/deployment/README.md:114-115` records a production trace).
+      2026-09-29, read from site-config `main` (the Semaphore `production` record matched it,
+      `sync-inventory.yml --check`): production declares `agw_otlp_host`, `agw_trace_sampling`
+      and `o11y_otlp_bind`; `agw_trace_sampling` is pinned at 0.05, below the 10% decision;
+      the correction to 0.1 merged in site-config#46 (a8c886d, 2026-09-29); the gateway
+      redeploy that applies it is still to run. The local inventory is not recorded here
 - [ ] 1.2 `templates/config.yaml.j2`: render `accessLog.otlp` only when `agw_otlp_host`
       is set and `agw_otlp_logs` is true (today the condition is the host alone, line
       88). Render `frontendPolicies.tracing` only when `agw_otlp_host` is set and
@@ -160,7 +165,8 @@ is a separate dashboard, with operations as a second dashboard.
       including the enrolled legacy shared key and `skynet`, which Joe confirmed as
       team-only on 2026-09-27. Only after 3.2's schedule is live and
       `inference-gateway-agentgateway` task 1.10 (PR #303) is merged and deployed, set
-      `agw_content_logging: full` and `agw_request_log_retention_days: 90`
+      `agw_content_logging: full` and `agw_request_log_retention_days: 90`. (#303 merged
+      2026-09-28; the deploy is still to run)
 - [ ] 2.13 Validation gate: 2.6's planted field fails the scan, which proves scenario
       "Content-capturing configuration is refused". 2.9 proves scenarios "A non-team
       identity is refused at render" and "A team request's content is stored". 2.10
@@ -186,7 +192,9 @@ is a separate dashboard, with operations as a second dashboard.
       selection. If it does, the alert in 3.4 reads that line. If it does not, the prune
       pushes the same fields to Loki from the receiver host, labelled
       `service="agentgateway", signal="request-log-prune"`, and BATS asserts the push
-      carries counts only
+      carries counts only. Resolved 2026-09-29: it does not. The collector selects only
+      templates that map to a registry step (`platform/workflows/service-onboarding/lib/step_results.py`,
+      `select`), so the prune pushes its own Loki line (the second branch)
 - [ ] 3.4 **[o11y]** Grafana alert rule: fire when no prune result has arrived in 26 hours,
       or when the reported oldest age exceeds the retention plus two days. Task 3.6
       waits on it
@@ -245,7 +253,11 @@ is a separate dashboard, with operations as a second dashboard.
 - [ ] 5.2 unverified: whether `apply-firewall.yml` removes an allow rule it added on an
       earlier run when the source list for that port shrinks. Read the play and run it
       with `--check` against the gateway host. If it does not prune, add pruning of rules
-      that carry the play's own comment tag, with a BATS case
+      that carry the play's own comment tag, with a BATS case. Resolved 2026-09-29: it
+      does, since #327. Every rule carries an `agent-cloud:` tag, and a tagged rule that is
+      no longer declared is pruned; an untagged rule is only reported until a run with the
+      declaration that produced it tags it. Left: the `--check` run on the gateway host,
+      recording its would-delete list
 - [ ] 5.3 `compose.yml` (gateway): add the labels `prometheus.io/scrape: "true"`,
       `prometheus.io/port: "19002"` and `prometheus.io/path: /metrics`. BATS asserts
       them

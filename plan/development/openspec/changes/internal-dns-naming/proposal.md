@@ -81,14 +81,16 @@ certificates depend on.
   `netbox-allocate-ip.yml` sets `dns_name` only when it creates an address
   (`platform/playbooks/netbox-allocate-ip.yml:311-335`) and has no update path, so
   rewriting an existing value needs one (task 4.2).
-- Live: production hickory-dns is not deployed. Its VM is being onboarded
-  (`platform/semaphore/templates.yml:1503-1504` records onboarding the internal DNS and
-  CA VMs on 2026-09-28) and `templates.yml` has no production DNS deploy template yet.
+- Live: production hickory-dns is not deployed. Its VM is provisioned, key-only over
+  SSH and firewalled to its declared clients (2026-09-28/29), and `templates.yml` has no
+  production DNS deploy template yet.
   This change defines what that deploy serves. Local-dev keeps its wildcard until its names are migrated.
 - Out of scope, recorded: cross-site names under the bare `<service>.<zone>` form
   (reserved, not built); dynamic registration (the RFC 2136 challenge sub-zone of
-  `platform/services/dns/context/architecture.md:45-46` stays its own work); split-horizon
-  answers for public names (`inference-gateway-agentgateway` group 7).
+  `platform/services/dns/context/architecture.md:45-46` stays its own work); which public
+  names get a split-horizon answer (`inference-gateway-agentgateway` group 7). The
+  mechanism that renders them, a declared list, is in scope since 2026-09-29 (design
+  decision 15, task 2.5a).
 
 ## Rollback Plan
 

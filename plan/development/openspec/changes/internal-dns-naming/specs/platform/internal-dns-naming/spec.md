@@ -65,8 +65,9 @@ The DNS deploy SHALL validate every declared name before it writes any file. Eac
 MUST match `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`, except SRV owner labels, which start with
 `_`, and each full name MUST be at most 253 characters. A service name MUST NOT be `host`,
 `mgmt`, `ns`, a label starting with `_`, or any declared site label. The render MUST
-refuse a name outside `<site>.<zone>` other than the SOA, NS and apex records, a name
-declared twice, a CNAME owner that carries any other record, and, when not in local mode,
+refuse a name outside `<site>.<zone>` other than the SOA, NS and apex records and the
+entries of the declared split-horizon list (each rendered as its own single-name zone,
+answered only to the declared clients), a name declared twice, a CNAME owner that carries any other record, and, when not in local mode,
 a wildcard record.
 
 #### Scenario: A reserved label is refused at render
@@ -78,6 +79,12 @@ a wildcard record.
 - WHEN a declared name contains an upper-case letter, an underscore outside an SRV owner
   label, a label longer than 63 characters, or a label that starts with a hyphen or digit
 - THEN the render fails naming the offending label and no zone file is written
+
+#### Scenario: A public name outside the split-horizon list is refused
+- WHEN a record is declared for a name outside `<site>.<zone>` that is not in the
+  split-horizon list
+- THEN the render fails naming it, and a name that is in the list renders as its own
+  single-name zone
 
 #### Scenario: A production wildcard is refused
 - WHEN a wildcard record is declared for an inventory that is not in local mode

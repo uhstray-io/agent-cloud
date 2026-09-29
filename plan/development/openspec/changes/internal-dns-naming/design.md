@@ -19,8 +19,9 @@ one Primary zone and the forward store (`platform/services/dns/deployment/templa
 probe resolves and that forwarding answers (`:100-127`). The pinned image is
 `docker.io/hickorydns/hickory-dns:0.26.0` (`platform/services/dns/deployment/compose.yml:18`).
 hickory-dns runs in local-dev only; production is planned
-(`platform/services/dns/context/architecture.md:7`, `:45`), and the production DNS VM is
-being onboarded (`platform/semaphore/templates.yml:1503-1504`).
+(`platform/services/dns/context/architecture.md:7`, `:45`). The production DNS VM is
+provisioned, key-only over SSH and firewalled to its declared clients (2026-09-28/29);
+the service is not deployed.
 
 **Authorities.** NetBox is the IPAM authority
 (`plan/development/03-guardrails-governance.md:1217`), hickory-dns is the authority for
@@ -277,6 +278,13 @@ name or site label (site-config values, chosen by Joe).
     refuses a name outside `<zone>`. A LAN answer for a public name is split-horizon work
     owned by `inference-gateway-agentgateway` tasks 7.1–7.3.
 
+    **Amended 2026-09-29 (Joe: "Declared split list").** A public name that the gateway
+    change needs answered internally is declared in a separate site-config list of
+    split-horizon names (proposed name `dns_split_horizon`). Each entry renders as its own
+    single-name Primary zone, answered only to the declared clients. The guard refuses a
+    public name that is not in that list. Rejected: a managed hosts-file line on each host
+    that needs the name.
+
 ## Risks / Trade-offs
 
 - **hickory-dns answer behaviour is unverified** (context). If CNAME answers do not carry
@@ -318,6 +326,13 @@ Each default is now the decision.
    `inference` at Caddy instead, issue client leaves to LAN clients, or keep LAN clients
    on the public name. Default if unanswered: the gateway, per Joe's decision, with LAN
    clients on the public name until he decides.
+
+   **Amended 2026-09-29.** Only declared clients resolve the internal zone: every
+   agent-cloud host, the DGX Spark nodes and a future Tailscale subnet router. They query
+   the internal DNS directly, with the router as their second resolver; pfSense does not
+   forward the zone ("Direct, no pfSense"). Every other LAN client stays on the public
+   name (`plan/architecture/05-platform-infra.md`, "Internal DNS clients and
+   split-horizon names").
 2. **Hostnames that start with a digit.** Decision 8 follows RFC 1035's letter-first rule.
    Whether any live hostname starts with a digit is not checked here (the hostnames are
    in site-config). Default: the guard refuses, and such a host is renamed or given a

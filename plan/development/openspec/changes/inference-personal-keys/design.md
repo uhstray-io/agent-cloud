@@ -36,8 +36,7 @@ Verified 2026-09-27 by reading the files named, unless marked otherwise.
   and switches its config store to read-only (`crates/agentgateway/src/config.rs:390-392`
   at tag v1.5.0, read 2026-09-28), and the UI refuses writes in that mode
   (`crates/agentgateway/src/ui.rs:53`). The gateway change's task 1.10 sets
-  `UI_READ_ONLY=true` in `env.j2`, done in PR #303 (open against `dev` on 2026-09-28;
-  this tree at `f92b0bf` does not carry it yet, grep 2026-09-28). This change depends on
+  `UI_READ_ONLY=true` in `env.j2`, done in PR #303 (merged into `dev` on 2026-09-28 (merge `255b251`); `templates/env.j2:38` renders it). This change depends on
   that task instead of setting it again.
 - **Budgets and JWT at v1.5.0 (Joe, 2026-09-27, not re-verified here).** Per-key token
   budgets attach only to API keys; a JWT-authenticated caller gets no personal budget;
@@ -361,7 +360,7 @@ admin OIDC login beyond the hardening in decision 5; moving agent identities off
     person's identity is for here; (b) the gateway would fetch Authentik's JWKS from the
     public issuer, which sits behind Cloudflare's challenge and needs the skip rule from
     PR #289 (merged to `dev`, `platform/infra/cloudflare/waf.tf:129-135`; its production
-    apply is gateway task 1.11) or the LAN split-horizon record of gateway task 7.1; (c) the Authentik provider must sign with a certificate (RS256, published as
+    apply is gateway task 1.11) or the internal-resolver split-horizon record of gateway task 7.1; (c) the Authentik provider must sign with a certificate (RS256, published as
     JWKS) — the existing providers do reference the self-signed certificate
     (`agentgateway-oidc.yaml:48-49`, `openbao-oidc.yaml:36-37`), so this one is not a
     blocker; (d) the clients in use (OpenAI-compatible SDKs, OpenCode, pi) hold a static

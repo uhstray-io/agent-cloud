@@ -127,7 +127,10 @@ estate; semantic routing, prompt guards, caching (features exist; none requested
    and a Tempo decision is deferred: traces are sampled at `randomSampling` low and go
    to Loki as structured log lines until Tempo has an owner (plan 05 Phase 3).
    Alternative rejected: deploy Tempo now, because one producer does not justify a
-   store with no retention owner. Amended 2026-09-17 per upstream's LLM observability
+   store with no retention owner. **Amended 2026-09-29: reversed.** The o11y session
+   added Tempo to the o11y stack (`platform/services/o11y/deployment/compose.yml`,
+   Tempo 2.10.8) and owns it; traces go to Tempo (`agentgateway-observability`).
+   Amended 2026-09-17 per upstream's LLM observability
    page: the default access log already carries the `gen_ai.*` model and token fields;
    the config adds `identity: apiKey.name` to BOTH metrics (bounded cardinality: the
    enrolled identities) and logs; the default log already carries
@@ -239,14 +242,14 @@ production start failed (see the last item).
   side is dgx-spark's, handled by the dgx-spark session.
 - **Token authority.** OpenBao holds every key value; the gateway alone accepts them and
   meters budgets. Personal access through Authentik SSO is a personal API key per user,
-  rotated every 30 days and readable only by its owner through an Authentik OIDC login to
+  rotated monthly (as one cohort on a fixed calendar day while a key change restarts the gateway, so a key lives at most 34 days; 30 days with hot reload) and readable only by its owner through an Authentik OIDC login to
   OpenBao: change `inference-personal-keys`. Accepting Authentik JWTs directly at the
   gateway is deferred there, because v1.5.0 attaches budgets only to API keys.
 - **UI read-only, explicitly.** The config file is mounted read-only, so a UI write already
   fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (v1.5.0 reads it
   at `crates/agentgateway/src/config.rs:390-392` and switches the config store to read-only;
   `ui.rs:53` refuses writes in that mode), so no key or policy is ever managed there. Task
-  1.10 is the one place this is set (done in PR #303, open against `dev` on 2026-09-28);
+  1.10 is the one place this is set (done in PR #303, merged into `dev` on 2026-09-28 (merge `255b251`); `templates/env.j2:38` renders it);
   `inference-personal-keys` and `agentgateway-observability` decision 5 depend on it.
 - **Grace period.** `legacy-shared` stays valid through the gateway for 14 days after the
   route switch (`legacy_shared_expires` = switch date + 14 days), then task 5.1 applies.
@@ -352,7 +355,7 @@ production start failed (see the last item).
   (`crates/agentgateway/src/http/oidc/local.rs:150`), and a first load that fails fails
   the start (`state_manager.rs:140`); a later reload that fails keeps the running state
   (`state_manager.rs:301-311`). So an IdP or edge fault at restart takes the inference API
-  down with the UI. Mitigations: the Cloudflare skip rule now; the LAN split-horizon
+  down with the UI. Mitigations: the Cloudflare skip rule now; the internal-resolver split-horizon
   record (task 7.1) next, so the fetch never transits Cloudflare; and decision 11, so the
   gateway restarts only when its inputs change. `agw_ui_enabled: false` remains the
   lever that renders no UI listener and no OIDC block, and with them no discovery fetch
@@ -386,7 +389,7 @@ production start failed (see the last item).
   with its own identity? Default if unanswered: through the gateway, so one place
   meters every request and the node firewall can narrow to one source.
 - ~~VM id and address for the gateway (site-config `vm-specs.yml`).~~ Answered 2026-09-17:
-  vmid 216 on apollo, 2 cores / 4 GB / 20G; address picked from the inventory's declared
+  2 cores / 4 GB / 20G, node and vmid in site-config; address picked from the inventory's declared
   set because NetBox was down — to be reserved in NetBox before provisioning.
 - ~~Whether `localRateLimit` supports a log-only mode.~~ Answered 2026-09-17: no such
   mode in v1.5.0; the first week runs with the figure set high and tightened from
