@@ -858,12 +858,17 @@ assert all(task.get('no_log') is True for task in api_reads)
 assert all(task.get('check_mode') is False for task in api_reads)
 uri_defaults = survey['module_defaults']['ansible.builtin.uri']
 assert uri_defaults['follow_redirects'] == 'none'
+assert 'headers' not in uri_defaults
 credential_tasks = [
     task for task in tasks
     if task['name'] in ('Read Proxmox API credentials from OpenBao', 'Derive Proxmox API connection values')
 ]
 assert len(credential_tasks) == 2
 assert all(task.get('no_log') is True for task in credential_tasks)
+derive_index = tasks.index(credential_tasks[1])
+assert all(tasks.index(task) > derive_index for task in api_reads)
+expected_headers = {'Authorization': 'PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}'}
+assert all(task['ansible.builtin.uri']['headers'] == expected_headers for task in api_reads)
 summarize = next(task for task in tasks if task['name'] == 'Summarize backup listing without exposing storage or artifact details')
 assert summarize.get('no_log') is True
 summary_template = summarize['ansible.builtin.set_fact']['_backup_summary']
@@ -898,6 +903,31 @@ assert item['repository'] == 'agent-cloud dev'
 sha, = (field for field in item['survey_vars'] if field['name'] == 'expected_repository_sha')
 assert sha['required'] is True
 assert len(item['survey_vars']) == 1
+PY
+}
+
+@test "o11y: snapshot workflow attaches Proxmox credentials after connection freeze" {
+  python3 - "$REPO_ROOT/platform/playbooks/snapshot-vm.yml" <<'PY'
+import sys
+
+import yaml
+
+playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+defaults = playbook['module_defaults']['ansible.builtin.uri']
+assert defaults['validate_certs'] is False
+assert defaults['follow_redirects'] == 'none'
+assert 'headers' not in defaults
+tasks = playbook['tasks']
+freeze_index = next(
+    index for index, task in enumerate(tasks)
+    if task['name'] == 'Resolve + freeze the Proxmox connection'
+)
+requests = [task for task in tasks if 'ansible.builtin.uri' in task]
+assert len(requests) == 4
+expected = {'Authorization': 'PVEAPIToken={{ _pve_tid }}={{ _pve_sec }}'}
+assert all(task['ansible.builtin.uri']['headers'] == expected for task in requests)
+assert all(tasks.index(task) > freeze_index for task in requests)
+assert all(task.get('no_log') is True for task in requests)
 PY
 }
 

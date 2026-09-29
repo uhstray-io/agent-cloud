@@ -17,8 +17,6 @@
       # the Semaphore runner; the shared inventory setting enables validation.
       validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
       follow_redirects: none
-      headers:
-        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
     _project_root: "{{ playbook_dir | dirname | dirname }}"
     _bao_url: "{{ openbao_addr | default('') }}"
@@ -90,11 +88,15 @@
         that: _pve_host is match('^https://')
         fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
 
+    # Keep the credential-dependent header on each request: play-level URI
+    # module defaults are rendered before these OpenBao-derived facts exist.
     - name: Read target VM record from Proxmox
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
         method: GET
         status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _pve_vms
       no_log: true
       check_mode: false
@@ -118,6 +120,8 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
         method: GET
         status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _node_storage
       no_log: true
       check_mode: false
@@ -146,6 +150,8 @@
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _vmid }}"
         method: GET
         status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       loop: "{{ _backup_storages }}"
       register: _backup_content_reads
       no_log: true

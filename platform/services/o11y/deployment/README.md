@@ -257,8 +257,8 @@ The provisioned `o11y_receiver_root_disk_low` warning evaluates the exact
 filesystem samples are treated as alerting. The 2026-09-28 read-only budget
 receipt measured 7.06% free, so the threshold is relevant to current conditions.
 The rule has a focused render test and deploy readback requires its exact UID to
-be active when production alerts are enabled. Live firing and Discord delivery
-still require a post-merge deploy and drill.
+be active when production alerts are enabled. The 2026-09-29 post-merge drill
+verified firing and ops delivery for this low-space event; see the receipt below.
 
 `Survey o11y Backup Readiness (Dev)` is a read-only Proxmox survey. It reads the
 single declared production o11y VM from `vm_vmid` and `vm_node` on the sole
@@ -267,6 +267,15 @@ It reads backup-capable node storage and backup
 content listings for that VM using OpenBao-sourced credentials. Its output
 contains only status and counts. A listed artifact is a candidate; the survey
 does not prove immutability, an isolated restore target, or restore success.
+The first production survey attempt, Semaphore task 1828, failed before any
+Proxmox request because the Authorization header was templated from play-level
+URI defaults before the OpenBao-derived token facts existed. The survey now
+attaches that header to each request after credential derivation; this was a
+controller-side evaluation-order failure, not evidence of a Proxmox or storage
+problem. Credential and request task logging remains suppressed.
+The same dynamic play-level header pattern was removed from `snapshot-vm.yml`:
+its Proxmox requests now attach Authorization only after the connection facts
+are frozen, while retaining the existing certificate setting and `no_log`.
 Follow the official [Proxmox storage reference](https://pve.proxmox.com/pve-docs/pvesm.1.html)
 for storage content semantics. Do not grow the guest or change retention until
 an immutable backup artifact has been restored and validated on a declared
@@ -282,4 +291,22 @@ Retention remains Prometheus 15d, Loki 7d, and Tempo 168h; the Prometheus size
 cap remains 0B. Task 1823 observed 13,088 active Prometheus head series, 87.55%
 guest memory headroom, and sample limit 2,000. These are point-in-time readings,
 not a seven-day forecast or Loki/Tempo growth trend. Log source, seven-day
-baseline, backup/restore proof, and live disk-alert delivery remain open.
+baseline, and backup/restore proof remain open.
+
+The corrected non-destructive production deploy, task 1830, succeeded on merged
+`dev` SHA `3390557516d05101c60132e0c20e2cc5031a1bcd`. Read-only budget task 1831
+observed all five named volumes mounted on guest root with 6.75% free, 13,503
+active Prometheus series, and 87.73% guest memory headroom. Retention remains
+Prometheus 15d with a 0B size cap, Loki 7d, and Tempo 168h. Mounted-volume
+observations do not prove historical data continuity. These are point-in-time
+readings, not a seven-day forecast; at the time of task 1831, disk-alert firing
+and Discord delivery were still unverified; both were verified by the later
+2026-09-29 low-space event described below.
+
+At approximately 2026-09-29 04:56 UTC, the Grafana alert list showed
+`o11y_receiver_root_disk_low` firing with a healthy evaluation. Its detail view
+confirmed the receiver-root condition while the service-down rule was normal.
+Grafana showed one notification routed to the existing ops contact, and
+matching Discord delivery was independently verified. This verifies delivery
+for the low-space event; it does not prove delivery for other alert classes or
+a seven-day capacity forecast.
