@@ -902,7 +902,7 @@ PY
 }
 
 @test "o11y: real alert-enabled deploy verifies live rule and contact state" {
-  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
 import re
 import sys
@@ -911,24 +911,26 @@ import yaml
 from jinja2 import Environment, StrictUndefined
 
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
 assert block['when'] == [
     'o11y_alerts_enabled | default(false) | bool',
     'not ansible_check_mode',
-    'not (local_mode | default(false) | bool)',
 ]
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
 should_verify = [env.compile_expression(condition) for condition in block['when']]
 assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
-assert not all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
+assert all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
 tasks = block['block']
-rule_check = next(task for task in tasks if task['name'] == 'Require the service-down rule and every o11y rule to be active')
+rule_check = next(task for task in tasks if task['name'] == 'Require expected o11y rules and active routed rules')
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
 env.filters['from_json'] = json.loads
 compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
 select_rules = compile_value(rule_check['vars']['_o11y_rules'])
+rules_for_active_routing = compile_value(rule_check['vars']['_o11y_rules_for_active_routing'])
 checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
 settings = {
     'group_by': ['service', 'environment', 'cluster', 'alertname'],
@@ -936,8 +938,14 @@ settings = {
 }
 healthy = {'uid': 'o11y_service_down', 'isPaused': False, 'notification_settings': settings}
 healthy_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False, 'notification_settings': settings}
+paused_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': True}
 wrong_group = {'uid': 'o11y_service_down', 'isPaused': False,
                'notification_settings': settings | {'group_by': ['instance']}}
+def verify_rules(rules, local_mode, expected):
+    scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
+    active_routing = rules_for_active_routing(_o11y_rules=scoped, local_mode=local_mode)
+    assert all(bool(check(_o11y_rules=scoped, _o11y_rules_for_active_routing=active_routing)) for check in checks) is expected
+
 for rules, expected in [
     ([healthy, healthy_disk], True),
     ([healthy, healthy_disk, {'uid': 'unrelated', 'isPaused': True}], True),
@@ -948,8 +956,20 @@ for rules, expected in [
     ([healthy, {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False}], False),
     ([wrong_group], False),
 ]:
-    scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
-    assert all(bool(check(_o11y_rules=scoped)) for check in checks) is expected
+    verify_rules(rules, local_mode=False, expected=expected)
+
+# Exercise actual rendered local and production rule sets. Only the intentionally
+# paused local disk rule is excluded from active/routing checks.
+render_alerts = env.from_string(alert_template)
+local_rules = yaml.safe_load(render_alerts.render(local_mode=True, o11y_alerts_enabled=True))['groups'][0]['rules']
+prod_rules = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True))['groups'][0]['rules']
+assert next(rule for rule in local_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
+assert next(rule for rule in prod_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is False
+verify_rules(local_rules, local_mode=True, expected=True)
+verify_rules(prod_rules, local_mode=False, expected=True)
+local_service_down = next(rule for rule in local_rules if rule['uid'] == 'o11y_service_down')
+local_service_down['isPaused'] = True
+verify_rules(local_rules, local_mode=True, expected=False)
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
 assert contact['no_log'] is True and count['no_log'] is True

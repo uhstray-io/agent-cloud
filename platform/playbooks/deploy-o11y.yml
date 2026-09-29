@@ -802,7 +802,6 @@
       when:
         - o11y_alerts_enabled | default(false) | bool
         - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:
@@ -821,20 +820,26 @@
           delay: 5
           until: _active_rules.rc == 0
 
-        - name: Require the service-down rule and every o11y rule to be active
+        - name: Require expected o11y rules and active routed rules
           ansible.builtin.assert:
             that:
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_receiver_root_disk_low') | list | length == 1
-              - _o11y_rules | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules | length
-              - _o11y_rules | selectattr('notification_settings', 'defined') | list | length == _o11y_rules | length
-              - _o11y_rules | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
-              - _o11y_rules | rejectattr('notification_settings.group_wait', 'equalto', '30s') | list | length == 0
-              - _o11y_rules | rejectattr('notification_settings.group_interval', 'equalto', '5m') | list | length == 0
-              - _o11y_rules | rejectattr('notification_settings.repeat_interval', 'equalto', '4h') | list | length == 0
+              - _o11y_rules_for_active_routing | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules_for_active_routing | length
+              - _o11y_rules_for_active_routing | selectattr('notification_settings', 'defined') | list | length == _o11y_rules_for_active_routing | length
+              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
+              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_wait', 'equalto', '30s') | list | length == 0
+              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_interval', 'equalto', '5m') | list | length == 0
+              - _o11y_rules_for_active_routing | rejectattr('notification_settings.repeat_interval', 'equalto', '4h') | list | length == 0
             fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
           vars:
             _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+            _o11y_rules_for_active_routing: >-
+              {{ (_o11y_rules
+                  | rejectattr('uid', 'equalto', 'o11y_receiver_root_disk_low')
+                  | list)
+                 if (local_mode | default(false) | bool)
+                 else _o11y_rules }}
 
         - name: Read live Grafana contact points without displaying webhook settings
           ansible.builtin.command:
