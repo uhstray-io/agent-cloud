@@ -250,37 +250,48 @@ def _mutated_config(**changes):
 
 
 ANSIBLE_ASSERT_CASES = [
-    pytest.param(_yaml_response(_fixture_config([])), False, True, id="disabled-empty-processors"),
-    pytest.param(_yaml_response(_fixture_config(None)), False, True, id="disabled-null-processors"),
+    pytest.param(_yaml_response(_fixture_config([])), False, True, None, id="disabled-empty-processors"),
+    pytest.param(_yaml_response(_fixture_config(None)), False, True, None, id="disabled-null-processors"),
     pytest.param(
         _yaml_response(_mutated_config(processors=["span-metrics", "service-graphs"])),
         True,
         True,
+        None,
         id="enabled-processors-order-independent",
     ),
-    pytest.param(_yaml_response(_mutated_config(processors=[])), True, False, id="enabled-processors-missing"),
+    pytest.param(
+        _yaml_response(_mutated_config(processors=[])),
+        True,
+        False,
+        "configuration_mismatch",
+        id="enabled-processors-missing",
+    ),
     pytest.param(
         _yaml_response(_mutated_config(processors=["span-metrics"])),
         True,
         False,
+        "configuration_mismatch",
         id="enabled-single-processor",
     ),
     pytest.param(
         _yaml_response(_fixture_config(["service-graphs", "span-metrics"])),
         False,
         False,
+        "configuration_mismatch",
         id="disabled-processors-present",
     ),
     pytest.param(
         _yaml_response(_mutated_config(processors=["service-graphs", "span-metrics", "span-metrics"])),
         True,
         False,
+        "configuration_mismatch",
         id="duplicate-processor",
     ),
     pytest.param(
         _yaml_response(_mutated_config(remote_url="http://wrong.invalid/write")),
         True,
         False,
+        "configuration_mismatch",
         id="wrong-remote-write-url",
     ),
     pytest.param(
@@ -294,6 +305,7 @@ ANSIBLE_ASSERT_CASES = [
         ),
         True,
         False,
+        "configuration_mismatch",
         id="duplicate-remote-write-target",
     ),
     pytest.param(
@@ -309,43 +321,64 @@ overrides:
     metrics_generator:
       processors: [service-graphs, span-metrics]
       max_active_series: 2000
-""",
+        """,
         True,
         False,
+        "invalid_yaml",
         id="duplicate-expected-url-key",
     ),
-    pytest.param(_yaml_response(_mutated_config(wal_path="/tmp/tempo-wal")), True, False, id="wrong-wal-path"),
+    pytest.param(
+        _yaml_response(_mutated_config(wal_path="/tmp/tempo-wal")),
+        True,
+        False,
+        "configuration_mismatch",
+        id="wrong-wal-path",
+    ),
     pytest.param(
         _yaml_response(_mutated_config(max_active_series="2000")),
         True,
         False,
+        "configuration_mismatch",
         id="series-limit-string",
     ),
     pytest.param(
         _yaml_response(_mutated_config(max_active_series=True)),
         True,
         False,
+        "configuration_mismatch",
         id="series-limit-boolean",
     ),
-    pytest.param("", False, False, id="empty-response"),
+    pytest.param("", False, False, "no_matching_config", id="empty-response"),
     pytest.param(
         yaml.safe_dump_all([_fixture_config([]), _fixture_config([])]),
         False,
         False,
+        "ambiguous_config",
         id="ambiguous-config",
     ),
-    pytest.param("metrics_generator: [\n", False, False, id="malformed-yaml"),
+    pytest.param("metrics_generator: [\n", False, False, "invalid_yaml", id="malformed-yaml"),
 ]
 
 
-@pytest.mark.parametrize(("response", "enabled", "valid"), ANSIBLE_ASSERT_CASES)
+@pytest.mark.parametrize(("response", "enabled", "valid", "expected_reason"), ANSIBLE_ASSERT_CASES)
 def test_ansible_executes_production_tempo_assert_with_registered_command_result(
-    tmp_path, response, enabled, valid
+    tmp_path, response, enabled, valid, expected_reason
 ):
     """Exercise the production assertion against registered synthetic command output."""
+    filtered = tempo_config.tempo_metrics_config_check(response, enabled)
+    assert filtered["valid"] is valid
+    assert filtered["reason"] == expected_reason
+
     result = _run_production_assert(tmp_path, response, enabled)
-    assert (result.returncode == 0) is valid, result.stdout + result.stderr
-    assert "tempo-config-must-not-appear-in-logs" not in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "tempo-config-must-not-appear-in-logs" not in output
+    if valid:
+        assert expected_reason is None
+        assert result.returncode == 0, output
+    else:
+        assert expected_reason is not None
+        assert result.returncode != 0
+        assert expected_reason in output, output
 
 
 @pytest.mark.parametrize(
