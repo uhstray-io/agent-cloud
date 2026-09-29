@@ -193,3 +193,59 @@ def test_a_rule_declared_twice_appears_once_and_keeps_its_first_place():
     assert [(r["tag"], r["is_ssh"]) for r in got] == [
         ("agent-cloud:in:22/tcp:192.0.2.0/24", True), ("agent-cloud:in:8080/tcp:192.0.2.5", False)]
     assert [r["tag"] for r in again] == ["agent-cloud:in:22/tcp:192.0.2.0/24", "agent-cloud:in:8080/tcp:192.0.2.5"]
+
+
+def test_a_rule_naming_no_address_is_marked_dual_family():
+    got = {r["spec"]: r["dual_family"] for r in rules.ufw_desired_rules(
+        ["192.0.2.0/24", "any"], allow_rules=[{"port": 80, "from": "any"}], bridges=["podman1"],
+        deny_egress=[{"to": "198.51.100.3"}])}
+    assert got == {
+        "allow from 192.0.2.0/24 to any port 22 proto tcp": False,
+        "allow 22/tcp": True,                       # from any: ufw's short form, both families
+        "allow 80/tcp": True,
+        "allow in on podman1 to any port 53 proto udp": True,
+        "allow in on podman1 to any port 53 proto tcp": True,
+        "deny out to 198.51.100.3": False,
+    }
+
+
+def _held(spec, tag):
+    return {"spec": spec, "tag": tag, "family": "", "peer": ""}
+
+
+def test_a_rule_is_held_only_by_its_tag_and_its_spec_together():
+    desired = rules.ufw_desired_rules(["192.0.2.0/24"], allow_rules=[{"port": 8080, "from": "192.0.2.5"}])
+    ssh, web = desired
+    # the same tag over another rule does not stand in for the declared one (SSH included)
+    masked = _held("allow from 203.0.113.9 to any port 5432 proto tcp", ssh["tag"])
+    assert rules.ufw_absent(desired, [masked, _held(web["spec"], web["tag"])]) == [ssh]
+    # the declared spec without its tag (untagged, or an old tag) is absent too: it is retagged
+    assert rules.ufw_absent(desired, [_held(ssh["spec"], ""), _held(web["spec"], "agent-cloud:old")]) == desired
+    assert rules.ufw_absent(desired, [_held(ssh["spec"], ssh["tag"]), _held(web["spec"], web["tag"])]) == []
+    assert rules.ufw_masking([masked, _held(web["spec"], web["tag"]), _held("allow 8443/tcp", "")], desired) == [masked]
+
+
+def test_a_rule_naming_no_address_is_re_asserted_even_when_held():
+    desired = rules.ufw_desired_rules(["192.0.2.0/24"], bridges=["podman1"])
+    held = [_held(d["spec"], d["tag"]) for d in desired]
+    assert rules.ufw_absent(desired, held) == []
+    assert [d["spec"] for d in rules.ufw_absent(desired, held, reassert_dual_family=True)] == [
+        "allow in on podman1 to any port 53 proto udp", "allow in on podman1 to any port 53 proto tcp"]
+
+
+def test_a_rule_is_deleted_by_its_spec():
+    assert rules.ufw_delete_args("allow from 192.0.2.7 to any port 443 proto tcp") == \
+        "delete allow from 192.0.2.7 to any port 443 proto tcp"
+    assert rules.ufw_delete_args("route allow from 192.0.2.7 to any port 443 proto tcp") == \
+        "route delete allow from 192.0.2.7 to any port 443 proto tcp"
+
+
+def test_an_explicit_null_is_never_read_as_a_default():
+    # A null egress port must not widen a scoped denial to the whole destination, and a null
+    # proto must not become tcp: both render as written, which ufw refuses (the playbook's
+    # egress validation refuses them first).
+    [_, deny] = rules.ufw_desired_rules(["192.0.2.0/24"], deny_egress=[{"to": "198.51.100.1", "port": None}])
+    assert deny["cmd"] == "deny out to 198.51.100.1 port None proto tcp"
+    [_, allow] = rules.ufw_desired_rules(["192.0.2.0/24"],
+                                         allow_rules=[{"port": 80, "proto": None, "from": "192.0.2.5"}])
+    assert allow["cmd"] == "allow from 192.0.2.5 to any port 80 proto None"

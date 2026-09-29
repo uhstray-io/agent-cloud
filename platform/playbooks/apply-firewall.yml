@@ -36,16 +36,28 @@
 # below refuses rather than pruning around it.
 # The declared set is built ONCE, after port and bridge detection, by
 # filter_plugins/ufw_rules.py ufw_desired_rules: each rule's ufw command, its tag, and the
-# spec `ufw show added` prints for it. That module is the only definition of the command
-# forms and the tag; nothing in this playbook spells either.
+# spec `ufw show added` prints for it. That module is the only definition of the add and
+# delete command forms and the tag; nothing in this playbook spells any of them.
 # Each run, in order: read `ufw show added` and `ufw status verbose` → add each declared
-# rule whose TAG the host lacks (SSH first, all before enable) → when anything was added,
-# re-read and assert every declared tag is present (a drift guard between the add commands
-# and the host; failing here stops the run BEFORE anything is deleted) → delete each TAGGED
-# rule whose tag is not declared → when anything was deleted, re-read and assert every
-# declared SSH allow survived → default policies + enable, each only when the live state
-# differs. A converged host costs the two reads and nothing else: no add, no re-read, and
-# the final report reuses the first status read.
+# rule the host does not hold — held means the same tag AND spec — plus every rule naming no
+# address (SSH first, all before enable) → when an add changed something, re-read → assert
+# every declared rule is held (a drift guard between the add commands and the host; failing
+# here stops the run BEFORE anything is deleted) → delete each TAGGED rule whose tag is not
+# declared → when anything was deleted, re-read and assert every declared SSH allow
+# survived → default policies + enable, each only when the live state differs. A converged
+# host whose rules all name an address costs the two reads and nothing else: no add, no
+# re-read, and the final report reuses the first status read.
+#   - A rule naming no address (podman bridge DNS, anything `from any`) is re-added every
+#     run. ufw stores it once per IP family and `show added` prints the two as one line
+#     (src/frontend.py get_show_added, 0.36.2), so a lost half (a `ufw delete NUM`, IPV6
+#     switched on later) is invisible there; re-adding restores it, and with both halves
+#     stored ufw prints "Skipping adding existing rule", which is not a change.
+#   - A rule whose comment is a declared tag but whose rule is another one (a hand rule under
+#     the reserved prefix) does not count as the declared rule: that rule is added beside
+#     it. It is kept and reported, not pruned — see ufw_masking for why.
+#   - The drift guard compares the spec the filter computes with the form ufw prints. If
+#     the two ever differ for some rule shape, the run fails there, before any delete,
+#     naming the rule; it never deletes on that difference.
 #   - Untagged rules (added by hand, or by a version of this playbook before tagging) are
 #     LEFT ALONE and listed in a visible report. ufw updates the comment of an existing
 #     rule when the same rule is added with a different one (ufw(8) "RULE SYNTAX"; the
@@ -332,12 +344,20 @@
           - >-
             (not (item.broad | default(false) | bool))
             or ((item.reason | default('')) | length > 0)
+          # A port, when the key is present, is one port 1-65535: a null or empty `port` would
+          # otherwise read as "no port" and widen a scoped denial to the whole destination.
+          - >-
+            (item.port is not defined)
+            or (((item.port | string) is match('^[0-9]+$'))
+                and (item.port | int) >= 1 and (item.port | int) <= 65535)
+          - (item.proto is not defined) or (item.proto in ['tcp', 'udp', 'any'])
         fail_msg: >-
           firewall_deny_egress entry {{ item | to_json }} is invalid: `to` is required and
           must be a single host (no prefix, or /32) unless the entry sets `broad: true`.
           A denial broader than firewall_ssh_cidrs would cut this host off from the
           management network — see §2.5 in docs/MISTAKES.md. `broad: true` permits a
           wider mask but never one EQUAL to a declared SSH CIDR, and requires a `reason`.
+          `port`, when given, is one port 1-65535; `proto`, when given, is tcp, udp or any.
       loop: "{{ _deny_egress }}"
       loop_control:
         label: "{{ item.to | default('(missing to)') }}"
@@ -438,7 +458,6 @@
     - name: "Name the declared tags and the declared SSH allows"
       ansible.builtin.set_fact:
         _fw_declared: "{{ _fw_desired | map(attribute='tag') | list }}"
-        _fw_ssh_tags: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='tag') | list }}"
         # each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command)
         _fw_ssh_specs: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='spec') | list }}"
 
@@ -457,14 +476,17 @@
       changed_when: false
       check_mode: false
 
-    - name: "Select the declared rules whose tag the host does not hold"
+    - name: "Select the declared rules the host does not hold"
       ansible.builtin.set_fact:
-        # Absent by TAG, not by spec: an untagged (or differently tagged) copy of a declared
-        # rule is re-added with its tag, and ufw then only updates the stored comment (the
-        # `ret < 0 and not rule.remove` branch of set_rule, src/backend_iptables.py 0.36.2).
-        _fw_to_add: >-
-          {{ _fw_desired | rejectattr('tag', 'in',
-               _fw_added.stdout_lines | ufw_parse_added | map(attribute='tag') | list) | list }}
+        # Held means a stored rule with the same tag AND spec (filter_plugins/ufw_rules.py
+        # ufw_absent). An untagged (or differently tagged) copy of a declared rule is re-added
+        # with its tag, and ufw then only updates the stored comment (the `ret < 0 and not
+        # rule.remove` branch of set_rule, src/backend_iptables.py 0.36.2); a rule carrying a
+        # declared tag over another spec does not stand in for the declared rule. A rule naming
+        # no address (bridge DNS, `from any`) is re-added every run: ufw stores it per IP family
+        # and `show added` prints the pair as one line, so a lost half cannot be seen there;
+        # with both halves stored ufw prints "Skipping adding existing rule" (not a change).
+        _fw_to_add: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added, reassert_dual_family=true) }}"
 
     - name: "Allow SSH (22/tcp) from each admin CIDR the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
@@ -495,9 +517,11 @@
       ansible.builtin.command: "ufw show added"
       register: _fw_readd
       changed_when: false
+      # Only after an add that changed something: "Skipping adding existing rule" leaves the
+      # rules as the first read saw them.
       when:
         - not ansible_check_mode
-        - _fw_to_add | length > 0
+        - _fw_add_ssh is changed or _fw_add is changed
 
     - name: "Parse the host's rules into spec + tag"
       ansible.builtin.set_fact:
@@ -514,7 +538,8 @@
           {{ _fw_current | selectattr('tag') | rejectattr('tag', 'in', _fw_declared)
              | rejectattr('spec', 'in', _fw_ssh_specs) | list }}
         _fw_untagged: "{{ _fw_current | rejectattr('tag') | map(attribute='spec') | list }}"
-        _fw_missing: "{{ _fw_declared | reject('in', _fw_current | map(attribute='tag') | list) | list }}"
+        _fw_missing: "{{ _fw_desired | ufw_absent(_fw_current) | map(attribute='tag') | list }}"
+        _fw_masking: "{{ _fw_current | ufw_masking(_fw_desired) }}"
         # Detection that finds nothing (container stopped, engine missing, wrong user) is
         # indistinguishable here from "the service publishes nothing any more", so its rules
         # are HELD rather than pruned unless the inventory says an empty result is real.
@@ -570,6 +595,15 @@
           before narrowing, or removed by hand.
       when: _fw_untagged | length > 0
 
+    - name: "Report rules that carry a declared tag over a different rule (kept, not counted as declared)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} holds {{ _fw_masking | length }} rule(s) whose comment names a
+          declared rule but whose rule is another one: {{ _fw_masking | map(attribute='spec') | list }}.
+          The declared rule is added beside it; this one is kept, because the prune step never
+          deletes a rule whose tag is still declared. Remove it by hand, or re-comment it.
+      when: _fw_masking | length > 0
+
     - name: "Report stale detected-port rules held back because detection found nothing"
       ansible.builtin.debug:
         msg: >-
@@ -602,13 +636,14 @@
         that:
           - _fw_missing | length == 0
         fail_msg: >-
-          Declared rule tags not found on {{ inventory_hostname }} after adding them: {{ _fw_missing }}.
-          The add commands and the declared set disagree, or two declarations spell one ufw rule
-          differently (e.g. an address with and without /32). Nothing was deleted.
+          Declared rules not found on {{ inventory_hostname }} after adding them: {{ _fw_missing }}.
+          A rule reported added did not land, two declarations spell one ufw rule differently
+          (e.g. an address with and without /32), or ufw prints the rule in a form other than the
+          spec filter_plugins/ufw_rules.py computes for it. Nothing was deleted.
       when: not ansible_check_mode
 
     - name: "Prune each stale TAGGED rule, by its rule spec"  # noqa: command-instead-of-module
-      ansible.builtin.command: "ufw {{ ('route delete ' ~ item.spec[6:]) if item.spec.startswith('route ') else ('delete ' ~ item.spec) }}"
+      ansible.builtin.command: "ufw {{ item.spec | ufw_delete_args }}"
       register: _fwprune
       changed_when: "_fwprune.stdout is search('Rules? (deleted|updated)')"
       # A rule covering both IP families is deleted per family, and ufw reports each
@@ -636,13 +671,13 @@
         that:
           # Every declared SSH allow is still present; with >=1 CIDR required above, the
           # host can never be left with zero SSH allows.
-          - _fw_ssh_tags | reject('in', _fw_after_tags) | list | length == 0
-          - _fw_prune | map(attribute='tag') | select('in', _fw_after_tags) | list | length == 0
+          - _fw_desired | selectattr('is_ssh') | ufw_absent(_fw_after_rules) | length == 0
+          - _fw_prune | select('in', _fw_after_rules) | list | length == 0
         fail_msg: >-
           After pruning, {{ inventory_hostname }} is missing a declared SSH allow or still holds a
           stale tagged rule. Rules now: {{ _fw_after.stdout_lines }}
       vars:
-        _fw_after_tags: "{{ _fw_after.stdout_lines | ufw_parse_added | map(attribute='tag') | list }}"
+        _fw_after_rules: "{{ _fw_after.stdout_lines | ufw_parse_added }}"
       when:
         - not ansible_check_mode
         - _fw_prune | length > 0

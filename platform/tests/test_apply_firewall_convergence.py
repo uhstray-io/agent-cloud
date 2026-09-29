@@ -225,7 +225,7 @@ def test_a_declared_rule_that_did_not_land_stops_the_run_before_any_delete(tmp_p
     before = {"active": True, "rules": [[f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)]]}
     r, state = _run(tmp_path, CONTROLLER, state=before, drop=f"from {SSH} to any port 22")
     assert r.returncode != 0
-    assert "Declared rule tags not found" in r.stdout and "Nothing was deleted" in r.stdout
+    assert "Declared rules not found" in r.stdout and "Nothing was deleted" in r.stdout
     assert state["rules"] == before["rules"]
     assert not any('"delete"' in line for line in _log(tmp_path))
 
@@ -312,12 +312,16 @@ def test_ssh_cidrs_spelled_non_canonically_are_matched_as_ufw_stores_them(tmp_pa
 
 def test_the_post_prune_check_fails_when_a_delete_took_an_ssh_allow(tmp_path):
     # The declared SSH allow is in place; the stub's delete of the stale rule also takes it.
-    before = {"active": True, "rules": [
-        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
-        ["allow from 198.51.100.8 to any port 9001 proto tcp", _tag("in", "9001/tcp", "198.51.100.8")]]}
-    r, state = _run(tmp_path, {}, state=before, collateral="port 22")
+    # On the second host a hand rule still carries the SSH allow's tag after the delete: the
+    # check reads tag AND spec, so that tag alone does not pass it.
+    rules = [[f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+             ["allow from 198.51.100.8 to any port 9001 proto tcp", _tag("in", "9001/tcp", "198.51.100.8")]]
+    masked = [["allow from 203.0.113.9 to any port 5432 proto tcp", _tag("in", "22/tcp", SSH)], *rules]
+    r, _ = _run_many(tmp_path, {"plain": {"state": {"active": True, "rules": rules}},
+                                "masked": {"state": {"active": True, "rules": masked}}}, collateral="port 22")
     assert r.returncode != 0
-    assert "is missing a declared SSH allow" in r.stdout
+    for host in ("plain", "masked"):
+        assert f"After pruning, {host} is missing a declared SSH allow" in r.stdout, host
     assert "TASK [Enable UFW]" not in r.stdout
 
 
@@ -368,3 +372,57 @@ def test_the_controller_cidr_is_compared_in_the_spelling_ufw_stores(tmp_path):
                     state=before)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _rules(state) == {"allow from 192.0.2.5 to any port 22 proto tcp": _tag("in", "22/tcp", "192.0.2.5/32")}
+
+
+def test_a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchanged(tmp_path):
+    # `show added` prints a dual-family rule once whichever halves are stored, so presence by
+    # tag cannot see a lost half. The rule is re-added every run: the lost half comes back,
+    # and on a host holding both ufw only skips, which is not a change.
+    rootful = {"firewall_rootful": True, "firewall_detect_ports": False}
+    bridge = {"bridges": {"podman": "podman1"}}
+    whole = [[f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+             ["allow in on podman1 to any port 53 proto udp", _tag("in-on", "53/udp", "podman1")],
+             ["allow in on podman1 to any port 53 proto tcp", _tag("in-on", "53/tcp", "podman1")]]
+    lost = [list(r) for r in whole]
+    lost[1].append("v4")  # the v6 half of the udp rule is gone
+    r, states = _run_many(tmp_path, {
+        "lost": {"vars": rootful, "podman": bridge, "state": {"active": True, "rules": lost}},
+        "whole": {"vars": rootful, "podman": bridge, "state": {"active": True, "rules": whole}}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert states["lost"]["rules"] == whole and states["whole"]["rules"] == whole
+    assert re.search(r"\blost\s*:.*changed=[1-9]", r.stdout), r.stdout
+    assert re.search(r"\bwhole\s*:.*changed=0", r.stdout), r.stdout
+    adds = [line for line in _log(tmp_path, "whole") if MUTATING.search(line)]
+    assert len(adds) == 2 and all('"in", "on", "podman1"' in line for line in adds), adds
+
+
+def test_a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule(tmp_path):
+    # A hand rule under the reserved prefix carries the SSH allow's tag. The SSH allow is still
+    # added; the masking rule is kept (its tag is declared, so it is never pruned) and reported.
+    masked = "allow from 203.0.113.9 to any port 5432 proto tcp"
+    r, state = _run(tmp_path, {}, state={"active": True, "rules": [[masked, _tag("in", "22/tcp", SSH)]]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state) == {masked: _tag("in", "22/tcp", SSH),
+                             f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
+    assert "holds 1 rule(s) whose comment names a declared rule" in r.stdout and masked in r.stdout
+    assert not any('"delete"' in line for line in _log(tmp_path))
+
+
+def test_an_egress_port_or_proto_that_is_not_one_is_refused_before_any_rule_is_added(tmp_path):
+    bad = {"null_port": {"port": None}, "empty_port": {"port": ""}, "port_zero": {"port": 0},
+           "port_high": {"port": 70000}, "null_proto": {"port": 8200, "proto": None},
+           "icmp": {"port": 8200, "proto": "icmp"}}
+    hosts = {name: {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", **entry}]}} for name, entry in bad.items()}
+    hosts["good"] = {"vars": {"firewall_deny_egress": [{"to": "198.51.100.1", "port": "8200", "proto": "any"},
+                                                       {"to": "198.51.100.2", "port": 53, "proto": "udp"}]}}
+    r, states = _run_many(tmp_path, hosts)
+    assert r.returncode != 0
+    for name in bad:
+        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
+        assert states[name] is None, name  # the stub never ran a write: no state file
+    assert re.search(r"\bgood\s*:.*failed=0", r.stdout), r.stdout
+    assert _rules(states["good"]) == {
+        f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH),
+        "deny out to 198.51.100.1 port 8200": _tag("out-deny", "8200/any", "198.51.100.1"),
+        "deny out to 198.51.100.2 port 53 proto udp": _tag("out-deny", "53/udp", "198.51.100.2")}

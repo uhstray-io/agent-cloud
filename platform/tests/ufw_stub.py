@@ -19,7 +19,8 @@ on, read from the ufw 0.36.2 source (git.launchpad.net/ufw, tag 0.36.2):
 - A rule with no address (e.g. `allow in on IFACE ...`) covers both IP families and is
   reported per family; a state entry may carry a third element "v4" or "v6" to say only
   that family is stored, which a delete then reports as "Could not delete non-existent
-  rule" for the other (src/frontend.py set_rule, "both").
+  rule" for the other (src/frontend.py set_rule, "both"), and an add stores the missing
+  family again, reporting it "Rule added (v6)" beside "Skipping adding existing rule".
 
 `ufw delete NUM` and any syntax the playbook is not expected to emit exit non-zero, so a
 test fails loudly rather than the stub guessing. Every invocation is appended to the log
@@ -193,12 +194,19 @@ def ufw(argv):
             else "Could not delete non-existent rule")
         return 0
     if index is not None:
-        if state["rules"][index][1] == rule["comment"]:
+        entry = state["rules"][index]
+        stored = entry[2:] or ["v4", "v6"]
+        same = entry[1] == rule["comment"]
+        if same and (not both or set(stored) >= {"v4", "v6"}):
             say(lambda fam: "Skipping adding existing rule")
             return 0
-        state["rules"][index][1] = rule["comment"]
+        # Each family is set separately: a stored one is skipped (or its comment updated), a
+        # missing one is added — so re-adding a rule with one family lost restores it.
+        entry[1] = rule["comment"]
+        del entry[2:]
         _save(state_path, state)
-        say(lambda fam: "Rule updated" if active else "Rules updated")
+        say(lambda fam: ("Skipping adding existing rule" if same else ("Rule updated" if active else "Rules updated"))
+            if fam in stored else ("Rule added" if active else "Rules updated"))
         return 0
     drop = os.environ.get("UFW_STUB_DROP")
     if not (drop and drop in spec):
