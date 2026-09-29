@@ -532,48 +532,33 @@
       until: _tempo_config.rc == 0
       when: not ansible_check_mode
 
-    - name: Parse Tempo's effective configuration YAML documents
-      ansible.builtin.set_fact:
-        _tempo_config_documents: "{{ _tempo_config.stdout | from_yaml_all | list }}"
+    - name: Validate Tempo's effective metrics-generator configuration
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/verify-tempo-metrics-config.py"
+          - "{{ 'true' if o11y_trace_derived_metrics_enabled | default(false) | bool else 'false' }}"
+        stdin: "{{ _tempo_config.stdout }}"
+      delegate_to: localhost
+      register: _tempo_metrics_config_check
+      # The endpoint response passed on stdin can contain remote-storage credentials.
       no_log: true
+      changed_when: false
+      failed_when: false
       when: not ansible_check_mode
 
-    - name: Select Tempo configuration documents by expected top-level keys
-      ansible.builtin.set_fact:
-        _tempo_config_candidates: >-
-          {{ _tempo_config.stdout
-             | from_yaml_all
-             | list
-             | select('mapping')
-             | selectattr('metrics_generator', 'defined')
-             | selectattr('overrides', 'defined')
-             | list }}
-      no_log: true
-      when: not ansible_check_mode
-
-    - name: Require exactly one identifiable Tempo configuration document
-      ansible.builtin.assert:
-        that: _tempo_config_candidates | length == 1
-        fail_msg: >-
-          Tempo's effective config endpoint did not return exactly one identifiable
-          configuration document ({{ _tempo_config_candidates | length }} matched
-          among {{ _tempo_config_documents | length }} YAML documents).
-      when: not ansible_check_mode
-
-    - name: Retain the matching effective Tempo configuration
-      ansible.builtin.set_fact:
-        _tempo_effective_config: "{{ _tempo_config_candidates[0] }}"
-      no_log: true
-      when: not ansible_check_mode
-
-    - name: Require the effective Tempo processor, remote-write, and series limits
+    - name: Require exactly one valid Tempo configuration and bounded metrics settings
       ansible.builtin.assert:
         that:
-          - (_tempo_effective_config.overrides.defaults.metrics_generator.processors | default([], true) | list | sort) == ((['service-graphs', 'span-metrics'] | sort) if o11y_trace_derived_metrics_enabled | default(false) | bool else [])
-          - _tempo_effective_config.overrides.defaults.metrics_generator.max_active_series | int == 2000
-          - _tempo_effective_config.metrics_generator.storage.remote_write | selectattr('url', 'equalto', 'http://prometheus:9090/api/v1/write') | list | length == 1
-          - _tempo_effective_config.metrics_generator.storage.path == '/var/tempo/generator/wal'
-        fail_msg: "Tempo's effective derived-metrics configuration does not match the bounded, gated source configuration."
+          - _tempo_metrics_config_check.rc == 0
+          - (_tempo_metrics_config_check.stdout | from_json).status == 'verified'
+          - (_tempo_metrics_config_check.stdout | from_json).processors_match | bool
+          - (_tempo_metrics_config_check.stdout | from_json).max_active_series_match | bool
+          - (_tempo_metrics_config_check.stdout | from_json).remote_write_match | bool
+          - (_tempo_metrics_config_check.stdout | from_json).wal_path_match | bool
+        fail_msg: >-
+          Tempo's effective config readback failed validation. Sanitized checker result:
+          {{ _tempo_metrics_config_check.stdout | from_json }}
       when: not ansible_check_mode
 
     - name: "Pyroscope ready (/ready) through the private compose network"
