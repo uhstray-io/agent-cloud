@@ -348,9 +348,16 @@ def test_ansible_executes_production_tempo_assert_with_registered_command_result
     assert "tempo-config-must-not-appear-in-logs" not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("raw", [None, "x" * (4 * 1024 * 1024 + 1)])
-def test_tempo_filter_refuses_bad_or_oversize_input_without_details(raw):
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(None, id="non-string"),
+        pytest.param("x" * (4 * 1024 * 1024 + 1), id="oversize-config"),
+    ],
+)
+def test_tempo_filter_refuses_bad_or_oversize_input_without_details(raw, request):
     """Fail closed for invalid inputs and oversized config without returning source text."""
+    assert len(request.node.nodeid) < 200
     result = tempo_config.tempo_metrics_config_check(raw, False)
     assert result["valid"] is False
     assert result["status"] == "refused"
