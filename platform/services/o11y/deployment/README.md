@@ -191,7 +191,34 @@ Storage` task is read-only and requires exact controller/receiver revisions; it
 reports sanitized exporter PID/mount/network/port state, guest-root device
 ancestry, and Podman's volume/graph filesystem capacity. It uses kernel device
 numbers to resolve `/dev/mapper` aliases against `lsblk`; ambiguous mappings
-fail closed. No runtime diagnostic receipt has been collected yet.
+fail closed. At that point, no runtime diagnostic receipt had been collected.
+
+Read-only production Semaphore task 1801 later confirmed that node-exporter was
+running with private PID isolation, a read-only host-root mount, one private
+network, and no published ports. Podman documents a private PID namespace as
+the default; task 1801's diagnostic normalized its raw PID readback to
+`private`. The deploy guard accepts only unset, empty, or `private` values and
+continues to reject host or unknown modes ([Podman run
+reference](https://docs.podman.io/en/latest/markdown/podman-run.1.html)). The
+previous deploy failure was an assertion mismatch: the source still expected
+host PID although the observed runtime was private. Task 1801 also confirmed
+the guest root is ext4 on an LVM-backed
+virtual disk and that Podman's volume and graph paths share that filesystem;
+free space was 6.88%, below the 30% retention-expansion gate. Exact device
+identifiers and capacity values remain in the private Semaphore receipt. No
+guest growth occurred. The existing `snapshot-vm.yml` verifies snapshot
+creation/presence only; there is no code-managed restore-test workflow or
+verified backup/restore receipt, so it does not authorize disk growth.
+
+Dev-bound read-only Semaphore task 1802, at controller revision
+`5a9d17c7e26778049e1747ee48089985ae16121e`, verified the exact
+`o11y/receiver-host` target at `node-exporter:9100` and returned
+`node_filesystem_avail_bytes`. Semaphore tasks 1803 and 1804 also returned
+`node_cpu_seconds_total` and `node_memory_MemAvailable_bytes` for the same exact
+target. These three metrics plus task 1801's isolation readback prove private
+host CPU, memory, and filesystem visibility. Log delivery, a successful full
+deploy after the source correction, the seven-day capacity forecast, and the
+backup/restore prerequisite remain unproven.
 
 The o11y self-monitoring dashboard requires seven healthy component scrapes and
 Tempo span/byte rates. Receiver deployment reads back the provisioned dashboard

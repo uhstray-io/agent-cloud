@@ -984,7 +984,7 @@ assert 'Require the receiver-host exporter to remain private and read-only' in n
 assert 'Verify receiver-host metrics and host-versus-guest root filesystem' in names
 runtime_check = next(task for task in verify['tasks'] if task['name'] == 'Require the receiver-host exporter to remain private and read-only')
 runtime_conditions = runtime_check['ansible.builtin.assert']['that']
-assert any('pid_mode' in condition and "'host'" in condition for condition in runtime_conditions)
+assert any("pid_mode" in condition and "[none, '', 'private']" in condition for condition in runtime_conditions)
 assert any('networks.keys()' in condition and 'o11y' in condition for condition in runtime_conditions)
 assert any("'/'" in condition and "'/host'" in condition and 'RW' in condition for condition in runtime_conditions)
 metrics_check = next(task for task in verify['tasks'] if task['name'] == 'Verify receiver-host metrics and host-versus-guest root filesystem')
@@ -1002,7 +1002,7 @@ for task_name in (
     task = next(task for task in verify['tasks'] if task['name'] == task_name)
     assert task['when'] == local_runtime_guard
 node_exporter = compose['services']['node-exporter']
-assert node_exporter['pid'] == 'host'
+assert 'pid' not in node_exporter
 assert not node_exporter.get('ports')
 assert node_exporter['networks'] == ['o11y']
 assert '/:/host:ro,rslave' in node_exporter['volumes']
