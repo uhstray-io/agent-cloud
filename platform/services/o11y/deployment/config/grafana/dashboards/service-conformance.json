@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "(service, step) pairs whose latest recorded result is fail. No recent samples means collector telemetry is unavailable, not zero failures.",
+      "description": "Unique (service, step) pairs with a fail report in the last 16 minutes. Recent successful reports may overlap this window for up to one collector interval. No conformance records in the window means telemetry is unavailable, not zero failures.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "count(sum by (service, step) (count_over_time({job=\"agent-cloud-conformance\", status=\"fail\"} [16m])))"
+          "expr": "count(sum by (service, step) (count_over_time({job=\"agent-cloud-conformance\", status=\"fail\"} [16m]))) or (sum(count_over_time({job=\"agent-cloud-conformance\"} [16m])) * 0)"
         }
       ]
     },
