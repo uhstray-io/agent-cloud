@@ -287,7 +287,8 @@ allowed form redirects to a file and filters the file afterwards.
 **Occurrence 5 — 2026-09-29.** Before pushing a fix to PR #344, `ruff check platform/ |
 tail -1` printed only ruff's closing line, "No fixes available (1 hidden fix can be enabled
 with the `--unsafe-fixes` option)", and it was read as clean. The error line above it was
-cut. The push went out, and the PR's reviewer found the SIM108 failure before CI or merge.
+cut. The push went out; CI's Static Analysis failed on the SIM108 error (run 36598777879),
+the PR's independent reviewer flagged the same line, and it was fixed (2d78f01c) before merge.
 Why the rule did not fire: the pipe was added to shorten a lint run, and a linter's output
 was not treated as a status. Occurrence 4's proposal covers it once `ruff` is added to the
 command list; until then, `ruff check .; echo rc=$?` is the form.

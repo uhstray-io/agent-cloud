@@ -156,6 +156,9 @@ jobs:
       - name: Machine home-directory audit
         # The no-machine-paths pre-commit gate (docs/MISTAKES.md 4.11) at merge time: a
         # commit made with --no-verify, or through the GitHub API, never ran the hook.
+        # `shell: bash` adds pipefail (the default `bash -e {0}` has none), so a failed
+        # git diff fails the step instead of feeding the check an empty diff.
+        shell: bash
         run: git diff origin/main...HEAD | sh scripts/check-machine-paths.sh -
 
       - name: Jinja2 template hardcoded value audit
