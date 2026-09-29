@@ -128,8 +128,7 @@ The provisioned root-filesystem warning is scoped to the verified
 `receiver-host` job, `o11y/receiver-host` service, and `/` mountpoint. It uses a
 less-than-10% threshold for 15 minutes, warning severity, and the existing ops
 contact; missing filesystem samples become alerting. Source and render tests
-are not live firing evidence. A post-merge production deploy and delivery drill
-remain required.
+are not live firing evidence; see the 2026-09-29 production receipt below.
 
 The Dev-bound backup readiness survey uses OpenBao-sourced Proxmox credentials
 and read-only API requests against the single declared `o11y_svc` VM. It emits
@@ -139,3 +138,15 @@ only: the survey cannot establish immutable retention, identify an isolated
 restore target, or prove a restore. The separately reviewed restore workflow
 must validate the restored guest filesystem and telemetry-volume access, then
 record isolated-target cleanup before guest growth is allowed.
+
+## 2026-09-29 production disk-alert receipt
+
+Non-destructive production deploy task 1830 and read-only budget task 1831
+passed with retention unchanged at Prometheus 15d / 0B size cap, Loki 7d, and
+Tempo 168h. At approximately 04:56 UTC, Grafana showed
+`o11y_receiver_root_disk_low` firing with healthy evaluation while the
+service-down rule remained normal. Grafana showed one notification routed to
+the existing ops contact, and matching Discord delivery was independently
+verified. This verifies the low-space warning and delivery path for this event.
+It does not establish a seven-day capacity forecast, backup/restore readiness,
+or delivery of other alert classes.

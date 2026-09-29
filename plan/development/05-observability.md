@@ -1036,10 +1036,11 @@ seven-day growth forecast; at the time of task 1831, disk-alert firing and
 Discord delivery were still unverified.
 
 At approximately 2026-09-29 04:56 UTC, Grafana showed
-`o11y_receiver_root_disk_low` firing with healthy evaluation; its detail view
-reported 6.72676% free on `receiver-host` `/`. Grafana listed one active
-notification routed to `agent-cloud-ops`. This confirms Grafana routing status,
-not an independently received Discord message.
+`o11y_receiver_root_disk_low` firing with healthy evaluation while the
+service-down rule remained normal. Grafana listed one notification routed to
+the existing ops contact, and matching Discord delivery was independently
+verified. This verifies delivery for the low-space event, not for other alert
+classes, and is not a seven-day capacity forecast.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

@@ -304,6 +304,8 @@ and Discord delivery were still unverified.
 
 At approximately 2026-09-29 04:56 UTC, the Grafana alert list showed
 `o11y_receiver_root_disk_low` firing with a healthy evaluation. Its detail view
-reported 6.72676% free on `receiver-host` `/`, and Grafana showed one active
-notification routed to `agent-cloud-ops`. This is Grafana routing/delivery
-status; no independent Discord message receipt was verified.
+confirmed the receiver-root condition while the service-down rule was normal.
+Grafana showed one notification routed to the existing ops contact, and
+matching Discord delivery was independently verified. This verifies delivery
+for the low-space event; it does not prove delivery for other alert classes or
+a seven-day capacity forecast.
