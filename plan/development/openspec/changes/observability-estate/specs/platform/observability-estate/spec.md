@@ -57,6 +57,31 @@ The platform SHALL enable trace ingestion only after the metrics, alert delivery
 - **THEN** Alloy forwards the span to Tempo and the access record to Loki with the same stable service identity
 - **AND** Grafana can pivot from the trace to service logs and metrics, and the receiver is not considered ready before real metrics, logs, and a trace are read back
 
+### Requirement: Service graphs and signal links are bounded and evidence based
+Tempo-derived service-graph and span metrics SHALL remain disabled by default and MUST be bounded by finite dimensions and an active-series ceiling. Production enablement MUST require numeric Semaphore receipts for receiver capacity, backup/isolated restore, metrics, alert delivery, retention, and cardinality. Verified spans MUST underpin accepted graph edges. A graph node alone, especially an inferred peer node, MUST NOT prove that the named service emits traces; per-service trace coverage requires an exact-target receipt. Missing or unsupported signals MUST be recorded as such rather than inferred from configuration. Trace-to-profile links SHALL map only the declared Pyroscope service identity and require spans carrying the span-profile bridge attribute before a profile pivot is claimed.
+
+#### Scenario: Derived metrics stay off until production gates pass
+- **WHEN** the production receiver is deployed without an explicit derived-metrics enablement and numeric capacity, backup/restore, metrics, alert-delivery, retention, and cardinality Semaphore receipts
+- **THEN** Tempo's metrics-generator processors remain disabled
+- **AND** an attempted enablement with any receipt absent fails before receiver placement
+
+#### Scenario: Graph contains only verified request-serving services
+- **WHEN** a service coverage cohort is rolled out
+- **THEN** verified spans underpin any accepted graph edge, and per-service trace coverage is recorded only after an exact-target receipt proves that service's request spans reached Tempo
+- **AND** a graph node alone, including an inferred peer node, is not accepted as proof that the named service emits traces
+- **AND** services without request traces or with unsupported signal paths are recorded as not applicable or unsupported
+
+#### Scenario: Signal coverage is recorded per service
+- **WHEN** a cohort rollout is reported complete
+- **THEN** its coverage record states log, metric, trace, and profile applicability per service
+- **AND** each applicable signal has an exact-target readback receipt
+- **AND** profiles count as correlated only when profile data and the span-profile bridge are present
+
+#### Scenario: Grafana major-version dependency stays gated
+- **WHEN** trace-correlations UI from Grafana 12 is proposed while the service runs pinned Grafana 11.4
+- **THEN** the upgrade remains a separate change with backup/restore and capacity gates
+- **AND** no production version changes as part of this baseline
+
 ### Requirement: Imported observability dashboards have live sources
 The platform SHALL provision an agentgateway dashboard from the standalone metric contract and SHALL migrate original o11y dashboard content only when its referenced backend and exporters are deployed. Provisioned dashboards MUST use stable data-source UIDs and retained queryable metric names.
 
