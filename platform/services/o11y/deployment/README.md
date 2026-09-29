@@ -261,7 +261,9 @@ be active when production alerts are enabled. Live firing and Discord delivery
 still require a post-merge deploy and drill.
 
 `Survey o11y Backup Readiness (Dev)` is a read-only Proxmox survey. It reads the
-single declared production o11y VM, backup-capable node storage, and backup
+single declared production o11y VM from `vm_vmid` and `vm_node` on the sole
+`o11y_svc` inventory host; both values must be present in the live inventory.
+It reads backup-capable node storage and backup
 content listings for that VM using OpenBao-sourced credentials. Its output
 contains only status and counts. A listed artifact is a candidate; the survey
 does not prove immutability, an isolated restore target, or restore success.

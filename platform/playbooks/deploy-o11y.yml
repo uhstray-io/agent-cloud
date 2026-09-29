@@ -802,6 +802,7 @@
       when:
         - o11y_alerts_enabled | default(false) | bool
         - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:

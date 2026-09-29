@@ -13,7 +13,10 @@
   gather_facts: false
   module_defaults:
     ansible.builtin.uri:
+      # Keep aligned with resize-vm.yml until the Proxmox CA is installed on
+      # the Semaphore runner; the shared inventory setting enables validation.
       validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
       headers:
         Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
@@ -158,7 +161,8 @@
                 and result.json is defined
                 and result.json.data is defined
                 and result.json.data is sequence
-                and result.json.data is not string -%}
+                and result.json.data is not string
+                and result.json.data is not mapping -%}
           {%- set ns.artifacts = ns.artifacts + (result.json.data | length) -%}
           {%- else -%}
           {%- set ns.complete = false -%}

@@ -856,6 +856,8 @@ assert len(api_reads) == 3
 assert all(task['ansible.builtin.uri']['method'] == 'GET' for task in api_reads)
 assert all(task.get('no_log') is True for task in api_reads)
 assert all(task.get('check_mode') is False for task in api_reads)
+uri_defaults = survey['module_defaults']['ansible.builtin.uri']
+assert uri_defaults['follow_redirects'] == 'none'
 credential_tasks = [
     task for task in tasks
     if task['name'] in ('Read Proxmox API credentials from OpenBao', 'Derive Proxmox API connection values')
@@ -864,6 +866,19 @@ assert len(credential_tasks) == 2
 assert all(task.get('no_log') is True for task in credential_tasks)
 summarize = next(task for task in tasks if task['name'] == 'Summarize backup listing without exposing storage or artifact details')
 assert summarize.get('no_log') is True
+summary_template = summarize['ansible.builtin.set_fact']['_backup_summary']
+from jinja2 import Environment, StrictUndefined
+jinja = Environment(undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
+def summarize_results(results):
+    rendered = jinja.from_string(summary_template).render(
+        _backup_content_reads={'results': results}
+    )
+    return yaml.safe_load(rendered)
+assert summarize_results([{'status': 403}])['listing_complete'] is False
+assert summarize_results([{'status': 200, 'json': {'data': {'unexpected': 'mapping'}}}])['listing_complete'] is False
+assert summarize_results([{'status': 200, 'json': {'data': [{'volid': 'hidden-candidate'}]}}]) == {
+    'listing_complete': True, 'candidate_artifact_count': 1,
+}
 assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-bao-transport.yml' for task in tasks)
 assert any(task.get('ansible.builtin.assert', {}).get('that') == "_pve_host is match('^https://')" for task in tasks)
 summary = next(task for task in tasks if task['name'] == 'Report sanitized backup and restore prerequisites')
@@ -898,10 +913,18 @@ from jinja2 import Environment, StrictUndefined
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
-assert block['when'] == ['o11y_alerts_enabled | default(false) | bool', 'not ansible_check_mode']
+assert block['when'] == [
+    'o11y_alerts_enabled | default(false) | bool',
+    'not ansible_check_mode',
+    'not (local_mode | default(false) | bool)',
+]
+env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
+should_verify = [env.compile_expression(condition) for condition in block['when']]
+assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
+assert not all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
 tasks = block['block']
 rule_check = next(task for task in tasks if task['name'] == 'Require the service-down rule and every o11y rule to be active')
-env = Environment(undefined=StrictUndefined)
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
 env.filters['from_json'] = json.loads
 compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
