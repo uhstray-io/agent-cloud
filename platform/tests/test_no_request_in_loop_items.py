@@ -88,8 +88,12 @@ def violations(text: str) -> list[str]:
 # The request itself (its token header) reaches the output only at -vvv, the callback's
 # concern above; this guard is about the RESPONSE.
 #
-# ponytail: play- and block-level `vars:` are not refused - they are templated lazily and print
-# nothing by themselves; their consumers are the tasks this guard and guard 1 read.
+# ponytail, accepted gaps (none occurs in the repository, 2026-09-29): play- and block-level
+# `vars:` are not refused (templated lazily, they print only through a consumer, and neither
+# guard traces a variable to its consumer, including one in an included file); a token header
+# passed as a variable (`headers: "{{ h }}"`) with no /v1/ path; curl to OpenBao inside a shell
+# task; the short `vault_*` module names; free-form `uri: url=...` arguments; and a `{{ }}` only
+# at the START of the path counts as "built from variables".
 OPENBAO_PATH = re.compile(r"(?:sys|auth|identity|cubbyhole)/|[^/\s{}]+/(?:data|metadata)/|\{\{")
 # Requests whose response carries no secret, each one found visible in the repository
 # (2026-09-29). Path after /v1/, query string dropped, matched whole. Everything else that
@@ -113,13 +117,15 @@ PASS_THROUGH = {f"{prefix}{m}" for prefix in ("", "ansible.builtin.")
 
 
 def _visible(node, hidden: bool = False):
-    """Every play, block and task not hidden by its own `no_log: true` or an enclosing one's."""
+    """Every play, block and task whose output Ansible does not hide. A task's own `no_log`
+    wins over an enclosing block's or play's: `no_log: false` inside a hidden block prints
+    (checked on ansible-core 2.21, review of #347), so only an unset value inherits."""
     if not isinstance(node, list):
         return
     for item in node:
         if not isinstance(item, dict):
             continue
-        inner = hidden or item.get("no_log") is True
+        inner = (item["no_log"] is True) if "no_log" in item else hidden
         if not inner:
             yield item
         for key in TASK_LISTS:
@@ -331,3 +337,11 @@ def test_an_enclosing_block_or_play_no_log_hides_the_task():
     assert len(_one(block)) == 1
     assert _one(block + "      no_log: true\n") == []
     assert _one(f"      {task}\n", hide="  no_log: true\n") == []
+
+
+def test_a_task_that_sets_no_log_false_inside_a_hidden_block_or_play_is_visible():
+    task = REFUSED["set_fact lookup"]
+    override = f"          {task.strip()}\n          no_log: false\n"
+    block = f"      block:\n        - name: inner\n{override}      no_log: true\n"
+    assert len(_one(block)) == 1
+    assert len(_one(f"      {task}\n      no_log: false\n", hide="  no_log: true\n")) == 1
