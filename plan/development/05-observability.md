@@ -1023,6 +1023,16 @@ credential derivation, while retaining scoped `no_log` and redirect refusal.
 This was a controller-side ordering failure, not a Proxmox API or storage
 readback result; no Proxmox state was changed.
 
+The corrected non-destructive production o11y deploy, Semaphore task 1830,
+succeeded on merged `dev` SHA `3390557516d05101c60132e0c20e2cc5031a1bcd`.
+Read-only budget task 1831 observed all five named volumes mounted on guest
+root with 6.75% free, 13,503 active Prometheus series, and 87.73% guest memory
+headroom. Retention remains Prometheus 15d with a 0B size cap, Loki 7d, and
+Tempo 168h. These mounted-volume observations do not prove historical data
+continuity inside each volume. The readings are point-in-time evidence, not a
+seven-day growth forecast; disk-alert firing and Discord delivery remain
+unverified.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

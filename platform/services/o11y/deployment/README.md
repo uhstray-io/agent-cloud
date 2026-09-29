@@ -289,3 +289,12 @@ cap remains 0B. Task 1823 observed 13,088 active Prometheus head series, 87.55%
 guest memory headroom, and sample limit 2,000. These are point-in-time readings,
 not a seven-day forecast or Loki/Tempo growth trend. Log source, seven-day
 baseline, backup/restore proof, and live disk-alert delivery remain open.
+
+The corrected non-destructive production deploy, task 1830, succeeded on merged
+`dev` SHA `3390557516d05101c60132e0c20e2cc5031a1bcd`. Read-only budget task 1831
+observed all five named volumes mounted on guest root with 6.75% free, 13,503
+active Prometheus series, and 87.73% guest memory headroom. Retention remains
+Prometheus 15d with a 0B size cap, Loki 7d, and Tempo 168h. Mounted-volume
+observations do not prove historical data continuity. These are point-in-time
+readings, not a seven-day forecast; disk-alert firing and Discord delivery
+remain unverified.
