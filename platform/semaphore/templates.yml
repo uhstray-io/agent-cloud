@@ -1416,9 +1416,9 @@ templates:
         description: "Exact reviewed Dev revision for the read-only artifact detail survey"
         type: string
         required: true
-    # Reports sanitized artifact fingerprints/metadata and VM disk layout.
-    # Proxmox storage names, volume IDs, and free-form metadata stay hidden.
-    # A protected flag is not immutability proof; this task never writes Proxmox.
+    # Reports allow-listed artifact metadata and VM disk layout only.
+    # Proxmox storage names, volume IDs, hashes, and free-form metadata stay hidden.
+    # Missing protection metadata remains unknown; this task never writes Proxmox.
 
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml

@@ -152,18 +152,22 @@ target verification, and restore verification were all false. It did not
 select storage or alter Proxmox state. These facts still do not identify an
 immutable source or restore destination, so tasks 4.2 and 4.6 remain gated.
 
-The new Dev-bound `survey-o11y-backup-artifact.yml` is read-only and reports a
-path-free SHA-256 fingerprint of each candidate's Proxmox volume identity,
-backend class, archive format, byte size, creation epoch, Proxmox protection
-flag, and source VM disk device/size/backup-inclusion layout. Raw API results,
-volume IDs, storage names, and free-form values remain under `no_log`; only
-the allow-listed decision facts appear in the private Semaphore receipt. The
-fingerprint identifies a listed volume and is not a checksum of backup bytes.
-The Proxmox `protected` flag is not immutability evidence, and the survey
-always reports immutability and restore verification as false. Its first
-reviewed Dev execution is pending. Use those live facts to declare any
-artifact selector and then design the isolated target and immutable storage
-mechanism in private site-config before implementing a restore workflow.
+The new Dev-bound `survey-o11y-backup-artifact.yml` is read-only and reports
+only allow-listed candidate metadata (backend class, format, byte size,
+creation epoch, and protection status) plus source VM disk device/size/backup
+inclusion layout, including EFI and TPM state disks. Raw API results, volume
+IDs, storage names, and free-form values remain under `no_log`; no hash or
+reversible identifier is included in the visible receipt. A future restore
+workflow must use a separately declared private artifact selector. The
+inspector validates PBS VM records in the official `backup/vm/<vmid>/<UTC
+timestamp>` form with `pbs-vm` format, and requires the volume storage prefix to
+match the listing source. See the [Proxmox PBS storage implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/PBSPlugin.pm).
+An absent protection field remains `unknown`; a reported protection flag is
+not immutability evidence. The survey always reports immutability and restore
+verification as false. Its first reviewed Dev execution is pending. Use those
+live facts to declare any artifact selector and then design the isolated
+target and immutable storage mechanism in private site-config before
+implementing a restore workflow.
 
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the

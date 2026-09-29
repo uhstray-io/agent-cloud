@@ -43,7 +43,8 @@ def payload():
                 "scsi0": "private-store:vm-100-disk-0,size=120G,discard=on",
                 "virtio1": "private-store:vm-100-disk-1,size=8G,backup=0",
                 "ide2": "private-store:iso/installer.iso,media=cdrom",
-                "efidisk0": "private-store:vm-100-disk-2,size=1M",
+                "efidisk0": "private-store:vm-100-disk-2,size=528K",
+                "tpmstate0": "private-store:vm-100-disk-3,size=4M,version=v2.0",
             },
         },
     }
@@ -60,9 +61,10 @@ def test_inspection_reports_decision_facts_without_storage_or_free_form_values()
     assert candidate["creation_time_epoch"] == 1_790_553_600
     assert candidate["proxmox_protected_flag"] == "protected"
     assert candidate["immutability_verified"] is False
-    assert len(candidate["artifact_identity_sha256"]) == 64
     assert result["source_disk_layout"] == [
+        {"device": "efidisk0", "size_bytes": 528 * 1024, "included_in_backup": None},
         {"device": "scsi0", "size_bytes": 120 * 1024**3, "included_in_backup": None},
+        {"device": "tpmstate0", "size_bytes": 4 * 1024**2, "included_in_backup": None},
         {"device": "virtio1", "size_bytes": 8 * 1024**3, "included_in_backup": False},
     ]
     assert result["source_disk_layout_complete"] is True
@@ -73,6 +75,19 @@ def test_inspection_reports_decision_facts_without_storage_or_free_form_values()
     assert result["artifact_immutability_verified"] is False
     assert result["isolated_restore_target_verified"] is False
     assert result["restore_test_verified"] is False
+    assert set(result) == {
+        "survey", "target_vm_verified", "candidate_artifact_count", "candidates",
+        "source_disk_count", "source_disk_layout", "source_disk_layout_complete",
+        "artifact_immutability_verified", "isolated_restore_target_verified", "restore_test_verified",
+    }
+    assert set(candidate) == {
+        "backend_class", "format", "size_bytes", "creation_time_epoch",
+        "proxmox_protected_flag", "immutability_verified",
+    }
+    assert all(set(disk) == {"device", "size_bytes", "included_in_backup"}
+               for disk in result["source_disk_layout"])
+    assert "artifact_identity_sha256" not in str(result)
+    assert "volid" not in str(result)
 
 
 @pytest.mark.parametrize(
@@ -84,8 +99,18 @@ def test_inspection_reports_decision_facts_without_storage_or_free_form_values()
         (lambda data: data["content_reads"][0].update(status=403), "incomplete"),
         (lambda data: data["content_reads"][0]["json"]["data"][0].update(size=-1), "malformed identity"),
         (lambda data: data["content_reads"][0]["json"]["data"][0].update(vmid=101), "does not match"),
+        (lambda data: data["content_reads"][0]["json"]["data"][0].update(
+            volid="private-store:backup/vzdump-qemu-100-2026_09_28-01_00_00.tar",
+            format="tar",
+        ), "malformed identity"),
+        (lambda data: data["content_reads"][0]["json"]["data"][0].update(
+            volid="other-store:backup/vzdump-qemu-100-2026_09_28-01_00_00.vma.zst"
+        ), "source storage"),
         (lambda data: data["vm_config"]["data"].update(scsi0="private-store:vm-100-disk-0,size=badG"), "disk size"),
         (lambda data: data.update(content_reads=[]), "incomplete"),
+        (lambda data: data["content_reads"][0]["json"]["data"].append(
+            dict(data["content_reads"][0]["json"]["data"][0])
+        ), "duplicate backup artifact identities"),
     ],
 )
 def test_malformed_or_incomplete_inputs_fail_closed(mutate, message):
@@ -93,6 +118,74 @@ def test_malformed_or_incomplete_inputs_fail_closed(mutate, message):
     mutate(data)
     with pytest.raises(ValueError, match=message):
         inspect(data)
+
+
+def test_pbs_vm_snapshot_format_and_volume_id_are_supported():
+    data = payload()
+    data["storages"] = [{"storage": "pbs-store", "type": "pbs"}]
+    data["content_reads"][0]["item"]["storage"] = "pbs-store"
+    data["content_reads"][0]["json"]["data"] = [{
+        "volid": "pbs-store:backup/vm/100/2026-09-29T00:00:00Z",
+        "vmid": 100,
+        "format": "pbs-vm",
+        "size": 123456,
+        "ctime": 1_790_640_000,
+    }]
+
+    result = inspect(data)
+    assert result["candidates"] == [{
+        "backend_class": "pbs",
+        "format": "pbs-vm",
+        "size_bytes": 123456,
+        "creation_time_epoch": 1_790_640_000,
+        "proxmox_protected_flag": "unknown",
+        "immutability_verified": False,
+    }]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"format": "vma.zst"},
+        {"ctime": 1_790_640_001},
+        {"volid": "other-store:backup/vm/100/2026-09-29T00:00:00Z"},
+    ],
+)
+def test_pbs_artifact_type_source_and_timestamp_must_match(update):
+    data = payload()
+    data["storages"] = [{"storage": "pbs-store", "type": "pbs"}]
+    data["content_reads"][0]["item"]["storage"] = "pbs-store"
+    candidate = {
+        "volid": "pbs-store:backup/vm/100/2026-09-29T00:00:00Z",
+        "vmid": 100,
+        "format": "pbs-vm",
+        "size": 123456,
+        "ctime": 1_790_640_000,
+    }
+    candidate.update(update)
+    data["content_reads"][0]["json"]["data"] = [candidate]
+    with pytest.raises(ValueError):
+        inspect(data)
+
+
+def test_missing_protection_flag_remains_unknown_and_explicit_false_is_not_protected():
+    data = payload()
+    candidate = data["content_reads"][0]["json"]["data"][0]
+    candidate.pop("protected")
+    assert inspect(data)["candidates"][0]["proxmox_protected_flag"] == "unknown"
+    candidate["protected"] = False
+    assert inspect(data)["candidates"][0]["proxmox_protected_flag"] == "not-protected"
+
+
+@pytest.mark.parametrize("device", ["efidisk0", "tpmstate0"])
+def test_efi_and_tpm_disk_sizes_participate_in_layout_completeness(device):
+    data = payload()
+    data["vm_config"]["data"][device] = "private-store:vm-100-state-disk"
+
+    result = inspect(data)
+    state_disk = next(disk for disk in result["source_disk_layout"] if disk["device"] == device)
+    assert state_disk["size_bytes"] is None
+    assert result["source_disk_layout_complete"] is False
 
 
 def test_cli_refusal_does_not_echo_private_proxmox_values(monkeypatch, capsys):

@@ -3,19 +3,23 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 VMID = re.compile(r"[1-9][0-9]{0,8}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
-VOLID = re.compile(
+VZDUMP_VOLID = re.compile(
     r"(?P<storage>[A-Za-z0-9._-]{1,64}):backup/vzdump-qemu-(?P<vmid>[1-9][0-9]{0,8})-"
-    r"[A-Za-z0-9_.-]+\.(?P<format>vma(?:\.zst|\.gz|\.lzo)?|tar)"
+    r"[A-Za-z0-9_.-]+\.(?P<format>vma(?:\.zst|\.gz|\.lzo)?)"
 )
-DISK_DEVICE = re.compile(r"(?:ide|sata|scsi|virtio)[0-9]+")
+PBS_VM_VOLID = re.compile(
+    r"(?P<storage>[A-Za-z0-9._-]{1,64}):backup/vm/(?P<vmid>[1-9][0-9]{0,8})/"
+    r"(?P<timestamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"
+)
+DISK_DEVICE = re.compile(r"(?:ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+")
 SIZE = re.compile(r"(?:^|,)size=(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>[KMGT])(?:$|,)", re.I)
 SIZE_MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 SAFE_REFUSALS = {
@@ -29,6 +33,9 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed backup-content listing.",
     "A listed backup artifact has a malformed identity or metadata.",
     "A listed backup artifact does not match the declared o11y VM.",
+    "A listed backup artifact does not match its source storage or backend.",
+    "Proxmox returned duplicate backup artifact identities.",
+    "A PBS backup artifact has inconsistent timestamp metadata.",
     "Proxmox returned a malformed VM disk configuration.",
     "Proxmox returned a malformed VM disk size.",
     "Unsupported artifact inspection operation.",
@@ -69,33 +76,58 @@ def _storage_classes(storages: object) -> dict[str, str]:
     return result
 
 
-def _inspect_candidate(candidate: object, vmid: int, storage_classes: Mapping[str, str]) -> dict[str, object]:
+def _inspect_candidate(
+    candidate: object,
+    vmid: int,
+    source_storage: str,
+    storage_classes: Mapping[str, str],
+) -> tuple[str, dict[str, object]]:
     _require(isinstance(candidate, Mapping), "A listed backup artifact has a malformed identity or metadata.")
     volid = candidate.get("volid")
-    match = VOLID.fullmatch(volid) if isinstance(volid, str) else None
+    _require(isinstance(volid, str), "A listed backup artifact has a malformed identity or metadata.")
+    storage_class = storage_classes.get(source_storage)
+    if storage_class == "pbs":
+        match = PBS_VM_VOLID.fullmatch(volid)
+        _require(
+            match is not None and candidate.get("format") == "pbs-vm",
+            "A listed backup artifact has a malformed identity or metadata.",
+        )
+        timestamp = datetime.strptime(match.group("timestamp"), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+        expected_ctime = int(timestamp.timestamp())
+    else:
+        match = VZDUMP_VOLID.fullmatch(volid)
+        _require(
+            match is not None and candidate.get("format", match.group("format")) == match.group("format"),
+            "A listed backup artifact has a malformed identity or metadata.",
+        )
+        expected_ctime = None
     _require(match is not None, "A listed backup artifact has a malformed identity or metadata.")
     _require(int(match.group("vmid")) == vmid, "A listed backup artifact does not match the declared o11y VM.")
     storage = match.group("storage")
-    _require(storage in storage_classes, "A listed backup artifact has a malformed identity or metadata.")
-    fmt = candidate.get("format", match.group("format"))
-    _require(isinstance(fmt, str) and fmt == match.group("format"),
-             "A listed backup artifact has a malformed identity or metadata.")
+    _require(
+        storage == source_storage and storage in storage_classes,
+        "A listed backup artifact does not match its source storage or backend.",
+    )
+    fmt = "pbs-vm" if storage_class == "pbs" else match.group("format")
     size = _positive_int(candidate.get("size"))
     ctime = _positive_int(candidate.get("ctime"))
+    _require(expected_ctime is None or ctime == expected_ctime,
+             "A PBS backup artifact has inconsistent timestamp metadata.")
     protected = candidate.get("protected")
     if protected is True or (type(protected) is int and protected == 1):
         protected_status = "protected"
     elif protected is False or (type(protected) is int and protected == 0):
         protected_status = "not-protected"
     elif protected is None:
+        # Not every storage listing reliably emits an explicit false value.
         protected_status = "unknown"
     else:
         _require(False, "A listed backup artifact has a malformed identity or metadata.")
         protected_status = "unknown"
-    return {
-        # This fingerprint identifies the record without disclosing its storage/path.
-        "artifact_identity_sha256": hashlib.sha256(volid.encode("utf-8")).hexdigest(),
-        "backend_class": storage_classes[storage],
+    return volid, {
+        "backend_class": storage_class,
         "format": fmt,
         "size_bytes": size,
         "creation_time_epoch": ctime,
@@ -153,6 +185,7 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
     _require(isinstance(reads, list), "Proxmox returned an incomplete backup-content listing.")
     candidates = []
     seen_storages = set()
+    seen_volids = set()
     for read in reads:
         _require(isinstance(read, Mapping), "Proxmox returned an incomplete backup-content listing.")
         item = read.get("item")
@@ -171,7 +204,10 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         for candidate in data:
             _require(isinstance(candidate, Mapping) and candidate.get("vmid") == vmid,
                      "A listed backup artifact does not match the declared o11y VM.")
-            candidates.append(_inspect_candidate(candidate, vmid, storage_classes))
+            volid, summary = _inspect_candidate(candidate, vmid, storage, storage_classes)
+            _require(volid not in seen_volids, "Proxmox returned duplicate backup artifact identities.")
+            seen_volids.add(volid)
+            candidates.append(summary)
     _require(seen_storages == set(storage_classes),
              "Proxmox returned an incomplete backup-content listing.")
 
