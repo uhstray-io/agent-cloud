@@ -34,11 +34,18 @@
 # address one way across declarations: `192.0.2.10` and `192.0.2.10/32` may be stored
 # as ONE ufw rule under two tags, leaving a declared tag absent — which the drift guard
 # below refuses rather than pruning around it.
-# Each run, in order: ensure every declared rule (SSH first, all before enable) → read
-# `ufw show added` → assert every declared tag is present (a drift guard between the add
-# commands and the declared set; failing here stops the run BEFORE anything is deleted) →
-# delete each TAGGED rule whose tag is not declared → re-read and assert an SSH allow
-# survived → default policies + enable, each only when the live state differs.
+# The declared set is built ONCE, after port and bridge detection, by
+# filter_plugins/ufw_rules.py ufw_desired_rules: each rule's ufw command, its tag, and the
+# spec `ufw show added` prints for it. That module is the only definition of the command
+# forms and the tag; nothing in this playbook spells either.
+# Each run, in order: read `ufw show added` and `ufw status verbose` → add each declared
+# rule whose TAG the host lacks (SSH first, all before enable) → when anything was added,
+# re-read and assert every declared tag is present (a drift guard between the add commands
+# and the host; failing here stops the run BEFORE anything is deleted) → delete each TAGGED
+# rule whose tag is not declared → when anything was deleted, re-read and assert every
+# declared SSH allow survived → default policies + enable, each only when the live state
+# differs. A converged host costs the two reads and nothing else: no add, no re-read, and
+# the final report reuses the first status read.
 #   - Untagged rules (added by hand, or by a version of this playbook before tagging) are
 #     LEFT ALONE and listed in a visible report. ufw updates the comment of an existing
 #     rule when the same rule is added with a different one (ufw(8) "RULE SYNTAX"; the
@@ -47,6 +54,9 @@
 #     untagged rule that is no longer declared stays untagged and is only reported: to have
 #     it pruned, run this playbook once with the declaration that produced it (tagging it),
 #     then narrow the declaration.
+#   - The prune plan reads the rules as they stand AFTER the adds. A rule the add re-tagged
+#     (an untagged copy adopted, or an old tag replaced) would otherwise still look stale
+#     in the first read and be deleted by its spec — the declared rule itself.
 #   - Deletion is by rule SPEC, not by number: the spec is ufw's own normalised form from
 #     `ufw show added` with the comment stripped (ufw(8): "prefix the original rule with
 #     delete with or without the rule comment"). Numbers shift after every delete, `ufw
@@ -202,17 +212,10 @@
       {%- endfor -%}
       {{ out }}
     _rules: "{{ (firewall_allow_rules | default([])) + _group_rules }}"
-    # The tag of each SSH allow (header note "Convergence"): the drift guard, the
-    # anti-lockout asserts and the declared set all read this one expression.
-    _fw_ssh_tags: "{{ _ssh_cidrs | map('regex_replace', '^', 'agent-cloud:in:22/tcp:') | list }}"
     # The SSH CIDRs as ufw stores them (filter_plugins/ufw_rules.py ufw_address: host mask
     # dropped, IPv4 masked to its network, dotted netmask to a prefix — src/util.py
     # normalize_address, 0.36.2), so `192.0.2.5/32` equals the stored `192.0.2.5`.
     _fw_ssh_cidrs_stored: "{{ _ssh_cidrs | map('ufw_address') | list }}"
-    # ...and each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command).
-    _fw_ssh_specs: >-
-      {{ _fw_ssh_cidrs_stored | map('regex_replace', '^', 'allow from ')
-         | map('regex_replace', '$', ' to any port 22 proto tcp') | list }}
     _route_rules: "{{ firewall_route_rules | default([]) }}"
     _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
     _engine: "{{ container_engine | default('podman') }}"
@@ -296,7 +299,9 @@
       ansible.builtin.assert:
         that:
           - (firewall_allow_groups | default([])) | map(attribute='group') | reject('in', groups) | list | length == 0
-          - _group_rules | map(attribute='from') | reject('match', '^\\d{1,3}(\\.\\d{1,3}){3}$') | list | length == 0
+          # stdlib ipaddress (filter_plugins/ufw_rules.py ufw_is_ipv4), not a dotted-quad
+          # regex, which accepted 999.1.1.1.
+          - _group_rules | map(attribute='from') | map('ufw_is_ipv4') | reject | list | length == 0
         fail_msg: >-
           firewall_allow_groups on {{ inventory_hostname }} names a group that does not exist, or a
           member whose ansible_host is not an IPv4 address; refusing rather than dropping a source.
@@ -304,39 +309,38 @@
           Sources: {{ _group_rules | map(attribute='from') | list }}.
       when: (firewall_allow_groups | default([])) | length > 0
 
-    - name: "Allow SSH (22/tcp) from each admin CIDR — BEFORE enabling"  # noqa: command-instead-of-module
-      ansible.builtin.command: "ufw allow from {{ item }} to any port 22 proto tcp comment 'agent-cloud:in:22/tcp:{{ item }}'"
-      register: _sshrule
-      changed_when: "_sshrule.stdout is search('Rules? (added|updated)')"
-      loop: "{{ _ssh_cidrs }}"
-      when: not ansible_check_mode
-
-    - name: "Allow each STATIC service port from its intended source"  # noqa: command-instead-of-module
-      ansible.builtin.command: >-
-        ufw allow from {{ item.from }} to any port {{ item.port }} proto {{ item.proto | default('tcp') }}
-        comment 'agent-cloud:in:{{ item.port }}/{{ item.proto | default('tcp') }}:{{ item.from }}'
-      register: _svcrule
-      changed_when: "_svcrule.stdout is search('Rules? (added|updated)')"
-      loop: "{{ _rules }}"
+    # ── Egress containment for a semi-trusted host. Validated before ANY rule is built or
+    # added, and the denials land BEFORE enable for the same reason the SSH allows do: the
+    # rule set must be complete the moment the firewall goes live, so there is no window in
+    # which the host is active but uncontained.
+    - name: "Validate each egress denial (single host unless explicitly broad)"
+      ansible.builtin.assert:
+        that:
+          - (item.to | default('')) | length > 0
+          - >-
+            ('/' not in item.to)
+            or ((item.to.split('/') | last) == '32')
+            or (item.broad | default(false) | bool)
+          # `broad: true` is an escape hatch, not a bypass of the thing the guard exists
+          # for. A target that EQUALS a declared SSH CIDR is refused even when flagged
+          # broad — that is the exact self-lock, and no opt-in should be able to express
+          # it. (Strict containment would need ipaddr, which the orchestrator does not
+          # install; equality catches the case that actually happens, which is someone
+          # copying a management CIDR into the denial list.)
+          - item.to not in _ssh_cidrs
+          # And a broad denial must say why, so it cannot be set in passing.
+          - >-
+            (not (item.broad | default(false) | bool))
+            or ((item.reason | default('')) | length > 0)
+        fail_msg: >-
+          firewall_deny_egress entry {{ item | to_json }} is invalid: `to` is required and
+          must be a single host (no prefix, or /32) unless the entry sets `broad: true`.
+          A denial broader than firewall_ssh_cidrs would cut this host off from the
+          management network — see §2.5 in docs/MISTAKES.md. `broad: true` permits a
+          wider mask but never one EQUAL to a declared SSH CIDR, and requires a `reason`.
+      loop: "{{ _deny_egress }}"
       loop_control:
-        label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} ({{ item.comment | default('') }})"
-      when: not ansible_check_mode
-
-    - name: "Allow each STATIC route rule on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
-      # Published ports on rootful/Docker are DNAT'd to the container and routed
-      # (FORWARD), so a plain `ufw allow` (INPUT) never matches them. These route
-      # rules are what actually let the reverse proxy reach the container. Applied
-      # whenever provided (the list is empty on rootless hosts), BEFORE enable so
-      # the anti-lockout ordering holds. Route rules never affect host SSH (INPUT).
-      ansible.builtin.command: >-
-        ufw route allow proto {{ item.proto | default('tcp') }} from {{ item.from }} to any port {{ item.port }}
-        comment 'agent-cloud:route:{{ item.port }}/{{ item.proto | default('tcp') }}:{{ item.from }}'
-      register: _routerule
-      changed_when: "_routerule.stdout is search('Rules? (added|updated)')"
-      loop: "{{ _route_rules }}"
-      loop_control:
-        label: "{{ item.port }}/{{ item.proto | default('tcp') }} from {{ item.from }} (route, {{ item.comment | default('') }})"
-      when: not ansible_check_mode
+        label: "{{ item.to | default('(missing to)') }}"
 
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
@@ -392,40 +396,6 @@
         - firewall_detect_ports | default(true) | bool
         - (_detected.stdout_lines | default([])) | length > 0
 
-    - name: "Allow each DETECTED published port from the upstream (e.g. Caddy)"  # noqa: command-instead-of-module
-      ansible.builtin.command: >-
-        ufw allow from {{ item.1 }} to any port {{ item.0.split()[0] }} proto {{ item.0.split()[1] }}
-        comment 'agent-cloud:in:{{ item.0.split()[0] }}/{{ item.0.split()[1] }}:{{ item.1 }}'
-      register: _detrule
-      changed_when: "_detrule.stdout is search('Rules? (added|updated)')"
-      # Every detected port, once per declared upstream.
-      loop: "{{ (_detected.stdout_lines | default([])) | product(_upstream_sources) | list }}"
-      loop_control:
-        label: "{{ item.0 }} from {{ item.1 }}"
-      when:
-        - not ansible_check_mode
-        - firewall_detect_ports | default(true) | bool
-        - (_detected.stdout_lines | default([])) | length > 0
-
-    - name: "Allow each DETECTED published port on the FORWARD chain (rootful podman / Docker)"  # noqa: command-instead-of-module
-      # The INPUT allow above doesn't match DNAT'd container traffic on rootful/
-      # Docker hosts — it crosses FORWARD. Mirror each detected port as a route
-      # rule so the reverse proxy can actually reach the container. Rootless hosts
-      # (_rootful false) skip this: their published ports terminate on the host.
-      ansible.builtin.command: >-
-        ufw route allow proto {{ item.0.split()[1] }} from {{ item.1 }} to any port {{ item.0.split()[0] }}
-        comment 'agent-cloud:route:{{ item.0.split()[0] }}/{{ item.0.split()[1] }}:{{ item.1 }}'
-      register: _detroute
-      changed_when: "_detroute.stdout is search('Rules? (added|updated)')"
-      loop: "{{ (_detected.stdout_lines | default([])) | product(_upstream_sources) | list }}"
-      loop_control:
-        label: "{{ item.0 }} from {{ item.1 }} (route)"
-      when:
-        - not ansible_check_mode
-        - _rootful
-        - firewall_detect_ports | default(true) | bool
-        - (_detected.stdout_lines | default([])) | length > 0
-
     # ── Rootful podman bridge DNS (INPUT): allow container name resolution, which
     # crosses the host INPUT chain only on rootful podman (full rationale in the
     # header note above). Detected at run time so it tracks whatever bridge(s) exist;
@@ -452,105 +422,27 @@
         - _engine == 'podman'
       check_mode: false
 
-    - name: "Allow container->gateway DNS (53/udp+tcp) on each podman bridge (INPUT) — BEFORE enable"  # noqa: command-instead-of-module
-      # Scoped to port 53 only: aardvark-dns is the sole host-gateway service the
-      # containers need, so opening the whole bridge to host INPUT would widen the
-      # trust boundary well past the DNS fix. Container<->container traffic is
-      # FORWARD (handled by netavark), not INPUT, so it is unaffected by this.
-      ansible.builtin.command: "ufw allow in on {{ item.0 }} to any port 53 proto {{ item.1 }} comment 'agent-cloud:in-on:53/{{ item.1 }}:{{ item.0 }}'"
-      register: _bridgerule
-      changed_when: "_bridgerule.stdout is search('Rules? (added|updated)')"
-      loop: "{{ _bridges.stdout_lines | default([]) | product(['udp', 'tcp']) | list }}"
-      loop_control:
-        label: "{{ item.0 }} 53/{{ item.1 }} (podman bridge DNS, INPUT)"
-      when:
-        - not ansible_check_mode
-        - _allow_bridge_dns
-        - _rootful
-        - _engine == 'podman'
-        - (_bridges.stdout_lines | default([])) | length > 0
-
-    # ── Egress containment for a semi-trusted host. Applied BEFORE enable for the same
-    # reason the SSH allows are: the rule set must be complete the moment the firewall
-    # goes live, so there is no window in which the host is active but uncontained.
-    - name: "Validate each egress denial (single host unless explicitly broad)"
-      ansible.builtin.assert:
-        that:
-          - (item.to | default('')) | length > 0
-          - >-
-            ('/' not in item.to)
-            or ((item.to.split('/') | last) == '32')
-            or (item.broad | default(false) | bool)
-          # `broad: true` is an escape hatch, not a bypass of the thing the guard exists
-          # for. A target that EQUALS a declared SSH CIDR is refused even when flagged
-          # broad — that is the exact self-lock, and no opt-in should be able to express
-          # it. (Strict containment would need ipaddr, which the orchestrator does not
-          # install; equality catches the case that actually happens, which is someone
-          # copying a management CIDR into the denial list.)
-          - item.to not in _ssh_cidrs
-          # And a broad denial must say why, so it cannot be set in passing.
-          - >-
-            (not (item.broad | default(false) | bool))
-            or ((item.reason | default('')) | length > 0)
-        fail_msg: >-
-          firewall_deny_egress entry {{ item | to_json }} is invalid: `to` is required and
-          must be a single host (no prefix, or /32) unless the entry sets `broad: true`.
-          A denial broader than firewall_ssh_cidrs would cut this host off from the
-          management network — see §2.5 in docs/MISTAKES.md. `broad: true` permits a
-          wider mask but never one EQUAL to a declared SSH CIDR, and requires a `reason`.
-      loop: "{{ _deny_egress }}"
-      loop_control:
-        label: "{{ item.to | default('(missing to)') }}"
-
-    - name: "Deny OUTBOUND traffic to each declared destination — BEFORE enabling"  # noqa: command-instead-of-module
-      ansible.builtin.command: >-
-        ufw deny out to {{ item.to }}{{ (' port ' ~ item.port ~ ' proto ' ~ (item.proto | default('tcp'))) if item.port is defined else '' }}
-        comment 'agent-cloud:out-deny:{{ (item.port ~ '/' ~ (item.proto | default('tcp'))) if item.port is defined else 'any' }}:{{ item.to }}'
-      register: _denyegress
-      changed_when: "_denyegress.stdout is search('Rules? (added|updated)')"
-      loop: "{{ _deny_egress }}"
-      loop_control:
-        label: "deny out to {{ item.to }}{{ (':' ~ item.port) if item.port is defined else ' (all ports)' }} ({{ item.comment | default('') }})"
-      when: not ansible_check_mode
-
-    # ── Convergence: prune what this playbook added and no longer declares (header note
-    # "Convergence"). Everything above ENSURED the declared set; from here the host's
-    # tagged rules are compared with it. The declared tags are built from the same inputs
-    # and conditions as the add tasks above; if the two ever disagree, the drift guard
-    # stops the run before a rule is deleted.
-    - name: "Compute the declared rule tags"
+    # ── The declared rule set, built ONCE (filter_plugins/ufw_rules.py ufw_desired_rules):
+    # each rule's ufw command, its tag, and the spec `ufw show added` prints for it. Every
+    # task below reads this list, so the tag format has one definition and the add commands
+    # cannot disagree with the declared set. Order is the add order: SSH first.
+    - name: "Compute the declared rules (command, tag, stored spec), SSH first"
       ansible.builtin.set_fact:
-        _fw_declared: >-
-          {%- set t = [] -%}
-          {%- set _ = t.extend(_fw_ssh_tags) -%}
-          {%- for r in _rules -%}
-          {%- set _ = t.append('agent-cloud:in:' ~ r.port ~ '/' ~ (r.proto | default('tcp')) ~ ':' ~ r.from) -%}
-          {%- endfor -%}
-          {%- for r in _route_rules -%}
-          {%- set _ = t.append('agent-cloud:route:' ~ r.port ~ '/' ~ (r.proto | default('tcp')) ~ ':' ~ r.from) -%}
-          {%- endfor -%}
-          {%- if firewall_detect_ports | default(true) | bool -%}
-          {%- for d in _detected.stdout_lines | default([]) -%}
-          {%- for src in _upstream_sources -%}
-          {%- set _ = t.append('agent-cloud:in:' ~ d.split()[0] ~ '/' ~ d.split()[1] ~ ':' ~ src) -%}
-          {%- if _rootful -%}
-          {%- set _ = t.append('agent-cloud:route:' ~ d.split()[0] ~ '/' ~ d.split()[1] ~ ':' ~ src) -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {%- endif -%}
-          {%- if _allow_bridge_dns and _rootful and _engine == 'podman' -%}
-          {%- for b in _bridges.stdout_lines | default([]) -%}
-          {%- for p in ['udp', 'tcp'] -%}
-          {%- set _ = t.append('agent-cloud:in-on:53/' ~ p ~ ':' ~ b) -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {%- endif -%}
-          {%- for e in _deny_egress -%}
-          {%- set _ = t.append('agent-cloud:out-deny:' ~ ((e.port ~ '/' ~ (e.proto | default('tcp'))) if e.port is defined else 'any') ~ ':' ~ e.to) -%}
-          {%- endfor -%}
-          {{ t | unique | list }}
+        _fw_desired: >-
+          {{ _ssh_cidrs | ufw_desired_rules(
+               allow_rules=_rules, route_rules=_route_rules,
+               detected=_detected.stdout_lines | default([]), upstreams=_upstream_sources,
+               rootful=_rootful | bool, bridges=_bridges.stdout_lines | default([]),
+               deny_egress=_deny_egress) }}
 
+    - name: "Name the declared tags and the declared SSH allows"
+      ansible.builtin.set_fact:
+        _fw_declared: "{{ _fw_desired | map(attribute='tag') | list }}"
+        _fw_ssh_tags: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='tag') | list }}"
+        # each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command)
+        _fw_ssh_specs: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='spec') | list }}"
+
+    # Read BEFORE adding, so a converged host costs these two reads and no add at all.
     # `show added` lists the STORED rules in ufw's normalised command form, comment
     # included, whether or not ufw is active (src/frontend.py get_show_added, 0.36.2).
     - name: "Read the rules ufw holds, with their comments"  # noqa: command-instead-of-module
@@ -565,17 +457,53 @@
       changed_when: false
       check_mode: false
 
+    - name: "Select the declared rules whose tag the host does not hold"
+      ansible.builtin.set_fact:
+        # Absent by TAG, not by spec: an untagged (or differently tagged) copy of a declared
+        # rule is re-added with its tag, and ufw then only updates the stored comment (the
+        # `ret < 0 and not rule.remove` branch of set_rule, src/backend_iptables.py 0.36.2).
+        _fw_to_add: >-
+          {{ _fw_desired | rejectattr('tag', 'in',
+               _fw_added.stdout_lines | ufw_parse_added | map(attribute='tag') | list) | list }}
+
+    - name: "Allow SSH (22/tcp) from each admin CIDR the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
+      register: _fw_add_ssh
+      changed_when: "_fw_add_ssh.stdout is search('Rules? (added|updated)')"
+      loop: "{{ _fw_to_add | selectattr('is_ssh') | list }}"
+      loop_control:
+        label: "{{ item.tag }}"
+      when: not ansible_check_mode
+
+    # Every other declared rule the host lacks — static and detected INPUT allows, FORWARD
+    # (route) allows for rootful podman / Docker, podman bridge DNS, egress denials — still
+    # BEFORE enable. One command per MISSING rule, so the cost follows the drift, not the
+    # size of the declaration; a single script would lose the per-rule changed status.
+    - name: "Add each other declared rule the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
+      register: _fw_add
+      changed_when: "_fw_add.stdout is search('Rules? (added|updated)')"
+      loop: "{{ _fw_to_add | rejectattr('is_ssh') | list }}"
+      loop_control:
+        label: "{{ item.tag }}"
+      when: not ansible_check_mode
+
+    # ── Convergence: prune what this playbook added and no longer declares (header note
+    # "Convergence"). The plan is made from the rules as they stand AFTER the adds: a rule
+    # re-tagged by an add would otherwise still look stale and be deleted by its spec.
+    - name: "Re-read the rules after adding"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw show added"
+      register: _fw_readd
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - _fw_to_add | length > 0
+
     - name: "Parse the host's rules into spec + tag"
       ansible.builtin.set_fact:
         _fw_current: >-
-          {%- set out = [] -%}
-          {%- for line in _fw_added.stdout_lines if line.startswith('ufw ') -%}
-          {%- set tagged = line is search(" comment 'agent-cloud:[^']*'$") -%}
-          {%- set _ = out.append({'spec': line[4:] | regex_replace(" comment '[^']*'$", ''),
-                                  'tag': (line | regex_replace("^.* comment '(agent-cloud:[^']*)'$", '\\1'))
-                                         if tagged else ''}) -%}
-          {%- endfor -%}
-          {{ out }}
+          {{ (_fw_readd.stdout_lines if _fw_readd is not skipped else _fw_added.stdout_lines)
+             | ufw_parse_added }}
 
     - name: "Plan: stale tagged rules, untagged rules, declared rules not yet on the host"
       ansible.builtin.set_fact:
@@ -601,14 +529,9 @@
         # detected family is recognised by its peer: an INPUT or route allow FROM one of the
         # declared upstream sources. Conservative: a static rule from an upstream is held too.
         _fw_held: >-
-          {%- set out = [] -%}
-          {%- for r in _fw_stale if _fw_detection_empty -%}
-          {%- set f = r.tag.split(':', 3) -%}
-          {%- if f | length == 4 and f[1] in ['in', 'route'] and f[3] in _upstream_sources -%}
-          {%- set _ = out.append(r) -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ out }}
+          {{ (_fw_stale | selectattr('family', 'in', ['in', 'route'])
+              | selectattr('peer', 'in', _upstream_sources) | list)
+             if _fw_detection_empty else [] }}
 
     - name: "Plan: the rules this run deletes"
       ansible.builtin.set_fact:
@@ -671,6 +594,9 @@
           on {{ inventory_hostname }}; declare firewall_controller_cidr (one of firewall_ssh_cidrs) to allow
           it. Nothing was deleted.
 
+    # With nothing added, the first read already held every declared tag (nothing was
+    # missing); with something added, this reads the re-read, so a rule that reported
+    # "added" but did not land — or two declarations ufw stores as ONE rule — stops here.
     - name: "Refuse to prune while a declared rule is missing from the host (drift guard)"
       ansible.builtin.assert:
         that:
@@ -695,27 +621,31 @@
         label: "{{ item.spec }} ({{ item.tag }})"
       when: not ansible_check_mode
 
+    # Only after a delete: with none, the drift guard above already proved every declared
+    # SSH allow present on the rules as they stand.
     - name: "Re-read the rules after pruning"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw show added"
       register: _fw_after
       changed_when: false
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - _fw_prune | length > 0
 
     - name: "Refuse to continue with a declared SSH allow gone, or a stale rule left (anti-lockout)"
       ansible.builtin.assert:
         that:
           # Every declared SSH allow is still present; with >=1 CIDR required above, the
           # host can never be left with zero SSH allows.
-          - >-
-            _fw_ssh_tags | map('regex_replace', '^', " comment '") | map('regex_replace', '$', "'")
-            | reject('in', _fw_after.stdout) | list | length == 0
-          - >-
-            _fw_prune | map(attribute='tag') | map('regex_replace', '^', " comment '")
-            | map('regex_replace', '$', "'") | select('in', _fw_after.stdout) | list | length == 0
+          - _fw_ssh_tags | reject('in', _fw_after_tags) | list | length == 0
+          - _fw_prune | map(attribute='tag') | select('in', _fw_after_tags) | list | length == 0
         fail_msg: >-
           After pruning, {{ inventory_hostname }} is missing a declared SSH allow or still holds a
           stale tagged rule. Rules now: {{ _fw_after.stdout_lines }}
-      when: not ansible_check_mode
+      vars:
+        _fw_after_tags: "{{ _fw_after.stdout_lines | ufw_parse_added | map(attribute='tag') | list }}"
+      when:
+        - not ansible_check_mode
+        - _fw_prune | length > 0
 
     # Each only when the live state differs: `ufw default` and `ufw --force enable` print
     # "changed"/"active" on every call (set_default_policy / set_enabled, 0.36.2), so
@@ -760,12 +690,17 @@
       when: _verify
       check_mode: false
 
+    # Re-read only when this run changed something; otherwise the read taken before the adds
+    # IS the final state, and the report shows it.
     - name: "Capture UFW status"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw status verbose"
       register: _status
       changed_when: false
       check_mode: false
+      when: >-
+        _fw_add_ssh is changed or _fw_add is changed or _fwprune is changed
+        or _din is changed or _dout is changed or _en is changed
 
     - name: "Report"
       ansible.builtin.debug:
-        msg: "{{ inventory_hostname }} firewall: {{ _status.stdout_lines }}"
+        msg: "{{ inventory_hostname }} firewall: {{ _status.stdout_lines | default(_fw_state.stdout_lines) }}"

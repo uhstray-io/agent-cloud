@@ -1,7 +1,20 @@
-"""Read ufw rules the way ufw itself stores them (apply-firewall.yml, "Convergence").
+"""Build and read ufw rules the way ufw itself stores them (apply-firewall.yml, "Convergence").
 
-Two questions the prune step must answer from a stored rule, not from its tag:
+Building — the ONE place the playbook's rule format lives:
 
+- ufw_desired_rules: every rule the inventory declares, in the order it must be added (SSH
+  first, so the allows that keep the runner connected land before anything else), each as
+  {cmd, tag, spec, family, is_ssh}. `cmd` is the ufw argument list without the comment,
+  `tag` the comment naming the rule, `spec` the form `ufw show added` prints it in. A rule
+  declared twice (an SSH CIDR also listed as a static 22/tcp rule) appears once.
+- ufw_tag: `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
+  peer is last because it is the only field that may itself contain ':' (IPv6).
+- ufw_is_ipv4: a single IPv4 address, by stdlib ipaddress (so 999.1.1.1 is not one).
+
+Reading — what the prune step must answer from a stored rule, not from its tag:
+
+- ufw_parse_added: `ufw show added` output as [{spec, tag, family, peer}]; `tag` is ''
+  unless the rule's comment carries the reserved `agent-cloud:` prefix.
 - ufw_address: the spelling ufw stores for an address, so a declared CIDR can be compared
   with what `ufw show added` prints. ufw drops a host mask (/32, /255.255.255.255, /128),
   turns a dotted netmask into a prefix, and masks an IPv4 CIDR to its network
@@ -15,6 +28,7 @@ Tested directly by platform/tests/test_ufw_rules_filter.py.
 """
 
 import ipaddress
+import re
 
 # The actions that let traffic in; `limit` is an allow with a rate limit (ufw(8)).
 _ADMITS = ("allow", "limit")
@@ -105,6 +119,128 @@ def ufw_rule_admits_port(spec, port=22, protocols=("tcp",)):
     return proto in (*protocols, "any") and _covers(dports, int(port))
 
 
+TAG_PREFIX = "agent-cloud:"
+_ADDED = re.compile(r"^ufw (?P<spec>.*?)(?: comment '(?P<comment>[^']*)')?$")
+
+
+def ufw_is_ipv4(value):
+    """True for one IPv4 address in dotted form; a CIDR, a name, or 999.1.1.1 is not."""
+    try:
+        ipaddress.IPv4Address(str(value).strip())
+    except ValueError:
+        return False
+    return True
+
+
+def ufw_tag(family, port_proto, peer):
+    """The comment naming a rule this playbook adds (apply-firewall.yml, "Convergence")."""
+    return f"{TAG_PREFIX}{family}:{port_proto}:{peer}"
+
+
+def ufw_parse_added(lines):
+    """`ufw show added` lines -> [{spec, tag, family, peer}] (src/frontend.py get_show_added, 0.36.2).
+
+    Only lines naming a rule (`ufw ...`) count; the header and "(None)" do not. The spec is
+    ufw's own form with the comment stripped, which is what `ufw delete` takes back. `family`
+    and `peer` are read from the tag ('' when untagged or the tag has fewer fields).
+    """
+    out = []
+    for line in lines or []:
+        match = _ADDED.match(str(line))
+        if not match:
+            continue
+        comment = match.group("comment") or ""
+        tag = comment if comment.startswith(TAG_PREFIX) else ""
+        fields = tag.split(":", 3)
+        family, peer = (fields[1], fields[3]) if len(fields) == 4 else ("", "")
+        out.append({"spec": match.group("spec"), "tag": tag, "family": family, "peer": peer})
+    return out
+
+
+def _stored_command(action, src="any", dst="any", port="any", proto="any", iface="", out=False,
+                    route=False):
+    """src/parser.py get_command, for the rule shapes ufw_desired_rules emits."""
+    src, dst = ufw_address(src), ufw_address(dst)
+    res = action
+    if src == "any" and dst == "any" and not iface and port != "any":
+        res += (" out" if out else "") + f" {port}" + (f"/{proto}" if proto != "any" else "")
+    else:
+        if iface:
+            res += f" {'out' if out else 'in'} on {iface}"
+        elif out:
+            res += " out"
+        if src != "any":
+            res += f" from {src}"
+        if dst != "any" or port != "any":
+            res += f" to {dst}" + (f" port {port}" if port != "any" else "")
+        if " to " not in res and " from " not in res and not iface:
+            res += " to any"
+        if proto != "any":
+            res += f" proto {proto}"
+    return ("route " if route else "") + res
+
+
+def _rule(family, cmd, port_proto, peer, spec, is_ssh=False):
+    return {"cmd": cmd, "tag": ufw_tag(family, port_proto, peer), "spec": spec, "family": family,
+            "is_ssh": is_ssh}
+
+
+def _allow_in(peer, port, proto, is_ssh=False):
+    return _rule("in", f"allow from {peer} to any port {port} proto {proto}", f"{port}/{proto}", peer,
+                 _stored_command("allow", src=peer, port=port, proto=proto), is_ssh)
+
+
+def _allow_route(peer, port, proto):
+    # proto-first: the form verified on the first rootful host (bootstrap hotfix)
+    return _rule("route", f"route allow proto {proto} from {peer} to any port {port}", f"{port}/{proto}", peer,
+                 _stored_command("allow", src=peer, port=port, proto=proto, route=True))
+
+
+def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), upstreams=(), rootful=False,
+                      bridges=(), deny_egress=()):
+    """Every declared rule, in add order, once each (see the module docstring).
+
+    ssh_cidrs    firewall_ssh_cidrs: an INPUT 22/tcp allow from each, added FIRST
+    allow_rules  static INPUT rules [{port, proto(=tcp), from}] (firewall_allow_rules plus the
+                 expanded firewall_allow_groups)
+    route_rules  static FORWARD rules, same shape (firewall_route_rules)
+    detected     published ports found on the host, one "<port> <proto>" per line; each is
+                 allowed from every upstream, and mirrored on FORWARD when `rootful`
+    bridges      podman bridge interfaces that get a 53/udp+tcp INPUT allow
+    deny_egress  [{to, port(optional), proto(=tcp)}]: `deny out` rules
+    """
+    rules = [_allow_in(c, 22, "tcp", is_ssh=True) for c in ssh_cidrs or []]
+    rules += [_allow_in(r["from"], r["port"], r.get("proto") or "tcp") for r in allow_rules or []]
+    rules += [_allow_route(r["from"], r["port"], r.get("proto") or "tcp") for r in route_rules or []]
+    for fields in (str(line).split() for line in detected or [] if str(line).strip()):
+        port, proto = fields[0], fields[1]
+        for src in upstreams or []:
+            rules.append(_allow_in(src, port, proto))
+            if rootful:
+                rules.append(_allow_route(src, port, proto))
+    for iface in bridges or []:
+        for proto in ("udp", "tcp"):
+            rules.append(_rule("in-on", f"allow in on {iface} to any port 53 proto {proto}", f"53/{proto}", iface,
+                               _stored_command("allow", port=53, proto=proto, iface=iface)))
+    for e in deny_egress or []:
+        if e.get("port") is not None:
+            proto = e.get("proto") or "tcp"
+            rules.append(_rule("out-deny", f"deny out to {e['to']} port {e['port']} proto {proto}",
+                               f"{e['port']}/{proto}", e["to"],
+                               _stored_command("deny", dst=e["to"], port=e["port"], proto=proto, out=True)))
+        else:
+            rules.append(_rule("out-deny", f"deny out to {e['to']}", "any", e["to"],
+                               _stored_command("deny", dst=e["to"], out=True)))
+    seen, unique = set(), []
+    for rule in rules:
+        if rule["tag"] not in seen:
+            seen.add(rule["tag"])
+            unique.append(rule)
+    return unique
+
+
 class FilterModule:
     def filters(self):
-        return {"ufw_address": ufw_address, "ufw_rule_admits_port": ufw_rule_admits_port}
+        return {"ufw_address": ufw_address, "ufw_rule_admits_port": ufw_rule_admits_port,
+                "ufw_is_ipv4": ufw_is_ipv4, "ufw_tag": ufw_tag, "ufw_parse_added": ufw_parse_added,
+                "ufw_desired_rules": ufw_desired_rules}
