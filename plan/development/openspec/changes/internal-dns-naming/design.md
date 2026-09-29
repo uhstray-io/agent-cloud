@@ -42,9 +42,11 @@ and leaves the production zone name open (`:396-399`, open question 4). The gate
 waits on internal records for its server leaf's SAN and a split-horizon answer for the
 identity provider
 (`plan/development/openspec/changes/inference-gateway-agentgateway/tasks.md:349-363`,
-group 7). The DGX Spark nodes are not in this repository's inventory
-(`plan/development/openspec/changes/production-internal-ca/design.md:382-384`); spark-1
-serves the OpenAI-compatible API and spark-2 is its Ray worker (`AGENTS.md:460`).
+group 7). The GPU nodes behind the inference API are not in this repository's inventory
+(`plan/development/openspec/changes/production-internal-ca/design.md:382-384`); one serves
+the OpenAI-compatible API and the other is its Ray worker (`AGENTS.md:460`). Below they
+are `<gpu-head>` and `<gpu-worker>`, and a hypervisor node is `<pve-node>`: agent-cloud is
+a template, and which machines a site has is declared in its site-config.
 
 **Standards read for this design (fetched 2026-09-28 from rfc-editor.org).**
 RFC 1035 §2.3.1: a label starts with a letter, ends with a letter or digit, and has only
@@ -97,7 +99,7 @@ name or site label (site-config values, chosen by Joe).
    | Host | `<hostname>.host.<site>.<zone>` | A and PTR | 3600 s |
    | Management | `<hostname>.mgmt.<site>.<zone>` | A and PTR; exists only for a management address distinct from the host address | 3600 s |
 
-   A machine whose management interface (a Proxmox node's UI, for example) answers on its
+   A machine whose management interface (a hypervisor node's UI, for example) answers on its
    host address has no management name; the host name serves, so every address keeps a
    single PTR. The address of a machine is written once, in its host record; every other name reaches
    it through a CNAME or is rendered from the same declaration. Alternative rejected:
@@ -137,10 +139,10 @@ name or site label (site-config values, chosen by Joe).
    answers to a new one.
 
 6. **A member that does not serve keeps its instance name and is left out of the pool.**
-   spark-2 is `dgx02.vllm-primary.<site>.<zone>` with `serves: false`: its instance CNAME
+   `<gpu-worker>` is `dgx02.vllm-primary.<site>.<zone>` with `serves: false`: its instance CNAME
    is rendered, and it is excluded from the `vllm-primary` A set and from every
    load-balancer backend list. The instance name records which deployment the machine
-   belongs to (the model is split across both nodes; losing spark-2 takes
+   belongs to (the model is split across both nodes; losing `<gpu-worker>` takes
    `vllm-primary` down), which is what an operator looking for it needs. Alternatives
    rejected: *a separate service* (`vllm-primary-worker` or `ray`), because a service
    name promises clients something to connect to and there is nothing; *host name
@@ -194,18 +196,18 @@ name or site label (site-config values, chosen by Joe).
    # site-config, all-hosts variables: machines this repository does not manage.
    # A plain list, NOT inventory hosts, so no play can ever target them.
    dns_records_only_hosts:
-     - hostname: <spark-1 hostname>
+     - hostname: <gpu-head>
        address: <address>
        instances: [{service: vllm-primary, instance: dgx01}]
-     - hostname: <spark-2 hostname>
+     - hostname: <gpu-worker>
        address: <address>
        instances: [{service: vllm-primary, instance: dgx02, serves: false}]
-     - hostname: <proxmox node>
+     - hostname: <pve-node>
        address: <address>
        mgmt_address: <address>
    ```
 
-   Machines this repository does not manage (the DGX Spark nodes, the Proxmox nodes) are
+   Machines this repository does not manage (GPU nodes, hypervisor nodes) are
    entries in `dns_records_only_hosts`, not inventory hosts or a group. An inventory host
    can be a play's target however it is declared: a host without `ansible_host` is still
    contacted, because Ansible falls back to the inventory hostname (checked 2026-09-28:

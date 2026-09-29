@@ -340,7 +340,7 @@ declared in site-config, not in this repository.
 | Service | `<service>.<site>.<zone>` | `vllm-primary.<site>.<zone>` | CNAME to the load balancer's service name where one fronts it; otherwise one A record per serving member | 30–60 s |
 | Instance | `<class><NN>.<service>.<site>.<zone>` | `dgx01.vllm-primary.<site>.<zone>` | CNAME to the member's host name | 60 s |
 | Host | `<hostname>.host.<site>.<zone>` | a Proxmox VM or node by its hostname | A, plus the matching PTR | 3600 s |
-| Management | `<hostname>.mgmt.<site>.<zone>` | a BMC, or a Proxmox node's UI on its own address | A, plus the matching PTR; only for a management address distinct from the host address (otherwise the host name serves) | 3600 s |
+| Management | `<hostname>.mgmt.<site>.<zone>` | a BMC, or a hypervisor node's UI on its own address | A, plus the matching PTR; only for a management address distinct from the host address (otherwise the host name serves) | 3600 s |
 
 - **Clients use service names and nothing else.** Adding capacity adds an instance and,
   for a pool, one more A record under the service name. No client configuration changes.
@@ -377,21 +377,24 @@ declared in site-config, not in this repository.
   (`*.agent-cloud.test`, line 201 of this document) does not cover names under a site
   label.
 
-**Applied to what exists today.** `inference.<site>.<zone>` is a CNAME to
-`gateway.<site>.<zone>`, the agentgateway service, whose one instance is
-`vm01.gateway.<site>.<zone>`. `vllm-primary.<site>.<zone>` is the API-serving pool: its A
-set holds `dgx01` (spark-1, which serves the API) only. spark-2 is named
-`dgx02.vllm-primary.<site>.<zone>` because it is part of that deployment (the model is
-split across both nodes, and losing spark-2 takes the service down), but as a Ray worker
-with no API it is excluded from the pool's A set and from every load-balancer backend
-list. The platform services `openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca` and
-`caddy` each have one instance, `vm01`. An HTTP service's name becomes a CNAME to
-`caddy.<site>.<zone>` once Caddy carries a route for that internal name; until then it is
-the A record of its one member. Either way the change is one record and clients keep the
-name. Proxmox nodes have a host name, and a management name where their management
-address is distinct from it. Machines this repository does not manage (the DGX Spark
-nodes, the Proxmox nodes) are declared in a site-config variables list, not as inventory
-hosts, so no playbook can target them.
+**Applied example.** agent-cloud is a template to deploy on; which hosts, instances and
+addresses a site has is declared in that site's site-config, never here. The example uses
+role placeholders. `inference.<site>.<zone>` is a CNAME to `gateway.<site>.<zone>`, the
+agentgateway service, whose one instance is `vm01.gateway.<site>.<zone>`.
+`vllm-primary.<site>.<zone>` is the API-serving pool of a model split across two GPU
+nodes: `<gpu-head>` serves the API and is `dgx01.vllm-primary.<site>.<zone>`, the only
+member in the pool's A set; `<gpu-worker>` is its Ray worker, named
+`dgx02.vllm-primary.<site>.<zone>` because it is part of that deployment (losing it takes
+the service down), but with no API it is excluded from the pool's A set and from every
+load-balancer backend list. `dgx` is an illustrative instance class. Single-instance
+platform services (`openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca`, `caddy`)
+each have instance `vm01`. An HTTP service's name becomes a CNAME to `caddy.<site>.<zone>`
+once Caddy carries a route for that internal name; until then it is the A record of its
+one member. Either way the change is one record and clients keep the name. A hypervisor
+node `<pve-node>` has a host name, and a management name where its management address is
+distinct from it. Machines the platform does not manage (GPU nodes, hypervisor nodes) are
+declared in a site-config variables list, not as inventory hosts, so no playbook can
+target them.
 
 **Alternatives rejected.**
 

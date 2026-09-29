@@ -25,16 +25,22 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       `dns_address` or `dns_mgmt_address` only where the defaults do not hold): `vm01` of
       `gateway`, `openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca` and `caddy`
 - [ ] 1.3 Declare the all-hosts list `dns_records_only_hosts` (design decision 9) for
-      machines this repository does not manage: the two DGX Spark nodes (`dgx01` of
-      `vllm-primary`, serving; `dgx02`, `serves: false`) and the Proxmox nodes (host
+      machines this repository does not manage: the GPU nodes (in the design's example,
+      `<gpu-head>` as `dgx01` of `vllm-primary`, serving, and `<gpu-worker>` as `dgx02`,
+      `serves: false`) and the hypervisor nodes (host
       address, and a management address only where it is distinct). They are list
       entries, never inventory hosts or a group, so no `hosts:` pattern (including `all`
       or a `target_service` survey value) can reach them
-- [ ] 1.4 Confirm no DGX Spark or Proxmox node is an inventory host in the Semaphore
+- [ ] 1.4 Confirm no GPU or hypervisor node is an inventory host in the Semaphore
       inventory; any that is gets moved into the list by this change
 - [ ] 1.5 `platform/inventory/local-dev.yml.example` gains the same variables with
       placeholder values and a local site label, beside the existing `dns_records`
-- [ ] 1.6 Validation gate: `ansible-inventory --list` against the Semaphore inventory
+- [ ] 1.6 Declare the site's concrete record map in site-config: which hosts carry which
+      instances of which services, which machines are records-only, and every host and
+      management address (each reserved in NetBox first). agent-cloud is a template and
+      carries only the scheme, the renderer and role-placeholder examples; no real host
+      name, vmid or address from any site enters this repository
+- [ ] 1.7 Validation gate: `ansible-inventory --list` against the Semaphore inventory
       shows `dns_records_only_hosts` as a variable and none of its hostnames among the
       inventory's hosts; this phase proves no spec scenario on its own and gates phase 2
 

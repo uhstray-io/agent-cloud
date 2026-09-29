@@ -92,7 +92,7 @@ reverse records for a list entry as for a managed host, and MUST refuse a hostna
 is both a list entry and an inventory host.
 
 #### Scenario: Records-only machines are never inventory hosts
-- WHEN the DGX Spark nodes are declared in `dns_records_only_hosts` and the DNS deploy
+- WHEN `<gpu-head>` and `<gpu-worker>` are declared in `dns_records_only_hosts` and the DNS deploy
   renders the zone
 - THEN their host and instance records are rendered, a play whose host pattern is `all`
   matches none of them, and a render in which one of those hostnames is also an

@@ -42,7 +42,7 @@ certificates depend on.
 - A site-config inventory shape that declares every name: the site label and zone, the
   service list (with the load balancer that fronts each, if any), and per host its host
   name, management address and the instances it carries. Hosts this repository does not
-  manage (the DGX Spark nodes, the Proxmox nodes) are declared as entries in a
+  manage (GPU nodes, hypervisor nodes) are declared as entries in a
   variables list, `dns_records_only_hosts`, not as inventory hosts, so no play can
   target them.
 - The DNS deploy renders service, instance, host, management and reverse (PTR) records
