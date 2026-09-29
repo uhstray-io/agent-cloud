@@ -113,3 +113,46 @@ def test_any_no_log_source_is_protected_and_whole_register_prints_are_caught():
     - ansible.builtin.debug: {var: _public}
 """
     assert violations(play) == ["'<unnamed>' loops over _files.results", "'<unnamed>' prints _files"]
+
+
+# A KV read's response body IS the secret (`json.data.data`), and `-v` prints every task's
+# result whether or not it is registered, so the read itself must be hidden; hiding its
+# consumers is not enough (sync-secrets-to-openbao.yml "Verify secrets stored", 2026-09-29).
+KV_READ = re.compile(r"/v1/secret/data/")
+
+
+def visible_secret_reads(text: str) -> list[str]:
+    found = []
+    for t in _tasks(yaml.safe_load(text)):
+        for m in URI:
+            args = t.get(m)
+            if (isinstance(args, dict) and KV_READ.search(str(args.get("url", "")))
+                    and str(args.get("method", "GET")).upper() == "GET" and t.get("no_log") is not True):
+                found.append(f"{t.get('name', '<unnamed>')!r} reads a secret without no_log")
+    return found
+
+
+def test_no_visible_task_reads_a_secret():
+    found = []
+    for base in SCANNED:
+        for path in sorted((ROOT / base).rglob("*.yml")):
+            try:
+                found += [f"{path.relative_to(ROOT)}: {v}" for v in visible_secret_reads(path.read_text())]
+            except yaml.YAMLError:
+                continue
+    assert not found, "\n".join(found)
+
+
+def test_the_secret_read_guard_catches_a_visible_get_and_passes_the_safe_shapes():
+    read = """
+- hosts: localhost
+  tasks:
+    - name: read
+      ansible.builtin.uri:
+        url: "{{ bao }}/v1/secret/data/services/x"
+        headers: {X-Vault-Token: t}
+      register: _r
+"""
+    assert visible_secret_reads(read) == ["'read' reads a secret without no_log"]
+    assert visible_secret_reads(read + "      no_log: true\n") == []
+    assert visible_secret_reads(read.replace("x\"\n", "x\"\n        method: POST\n")) == []
