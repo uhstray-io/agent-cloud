@@ -164,10 +164,36 @@ timestamp>` form with `pbs-vm` format, and requires the volume storage prefix to
 match the listing source. See the [Proxmox PBS storage implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/PBSPlugin.pm).
 An absent protection field remains `unknown`; a reported protection flag is
 not immutability evidence. The survey always reports immutability and restore
-verification as false. Its first reviewed Dev execution is pending. Use those
-live facts to declare any artifact selector and then design the isolated
-target and immutable storage mechanism in private site-config before
-implementing a restore workflow.
+verification as false. Reviewed Dev task 1953 succeeded with one non-PBS
+candidate and complete source disk sizes. At least one backup-inclusion flag was
+absent, so backup inclusion remains unverified; parsed layout does not prove
+guest state was included. The run did not establish immutability, an isolated
+target, or restore success. Read-only Proxmox cluster validation task 1955
+reported image-storage capacity facts, but did not inspect physical disks, LVM,
+or filesystems. Use these facts to declare any artifact selector and then
+design the isolated target and immutable storage mechanism in private
+site-config before implementing a restore workflow.
+
+The follow-on restore-feasibility receipt is deliberately narrow. It reports
+the count of distinct storage IDs that Proxmox reports active and image-capable
+on at least one online node other than the source VM's node, with enough
+point-in-time `avail`/`total` capacity for the complete source disk layout while
+retaining at least 30% of reported total capacity. If any source disk size is
+unknown, no storage qualifies. EFI and TPM state disks are included in the
+aggregate size. It does not choose a storage; shared storage IDs count once.
+Malformed or incomplete node/storage reads fail closed. A returned
+`cluster/nextid` value means only that a candidate was available at read time:
+the value is suppressed and no ID is reserved. Neither result proves a future
+restore can be placed.
+
+The selected backup destination remains local-only PBS on a separately declared
+cluster node; the node declaration belongs in private `site-config`. The
+current image-capacity and VMID checks do not establish that node's physical
+disk safety or PBS datastore readiness. Before any disk or storage write, a
+separate reviewed GET-only physical-storage survey must use verified Proxmox
+API contracts and report only structural aggregate facts. Then reviewed,
+idempotent disk/LVM/filesystem automation must match the private declared
+layout; no unused device may be presumed safe or selected automatically.
 
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
