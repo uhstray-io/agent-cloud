@@ -154,6 +154,17 @@ gated. The 90d/45d retention target also remains blocked: keep the effective
 the representative seven-day forecast, nonzero cap, at least 30% backing
 filesystem headroom, and immutable isolated-restore receipt pass review.
 
+The backup-job reconciliation is a separate Dev-bound Semaphore workflow.
+It reads the Proxmox job list before mutation, reports candidate job IDs only
+in the private task receipt, and takes the selected `o11y_backup_job_id` from
+private inventory. The selected job must be enabled and use an explicit VMID
+list. A `PUT /cluster/backup/{id}` with only the unioned `vmid` membership is
+safe for that mode; Proxmox clears `all`, `exclude`, and `pool` on a `vmid`
+update, so those modes are refused. The playbook changes no schedule, storage,
+retention, or other job option, reads the job back, and converges to a no-op
+on a second run. Check mode issues no write. Backup artifact and isolated
+restore validation remain independent follow-on gates.
+
 ## 2026-09-29 production disk-alert receipt
 
 Non-destructive production deploy task 1830 and read-only budget task 1831

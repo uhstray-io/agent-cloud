@@ -212,6 +212,25 @@ guest growth occurred. The existing `snapshot-vm.yml` verifies snapshot
 creation/presence only; there is no code-managed restore-test workflow or
 verified backup/restore receipt, so it does not authorize disk growth.
 
+Use the Dev-bound `Reconcile o11y Backup Job` template to assign the o11y VM to
+an existing backup job. Declare its selected ID as `o11y_backup_job_id` in
+private inventory after inspection; launch only with the exact reviewed Dev
+SHA. Run Semaphore check mode first. The reconciler accepts only an enabled
+job with an explicit VMID list, refuses `all`, pool, exclusion, malformed,
+missing, duplicate, or concurrently changed job state, and sends only the
+updated `vmid` list. It verifies the final membership and preserved job
+options. This config change does not run a backup or prove artifact
+immutability, retention, or restore success; the separate restore gate still
+applies before guest growth.
+
+The Semaphore survey defaults **Inspect backup jobs only** to `true`, so its
+first launch is read-only. It verifies the reviewed Dev revision, o11y VM, and
+OpenBao access, then lists sanitized candidate IDs, enabled state, selector
+type, member count, and declared-VM membership. Inspection ends before job
+detail reads or writes. Record the chosen existing job ID on the o11y host in
+private inventory, then set inspection to `false` for check mode and the
+reviewed apply.
+
 Dev-bound read-only Semaphore task 1802, at controller revision
 `5a9d17c7e26778049e1747ee48089985ae16121e`, verified the exact
 `o11y/receiver-host` target at `node-exporter:9100` and returned

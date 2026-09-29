@@ -1018,6 +1018,18 @@ free-form storage values are not emitted. Immutability, isolated restore target,
 and restore success remain unknown; no backup, restore, retention change, or
 guest growth occurred.
 
+The next backup step is to reconcile o11y's membership in the existing
+Proxmox schedule through a Dev-bound Semaphore playbook. A read-only inspect
+mode identifies the candidate job in private task output; its exact ID belongs
+in `site-config` inventory. The apply mode uses the OpenBao Proxmox token,
+requires one declared o11y VM and an enabled job with an explicit VMID list,
+adds only that VM, and reads membership back. Proxmox's update API changes
+selection mode when given `vmid`, so `all`, `pool`, and `exclude` jobs must be
+refused rather than silently converted. The run must preserve every other
+job setting and member and be idempotent. After a scheduled backup, repeat
+the artifact survey. An artifact and a successful isolated restore are still
+separate gates before disk growth or 90-day/45-day retention.
+
 2026-09-29: the first production survey attempt, Semaphore task 1828, failed
 before contacting Proxmox. The Authorization header lived in play-level URI
 module defaults and was interpolated before the OpenBao credential tasks set
@@ -1179,3 +1191,18 @@ When Phase 1's gate passes:
 - **Config is code.** Datasources, dashboards, scrape rules, and log pipelines are committed and provisioned on boot; the only secret is the Grafana admin password (OpenBao). A wipe + redeploy reproduces the exact same observability.
 - **The audit-logging requirement has a home.** AUTOMATION-COMPOSABILITY's OpenBao-audit→Loki pipe and orb-agent OTel export now have a concrete target (Phase 2), instead of an unbuilt dependency.
 - **Local mirrors prod.** The same compose base extends to Mimir/Tempo/MinIO/Alertmanager in prod via overlay + `manage-secrets` — one codebase, no fork; local proves the shape before prod.
+
+## 2026-09-29 production conformance receipts
+
+PR #331 merged to `dev` as `566a5e3d`; PR #332 merged as `5314ec65`. Semaphore
+inventory sync matched the private source. At exact reviewed `dev` revision
+`5314ec65`, deploy check/apply tasks 1850/1851 succeeded with a healthy stack;
+firewall check/apply tasks 1852/1853 succeeded; and collector check/apply tasks
+1854/1855 succeeded with `otlp: delivered`. The live Grafana conformance
+dashboard reports 18 tracked services and five recent failed-step reports with
+their assessment context. Scoped schedule readback confirmed `*/15 * * * *`.
+
+Generic `Verify o11y Service` task 1857 failed because it queried
+`service.name` as a Loki `service` label. This was a verifier query mismatch,
+not a collector delivery failure: conformance records use
+`job=agent-cloud-conformance` and `service=<assessed service>`.
