@@ -99,6 +99,40 @@ Each row is a rule from the linked page, read 2026-09-22.
      `ansible-doc --json <module>`; support was read that way on 2026-09-22.
    A task that reads a value a later write needs, and must not run for real under `--check`,
    uses `ignore_errors: "{{ ansible_check_mode }}"` on the consumer instead.
+
+   > **Decision (Joe): runner-scratch class, 2026-09-28.** A fourth class, added to the
+   > three above without changing them. A task may carry `check_mode: false` and write
+   > for real during a dry run when it writes **only** inside a temporary directory on
+   > the Semaphore runner (`delegate_to: localhost`) that the same run created and removes
+   > in an `always` section. Nothing outside that directory is written, and the removal
+   > itself carries `check_mode: false`, since a simulated delete would leave the file
+   > behind. Such tasks set `changed_when: false`: they leave nothing behind, so reporting
+   > them as changes would misstate what the real run does. The reason is proof before
+   > the real run: an SSH key probe needs the key on disk, and without this a dry run of
+   > Distribute SSH Keys, Harden SSH or Verify Host Access could not test key auth at all
+   > (`ansible.builtin.tempfile` has no check-mode support, so the hand-rolled key file
+   > never existed under `--check`). The one implementation is
+   > `platform/playbooks/tasks/materialise-ssh-key.yml` with `tasks/remove-ssh-key.yml`
+   > (and `tasks/pin-ssh-host-key.yml` for the pinned known_hosts). Enforcement is three
+   > independent lines, because a guard that only reads source can be routed around by
+   > indirection (PR #319 review):
+   > `platform/tests/test_check_mode_contract.py` accepts a file write forced to run
+   > under `--check` only in one of those shared files, delegated to the runner, with no
+   > `vars:` on it or any enclosing block, aimed at that file's one pinned target
+   > expression (for the tempfile, the pinned temp-root expression). Every name a target
+   > is built from must be defined exactly once in the repository, by its pinned
+   > expression. Anything else is a violation: a task, block, play or include `vars:`
+   > entry, another `set_fact` in mapping, `k=v` or `args:` form, or a `register`. Source
+   > analysis cannot see extra vars, inventory, `vars_files` or `include_vars`, and an
+   > extra var outranks every `set_fact`. So the shared tasks also assert at runtime that the
+   > directory and the known_hosts path sit directly under the temp root, in a `.sshkey_`
+   > directory, before writing. That root is computed INLINE from the runner's environment
+   > and never held in a variable, so nothing can move it. The tests that execute these
+   > tasks run under a default-deny write sandbox where the host has one
+   > (`platform/tests/harness_sandbox.py`: `sandbox-exec` on macOS, allowing only the
+   > test's directory, the temp root and `/dev`; `bwrap` on Linux). The GitHub-hosted CI
+   > runner has neither, so there the source guard and the runtime assert are the
+   > enforcement.
 3. **Verify is a tag.** Each state-changing playbook tags its verification tasks `verify`,
    and also tags `verify` on anything verification needs: OpenBao authentication, the
    transport guard, and every `rescue` and `always` section of a block that contains verify
@@ -165,6 +199,14 @@ allowlist as it is fixed.
   "Diff" option is not used on credential playbooks.
 - `check_mode: false` makes a task run for real during a dry run; it is allowed only on
   tasks that cannot change state, which the guard checks by module and HTTP method.
+
+  > **Decision (Joe): runner-scratch class, 2026-09-28.** The one exception is the
+  > runner-scratch class under "Platform conventions" 2: a write confined to a runner-local
+  > temporary directory created and removed in the same run. It can hold secret material
+  > (a private key), so the write is `no_log` with `diff: false`, the directory is
+  > owner-only (0700) and the file 0600, and the removal refuses any directory that is not
+  > one the shared task created directly under the runner's temp root. No other write may
+  > run under `--check`.
 - `set_stats` output lands in Semaphore's durable task log; step results carry names,
   statuses and evidence, never credential values.
 
@@ -184,3 +226,4 @@ allowlist as it is fixed.
 | Date | Change |
 |---|---|
 | 2026-09-22 | Initial version from the official documentation |
+| 2026-09-28 | Decision (Joe): runner-scratch class — runner-local temp writes removed in the same run may run under `--check`; enforced by the check-mode guard (pinned targets and definitions), runtime path asserts, and a sandboxed test harness |

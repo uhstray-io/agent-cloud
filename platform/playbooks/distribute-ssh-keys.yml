@@ -195,45 +195,71 @@
           'secret/data/services/ssh:private_key',
           url=_bao_url, auth_method='approle',
           role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-
-    - name: "Write key to temp file"
-      ansible.builtin.tempfile:
-        state: file
-        prefix: ".mgmt_key_"
-      register: _key_file
-      delegate_to: localhost
-
-    - name: "Set key contents"
-      ansible.builtin.copy:
-        content: "{{ _mgmt_priv_key }}\n"
-        dest: "{{ _key_file.path }}"
-        mode: "0600"
-      delegate_to: localhost
       no_log: true
 
-    - name: "Test SSH key auth to host — {{ service_name }}"
-      ansible.builtin.command:
-        cmd: >
-          ssh -i {{ _key_file.path }}
-              -o BatchMode=yes
-              -o ConnectTimeout=10
-              -o StrictHostKeyChecking=accept-new
-              -o PasswordAuthentication=no
-              -o PubkeyAuthentication=yes
-              {{ _ssh_user }}@{{ ansible_host | default(inventory_hostname) }}
-              echo KEY_AUTH_OK
-      delegate_to: localhost
-      register: _key_test
-      failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
-      changed_when: false
-      check_mode: false
+    # The key goes on disk only for the probe, via the shared task, and is wiped in
+    # `always` — on a failed probe too. Under --check this still runs: the scratch is
+    # runner-local (tasks/materialise-ssh-key.yml explains why that is allowed).
+    # The host key is pinned into the scratch known_hosts, never the runner's own
+    # ~/.ssh/known_hosts, so neither a dry run nor a real one leaves it behind.
+    - name: "Test SSH key auth with a runner-local copy of the management key"
+      block:
+        - name: "Materialise the management key (runner-local, 0600)"
+          ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+          vars:
+            ssh_key_content: "{{ _mgmt_priv_key }}"
+            ssh_key_result_var: _mgmt_key
 
-    - name: "Result"
-      ansible.builtin.debug:
-        msg: "{{ service_name }}: SSH key auth {{ 'CONFIRMED' if _key_test.rc == 0 else 'FAILED' }}"
+        # StrictHostKeyChecking=yes against the host's own key, read over the Ansible
+        # connection this run already has (tasks/pin-ssh-host-key.yml says what that proves).
+        - name: "Pin the target's SSH host key read over the existing connection"
+          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+          vars:
+            ssh_key_result_var: _mgmt_key
+            ssh_host_key_result_var: _mgmt_pin
+            ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+            ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
 
-    - name: "Remove temp key"
-      ansible.builtin.file:
-        path: "{{ _key_file.path }}"
-        state: absent
-      delegate_to: localhost
+        - name: "Refuse an unpinned probe"
+          ansible.builtin.assert:
+            that: _mgmt_pin.pinned | bool
+            fail_msg: >-
+              Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
+              connection, so the ssh probe would have to trust whatever answers. Refusing.
+            quiet: true
+
+        - name: "Test SSH key auth to host — {{ service_name }}"
+          ansible.builtin.command:
+            cmd: >
+              ssh -i {{ _mgmt_key.key }}
+                  -o BatchMode=yes
+                  -o ConnectTimeout=10
+                  -o StrictHostKeyChecking=yes
+                  -o UserKnownHostsFile={{ _mgmt_key.known_hosts }}
+                  -o PasswordAuthentication=no
+                  -o PubkeyAuthentication=yes
+                  -p {{ _mgmt_pin.port }}
+                  {{ _ssh_user }}@{{ _mgmt_pin.addr }}
+                  echo KEY_AUTH_OK
+          delegate_to: localhost
+          register: _key_test
+          # Under --check the authorized_key writes above were only simulated, so this
+          # reads the host's CURRENT state and reports it instead of failing the dry run
+          # over a change it did not make (plan/architecture/08, "Platform conventions"
+          # 2: the consumer of a simulated write tolerates it under check mode).
+          failed_when: "'KEY_AUTH_OK' not in _key_test.stdout and not ansible_check_mode"
+          changed_when: false
+          check_mode: false
+
+        - name: "Result"
+          ansible.builtin.debug:
+            msg: >-
+              {{ service_name }}: SSH key auth {{ 'CONFIRMED' if _key_test.rc == 0 else 'FAILED' }}{{
+              ' (dry run: the key writes were simulated, so this is the host as it is NOW)'
+              if ansible_check_mode else '' }}
+
+      always:
+        - name: "Remove the runner-local key"
+          ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+          vars:
+            ssh_key_result_var: _mgmt_key

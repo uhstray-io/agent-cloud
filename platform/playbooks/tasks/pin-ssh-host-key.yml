@@ -1,0 +1,127 @@
+---
+# pin-ssh-host-key.yml — pin the target's SSH host key into a materialised scratch
+# known_hosts, so the runner's ssh probes trust exactly the host Ansible reached.
+#
+# Every probe that connects from the runner by ssh (Distribute SSH Keys, Harden SSH,
+# Verify Host Access) uses StrictHostKeyChecking=yes against this file. accept-new would let
+# an on-path server impersonate the target, accept our key, and make a probe report
+# success against the attacker while the real host has no key path.
+#
+# WHAT THE PIN IS, AND IS NOT. The key is read over the ALREADY-ESTABLISHED Ansible
+# connection to the target. Semaphore runs every playbook with
+# ANSIBLE_HOST_KEY_CHECKING=False (semaphoreui/semaphore v2.19.11,
+# db_lib/AnsiblePlaybook.go:28, read 2026-09-28), so that connection itself verified no
+# host key. The pin therefore binds the probe to the host the Ansible connection reached
+# IN THIS RUN — a probe cannot be answered by a different server than the one Ansible is
+# configuring — not to a long-lived trust root. It is the strongest root available before
+# a host is hardened, and it keeps nothing on the runner between runs.
+#
+# Inputs:
+#   ssh_key_result_var        the tasks/materialise-ssh-key.yml result whose
+#                             known_hosts this writes (nothing happens when it did not
+#                             materialise)
+#   ssh_host_key_result_var   name of the fact this sets:
+#                               pinned  true when known_hosts holds the target's key
+#                               addr    the address the pin (and so the probe) uses
+#                               port    the port; OpenSSH keys a non-22 port as [addr]:port
+#   ssh_host_key_addr         the target address, resolved by the CALLER outside any
+#                             delegation (hostvars[inventory_hostname].ansible_host): inside
+#                             a delegate_to: localhost task, a bare ansible_host can resolve
+#                             in the delegated context
+#   ssh_host_key_port         default 22
+#   ssh_host_key_files        host public keys to try on the target, in order
+#
+# Include it after the materialise task, inside the same block, so the known_hosts it
+# writes is wiped with the key by tasks/remove-ssh-key.yml. The writes are the
+# runner-scratch class of plan/architecture/08 (decision 2026-09-28).
+
+- name: "Pin SSH host key: validate the inputs"
+  ansible.builtin.assert:
+    that:
+      - ssh_key_result_var is defined
+      - ssh_host_key_result_var is defined
+      - ssh_host_key_result_var is string
+      - ssh_host_key_result_var is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - (ssh_host_key_addr | default('') | string | length) > 0
+    fail_msg: >-
+      pin-ssh-host-key.yml needs ssh_key_result_var, ssh_host_key_result_var (a plain
+      variable name) and ssh_host_key_addr.
+    quiet: true
+
+# Freeze the address and port HERE, in a task that is not delegated.
+- name: "Pin SSH host key: start from 'not pinned'"
+  ansible.builtin.set_fact:
+    "{{ ssh_host_key_result_var }}":
+      pinned: false
+      addr: "{{ ssh_host_key_addr | string }}"
+      port: "{{ ssh_host_key_port | default(22) | int }}"
+
+- name: "Pin SSH host key: read the target's own host key over the existing connection"
+  ansible.builtin.raw: >-
+    {{ ssh_host_key_files | default(['/etc/ssh/ssh_host_ed25519_key.pub', '/etc/ssh/ssh_host_rsa_key.pub'])
+       | map('quote') | map('regex_replace', '^(.*)$', 'cat \1 2>/dev/null') | join(' || ') }} || true
+  register: _pshk_read
+  delegate_to: "{{ inventory_hostname }}"
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _pshk_key.materialised | default(false) | bool
+  vars:
+    _pshk_key: "{{ lookup('ansible.builtin.vars', ssh_key_result_var, default={}) }}"
+
+# The target path and the line are resolved here, by set_fact, so the forced write below
+# carries no `vars:`; `_pshk_kh` has exactly one pinned definition in the repository
+# (test_check_mode_contract.py). The temp root is deliberately NOT a variable: every check
+# below computes it inline, so no set_fact, include parameter or extra var can move it.
+- name: "Pin SSH host key: resolve the known_hosts path and the pinned line"
+  ansible.builtin.set_fact:
+    _pshk_kh: "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"
+    # OpenSSH keys a non-default port as [host]:port; a bare entry would never match and
+    # StrictHostKeyChecking=yes would refuse — a false failure from the opposite direction.
+    _pshk_line: >-
+      {{ (_pshk_pin.addr if ((_pshk_pin.port | int) == 22) else ('[' ~ _pshk_pin.addr ~ ']:' ~ _pshk_pin.port))
+         ~ ' ' ~ (_pshk_fields[:2] | join(' ')) }}
+  vars:
+    _pshk_pin: "{{ lookup('ansible.builtin.vars', ssh_host_key_result_var) }}"
+    _pshk_fields: "{{ ((_pshk_read.stdout | default('') | trim).splitlines() | first | default('')).split() }}"
+  when:
+    - _pshk_read.stdout is defined
+    - (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
+
+# The known_hosts path arrives through the materialise RESULT fact, and any fact can be
+# overridden (a caller's set_fact, an include parameter, an extra var — PR #319 review wrote
+# through each). So it is checked at runtime, against the temp root computed INLINE from the
+# runner's environment, to be `known_hosts` in a `.sshkey_` directory directly under it.
+- name: "Pin SSH host key: refuse a known_hosts outside the scratch directory"
+  ansible.builtin.assert:
+    that:
+      - (_pshk_kh | basename) == 'known_hosts'
+      - (_pshk_kh | dirname | basename) is match('^\.sshkey_')
+      - (_pshk_kh | realpath | dirname | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)
+    fail_msg: "The pinned known_hosts path is not inside the SSH key scratch directory; refusing to write it."
+    quiet: true
+  when: _pshk_line is defined and _pshk_read.stdout is defined
+    and (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
+
+- name: "Pin SSH host key: write known_hosts pinned to that key (runner scratch)"
+  ansible.builtin.copy:
+    content: "{{ _pshk_line }}\n"
+    dest: "{{ _pshk_kh }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  when:
+    - _pshk_read.stdout is defined
+    - (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
+  register: _pshk_write
+
+- name: "Pin SSH host key: publish the result"
+  ansible.builtin.set_fact:
+    "{{ ssh_host_key_result_var }}":
+      pinned: true
+      addr: "{{ lookup('ansible.builtin.vars', ssh_host_key_result_var).addr }}"
+      port: "{{ lookup('ansible.builtin.vars', ssh_host_key_result_var).port }}"
+  when: _pshk_write is not skipped

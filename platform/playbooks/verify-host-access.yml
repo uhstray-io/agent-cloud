@@ -21,8 +21,9 @@
 #   * Nothing on the TARGET is written, restarted or reconfigured. It cannot
 #     cause the lockout it exists to prevent.
 #   * The key-only probe needs the private key on disk to use it, so it is
-#     written to a 0600 temp file ON THE RUNNER and removed in an `always`
-#     block — including when the probe fails.
+#     written to a 0600 file in a 0700 scratch directory ON THE RUNNER
+#     (tasks/materialise-ssh-key.yml) and removed in an `always` block —
+#     including when the probe fails.
 #   * Every probe tolerates failure and REPORTS it. A partial answer is what you
 #     need when access is the thing in question.
 #
@@ -178,69 +179,42 @@
             _svc_key_len: "{{ _svc_key | length }}"
 
         - name: "Materialise it for the probe (runner-side, 0600)"
-          # The host is untouched; this file exists only on the runner and only
-          # for the duration of the probe. Removed in `always` below, including
-          # on failure.
-          ansible.builtin.tempfile:
-            state: file
-            suffix: ".probe-key"
-          register: _keyfile
-          when: _svc_key | length > 0
-
-        - name: "Write the key material"
-          ansible.builtin.copy:
-            content: "{{ _svc_key }}\n"
-            dest: "{{ _keyfile.path }}"
-            mode: "0600"
-          no_log: true
-          when: _svc_key | length > 0
+          # The host is untouched; the key exists only on the runner and only for the
+          # duration of the probe, in a scratch directory the `always` below wipes,
+          # including on failure. Runs under --check too, so a dry run of this gate
+          # still proves key auth (tasks/materialise-ssh-key.yml explains why that is
+          # allowed). An empty key is REPORTED here, not fatal: materialised=false.
+          ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+          vars:
+            ssh_key_content: "{{ _svc_key }}"
+            ssh_key_result_var: _probe_key
+            ssh_key_allow_empty: true
 
         # Pin the host's identity BEFORE connecting. With
         # StrictHostKeyChecking=accept-new, an on-path server could impersonate
         # the inventory host, accept our public key, and make the probe report
         # success — so the gate would prove key auth against an attacker while
-        # the real host has none. Reading the host's own public key over the
-        # ALREADY-ESTABLISHED Ansible connection roots the probe's trust in the
-        # same channel Ansible is already using, rather than in whatever answers
-        # on the network. (That channel is only as trustworthy as the connection
-        # itself — but it is strictly better than trusting an unknown key, and it
-        # is the strongest root available before the host is hardened.)
-        - name: "Read the target's own SSH host key over the existing connection"
-          ansible.builtin.raw: "cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || cat /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || true"
-          register: _hostkey
-          delegate_to: "{{ inventory_hostname }}"
-          changed_when: false
-          failed_when: false
-          check_mode: false
+        # the real host has none. The shared task reads the host's own public key
+        # over the ALREADY-ESTABLISHED Ansible connection and writes it into the
+        # scratch known_hosts; it explains what that pin does and does not prove.
+        - name: "Pin the target's SSH host key read over the existing connection"
+          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+          vars:
+            ssh_key_result_var: _probe_key
+            ssh_host_key_result_var: _probe_pin
+            ssh_host_key_addr: "{{ _target_addr }}"
+            ssh_host_key_port: "{{ _target_port }}"
 
         - name: "Record whether the host key was readable"
           ansible.builtin.set_fact:
-            _hostkey_ok: "{{ ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2 }}"
-
-        - name: "Write a known_hosts pinned to that key"
-          ansible.builtin.copy:
-            # OpenSSH keys a non-default port as [host]:port. Writing the bare
-            # host for such a target means the pin never matches and
-            # StrictHostKeyChecking=yes refuses the connection — another false
-            # NO-GO, from the opposite direction.
-            content: "{{ _kh_host }} {{ (_hostkey.stdout | default('') | trim).split(' ')[0] }} {{ (_hostkey.stdout | default('') | trim).split(' ')[1] }}\n"
-            dest: "{{ _keyfile.path }}.known_hosts"
-            mode: "0600"
-          vars:
-            _kh_host: "{{ _target_addr if ((_target_port | int) == 22) else ('[' ~ _target_addr ~ ']:' ~ _target_port) }}"
-          when:
-            - _svc_key | length > 0
-            - _keyfile.path is defined
-            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
-            # An empty user would template to "@host" and fail as an argument
-            # error rather than a probe failure.
+            _hostkey_ok: "{{ _probe_pin.pinned | default(false) | bool }}"
 
         - name: "Connect using the key ONLY — password auth refused, host key pinned"
           ansible.builtin.command:
             argv:
               - ssh
               - -i
-              - "{{ _keyfile.path }}"
+              - "{{ _probe_key.key }}"
               - -o
               - BatchMode=yes
               - -o
@@ -256,7 +230,7 @@
               - -o
               - StrictHostKeyChecking=yes
               - -o
-              - "UserKnownHostsFile={{ _keyfile.path }}.known_hosts"
+              - "UserKnownHostsFile={{ _probe_key.known_hosts }}"
               - -o
               - ConnectTimeout=10
               - -p
@@ -267,13 +241,13 @@
           changed_when: false
           failed_when: false
           # MUST be gated on the key AND the pin existing. `failed_when: false`
-          # does NOT catch task-ARGUMENT templating failures, so an undefined
-          # _keyfile.path here aborts the play instead of reporting NO-GO —
+          # does NOT catch task-ARGUMENT templating failures, so a probe without a
+          # materialised key would abort the play instead of reporting NO-GO —
           # defeating the entire "always report something" design.
           when:
             - _svc_key | length > 0
-            - _keyfile.path is defined
-            - ((_hostkey.stdout | default('') | trim).split(' ') | length) >= 2
+            - _probe_key.materialised | default(false) | bool
+            - _probe_pin.pinned | default(false) | bool
             # An empty user would template to "@host" and fail as an ARGUMENT
             # error rather than a probe failure — indistinguishable from an abort.
             - (_target_user | default('') | trim | length) > 0
@@ -281,13 +255,10 @@
 
       always:
         - name: "Remove the probe key and its pinned known_hosts"
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ _keyfile.path }}"
-            - "{{ _keyfile.path }}.known_hosts"
-          when: _keyfile.path is defined
+          # Both live in the one scratch directory, so one wipe removes both.
+          ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+          vars:
+            ssh_key_result_var: _probe_key
 
     # ── Escalation needs a sudo password on a host that is not yet hardened ──
     # The two tasks below need root, and a host that has not been hardened has no

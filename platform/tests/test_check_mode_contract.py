@@ -11,11 +11,27 @@ Under `ansible-playbook --check`, a module without check-mode support is skipped
   `ansible_check_mode`, `check_mode: true`, or `creates`/`removes` on a command. A write
   under `check_mode: false` runs for real during a dry run and is always a violation.
 
+A FILE write (copy, file, tempfile, lineinfile, template, ...) simulates, so it needs no guard,
+but under `check_mode: false` it runs for real. That is allowed only in the runner-scratch class
+(plan/architecture/08, decision 2026-09-28), and only as a CLOSED set of exact source forms:
+- delegated to the runner, with NO `vars:` on the task or any enclosing block;
+- its dest/path one of the pinned targets of the shared task file it sits in
+  (materialise-ssh-key.yml, remove-ssh-key.yml, pin-ssh-host-key.yml), or, for the one
+  tempfile, exactly the pinned temp-root expression;
+- every name those targets are built from defined exactly ONCE in the whole repository, by
+  the pinned expression in its own file (a set_fact or the tempfile's register). A second
+  definition anywhere — task, block or play `vars:`, include parameters, another set_fact or
+  register — is a violation, because Ansible would let it redirect the write while the target
+  text stayed the same (PR #319 review: exactly that bypass wrote outside the scratch).
+Source analysis is not the only line: the shared tasks re-check their paths at runtime, and
+the test harness that executes them runs sandboxed (platform/tests/harness_sandbox.py).
+
 Guards on an enclosing block are inherited. Files still being retrofitted are listed in
 check_mode_allowlist.txt; a listed file that has become clean fails the test until its line is
 removed, so the list only shrinks (change service-deployment-workflow, tasks 1.4 and 2.4).
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -45,6 +61,32 @@ HOST_WRITE = re.compile(
     r"|(?:^|[\s;&|(])(?:sudo\s+)?systemctl\s+(?:--user\s+)?(?:start|stop|restart|reload|enable|disable)\b"
 )
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
+
+FILE_WRITES = {"copy", "file", "tempfile", "lineinfile", "template", "blockinfile", "replace",
+               "assemble", "get_url", "unarchive"}
+MATERIALISE = "platform/playbooks/tasks/materialise-ssh-key.yml"
+REMOVE = "platform/playbooks/tasks/remove-ssh-key.yml"
+PIN = "platform/playbooks/tasks/pin-ssh-host-key.yml"
+SCRATCH_ROOT = "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+# The same root, as the runtime checks must compute it: INLINE, never through a variable, so no
+# set_fact, include parameter or extra var can move it (PR #319 review: `-e` beat a set_fact).
+SCRATCH_ROOT_INLINE = "(lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)"
+SET_FACT_KEYS = ("ansible.builtin.set_fact", "ansible.legacy.set_fact", "set_fact")
+# The only dest/path a forced write may carry, each valid only in its own file.
+SCRATCH_TARGETS = {
+    MATERIALISE: {"{{ _msk_dir.path }}/id"},
+    REMOVE: {"{{ _rsk_dir }}"},
+    PIN: {"{{ _pshk_kh }}"},
+}
+# Every name a scratch target is built from, and its ONE definition: (file, kind, value), where
+# value is the exact set_fact expression, or the name of the task whose register defines it.
+PINNED_DEFINITIONS = {
+    "_msk_dir": (MATERIALISE, "register", "Materialise SSH key: create the runner-local scratch directory (0700)"),
+    "_rsk_dir": (REMOVE, "set_fact",
+                 "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir"
+                 " | default('') }}"),
+    "_pshk_kh": (PIN, "set_fact", "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"),
+}
 
 
 class _Loader(yaml.SafeLoader):
@@ -105,6 +147,86 @@ def _sandboxed(text: str) -> bool:
     return bool(re.search(r"\broot=\$\(mktemp -d\)", text)) and "trap 'rm -rf \"$root\"' EXIT" in text
 
 
+def _file_write(task: dict) -> tuple[str, object] | tuple[None, None]:
+    for key, value in task.items():
+        short = key.rsplit(".", 1)[-1]
+        core = key == short or key.startswith(("ansible.builtin.", "ansible.legacy."))
+        if core and short in FILE_WRITES:
+            return short, value
+    return None, None
+
+
+def _in_runner_scratch(module: str, args, rel: str | None) -> bool:
+    args = args if isinstance(args, dict) else {}
+    if module == "tempfile":
+        # Only the shared task may create the scratch root: its own prefix, the pinned root.
+        return (rel == MATERIALISE and args.get("state") == "directory" and args.get("prefix") == ".sshkey_"
+                and str(args.get("path", "")).strip() == SCRATCH_ROOT)
+    target = str(args.get("dest") or args.get("path") or "").strip()
+    return target in SCRATCH_TARGETS.get(rel, set())
+
+
+def _definitions(doc, rel: str) -> list[tuple[str, str, str, str]]:
+    """(name, rel, kind, value) for every definition of a pinned name in one parsed file."""
+    found = []
+
+    def from_vars(mapping, kind):
+        for name, value in (mapping or {}).items() if isinstance(mapping, dict) else []:
+            if name in PINNED_DEFINITIONS:
+                found.append((name, rel, kind, str(value).strip()))
+
+    def from_free_form(text):
+        # `set_fact: a=1 b=2` (k=v form). Any pinned name defined this way is a second,
+        # unpinned definition (PR #319 review: it redefined the root and the target).
+        for name in re.findall(r"(?:^|\s)([A-Za-z_]\w*)=", str(text)):
+            if name in PINNED_DEFINITIONS:
+                found.append((name, rel, "set_fact k=v", str(text).strip()))
+
+    def walk(tasks):
+        for task in tasks or []:
+            if not isinstance(task, dict):
+                continue
+            from_vars(task.get("vars"), "vars")
+            for key in SET_FACT_KEYS:
+                if key not in task:
+                    continue
+                if isinstance(task[key], dict):
+                    from_vars(task[key], "set_fact")
+                else:
+                    from_free_form(task[key] or "")
+                # `set_fact:` with its parameters under the task's `args:`
+                from_vars(task.get("args"), "set_fact args")
+            if task.get("register") in PINNED_DEFINITIONS:
+                found.append((task["register"], rel, "register", str(task.get("name"))))
+            for key in TASK_LISTS:
+                if isinstance(task.get(key), list):
+                    walk(task[key])
+
+    for item in doc if isinstance(doc, list) else []:
+        if isinstance(item, dict) and ("hosts" in item or "import_playbook" in item):
+            from_vars(item.get("vars"), "vars")
+            for key in ("pre_tasks", "tasks", "post_tasks", "handlers"):
+                walk(item.get(key))
+        else:
+            walk([item])
+    return found
+
+
+def pinned_definition_problems(docs: dict | None = None) -> list[str]:
+    """Each pinned name must be defined exactly once, by its pinned expression, in its own file."""
+    if docs is None:
+        docs = {str(p.relative_to(REPO)): _load(p) for p in _files()}
+    seen: dict[str, list[tuple[str, str, str]]] = {name: [] for name in PINNED_DEFINITIONS}
+    for rel, doc in docs.items():
+        for name, where, kind, value in _definitions(doc, rel):
+            seen[name].append((where, kind, value))
+    problems = []
+    for name, expected in PINNED_DEFINITIONS.items():
+        if seen[name] != [expected]:
+            problems.append(f"{name}: expected exactly {expected}, found {seen[name]}")
+    return problems
+
+
 def _classify(task: dict, module: str, args) -> str:
     # `changed_when: false` is the author's declaration that the task changes nothing, for a
     # command and for an HTTP call alike (an OpenBao AppRole login is a POST that only
@@ -125,19 +247,32 @@ def _classify(task: dict, module: str, args) -> str:
     return "write"
 
 
-def violations_in(doc) -> list[str]:
+def violations_in(doc, rel: str | None = None, all_writes: bool = False) -> list[str]:
+    """`all_writes` treats every file write as forced: the test harness uses it, since it runs
+    the tasks it lifts for real whatever their check_mode."""
     found: list[str] = []
 
-    def walk(tasks, inherited: bool, inherited_off: bool):
+    def walk(tasks, inherited: bool, inherited_off: bool, inherited_runner: bool = False,
+             inherited_vars: bool = False):
         for index, task in enumerate(tasks or []):
             if not isinstance(task, dict):
                 continue
             name = task.get("name", f"#{index}")
             guard = _guarded(task, inherited)
             off = inherited_off or task.get("check_mode") is False
+            runner = inherited_runner or task.get("delegate_to") == "localhost"
+            has_vars = inherited_vars or bool(task.get("vars"))
             for key in TASK_LISTS:
                 if key in task and isinstance(task[key], list):
-                    walk(task[key], guard, off)
+                    walk(task[key], guard, off, runner, has_vars)
+            file_module, file_args = _file_write(task)
+            if file_module and (off or all_writes):
+                if has_vars:
+                    found.append(f"{name}: {file_module} write forced to run in check mode carries vars:, "
+                                 "which could redirect it")
+                elif not (runner and _in_runner_scratch(file_module, file_args, rel)):
+                    found.append(f"{name}: {file_module} write forced to run in check mode outside the runner "
+                                 "scratch directory")
             module, args = _module(task)
             if module is None:
                 continue
@@ -161,7 +296,8 @@ def violations_in(doc) -> list[str]:
             for play in doc:
                 if isinstance(play, dict):
                     for key in ("pre_tasks", "tasks", "post_tasks", "handlers"):
-                        walk(play.get(key), play.get("check_mode") is True, play.get("check_mode") is False)
+                        walk(play.get(key), play.get("check_mode") is True, play.get("check_mode") is False,
+                             play.get("delegate_to") == "localhost", bool(play.get("vars")))
         else:
             walk(doc, False, False)
     return found
@@ -183,7 +319,7 @@ def _load(path: Path):
 @pytest.mark.parametrize("path", _files(), ids=lambda p: str(p.relative_to(REPO)))
 def test_playbook_honours_check_mode(path):
     rel = str(path.relative_to(REPO))
-    found = violations_in(_load(path))
+    found = violations_in(_load(path), rel)
     if rel in _allowlist():
         assert found, f"{rel} is clean now: remove it from {ALLOWLIST.name}"
     else:
@@ -374,3 +510,117 @@ def test_no_task_key_is_stranded_under_the_next_tasks_comment():
                     and lines[i + 1].strip().startswith("- name:")):
                 stranded.append(f"{path.relative_to(REPO)}:{i + 1}")
     assert not stranded, stranded
+
+
+# The runner-scratch class (plan/architecture/08, decision 2026-09-28).
+
+def _scratch(yaml_text: str, rel=None):
+    return violations_in(yaml.safe_load(yaml_text), rel)
+
+
+OUTSIDE = " write forced to run in check mode outside the runner scratch directory"
+CARRIES_VARS = " write forced to run in check mode carries vars:, which could redirect it"
+FORCED = "  delegate_to: localhost\n  check_mode: false\n"
+
+
+def test_forced_file_write_outside_the_scratch_is_caught():
+    for task in ('ansible.builtin.copy:\n    content: x\n    dest: /etc/motd',
+                 'ansible.builtin.lineinfile:\n    path: /etc/ssh/sshd_config\n    line: x',
+                 'ansible.builtin.file:\n    path: "{{ _rsk_dir }}/../x"\n    state: absent',
+                 # a caller's result fact is not a target: it can be overwritten
+                 'ansible.builtin.copy:\n    content: x\n    dest: "{{ _probe_key.known_hosts }}"',
+                 'ansible.builtin.tempfile:\n    state: directory\n    prefix: .sshkey_'):
+        found = _scratch(f"- name: w\n  {task}\n{FORCED}", PIN)
+        assert found == ["w: " + task.split(":")[0].rsplit(".", 1)[-1] + OUTSIDE], task
+
+
+def test_a_pinned_target_passes_only_in_its_own_file_on_the_runner():
+    task = '- name: pin\n  ansible.builtin.copy:\n    content: x\n    dest: "{{ _pshk_kh }}"\n'
+    assert not _scratch(task + FORCED, PIN)
+    assert _scratch(task + FORCED, REMOVE), "another file's target"
+    assert _scratch(task + "  check_mode: false\n", PIN), "a forced write on the TARGET is not runner scratch"
+
+
+def test_vars_on_a_forced_write_or_its_block_are_refused():
+    # PR #319 review: `_pshk_kh: <elsewhere>` in the task's vars redirected the write while
+    # its dest text stayed `{{ _pshk_kh }}`.
+    task = '- name: pin\n  ansible.builtin.copy:\n    content: x\n    dest: "{{ _pshk_kh }}"\n'
+    assert _scratch(task + FORCED + "  vars:\n    _pshk_kh: /tmp/x\n", PIN) == ["pin: copy" + CARRIES_VARS]
+    nested = ("- name: outer\n  vars:\n    anything: 1\n  block:\n"
+              '    - name: pin\n      ansible.builtin.copy:\n        content: x\n        dest: "{{ _pshk_kh }}"\n'
+              "      delegate_to: localhost\n      check_mode: false\n")
+    assert _scratch(nested, PIN) == ["pin: copy" + CARRIES_VARS]
+
+
+def test_the_tempfile_root_is_pinned():
+    # PR #319 review: pointing tempfile's `path` elsewhere created key directories outside the
+    # temp root, which the wipe then (correctly) refused to delete.
+    base = "- name: t\n  ansible.builtin.tempfile:\n    state: directory\n    prefix: .sshkey_\n"
+    assert not _scratch(base + f'    path: "{SCRATCH_ROOT}"\n' + FORCED, MATERIALISE)
+    assert _scratch(base + '    path: "/tmp/elsewhere"\n' + FORCED, MATERIALISE) == ["t: tempfile" + OUTSIDE]
+
+
+def test_the_harness_mode_treats_every_file_write_as_forced():
+    assert not _scratch("- name: w\n  ansible.builtin.copy:\n    content: x\n    dest: /etc/motd\n")
+    found = violations_in(yaml.safe_load("- name: w\n  ansible.builtin.copy:\n    content: x\n    dest: /etc/motd\n"),
+                          None, all_writes=True)
+    assert found == ["w: copy" + OUTSIDE]
+
+
+def test_every_pinned_name_has_exactly_its_one_definition():
+    assert pinned_definition_problems() == []
+
+
+def _repo_docs() -> dict:
+    return {str(p.relative_to(REPO)): _load(p) for p in _files()}
+
+
+def test_a_second_definition_anywhere_is_a_violation():
+    for extra in (
+        # task vars in a caller
+        [{"name": "x", "ansible.builtin.debug": {"msg": 1}, "vars": {"_pshk_kh": "/tmp/x"}}],
+        # include parameters, which outrank the shared task's set_fact
+        [{"name": "x", "ansible.builtin.include_tasks": "tasks/pin-ssh-host-key.yml",
+          "vars": {"_pshk_kh": "/tmp/x"}}],
+        # another set_fact
+        [{"name": "x", "ansible.builtin.set_fact": {"_rsk_dir": "/tmp/x"}}],
+        # another register
+        [{"name": "x", "ansible.builtin.command": "true", "register": "_msk_dir"}],
+        # play vars
+        [{"hosts": "all", "vars": {"_rsk_dir": "/tmp/x"}, "tasks": []}],
+    ):
+        docs = {**_repo_docs(), "platform/playbooks/intruder.yml": extra}
+        assert pinned_definition_problems(docs), extra
+
+
+def test_a_changed_pinned_expression_is_a_violation():
+    docs = _repo_docs()
+    pin = json.loads(json.dumps(docs[PIN]))
+    for task in pin:
+        facts = task.get("ansible.builtin.set_fact") or {}
+        if "_pshk_kh" in facts:
+            facts["_pshk_kh"] = "/tmp/elsewhere/known_hosts"
+    assert pinned_definition_problems({**docs, PIN: pin})
+
+
+def test_a_k_equals_v_or_args_set_fact_is_a_second_definition():
+    # PR #319 review (B3): `set_fact: _pshk_root=… _pshk_kh=…` was invisible to a scanner that
+    # read only the mapping form, and the write followed it.
+    for extra in (
+        [{"name": "x", "ansible.builtin.set_fact": "_pshk_kh=/tmp/x/.sshkey_q/known_hosts"}],
+        [{"name": "x", "set_fact": "cacheable=true _rsk_dir=/tmp/x"}],
+        [{"name": "x", "ansible.builtin.set_fact": None, "args": {"_pshk_kh": "/tmp/x"}}],
+    ):
+        docs = {**_repo_docs(), "platform/playbooks/intruder.yml": extra}
+        assert pinned_definition_problems(docs), extra
+
+
+def test_every_runtime_root_check_computes_the_root_inline():
+    # B4: an extra var outranks every set_fact, so a root held in a variable could be moved.
+    for rel, marker in ((MATERIALISE, "_msk_dir.path | realpath | dirname"),
+                        (REMOVE, "_rsk_dir | realpath | dirname"),
+                        (PIN, "_pshk_kh | realpath | dirname | dirname")):
+        text = (REPO / rel).read_text()
+        (line,) = [ln for ln in text.splitlines() if marker in ln]
+        assert line.strip().endswith("== " + SCRATCH_ROOT_INLINE), (rel, line)
+        assert not re.search(r"_\w*root\b", text), f"{rel} holds the temp root in a variable"
