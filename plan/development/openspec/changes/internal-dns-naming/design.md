@@ -296,6 +296,9 @@ name or site label (site-config values, chosen by Joe).
 
 ## Open Questions
 
+Decided 2026-09-28: Joe accepted all four defaults below ("Accept all four defaults").
+Each default is now the decision.
+
 1. **LAN clients and the gateway's mutual TLS.** `inference.<site>.<zone>` CNAMEs to the
    gateway, whose listeners refuse a caller without a client certificate once the gateway
    change's group 6 lands
