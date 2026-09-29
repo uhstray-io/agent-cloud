@@ -128,10 +128,10 @@ def test_every_declared_rule_kind_has_its_command_tag_and_stored_spec_in_add_ord
         # SSH first: these must land before any other rule and before enable (anti-lockout)
         ("allow from 192.0.2.0/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:192.0.2.0/24",
          "allow from 192.0.2.0/24 to any port 22 proto tcp", "in", True),
-        # the command and tag keep the declared spelling; the spec is ufw's stored one
-        ("allow from 198.51.100.77/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:198.51.100.77/24",
+        # the command keeps the declared spelling; the tag and the spec use ufw's stored one
+        ("allow from 198.51.100.77/24 to any port 22 proto tcp", "agent-cloud:in:22/tcp:198.51.100.0/24",
          "allow from 198.51.100.0/24 to any port 22 proto tcp", "in", True),
-        ("allow from 192.0.2.5/32 to any port 8080 proto tcp", "agent-cloud:in:8080/tcp:192.0.2.5/32",
+        ("allow from 192.0.2.5/32 to any port 8080 proto tcp", "agent-cloud:in:8080/tcp:192.0.2.5",
          "allow from 192.0.2.5 to any port 8080 proto tcp", "in", False),
         ("allow from 192.0.2.10 to any port 53 proto udp", "agent-cloud:in:53/udp:192.0.2.10",
          "allow from 192.0.2.10 to any port 53 proto udp", "in", False),
@@ -195,6 +195,27 @@ def test_a_rule_declared_twice_appears_once_and_keeps_its_first_place():
     assert [(r["tag"], r["is_ssh"]) for r in got] == [
         ("agent-cloud:in:22/tcp:192.0.2.0/24", True), ("agent-cloud:in:8080/tcp:192.0.2.5", False)]
     assert [r["tag"] for r in again] == ["agent-cloud:in:22/tcp:192.0.2.0/24", "agent-cloud:in:8080/tcp:192.0.2.5"]
+
+
+def test_one_address_spelled_two_ways_is_one_rule_under_one_tag():
+    # ufw stores both spellings as one rule; two tags for it would leave one declared tag absent.
+    got = rules.ufw_desired_rules(
+        ["192.0.2.5/32", "192.0.2.5"], allow_rules=[{"port": 80, "from": "192.0.2.10/32"},
+                                                    {"port": 80, "from": "192.0.2.10"}],
+        route_rules=[{"port": 9000, "from": "198.51.100.77/24"}],
+        detected=["443 tcp"], upstreams=["192.0.2.7/255.255.255.255", "192.0.2.7"],
+        deny_egress=[{"to": "198.51.100.1/32", "port": 8200}, {"to": "198.51.100.1", "port": 8200}],
+        bridges=["podman1"])
+    assert [r["tag"] for r in got] == [
+        "agent-cloud:in:22/tcp:192.0.2.5", "agent-cloud:in:80/tcp:192.0.2.10",
+        "agent-cloud:route:9000/tcp:198.51.100.0/24", "agent-cloud:in:443/tcp:192.0.2.7",
+        "agent-cloud:in-on:53/udp:podman1", "agent-cloud:in-on:53/tcp:podman1",
+        "agent-cloud:out-deny:8200/tcp:198.51.100.1"]
+    # and a stored tag's peer reads back in the same spelling, whichever version wrote it
+    [old, new] = rules.ufw_parse_added([
+        "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7/32'",
+        "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7'"])
+    assert old["peer"] == new["peer"] == "192.0.2.7" and old["tag"] != new["tag"]
 
 
 def test_a_rule_naming_no_address_is_marked_dual_family():

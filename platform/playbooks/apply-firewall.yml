@@ -30,10 +30,12 @@
 # The tag is built from the rule's own fields, never from its declaration source, so the
 # same rule declared twice (an SSH CIDR also listed as a static 22/tcp rule, a detected
 # port also declared statically) carries ONE tag and runs cannot flip-flop it. The peer
-# is last because it is the only field that may itself contain ':' (IPv6). Spell one
-# address one way across declarations: `192.0.2.10` and `192.0.2.10/32` may be stored
-# as ONE ufw rule under two tags, leaving a declared tag absent — which the drift guard
-# below refuses rather than pruning around it.
+# is last because it is the only field that may itself contain ':' (IPv6), and it is the
+# address as ufw stores it (filter_plugins/ufw_rules.py ufw_address), not as declared:
+# `192.0.2.10` and `192.0.2.10/32` are one ufw rule, so they are one tag. A rule tagged by
+# an earlier version with a non-canonical declared spelling (`.../32`, a CIDR with host bits
+# set) carries an undeclared tag now; the add re-tags it in place (same spec, new comment)
+# and the prune plan reads the rules after the adds, so it is never pruned for the rename.
 # The declared set is built ONCE, after port and bridge detection, by
 # filter_plugins/ufw_rules.py ufw_desired_rules: each rule's ufw command, its tag, and the
 # spec `ufw show added` prints for it. That module is the only definition of the add and
@@ -540,9 +542,11 @@
         # A detected-port rule carries the same tag as a static one (header note), so the
         # detected family is recognised by its peer: an INPUT or route allow FROM one of the
         # declared upstream sources. Conservative: a static rule from an upstream is held too.
+        # Both sides in ufw's stored spelling: ufw_parse_added normalises the tag's peer, and
+        # the declared sources are normalised here, so `192.0.2.7/32` names `192.0.2.7`.
         _fw_held: >-
           {{ (_fw_stale | selectattr('family', 'in', ['in', 'route'])
-              | selectattr('peer', 'in', _upstream_sources) | list)
+              | selectattr('peer', 'in', _upstream_sources | map('ufw_address') | list) | list)
              if _fw_detection_empty else [] }}
 
     - name: "Plan: the rules this run deletes"
@@ -624,9 +628,9 @@
           - _fw_missing | length == 0
         fail_msg: >-
           Declared rules not found on {{ inventory_hostname }} after adding them: {{ _fw_missing }}.
-          A rule reported added did not land, two declarations spell one ufw rule differently
-          (e.g. an address with and without /32), or ufw prints the rule in a form other than the
-          spec filter_plugins/ufw_rules.py computes for it. Nothing was deleted.
+          A rule reported added did not land, two declarations with different tags name one ufw
+          rule, or ufw prints the rule in a form other than the spec filter_plugins/ufw_rules.py
+          computes for it. Nothing was deleted.
       when: not ansible_check_mode
 
     - name: "Prune each stale TAGGED rule, by its rule spec"  # noqa: command-instead-of-module

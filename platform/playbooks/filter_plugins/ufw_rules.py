@@ -8,7 +8,9 @@ Building — the ONE place the playbook's rule format lives:
   `tag` the comment naming the rule, `spec` the form `ufw show added` prints it in. A rule
   declared twice (an SSH CIDR also listed as a static 22/tcp rule) appears once.
 - ufw_tag: `agent-cloud:<family>:<port>/<proto>:<peer>` (`any` for a port-less denial). The
-  peer is last because it is the only field that may itself contain ':' (IPv6).
+  peer is last because it is the only field that may itself contain ':' (IPv6). The
+  builders pass the peer as ufw stores it (ufw_address), so one address spelled two ways
+  (`192.0.2.10`, `192.0.2.10/32`) is one rule under one tag.
 - ufw_is_ipv4: a single IPv4 address, by stdlib ipaddress (so 999.1.1.1 is not one).
 - ufw_egress_problems: why each firewall_deny_egress entry must be refused ([] when none):
   containment against the SSH CIDRs by stdlib ipaddress, so a supernet of the management
@@ -160,7 +162,9 @@ def ufw_parse_added(lines):
 
     Only lines naming a rule (`ufw ...`) count; the header and "(None)" do not. The spec is
     ufw's own form with the comment stripped, which is what `ufw delete` takes back. `family`
-    and `peer` are read from the tag ('' when untagged or the tag has fewer fields).
+    and `peer` are read from the tag ('' when untagged or the tag has fewer fields); the peer
+    is given in the spelling ufw stores (ufw_address), so a tag written by an earlier version
+    in the declared spelling (`192.0.2.7/32`) still names the same source.
     """
     out = []
     for line in lines or []:
@@ -170,7 +174,7 @@ def ufw_parse_added(lines):
         comment = match.group("comment") or ""
         tag = comment if comment.startswith(TAG_PREFIX) else ""
         fields = tag.split(":", 3)
-        family, peer = (fields[1], fields[3]) if len(fields) == 4 else ("", "")
+        family, peer = (fields[1], ufw_address(fields[3])) if len(fields) == 4 else ("", "")
         out.append({"spec": match.group("spec"), "tag": tag, "family": family, "peer": peer})
     return out
 
@@ -207,7 +211,11 @@ def _names_no_address(spec):
 
 
 def _rule(family, cmd, port_proto, peer, spec, is_ssh=False):
-    return {"cmd": cmd, "tag": ufw_tag(family, port_proto, peer), "spec": spec, "family": family,
+    # The tag names the peer as ufw stores it, never as declared: `192.0.2.10` and
+    # `192.0.2.10/32` are one stored rule, so they must be one tag, or the second add rewrites
+    # the first's comment and the drift guard finds a declared tag missing. An interface name
+    # (in-on) is not an address and passes through unchanged.
+    return {"cmd": cmd, "tag": ufw_tag(family, port_proto, ufw_address(peer)), "spec": spec, "family": family,
             "is_ssh": is_ssh, "dual_family": _names_no_address(spec)}
 
 
