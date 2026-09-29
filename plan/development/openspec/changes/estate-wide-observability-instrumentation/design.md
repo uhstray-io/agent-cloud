@@ -143,16 +143,36 @@ guest filesystem and telemetry-volume access, then record isolated-target
 cleanup before guest growth is allowed.
 
 Read-only Semaphore survey task 1835 succeeded against exact reviewed `dev`
-SHA `fb7e5315f4f8d85a6b5b26a4f24d93f4692dbc7a`; both exact-checkout and
-clean-checkout assertions passed. It reported three active backup-capable
-storage entries and zero matching backup artifacts. That run predates the
-backend-class count addition, so it provides no per-backend count. It proves
-neither artifact immutability nor isolated-restore readiness, and did not
-select storage or alter Proxmox state. Tasks 4.2 and 4.6 therefore remain
-gated. The 90d/45d retention target also remains blocked: keep the effective
-15d Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until
-the representative seven-day forecast, nonzero cap, at least 30% backing
-filesystem headroom, and immutable isolated-restore receipt pass review.
+SHA `fb7e5315f4f8d85a6b5b26a4f24d93f4692dbc7a`; it reported three active
+backup-capable storage entries and zero matching backup artifacts. Later,
+read-only Dev-bound survey task 1945 succeeded and reported one candidate
+artifact, three non-PBS backup-capable stores, zero PBS stores, and a verified
+target VM. Its listing was complete, while artifact immutability, isolated
+target verification, and restore verification were all false. It did not
+select storage or alter Proxmox state. These facts still do not identify an
+immutable source or restore destination, so tasks 4.2 and 4.6 remain gated.
+
+The new Dev-bound `survey-o11y-backup-artifact.yml` is read-only and reports
+only allow-listed candidate metadata (backend class, format, byte size,
+creation epoch, and protection status) plus source VM disk device/size/backup
+inclusion layout, including EFI and TPM state disks. Raw API results, volume
+IDs, storage names, and free-form values remain under `no_log`; no hash or
+reversible identifier is included in the visible receipt. A future restore
+workflow must use a separately declared private artifact selector. The
+inspector validates PBS VM records in the official `backup/vm/<vmid>/<UTC
+timestamp>` form with `pbs-vm` format, and requires the volume storage prefix to
+match the listing source. See the [Proxmox PBS storage implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/PBSPlugin.pm).
+An absent protection field remains `unknown`; a reported protection flag is
+not immutability evidence. The survey always reports immutability and restore
+verification as false. Its first reviewed Dev execution is pending. Use those
+live facts to declare any artifact selector and then design the isolated
+target and immutable storage mechanism in private site-config before
+implementing a restore workflow.
+
+The 90d/45d retention target remains blocked: keep the effective 15d
+Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
+representative seven-day forecast, nonzero cap, at least 30% backing-filesystem
+headroom, and immutable isolated-restore receipt pass review.
 
 The backup-job reconciliation is a separate Dev-bound Semaphore workflow.
 It reads the Proxmox job list before mutation, reports candidate job IDs only

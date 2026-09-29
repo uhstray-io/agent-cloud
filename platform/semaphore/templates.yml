@@ -1407,6 +1407,19 @@ templates:
     # Reports sanitized backup-capable storage and candidate artifact counts.
     # It does not mutate Proxmox or prove immutability or restore success.
 
+  - name: Survey o11y Backup Artifact Details (Dev)
+    playbook: platform/playbooks/survey-o11y-backup-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only artifact detail survey"
+        type: string
+        required: true
+    # Reports allow-listed artifact metadata and VM disk layout only.
+    # Proxmox storage names, volume IDs, hashes, and free-form metadata stay hidden.
+    # Missing protection metadata remains unknown; this task never writes Proxmox.
+
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
     repository: agent-cloud dev
