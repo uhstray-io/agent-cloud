@@ -194,6 +194,8 @@ list of files allowed to write a private key).
 | `drill-o11y-active-alert-delivery.yml` | Dev-bound production drill against already-active Grafana rules/contact; adds one failed scrape, reuses the named Discord receipt path, then removes only its scrape declaration and verifies recovery |
 | `recover-o11y-active-alert-drill.yml` | Separate idempotent recovery for an interrupted active alert drill; clears its marker only after scrape, rule, and contact readback |
 | `verify-o11y-production-budgets.yml` | Dev-bound read-only production receipt for Prometheus/Loki/Tempo retention, Alloy sample limit, active Prometheus series, and the Semaphore task ID |
+| `survey-o11y-backup-readiness.yml` | Dev-bound, read-only aggregate survey of backup-capable storage and matching o11y VM artifact counts; does not select an artifact or prove immutability/restore |
+| `survey-o11y-backup-artifact.yml` | Dev-bound, read-only detail survey for candidate artifact identity fingerprints, format/size/time/protection metadata, and sanitized source disk layout; reports no storage names or paths and never claims immutability |
 | `reconcile-o11y-backup-job.yml` | Dev-bound Proxmox reconciliation that adds the declared o11y VM to one existing enabled explicit-VMID backup job, refuses alternate selectors or changed state, and verifies exact readback |
 | `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
 | `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |

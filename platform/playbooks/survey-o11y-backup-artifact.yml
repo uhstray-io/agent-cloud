@@ -1,0 +1,179 @@
+# Read-only detail survey for the one declared production o11y VM.
+# A protected flag and a non-PBS backup record do not establish immutability.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Survey o11y backup artifact details
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_backup_artifact.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts | first | default('') }}"
+    _vmid: "{{ hostvars[_o11y_host].vm_vmid | default('') if _o11y_host else '' }}"
+    _node: "{{ hostvars[_o11y_host].vm_node | default('') if _o11y_host else '' }}"
+  tasks:
+    - name: Require an exact reviewed controller revision and production inventory declaration
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _o11y_hosts | length == 1
+          - _vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _node | string is match('^[A-Za-z0-9._-]+$')
+        fail_msg: "This read-only artifact survey requires one declared production o11y VM and an exact reviewed revision."
+
+    - name: Read controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact reviewed controller revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "The reviewed controller checkout contains uncommitted files."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    - name: Read target VM record from Proxmox
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_vms
+      no_log: true
+      check_mode: false
+
+    - name: Read storage available to the declared Proxmox node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _node_storage
+      no_log: true
+      check_mode: false
+
+    - name: Select active backup-capable storage for inspection
+      ansible.builtin.set_fact:
+        _backup_storages: >-
+          {{ _node_storage.json.data
+             | selectattr('active', 'defined')
+             | selectattr('active', 'equalto', 1)
+             | selectattr('content', 'defined')
+             | selectattr('content', 'search', '(^|,)backup(,|$)')
+             | list }}
+      no_log: true
+
+    - name: Read candidate backup content from each declared node storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _vmid }}"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_storages }}"
+      loop_control:
+        label: "backup-content read"
+      register: _backup_content_reads
+      no_log: true
+      check_mode: false
+
+    - name: Read the declared VM disk configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _vm_config
+      no_log: true
+      check_mode: false
+
+    - name: Build the sanitized artifact and disk-layout inspection
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: >-
+          {{ {'vmid': _vmid | string,
+              'node': _node,
+              'vms': _pve_vms.json.data,
+              'storages': _backup_storages,
+              'content_reads': _backup_content_reads.results,
+              'vm_config': {'status': _vm_config.status, 'data': _vm_config.json.data}}
+             | to_json }}
+      register: _artifact_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require valid sanitized artifact inspection
+      ansible.builtin.assert:
+        that: _artifact_inspection.rc == 0
+        fail_msg: >-
+          Backup artifact inspection refused:
+          {{ ((_artifact_inspection.stdout | from_json).refusal
+              | default('Proxmox returned invalid inspection data.')) }}
+
+    - name: Keep the sanitized artifact inspection receipt
+      ansible.builtin.set_fact:
+        _artifact_receipt: "{{ _artifact_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Report private artifact decision facts without storage names or paths
+      ansible.builtin.debug:
+        msg: "{{ _artifact_receipt }}"
