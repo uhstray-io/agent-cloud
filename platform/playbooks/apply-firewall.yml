@@ -524,12 +524,13 @@
 
     - name: "Plan: stale tagged rules, untagged rules, declared rules not yet on the host"
       ansible.builtin.set_fact:
-        # A rule whose spec is an SSH allow from a declared CIDR is never stale, whatever its
-        # tag says (anti-lockout): the add above retags it in a real run, and a dry run
-        # must not plan to delete it.
+        # A rule whose spec is declared is never stale, whatever its tag says: the add above
+        # retags it in a real run, and a dry run (no add, no re-read) must not plan to delete
+        # it. Deleting by a declared spec would remove the declared rule itself; SSH allows
+        # are the lockout case of the same rule (review of #348).
         _fw_stale: >-
           {{ _fw_current | selectattr('tag') | rejectattr('tag', 'in', _fw_declared)
-             | rejectattr('spec', 'in', _fw_ssh_specs) | list }}
+             | rejectattr('spec', 'in', _fw_desired | map(attribute='spec') | list) | list }}
         _fw_untagged: "{{ _fw_current | rejectattr('tag') | map(attribute='spec') | list }}"
         _fw_missing: "{{ _fw_desired | ufw_absent(_fw_current) | map(attribute='tag') | list }}"
         _fw_masking: "{{ _fw_current | ufw_masking(_fw_desired) }}"

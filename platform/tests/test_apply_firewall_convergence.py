@@ -420,6 +420,24 @@ def test_rules_tagged_in_a_declared_spelling_are_retagged_then_converge(tmp_path
         '["ufw", "show", "added"]', '["ufw", "status", "verbose"]']
 
 
+def test_a_dry_run_over_older_tags_plans_no_delete_of_a_declared_rule(tmp_path):
+    # In --check there is no add and no re-read, so a declared rule still carrying an older
+    # tag spelling must not appear in the delete plan, and a static port-22 allow from a
+    # source outside firewall_ssh_cidrs must not trip the anti-orphan guard (review of #348).
+    host = {"firewall_ssh_cidrs": ["192.0.2.5"], "firewall_detect_ports": False,
+            "firewall_allow_rules": [{"port": 8080, "from": "198.51.100.77/24"},
+                                     {"port": 22, "from": "203.0.113.9/32"}]}
+    before = {"active": True, "rules": [
+        ["allow from 192.0.2.5 to any port 22 proto tcp", _tag("in", "22/tcp", "192.0.2.5")],
+        ["allow from 198.51.100.0/24 to any port 8080 proto tcp", _tag("in", "8080/tcp", "198.51.100.77/24")],
+        ["allow from 203.0.113.9 to any port 22 proto tcp", _tag("in", "22/tcp", "203.0.113.9/32")]]}
+    r, state = _run(tmp_path, host, state=before, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state == before
+    plan = r.stdout[r.stdout.index("TASK [Report the convergence plan]"):]
+    assert re.search(r'"delete_stale_tagged": \[\]', plan), plan
+
+
 def test_an_upstream_declared_non_canonically_still_holds_its_rules_on_empty_detection(tmp_path):
     # The held set is recognised by peer; the tag's peer is ufw's spelling (whichever version
     # wrote it), so the declared upstream is compared in that spelling too.
