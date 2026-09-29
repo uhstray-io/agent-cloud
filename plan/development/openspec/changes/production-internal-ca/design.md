@@ -434,6 +434,21 @@ it); the Caddy leaf `vm01.caddy` and `caddy`. The gateway's model `tls.hostname`
    template", `Clean Deploy step-ca` exists in production, guarded by `confirm_ca_reset`
    naming the host, so the scenario "Reset without confirmation is refused" is proven there.
 
+## Recorded risk 2026-09-29: the key password sits beside the keys
+
+Read from the step-ca 0.30.2 image's `/entrypoint.sh`: on first boot it writes
+`DOCKER_STEPCA_INIT_PASSWORD` to `/home/step/secrets/password` (mode 0644) and to
+`provisioner_password`, and prints the latter to the container log ("Your CA administrative
+password is: ..."). That password also encrypts the root and intermediate keys, which live in
+the same volume. So the volume, and the container log of the first boot, hold what an attacker
+needs to use the root key: encryption at rest protects the key only from someone who has
+the volume but not those files.
+
+Accepted for the first rollout: the CA host is SSH-only, key-only, and holds nothing else.
+Mitigations for a later change: a separate root key password through
+`DOCKER_STEPCA_INIT_KEY_PASSWORD_FILE`, which the entrypoint supports; removing the plaintext
+file after first boot; and rotating the first-boot container log.
+
 ## Open Questions
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded

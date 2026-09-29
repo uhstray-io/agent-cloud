@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
+FIRST_BOOT_TASKS = REPO / "platform/playbooks/tasks/assert-step-ca-first-boot.yml"
 DEPLOY = REPO / "platform/playbooks/deploy-step-ca.yml"
 CLEAN = REPO / "platform/playbooks/clean-deploy-step-ca.yml"
 ENV_J2 = REPO / "platform/services/step-ca/deployment/templates/env.j2"
@@ -44,7 +45,8 @@ def _run(tmp_path: Path, host_vars: dict, tasks: list, play_vars: dict | None = 
 def test_a_ca_reset_runs_only_when_the_launch_names_the_host(tmp_path, confirm, ok):
     guard = _play(CLEAN, "Refuse a CA reset")
     extra = ["-e", f"confirm_ca_reset={confirm}"] if confirm else []
-    r = _run(tmp_path, {}, guard["tasks"], extra=extra)
+    r = _run(tmp_path, {"local_mode": True}, [_task(guard, "Require the run to NAME the host whose CA it destroys")],
+             extra=extra)
     assert (r.returncode == 0) is ok, r.stdout + r.stderr
     if not ok:
         assert "Refusing: pass -e confirm_ca_reset=step-ca" in r.stdout
@@ -54,6 +56,17 @@ def test_the_reset_guard_runs_before_anything_is_destroyed():
     plays = yaml.safe_load(CLEAN.read_text())
     assert plays[0]["name"].startswith("Refuse a CA reset")
     assert plays[0].get("any_errors_fatal") is True
+    # A confirmed reset with incomplete inventory refuses before the root is destroyed.
+    includes = [t.get("ansible.builtin.include_tasks") for t in plays[0]["tasks"]]
+    assert "tasks/assert-step-ca-first-boot.yml" in includes
+
+
+def test_deploy_runs_the_first_boot_guard_before_anything_is_written():
+    names = [t["name"] for t in _play(DEPLOY, "Phase 1")["tasks"]]
+    first = _task(_play(DEPLOY, "Phase 1"), "Refuse a production CA without its first-boot settings")
+    assert first["ansible.builtin.include_tasks"] == "tasks/assert-step-ca-first-boot.yml"
+    assert names.index("Refuse a production CA without its first-boot settings") < names.index(
+        "Manage secrets and template env file")
 
 
 # ── First-boot guard (task 2.2) ────────────────────────────────────────────────
@@ -69,25 +82,37 @@ FIRST_BOOT = {"stepca_name": "Example CA", "stepca_dns_names": "ca.example.test,
     ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_dns_names"}, False),
     ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_init_acme"}, False),
     ({**FIRST_BOOT, "stepca_bind": "0.0.0.0"}, False),
+    ({**FIRST_BOOT, "stepca_provisioner": "other"}, False),   # Phase 2.5 raises admin's lifetime
+    ({**FIRST_BOOT, "stepca_dns_names": "ca.example.test,step-ca"}, False),  # health uses localhost
+    ({**FIRST_BOOT, "stepca_dns_names": ["ca.example.test", "localhost"]}, False),  # a list renders badly
     ({"local_mode": True}, True),  # local-dev keeps its defaults
 ])
 def test_a_production_ca_is_refused_without_its_first_boot_settings(tmp_path, host_vars, ok):
-    guard = _task(_play(DEPLOY, "Phase 1"), "Refuse a production CA without its first-boot settings")
-    r = _run(tmp_path, host_vars, [guard])
+    guard = yaml.safe_load(FIRST_BOOT_TASKS.read_text())
+    r = _run(tmp_path, host_vars, guard)
     assert (r.returncode == 0) is ok, r.stdout + r.stderr
 
 
 # ── Provisioner plan (task 2.1) ────────────────────────────────────────────────
 
-def _plan(tmp_path: Path, provisioners: list) -> dict:
+def _plan(tmp_path: Path, provisioners: list, running: list | None = None) -> dict:
+    """The plan for a ca.json holding `provisioners` and a running CA listing `running`
+    (the same by default). The report task runs too, so a plan key it cannot read fails."""
     play = _play(DEPLOY, "Phase 2.5")
-    planner = _task(play, "Plan the provisioner changes")
-    fake = {"name": "fake the list", "ansible.builtin.set_fact": {
-        "_ca_present": {"rc": 0}, "_prov_list": {"stdout": json.dumps(provisioners)}}}
+    fake = {"name": "fake the reads", "ansible.builtin.set_fact": {
+        "_ca_present": {"rc": 0},
+        "_ca_json": {"stdout": json.dumps({"authority": {"provisioners": provisioners}})},
+        "_prov_list": {"stdout": json.dumps(provisioners if running is None else running)}}}
     out = tmp_path / "plan.json"
     dump = {"name": "dump", "ansible.builtin.copy": {
         "content": "{{ _prov_plan | to_json }}", "dest": str(out), "mode": "0600"}}
-    r = _run(tmp_path, {}, [fake, planner, dump], play_vars=play["vars"])
+    loops = {"name": "evaluate the loops", "ansible.builtin.debug": {"msg": [
+        "{{ _task_add_loop }}", "{{ _task_set_loop }}"]}, "vars": {
+        "_task_add_loop": _task(play, "Add each missing issuing provisioner")["loop"],
+        "_task_set_loop": _task(play, "Set the issuing provisioners' leaf lifetime")["loop"]}}
+    tasks = [fake, _task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"),
+             loops, dump]
+    r = _run(tmp_path, {}, tasks, play_vars=play["vars"])
     assert r.returncode == 0, r.stdout + r.stderr
     return json.loads(out.read_text())
 
@@ -99,20 +124,20 @@ def _jwk(name, dur=None):
 
 def test_a_fresh_ca_gets_both_issuers_and_every_lifetime(tmp_path):
     plan = _plan(tmp_path, [_jwk("admin")])
-    assert plan == {"admin": True, "add": ["issuer-server", "issuer-client"],
-                    "update": ["issuer-server", "issuer-client"]}
+    assert plan == {"raise_admin": True, "add": ["issuer-server", "issuer-client"],
+                    "set_lifetime": ["issuer-server", "issuer-client"], "reload_pending": False}
 
 
 def test_a_converged_ca_plans_nothing(tmp_path):
     plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
                             _jwk("issuer-client", "720h0m0s")])
-    assert plan == {"admin": False, "add": [], "update": []}
+    assert plan == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": False}
 
 
 def test_only_the_provisioner_whose_lifetime_differs_is_updated(tmp_path):
     plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s"),
                             _jwk("issuer-client", "720h0m0s")])
-    assert plan == {"admin": False, "add": [], "update": ["issuer-server"]}
+    assert plan == {"raise_admin": False, "add": [], "set_lifetime": ["issuer-server"], "reload_pending": False}
 
 
 def test_the_list_is_read_before_any_provisioner_is_added_and_the_add_is_hidden():
@@ -142,4 +167,12 @@ def test_a_differing_maximum_alone_triggers_the_update(tmp_path):
     server = {"type": "JWK", "name": "issuer-server",
               "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}}
     plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), server, _jwk("issuer-client", "720h0m0s")])
-    assert plan["update"] == ["issuer-server"]
+    assert plan["set_lifetime"] == ["issuer-server"]
+
+
+def test_a_change_written_but_never_reloaded_is_reloaded(tmp_path):
+    # A run stopped between an add and the reload: ca.json has the issuers, the running CA
+    # does not. Nothing is left to add, but the reload must still run.
+    converged = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
+    plan = _plan(tmp_path, converged, running=[_jwk("admin", "8760h0m0s")])
+    assert plan == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}

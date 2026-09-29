@@ -28,6 +28,11 @@
           root and intermediate. A reset issues a new root that every client must trust
           again, so a destructive template must be told which host, in its own launch.
 
+    # The redeploy below refuses without these; checked here so a confirmed reset with
+    # incomplete inventory refuses before the root is destroyed, not after.
+    - name: "Refuse a reset whose redeploy would refuse"
+      ansible.builtin.include_tasks: tasks/assert-step-ca-first-boot.yml
+
 - name: "Clean step-ca deployment"
   hosts: step_ca_svc
   gather_facts: false

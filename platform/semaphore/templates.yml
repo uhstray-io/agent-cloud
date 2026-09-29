@@ -567,24 +567,27 @@ templates:
         required: false
         default_value: "main"
 
-  - name: Deploy step-ca
+  # The production internal CA (openspec production-internal-ca). Dev-bound until the
+  # step-ca guards are promoted: main's deploy-step-ca.yml has no first-boot guard and main's
+  # clean-deploy-step-ca.yml no reset confirmation, so a main-bound twin would first-boot a
+  # CA with ACME on, or destroy the root unconfirmed. Add the main-bound entries with the
+  # promotion.
+  - name: Deploy step-ca (Dev)
     playbook: platform/playbooks/deploy-step-ca.yml
-    # The production internal CA (openspec production-internal-ca). Refuses to run until
-    # inventory declares the first-boot settings; the "(Dev)" variant runs the dev code.
-    dev_variant: true
+    repository: agent-cloud dev
     survey_vars:
       - name: service_branch
         title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
+        description: "Git branch the CA host checks out (dev until promotion)"
         type: string
         required: false
-        default_value: "main"
+        default_value: "dev"
 
-  - name: Clean Deploy step-ca
+  - name: Clean Deploy step-ca (Dev)
     playbook: platform/playbooks/clean-deploy-step-ca.yml
+    repository: agent-cloud dev
     # DESTRUCTIVE: deletes the CA root and intermediate; the redeploy issues a new root
     # every client must trust again. Refuses unless confirm_ca_reset names the host.
-    dev_variant: true
     survey_vars:
       - name: confirm_ca_reset
         title: "Confirm: host whose CA is reset"
@@ -593,10 +596,10 @@ templates:
         required: true
       - name: service_branch
         title: "Branch"
-        description: "Git branch to deploy after the reset (leave as 'main' for production)"
+        description: "Git branch the CA host checks out after the reset (dev until promotion)"
         type: string
         required: false
-        default_value: "main"
+        default_value: "dev"
 
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml

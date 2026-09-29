@@ -68,8 +68,10 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       inventory, `main`) and its generated `(Dev)` variant; no production clean-deploy
       template; run `setup-templates.yml`. Amended 2026-09-29 (Joe): a production
       `Clean Deploy step-ca` template is added too, guarded by a required `confirm_ca_reset`
-      survey with no default, so the reset refusal is proven in production. Both templates
-      are declared; publishing them is the remaining step
+      survey with no default, so the reset refusal is proven in production. Both are declared
+      as dev-bound `(Dev)` templates (`repository: agent-cloud dev`) with no main-bound twin
+      until promotion, because main's playbooks lack the guards (review of #349). Publishing
+      them is the remaining step
 - [ ] 2.4a `platform/semaphore/templates.yml`: a signing template for dgx-spark's vLLM
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel

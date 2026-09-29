@@ -41,22 +41,8 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
-    # The name, DNS names and ACME switch are written into the volume at first boot and
-    # never read again; a production CA initialised from the local defaults would keep
-    # ACME on and the wrong name until a reset.
     - name: "Refuse a production CA without its first-boot settings"
-      ansible.builtin.assert:
-        that:
-          - stepca_name is defined and (stepca_name | string | length) > 0
-          - stepca_dns_names is defined and (stepca_dns_names | string | length) > 0
-          - (stepca_init_acme | default('') | string) == 'false'
-          - (stepca_bind | default('127.0.0.1') | string) == '127.0.0.1'
-        fail_msg: >-
-          {{ inventory_hostname }}: declare stepca_name, stepca_dns_names and
-          stepca_init_acme: "false" (and keep stepca_bind at 127.0.0.1) in inventory before
-          the first production deploy. step-ca writes them into its volume at first boot.
-        quiet: true
-      when: not (local_mode | default(false) | bool)
+      ansible.builtin.include_tasks: tasks/assert-step-ca-first-boot.yml
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -122,8 +108,10 @@
       - { name: issuer-client, secret: issuer_client_password }
 
   tasks:
+    # `inspect --type container` works on podman and docker alike (docker has no
+    # `container exists`).
     - name: "Is the CA container running"
-      ansible.builtin.command: "{{ _engine }} container exists step-ca"
+      ansible.builtin.command: "{{ _engine }} inspect --type container --format '{{ '{{' }}.Id{{ '}}' }}' step-ca"
       register: _ca_present
       changed_when: false
       failed_when: false
@@ -141,12 +129,34 @@
       check_mode: false
       when: _ca_present.rc == 0
 
+    # add/update edit ca.json and only a reload makes the running CA see them, so the plan
+    # reads the FILE (what add/update wrote). A run stopped between an add and the reload
+    # leaves the two differing; the reload below then runs even with nothing to change.
+    - name: "Read the CA configuration file"
+      ansible.builtin.command: "{{ _engine }} exec step-ca cat /home/step/config/ca.json"
+      register: _ca_json
+      changed_when: false
+      check_mode: false
+      when: _ca_present.rc == 0
+
     - name: "Plan the provisioner changes"
       ansible.builtin.set_fact:
+        # Keys avoid dict method names: `_prov_plan.update` would be dict.update, not the key.
         _prov_plan: >-
           {%- set by_name = {} -%}
-          {%- for p in (_prov_list.stdout | from_json) -%}
+          {%- for p in ((_ca_json.stdout | from_json).authority.provisioners | default([])) -%}
             {%- set _ = by_name.update({p.name: (p.claims | default({}, true))}) -%}
+          {%- endfor -%}
+          {%- set running = {} -%}
+          {%- for p in (_prov_list.stdout | from_json) -%}
+            {%- set _ = running.update({p.name: (p.claims | default({}, true))}) -%}
+          {%- endfor -%}
+          {%- set ns = namespace(pending=(by_name.keys() | list | sort) != (running.keys() | list | sort)) -%}
+          {%- for n, c in by_name.items() -%}
+            {%- if c.get('maxTLSCertDuration') != running.get(n, {}).get('maxTLSCertDuration')
+                  or c.get('defaultTLSCertDuration') != running.get(n, {}).get('defaultTLSCertDuration') -%}
+              {%- set ns.pending = true -%}
+            {%- endif -%}
           {%- endfor -%}
           {%- set admin = by_name.get('admin', {}) -%}
           {%- set add = _issuers | rejectattr('name', 'in', by_name.keys() | list) | map(attribute='name') | list -%}
@@ -158,9 +168,9 @@
               {%- set _ = upd.append(i.name) -%}
             {%- endif -%}
           {%- endfor -%}
-          {{ {'admin': admin.get('maxTLSCertDuration') != _max_dur_stored
-                        or admin.get('defaultTLSCertDuration') != _max_dur_stored,
-              'add': add, 'update': upd} }}
+          {{ {'raise_admin': admin.get('maxTLSCertDuration') != _max_dur_stored
+                              or admin.get('defaultTLSCertDuration') != _max_dur_stored,
+              'add': add, 'set_lifetime': upd, 'reload_pending': ns.pending} }}
       when: _ca_present.rc == 0
 
     - name: "Report the provisioner plan"
@@ -168,9 +178,10 @@
         msg: >-
           {{ 'CA container not present (not deployed yet): provisioners are configured by the
           first real run' if _ca_present.rc != 0 else
-          ('admin lifetime ' ~ ('to ' ~ _max_dur ~ ' ' if _prov_plan.admin else 'unchanged ')
-          ~ '| add ' ~ (_prov_plan.add | join(', ') or 'none')
-          ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan.update | join(', ') or 'none')) }}
+          ('admin lifetime ' ~ ('to ' ~ _max_dur ~ ' ' if _prov_plan['raise_admin'] else 'unchanged ')
+          ~ '| add ' ~ (_prov_plan['add'] | join(', ') or 'none')
+          ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan['set_lifetime'] | join(', ') or 'none')
+          ~ (' | reload pending from an earlier run' if _prov_plan['reload_pending'] else '')) }}
 
     - name: "Raise the admin provisioner x509 cert duration"
       # Literal block + inner-sh backslash continuation: a folded scalar (>-)
@@ -187,7 +198,7 @@
         '
       register: _prov_admin
       changed_when: true
-      when: not ansible_check_mode and _ca_present.rc == 0 and _prov_plan.admin
+      when: not ansible_check_mode and _ca_present.rc == 0 and _prov_plan['raise_admin']
 
     # Credential task: the password arrives on stdin and is written to a 0600 file that
     # is removed before the shell exits. `add` of an existing name fails, which is why
@@ -208,7 +219,7 @@
           - "{{ item.name }}"
         stdin: "{{ secrets[item.secret] }}"
         stdin_add_newline: false
-      loop: "{{ _issuers | selectattr('name', 'in', _prov_plan.add | default([])) | list }}"
+      loop: "{{ _issuers | selectattr('name', 'in', (_prov_plan | default({}))['add'] | default([])) | list }}"
       loop_control:
         label: "{{ item.name }}"
       register: _prov_add
@@ -220,7 +231,7 @@
       ansible.builtin.command: >-
         {{ _engine }} exec step-ca step ca provisioner update {{ item }}
         --x509-max-dur={{ _leaf_dur }} --x509-default-dur={{ _leaf_dur }}
-      loop: "{{ _prov_plan.update | default([]) }}"
+      loop: "{{ (_prov_plan | default({}))['set_lifetime'] | default([]) }}"
       register: _prov_upd
       changed_when: true
       when: not ansible_check_mode and _ca_present.rc == 0
@@ -231,7 +242,7 @@
       when:
         - not ansible_check_mode
         - _ca_present.rc == 0
-        - _prov_admin is changed or _prov_add is changed or _prov_upd is changed
+        - _prov_admin is changed or _prov_add is changed or _prov_upd is changed or ((_prov_plan | default({})).get('reload_pending', false))
       # No post-reload health wait here: Phase 3's retried `step ca health` is
       # the single gate, and it settles the reload (retries/until 'ok').
 
@@ -247,7 +258,7 @@
     # A dry run against a host whose CA has never been deployed has nothing to verify;
     # a real run always has a container here (Phase 2 started it).
     - name: "Is the CA container running"
-      ansible.builtin.command: "{{ _engine }} container exists step-ca"
+      ansible.builtin.command: "{{ _engine }} inspect --type container --format '{{ '{{' }}.Id{{ '}}' }}' step-ca"
       register: _ca_up
       changed_when: false
       failed_when: false
@@ -308,7 +319,7 @@
           provisioners, and its API published on {{ stepca_bind | default('127.0.0.1') }} only.
           Published: {{ _ca_state.results[1].stdout_lines }}.
         quiet: true
-      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool) and not ansible_check_mode)
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
 
     - name: "Report"
       ansible.builtin.debug:
