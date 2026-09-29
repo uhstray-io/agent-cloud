@@ -12,16 +12,16 @@
 # The wipe refuses any directory materialise-ssh-key.yml did not create: the path arrives
 # through a fact, and a mis-set fact must not turn a cleanup step into an arbitrary
 # recursive delete. It must carry the `.sshkey_` prefix AND sit directly under the temp
-# root, computed here by the same expression the materialise task hands tempfile, not
-# read back from the fact.
+# root, computed inline here by the same expression the materialise task hands tempfile,
+# not read back from any variable.
 
 # Resolved by set_fact, not task vars: the forced write below carries no `vars:` at all, and
-# each name here has exactly one pinned definition in the repository
-# (test_check_mode_contract.py), so neither can be redefined around the check.
-- name: "Remove SSH key: resolve the directory and the temp root"
+# `_rsk_dir` has exactly one pinned definition in the repository (test_check_mode_contract.py).
+# Even so, a fact can be overridden (an extra var outranks set_fact), so the wipe's own
+# condition computes the temp root INLINE and never from a variable.
+- name: "Remove SSH key: resolve the directory"
   ansible.builtin.set_fact:
     _rsk_dir: "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir | default('') }}"
-    _rsk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
   when: ssh_key_result_var is defined
 
 - name: "Remove SSH key: wipe the runner-local scratch directory"
@@ -36,4 +36,4 @@
     - ssh_key_result_var is defined
     - _rsk_dir | length > 0
     - (_rsk_dir | basename) is match('^\.sshkey_')
-    - (_rsk_dir | realpath | dirname) == _rsk_root
+    - (_rsk_dir | realpath | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)

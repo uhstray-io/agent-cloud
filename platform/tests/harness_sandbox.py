@@ -7,9 +7,10 @@ mutation that overwrote ~/.ssh/known_hosts that way. A source-level guard refuse
 before running (test_check_mode_contract.py), but a guard that reads source can be routed
 around by indirection (PR #319 review), so the run itself is confined too:
 
-- macOS: `sandbox-exec` with a profile denying every file write under /Users and under any
-  explicitly denied path, except the test's own directory and the temp root the scratch uses.
-  Later rules win in a sandbox profile, so the explicit denials come last.
+- macOS: `sandbox-exec` with a DEFAULT-DENY write profile: every file write is refused except
+  under the test's own directory (which also holds Ansible's own state), the temp root the
+  scratch uses, the interpreter's temp dir, and /dev. Later rules win in a sandbox profile, so
+  explicit denials (the proof tests' canaries) come last.
 - Linux with `bwrap`: the root file system is bound read-only apart from the test's directory
   and the temp root.
 - Linux without `bwrap` (the GitHub-hosted CI runner, unless it gains it): NO kernel sandbox.
@@ -44,8 +45,8 @@ def _profile(writable: list[str], denied: list[str]) -> str:
     def paths(items):
         return " ".join(f'(subpath "{p}")' for p in items)
 
-    rules = ["(version 1)", "(allow default)", '(deny file-write* (subpath "/Users"))',
-             f"(allow file-write* {paths(writable)})"]
+    rules = ["(version 1)", "(allow default)", "(deny file-write*)",
+             f'(allow file-write* {paths(writable)} (subpath "/dev"))']
     if denied:
         rules.append(f"(deny file-write* {paths(denied)})")
     return "".join(rules)

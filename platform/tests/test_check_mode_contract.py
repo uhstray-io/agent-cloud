@@ -68,6 +68,10 @@ MATERIALISE = "platform/playbooks/tasks/materialise-ssh-key.yml"
 REMOVE = "platform/playbooks/tasks/remove-ssh-key.yml"
 PIN = "platform/playbooks/tasks/pin-ssh-host-key.yml"
 SCRATCH_ROOT = "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+# The same root, as the runtime checks must compute it: INLINE, never through a variable, so no
+# set_fact, include parameter or extra var can move it (PR #319 review: `-e` beat a set_fact).
+SCRATCH_ROOT_INLINE = "(lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)"
+SET_FACT_KEYS = ("ansible.builtin.set_fact", "ansible.legacy.set_fact", "set_fact")
 # The only dest/path a forced write may carry, each valid only in its own file.
 SCRATCH_TARGETS = {
     MATERIALISE: {"{{ _msk_dir.path }}/id"},
@@ -81,9 +85,7 @@ PINNED_DEFINITIONS = {
     "_rsk_dir": (REMOVE, "set_fact",
                  "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir"
                  " | default('') }}"),
-    "_rsk_root": (REMOVE, "set_fact", SCRATCH_ROOT),
     "_pshk_kh": (PIN, "set_fact", "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"),
-    "_pshk_root": (PIN, "set_fact", SCRATCH_ROOT),
 }
 
 
@@ -173,13 +175,27 @@ def _definitions(doc, rel: str) -> list[tuple[str, str, str, str]]:
             if name in PINNED_DEFINITIONS:
                 found.append((name, rel, kind, str(value).strip()))
 
+    def from_free_form(text):
+        # `set_fact: a=1 b=2` (k=v form). Any pinned name defined this way is a second,
+        # unpinned definition (PR #319 review: it redefined the root and the target).
+        for name in re.findall(r"(?:^|\s)([A-Za-z_]\w*)=", str(text)):
+            if name in PINNED_DEFINITIONS:
+                found.append((name, rel, "set_fact k=v", str(text).strip()))
+
     def walk(tasks):
         for task in tasks or []:
             if not isinstance(task, dict):
                 continue
             from_vars(task.get("vars"), "vars")
-            for key in ("ansible.builtin.set_fact", "set_fact"):
-                from_vars(task.get(key), "set_fact")
+            for key in SET_FACT_KEYS:
+                if key not in task:
+                    continue
+                if isinstance(task[key], dict):
+                    from_vars(task[key], "set_fact")
+                else:
+                    from_free_form(task[key] or "")
+                # `set_fact:` with its parameters under the task's `args:`
+                from_vars(task.get("args"), "set_fact args")
             if task.get("register") in PINNED_DEFINITIONS:
                 found.append((task["register"], rel, "register", str(task.get("name"))))
             for key in TASK_LISTS:
@@ -567,7 +583,7 @@ def test_a_second_definition_anywhere_is_a_violation():
         [{"name": "x", "ansible.builtin.include_tasks": "tasks/pin-ssh-host-key.yml",
           "vars": {"_pshk_kh": "/tmp/x"}}],
         # another set_fact
-        [{"name": "x", "ansible.builtin.set_fact": {"_rsk_root": "/tmp"}}],
+        [{"name": "x", "ansible.builtin.set_fact": {"_rsk_dir": "/tmp/x"}}],
         # another register
         [{"name": "x", "ansible.builtin.command": "true", "register": "_msk_dir"}],
         # play vars
@@ -585,3 +601,26 @@ def test_a_changed_pinned_expression_is_a_violation():
         if "_pshk_kh" in facts:
             facts["_pshk_kh"] = "/tmp/elsewhere/known_hosts"
     assert pinned_definition_problems({**docs, PIN: pin})
+
+
+def test_a_k_equals_v_or_args_set_fact_is_a_second_definition():
+    # PR #319 review (B3): `set_fact: _pshk_root=… _pshk_kh=…` was invisible to a scanner that
+    # read only the mapping form, and the write followed it.
+    for extra in (
+        [{"name": "x", "ansible.builtin.set_fact": "_pshk_kh=/tmp/x/.sshkey_q/known_hosts"}],
+        [{"name": "x", "set_fact": "cacheable=true _rsk_dir=/tmp/x"}],
+        [{"name": "x", "ansible.builtin.set_fact": None, "args": {"_pshk_kh": "/tmp/x"}}],
+    ):
+        docs = {**_repo_docs(), "platform/playbooks/intruder.yml": extra}
+        assert pinned_definition_problems(docs), extra
+
+
+def test_every_runtime_root_check_computes_the_root_inline():
+    # B4: an extra var outranks every set_fact, so a root held in a variable could be moved.
+    for rel, marker in ((MATERIALISE, "_msk_dir.path | realpath | dirname"),
+                        (REMOVE, "_rsk_dir | realpath | dirname"),
+                        (PIN, "_pshk_kh | realpath | dirname | dirname")):
+        text = (REPO / rel).read_text()
+        (line,) = [ln for ln in text.splitlines() if marker in ln]
+        assert line.strip().endswith("== " + SCRATCH_ROOT_INLINE), (rel, line)
+        assert not re.search(r"_\w*root\b", text), f"{rel} holds the temp root in a variable"

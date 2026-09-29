@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 import harness_sandbox
@@ -142,7 +143,8 @@ def _section(playbook: str):
                      "_target_addr": "192.0.2.10", "_target_user": "tester", "_target_port": 22}, "_probe_key"
 
 
-def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool = True, extra: dict | None = None):
+def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool = True, extra: dict | None = None,
+         cli: list[str] | None = None):
     tasks, variables, result_var = _section(playbook)
     variables = {**variables, **(extra or {})}
     # The pin's raw read really runs (over the local connection); only the file it reads
@@ -166,6 +168,7 @@ def _run(tmp_path: Path, playbook: str, *, check: bool, ssh: str, host_key: bool
     # through hostvars[inventory_hostname], which a play var does not reach.
     (tmp_path / "inventory.ini").write_text("localhost ansible_connection=local ansible_host=192.0.2.10\n")
     args = ["-v", "-i", str(tmp_path / "inventory.ini"), str(tmp_path / "h.yml")] + (["--check"] if check else [])
+    args += cli or []
     out = _ansible(tmp_path, args, tasks, {"SSH_STUB": ssh, "SSH_STUB_LOG": str(log),
                                            "PATH": f"{tmp_path / 'bin'}:{os.environ.get('PATH', '')}"})
     calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -390,10 +393,9 @@ def test_remove_deletes_only_a_scratch_dir_under_the_temp_root(tmp_path):
 def test_materialise_and_remove_agree_on_the_temp_root():
     root = yaml.safe_load((PLAYBOOKS / MATERIALISE).read_text())
     (tmp,) = [t for t in root if "ansible.builtin.tempfile" in t]
-    resolve, wipe = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
-    assert tmp["ansible.builtin.tempfile"]["path"] == resolve["ansible.builtin.set_fact"]["_rsk_root"]
+    _resolve, wipe = yaml.safe_load((PLAYBOOKS / REMOVE).read_text())
     assert tmp["ansible.builtin.tempfile"]["path"] == check_mode_contract.SCRATCH_ROOT
-    assert "(_rsk_dir | realpath | dirname) == _rsk_root" in wipe["when"]
+    assert "(_rsk_dir | realpath | dirname) == " + check_mode_contract.SCRATCH_ROOT_INLINE in wipe["when"]
 
 
 @needs_ansible
@@ -446,8 +448,63 @@ def test_the_sandbox_blocks_a_write_the_static_guard_never_saw(tmp_path, tmp_pat
     assert out.returncode == 0 and target.exists(), out.stdout[-1500:]
 
 
-def test_the_sandbox_profile_denies_the_home_tree():
+def test_the_sandbox_profile_denies_writes_by_default():
     profile = harness_sandbox._profile(["/private/var/folders/x"], ["/private/var/folders/x/canary"])
-    assert '(deny file-write* (subpath "/Users"))' in profile
+    assert "(deny file-write*)" in profile and '(subpath "/Users")' not in profile
     # explicit denials come LAST, since later rules win
     assert profile.rindex("(deny file-write*") > profile.index("(allow file-write*")
+
+
+@needs_ansible
+@pytest.mark.skipif(harness_sandbox.SANDBOX != "sandbox-exec", reason="macOS sandbox profile only")
+def test_the_sandbox_refuses_writes_outside_its_allowlist(tmp_path):
+    # Not denied explicitly: refused only because they are outside the allowlist. Both probe
+    # roots are created here and removed afterwards; neither is the home directory or a
+    # system path.
+    roots = [Path(tempfile.mkdtemp(prefix=".sandbox-probe-", dir=REPO)),
+             Path(tempfile.mkdtemp(prefix="sandbox-probe-", dir="/private/tmp"))]
+    try:
+        for root in roots:
+            assert not any(str(root).startswith(a) for a in (str(tmp_path), harness_sandbox.temp_root())), root
+            target = root / "written"
+            play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                     "tasks": [{"ansible.builtin.copy": {"content": "x", "dest": str(target)}}]}]
+            (tmp_path / "h.yml").write_text(yaml.safe_dump(play))
+            out = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")], tmp_path,
+                                      cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+            assert out.returncode != 0 and not target.exists(), (root, out.stdout[-1200:])
+    finally:
+        for root in roots:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+@needs_ansible
+@pytest.mark.parametrize("playbook", CONVERTED)
+def test_extra_vars_cannot_move_the_pinned_known_hosts(tmp_path, playbook):
+    # PR #319 review (B4): `-e _pshk_root=X -e _pshk_kh=X/.sshkey_q/known_hosts` outranked the
+    # set_fact and the runtime check compared against the moved root, so it WROTE. The root
+    # is now computed inline. The target is inside tmp_path, which the sandbox allows, so only
+    # that check stands in the way; the directory exists so the copy would otherwise succeed.
+    evil = tmp_path / "evil" / ".sshkey_q"
+    evil.mkdir(parents=True)
+    kh = evil / "known_hosts"
+    out, _, _ = _run(tmp_path, playbook, check=True, ssh="ok",
+                     cli=["-e", f"_pshk_root={tmp_path / 'evil'}", "-e", f"_pshk_kh={kh}"])
+    assert not kh.exists(), "an extra var redirected the pinned known_hosts"
+    assert out.returncode != 0 and "refusing to write it" in out.stdout, out.stdout[-1500:]
+
+
+@needs_ansible
+def test_extra_vars_cannot_widen_the_wipe(tmp_path):
+    # B4 for the wipe: neither a moved root nor a directory handed in by extra var is deleted.
+    decoy = tmp_path / ".sshkey_decoy"
+    decoy.mkdir()
+    (decoy / "keep").write_text("x")
+    (tmp_path / "tasks").symlink_to(PLAYBOOKS / "tasks")
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "tasks": [{"ansible.builtin.include_tasks": REMOVE, "vars": {"ssh_key_result_var": "_k"}}]}]
+    (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
+    out = _ansible(tmp_path, ["-i", "localhost,", str(tmp_path / "h.yml"),
+                              "-e", f"_rsk_root={tmp_path}", "-e", f"_rsk_dir={decoy}"], harness[0]["tasks"])
+    assert out.returncode == 0, out.stdout[-1500:]
+    assert (decoy / "keep").exists(), "an extra var widened the wipe"

@@ -71,12 +71,12 @@
     _pshk_key: "{{ lookup('ansible.builtin.vars', ssh_key_result_var, default={}) }}"
 
 # The target path and the line are resolved here, by set_fact, so the forced write below
-# carries no `vars:`; `_pshk_kh` and `_pshk_root` each have exactly one pinned definition in
-# the repository (test_check_mode_contract.py).
+# carries no `vars:`; `_pshk_kh` has exactly one pinned definition in the repository
+# (test_check_mode_contract.py). The temp root is deliberately NOT a variable: every check
+# below computes it inline, so no set_fact, include parameter or extra var can move it.
 - name: "Pin SSH host key: resolve the known_hosts path and the pinned line"
   ansible.builtin.set_fact:
     _pshk_kh: "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"
-    _pshk_root: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
     # OpenSSH keys a non-default port as [host]:port; a bare entry would never match and
     # StrictHostKeyChecking=yes would refuse — a false failure from the opposite direction.
     _pshk_line: >-
@@ -89,15 +89,16 @@
     - _pshk_read.stdout is defined
     - (((_pshk_read.stdout | trim).splitlines() | first | default('')).split() | length) >= 2
 
-# The known_hosts path arrives through the materialise RESULT fact, which a caller can
-# overwrite; so it is checked at runtime to be the known_hosts inside a scratch directory
-# directly under the temp root, before anything is written (PR #319 review).
+# The known_hosts path arrives through the materialise RESULT fact, and any fact can be
+# overridden (a caller's set_fact, an include parameter, an extra var — PR #319 review wrote
+# through each). So it is checked at runtime, against the temp root computed INLINE from the
+# runner's environment, to be `known_hosts` in a `.sshkey_` directory directly under it.
 - name: "Pin SSH host key: refuse a known_hosts outside the scratch directory"
   ansible.builtin.assert:
     that:
       - (_pshk_kh | basename) == 'known_hosts'
       - (_pshk_kh | dirname | basename) is match('^\.sshkey_')
-      - (_pshk_kh | realpath | dirname | dirname) == _pshk_root
+      - (_pshk_kh | realpath | dirname | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)
     fail_msg: "The pinned known_hosts path is not inside the SSH key scratch directory; refusing to write it."
     quiet: true
   when: _pshk_line is defined and _pshk_read.stdout is defined
