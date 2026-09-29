@@ -1479,6 +1479,8 @@
         headers: *bao_root_hdr
         status_code: [200, 404]
       register: _seed_check
+      # A 200 response carries the path's stored values.
+      no_log: true
       loop: "{{ _seed_specs | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
