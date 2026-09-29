@@ -449,7 +449,7 @@
 
     - name: Read guest-visible root filesystem size and free bytes
       ansible.builtin.command:
-        argv: [df, --block-size=1, --output=size,avail, /]
+        argv: [df, --block-size=1, "--output=size,avail", /]
       register: _receiver_guest_root_df
       changed_when: false
       check_mode: false
