@@ -101,7 +101,7 @@ and why.
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | Pre-push hook |
 | 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | Convention (user-stated) |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | Pinned binary and SHA256 in CI |
-| 5.9 | Added AI attribution trailers to six commits against the repo rule; one was pushed | Process | commit-msg hook |
+| 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads | Process | commit-msg hook (commits); Convention (PR bodies) |
 | 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | Convention (hook proposed) |
 | 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | Convention |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | Test |
@@ -2325,6 +2325,8 @@ push of the same branch while one holds it.
 
 ### 5.9 AI attribution trailers added to commits against the repo rule
 
+**Occurrences: 2** — 2026-09-22, 2026-09-29
+
 **What happened.** On 2026-09-22 the agent ended six commit messages with
 `Co-Authored-By: Claude …` and `Claude-Session: …` trailers, because its harness instructed
 it to. Root `AGENTS.md` (Git Conventions: "No AI attribution in commits") and the operator's
@@ -2345,6 +2347,18 @@ a harness is a default, not a permission.
 links, "Generated with" footers and the assistant noreply address; a human co-author still
 passes. Tested by `platform/tests/test_commit_msg_hook.bats`. Active wherever
 `core.hooksPath=.githooks` is set (`make git-setup`).
+
+**Occurrence 2 — 2026-09-29.** A harness reminder mid-session again said to end commit
+messages and PR bodies with attribution lines. The agent added the commit trailers to a
+fix on the firewall convergence branch, and `.githooks/commit-msg` refused the commit, so
+nothing landed. The same turn it had already opened a site-config pull request whose body
+ended in the "Generated with" footer and a session link. No hook reads a PR body, so that
+one was published, then removed by editing the body. Why the rule did not fire: it is
+worded for commits, and the reminder arrived after the session's conventions had been read,
+so nothing prompted a re-check. The rule covers PR bodies, issues and review comments as
+well as commits: the operator's standing preference names all of them. PR bodies are
+still enforced only by convention; a guard would have to wrap `gh pr create` and
+`gh pr edit`, which no hook in this repository sees.
 
 ### 5.12 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
 
