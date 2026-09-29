@@ -16,9 +16,9 @@ services:
     image: ${O11Y_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: o11y-node-exporter
     restart: always
-    # node_exporter reads host procfs and filesystem data; keep that access in
-    # this dedicated container, not the externally reachable Alloy receiver.
-    pid: host
+    # node_exporter reads host procfs and filesystem data through these
+    # read-only mounts. Keep its PID namespace private and its host access out of
+    # the externally reachable Alloy receiver.
     command:
       - --path.rootfs=/host
       - --path.procfs=/host/proc

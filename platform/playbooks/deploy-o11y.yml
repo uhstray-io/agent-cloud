@@ -422,7 +422,7 @@
     - name: Require the receiver-host exporter to remain private and read-only
       ansible.builtin.assert:
         that:
-          - (_receiver_host_runtime.stdout | from_json).pid_mode == 'host'
+          - (_receiver_host_runtime.stdout | from_json).pid_mode in [none, '', 'private']
           - (_receiver_host_runtime.stdout | from_json).ports is none or (_receiver_host_runtime.stdout | from_json).ports == {}
           - (_receiver_host_runtime.stdout | from_json).networks | length == 1
           - (_receiver_host_runtime.stdout | from_json).networks.keys() | first == 'o11y' or (_receiver_host_runtime.stdout | from_json).networks.keys() | first is search('_o11y$')
